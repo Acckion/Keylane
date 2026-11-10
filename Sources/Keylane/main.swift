@@ -241,7 +241,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         glass.layer?.cornerCurve = .continuous
         glass.layer?.masksToBounds = true
         glass.layer?.borderWidth = 0
-        if #available(macOS 27.0, *) { glass.effectIsInteractive = false }
+        // Glass remains noninteractive by default; keep compatibility with the macOS 26 SDK.
         glass.contentView = NSHostingView(rootView: Launcher(model: model))
         window.contentView = glass; window.isReleasedWhenClosed = false; window.center()
         window.delegate = self
