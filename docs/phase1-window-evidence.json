@@ -1,0 +1,56 @@
+[
+  {
+    "displayCount" : 1,
+    "event" : "shown",
+    "hotkeyStatus" : 0,
+    "launcherKey" : true,
+    "launcherVisible" : true,
+    "settingsVisible" : false,
+    "time" : 1794289715.0075021
+  },
+  {
+    "displayCount" : 1,
+    "event" : "shownSettled",
+    "hotkeyStatus" : 0,
+    "launcherKey" : true,
+    "launcherVisible" : true,
+    "settingsVisible" : false,
+    "time" : 1794289715.0567532
+  },
+  {
+    "displayCount" : 1,
+    "event" : "hidden:outsideClick",
+    "hotkeyStatus" : 0,
+    "launcherKey" : false,
+    "launcherVisible" : false,
+    "settingsVisible" : false,
+    "time" : 1794289914.042285
+  },
+  {
+    "displayCount" : 1,
+    "event" : "shown",
+    "hotkeyStatus" : 0,
+    "launcherKey" : true,
+    "launcherVisible" : true,
+    "settingsVisible" : false,
+    "time" : 1794289915.1593552
+  },
+  {
+    "displayCount" : 1,
+    "event" : "shownSettled",
+    "hotkeyStatus" : 0,
+    "launcherKey" : true,
+    "launcherVisible" : true,
+    "settingsVisible" : false,
+    "time" : 1794289915.176018
+  },
+  {
+    "displayCount" : 1,
+    "event" : "hidden:command",
+    "hotkeyStatus" : 0,
+    "launcherKey" : false,
+    "launcherVisible" : false,
+    "settingsVisible" : false,
+    "time" : 1794289916.373873
+  }
+]

@@ -1,0 +1,106 @@
+import Foundation
+import AppKit
+import Combine
+import KeylaneCore
+
+let app = NSApplication.shared
+let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYLANE_CLIPBOARD_TEST_ROOT"]!).appendingPathComponent("fixtures")
+let suite = "org.keylane.clipboard.test." + UUID().uuidString
+let prefs = UserDefaults(suiteName: suite)!
+let board = NSPasteboard(name: .init(suite))
+let controller = ClipboardController(directory: root, board: board, preferences: prefs, startTimer: false)
+func wait(_ message: String, _ condition: () -> Bool) {
+    let deadline = Date().addingTimeInterval(message == "Vision OCR" ? 50 : 12)
+    while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.03)) }
+    if !condition() { fputs("FAIL total=\(controller.total) list=\(controller.items.count) detail=\(controller.detail != nil) status=\(controller.status) root=\(root.path)\n", stderr) }; precondition(condition(), message + " status=" + controller.status)
+}
+func write(_ text: String) { board.clearContents(); board.setString(text, forType: .string); controller.poll() }
+defer { board.releaseGlobally(); prefs.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+write("MUST NOT CAPTURE")
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(controller.total == 0)
+controller.captureEnabled = true
+write("Keylane 中文 clipboard probe")
+wait("capture text") { controller.total == 1 && controller.detail?.text == "Keylane 中文 clipboard probe" }
+controller.pinSelected(); wait("pin") { controller.detail?.item.pinned == true }
+write("Second record")
+wait("second") { controller.total == 2 }
+write("Keylane 中文 clipboard probe")
+wait("dedup and stable pin") { controller.items.first?.copyCount == 2 && controller.total == 2 }
+precondition(controller.copySelected())
+precondition(board.string(forType: .string) == "Keylane 中文 clipboard probe")
+controller.poll()
+RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+precondition(controller.items.first?.copyCount == 2)
+// Sensitive marker must skip before content is read.
+board.clearContents(); board.setString("DO NOT SAVE", forType: .string); board.setString("1", forType: .init("org.nspasteboard.ConcealedType")); controller.poll()
+RunLoop.current.run(until: Date().addingTimeInterval(0.1)); precondition(controller.total == 2)
+let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 256, pixelsHigh: 100, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 256, height: 100).fill()
+("KEYLANE OCR 123" as NSString).draw(at: NSPoint(x: 8, y: 35), withAttributes: [.font: NSFont.systemFont(ofSize: 24), .foregroundColor: NSColor.black])
+NSGraphicsContext.restoreGraphicsState()
+let png = bitmap.representation(using: .png, properties: [:])!
+board.clearContents(); board.setData(png, forType: .png); controller.poll()
+wait("image capture") { controller.total == 3 }
+let image = controller.items.first { $0.kind == .image }!; controller.select(image.id)
+wait("thumbnail") { controller.thumbnail != nil }
+controller.recognizeSelected()
+wait("Vision OCR") { controller.detail?.ocrText.contains("KEYLANE") == true }
+controller.search("OCR 123"); wait("OCR search") { controller.items.count == 1 && controller.items.first?.id == image.id }
+precondition(controller.copySelected()); precondition(board.data(forType: .png) == png)
+controller.search(""); wait("reset") { controller.items.count == 3 }
+try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+let file = root.appendingPathComponent("fixture.txt"); try Data("OWN FIXTURE".utf8).write(to: file)
+board.clearContents(); board.writeObjects([file as NSURL]); controller.poll()
+wait("file capture") { controller.total == 4 }
+let fileID = controller.items.first { $0.kind == .files }!.id; controller.select(fileID)
+wait("file detail") { controller.detail?.item.id == fileID }
+precondition(controller.copySelected())
+let copiedFile = (board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL])?.first
+precondition(copiedFile?.resolvingSymlinksInPath() == file.resolvingSymlinksInPath())
+controller.removeSelected(); wait("file history deletion") { controller.total == 3 }
+precondition(FileManager.default.fileExists(atPath: file.path))
+let reopened = try ClipboardStore(directory: root)
+let reopenedCount = try reopened.count(); precondition(reopenedCount == 3)
+controller.clear(includePinned: false); wait("clear unpinned") { controller.total == 1 }
+precondition(controller.items.first?.pinned == true)
+controller.clear(includePinned: true); wait("clear all") { controller.total == 0 }
+let richString = "富文本格式示例"
+let attributed = NSAttributedString(string:richString,attributes:[.font:NSFont.boldSystemFont(ofSize:18)])
+let rtf = try attributed.data(from:NSRange(location:0,length:attributed.length),documentAttributes:[.documentType:NSAttributedString.DocumentType.rtf])
+let html = Data("<b>富文本格式示例</b>".utf8)
+let rich = NSPasteboardItem(); rich.setString(richString,forType:.string); rich.setData(rtf,forType:.rtf); rich.setData(html,forType:.html)
+board.clearContents(); board.writeObjects([rich]); controller.poll()
+wait("rich capture") { controller.total == 1 && controller.detail?.snapshot?.hasRichText == true }
+let richID = controller.selectedID!
+let heldDetail = controller.detail
+var detailDisappeared = false
+let observation = controller.$detail.dropFirst().sink { if $0 == nil { detailDisappeared = true } }
+controller.reload(); RunLoop.current.run(until:Date().addingTimeInterval(0.15))
+precondition(!detailDisappeared && controller.detail?.item.id == heldDetail?.item.id)
+observation.cancel()
+precondition(controller.copySelected())
+precondition(board.data(forType:.rtf) == rtf && board.data(forType:.html) == html)
+precondition(controller.copySelected(plainText:true))
+precondition(board.string(forType:.string) == richString && board.data(forType:.rtf) == nil && board.data(forType:.html) == nil)
+let firstItem = NSPasteboardItem(); firstItem.setString("多个项目里的文字",forType:.string)
+let secondItem = NSPasteboardItem(); secondItem.setData(png,forType:.png)
+board.clearContents(); board.writeObjects([firstItem,secondItem]); controller.poll()
+wait("multiple representations") { controller.total == 2 }
+let mixedID = controller.items.first { $0.id != richID }!.id
+controller.select(mixedID); wait("mixed detail") { controller.detail?.item.id == mixedID && !controller.loadingDetail }
+precondition(controller.detail?.snapshot?.items.count == 2)
+precondition(controller.copySelected())
+precondition(board.pasteboardItems?.count == 2)
+precondition(board.pasteboardItems?.first?.string(forType:.string) == "多个项目里的文字")
+precondition(board.pasteboardItems?.last?.data(forType:.png) == png)
+let restored = try ClipboardStore(directory:root)
+precondition(try! restored.detail(id:richID)?.snapshot?.hasRichText == true)
+let htmlOnly = NSPasteboardItem(); htmlOnly.setData(Data("<p>猫&amp;狗</p><img src='https://invalid.example/never-load.png'><script>never-run()</script>".utf8),forType:.html)
+board.clearContents(); board.writeObjects([htmlOnly]); controller.poll()
+wait("inert HTML projection") { controller.total == 3 }
+controller.search("猫&狗"); wait("HTML text search") { controller.items.count == 1 && controller.detail?.snapshot?.plainText == "猫&狗" }
+precondition(controller.copySelected(plainText:true)); precondition(board.string(forType:.string) == "猫&狗")
+controller.clear(includePinned:true); wait("cleanup final") { controller.total == 0 }
+print("PASS named pasteboard: rich RTF/HTML exact roundtrip, plain copy, mixed items, inert HTML, stable detail, default-off, text, dedupe, stable pin, replay exclusion, sensitive exclusion, native PNG roundtrip, Vision OCR/search, file roundtrip, original retained, reopen, clear policies")

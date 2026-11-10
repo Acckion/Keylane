@@ -1,0 +1,14 @@
+{
+  "test": "NSWorkspace arguments to generated native probe",
+  "received": [
+    "--name",
+    "two words",
+    ""
+  ],
+  "expected": [
+    "--name",
+    "two words",
+    ""
+  ],
+  "passed": true
+}

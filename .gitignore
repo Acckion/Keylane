@@ -1,0 +1,20 @@
+.build/
+.swiftpm/
+dist/
+.DS_Store
+
+.build-current/
+
+# Local certificate selector only; private keys remain in Keychain.
+.signing-identity
+.signing-identity.tmp
+scripts/__pycache__/
+
+# Local credentials and developer settings
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.pem
+*.key
