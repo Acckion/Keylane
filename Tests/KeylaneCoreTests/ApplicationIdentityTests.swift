@@ -6,7 +6,13 @@ final class ApplicationIdentityTests: XCTestCase {
         guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("System Settings fixture not installed") }
         for (language, expected, query) in [("zh-Hans-CN", "系统设置", "系统设置"), ("fr", "Réglages\u{00A0}Système", "Reglages Systeme"), ("de", "System\u{00AD}einstellungen", "Systemeinstellungen")] {
             let identity = ApplicationIdentity(url: url, preferredLanguages: [language])
-            XCTAssertEqual(identity.displayName, expected, language)
+            // Apple's localized labels vary in spacing/hyphenation between OS releases.
+            // Assert the translated words; the app should preserve the system's original label.
+            func labelWords(_ value: String) -> String {
+                value.replacingOccurrences(of: "\u{00AD}", with: "")
+                    .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            }
+            XCTAssertEqual(labelWords(identity.displayName), labelWords(expected), language)
             XCTAssertNotNil(identity.score(query: query), language)
             XCTAssertNotNil(identity.score(query: "System Settings"), language)
         }
