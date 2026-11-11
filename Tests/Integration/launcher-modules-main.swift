@@ -55,6 +55,33 @@ precondition(starts == 1 && stops == 1)
 withExtendedLifetime(change) {}
 print("PASS native module registry: lazy registration, unified dispatch, availability, cache invalidation and service lifecycle")
 
+let localID = CommandID(rawValue: "module-preference")
+var locallyEnabled = true
+var globalDisabled: Set<String> = [localID.rawValue, "host-only"]
+let localPreference = Binding(get: { locallyEnabled }, set: { locallyEnabled = $0 })
+let localCommand = LauncherModule.Command(
+    declaration: .init(id: localID, title: "Module Preference", detail: "", symbol: "gear", keywords: []),
+    settingsEnabled: localPreference,
+    available: { localPreference.wrappedValue }
+)
+let localRegistry = try LauncherModuleRegistry(
+    modules: [.init(id: .init(rawValue: "test.preference"), commands: [localCommand])],
+    commandEnabled: { !globalDisabled.contains($0.rawValue) }
+)
+globalDisabled = localRegistry.migrateDisabledCommands(globalDisabled)
+precondition(globalDisabled == ["host-only"] && !locallyEnabled)
+precondition(localRegistry.candidates(for: input).isEmpty)
+let sharedPreference = localRegistry.shortcutCommandGroups[0].commands[0].settingsEnabled!
+sharedPreference.wrappedValue = true
+precondition(locallyEnabled)
+precondition(localRegistry.candidates(for: input).map(\.commandID) == [localID])
+precondition(localRegistry.resolve(localID, origin: .shortcut, navigate: { _ in }) != nil)
+localPreference.wrappedValue = false
+precondition(!sharedPreference.wrappedValue)
+precondition(localRegistry.resolve(localID, origin: .menu, navigate: { _ in }) == nil)
+precondition(localRegistry.migrateDisabledCommands(globalDisabled) == globalDisabled)
+print("PASS shared command preference and legacy disabled-state migration")
+
 
 let applications = LauncherSettingsPage(id: "applications", title: "应用程序", symbol: "app", subtitle: "", order: 10,
                                         items: [.applicationScopes, .applicationFavorites], content: { AnyView(EmptyView()) })

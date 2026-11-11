@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import KeylaneCore
+import SwiftUI
 
 final class ScriptCommandsController: ObservableObject {
     @Published var enabled: Bool {
@@ -128,6 +129,13 @@ final class ScriptCommandsController: ObservableObject {
 
     private static func contains(_ command: ScriptCommand, in folder: String) -> Bool {
         command.url.path.hasPrefix(folder == "/" ? "/" : folder + "/")
+    }
+
+    func commandEnabledBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { !self.disabled.contains(id) }, set: { enabled in
+            if enabled { self.disabled.remove(id) }
+            else { self.disabled.insert(id) }
+        })
     }
 
     func canRun(_ script: ScriptCommand) -> Bool {

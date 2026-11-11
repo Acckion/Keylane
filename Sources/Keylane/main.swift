@@ -116,9 +116,12 @@ final class Model: ObservableObject {
     private let commandSearch = LauncherCommandSearch()
     private(set) lazy var launcherModules: LauncherModuleRegistry? = {
         do {
-            return try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) { [weak self] id in
+            let registry = try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) { [weak self] id in
                 self?.disabledCommands.contains(id.rawValue) == false
             }
+            let remaining = registry.migrateDisabledCommands(disabledCommands)
+            if remaining != disabledCommands { disabledCommands = remaining }
+            return registry
         }
         catch {
             NSLog("Keylane: invalid built-in module catalog: %@", String(describing: error))
@@ -234,7 +237,7 @@ final class Model: ObservableObject {
     func openPage(_ page: PageID, origin: LauncherCommandOrigin) {
         guard launcherModules?.page(page) != nil else { return }
         pageID = page
-        if origin != .search { (NSApp.delegate as? Delegate)?.revealLauncher() }
+        if origin != .search { (NSApp.delegate as? Delegate)?.revealLauncherDestination() }
     }
     func launch(_ url: URL) {
         if NSWorkspace.shared.open(url) { (NSApp.delegate as? Delegate)?.hideLauncher() }
@@ -285,7 +288,7 @@ final class Model: ObservableObject {
     }
     func chooseFileSearchFolder(returnToLauncher: Bool = false) {
         fileSearch.addScope()
-        if returnToLauncher { (NSApp.delegate as? Delegate)?.revealLauncher() }
+        if returnToLauncher { (NSApp.delegate as? Delegate)?.revealLauncherDestination() }
     }
     func openFile(_ url: URL) {
         guard !fileSearch.isSearching else { return }
@@ -451,7 +454,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.model.runCommand(.init(rawValue: action), origin: .shortcut, usageKey: appKey)
             }
         }
-        do { try shortcuts.apply(model.bindings); hotkeyStatus = 0 } catch { hotkeyStatus = -1; model.error = error.localizedDescription }
+        do { try shortcuts.restore(model.bindings); hotkeyStatus = 0 } catch { hotkeyStatus = -1; model.error = error.localizedDescription }
         modifiers.activate = { [weak self] in self?.show() }
         model.configureModifiers()
         model.launcherModules?.startServices()
@@ -463,14 +466,26 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         onboarding.show(model: model) { [weak self] in self?.revealLauncher() }
     }
 
-    @objc func revealLauncher() {
+    @objc func revealLauncher() { activateLauncher(toggle: false) }
+
+    /// Explicit commands already chose a destination, so keep it when making the window visible.
+    func revealLauncherDestination() {
         if onboarding.isVisible {
             onboarding.bringToFront()
             return
         }
-        rememberPreviousApplication()
-        if !window.isVisible { presentLauncher() }
-        else { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); NotificationCenter.default.post(name: .launcherShown, object: nil) }
+        showCurrentLauncherPage()
+    }
+
+    private func showCurrentLauncherPage() {
+        if !window.isVisible {
+            presentLauncher()
+        } else {
+            rememberPreviousApplication()
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            NotificationCenter.default.post(name: .launcherShown, object: nil)
+        }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if onboarding.isVisible { onboarding.bringToFront() }
@@ -600,12 +615,14 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         resizeTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }
-    @objc func show() {
+    @objc func show() { activateLauncher(toggle: true) }
+
+    private func activateLauncher(toggle: Bool) {
         if onboarding.isVisible {
             onboarding.bringToFront()
             return
         }
-        if window.isVisible && window.isKeyWindow { hideLauncher(); return }
+        if toggle && window.isVisible && window.isKeyWindow { hideLauncher(); return }
         if !window.isVisible, let hiddenAt = launcherHiddenAt,
            model.launcherReturnDelay.shouldReturn(hiddenFor: ProcessInfo.processInfo.systemUptime - hiddenAt) {
             NotificationCenter.default.post(name: .launcherResetSearch, object: nil)
@@ -613,7 +630,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.query = ""
             model.compactExpanded = false
         }
-        presentLauncher()
+        if toggle { presentLauncher() }
+        else { showCurrentLauncherPage() }
     }
     /// Present the current destination without applying the launcher's compact-mode reset.
     private func presentLauncher() {
