@@ -120,6 +120,8 @@ struct LauncherMenuRow<Trailing: View>: View {
     let symbol: String
     let selected: Bool
     var style: Style = .action
+    var enabled = true
+    var destructive = false
     let activate: () -> Void
     let highlight: () -> Void
     @ViewBuilder let trailing: () -> Trailing
@@ -138,10 +140,13 @@ struct LauncherMenuRow<Trailing: View>: View {
             .frame(height: style == .action ? 39 : 40)
             .background(selected ? Color.primary.opacity(contrast == .increased ? 0.24 : 0.12) : .clear,
                         in: RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
+            .foregroundStyle(destructive ? Color.red : Color.primary)
+            .opacity(enabled ? 1 : 0.45)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { inside in if inside { highlight() } }
+        .disabled(!enabled)
+        .onHover { inside in if inside && enabled { highlight() } }
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

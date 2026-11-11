@@ -15,6 +15,7 @@ struct ApplicationPreferences: View {
         catalog = model.applicationSettingsCatalog
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$applicationHotkeyAction),
+            ViewObservation.changes(model.$applicationSettingsPath),
             ViewObservation.changes(model.$roots),
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
@@ -25,8 +26,27 @@ struct ApplicationPreferences: View {
     }
 
     var body: some View {
+        if let path = model.applicationSettingsPath {
+            SettingsPageSections {
+                HStack {
+                    Text("命令设置").font(.headline)
+                    Spacer()
+                    Button("显示所有应用") { model.showAllApplicationSettings() }
+                        .buttonStyle(.bordered)
+                }.padding(.horizontal, 14)
+                CommandSettingsList(items: catalog.items.filter { $0.id == path }, id: \.id,
+                                    emptyMessage: "应用已移走或删除") { item in
+                    item.commandSettingsEntry(model: model)
+                }
+            }
+        } else {
+            allApplications
+        }
+    }
+
+    private var allApplications: some View {
         let visibleApplications = filteredApplications ?? catalog.items
-        SettingsPageSections {
+        return SettingsPageSections {
             SettingsGroup {
                 SettingsRow("自动退出", detail: "停止使用应用一段时间后自动退出。") {
                     HStack {
@@ -102,8 +122,7 @@ extension ApplicationPreferenceItem {
         return CommandSettingsEntry(
             title: self.title, model: model, commandID: .init(rawValue: "app:" + self.id), aliasKey: self.id,
             isEnabled: Binding(get: { !model.excluded.contains(self.id) }, set: { value in
-                if value { model.excluded.remove(self.id) } else { model.excluded.insert(self.id) }
-                model.reloadCatalog()
+                model.setApplicationEnabled(value, path: self.id)
             }),
             help: self.id,
             menu: [

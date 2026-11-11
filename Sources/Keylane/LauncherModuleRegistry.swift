@@ -34,7 +34,9 @@ struct LauncherAction: Identifiable {
     let icon: String
     var keys: [String] = []
     var submenu: Submenu?
-    var argumentForm: ArgumentForm?
+    var group = 0
+    var enabled = true
+    var destructive = false
     var perform: () -> Void = {}
 }
 

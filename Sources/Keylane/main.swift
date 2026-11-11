@@ -10,6 +10,7 @@ final class Model: ObservableObject {
     let store: Store?
     @Published var error = ""
     @Published var settingsPage = "applications"
+    @Published private(set) var applicationSettingsPath: String?
     @Published var appearance = UserDefaults.standard.string(forKey: "appearance") ?? "system" { didSet { UserDefaults.standard.set(appearance, forKey: "appearance") } }
     @Published var placement = UserDefaults.standard.string(forKey: "placement") ?? "activeScreen" { didSet { UserDefaults.standard.set(placement, forKey: "placement") } }
     @Published var interfaceSize = UserDefaults.standard.string(forKey: "interfaceSize") ?? "medium" { didSet { UserDefaults.standard.set(interfaceSize, forKey: "interfaceSize") } }
@@ -77,6 +78,7 @@ final class Model: ObservableObject {
     @Published var loginStatus = ""
     @Published var loginEnabled = false
     let discovery = ApplicationDiscovery()
+    let applicationResultActions = ApplicationResultActions()
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -111,7 +113,28 @@ final class Model: ObservableObject {
         }
     }
     func toggleFavorite(_ id: String) { if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }; UserDefaults.standard.set(Array(favorites), forKey: "favorites") }
-    func openSettings(page: String? = nil) { if let page { settingsPage = page }; (NSApp.delegate as? Delegate)?.showSettings() }
+    func openSettings(page: String? = nil) {
+        applicationSettingsPath = nil
+        if let page { settingsPage = page }
+        (NSApp.delegate as? Delegate)?.showSettings()
+    }
+    func openApplicationCommandSettings(path: String) {
+        applicationSettingsPath = path
+        settingsPage = "applications"
+        (NSApp.delegate as? Delegate)?.showSettings()
+    }
+    func showAllApplicationSettings() { applicationSettingsPath = nil }
+    func setApplicationEnabled(_ enabled: Bool, path: String) {
+        if enabled { excluded.remove(path) } else { excluded.insert(path) }
+        commandSearch.invalidate()
+        rootSearchUpdates.send()
+        reloadCatalog()
+    }
+    func resetUsage(for key: String) {
+        usage.removeValue(forKey: key)
+        UserDefaults.standard.set(usage, forKey: "usage")
+        rootSearchUpdates.send()
+    }
     func saveNote() { do { try store?.save(KeylaneCore.Record(id: noteID, kind: "note", title: String(notes.prefix(60)), body: notes)); savedNotes = try store?.records(kind: "note") ?? [] } catch { self.error = error.localizedDescription } }
     func newNote() { noteID = UUID().uuidString; notes = "" }
     func exportData() { let panel = NSSavePanel(); panel.nameFieldStringValue = "Keylane-backup.json"; if panel.runModal() == .OK, let url = panel.url { do { try store?.export(to: url) } catch { self.error = error.localizedDescription } } }
