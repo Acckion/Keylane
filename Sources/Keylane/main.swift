@@ -630,10 +630,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if toggle && window.isVisible && window.isKeyWindow { hideLauncher(); return }
         if !window.isVisible, let hiddenAt = launcherHiddenAt,
            model.launcherReturnDelay.shouldReturn(hiddenFor: ProcessInfo.processInfo.systemUptime - hiddenAt) {
-            NotificationCenter.default.post(name: .launcherResetSearch, object: nil)
             model.pageID = .root
             model.query = ""
             model.compactExpanded = false
+            NotificationCenter.default.post(name: .launcherResetSearch, object: nil)
         }
         if toggle { presentLauncher() }
         else { showCurrentLauncherPage() }

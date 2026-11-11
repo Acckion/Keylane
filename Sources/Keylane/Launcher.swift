@@ -209,7 +209,7 @@ struct Launcher: View {
             mainSearchQuery = ""
             mainSearchSelection = .init()
             mainSearchExpanded = false
-            selection = .init()
+            if presentation.page == .root { resetResultSelection() }
             dismissArgumentEditor()
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
