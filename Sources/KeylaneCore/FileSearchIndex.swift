@@ -35,6 +35,7 @@ public final class FileSearchIndex {
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,name TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',root TEXT NOT NULL,volume TEXT NOT NULL,modified REAL NOT NULL,directory INTEGER NOT NULL,symlink INTEGER NOT NULL,external INTEGER NOT NULL DEFAULT 0,epoch TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS files_root ON files(root);
+                CREATE INDEX IF NOT EXISTS files_name_search ON files(root,name,modified,path,external);
                 CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(name,body,content='files',content_rowid='rowid',tokenize='trigram');
                 CREATE TRIGGER IF NOT EXISTS file_ai AFTER INSERT ON files BEGIN INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_ad AFTER DELETE ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); END;
@@ -106,9 +107,10 @@ public final class FileSearchIndex {
                 conditions.append("rowid IN (SELECT rowid FROM file_fts WHERE file_fts MATCH ?)")
                 values.append(options.contentSearch ? phrase : "name : " + phrase)
             } else {
-                let literal = "%" + word.replacingOccurrences(of:"\\",with:"\\\\").replacingOccurrences(of:"%",with:"\\%").replacingOccurrences(of:"_",with:"\\_") + "%"
-                conditions.append(options.contentSearch ? "(name LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')" : "name LIKE ? ESCAPE '\\'")
-                values.append(literal); if options.contentSearch { values.append(literal) }
+                // Names and bodies are already folded. Match the literal substring directly.
+                conditions.append(options.contentSearch ? "(instr(name, ?) > 0 OR instr(body, ?) > 0)" : "instr(name, ?) > 0")
+                values.append(word)
+                if options.contentSearch { values.append(word) }
             }
         }
         if !options.externalVolumes { conditions.append("external=0") }
