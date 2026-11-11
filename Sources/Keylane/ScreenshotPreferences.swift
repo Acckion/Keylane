@@ -84,10 +84,7 @@ struct ScreenshotPreferences: View {
             CommandSettingsList(items: ScreenshotCommand.allCases, id: \.rawValue) { command in
                 CommandSettingsEntry(title: command.title,
                     model: model, commandID: CommandID(rawValue: command.rawValue),
-                    isEnabled: Binding(get: { !library.disabledCommands.contains(command.rawValue) }, set: { enabled in
-                        if enabled { library.disabledCommands.remove(command.rawValue) }
-                        else { library.disabledCommands.insert(command.rawValue) }
-                    })) {
+                    isEnabled: library.commandEnabledBinding(command)) {
                         SettingsIcon(symbol: command.symbol)
                     }
             }.disabled(!library.enabled)

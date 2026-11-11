@@ -130,6 +130,7 @@ enum NavigationLauncherModules {
                 declaration: .init(id: .init(rawValue: command.rawValue), title: command.title,
                                    detail: "截图管理", symbol: command.symbol, keywords: command.aliases,
                                    destination: command == .search ? .page(id) : .action, settingsPage: "screenshots"),
+                settingsEnabled: library.commandEnabledBinding(command),
                 available: { library.isEnabled(command) },
                 execute: { [weak model] _ in
                     if command == .latest, let model { pasteLatestScreenshot(model) }

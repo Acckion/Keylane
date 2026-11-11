@@ -117,7 +117,7 @@ struct FileSearchPreferences: View {
         let declaration = model.launcherModules?.declaration(commandID)
         return CommandSettingsEntry(title: declaration?.title ?? id,
             model: model, commandID: commandID,
-            isEnabled: Binding(get: { model.fileAI.commandsEnabled[id] != false }, set: { model.fileAI.commandsEnabled[id] = $0 }),
+            isEnabled: model.fileAI.commandEnabledBinding(id),
             perform: { model.runCommand(commandID, origin: .menu) },
             icon: { Image(systemName: declaration?.symbol ?? "sparkles").font(VisualStyle.actionSymbol) })
     }

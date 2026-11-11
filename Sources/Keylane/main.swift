@@ -116,9 +116,12 @@ final class Model: ObservableObject {
     private let commandSearch = LauncherCommandSearch()
     private(set) lazy var launcherModules: LauncherModuleRegistry? = {
         do {
-            return try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) { [weak self] id in
+            let registry = try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) { [weak self] id in
                 self?.disabledCommands.contains(id.rawValue) == false
             }
+            let remaining = registry.migrateDisabledCommands(disabledCommands)
+            if remaining != disabledCommands { disabledCommands = remaining }
+            return registry
         }
         catch {
             NSLog("Keylane: invalid built-in module catalog: %@", String(describing: error))
