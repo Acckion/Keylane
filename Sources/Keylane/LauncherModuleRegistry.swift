@@ -217,6 +217,14 @@ final class LauncherModuleRegistry {
 
     func page(_ id: PageID) -> LauncherPage? { pages[id] }
 
+    func command(for page: PageID) -> LauncherCommandDeclaration? {
+        commands.first { $0.declaration.destination == .page(page) }?.declaration
+    }
+
+    func commands(inSettingsPage page: String) -> [LauncherCommandDeclaration] {
+        commands.map(\.declaration).filter { $0.settingsPage == page }
+    }
+
     private func provider(for entry: Entry) -> LauncherModule.Provider? {
         providers.first { $0.namespace.contains(entry.commandID) }
     }

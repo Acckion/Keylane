@@ -15,10 +15,16 @@ struct SettingsView: View {
 
     var body: some View {
         let matches = SettingsItem.search(query, in: state.catalog.items)
+        let command = state.command(on: selected)
+        let destinationID = command.map { "command:" + $0.id.rawValue } ?? selected
         return NavigationSplitView {
             sidebar(matches: matches)
         } detail: {
-            SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
+            SettingsPageContainer(pageID: destinationID,
+                                  title: command?.title ?? page?.title ?? "设置",
+                                  symbol: command?.symbol ?? page?.symbol ?? "gearshape",
+                                  subtitle: command?.detail ?? page?.subtitle ?? "",
+                                  target: command == nil ? target : nil, headerScrolledAway: $headerScrolledAway) {
                 if !state.error.isEmpty {
                     HStack {
                         Text(state.error).foregroundStyle(.red)
@@ -26,10 +32,14 @@ struct SettingsView: View {
                         SettingsIconButton("关闭错误提示", symbol: "xmark", compact: true) { state.clearError() }
                     }.padding(12).background(.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
                 }
-                page?.content()
+                if let command {
+                    state.commandPreferences(command)
+                    Button("显示扩展设置") { state.clearCommandSettings() }
+                        .buttonStyle(.bordered)
+                } else { page?.content() }
             }
         }.toggleStyle(SettingsSwitchStyle())
-        .navigationTitle(headerScrolledAway ? (page?.title ?? "设置") : "")
+        .navigationTitle(headerScrolledAway ? (command?.title ?? page?.title ?? "设置") : "")
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .preferredColorScheme(state.colorScheme)
@@ -81,7 +91,7 @@ struct SettingsView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 5)
-                .overlay { SettingsRowMouseDown { selected = item.id } }
+                .overlay { SettingsRowMouseDown { state.clearCommandSettings(); selected = item.id } }
                 .tag(item.id)
             }
         }.listStyle(.sidebar)
@@ -112,6 +122,7 @@ struct SettingsView: View {
         Color.clear.frame(height: 52).listRowInsets(EdgeInsets()).listRowSeparator(.hidden).listRowBackground(Color.clear).disabled(true).accessibilityHidden(true)
     }
     private func reveal(_ item: SettingsItem) {
+        state.clearCommandSettings()
         selected = item.page; target = nil; searchSelection = nil; query = ""
         if state.catalog.page(item.page)?.titlebar?.searchItem?.id != item.id {
             DispatchQueue.main.async { target = item.id }

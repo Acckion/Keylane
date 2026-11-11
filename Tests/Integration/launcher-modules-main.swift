@@ -65,3 +65,28 @@ do {
     precondition(error == .wrongPage(item: "scopes", expected: "unrelated"))
 }
 print("PASS settings catalog lookup, ordering and page ownership")
+
+
+let windowPage = PageID(rawValue: "Windows")
+let menuPage = PageID(rawValue: "MenuItems")
+let windowCommand = CommandID(rawValue: "switch-windows")
+let menuCommand = CommandID(rawValue: "search-menu-items")
+let navigation = LauncherModule(
+    id: .init(rawValue: "keylane.navigation"),
+    commands: [
+        .init(declaration: .init(id: windowCommand, title: "切换窗口", detail: "", symbol: "macwindow", keywords: [],
+                                 destination: .page(windowPage), settingsPage: "navigation")),
+        .init(declaration: .init(id: menuCommand, title: "搜索菜单项", detail: "", symbol: "menubar", keywords: [],
+                                 destination: .page(menuPage), settingsPage: "navigation"))
+    ],
+    pages: [.init(id: windowPage, placeholder: "搜索窗口"), .init(id: menuPage, placeholder: "搜索菜单")],
+    settings: [.init(id: "navigation", title: "导航", symbol: "macwindow", subtitle: "", order: 20, items: [],
+                     content: { AnyView(EmptyView()) })]
+)
+let pageSettingsRegistry = try LauncherModuleRegistry(modules: [module, navigation])
+precondition(pageSettingsRegistry.command(for: pageID)?.id == commandID)
+precondition(pageSettingsRegistry.command(for: windowPage)?.id == windowCommand)
+precondition(pageSettingsRegistry.command(for: menuPage)?.id == menuCommand)
+precondition(pageSettingsRegistry.command(for: .root) == nil)
+precondition(pageSettingsRegistry.commands(inSettingsPage: "navigation").map(\.id) == [windowCommand, menuCommand])
+print("PASS page-specific command settings and shared extension settings")

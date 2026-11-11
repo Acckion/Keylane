@@ -33,17 +33,20 @@ enum NavigationLauncherModules {
                 id: .init(rawValue: "switch-windows"), title: NavigationMode.windows.title,
                 detail: NavigationText.label("查找并切换已打开的窗口", "Find and switch open windows"),
                 symbol: NavigationMode.windows.symbol, keywords: ["Switch Windows", "窗口切换", "窗口", "Navigation"],
-                destination: .page(windows)
+                destination: .page(windows), settingsPage: "navigation"
             )),
             .init(declaration: .init(
                 id: .init(rawValue: "search-menu-items"), title: NavigationMode.menus.title,
                 detail: NavigationText.label("搜索并执行前一个应用的菜单命令", "Find and run a menu command in the previous app"),
                 symbol: NavigationMode.menus.symbol, keywords: ["Search Menu Items", "菜单", "菜单栏", "Navigation"],
-                destination: .page(menus)
+                destination: .page(menus), settingsPage: "navigation"
             ))
         ], pages: [
             navigationPage(windows, mode: .windows, model: model),
             navigationPage(menus, mode: .menus, model: model)
+        ], settings: [
+            BuiltinLauncherModules.commandOnlySettingsPage(model, "navigation", "导航", "macwindow.on.rectangle",
+                                                          "切换窗口和搜索菜单项。", 66)
         ], services: [focusService], applicationFocused: observeFocus)
     }
 
