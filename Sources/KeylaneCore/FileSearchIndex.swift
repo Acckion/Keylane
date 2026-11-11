@@ -35,6 +35,7 @@ public final class FileSearchIndex {
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,name TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',root TEXT NOT NULL,volume TEXT NOT NULL,modified REAL NOT NULL,directory INTEGER NOT NULL,symlink INTEGER NOT NULL,external INTEGER NOT NULL DEFAULT 0,epoch TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS files_root ON files(root);
+                CREATE INDEX IF NOT EXISTS files_name_search ON files(root,name,modified,path,external);
                 CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(name,body,content='files',content_rowid='rowid',tokenize='trigram');
                 CREATE TRIGGER IF NOT EXISTS file_ai AFTER INSERT ON files BEGIN INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_ad AFTER DELETE ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); END;
@@ -106,9 +107,17 @@ public final class FileSearchIndex {
                 conditions.append("rowid IN (SELECT rowid FROM file_fts WHERE file_fts MATCH ?)")
                 values.append(options.contentSearch ? phrase : "name : " + phrase)
             } else {
-                let literal = "%" + word.replacingOccurrences(of:"\\",with:"\\\\").replacingOccurrences(of:"%",with:"\\%").replacingOccurrences(of:"_",with:"\\_") + "%"
-                conditions.append(options.contentSearch ? "(name LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')" : "name LIKE ? ESCAPE '\\'")
-                values.append(literal); if options.contentSearch { values.append(literal) }
+                // Names are already folded. Match the literal substring directly.
+                if options.contentSearch {
+                    let literal = "%" + word.replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "%", with: "\\%")
+                        .replacingOccurrences(of: "_", with: "\\_") + "%"
+                    conditions.append("(instr(name, ?) > 0 OR body LIKE ? ESCAPE '\\')")
+                    values += [word, literal]
+                } else {
+                    conditions.append("instr(name, ?) > 0")
+                    values.append(word)
+                }
             }
         }
         if !options.externalVolumes { conditions.append("external=0") }
@@ -120,7 +129,11 @@ public final class FileSearchIndex {
         let allNameWords = words.map { _ in "instr(name, ?) > 0" }.joined(separator: " AND ")
         let relevance = "CASE WHEN name=? THEN 0 WHEN instr(name,?)=1 THEN 1 WHEN instr(name,?)>0 THEN 2 WHEN (" + allNameWords + ") THEN 3 ELSE 4 END"
         values += [phrase, phrase, phrase] + words
-        let sql = "SELECT path,modified FROM files WHERE " + conditions.joined(separator: " AND ")
+        // Use the covering index only when a name scan is unavoidable. FTS
+        // queries should intersect their row IDs with the root index.
+        let shortNameScan = !options.contentSearch && words.allSatisfy { $0.count < 3 }
+        let searchIndex = shortNameScan ? "files_name_search" : "files_root"
+        let sql = "SELECT path,modified FROM files INDEXED BY " + searchIndex + " WHERE " + conditions.joined(separator: " AND ")
             + " ORDER BY " + relevance + ",modified DESC,path LIMIT 2000"
         let s = try statement(sql, values)
         defer { sqlite3_finalize(s) }

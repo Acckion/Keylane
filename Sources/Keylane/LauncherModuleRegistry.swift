@@ -16,6 +16,8 @@ struct Entry: Identifiable {
     var rankingKind: LauncherSearchRanking.Kind = .command
     var matchScore: Int?
     var isDirectory = false
+    var isFallback = false
+    var subtitle: String?
 }
 
 struct LauncherAction: Identifiable {
@@ -60,6 +62,7 @@ struct LauncherPage {
     var submit: (() -> Void)?
     var shortcutSubmit: (() -> Void)?
     var primaryTitle: (() -> String)?
+    var primaryEnabled: (() -> Bool)?
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
     var searchAccessory: (() -> AnyView)?
@@ -152,6 +155,7 @@ struct LauncherModule {
         var actions: ((Entry) -> [LauncherAction]?)?
         var displayDetail: ((Entry) -> String?)?
         var artwork: ((Entry) -> AnyView)?
+        var detailView: ((Entry) -> AnyView?)?
     }
 
     struct Service {
@@ -287,16 +291,27 @@ final class LauncherModuleRegistry {
     func primaryTitle(for entry: Entry) -> String? { provider(for: entry)?.primaryTitle?(entry) }
     func displayDetail(for entry: Entry) -> String? { provider(for: entry)?.displayDetail?(entry) }
 
-    func artwork(for entry: Entry) -> AnyView? { provider(for: entry)?.artwork?(entry) }
+    func detailView(for entry: Entry) -> AnyView? { provider(for: entry)?.detailView?(entry) }
+
+    func artwork(for entry: Entry) -> AnyView? {
+        if let artwork = provider(for: entry)?.artwork?(entry) { return artwork }
+        let item = declaration(entry.commandID)
+        return ModuleArtwork.command(entry.commandID, settingsPage: item?.settingsPage)
+            .map { AnyView(ModuleArtworkImage(image: $0)) }
+    }
 
     func candidates(for input: LauncherCommandSearch.Input) -> [Entry] {
         commands.compactMap { command in
-            guard commandEnabled(command.declaration.id), command.available() else { return nil }
+            guard input.namespace?.contains(command.declaration.id) != false,
+                  commandEnabled(command.declaration.id), command.available() else { return nil }
             let item = command.declaration
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
                          detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords)
         } + providers.flatMap { provider in
-            provider.entries(input).filter { provider.namespace.contains($0.commandID) }
+            guard input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
+            return provider.entries(input).filter {
+                provider.namespace.contains($0.commandID) && input.namespace?.contains($0.commandID) != false
+            }
         }
     }
 

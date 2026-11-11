@@ -15,10 +15,13 @@ final class FileIndexTests: XCTestCase {
         XCTAssertEqual(try db.search("预算 报告",options:options).map(\.name),["报告 预算2026.txt"])
         XCTAssertEqual(try db.search("100%_",options:options).map(\.name),["100%_value.txt"])
         XCTAssertTrue(try db.search("100__",options:options).isEmpty)
+        XCTAssertEqual(try db.search("%_", options: options).map(\.name), ["100%_value.txt"])
+        XCTAssertEqual(try db.search("ＶＡ", options: options).map(\.name), ["100%_value.txt"])
         try put("正文测试.txt",body:"独立内容关键词")
         XCTAssertTrue(try db.search("内容关键词",options:options).isEmpty)
         options.contentSearch = true
         XCTAssertEqual(try db.search("内容关键词",options:options).map(\.name),["正文测试.txt"])
+        XCTAssertEqual(try db.search("内容",options:options).map(\.name),["正文测试.txt"])
         try db.clearBodies()
         XCTAssertTrue(try db.search("内容关键词",options:options).isEmpty)
         try put("外接磁盘.txt",external:true)

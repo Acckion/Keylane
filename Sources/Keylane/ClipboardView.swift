@@ -182,7 +182,7 @@ struct ClipboardPreferences: View {
                 case "clipboard":
                     CommandSettingsEntry(title: "剪贴板历史", model: model, commandID: .init(rawValue: id),
                                          isEnabled: binding(\.historyCommandEnabled), perform: { showsHistorySettings = true }) {
-                        SettingsIcon(symbol: "clipboard")
+                        SettingsIcon(symbol: "clipboard", artwork: ModuleArtwork.settings("clipboard"))
                     }
                 case "paste-sequentially":
                     unavailableCommand("顺序粘贴", symbol: "list.clipboard")
