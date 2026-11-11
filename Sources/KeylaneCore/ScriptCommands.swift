@@ -34,9 +34,9 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
             var reached: Set<String> = []
             for case let file as URL in children {
                 if isCancelled() { return ([], []) }
-                if file.hasDirectoryPath, roots.contains(file.path),
-                   let metadata = try? file.resourceValues(forKeys: [.isPackageKey, .isSymbolicLinkKey]),
-                   metadata.isPackage == false, metadata.isSymbolicLink == false {
+                if roots.contains(file.path),
+                   let metadata = try? file.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]),
+                   metadata.isDirectory == true, metadata.isPackage != true, metadata.isSymbolicLink != true {
                     reached.insert(file.path)
                 }
                 guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true,

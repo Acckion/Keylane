@@ -122,7 +122,11 @@ public final class FileSearchIndex {
         let allNameWords = words.map { _ in "instr(name, ?) > 0" }.joined(separator: " AND ")
         let relevance = "CASE WHEN name=? THEN 0 WHEN instr(name,?)=1 THEN 1 WHEN instr(name,?)>0 THEN 2 WHEN (" + allNameWords + ") THEN 3 ELSE 4 END"
         values += [phrase, phrase, phrase] + words
-        let sql = "SELECT path,modified FROM files WHERE " + conditions.joined(separator: " AND ")
+        // Use the covering index only when a name scan is unavoidable. FTS
+        // queries should intersect their row IDs with the root index.
+        let shortNameScan = !options.contentSearch && words.allSatisfy { $0.count < 3 }
+        let searchIndex = shortNameScan ? "files_name_search" : "files_root"
+        let sql = "SELECT path,modified FROM files INDEXED BY " + searchIndex + " WHERE " + conditions.joined(separator: " AND ")
             + " ORDER BY " + relevance + ",modified DESC,path LIMIT 2000"
         let s = try statement(sql, values)
         defer { sqlite3_finalize(s) }
