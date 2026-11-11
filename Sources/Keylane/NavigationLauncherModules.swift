@@ -28,7 +28,7 @@ enum NavigationLauncherModules {
             }
             SystemNavigation.shared.stopObservingFocus()
         })
-        return LauncherModule(id: .init(rawValue: "keylane.navigation"), commands: [
+        return LauncherModule(id: .init(rawValue: "keylane.navigation"), title: "窗口与菜单", symbol: "macwindow", commands: [
             .init(declaration: .init(
                 id: .init(rawValue: "switch-windows"), title: NavigationMode.windows.title,
                 detail: NavigationText.label("查找并切换已打开的窗口", "Find and switch open windows"),

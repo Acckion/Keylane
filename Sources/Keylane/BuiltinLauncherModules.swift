@@ -7,10 +7,29 @@ import KeylaneCore
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        [host(model), applications(model), files(model), clipboard(model), notes(model),
-         links(model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model),
-         ScriptCommandsModule.make(model: model)]
-        + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
+        let modules = [host(model), applications(model), files(model), clipboard(model), notes(model),
+                       links(model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model),
+                       ScriptCommandsModule.make(model: model)]
+            + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
+        return modules.enumerated().map { index, module in
+            guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
+                return module
+            }
+            let id = module.id.rawValue
+            let title = module.displayTitle
+            let symbol = module.displaySymbol
+            let commands = module.commands
+            let searchItem = SettingsItem(id: id, page: id, title: title,
+                                           keywords: commands.flatMap { $0.declaration.keywords }.joined(separator: " "))
+            var extensionModule = module
+            extensionModule.settings = [.init(id: id, title: title, symbol: symbol,
+                                               subtitle: "管理此扩展的命令、别名与快捷键。", order: 120 + index,
+                                               items: [searchItem], content: { [weak model] in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(ExtensionCommandPreferences(model: model, commands: commands).settingsAnchor(searchItem))
+            })]
+            return extensionModule
+        }
     }
 
     private static func command(_ id: String, _ title: String, _ detail: String, _ symbol: String,
@@ -18,24 +37,32 @@ enum BuiltinLauncherModules {
                                 settings: String? = nil,
                                 available: @escaping () -> Bool = { true },
                                 dynamicDetail: (() -> String)? = nil,
+                                settingsEnabled: Binding<Bool>? = nil,
                                 execute: @escaping (LauncherCommandOrigin) -> Void = { _ in }) -> LauncherModule.Command {
         LauncherModule.Command(
             declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
                                keywords: keywords, destination: destination, settingsPage: settings),
-            detail: dynamicDetail, available: available, execute: execute
+            detail: dynamicDetail, settingsEnabled: settingsEnabled, available: available, execute: execute
         )
     }
 
     private static func host(_ model: Model) -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.host"),
+        .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
-                                 ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general")],
+                                 ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general"),
+                         command("show-onboarding", "Show Onboarding", "重新打开 Keylane 的首次引导",
+                                 "sparkles.rectangle.stack", ["onboarding", "welcome", "首次引导", "新手引导"]) { _ in
+                             (NSApp.delegate as? Delegate)?.showOnboarding()
+                         }],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
                          settingsPage(model, "launcher", "启动器", "magnifyingglass", "管理启动器的显示与搜索行为。", 5) {
                              LauncherBehaviorPreferences(model: $0)
                          },
                          settingsPage(model, "keyboard", "键盘", "keyboard", "管理按键行为、导航和 Hyper Key。", 6) {
                              KeyboardPreferences(model: $0)
+                         },
+                         settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7) {
+                             ShortcutSettingsPreferences(model: $0)
                          },
                          settingsPage(model, "menu-bar", "菜单栏", "menubar.rectangle", "选择各模块在菜单栏中显示的项目。", 70) {
                              MenuBarPreferences(registry: $0.menuBar)
@@ -204,7 +231,9 @@ enum BuiltinLauncherModules {
         )
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
-                    ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard")
+                    ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard",
+                    available: { controller.historyCommandEnabled },
+                    settingsEnabled: Binding(get: { controller.historyCommandEnabled }, set: { controller.historyCommandEnabled = $0 }))
         ], pages: [page], settings: [
             settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: .init(
                 title: SettingsItem.clipboardCapture.title,
@@ -216,7 +245,7 @@ enum BuiltinLauncherModules {
         ], services: [
             .init(start: { [weak model] in model?.clipboard.startMonitoring() },
                   stop: { [weak model] in model?.clipboard.stopMonitoring() })
-        ])
+        ], searchUpdates: [updates(controller.$historyCommandEnabled)])
     }
 
     private static func clipboardActions(_ controller: ClipboardController) -> [LauncherAction] {
@@ -294,7 +323,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func systemTools() -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.system-tools"), commands: [
+        .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
             command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", [], execute: { _ in
                 (NSApp.delegate as? Delegate)?.hideLauncher()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { SystemTools.shared.screenshot() }

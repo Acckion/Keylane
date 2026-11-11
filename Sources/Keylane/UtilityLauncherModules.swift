@@ -32,7 +32,7 @@ enum UtilityLauncherModules {
             return nil
         }
         page.resume = controller.start
-        return .init(id: .init(rawValue: "keylane.contacts"), commands: [
+        return .init(id: .init(rawValue: "keylane.contacts"), title: "联系人", symbol: "person.crop.circle", commands: [
             command("contacts", "搜索联系人", "系统通讯录", "person.crop.circle",
                     ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID))
         ], pages: [page])
@@ -93,7 +93,7 @@ enum UtilityLauncherModules {
         page.resume = { [weak model] in
             if let query = model?.query { controller.search(query) }
         }
-        return .init(id: .init(rawValue: "keylane.dictionary"), commands: [
+        return .init(id: .init(rawValue: "keylane.dictionary"), title: "词典", symbol: "book", commands: [
             command("dictionary", "查询词典", "查找词语释义", "book.closed",
                     ["Dictionary", "Define Word", "字典", "查词"], destination: .page(pageID))
         ], providers: [provider], pages: [page])
@@ -168,7 +168,7 @@ enum UtilityLauncherModules {
                 searchPlaceholder: EmojiCatalog.label("搜索分类…", "Search categories…")
             ))
         }
-        return .init(id: .init(rawValue: "keylane.emoji"), commands: [
+        return .init(id: .init(rawValue: "keylane.emoji"), title: "Emoji 与符号", symbol: "face.smiling", commands: [
             command("emoji-symbols", EmojiCatalog.label("Emoji 与符号", "Search Emoji & Symbols"),
                     EmojiCatalog.label("搜索并插入表情与符号", "Search and insert emoji and symbols"),
                     "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID))

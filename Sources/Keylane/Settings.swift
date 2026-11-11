@@ -76,16 +76,24 @@ struct SettingsView: View {
     private var settingsPages: some View {
         List(selection: $selected) {
             searchClearance
-            ForEach(state.catalog.pages) { item in
-                Label { Text(item.title).font(VisualStyle.rowText) } icon: {
-                    SettingsIcon(symbol: item.symbol)
+            ForEach(state.catalog.sidebarGroups) { group in
+                Section {
+                    ForEach(group.pages, content: settingsSidebarRow)
+                } header: {
+                    if let title = group.id.settingsSectionTitle { Text(title) }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 5)
-                .overlay { SettingsRowMouseDown { selected = item.id } }
-                .tag(item.id)
             }
         }.listStyle(.sidebar)
+    }
+
+    private func settingsSidebarRow(_ item: LauncherSettingsPage) -> some View {
+        Label { Text(item.title).font(VisualStyle.rowText) } icon: {
+            SettingsIcon(symbol: item.symbol)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 5)
+        .overlay { SettingsRowMouseDown { selected = item.id } }
+        .tag(item.id)
     }
 
     private func searchResults(_ matches: [SettingsItem]) -> some View {

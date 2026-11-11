@@ -36,7 +36,7 @@ struct ApplicationPreferences: View {
                 }.padding(.horizontal, 14)
                 CommandSettingsList(items: catalog.items.filter { $0.id == path }, id: \.id,
                                     emptyMessage: "应用已移走或删除") { item in
-                    applicationCommand(item)
+                    item.commandSettingsEntry(model: model)
                 }
             }
         } else {
@@ -86,7 +86,7 @@ struct ApplicationPreferences: View {
                 SettingsSearchField(text: $filter, placeholder: "筛选应用…").frame(width: 170, height: 24)
             }.padding(.horizontal, 14).padding(.top, 10)
             CommandSettingsList(items: visibleApplications, id: \.id, emptyMessage: "没有匹配的应用") { item in
-                applicationCommand(item)
+                item.commandSettingsEntry(model: model)
             }.settingsAnchor(.applicationFavorites)
             HStack {
                 Text(model.scanStatus).font(.caption).foregroundStyle(.secondary)
@@ -111,23 +111,26 @@ struct ApplicationPreferences: View {
                              available: false, help: "此命令尚未实现，不能启用或设置快捷键。")
     }
 
-    private func applicationCommand(_ item: ApplicationPreferenceItem) -> CommandSettingsEntry<SettingsApplicationIcon> {
+}
+
+extension ApplicationPreferenceItem {
+    func commandSettingsEntry(model: Model) -> CommandSettingsEntry<SettingsApplicationIcon> {
         let revision = ApplicationCommandRevision(
-            title: item.title, alias: model.aliases[item.id] ?? "", shortcut: model.bindings["app:" + item.id],
-            enabled: !model.excluded.contains(item.id), favorite: model.favorites.contains(item.id)
+            title: self.title, alias: model.aliases[self.id] ?? "", shortcut: model.bindings["app:" + self.id],
+            enabled: !model.excluded.contains(self.id), favorite: model.favorites.contains(self.id)
         )
         return CommandSettingsEntry(
-            title: item.title, model: model, commandID: .init(rawValue: "app:" + item.id), aliasKey: item.id,
-            isEnabled: Binding(get: { !model.excluded.contains(item.id) }, set: { value in
-                model.setApplicationEnabled(value, path: item.id)
+            title: self.title, model: model, commandID: .init(rawValue: "app:" + self.id), aliasKey: self.id,
+            isEnabled: Binding(get: { !model.excluded.contains(self.id) }, set: { value in
+                model.setApplicationEnabled(value, path: self.id)
             }),
-            help: item.id,
+            help: self.id,
             menu: [
-                .init(title: revision.favorite ? "取消收藏" : "加入收藏") { model.toggleFavorite(item.id) },
-                .init(title: "在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+                .init(title: revision.favorite ? "取消收藏" : "加入收藏") { model.toggleFavorite(self.id) },
+                .init(title: "在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([self.url]) }
             ],
             renderRevision: revision,
-            icon: { SettingsApplicationIcon(path: item.id) }
+            icon: { SettingsApplicationIcon(path: self.id) }
         )
     }
 
@@ -143,7 +146,7 @@ private struct ApplicationCommandRevision: Hashable {
 
 /// Keeps the settings list ready when switching away from and back to Applications.
 final class ApplicationSettingsCatalog: ObservableObject {
-    @Published fileprivate private(set) var items: [ApplicationPreferenceItem] = []
+    @Published private(set) var items: [ApplicationPreferenceItem] = []
     private var changes: AnyCancellable?
 
     init(model: Model) {
@@ -165,7 +168,7 @@ final class ApplicationSettingsCatalog: ObservableObject {
     }
 }
 
-private struct ApplicationPreferenceItem: Identifiable, Equatable {
+struct ApplicationPreferenceItem: Identifiable, Equatable {
     let id: String
     let url: URL
     let title: String

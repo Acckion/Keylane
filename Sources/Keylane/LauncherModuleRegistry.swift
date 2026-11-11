@@ -94,14 +94,38 @@ struct LauncherSettingsPage: Identifiable {
     let content: () -> AnyView
 }
 
+enum LauncherModuleOrigin: CaseIterable {
+    case application
+    case builtInExtension
+    case installedExtension
+
+    var settingsSectionTitle: String? {
+        switch self {
+        case .application: nil
+        case .builtInExtension: "内置扩展"
+        case .installedExtension: "已安装扩展"
+        }
+    }
+}
+
+struct SettingsSidebarGroup: Identifiable {
+    let id: LauncherModuleOrigin
+    let pages: [LauncherSettingsPage]
+}
+
 struct SettingsWindowCatalog {
     let pages: [LauncherSettingsPage]
+    let sidebarGroups: [SettingsSidebarGroup]
     let items: [SettingsItem]
     private let pagesByID: [String: LauncherSettingsPage]
     private let itemsByID: [String: SettingsItem]
 
-    init(pages: [LauncherSettingsPage]) {
+    init(pages: [LauncherSettingsPage], origins: [String: LauncherModuleOrigin] = [:]) {
         self.pages = pages
+        sidebarGroups = LauncherModuleOrigin.allCases.compactMap { origin in
+            let matches = pages.filter { (origins[$0.id] ?? .builtInExtension) == origin }
+            return matches.isEmpty ? nil : SettingsSidebarGroup(id: origin, pages: matches)
+        }
         items = pages.flatMap(\.items)
         pagesByID = Dictionary(pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         itemsByID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -115,6 +139,7 @@ struct LauncherModule {
     struct Command {
         let declaration: LauncherCommandDeclaration
         var detail: (() -> String)?
+        var settingsEnabled: Binding<Bool>?
         var available: () -> Bool = { true }
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
     }
@@ -135,6 +160,9 @@ struct LauncherModule {
     }
 
     let id: ModuleID
+    var origin: LauncherModuleOrigin = .builtInExtension
+    var title: String? = nil
+    var symbol: String? = nil
     var commands: [Command] = []
     var providers: [Provider] = []
     var pages: [LauncherPage] = []
@@ -146,6 +174,18 @@ struct LauncherModule {
     var applicationFocused: ((NSRunningApplication) -> Void)?
 }
 
+extension LauncherModule {
+    var displayTitle: String { title ?? settings.first?.title ?? commands.first?.declaration.title ?? id.rawValue }
+    var displaySymbol: String { symbol ?? settings.first?.symbol ?? commands.first?.declaration.symbol ?? "puzzlepiece.extension" }
+}
+
+struct ShortcutCommandGroup {
+    let id: ModuleID
+    let title: String
+    let symbol: String
+    let commands: [LauncherModule.Command]
+}
+
 /// The registry stores native factories and handlers. Validation never runs a
 /// handler, constructs a view, or touches a permission-protected service.
 final class LauncherModuleRegistry {
@@ -153,7 +193,9 @@ final class LauncherModuleRegistry {
         case wrongPage(item: String, expected: String)
         case duplicateItem(String)
     }
+    let shortcutCommandGroups: [ShortcutCommandGroup]
     private let commands: [LauncherModule.Command]
+    private let commandEnabled: (CommandID) -> Bool
     private let byID: [CommandID: LauncherModule.Command]
     private let providers: [LauncherModule.Provider]
     private let pages: [PageID: LauncherPage]
@@ -166,12 +208,18 @@ final class LauncherModuleRegistry {
     let searchUpdates: AnyPublisher<Void, Never>
     let presentationUpdates: AnyPublisher<Void, Never>
 
-    init(modules: [LauncherModule]) throws {
+    init(modules: [LauncherModule], commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
+        self.commandEnabled = commandEnabled
         _ = try LauncherModuleCatalog(modules: modules.map {
             LauncherModuleDeclaration(id: $0.id, commands: $0.commands.map(\.declaration),
                                       pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
                                       providers: $0.providers.map(\.namespace))
         })
+        shortcutCommandGroups = modules.compactMap { module in
+            guard !module.commands.isEmpty else { return nil }
+            return ShortcutCommandGroup(id: module.id, title: module.displayTitle,
+                                        symbol: module.displaySymbol, commands: module.commands)
+        }
         commands = modules.flatMap(\.commands)
         byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.declaration.id, $0) })
         providers = modules.flatMap(\.providers)
@@ -188,7 +236,10 @@ final class LauncherModuleRegistry {
                 }
             }
         }
-        settingsCatalog = SettingsWindowCatalog(pages: settingsPages)
+        let settingsOrigins = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
+            module.settings.map { ($0.id, module.origin) }
+        })
+        settingsCatalog = SettingsWindowCatalog(pages: settingsPages, origins: settingsOrigins)
         services = modules.flatMap(\.services)
         launcherShownHandlers = modules.compactMap(\.launcherShown)
         applicationFocusedHandlers = modules.compactMap(\.applicationFocused)
@@ -229,7 +280,7 @@ final class LauncherModuleRegistry {
 
     func candidates(for input: LauncherCommandSearch.Input) -> [Entry] {
         commands.compactMap { command in
-            guard command.available() else { return nil }
+            guard commandEnabled(command.declaration.id), command.available() else { return nil }
             let item = command.declaration
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
                          detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords)
@@ -241,7 +292,7 @@ final class LauncherModuleRegistry {
     func resolve(_ id: CommandID, origin: LauncherCommandOrigin,
                  navigate: @escaping (LauncherCommandDeclaration.Destination) -> Void) -> (() -> Void)? {
         if let command = byID[id] {
-            guard command.available() else { return nil }
+            guard commandEnabled(command.declaration.id), command.available() else { return nil }
             return {
                 command.execute(origin)
                 switch command.declaration.destination {

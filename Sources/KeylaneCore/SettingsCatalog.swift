@@ -5,6 +5,13 @@ public struct SettingsItem: Identifiable, Equatable {
     public let page: String
     public let title: String
     public let keywords: String
+    public init(id: String, page: String, title: String, keywords: String) {
+        self.id = id
+        self.page = page
+        self.title = title
+        self.keywords = keywords
+    }
+
     public static let applicationScopes = SettingsItem(id: "scopes", page: "applications", title: "应用搜索范围", keywords: "应用 文件夹 applications folders scope")
     public static let applicationFavorites = SettingsItem(id: "favorites", page: "applications", title: "收藏", keywords: "排序 favorite pin")
     public static let screenshotColumns = SettingsItem(id: "screenshot-columns", page: "screenshots", title: "截图列数", keywords: "screenshots grid columns 截屏 缩略图")
@@ -27,6 +34,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let keyboardNavigation = SettingsItem(id: "keyboard-navigation", page: "keyboard", title: "导航绑定", keywords: "键盘 方向键 Vim Emacs navigation")
     public static let keyboardPageNavigation = SettingsItem(id: "keyboard-page-navigation", page: "keyboard", title: "页面导航键", keywords: "键盘 方括号 前进 后退 navigation brackets")
     public static let keyboardHyperKey = SettingsItem(id: "keyboard-hyper", page: "keyboard", title: "Hyper Key", keywords: "键盘 修饰键 大写锁定 Caps Lock Shift Hyperkey")
+    public static let hotkeys = SettingsItem(id: "grouped-hotkeys", page: "hotkeys", title: "快捷键", keywords: "扩展 分组 别名 hotkeys shortcuts aliases")
     public static let login = SettingsItem(id: "login", page: "general", title: "登录时启动", keywords: "开机 自启动 startup login")
     public static let glass = SettingsItem(id: "glass", page: "general", title: "液态玻璃与辅助功能", keywords: "透明度 动画 对比度 glass transparency motion accessibility")
     public static let fileSearchScope = SettingsItem(id: "file-search-scope", page: "files", title: "文件搜索范围", keywords: "文件 Spotlight 索引 file search index scope")
@@ -44,6 +52,9 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let calendarMenuBar = SettingsItem(id: "calendar-menu-bar", page: "calendar", title: "日历菜单栏摘要", keywords: "下一个 日程 日期 calendar agenda menu bar")
     public static let calendarSelection = SettingsItem(id: "calendar-selection", page: "calendar", title: "选择显示的日历", keywords: "日历 筛选 账户 calendar account filter")
     public static let clipboardCapture = SettingsItem(id: "capture", page: "clipboard", title: "记录剪贴板历史", keywords: "文字 图片 文件 保留 采集 置顶 OCR capture clipboard history")
+    public static let clipboardRetention = SettingsItem(id: "clipboard-retention", page: "clipboard", title: "剪贴板保留历史记录", keywords: "保留时间 clipboard retention")
+    public static let clipboardRecognition = SettingsItem(id: "clipboard-recognition", page: "clipboard", title: "剪贴板文字识别", keywords: "图片 快速 准确 clipboard OCR recognition")
+    public static let clipboardExclusions = SettingsItem(id: "clipboard-exclusions", page: "clipboard", title: "不记录这些应用", keywords: "剪贴板 排除 应用 clipboard disabled applications")
     public static let noteExport = SettingsItem(id: "export", page: "notes", title: "导出便笺", keywords: "笔记 备份 notes backup export")
     public static let quicklink = SettingsItem(id: "quicklink", page: "links", title: "默认快捷链接", keywords: "网址 url quicklink")
     public static let windowActivation = SettingsItem(id: "advanced-window-activation", page: "advanced", title: "窗口激活行为", keywords: "空间 窗口 window activation behavior spaces")
@@ -75,6 +86,7 @@ public struct SettingsItem: Identifiable, Equatable {
         keyboardNavigation,
         keyboardPageNavigation,
         keyboardHyperKey,
+        hotkeys,
         login,
         glass,
         applicationScopes,
@@ -97,6 +109,9 @@ public struct SettingsItem: Identifiable, Equatable {
         calendarMenuBar,
         calendarSelection,
         clipboardCapture,
+        clipboardRetention,
+        clipboardRecognition,
+        clipboardExclusions,
         noteExport,
         quicklink,
         windowActivation,
