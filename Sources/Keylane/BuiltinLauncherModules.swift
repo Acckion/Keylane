@@ -333,7 +333,19 @@ enum BuiltinLauncherModules {
             command("color", "Pick Color / 取色", "Copy hex color", "eyedropper", [], execute: { _ in SystemTools.shared.colorPicker() }),
             command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", [], execute: { _ in SystemTools.shared.readClipboard() }),
             command("stop-speaking", "Stop Reading / 停止朗读", "Stop speech playback", "stop.circle", [], execute: { _ in SystemTools.shared.stopReading() }),
-            command("finder", "Open Home / 个人文件夹", "Finder", "folder", [], execute: { _ in NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) })
+            command("finder", "Open Home / 个人文件夹", "Finder", "folder", [], execute: { _ in NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) }),
+            command("lock-screen", "锁定屏幕", "锁定当前 macOS 会话", "lock.fill",
+                    ["Lock Screen", "锁屏"], execute: { _ in SystemActions.lockScreen() }),
+            command("sleep-mac", "让 Mac 睡眠", "让电脑进入睡眠", "moon.zzz",
+                    ["Sleep Mac", "系统睡眠", "休眠"], execute: { _ in SystemActions.requestPowerAction(.sleep) }),
+            command("sleep-displays", "让显示器睡眠", "关闭显示器画面", "display",
+                    ["Sleep Displays", "显示器睡眠", "关闭屏幕"], execute: { _ in SystemActions.requestPowerAction(.sleepDisplays) }),
+            command("toggle-output-mute", "切换静音", "切换默认音频输出设备的静音状态", "speaker.slash",
+                    ["Toggle Mute", "Mute", "Unmute", "取消静音"], execute: { _ in SystemActions.toggleOutputMute() }),
+            command("hide-other-applications", "隐藏其他应用", "保留前台应用", "eye.slash",
+                    ["Hide Other Apps", "Hide All Apps Except Frontmost"], execute: { _ in SystemActions.hideOtherApplications() }),
+            command("unhide-applications", "显示所有隐藏应用", "恢复已隐藏的应用窗口", "eye",
+                    ["Unhide All Hidden Apps", "Show Hidden Apps"], execute: { _ in SystemActions.unhideApplications() })
         ])
     }
 
