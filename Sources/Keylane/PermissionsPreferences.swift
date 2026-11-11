@@ -5,7 +5,7 @@ import KeylaneCore
 
 struct PermissionsPreferences: View {
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
     @State private var hasRefreshed = false
     @State private var accessibilityAllowed = false
     @State private var inputMonitoringAllowed = false
@@ -14,11 +14,11 @@ struct PermissionsPreferences: View {
 
     init(model: Model) {
         self.model = model
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.calendar.$requesting),
-            SettingsPageObservation.changes(model.calendar.$error),
-            SettingsPageObservation.changes(model.contacts.$requesting),
-            SettingsPageObservation.changes(model.contacts.$error)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.calendar.$requesting),
+            ViewObservation.changes(model.calendar.$error),
+            ViewObservation.changes(model.contacts.$requesting),
+            ViewObservation.changes(model.contacts.$error)
         ]))
     }
 
