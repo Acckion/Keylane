@@ -51,9 +51,18 @@ final class LauncherDragGuides {
         launcher = window
         moveObserver = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: window, queue: .main) { [weak self] _ in self?.moved() }
         willMoveObserver = NotificationCenter.default.addObserver(forName: NSWindow.willMoveNotification, object: window, queue: .main) { [weak self] _ in self?.beginTracking() }
-        localUp = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
-            if event.type == .leftMouseDown, event.window === self?.launcher { self?.beginTracking() }
-            if event.type == .leftMouseUp { self?.finish() }
+        localUp = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .leftMouseDown, event.window === launcher { beginTracking() }
+            if event.type == .leftMouseDragged, ownsDrag {
+                moved()
+                return nil
+            }
+            if event.type == .leftMouseUp {
+                let consumed = ownsDrag
+                finish()
+                if consumed { return nil }
+            }
             return event
         }
         globalUp = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in self?.finish() }
@@ -63,16 +72,9 @@ final class LauncherDragGuides {
     func performDrag(with event: NSEvent) {
         guard let launcher else { return }
         cancel()
-        initialFrame = launcher.frame
+        beginTracking()
         initialMouse = launcher.convertPoint(toScreen: event.locationInWindow)
-        matchX = false; matchY = false
         ownsDrag = true
-        defer { ownsDrag = false; cancel() }
-        while let next = launcher.nextEvent(matching: [.leftMouseDragged, .leftMouseUp], until: .distantFuture, inMode: .eventTracking, dequeue: true) {
-            if next.type == .leftMouseUp { break }
-            guard launcher.isVisible else { break }
-            moved()
-        }
     }
     private func beginTracking() {
         guard !ownsDrag, trackingTimer == nil, let launcher else { return }
@@ -83,7 +85,10 @@ final class LauncherDragGuides {
             guard let self, let launcher = self.launcher else { return }
             if !launcher.isVisible { self.cancel(); return }
             if NSEvent.pressedMouseButtons & 1 == 0 { self.finish(); return }
-            if self.dragging || launcher.frame.origin != self.initialFrame.origin { self.moved() }
+            if self.dragging || launcher.frame.origin != self.initialFrame.origin ||
+                (self.ownsDrag && NSEvent.mouseLocation != self.initialMouse) {
+                self.moved()
+            }
         }
         trackingTimer = timer
         RunLoop.main.add(timer, forMode: .common)
@@ -134,6 +139,7 @@ final class LauncherDragGuides {
     func cancel() {
         trackingTimer?.invalidate(); trackingTimer = nil
         dragging = false
+        ownsDrag = false
         overlay?.orderOut(nil)
     }
     deinit {
