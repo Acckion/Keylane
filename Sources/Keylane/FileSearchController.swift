@@ -140,7 +140,11 @@ final class FileSearchController: ObservableObject {
     }
     func cancel() {
         cancelMerge()
+        let wasSearching = !currentQuery.isEmpty
         queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
+        if wasSearching {
+            reader.async { [weak self] in self?.readDB?.releaseCachedPages() }
+        }
     }
     func search(_ text: String, homeOnly: Bool = false, root: URL? = nil, includeContents: Bool = true) {
         let scopeChanged = includesQueryContents != includeContents
@@ -270,6 +274,7 @@ final class FileSearchController: ObservableObject {
         indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []; startWatch()
         writer.async { [weak self] in
             guard let self, let db = self.writeDB, !token.cancelled else { return }
+            defer { db.releaseCachedPages() }
             let start = Date(); var lastProgress = Date.distantPast; var invalid = 0; var denied: [String] = []; var auto: [AutomaticFileExclusion] = []; var processed = 0
             let homeLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
             let epoch = (config.contentSearch ? "c:" : "n:") + UUID().uuidString

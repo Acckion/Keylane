@@ -542,6 +542,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.async { [weak self, weak settings] in
             guard let self, let settings, settings === self.settingsWindow, !settings.isVisible else { return }
             settings.contentView = nil
+            settings.toolbar = nil
+            for index in settings.titlebarAccessoryViewControllers.indices.reversed() {
+                settings.removeTitlebarAccessoryViewController(at: index)
+            }
             self.settingsWindow = nil
             self.scheduleIdleMemoryTrim()
         }
@@ -630,6 +634,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else { return }
             self.idleMemoryTrim = nil
             guard !self.window.isVisible, self.settingsWindow?.isVisible != true else { return }
+            WorkspaceItemIcon.discardCachedImages()
             // Let the hidden views finish releasing their objects before
             // returning unused allocator pages to the system.
             DispatchQueue.global(qos: .utility).async {

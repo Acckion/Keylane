@@ -8,6 +8,8 @@ struct WorkspaceItemIcon: View {
     var fallbackSymbol = "app"
     @State private var loaded: (path: String, image: NSImage)?
 
+    static func discardCachedImages() { WorkspaceItemIcons.shared.discardCachedImages() }
+
     var body: some View {
         let cache = WorkspaceItemIcons.shared
         let image = loaded.flatMap { $0.path == path ? $0.image : nil } ?? cache.cachedImage(for: path)
@@ -41,6 +43,8 @@ private final class WorkspaceItemIcons: @unchecked Sendable {
 
     private static let thumbnailPixels = 64
     private static let thumbnailCost = thumbnailPixels * thumbnailPixels * 4
+
+    func discardCachedImages() { icons.removeAllObjects() }
 
     func cachedImage(for path: String) -> NSImage? {
         icons.object(forKey: path as NSString)

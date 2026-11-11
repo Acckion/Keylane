@@ -46,6 +46,7 @@ public final class FileSearchIndex {
         } catch { sqlite3_close(db); db = nil; throw error }
     }
     deinit { sqlite3_close(db) }
+    public func releaseCachedPages() { sqlite3_db_release_memory(db) }
     private func exec(_ sql: String) throws { guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw FileIndexError.database } }
     private func statement(_ sql: String, _ values: [String] = []) throws -> OpaquePointer {
         var s: OpaquePointer?
