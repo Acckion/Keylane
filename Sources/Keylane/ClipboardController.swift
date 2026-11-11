@@ -24,6 +24,8 @@ final class ClipboardController: ObservableObject {
     }
     @Published var primaryAction: String { didSet { preferences.set(primaryAction,forKey:"clipboardPrimaryAction") } }
     @Published var automaticOCR: Bool { didSet { preferences.set(automaticOCR, forKey: "clipboardAutomaticOCR") } }
+    @Published var accurateOCR: Bool { didSet { preferences.set(accurateOCR, forKey: "clipboardAccurateOCR") } }
+    @Published var historyCommandEnabled: Bool { didSet { preferences.set(historyCommandEnabled, forKey: "clipboardHistoryCommandEnabled") } }
     @Published var retentionDays: Int { didSet { preferences.set(retentionDays, forKey: "clipboardRetentionDays"); updateLimits() } }
     @Published var maxItems: Int { didSet { preferences.set(maxItems, forKey: "clipboardMaxItems"); updateLimits() } }
     @Published var excludedApps: Set<String> { didSet { preferences.set(Array(excludedApps), forKey: "clipboardExcludedApps") } }
@@ -74,6 +76,8 @@ final class ClipboardController: ObservableObject {
         captureEnabled = preferences.bool(forKey: "clipboardPersistentCapture")
         primaryAction = preferences.string(forKey:"clipboardPrimaryAction") ?? "copy"
         automaticOCR = preferences.bool(forKey: "clipboardAutomaticOCR")
+        accurateOCR = preferences.object(forKey: "clipboardAccurateOCR") as? Bool ?? true
+        historyCommandEnabled = preferences.object(forKey: "clipboardHistoryCommandEnabled") as? Bool ?? true
         retentionDays = preferences.object(forKey: "clipboardRetentionDays") as? Int ?? 30
         maxItems = preferences.object(forKey: "clipboardMaxItems") as? Int ?? 500
         excludedApps = Set(preferences.stringArray(forKey: "clipboardExcludedApps") ?? []).union(ClipboardPolicy.defaultExcluded)
@@ -423,6 +427,7 @@ final class ClipboardController: ObservableObject {
     func recognizeSelected() { if let id = selectedID { recognize(id) } }
     private func recognize(_ id: String) {
         guard recognizing.count < 5, recognizing.insert(id).inserted else { return }
+        let level: VNRequestTextRecognitionLevel = accurateOCR ? .accurate : .fast
         status = "正在识别图片文字…"
         worker.async { [weak self] in
             guard let self else { return }
@@ -431,7 +436,7 @@ final class ClipboardController: ObservableObject {
                 self.ocrWorker.async {
                     defer { DispatchQueue.main.async { self.recognizing.remove(id) } }
                     do {
-                        let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate; request.automaticallyDetectsLanguage = true
+                        let request = VNRecognizeTextRequest(); request.recognitionLevel = level; request.automaticallyDetectsLanguage = true
                         let supported = try request.supportedRecognitionLanguages()
                         request.recognitionLanguages = ["zh-Hans", "en-US"].filter { supported.contains($0) }
                         try VNImageRequestHandler(url: url).perform([request])

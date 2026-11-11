@@ -96,78 +96,148 @@ struct ClipboardPreferences: View {
     let controller: ClipboardController
     let model: Model
     @StateObject private var observation: ViewObservation
+    @State private var showsHistorySettings = false
+    @State private var showsUniversalDetails = true
+    @State private var excludedApplications: [String: URL] = [:]
 
     init(controller: ClipboardController, model: Model) {
         self.controller = controller
         self.model = model
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(controller.$automaticOCR),
+            ViewObservation.changes(controller.$accurateOCR),
+            ViewObservation.changes(controller.$historyCommandEnabled),
             ViewObservation.changes(controller.$primaryAction),
             ViewObservation.changes(controller.$retentionDays),
-            ViewObservation.changes(controller.$maxItems),
             ViewObservation.changes(controller.$excludedApps),
             ViewObservation.changes(controller.$accessMessage),
+            ViewObservation.changes(model.$aliases.map { $0["clipboard"] }),
             ViewObservation.changes(model.$bindings.map { $0["clipboard"] })
         ]))
     }
 
-    private func binding<Value>(_ key: ReferenceWritableKeyPath<ClipboardController, Value>) -> Binding<Value> {
-        Binding(get: { controller[keyPath: key] }, set: { controller[keyPath: key] = $0 })
-    }
-    @State private var excludedNames: [String: String] = [:]
-
-    private func updateExcludedNames(_ ids: Set<String>) {
-        excludedNames = Dictionary(uniqueKeysWithValues: ids.map { id in
-            (id, NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
-                .map { FileManager.default.displayName(atPath: $0.path) } ?? id)
-        })
-    }
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                Toggle("自动识别新图片中的文字", isOn: binding(\.automaticOCR))
-            }
+                SettingsPicker("保留历史记录", selection: binding(\.retentionDays)) {
+                    Text("7 天").tag(7)
+                    Text("30 天").tag(30)
+                    Text("3 个月").tag(90)
+                    Text("1 年").tag(365)
+                }
+            }.settingsAnchor(.clipboardRetention)
             SettingsGroup {
-                SettingsShortcutBindingRow(title: "剪贴板快捷键", shortcut: model.bindings["clipboard"], symbol: "clipboard") {
-                    model.setShortcut("clipboard", value: $0)
+                Toggle(isOn: binding(\.automaticOCR)) {
+                    SettingsRowLabel(title: "文字识别", detail: "自动提取图片中的文字，以便搜索。")
                 }
                 Divider()
+                SettingsPicker("识别模式", detail: "快速模式处理更快，准确模式会使用更多 CPU 资源。",
+                               selection: binding(\.accurateOCR)) {
+                    Text("快速").tag(false)
+                    Text("准确").tag(true)
+                }.disabled(!controller.automaticOCR)
+            }.settingsAnchor(.clipboardRecognition)
+            SettingsGroup {
+                SettingsRow {
+                    VStack(alignment: .leading, spacing: 4) {
+                        SettingsTitle("立即保存通用剪贴板内容")
+                        if showsUniversalDetails {
+                            SettingsDescription("macOS 没有提供单独控制跨设备剪贴板保存时机的公开接口。")
+                        }
+                        Button(showsUniversalDetails ? "收起" : "了解更多") {
+                            showsUniversalDetails.toggle()
+                        }.buttonStyle(.plain).foregroundStyle(.secondary)
+                    }
+                } control: {
+                    Toggle("立即保存通用剪贴板内容", isOn: .constant(false))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(true)
+                }
+            }
+            SettingsListCard(title: "不记录这些应用", detail: "这些应用的剪贴板变化不会记录到历史。", anchor: .clipboardExclusions) {
+                SettingsIconButton("添加应用", symbol: "plus") { controller.addExcludedApplication() }
+            } content: {
+                SettingsCompactList(items: controller.excludedApps.sorted(), id: \.self) { id in
+                    SettingsRow {
+                        Label {
+                            Text(excludedApplications[id].map {
+                                FileManager.default.displayName(atPath: $0.path)
+                            } ?? id).font(.system(size: 12))
+                        } icon: {
+                            if let url = excludedApplications[id] {
+                                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                                    .resizable().scaledToFit().frame(width: 16, height: 16)
+                            } else {
+                                Image(systemName: "app").frame(width: 16, height: 16)
+                            }
+                        }
+                    } control: {
+                        if !ClipboardPolicy.defaultExcluded.contains(id) {
+                            SettingsRemoveItemButton(label: "移除应用", help: "从排除列表移除") { controller.excludedApps.remove(id) }
+                        }
+                    }
+                }
+            }
+            SettingsSectionTitle(title: "命令")
+            CommandSettingsList(items: ["clipboard", "paste-sequentially", "reset-paste-sequence"], id: \.self) { id in
+                switch id {
+                case "clipboard":
+                    CommandSettingsEntry(title: "剪贴板历史", model: model, commandID: .init(rawValue: id),
+                                         isEnabled: binding(\.historyCommandEnabled), perform: { showsHistorySettings = true }) {
+                        SettingsIcon(symbol: "clipboard")
+                    }
+                case "paste-sequentially":
+                    unavailableCommand("顺序粘贴", symbol: "list.clipboard")
+                default:
+                    unavailableCommand("重置粘贴顺序", symbol: "arrow.counterclockwise")
+                }
+            }
+            SettingsSectionTitle(title: "AI 扩展")
+            CommandSettingsList(items: ["询问剪贴板"], id: \.self) { title in
+                unavailableCommand(title, symbol: "sparkles")
+            }
+        }
+        .onAppear { updateExcludedApplications() }
+        .onChange(of: controller.excludedApps) { _, _ in updateExcludedApplications() }
+        .sheet(isPresented: $showsHistorySettings) { historySettings }
+    }
+
+    private var historySettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsTitle("剪贴板历史")
+            SettingsGroup {
                 SettingsPicker("回车动作", selection: binding(\.primaryAction)) {
                     Text("仅复制").tag("copy")
                     Text("粘贴到上个应用").tag("paste")
                 }
                 Divider()
-                SettingsActionRow(title: "辅助功能", actionTitle: "管理权限…") { model.openSettings(page: "permissions") }
+                SettingsActionRow(title: "辅助功能", actionTitle: "管理权限…") {
+                    showsHistorySettings = false
+                    model.openSettings(page: "permissions")
+                }
                 if !controller.accessMessage.isEmpty {
-                    Divider()
-                    Text(controller.accessMessage).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            SettingsGroup {
-                SettingsPicker("保留时间", selection: binding(\.retentionDays)) { Text("7天").tag(7); Text("30天").tag(30); Text("90天").tag(90); Text("1年").tag(365) }
-                Divider()
-                SettingsPicker("记录上限", selection: binding(\.maxItems)) { Text("100项").tag(100); Text("500项").tag(500); Text("1000项").tag(1000) }
-            }
-            SettingsCard {
-                SettingsRow("不记录这些应用") {
-                    Button("添加应用…", systemImage: "plus") { controller.addExcludedApplication() }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                }
-                SettingsCompactList(items: controller.excludedApps.sorted(), id: \.self) { id in
-                    SettingsRow(excludedNames[id] ?? id) {
-                        if !ClipboardPolicy.defaultExcluded.contains(id) {
-                            Button("移除") { controller.excludedApps.remove(id) }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                        }
-                    }
+                    SettingsDescription(controller.accessMessage)
                 }
             }
             ClipboardHistoryStatistics(controller: controller)
-        }
-        .onAppear { updateExcludedNames(controller.excludedApps) }
-        .onChange(of: controller.excludedApps) { _, ids in updateExcludedNames(ids) }
+            Button("完成") { showsHistorySettings = false }
+                .keyboardShortcut(.defaultAction)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }.padding(20).frame(width: 480)
+    }
+
+    private func unavailableCommand(_ title: String, symbol: String) -> CommandSettingsEntry<SettingsIcon> {
+        CommandSettingsEntry(title: title, alias: .constant(""), shortcut: nil, isEnabled: .constant(false),
+                             setShortcut: { _ in }, icon: { SettingsIcon(symbol: symbol) }, available: false)
+    }
+
+    private func binding<Value>(_ key: ReferenceWritableKeyPath<ClipboardController, Value>) -> Binding<Value> {
+        Binding(get: { controller[keyPath: key] }, set: { controller[keyPath: key] = $0 })
+    }
+
+    private func updateExcludedApplications() {
+        excludedApplications = Dictionary(uniqueKeysWithValues: controller.excludedApps.compactMap { id in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: id).map { (id, $0) }
+        })
     }
 }
 

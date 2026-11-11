@@ -30,6 +30,9 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let calendarMenuBar = SettingsItem(id: "calendar-menu-bar", page: "calendar", title: "日历菜单栏摘要", keywords: "下一个 日程 日期 calendar agenda menu bar")
     public static let calendarSelection = SettingsItem(id: "calendar-selection", page: "calendar", title: "选择显示的日历", keywords: "日历 筛选 账户 calendar account filter")
     public static let clipboardCapture = SettingsItem(id: "capture", page: "clipboard", title: "记录剪贴板历史", keywords: "文字 图片 文件 保留 采集 置顶 OCR capture clipboard history")
+    public static let clipboardRetention = SettingsItem(id: "clipboard-retention", page: "clipboard", title: "剪贴板保留历史记录", keywords: "保留时间 clipboard retention")
+    public static let clipboardRecognition = SettingsItem(id: "clipboard-recognition", page: "clipboard", title: "剪贴板文字识别", keywords: "图片 快速 准确 clipboard OCR recognition")
+    public static let clipboardExclusions = SettingsItem(id: "clipboard-exclusions", page: "clipboard", title: "不记录这些应用", keywords: "剪贴板 排除 应用 clipboard disabled applications")
     public static let noteExport = SettingsItem(id: "export", page: "notes", title: "导出便笺", keywords: "笔记 备份 notes backup export")
     public static let quicklink = SettingsItem(id: "quicklink", page: "links", title: "默认快捷链接", keywords: "网址 url quicklink")
     public static let dataDirectory = SettingsItem(id: "directory", page: "advanced", title: "资料目录", keywords: "数据 sqlite directory storage")
@@ -62,6 +65,9 @@ public struct SettingsItem: Identifiable, Equatable {
         calendarMenuBar,
         calendarSelection,
         clipboardCapture,
+        clipboardRetention,
+        clipboardRecognition,
+        clipboardExclusions,
         noteExport,
         quicklink,
         dataDirectory,

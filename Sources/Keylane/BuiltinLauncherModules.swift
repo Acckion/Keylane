@@ -213,7 +213,8 @@ enum BuiltinLauncherModules {
         )
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
-                    ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard")
+                    ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard",
+                    available: { controller.historyCommandEnabled })
         ], pages: [page], settings: [
             settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: .init(
                 title: SettingsItem.clipboardCapture.title,
@@ -225,7 +226,7 @@ enum BuiltinLauncherModules {
         ], services: [
             .init(start: { [weak model] in model?.clipboard.startMonitoring() },
                   stop: { [weak model] in model?.clipboard.stopMonitoring() })
-        ])
+        ], searchUpdates: [updates(controller.$historyCommandEnabled)])
     }
 
     private static func clipboardActions(_ controller: ClipboardController) -> [LauncherAction] {
