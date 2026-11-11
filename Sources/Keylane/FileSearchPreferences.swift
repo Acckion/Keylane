@@ -114,7 +114,7 @@ struct FileSearchPreferences: View {
                 }.padding(.bottom, 5)
             }
             Divider()
-            SettingsRow("自动排除", detail: "跳过构建输出或依赖缓存。恢复后重新索引该目录。") {
+            SettingsListHeader(title: "自动排除", detail: "跳过构建输出或依赖缓存。恢复后重新索引该目录。") {
                 EmptyView()
             }
             if controller.automaticExclusions.isEmpty {

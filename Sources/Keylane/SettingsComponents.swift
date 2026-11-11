@@ -320,6 +320,19 @@ struct SettingsCaption: View {
     }
 }
 
+/// Use the normal settings row height inside a compact list card without adding a second horizontal inset.
+struct SettingsListHeader<Control: View>: View {
+    let title: String
+    let detail: String
+    @ViewBuilder let control: () -> Control
+
+    var body: some View {
+        SettingsRowsLayout {
+            SettingsRow(title, detail: detail, control: control)
+        }
+    }
+}
+
 /// Compact settings collections share the same heading, surface, and content inset.
 struct SettingsListCard<Control: View, Content: View>: View {
     let title: String
@@ -331,7 +344,7 @@ struct SettingsListCard<Control: View, Content: View>: View {
     var body: some View {
         SettingsCard(layout: .flush, anchor: anchor) {
             VStack(alignment: .leading, spacing: 0) {
-                SettingsRow(title, detail: detail, control: control)
+                SettingsListHeader(title: title, detail: detail, control: control)
                 content()
             }.padding(.horizontal, 18)
         }
