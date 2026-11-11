@@ -4,10 +4,15 @@ import KeylaneCore
 
 private final class IconCache {
     static let shared = IconCache()
-    private var icons: [String: NSImage] = [:]
+    private let icons = NSCache<NSString, NSImage>()
+    private init() { icons.countLimit = 512 }
+
     func image(_ path: String) -> NSImage {
-        if let image = icons[path] { return image }
-        let image = NSWorkspace.shared.icon(forFile: path); icons[path] = image; return image
+        let key = path as NSString
+        if let image = icons.object(forKey: key) { return image }
+        let image = NSWorkspace.shared.icon(forFile: path)
+        icons.setObject(image, forKey: key)
+        return image
     }
 }
 struct Launcher: View {

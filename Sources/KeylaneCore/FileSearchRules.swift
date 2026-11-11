@@ -31,23 +31,33 @@ public struct FileSearchOptions: Codable, Equatable {
 public enum FileSearchRules {
     private static let globCache: NSCache<NSString, NSRegularExpression> = { let value = NSCache<NSString, NSRegularExpression>(); value.countLimit = 512; return value }()
     public static func rank(_ name: String, query: String) -> Int {
-        let name = fold(name); let query = fold(query.trimmingCharacters(in: .whitespacesAndNewlines))
-        if name == query { return 1000 }; if name.hasPrefix(query) { return 800 }; if name.contains(query) { return 600 }
-        return tokens(query).allSatisfy { name.contains($0) } ? 500 : 0
+        ranker(for: query)(name)
     }
-    /// Prepare once per query; avoid parsing patterns and allocating URLs for
-    /// every candidate/pattern pair in the result loop.
-    public static func pathFilter(_ patterns: [String]) -> (String, String) -> Bool {
-        let filters: [(NSRegularExpression,Bool)] = patterns.compactMap { pattern in
-            let original = pattern.trimmingCharacters(in:.whitespacesAndNewlines)
-            _ = glob(original,matches:"")
-            guard let regex = globCache.object(forKey:("f:" + original) as NSString) else { return nil }
-            return (regex,!original.contains("/"))
+    static func ranker(for query: String) -> (String) -> Int {
+        let phrase = fold(query.trimmingCharacters(in: .whitespacesAndNewlines))
+        let words = tokens(phrase)
+        return { name in
+            let name = fold(name)
+            if name == phrase { return 1000 }
+            if name.hasPrefix(phrase) { return 800 }
+            if name.contains(phrase) { return 600 }
+            return words.allSatisfy { name.contains($0) } ? 500 : 0
+        }
+    }
+    /// Prepare regexes once per query or scan and reuse ranges across rules.
+    public static func pathFilter(_ patterns: [String], directory: Bool = false) -> (String, String) -> Bool {
+        let filters: [(regex: NSRegularExpression, basename: Bool)] = patterns.compactMap { pattern in
+            guard let glob = compileGlob(pattern, directory: directory) else { return nil }
+            return glob
         }
         return { path, name in
-            let pathRange = NSRange(location:0,length:path.utf16.count)
-            let nameRange = NSRange(location:0,length:name.utf16.count)
-            return filters.contains { regex, basename in regex.firstMatch(in:basename ? name:path,range:basename ? nameRange:pathRange) != nil }
+            let subject = directory ? path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/" : path
+            let pathRange = NSRange(location: 0, length: subject.utf16.count)
+            let nameRange = NSRange(location: 0, length: name.utf16.count)
+            return filters.contains { filter in
+                filter.regex.firstMatch(in: filter.basename ? name : subject,
+                                        range: filter.basename ? nameRange : pathRange) != nil
+            }
         }
     }
     public static func tokens(_ query: String) -> [String] {
@@ -62,15 +72,21 @@ public enum FileSearchRules {
     }
     /// Shell glob syntax only: no shell execution, expansion or arbitrary regex.
     public static func glob(_ pattern: String, matches path: String, directory: Bool = false) -> Bool {
-        let original = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !original.isEmpty, original.utf8.count <= 1024 else { return false }
-        let directoryOnly = original.hasSuffix("/")
-        if directoryOnly && !directory { return false }
-        let value = directoryOnly ? String(original.dropLast()) : original
+        guard let glob = compileGlob(pattern, directory: directory) else { return false }
         let path = directory ? path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/" : path
-        let subject = value.contains("/") ? path : URL(fileURLWithPath: path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))).lastPathComponent
+        let subject = glob.basename ? URL(fileURLWithPath: path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))).lastPathComponent : path
+        return glob.regex.firstMatch(in: subject, range: NSRange(subject.startIndex..., in: subject)) != nil
+    }
+
+    private static func compileGlob(_ pattern: String, directory: Bool) -> (regex: NSRegularExpression, basename: Bool)? {
+        let original = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !original.isEmpty, original.utf8.count <= 1024 else { return nil }
+        let directoryOnly = original.hasSuffix("/")
+        if directoryOnly && !directory { return nil }
+        let value = directoryOnly ? String(original.dropLast()) : original
+        let basename = !value.contains("/")
         let cacheKey = ((directory ? "d:" : "f:") + original) as NSString
-        if let expression = globCache.object(forKey: cacheKey) { return expression.firstMatch(in: subject, range: NSRange(subject.startIndex..., in: subject)) != nil }
+        if let expression = globCache.object(forKey: cacheKey) { return (expression, basename) }
         let chars = Array(value); var regex = ""; var i = 0
         while i < chars.count {
             let char = chars[i]
@@ -90,9 +106,9 @@ public enum FileSearchRules {
             i += 1
         }
         if directory { regex += "/?" }
-        guard let expression = try? NSRegularExpression(pattern: "^(?:" + regex + ")$") else { return false }
+        guard let expression = try? NSRegularExpression(pattern: "^(?:" + regex + ")$") else { return nil }
         globCache.setObject(expression, forKey: cacheKey)
-        return expression.firstMatch(in: subject, range: NSRange(subject.startIndex..., in: subject)) != nil
+        return (expression, basename)
     }
     public struct IgnoreRule {
         public let base: String

@@ -35,16 +35,21 @@ final class FileSearchController: ObservableObject {
     private var lastPublishedQuery = ""
     private var lastPublishedStatus = ""
     private var currentQuery = ""
+    private var localQueryResolved = false
     private var didStart = false
     private var grants: [String: Data]
     private var activeURLs: [URL] = []
     private var spotlight = SpotlightSearch()
-    private var spotlightResults: [SpotlightFile] = []
-    private var localResults: [SpotlightFile] = []
+    private var spotlightResults: [RankedFile] = []
+    private var localResults: [RankedFile] = []
+    private let mergeQueue = DispatchQueue(label: "org.keylane.files.merge", qos: .userInitiated)
+    private var pendingMerge: DispatchWorkItem?
+    private var mergeVersion = 0
     private var watch: FSEventStreamRef?
     private var pendingRefresh: DispatchWorkItem?
     private var restored: Set<String> = []
-    private var lastBuild = Date.distantPast
+    private var dirtyPaths = Set<String>()
+    private var needsFullScan = false
     static var defaults: FileSearchOptions {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return FileSearchOptions(roots: [home, "/Applications", home + "/Library/Mobile Documents/com~apple~CloudDocs"])
@@ -77,32 +82,30 @@ final class FileSearchController: ObservableObject {
         }
         spotlight.updated = { [weak self] results, _ in
             guard let self else { return }
-            self.spotlightResults = results.filter { file in
-                let path = file.url.path
-                return self.options.roots.contains { path == $0 || path.hasPrefix($0 + "/") } &&
-                    (self.options.includeHidden || !path.split(separator:"/").contains { $0.hasPrefix(".") }) &&
-                    !self.options.ignorePatterns.contains { FileSearchRules.glob($0, matches: path) } &&
-                    !self.automaticExclusions.contains { path == $0.path || path.hasPrefix($0.path + "/") }
-            }
-            // Respect per-directory ignore files: results from our indexed roots are
-            // authoritative when ignore-file filtering is enabled.
+            self.spotlightResults = results
+            if self.isSearching && !self.localQueryResolved && results.isEmpty { return }
             self.publish()
         }
     }
-    deinit { stopWatch(); cancellation.cancel(); activeURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+    deinit { stopWatch(); cancelMerge(); cancellation.cancel(); activeURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
     private func fail(_ error: Error) { DispatchQueue.main.async { self.indexStatus = error.localizedDescription } }
     private func configure(old: FileSearchOptions) {
         preferences.set(try? JSONEncoder().encode(options), forKey: "fileSearchOptions")
         var previous = old; previous.searchFromLauncher = options.searchFromLauncher
         if previous == options { return }
-        cancellation.cancel(); spotlight.cancel(); spotlightResults = []; localResults = []; stopWatch()
+        cancelMerge(); cancellation.cancel(); spotlight.cancel(); spotlightResults = []; localResults = []; stopWatch()
         let contentEnabled = options.contentSearch
         let removed = old.roots.filter { !options.roots.contains($0) }
         writer.async { [weak self] in
             guard let self else { return }
             do { for root in removed { try self.writeDB?.removeScope(root) }; if !contentEnabled { try self.writeDB?.clearBodies() } } catch { self.fail(error) }
         }
-        if options.enabled { startIndex(); search(currentQuery) }
+        if options.enabled {
+            let query = currentQuery
+            currentQuery = ""
+            startIndex()
+            search(query)
+        }
         else { indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
     private func resolveGrants() {
@@ -135,21 +138,25 @@ final class FileSearchController: ObservableObject {
         automaticExclusions = []; saveAutomatic(); options = Self.defaults; startIndex()
     }
     func cancel() {
-        queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; isSearching = false
+        cancelMerge()
+        queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
     }
     func search(_ text: String, homeOnly: Bool = false, root: URL? = nil) {
         let changed = currentQuery != text
         currentQuery = text
         guard options.enabled else { emit([], "文件搜索已关闭，请在设置中开启。"); return }
-        if !didStart { didStart = true; startIndex() }
         guard !FileSearchRules.tokens(text).isEmpty, text.count <= 256 else {
+            cancelMerge()
             queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); isSearching = false
-            localResults = []; spotlightResults = []
+            localResults = []; spotlightResults = []; localQueryResolved = false
             emit([], text.count > 256 ? "文件搜索最多256个字符。" : "输入文件名或多个关键词；搜索范围可在设置中添加并授权。")
             return
         }
+        if !didStart { startIndex() }
         if changed {
-            spotlight.cancel(); spotlightResults = []
+            cancelMerge()
+            spotlight.cancel(); spotlightResults = []; localResults = []
+            localQueryResolved = false
             isSearching = true
             if !options.useIgnoreFiles { spotlight.search(text, root: options.roots.count == 1 ? URL(fileURLWithPath:options.roots[0]) : nil) }
         }
@@ -166,12 +173,24 @@ final class FileSearchController: ObservableObject {
             self.reader.async { [weak self] in
                 guard let self, !cancellation.cancelled else { return }
                 do {
-                    let result = try self.readDB?.search(text, options: config, excluded: excluded, isCancelled: { cancellation.cancelled }) ?? []
+                    let result = try self.readDB?.searchRanked(text, options: config, excluded: excluded, isCancelled: { cancellation.cancelled }) ?? []
                     DispatchQueue.main.async {
                         guard self.queryVersion == ticket, !cancellation.cancelled else { return }
-                        self.localResults = result; if self.isSearching { self.isSearching = false }; self.publish()
+                        self.localResults = result
+                        self.localQueryResolved = true
+                        self.publish()
                     }
-                } catch { if !cancellation.cancelled { self.fail(error) } }
+                } catch {
+                    DispatchQueue.main.async {
+                        guard self.queryVersion == ticket, !cancellation.cancelled else { return }
+                        self.localQueryResolved = true
+                        if !self.spotlightResults.isEmpty { self.publish() }
+                        else {
+                            self.emit([], error.localizedDescription)
+                            self.isSearching = false
+                        }
+                    }
+                }
             }
         }
         pendingQuery = work
@@ -181,49 +200,154 @@ final class FileSearchController: ObservableObject {
         guard lastPublished != rows || lastPublishedStatus != status || lastPublishedQuery != currentQuery else { return }
         lastPublished = rows; lastPublishedStatus = status; lastPublishedQuery = currentQuery; updated?(rows, status)
     }
+    private func cancelMerge() {
+        pendingMerge?.cancel()
+        pendingMerge = nil
+        mergeVersion += 1
+    }
+
     private func publish() {
         guard options.enabled, !currentQuery.isEmpty else { return }
-        var seen = Set<String>()
-        let candidates = (localResults + (options.useIgnoreFiles ? [] : spotlightResults)).filter { seen.insert($0.id).inserted }
-        let ranked = candidates.map { (file: $0, score: FileSearchRules.rank($0.name, query: currentQuery)) }
-        var rows = ranked.sorted { a,b in a.score == b.score ? (a.file.modified == b.file.modified ? a.file.id < b.file.id : a.file.modified > b.file.modified) : a.score > b.score }.map(\.file)
-        if lastPublishedQuery == currentQuery {
-            let fresh = Dictionary(uniqueKeysWithValues: rows.map { ($0.id,$0) })
-            let previousIDs = Set(lastPublished.map(\.id))
-            rows = lastPublished.compactMap { fresh[$0.id] } + rows.filter { !previousIDs.contains($0.id) }
+        cancelMerge()
+        let ticket = mergeVersion
+        let query = currentQuery
+        let config = options
+        let exclusions = automaticExclusions.map(\.path)
+        let local = localResults
+        let system = config.useIgnoreFiles ? [] : spotlightResults
+        let task = DispatchWorkItem { [weak self] in
+            let ignored = FileSearchRules.pathFilter(config.ignorePatterns)
+            let allowed = system.filter { hit in
+                let path = hit.file.id
+                return config.roots.contains { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
+                    && (config.includeHidden || !path.split(separator: "/").contains { $0.hasPrefix(".") })
+                    && !ignored(path, hit.file.url.lastPathComponent)
+                    && !exclusions.contains { path == $0 || path.hasPrefix($0 + "/") }
+            }
+            var seen = Set<String>()
+            let ordered = (local + allowed).filter { seen.insert($0.file.id).inserted }
+                .sorted { $0.precedes($1) }
+            let best = ordered.prefix(200).map(\.file)
+            let truncated = ordered.count >= 200
+            DispatchQueue.main.async {
+                guard let self, self.mergeVersion == ticket, self.currentQuery == query else { return }
+                var rows = best
+                if self.lastPublishedQuery == query {
+                    let byID = Dictionary(uniqueKeysWithValues: best.map { ($0.id, $0) })
+                    let previousIDs = Set(self.lastPublished.map(\.id))
+                    rows = self.lastPublished.compactMap { byID[$0.id] } + best.filter { !previousIDs.contains($0.id) }
+                }
+                let status = rows.isEmpty
+                    ? (self.indexing ? "正在建立索引，完成后自动更新结果。" : "没有匹配项。请检查搜索范围、忽略规则或文件夹授权。")
+                    : "\(rows.count)项\(truncated ? " · 请增加关键词" : "") · 文件索引"
+                self.emit(rows, status)
+                if self.isSearching && self.localQueryResolved { self.isSearching = false }
+            }
         }
-        let status = rows.isEmpty ? (indexing ? "正在建立索引，完成后自动更新结果。" : "没有匹配项。请检查搜索范围、忽略规则或文件夹授权。") : "\(min(200,rows.count))项\(rows.count >= 200 ? " · 请增加关键词" : "") · 文件索引"
-        emit(Array(rows.prefix(200)), status)
+        pendingMerge = task
+        mergeQueue.async(execute: task)
     }
     private func refreshStats() {
         do { if let stats = try readDB?.stats() { DispatchQueue.main.async { var current = stats; current.invalid = self.stats.invalid; current.seconds = self.stats.seconds; self.stats = current } } } catch { fail(error) }
     }
     func startIndex() {
+        dirtyPaths.removeAll()
+        needsFullScan = false
+        scanIndex()
+    }
+    private func scanIndex(paths: [String]? = nil) {
         guard options.enabled else { return }
         didStart = true; cancellation.cancel(); let token = FileScanCancellation(); cancellation = token
         let config = options; let exclusions = automaticExclusions.map(\.path); let restored = restored
-        indexing = true; indexStatus = "正在建立文件索引…"; inaccessible = []; startWatch()
+        indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []; startWatch()
         writer.async { [weak self] in
             guard let self, let db = self.writeDB, !token.cancelled else { return }
             let start = Date(); var lastProgress = Date.distantPast; var invalid = 0; var denied: [String] = []; var auto: [AutomaticFileExclusion] = []; var processed = 0
             let homeLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
             let epoch = (config.contentSearch ? "c:" : "n:") + UUID().uuidString
+            let ignoresFile = FileSearchRules.pathFilter(config.ignorePatterns)
+            let ignoresDirectory = FileSearchRules.pathFilter(config.ignorePatterns, directory: true)
             do {
-                if !config.contentSearch { try db.clearBodies() }
-                if !config.keepRemovedVolumes { try db.removeUnavailableVolumes() }
-                for root in config.roots {
+                if paths == nil {
+                    if !config.contentSearch { try db.clearBodies() }
+                    if !config.keepRemovedVolumes { try db.removeUnavailableVolumes() }
+                }
+                let targets = config.roots.flatMap { root -> [(String, String?)] in
+                    guard let paths else { return [(root, nil)] }
+                    return paths.compactMap { path in
+                        if path == root { return (root, nil) }
+                        return path.hasPrefix(root == "/" ? "/" : root + "/") ? (root, path) : nil
+                    }
+                }
+                let keys: Set<URLResourceKey> = [.isDirectoryKey,.isSymbolicLinkKey,.contentModificationDateKey,.volumeURLKey,.volumeIsLocalKey,.volumeIsRemovableKey,.volumeIsInternalKey]
+                func excluded(_ url: URL, directory: Bool, rules: [FileSearchRules.IgnoreRule]) -> Bool {
+                    let path = url.path
+                    let ignoresPath = directory ? ignoresDirectory : ignoresFile
+                    return (!config.includeHidden && url.lastPathComponent.hasPrefix("."))
+                        || exclusions.contains { path == $0 || path.hasPrefix($0 + "/") }
+                        || ignoresPath(path, url.lastPathComponent)
+                        || FileSearchRules.ignored(url, directory: directory, patterns: [], rules: rules)
+                }
+                for (root, subtree) in targets {
                     if token.cancelled { return }
                     let rootURL = URL(fileURLWithPath: root)
                     guard FileManager.default.fileExists(atPath: root) else { if !config.keepRemovedVolumes { try db.removeScope(root) }; continue }
-                    var queue: [(URL,[FileSearchRules.IgnoreRule])] = [(rootURL,[])]; var position = 0; var complete = true
+                    let entry = subtree.map { URL(fileURLWithPath: $0) }
+                    let firstDirectory = entry?.deletingLastPathComponent() ?? rootURL
+                    var inheritedRules: [FileSearchRules.IgnoreRule] = []
+                    if let subtree {
+                        var ancestors: [URL] = []
+                        var ancestor = firstDirectory
+                        while ancestor.path != root {
+                            ancestors.append(ancestor)
+                            ancestor.deleteLastPathComponent()
+                        }
+                        var blocked = false
+                        var inaccessibleAncestor = false
+                        for parent in [rootURL] + ancestors.reversed() {
+                            if parent.path != root {
+                                if excluded(parent, directory: true, rules: inheritedRules)
+                                    || (parent.path == homeLibrary && root != homeLibrary) || parent.pathExtension == "app"
+                                    || ([".build", "DerivedData", "node_modules"].contains(parent.lastPathComponent)
+                                        && !restored.contains(parent.path)) {
+                                    blocked = true; break
+                                }
+                                do {
+                                    let metadata = try parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                                    if metadata.isDirectory != true || metadata.isSymbolicLink == true { blocked = true; break }
+                                } catch {
+                                    if Self.isMissing(error) { blocked = true }
+                                    else { inaccessibleAncestor = true }
+                                    break
+                                }
+                            }
+                            if config.useIgnoreFiles && parent.path != firstDirectory.path {
+                                inheritedRules += FileSearchRules.readIgnoreRules(in: parent)
+                            }
+                        }
+                        if inaccessibleAncestor { continue }
+                        if blocked { try db.removeUnseen(root: root, subtree: subtree, epoch: epoch); continue }
+                    }
+                    var queue: [(URL,[FileSearchRules.IgnoreRule])] = [(firstDirectory,inheritedRules)]; var position = 0; var complete = true
                     while position < queue.count && !token.cancelled {
                         let (directory,inherited) = queue[position]; position += 1
                         var rules = inherited; if config.useIgnoreFiles { rules += FileSearchRules.readIgnoreRules(in: directory) }
-                        let keys: Set<URLResourceKey> = [.isDirectoryKey,.isSymbolicLinkKey,.contentModificationDateKey,.volumeURLKey,.volumeIsLocalKey,.volumeIsRemovableKey,.volumeIsInternalKey]
                         let children: [URL]
-                        do { children = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys), options: config.includeHidden ? [] : [.skipsHiddenFiles]).sorted { a,b in
-                            let priority = ["Downloads":0,"Desktop":1,"Documents":2]; return (priority[a.lastPathComponent] ?? 3) < (priority[b.lastPathComponent] ?? 3)
-                        } } catch { invalid += 1; complete = false; if denied.count < 24 { denied.append(directory.path) }; continue }
+                        do {
+                            if let entry, position == 1 {
+                                children = [entry]
+                            } else {
+                                let priority = ["Downloads": 0, "Desktop": 1, "Documents": 2]
+                                children = try FileManager.default.contentsOfDirectory(
+                                    at: directory, includingPropertiesForKeys: Array(keys),
+                                    options: config.includeHidden ? [] : [.skipsHiddenFiles]
+                                ).sorted { (priority[$0.lastPathComponent] ?? 3) < (priority[$1.lastPathComponent] ?? 3) }
+                            }
+                        } catch {
+                            invalid += 1; complete = false
+                            if denied.count < 24 { denied.append(directory.path) }
+                            continue
+                        }
                         if config.enforceDiskSpace {
                             let free = self.availableCapacity(db.url.deletingLastPathComponent())
                             // Reserve room for SQLite/WAL and the next directory batch.
@@ -233,9 +357,14 @@ final class FileSearchController: ObservableObject {
                         try db.transaction {
                             for url in children {
                                 if token.cancelled { return }
-                                guard let value = try? url.resourceValues(forKeys: keys) else { invalid += 1; continue }
+                                let value: URLResourceValues
+                                do { value = try url.resourceValues(forKeys: keys) }
+                                catch {
+                                    if entry == url, Self.isMissing(error) { continue }
+                                    invalid += 1; complete = false; continue
+                                }
                                 let isDir = value.isDirectory == true; let symlink = value.isSymbolicLink == true; let path = url.path
-                                guard !exclusions.contains(where: { path == $0 || path.hasPrefix($0 + "/") }), !FileSearchRules.ignored(url, directory: isDir, patterns: config.ignorePatterns, rules: rules) else { continue }
+                                guard !excluded(url, directory: isDir, rules: rules) else { continue }
                                 if !config.externalVolumes && (value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false) { continue }
                                 if isDir && path == homeLibrary && root != homeLibrary { continue } // iCloud is a separate explicit scope.
                                 if isDir && [".build","DerivedData","node_modules"].contains(url.lastPathComponent) && !restored.contains(path) {
@@ -250,7 +379,6 @@ final class FileSearchController: ObservableObject {
                         }
                         if Date().timeIntervalSince(lastProgress) >= 1 {
                             lastProgress = Date(); let count = processed
-                            self.reader.async { self.refreshStats() }
                             DispatchQueue.main.async { if self.cancellation === token {
                                 self.indexStatus = "正在索引：\(count)项"
                                 if self.lastPublished.isEmpty && !self.currentQuery.isEmpty && !self.isSearching { self.refreshQuery() }
@@ -258,33 +386,54 @@ final class FileSearchController: ObservableObject {
                         }
                     }
                     if token.cancelled { return }
-                    if complete { try db.removeUnseen(root:root,epoch:epoch) }
+                    if complete {
+                        if let subtree { try db.removeUnseen(root: root, subtree: subtree, epoch: epoch) }
+                        else { try db.removeUnseen(root: root, epoch: epoch) }
+                    }
                 }
                 var stats = try db.stats(); stats.invalid = invalid; stats.seconds = Date().timeIntervalSince(start)
                 DispatchQueue.main.async {
                     guard self.cancellation === token else { return }
-                    self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied; self.lastBuild = Date()
+                    self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
                     for value in auto where !self.automaticExclusions.contains(where: { $0.path == value.path }) { self.automaticExclusions.append(value) }; self.saveAutomatic()
                     self.indexStatus = denied.isEmpty ? "索引已更新" : "部分目录无法访问，请重新授权搜索范围。"
                     if !self.currentQuery.isEmpty { self.refreshQuery() }
+                    self.scheduleRefresh()
                 }
-            } catch { DispatchQueue.main.async { guard self.cancellation === token else { return }; self.indexing = false; self.indexStatus = error.localizedDescription } }
+            } catch { DispatchQueue.main.async {
+                guard self.cancellation === token else { return }
+                self.indexing = false; self.indexStatus = error.localizedDescription
+                self.scheduleRefresh()
+            } }
         }
     }
-    private func stopWatch() { pendingRefresh?.cancel(); pendingRefresh = nil; if let watch { FSEventStreamStop(watch); FSEventStreamInvalidate(watch); FSEventStreamRelease(watch) }; watch = nil }
+    private static func isMissing(_ error: Error) -> Bool {
+        let error = error as NSError
+        return error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)
+    }
+
+    private func stopWatch() { pendingRefresh?.cancel(); pendingRefresh = nil; dirtyPaths.removeAll(); needsFullScan = false; if let watch { FSEventStreamStop(watch); FSEventStreamInvalidate(watch); FSEventStreamRelease(watch) }; watch = nil }
     private func startWatch() {
-        stopWatch(); guard watchEnabled, options.enabled, !options.roots.isEmpty else { return }
+        guard watch == nil, watchEnabled, options.enabled, !options.roots.isEmpty else { return }
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
-        watch = FSEventStreamCreate(nil, { _, context, count, rawPaths, _, _ in
+        watch = FSEventStreamCreate(nil, { _, context, count, rawPaths, flags, _ in
             guard let context else { return }
             let owner = Unmanaged<FileSearchController>.fromOpaque(context).takeUnretainedValue()
             let paths = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue() as! [String]
-            owner.changed(Array(paths.prefix(count)))
+            let recovery = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
+            owner.changed(Array(paths.prefix(count)), requiresFullScan: (0..<count).contains { flags[$0] & recovery != 0 })
         }, &context, options.roots as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 2, FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
-        if let watch { FSEventStreamSetDispatchQueue(watch,.main); FSEventStreamStart(watch) }
+        if let watch {
+            FSEventStreamSetDispatchQueue(watch, .main)
+            if !FSEventStreamStart(watch) {
+                FSEventStreamInvalidate(watch)
+                FSEventStreamRelease(watch)
+                self.watch = nil
+            }
+        }
     }
     private var churn: [String:(Date,Int)] = [:]
-    private func changed(_ paths: [String]) {
+    private func changed(_ paths: [String], requiresFullScan: Bool) {
         var changedExclusions = false
         for path in paths {
             if let i = automaticExclusions.firstIndex(where: { path == $0.path || path.hasPrefix($0.path + "/") }) { automaticExclusions[i].events += 1; changedExclusions = true; continue }
@@ -297,16 +446,45 @@ final class FileSearchController: ObservableObject {
         }
         if changedExclusions { saveAutomatic() }
         let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
-        let relevant = paths.filter { path in
+        let changedPaths = paths.map { path in
+            let url = URL(fileURLWithPath: path)
+            guard options.useIgnoreFiles else { return path }
+            if [".gitignore", ".ignore", ".rayignore"].contains(url.lastPathComponent) { return url.deletingLastPathComponent().path }
+            if path.hasSuffix("/.git/info/exclude") { return String(path.dropLast("/.git/info/exclude".count)) }
+            return path
+        }
+        let relevant = changedPaths.filter { path in
+            guard options.roots.contains(where: { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }) else { return false }
             if !options.includeHidden && path.split(separator:"/").contains(where:{ $0.hasPrefix(".") }) { return false }
             if path == library || path.hasPrefix(library + "/") {
                 guard options.roots.contains(where:{ ($0 == library || $0.hasPrefix(library + "/")) && (path == $0 || path.hasPrefix($0 + "/")) }) else { return false }
             }
             return !automaticExclusions.contains { path == $0.path || path.hasPrefix($0.path + "/") } && !options.ignorePatterns.contains { FileSearchRules.glob($0,matches:path) }
         }
-        guard !relevant.isEmpty else { return }
-        pendingRefresh?.cancel()
-        let work = DispatchWorkItem { [weak self] in guard let self else { return }; if !self.indexing { self.startIndex() } }
-        pendingRefresh = work; DispatchQueue.main.asyncAfter(deadline:.now()+max(2,15-Date().timeIntervalSince(lastBuild)),execute:work)
+        dirtyPaths.formUnion(relevant)
+        if requiresFullScan || changedExclusions || dirtyPaths.count > 256 {
+            needsFullScan = true
+            dirtyPaths.removeAll()
+        }
+        scheduleRefresh()
+    }
+
+    private func scheduleRefresh() {
+        guard !indexing, pendingRefresh == nil, needsFullScan || !dirtyPaths.isEmpty else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingRefresh = nil
+            guard !self.indexing else { return }
+            if self.needsFullScan { self.startIndex(); return }
+            let paths = self.dirtyPaths.sorted()
+            self.dirtyPaths.removeAll()
+            var targets: [String] = []
+            for path in paths where !targets.contains(where: { path.hasPrefix($0 == "/" ? "/" : $0 + "/") }) {
+                targets.append(path)
+            }
+            if !targets.isEmpty { self.scanIndex(paths: targets) }
+        }
+        pendingRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 }
