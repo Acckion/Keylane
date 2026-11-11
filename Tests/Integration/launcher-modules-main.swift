@@ -83,6 +83,38 @@ precondition(localRegistry.migrateDisabledCommands(globalDisabled) == globalDisa
 print("PASS shared command preference and legacy disabled-state migration")
 
 
+let dynamicID = ModuleID(rawValue: "fixture.dynamic-commands")
+let dynamicUpdates = PassthroughSubject<Void, Never>()
+var catalogReads = 0
+var rowBuilds = 0
+let dynamicRegistry = try LauncherModuleRegistry(modules: [
+    .init(id: dynamicID, title: "Dynamic Commands", dynamicCommandSettings: .init(
+        updates: { [dynamicUpdates.eraseToAnyPublisher()] },
+        matchingList: { matches in
+            catalogReads += 1
+            guard matches?("Fixture App", "app:/Fixture.app", "/Fixture.app") != false else { return nil }
+            return { _ in rowBuilds += 1; return AnyView(EmptyView()) }
+        }
+    ))
+])
+let dynamicGroup = dynamicRegistry.shortcutCommandGroups[0]
+precondition(dynamicGroup.id == dynamicID && dynamicGroup.commands.isEmpty)
+precondition(catalogReads == 0 && rowBuilds == 0)
+var updateCount = 0
+let settingsSubscription = Publishers.MergeMany(dynamicRegistry.shortcutSettingsUpdates()).sink { updateCount += 1 }
+dynamicUpdates.send()
+precondition(updateCount == 1 && catalogReads == 0)
+let matchedList = dynamicGroup.dynamicCommands?.matchingList { title, commandID, aliasKey in
+    title == "Fixture App" && commandID == "app:/Fixture.app" && aliasKey == "/Fixture.app"
+}
+precondition(matchedList != nil && catalogReads == 1 && rowBuilds == 0)
+_ = matchedList?(true)
+precondition(rowBuilds == 1)
+precondition(dynamicGroup.dynamicCommands?.matchingList { _, _, _ in false } == nil)
+withExtendedLifetime(settingsSubscription) {}
+print("PASS dynamic command settings group, settings updates and lazy list construction")
+
+
 let applications = LauncherSettingsPage(id: "applications", title: "应用程序", symbol: "app", subtitle: "", order: 10,
                                         items: [.applicationScopes, .applicationFavorites], content: { AnyView(EmptyView()) })
 let settingsModule = LauncherModule(id: .init(rawValue: "keylane.applications"), settings: [applications])

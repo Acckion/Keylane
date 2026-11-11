@@ -176,6 +176,9 @@ struct LauncherModule {
     var launcherShown: (() -> Void)?
     var presentationUpdates: [AnyPublisher<Void, Never>] = []
     var applicationFocused: ((NSRunningApplication) -> Void)?
+    var dynamicCommandSettings: DynamicCommandSettings?
+    var shortcutSettingsBinding: ShortcutSettingsBinding?
+    var shortcutSettingsUpdates: [AnyPublisher<Void, Never>] = []
 }
 
 extension LauncherModule {
@@ -183,11 +186,26 @@ extension LauncherModule {
     var displaySymbol: String { symbol ?? settings.first?.symbol ?? commands.first?.declaration.symbol ?? "puzzlepiece.extension" }
 }
 
+/// Modules supply a lazy catalog and a list that uses the shared command settings rows.
+struct DynamicCommandSettings {
+    typealias Matches = (_ title: String, _ commandID: String, _ aliasKey: String?) -> Bool
+    let updates: () -> [AnyPublisher<Void, Never>]
+    let matchingList: (_ matches: Matches?) -> ((_ showsColumns: Bool) -> AnyView)?
+}
+
+struct ShortcutSettingsBinding {
+    let id: String
+    let title: String
+    let symbol: String
+}
+
 struct ShortcutCommandGroup {
     let id: ModuleID
     let title: String
     let symbol: String
     let commands: [LauncherModule.Command]
+    let dynamicCommands: DynamicCommandSettings?
+    let binding: ShortcutSettingsBinding?
 }
 
 /// The registry stores native factories and handlers. Validation never runs a
@@ -198,6 +216,7 @@ final class LauncherModuleRegistry {
         case duplicateItem(String)
     }
     let shortcutCommandGroups: [ShortcutCommandGroup]
+    private let commandSettingsUpdates: [AnyPublisher<Void, Never>]
     private let commands: [LauncherModule.Command]
     private let commandEnabled: (CommandID) -> Bool
     private let byID: [CommandID: LauncherModule.Command]
@@ -220,10 +239,13 @@ final class LauncherModuleRegistry {
                                       providers: $0.providers.map(\.namespace))
         })
         shortcutCommandGroups = modules.compactMap { module in
-            guard !module.commands.isEmpty else { return nil }
+            guard !module.commands.isEmpty || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
+            else { return nil }
             return ShortcutCommandGroup(id: module.id, title: module.displayTitle,
-                                        symbol: module.displaySymbol, commands: module.commands)
+                                        symbol: module.displaySymbol, commands: module.commands,
+                                        dynamicCommands: module.dynamicCommandSettings, binding: module.shortcutSettingsBinding)
         }
+        commandSettingsUpdates = modules.flatMap(\.shortcutSettingsUpdates)
         commands = modules.flatMap(\.commands)
         byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.declaration.id, $0) })
         providers = modules.flatMap(\.providers)
@@ -250,6 +272,10 @@ final class LauncherModuleRegistry {
         presentationUpdates = Publishers.MergeMany(modules.flatMap(\.presentationUpdates))
             .receive(on: DispatchQueue.main).eraseToAnyPublisher()
         searchUpdates = Publishers.MergeMany(modules.flatMap(\.searchUpdates)).eraseToAnyPublisher()
+    }
+
+    func shortcutSettingsUpdates() -> [AnyPublisher<Void, Never>] {
+        commandSettingsUpdates + shortcutCommandGroups.flatMap { $0.dynamicCommands?.updates() ?? [] }
     }
 
     func launcherShown() { launcherShownHandlers.forEach { $0() } }

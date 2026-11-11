@@ -223,7 +223,14 @@ enum UtilityLauncherModules {
                 controller.onRunFailure = { [weak model] message in model?.error = message }
                 controller.refresh()
             }, stop: { controller.onRunFailure = nil })
-        ], searchUpdates: [searchUpdates])
+        ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
+            model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,
+            updates: {
+                [ViewObservation.changes(controller.$entries), ViewObservation.changes(controller.$disabledIDs),
+                 controller.$icons.dropFirst().map { _ in () }.eraseToAnyPublisher()]
+            },
+            entry: { $0.commandSettingsEntry(model: $1, controller: controller) }
+        ))
         module.launcherShown = { controller.refresh() }
         module.presentationUpdates = [
             controller.$runningID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
