@@ -24,7 +24,7 @@ struct ScreenshotPreferences: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        SettingsPageSections {
             SettingsCard {
                 Toggle("启用截图管理", isOn: binding(\.enabled))
             }
@@ -47,18 +47,16 @@ struct ScreenshotPreferences: View {
             }
             SettingsCard(anchor: .screenshotScopes) {
                 HStack {
-                    SettingsCaption(title: "搜索范围", detail: "搜索这些文件夹及其子目录。", style: .compact)
+                    SettingsCaption(title: "搜索范围", detail: "搜索这些文件夹及其子目录。")
                     Spacer()
                     SettingsAddFolderButton { library.chooseFolders() }
                 }
                 if library.scopes.isEmpty {
-                    ForEach(library.folders, id: \.path) { url in folderRow(url.path) }
+                    SettingsCompactList(items: library.folders, id: \.path) { url in SettingsFolderRow(path: url.path) { EmptyView() } }
                     Text("正在使用 macOS 的截图保存位置。").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    ForEach(library.scopes) { scope in
-                        HStack {
-                            folderRow(scope.url.path)
-                            Spacer()
+                    SettingsCompactList(items: library.scopes, id: \.id) { scope in
+                        SettingsFolderRow(path: scope.url.path) {
                             Button(role: .destructive) { library.removeFolder(scope) } label: { Image(systemName: "minus.circle.fill") }
                                 .buttonStyle(.plain).help("移除搜索范围")
                         }
@@ -67,12 +65,12 @@ struct ScreenshotPreferences: View {
             }
             SettingsCard {
                 Toggle(isOn: binding(\.includeAll)) {
-                    SettingsCaption(title: "包含所有媒体", detail: "搜索指定文件夹中的全部图片和视频。", style: .compact)
+                    SettingsCaption(title: "包含所有媒体", detail: "搜索指定文件夹中的全部图片和视频。")
                 }
             }
             SettingsCard(anchor: .screenshotText) {
                 Toggle(isOn: binding(\.recognizesText)) {
-                    SettingsCaption(title: "文字识别", detail: "使用本机文字识别，在搜索框输入 text: 或「文字:」查找图片内容。", style: .compact)
+                    SettingsCaption(title: "文字识别", detail: "使用本机文字识别，在搜索框输入 text: 或「文字:」查找图片内容。")
                 }
                 Divider()
                 SettingsPicker("识别模式", selection: binding(\.accurate)) {
@@ -81,12 +79,12 @@ struct ScreenshotPreferences: View {
                 }.disabled(!library.recognizesText)
                 Divider()
                 Toggle(isOn: binding(\.allowCloudOCR)) {
-                    SettingsCaption(title: "允许识别云端文件", detail: "识别尚未下载的图片时，云盘可能会下载原文件。", style: .compact)
+                    SettingsCaption(title: "允许识别云端文件", detail: "识别尚未下载的图片时，云盘可能会下载原文件。")
                 }.disabled(!library.recognizesText)
             }
-            Text("命令").font(VisualStyle.rowText).padding(.leading, 12)
+            SettingsSectionTitle(title: "命令")
             CommandSettingsList(items: ScreenshotCommand.allCases, id: \.rawValue) { command in
-                CommandSettingsRow(title: command.title,
+                CommandSettingsEntry(title: command.title,
                     model: model, commandID: CommandID(rawValue: command.rawValue),
                     isEnabled: Binding(get: { !library.disabledCommands.contains(command.rawValue) }, set: { enabled in
                         if enabled { library.disabledCommands.remove(command.rawValue) }
@@ -102,10 +100,7 @@ struct ScreenshotPreferences: View {
         Binding(get: { library[keyPath: key] }, set: { library[keyPath: key] = $0 })
     }
 
-    private func folderRow(_ path: String) -> some View {
-        Label((path as NSString).abbreviatingWithTildeInPath, systemImage: "folder")
-            .font(.system(size: 12)).lineLimit(1).truncationMode(.middle).help(path)
-    }
+
 }
 
 private struct ColumnDiagram: View {

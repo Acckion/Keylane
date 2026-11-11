@@ -26,7 +26,7 @@ struct ApplicationPreferences: View {
 
     var body: some View {
         let visibleApplications = filteredApplications ?? catalog.items
-        VStack(alignment: .leading, spacing: 18) {
+        SettingsPageSections {
             SettingsCard(layout: .flush) {
                 HStack {
                     SettingsCaption(title: "自动退出", detail: "停止使用应用一段时间后自动退出。")
@@ -54,43 +54,32 @@ struct ApplicationPreferences: View {
                         SettingsAddFolderButton(symbolFont: .system(size: 12, weight: .medium), action: model.addRoot)
                     }.padding(.bottom, 4)
                     VStack(spacing: 0) {
-                        ForEach(Array(model.roots.enumerated()), id: \.element) { index, path in
-                            ScopeRow(path: path) { model.roots.removeAll { $0 == path }; model.reloadCatalog() }
-                            if index < model.roots.count - 1 { Divider().opacity(0.4) }
+                        SettingsCompactList(items: model.roots, id: \.self) { path in
+                            SettingsFolderRow(path: path, showsActionsOnHover: true) {
+                                Button { model.roots.removeAll { $0 == path }; model.reloadCatalog() } label: {
+                                    Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
+                                }
+                                .buttonStyle(.plain).help("移除此搜索范围").accessibilityLabel("移除 \(path)")
+                            }
                         }
                         if model.roots.isEmpty { Text("尚未添加搜索范围").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 14) }
                     }
-                }.padding(14)
+                }.padding(14).padding(.bottom, 5)
             }
 
-            Text("命令").font(.system(size: 15, weight: .medium)).padding(.leading, 14).padding(.top, 10)
-            SettingsCard(layout: .flush) {
-                VStack(spacing: 0) {
-                    unavailableCommand("管理自动退出", icon: "app.badge.clock", color: .gray)
-                    Divider().opacity(0.4)
-                    unavailableCommand("卸载应用程序", icon: "trash.square.fill", color: .red)
-                }.padding(.horizontal, 14)
+            SettingsSectionTitle(title: "命令")
+            CommandSettingsList(items: ["管理自动退出", "卸载应用程序"], id: \.self) { title in
+                unavailableCommand(title, icon: title == "管理自动退出" ? "app.badge.clock" : "trash.square.fill",
+                                   color: title == "管理自动退出" ? .gray : .red)
             }
             HStack {
                 Text("应用程序").font(.system(size: 15, weight: .medium))
                 Spacer()
                 SettingsSearchField(text: $filter, placeholder: "筛选应用…").frame(width: 170, height: 24)
             }.padding(.horizontal, 14).padding(.top, 10)
-            SettingsCard(layout: .flush, anchor: .applicationFavorites) {
-                LazyVStack(spacing: 0) {
-                    ForEach(visibleApplications) { item in
-                        ApplicationPreferenceRow(
-                            model: model, item: item,
-                            alias: model.aliases[item.id] ?? "",
-                            shortcut: model.bindings["app:" + item.id],
-                            enabled: !model.excluded.contains(item.id),
-                            favorite: model.favorites.contains(item.id),
-                            showsDivider: item.id != visibleApplications.last?.id
-                        ).equatable()
-                    }
-                    if visibleApplications.isEmpty { Text("没有匹配的应用").foregroundStyle(.secondary).padding(24) }
-                }
-            }
+            CommandSettingsList(items: visibleApplications, id: \.id, emptyMessage: "没有匹配的应用") { item in
+                applicationCommand(item)
+            }.settingsAnchor(.applicationFavorites)
             HStack {
                 Text(model.scanStatus).font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -107,29 +96,44 @@ struct ApplicationPreferences: View {
         }
     }
 
-    private func unavailableCommand(_ name: String, icon: String, color: Color) -> some View {
-        CommandSettingsRow(title: name, alias: .constant(""), shortcut: nil,
-                           isEnabled: .constant(false), setShortcut: { _ in },
-                           icon: { Image(systemName: icon).font(VisualStyle.actionSymbol).foregroundStyle(color) },
-                           available: false)
-            .help("此命令尚未实现，不能启用或设置快捷键。")
+    private func unavailableCommand(_ title: String, icon: String, color: Color) -> CommandSettingsEntry<some View> {
+        CommandSettingsEntry(title: title, alias: .constant(""), shortcut: nil,
+                             isEnabled: .constant(false), setShortcut: { _ in },
+                             icon: { Image(systemName: icon).font(VisualStyle.actionSymbol).foregroundStyle(color) },
+                             available: false, help: "此命令尚未实现，不能启用或设置快捷键。")
     }
+
+    private func applicationCommand(_ item: ApplicationPreferenceItem) -> CommandSettingsEntry<SettingsApplicationIcon> {
+        let revision = ApplicationCommandRevision(
+            title: item.title, alias: model.aliases[item.id] ?? "", shortcut: model.bindings["app:" + item.id],
+            enabled: !model.excluded.contains(item.id), favorite: model.favorites.contains(item.id)
+        )
+        return CommandSettingsEntry(
+            title: item.title, model: model, commandID: .init(rawValue: "app:" + item.id), aliasKey: item.id,
+            isEnabled: Binding(get: { !model.excluded.contains(item.id) }, set: { value in
+                if value { model.excluded.remove(item.id) } else { model.excluded.insert(item.id) }
+                model.reloadCatalog()
+            }),
+            help: item.id,
+            menu: [
+                .init(title: revision.favorite ? "取消收藏" : "加入收藏") { model.toggleFavorite(item.id) },
+                .init(title: "在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+            ],
+            renderRevision: revision,
+            icon: { SettingsApplicationIcon(path: item.id) }
+        )
+    }
+
 }
 
-private struct ScopeRow: View {
-    let path: String
-    let remove: () -> Void
-    @State private var hovering = false
-    var body: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "folder").font(VisualStyle.actionSymbol).frame(width: 18)
-            Text((path as NSString).abbreviatingWithTildeInPath).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 4)
-            Button(action: remove) { Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary) }
-                .buttonStyle(.plain).opacity(hovering ? 1 : 0).help("移除此搜索范围").accessibilityLabel("移除 \(path)")
-        }.frame(height: 35).contentShape(Rectangle()).onHover { hovering = $0 }.help(path)
-    }
+private struct ApplicationCommandRevision: Hashable {
+    let title: String
+    let alias: String
+    let shortcut: Shortcut?
+    let enabled: Bool
+    let favorite: Bool
 }
+
 /// Keeps the settings list ready when switching away from and back to Applications.
 final class ApplicationSettingsCatalog: ObservableObject {
     @Published fileprivate private(set) var items: [ApplicationPreferenceItem] = []
@@ -159,43 +163,6 @@ private struct ApplicationPreferenceItem: Identifiable, Equatable {
     let url: URL
     let title: String
     let filename: String
-}
-
-private struct ApplicationPreferenceRow: View, Equatable {
-    let model: Model
-    let item: ApplicationPreferenceItem
-    let alias: String
-    let shortcut: Shortcut?
-    let enabled: Bool
-    let favorite: Bool
-    let showsDivider: Bool
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model === rhs.model && lhs.item == rhs.item && lhs.alias == rhs.alias
-            && lhs.shortcut == rhs.shortcut && lhs.enabled == rhs.enabled
-            && lhs.favorite == rhs.favorite && lhs.showsDivider == rhs.showsDivider
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            CommandSettingsRow(
-                title: item.title,
-                model: model, commandID: CommandID(rawValue: "app:" + item.id), aliasKey: item.id,
-                isEnabled: Binding(get: { !model.excluded.contains(item.id) }, set: { value in
-                    if value { model.excluded.remove(item.id) } else { model.excluded.insert(item.id) }
-                    model.reloadCatalog()
-                }),
-                icon: { SettingsApplicationIcon(path: item.id) }
-            )
-            .padding(.horizontal, 14)
-            .help(item.id)
-            .contextMenu {
-                Button(favorite ? "取消收藏" : "加入收藏") { model.toggleFavorite(item.id) }
-                Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
-            }
-            if showsDivider { Divider().opacity(0.4).padding(.horizontal, 14) }
-        }
-    }
 }
 
 struct ApplicationsIcon: View {

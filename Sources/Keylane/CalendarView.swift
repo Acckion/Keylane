@@ -132,7 +132,7 @@ private struct CalendarSettingsGroups: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        SettingsPageSections {
             SettingsGroup {
                 Button {
                     showsCalendars.toggle()
@@ -197,13 +197,13 @@ private struct CalendarSettingsGroups: View {
             .disabled(!controller.enabled)
             .settingsAnchor(.calendarMenuBar)
 
-            Text("日历命令").font(.headline).padding(.leading, 18)
-            SettingsGroup {
-                CommandSettingsRow(
+            SettingsSectionTitle(title: "日历命令")
+            CommandSettingsList(items: ["calendar"], id: \.self) { id in
+                CommandSettingsEntry(
                     title: "我的日程",
-                    model: model, commandID: .init(rawValue: "calendar"),
+                    model: model, commandID: .init(rawValue: id),
                     isEnabled: Binding(get: { controller.enabled }, set: { controller.enabled = $0 }),
-                    perform: { model.runCommand(.init(rawValue: "calendar"), origin: .menu) },
+                    perform: { model.runCommand(.init(rawValue: id), origin: .menu) },
                     icon: { CalendarSettingsIcon(size: 24) }
                 )
             }.id("calendar-command")

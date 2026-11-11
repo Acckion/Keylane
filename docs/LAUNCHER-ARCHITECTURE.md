@@ -20,6 +20,6 @@
 
 「应用程序」和「截图」是设置页接入样例。模块登记页面、搜索项及所需的标题栏开关，设置窗口负责侧栏、搜索、页头、滚动和历史。设置窗口只订阅路由、外观与窗口反馈。页面通过 `SettingsPageObservation` 订阅自己渲染的字段。
 
-常规分组使用 `SettingsCard` 或 `SettingsGroup`，说明文字和目录添加分别使用 `SettingsCaption` 和 `SettingsAddFolderButton`。可搜索的分组将登记用的 `SettingsItem` 直接传给 `SettingsCard(anchor:)`。命令用 `CommandSettingsRow` 的 `CommandID` 接口接入别名和热键。应用别名继续使用应用路径。长列表保留惰性布局、稳定的行 ID 和后台缩略图缓存。功能专属控件可以放进共用卡片，例如截图列数预览。
+常规分组使用 `SettingsCard` 或 `SettingsGroup`，说明文字和目录添加分别使用 `SettingsCaption` 和 `SettingsAddFolderButton`。可搜索的分组将登记用的 `SettingsItem` 直接传给 `SettingsCard(anchor:)`。命令列表使用 `CommandSettingsList`，条目通过 `CommandSettingsEntry` 的 `CommandID` 接口接入别名和热键。行高、分隔线和列对齐均由列表管理。应用别名继续使用应用路径。长列表保留惰性布局、稳定的行 ID 和后台缩略图缓存。功能专属控件可以放进共用卡片，例如截图列数预览。
 
 文件搜索、剪贴板、日历和快捷指令也沿用这些组件与定位方式。文件索引和剪贴板历史的统计分组独立订阅各自的状态。快捷指令长列表使用惰性行布局，保留原有行高和快捷键编辑行为。通用、菜单栏、便笺、快捷链接、高级和关于页复用同一套搜索锚点。

@@ -19,23 +19,16 @@ struct LauncherAppearancePreferences: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("外观").font(.headline).padding(.leading, 14)
-            SettingsCard(layout: .flush, anchor: .appearance) {
-                VStack(spacing: 16) {
-                    SettingsPicker("显示模式", selection: binding(\.appearance)) {
-                        Text("跟随系统").tag("system")
-                        Text("深色").tag("dark")
-                        Text("浅色").tag("light")
-                    }.settingsAnchor(.glass)
-                    Divider()
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("界面大小")
-                            Text("调整启动器的文字、图标和窗口大小。")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
+        SettingsPageSections {
+            SettingsGroup("外观") {
+                SettingsPicker("显示模式", selection: binding(\.appearance)) {
+                    Text("跟随系统").tag("system")
+                    Text("深色").tag("dark")
+                    Text("浅色").tag("light")
+                }.settingsAnchor(.glass)
+                Divider()
+                SettingsRow("界面大小") {
+                    HStack(spacing: 8) {
                         ForEach(Array(["small", "medium", "large"].enumerated()), id: \.element) { index, value in
                             Button { model.interfaceSize = value } label: {
                                 Text("Aa").font(.system(size: CGFloat(12 + index * 4), weight: .medium))
@@ -47,45 +40,40 @@ struct LauncherAppearancePreferences: View {
                                 .accessibilityAddTraits(model.interfaceSize == value ? .isSelected : [])
                         }
                     }
-                }.padding(18)
-            }
+                }
+            }.settingsAnchor(.appearance)
 
-            SettingsCard(layout: .flush, anchor: .windowMode) {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("窗口模式").font(.headline)
-                    Text("选择通过启动热键打开 Keylane 时的显示方式。")
-                        .font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 16) {
-                        mode("compact", title: "紧凑", expanded: false)
-                        mode("expanded", title: "展开", expanded: true)
+            SettingsGroup("窗口模式") {
+                HStack(spacing: 16) {
+                    Spacer(minLength: 0)
+                    mode("compact", title: "紧凑", expanded: false)
+                    mode("expanded", title: "展开", expanded: true)
+                    Spacer(minLength: 0)
+                }
+                Divider()
+                Toggle(isOn: binding(\.compactFavorites)) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("在紧凑模式显示收藏")
                     }
-                    Divider()
-                    Toggle(isOn: binding(\.compactFavorites)) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("在紧凑模式显示收藏")
-                            Text("在搜索框下方显示收藏图标。").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }.padding(18)
-            }
+                }
+            }.settingsAnchor(.windowMode)
         }
     }
     private func mode(_ value: String, title: String, expanded: Bool) -> some View {
-        Button { model.windowMode = value } label: {
-            VStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10).fill(model.windowMode == value ? Color.accentColor.gradient : Color.gray.gradient)
-                    VStack(spacing: 5) {
-                        HStack(spacing: 5) { Image(systemName: "magnifyingglass"); RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.3)).frame(height: 3) }
-                            .font(.system(size: 8)).foregroundStyle(.white.opacity(0.6))
-                        if expanded {
-                            ForEach(0..<3) { _ in RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.12)).frame(height: 6) }
-                        }
-                    }.padding(9).frame(width: 100)
-                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
-                }.frame(height: 86)
-                Text(title).font(.system(size: 12, weight: model.windowMode == value ? .semibold : .regular))
-            }.frame(maxWidth: .infinity).contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityAddTraits(model.windowMode == value ? .isSelected : [])
+        SettingsChoiceTile(title: title, selected: model.windowMode == value, action: {
+            model.windowMode = value
+        }) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10).fill(model.windowMode == value ? Color.accentColor.gradient : Color.gray.gradient)
+                VStack(spacing: 5) {
+                    HStack(spacing: 5) { Image(systemName: "magnifyingglass"); RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.3)).frame(height: 3) }
+                        .font(.system(size: 8)).foregroundStyle(.white.opacity(0.6))
+                    if expanded {
+                        ForEach(0..<3) { _ in RoundedRectangle(cornerRadius: 2).fill(.white.opacity(0.12)).frame(height: 6) }
+                    }
+                }.padding(9).frame(width: 100)
+                    .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+            }.frame(width: 128, height: 86)
+        }
     }
 }

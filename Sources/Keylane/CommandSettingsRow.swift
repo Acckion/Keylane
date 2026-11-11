@@ -1,28 +1,40 @@
 import SwiftUI
 import KeylaneCore
 
-/// A command editor independent of the model that persists its settings.
-/// Callers provide bindings so application paths and command IDs keep their existing semantics.
-struct CommandSettingsRow<Icon: View>: View {
+struct CommandSettingsEntry<Icon: View> {
     let title: String
-    @Binding var alias: String
+    let alias: Binding<String>
     let shortcut: Shortcut?
-    @Binding var isEnabled: Bool
+    let isEnabled: Binding<Bool>
     let setShortcut: (Shortcut?) -> Void
     @ViewBuilder let icon: () -> Icon
     var perform: (() -> Void)? = nil
     var available = true
+    var help: String?
+    var menu: [CommandSettingsAction] = []
+    /// Optional value snapshot for entries with a stable icon and stable handlers for this item ID.
+    var renderRevision: AnyHashable?
+}
+
+struct CommandSettingsAction: Identifiable {
+    var id: String { title }
+    let title: String
+    let perform: () -> Void
+}
+
+private struct CommandSettingsRow<Icon: View>: View {
+    let entry: CommandSettingsEntry<Icon>
     @FocusState private var aliasFocused: Bool
     @State private var aliasHovered = false
 
     var body: some View {
         HStack(spacing: 10) {
-            icon().frame(width: 24, height: 24).accessibilityHidden(true)
+            entry.icon().frame(width: 24, height: 24).accessibilityHidden(true)
             Group {
-                if let perform {
-                    Button(title, action: perform).buttonStyle(.plain)
+                if let perform = entry.perform {
+                    Button(entry.title, action: perform).buttonStyle(.plain)
                 } else {
-                    Text(title)
+                    Text(entry.title)
                 }
             }
             .font(VisualStyle.rowText)
@@ -30,7 +42,7 @@ struct CommandSettingsRow<Icon: View>: View {
             .truncationMode(.middle)
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            TextField(available ? "别名" : "未实现", text: $alias)
+            TextField(entry.available ? "别名" : "未实现", text: entry.alias)
                 .font(.system(size: 12))
                 .textFieldStyle(.plain)
                 .focused($aliasFocused)
@@ -40,26 +52,26 @@ struct CommandSettingsRow<Icon: View>: View {
                 .contentShape(RoundedRectangle(cornerRadius: 8))
                 .onHover { aliasHovered = $0 }
                 .onTapGesture { aliasFocused = true }
-                .accessibilityLabel("\(title) 搜索别名")
-            ShortcutRecorder(shortcut: shortcut, compact: true, title: title, icon: AnyView(icon()), changed: setShortcut)
+                .accessibilityLabel("\(entry.title) 搜索别名")
+            ShortcutRecorder(shortcut: entry.shortcut, title: entry.title, icon: AnyView(entry.icon()), changed: entry.setShortcut)
                 .frame(width: 112, alignment: .leading)
-            Toggle("启用 \(title)", isOn: $isEnabled)
+            Toggle("启用 \(entry.title)", isOn: entry.isEnabled)
                 .labelsHidden().toggleStyle(.checkbox).controlSize(.small)
         }
-        .frame(minHeight: 46)
-        .disabled(!available)
+        .frame(minHeight: SettingsRowsLayout.rowHeight)
+        .disabled(!entry.available)
     }
 }
 
-/// Command rows already size themselves. Use this card to group commands
-/// so settings groups do not add a second layer of row spacing.
-struct CommandSettingsList<Item, ID: Hashable, Row: View>: View {
+/// All command settings use this list. Callers supply data and actions only.
+struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
     let items: [Item]
     let id: KeyPath<Item, ID>
     var emptyMessage = "暂无命令"
-    @ViewBuilder let row: (Item) -> Row
+    let entry: (Item) -> CommandSettingsEntry<Icon>
 
     var body: some View {
+        let lastID = items.last.map { $0[keyPath: id] }
         LazyVStack(spacing: 0) {
             if items.isEmpty {
                 Text(emptyMessage)
@@ -68,26 +80,48 @@ struct CommandSettingsList<Item, ID: Hashable, Row: View>: View {
                     .padding(24)
             }
             ForEach(items, id: id) { item in
-                row(item).padding(.horizontal, 14)
-                if items.last.map({ $0[keyPath: id] }) != item[keyPath: id] {
-                    Divider().opacity(0.4).padding(.horizontal, 14)
-                }
+                let row = CommandSettingsListRow(entry: entry(item), showsDivider: item[keyPath: id] != lastID)
+                if row.entry.renderRevision != nil { row.equatable() }
+                else { row }
             }
         }
         .modifier(SettingsSurface())
     }
 }
 
-extension CommandSettingsRow {
+private struct CommandSettingsListRow<Icon: View>: View, Equatable {
+    let entry: CommandSettingsEntry<Icon>
+    let showsDivider: Bool
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        guard let revision = lhs.entry.renderRevision else { return false }
+        return revision == rhs.entry.renderRevision && lhs.showsDivider == rhs.showsDivider
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            CommandSettingsRow(entry: entry)
+                .padding(.horizontal, 14)
+                .help(entry.help ?? "")
+                .contextMenu {
+                    ForEach(entry.menu) { action in Button(action.title, action: action.perform) }
+                }
+            if showsDivider { Divider().opacity(0.4).padding(.horizontal, 14) }
+        }
+    }
+}
+
+extension CommandSettingsEntry {
     /// Application aliases use the path, while their shortcut IDs retain the app: namespace.
     init(title: String, model: Model, commandID: CommandID, aliasKey: String? = nil,
-         isEnabled: Binding<Bool>, perform: (() -> Void)? = nil, @ViewBuilder icon: @escaping () -> Icon) {
+         isEnabled: Binding<Bool>, perform: (() -> Void)? = nil, help: String? = nil,
+         menu: [CommandSettingsAction] = [], renderRevision: AnyHashable? = nil, @ViewBuilder icon: @escaping () -> Icon) {
         let key = aliasKey ?? commandID.rawValue
         self.init(title: title,
                   alias: Binding(get: { model.aliases[key] ?? "" }, set: { model.setAlias(key, value: $0) }),
                   shortcut: model.bindings[commandID.rawValue],
                   isEnabled: isEnabled,
                   setShortcut: { model.setShortcut(commandID.rawValue, value: $0) },
-                  icon: icon, perform: perform)
+                  icon: icon, perform: perform, help: help, menu: menu, renderRevision: renderRevision)
     }
 }

@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import KeylaneCore
-import ServiceManagement
 
 struct SettingsView: View {
     @ObservedObject var state: SettingsWindowState
@@ -154,7 +153,7 @@ enum LauncherSettingsContent {
         LoginPreferences(model: model)
         LauncherAppearancePreferences(model: model)
         WindowPositionPreferences(model: model)
-        SettingsGroup { KeyboardPreferences(model: model) }.settingsAnchor(.keyboard)
+        KeyboardPreferences(model: model).settingsAnchor(.keyboard)
     }
 
     @ViewBuilder static func applications(_ model: Model) -> some View {
@@ -196,16 +195,13 @@ private struct LoginPreferences: View {
     init(model: Model) {
         self.model = model
         _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$loginEnabled),
-            SettingsPageObservation.changes(model.$loginStatus)
+            SettingsPageObservation.changes(model.$loginEnabled)
         ]))
     }
 
     var body: some View {
-        SettingsGroup {
+        SettingsGroup("启动") {
             Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
-            Text(model.loginStatus).font(.caption).foregroundStyle(.secondary)
-            Button("打开系统登录项设置") { SMAppService.openSystemSettingsLoginItems() }.buttonStyle(.glass)
         }.settingsAnchor(.login)
     }
 }
@@ -215,7 +211,7 @@ private struct WindowPositionPreferences: View {
     @State private var placement = "activeScreen"
 
     var body: some View {
-        SettingsGroup {
+        SettingsGroup("位置") {
             SettingsPicker("窗口位置", selection: Binding(get: { placement }, set: { model.placement = $0 })) {
                 Text("当前屏幕居中").tag("activeScreen")
                 Text("记住上次位置").tag("remember")
@@ -231,10 +227,10 @@ private struct NotesSettings: View {
     @State private var count = 0
 
     var body: some View {
-        SettingsGroup {
-            LabeledContent("已保存便笺", value: String(count))
-            Text("使用本机 SQLite 自动保存。").foregroundStyle(.secondary)
-            Button("导出便笺…") { model.exportData() }.buttonStyle(ContentActionButtonStyle())
+        SettingsGroup("便笺") {
+            SettingsRow("已保存便笺") { Text(count.formatted()).foregroundStyle(.secondary) }
+            Divider()
+            SettingsActionRow(title: "便笺数据", actionTitle: "导出…") { model.exportData() }
         }
         .settingsAnchor(.noteExport)
         .onReceive(model.$savedNotes.map(\.count).removeDuplicates()) { count = $0 }
@@ -246,11 +242,14 @@ private struct QuicklinkSettings: View {
     @State private var link = ""
 
     var body: some View {
-        SettingsGroup {
-            Text("默认快捷链接").font(.headline)
-            TextField("https://example.com", text: Binding(get: { link }, set: { model.link = $0 }))
-                .textFieldStyle(.roundedBorder)
-            Text("当前支持一个默认链接。链接集合与参数化功能尚未实现。").foregroundStyle(.secondary)
+        SettingsGroup("链接") {
+            SettingsRow("默认快捷链接") {
+                TextField("默认快捷链接", text: Binding(get: { link }, set: { model.link = $0 }),
+                          prompt: Text("https://example.com"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+            }
         }
         .settingsAnchor(.quicklink)
         .onReceive(model.$link.removeDuplicates()) { link = $0 }
