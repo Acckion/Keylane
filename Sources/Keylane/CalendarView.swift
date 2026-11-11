@@ -178,9 +178,10 @@ private struct CalendarSettingsGroups: View {
 
             if controller.enabled && controller.access != .allowed {
                 SettingsGroup {
-                    CalendarConnectionView(controller: controller)
-                        .frame(minHeight: 170)
-                }.settingsAnchor(.calendarAccess)
+                    SettingsActionRow(title: "日历权限", detail: controller.access.message, actionTitle: "管理…") {
+                        model.openSettings(page: "permissions")
+                    }
+                }
             }
 
             SettingsGroup {
