@@ -75,4 +75,4 @@ python3 scripts/verify-package.py
 - README 与开发记录应区分已实现、自动化验证、实机验收和未完成项。
 - 发布前检查仓库只包含允许公开的代码与资料；产物包含许可证，且无第三方研究素材或用户数据。
 - Actions 的 `Checks` 必须通过。失败时定位并修复，不得以删测试、跳过检查或放宽发布条件掩盖问题。
-- CI 构建 Apple Silicon DMG。PR 和未配置发行凭据的 dev 构建只生成临时签名的测试包。正式 Release 必须使用通过 Developer ID 签名、Apple 公证及公证票据验证的产物。预发布应优先使用已公证的 dev 产物；测试包须明确标注临时签名和未公证。未完成验证前，不得宣称支持 Intel 或通用二进制。
+- CI 对每个 PR 运行版本检查、脚本检查和 Swift 测试。目标为 dev 的 PR 在改动打包相关文件时也构建并验证 Apple Silicon DMG。目标为 main 的 PR、dev/main 的提交及手动运行执行完整流程。PR 安装包及未配置发行凭据的 dev 安装包使用临时签名。正式 Release 必须使用通过 Developer ID 签名、Apple 公证及公证票据验证的产物。预发布应优先使用已公证的 dev 产物；测试包须明确标注临时签名和未公证。未完成验证前，不得宣称支持 Intel 或通用二进制。
