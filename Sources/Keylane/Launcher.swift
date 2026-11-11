@@ -82,6 +82,7 @@ struct Launcher: View {
     }
     private var launcherSurface: some View {
         let results = rows
+        let showsSearchBar = argumentTarget == nil && page?.contentPlacement != .form
         let compactSurface = model.isCompact && model.presentedLauncherHeight <= model.launcherHeight + 0.5
         return ZStack(alignment: .top) {
             if let target = argumentTarget { argumentEditor(target).padding(.bottom, VisualStyle.launcherBottomInset) }
@@ -96,12 +97,16 @@ struct Launcher: View {
                 } else if model.pageID == .root {
                     commandList(results).frame(height: 470, alignment: .top)
                 } else if let page, let content = page.content {
-                    if page.contentPlacement == .underChrome { content() }
-                    else { content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset) }
+                    switch page.contentPlacement {
+                    case .underChrome: content()
+                    case .form: content().padding(.bottom, VisualStyle.launcherBottomInset)
+                    case .inset, .fileResults:
+                        content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
+                    }
                 }
             }
             if !compactSurface { VStack(spacing: 0) {
-                if argumentTarget == nil {
+                if showsSearchBar {
                     ChromeBlur().frame(height: 88)
                         .mask(LinearGradient(stops: [.init(color: .black.opacity(0.85), location: 0), .init(color: .black.opacity(0.7), location: 0.48), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
                 }
@@ -111,14 +116,14 @@ struct Launcher: View {
                     .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black.opacity(0.55), location: 0.5), .init(color: .black.opacity(0.8), location: 1)], startPoint: .top, endPoint: .bottom))
             }.allowsHitTesting(false) }
             // Keep the search field interactive while the blur's full-window spacer is inert.
-            if argumentTarget == nil { VStack(spacing: 0) {
+            if showsSearchBar { VStack(spacing: 0) {
                 searchBar
                 if compactSurface && model.compactFavorites && !model.favorites.isEmpty { compactFavoritesBar }
                 Spacer(minLength: 0)
             } }
             if actions || appMenu || filterOpen { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
             if !compactSurface { footer.frame(maxHeight: .infinity, alignment: .bottom) }
-            if argumentTarget == nil && showsTypeFilter {
+            if showsSearchBar && showsTypeFilter {
                 typeFilter.frame(maxWidth: .infinity, alignment: .topTrailing)
                     .padding(VisualStyle.launcherEdgeInset)
             }
@@ -603,13 +608,33 @@ struct Launcher: View {
         return model.pageID == .root || showsFileResults ? "打开" : "返回"
     }
     private func argumentEditor(_ target: LauncherAction.ArgumentForm) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack { backButton { argumentTarget = nil; focusToken += 1 }; Text(target.title).font(.title2.weight(.semibold)) }
-            Text("启动一个新实例，并传入以下参数。参数是否生效取决于目标应用；不会通过 Shell 执行。").foregroundStyle(.secondary)
-            TextField("例如：--profile \"Work Profile\"", text: $argumentText).textFieldStyle(.roundedBorder).focused($argumentsFocused).onSubmit { run() }
-            if let arguments = try? ArgumentParser.parse(argumentText) { Text(arguments.enumerated().map { "[\($0.offset)] \($0.element)" }.joined(separator: "\n")).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
-            Spacer()
-        }.padding(22).frame(maxWidth: .infinity, maxHeight: .infinity).task { await Task.yield(); guard !Task.isCancelled else { return }; argumentsFocused = true }
+        LauncherCreationForm(back: {
+            argumentTarget = nil
+            focusToken += 1
+        }) {
+            Text(target.title).foregroundStyle(.secondary)
+        } fields: {
+            LauncherCreationField("启动参数", detail: "参数是否生效取决于目标应用；不会通过 Shell 执行。") {
+                VStack(alignment: .leading, spacing: 8) {
+                    LauncherCreationControl(focused: argumentsFocused) {
+                        TextField("例如：--profile \"Work Profile\"", text: $argumentText)
+                            .textFieldStyle(.plain)
+                            .focused($argumentsFocused)
+                            .onSubmit { run() }
+                    }
+                    if let arguments = try? ArgumentParser.parse(argumentText), !arguments.isEmpty {
+                        Text(arguments.enumerated().map { "[\($0.offset)] \($0.element)" }.joined(separator: "\n"))
+                            .font(.system(.body, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+        }
+        .task {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            argumentsFocused = true
+        }
     }
     private func backButton(_ action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: "chevron.backward").font(.system(size: 15, weight: .medium)).frame(width: 24, height: 26) }
