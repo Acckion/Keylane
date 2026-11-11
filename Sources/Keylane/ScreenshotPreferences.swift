@@ -68,21 +68,18 @@ struct ScreenshotPreferences: View {
                 }.disabled(!library.recognizesText)
             }.id("screenshot-text")
             Text("命令").font(VisualStyle.rowText).padding(.leading, 12)
-            card {
-                ForEach(ScreenshotCommand.allCases, id: \.rawValue) { command in
-                    if command != .search { Divider() }
-                    CommandSettingsRow(title: command.title,
-                        alias: Binding(get: { model.aliases[command.rawValue] ?? "" },
-                                       set: { model.setAlias(command.rawValue, value: $0) }),
-                        shortcut: model.bindings[command.rawValue],
-                        isEnabled: Binding(get: { !library.disabledCommands.contains(command.rawValue) }, set: { enabled in
-                            if enabled { library.disabledCommands.remove(command.rawValue) }
-                            else { library.disabledCommands.insert(command.rawValue) }
-                        }),
-                        setShortcut: { model.setShortcut(command.rawValue, value: $0) }) {
-                            SettingsIcon(symbol: command.symbol)
-                        }
-                }
+            CommandSettingsList(items: ScreenshotCommand.allCases, id: \.rawValue) { command in
+                CommandSettingsRow(title: command.title,
+                    alias: Binding(get: { model.aliases[command.rawValue] ?? "" },
+                                   set: { model.setAlias(command.rawValue, value: $0) }),
+                    shortcut: model.bindings[command.rawValue],
+                    isEnabled: Binding(get: { !library.disabledCommands.contains(command.rawValue) }, set: { enabled in
+                        if enabled { library.disabledCommands.remove(command.rawValue) }
+                        else { library.disabledCommands.insert(command.rawValue) }
+                    }),
+                    setShortcut: { model.setShortcut(command.rawValue, value: $0) }) {
+                        SettingsIcon(symbol: command.symbol)
+                    }
             }.disabled(!library.enabled)
         }
     }
