@@ -180,12 +180,13 @@ struct Launcher: View {
             }
         }
         .task(id: launcherVisible) {
-            guard !launcherVisible, surfaceMounted else { return }
+            guard !launcherVisible, surfaceMounted, model.pageID == .root || showsFileResults else { return }
             // Keep fast hotkey toggles warm. The outer view retains query,
             // selection and page state independently of the rendered surface.
             do { try await Task.sleep(for: .seconds(2)) }
             catch { return }
-            guard !launcherVisible else { return }
+            // Secondary pages keep their own scroll and editing state.
+            guard !launcherVisible, model.pageID == .root || showsFileResults else { return }
             surfaceMounted = false
         }
         .onAppear {
