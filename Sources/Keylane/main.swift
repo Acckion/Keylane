@@ -28,6 +28,7 @@ final class Model: ObservableObject {
     let fileAI = FileAIController()
     private var fileAIChanges: AnyCancellable?
     let clipboard = ClipboardController()
+    let screenshots = ScreenshotLibrary()
     private var clipboardChanges: AnyCancellable?
     @Published var notes: String = UserDefaults.standard.string(forKey: "notes") ?? "" { didSet { saveNote() } }
     @Published var link: String = UserDefaults.standard.string(forKey: "link") ?? "https://github.com/Acckion/Keylane" { didSet { UserDefaults.standard.set(link, forKey: "link") } }
@@ -152,6 +153,7 @@ final class Model: ObservableObject {
         } else { launch(url) }
     }
     private struct CommandSearchInput: Equatable {
+        let screenshotCommands: Set<String>
         let query: String
         let link: String
         let apps: [URL]
@@ -170,6 +172,7 @@ final class Model: ObservableObject {
         let includesFiles = tab == "Commands" && options.enabled && options.searchFromLauncher
             && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let input = CommandSearchInput(
+            screenshotCommands: Set(ScreenshotCommand.allCases.filter(screenshots.isEnabled).map(\.rawValue)),
             query: query, link: link, apps: applicationsEnabled ? apps : [],
             files: includesFiles ? fileResults : [], fileSearchEnabled: options.enabled,
             askFiles: fileAI.commandsEnabled["ask-files"] != false,
@@ -197,6 +200,14 @@ final class Model: ObservableObject {
             Entry(id: "stop-speaking", name: "Stop Reading / 停止朗读", detail: "Stop speech playback", symbol: "stop.circle", action: { SystemTools.shared.stopReading() }),
             Entry(id: "finder", name: "Open Home / 个人文件夹", detail: "Finder", symbol: "folder", action: { NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) })
         ]
+        rows += ScreenshotCommand.allCases.filter { input.screenshotCommands.contains($0.rawValue) }.map { command in
+            Entry(id: command.rawValue, name: command.title, detail: "截图管理", symbol: command.symbol,
+                  aliases: command.aliases, action: {
+                guard let delegate = NSApp.delegate as? Delegate else { return }
+                if command == .search { delegate.showScreenshotLibrary() }
+                else { delegate.pasteLatestScreenshot() }
+            })
+        }
         if input.askFiles { rows.append(Entry(id:"ask-files",name:"询问文件搜索",detail:"AI",symbol:"sparkles",aliases:["Ask File Search"],action:{ [weak self] in if let self { self.fileAI.present(self.fileResults.map(\.url)) } })) }
         if input.askFinder { rows.append(Entry(id:"ask-finder",name:"询问 Finder",detail:"AI",symbol:"sparkles",aliases:["Ask Finder"],action:{ [weak self] in self?.fileAI.presentFinder() })) }
         rows += input.apps.map { url in
@@ -246,14 +257,16 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func pasteClipboard(plainText: Bool = false) {
         guard model.clipboard.copySelected(plainText:plainText) else { return }
-        guard AXIsProcessTrusted() else { model.clipboard.feedback("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
-        guard let target = previousApplication, !target.isTerminated else { model.clipboard.feedback("已复制，但上一个应用已退出或不可用。"); return }
+        pasteIntoPreviousApplication(feedback: model.clipboard.feedback)
+    }
+    func pasteIntoPreviousApplication(feedback: @escaping (String) -> Void) {
+        guard AXIsProcessTrusted() else { feedback("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
+        guard let target = previousApplication, !target.isTerminated else { feedback("已复制，但上一个应用已退出或不可用。"); return }
         hideLauncher(); target.activate()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self else { return }
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier, !target.isTerminated else { self.model.clipboard.feedback("已复制。目标应用未获得焦点，已停止自动粘贴。"); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier, !target.isTerminated else { feedback("已复制。目标应用未获得焦点，已停止自动粘贴。"); return }
             let source = CGEventSource(stateID: .combinedSessionState)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { self.model.clipboard.feedback("已复制，无法发送粘贴按键。"); return }
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { feedback("已复制，无法发送粘贴按键。"); return }
             down.flags = .maskCommand; up.flags = .maskCommand; down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
         }
     }
@@ -321,6 +334,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else { return }
             if action == "launcher" { self.show() }
             else if action == "settings" { self.showSettings() }
+            else if action == ScreenshotCommand.search.rawValue, self.model.screenshots.isEnabled(.search) { self.showScreenshotLibrary() }
+            else if action == ScreenshotCommand.latest.rawValue, self.model.screenshots.isEnabled(.latest) { self.pasteLatestScreenshot() }
             else if action == "clipboard" { self.model.tab = "Clipboard"; self.revealLauncher() }
             else if action == "file-search", self.model.fileSearch.options.enabled { self.model.tab = "Files"; self.revealLauncher() }
             else if action == "ask-files", self.model.fileAI.commandsEnabled[action] != false { self.hideLauncher(); self.model.fileAI.present(self.model.fileResults.map(\.url)) }
@@ -332,6 +347,36 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.configureModifiers()
         show()
     }
+    func showScreenshotLibrary() {
+        guard model.screenshots.isEnabled(.search) else { return }
+        if window.isVisible {
+            model.tab = "Screenshots"
+            revealLauncher()
+        } else {
+            revealLauncher()
+            model.tab = "Screenshots"
+        }
+    }
+
+    func pasteLatestScreenshot() {
+        rememberPreviousApplication()
+        let target = previousApplication?.processIdentifier
+        model.screenshots.latest { [weak self] item in
+            guard let self else { return }
+            guard let item else { self.model.error = "没有找到可粘贴的截图。"; return }
+            do {
+                try self.model.screenshots.copy(item)
+                let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                guard self.previousApplication?.processIdentifier == target,
+                      front == target || front == ProcessInfo.processInfo.processIdentifier else {
+                    self.model.error = "已复制截图。目标应用已变化，已取消粘贴。"
+                    return
+                }
+                self.pasteIntoPreviousApplication { [weak self] message in self?.model.error = message }
+            } catch { self.model.error = "无法复制截图：" + error.localizedDescription }
+        }
+    }
+
     @objc func revealLauncher() {
         rememberPreviousApplication()
         if !window.isVisible { show() }

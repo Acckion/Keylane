@@ -50,6 +50,9 @@ struct Launcher: View {
                             .padding(.top, 61).padding(.bottom, 52)
                     }
                 } else if model.tab == "Clipboard" { ClipboardHistoryView(controller:model.clipboard,query:model.query) }
+                else if model.tab == "Screenshots" {
+                    ScreenshotLibraryPage(library: model.screenshots, query: model.query, chooseFolders: chooseScreenshotFolders)
+                }
                 else if model.tab == "Commands" { commandList(results) }
                 else { moduleContent.padding(.top, 61).padding(.bottom, 52) }
             }
@@ -101,9 +104,10 @@ struct Launcher: View {
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
         .onDisappear { modifiers.stop() }
         .onExitCommand { if !SearchField.isComposing { escape() } }
-        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in modifiers.start(); closeMenus(); if model.searchesFilesHere { model.searchFiles() } }
-        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in modifiers.stop(); actions = false; appMenu = false; actionQuery = ""; model.fileSearch.cancel() }
-        .onChange(of: model.query) { _, _ in selection = 0; selectedResultID = nil; if model.searchesFilesHere { model.searchFiles() }; if model.tab == "Clipboard" { model.clipboard.search(model.query) } }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in modifiers.start(); closeMenus(); if model.tab == "Screenshots" { model.screenshots.refresh() }; if model.searchesFilesHere { model.searchFiles() } }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in modifiers.stop(); model.screenshots.stop(); actions = false; appMenu = false; actionQuery = ""; model.fileSearch.cancel() }
+        .onChange(of: model.query) { _, _ in
+            if model.tab == "Screenshots" { model.screenshots.search(model.query) }; selection = 0; selectedResultID = nil; if model.searchesFilesHere { model.searchFiles() }; if model.tab == "Clipboard" { model.clipboard.search(model.query) } }
         .onChange(of: model.fileSearch.options.enabled) { _, _ in
             if model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] }
         }
@@ -117,11 +121,16 @@ struct Launcher: View {
             if let oldID, let index = results.firstIndex(where: { $0.id == oldID }) { selection = index }
             else { selection = min(selection,max(0,results.count-1)) }
         }
+        .onChange(of: model.tab) { previous, current in
+            if previous == "Screenshots", current != "Screenshots" { model.screenshots.stop() }
+            if current == "Screenshots", previous != "Screenshots" { model.screenshots.search(""); model.screenshots.refresh() }
+        }
         .onChange(of: model.tab) { _, _ in model.fileSearch.cancel(); model.query = ""; selection = 0; selectedResultID = nil; focusToken += 1; if model.searchesFilesHere { model.searchFiles() }; if model.tab == "Clipboard" { model.clipboard.search("") } }
     }
     private func moveSelection(_ delta: Int) {
         if model.isCompact { model.compactExpanded = true; return }
         if actions || appMenu { actionSelection = NavigationBounds.move(actionSelection, by: delta, count: filteredMenu(applicationMenu: appMenu).count) }
+        else if model.tab == "Screenshots" { model.screenshots.move(delta * model.screenshots.columns) }
         else if model.tab == "Clipboard" { model.clipboard.move(delta) }
         else if model.tab == "Commands" || model.tab == "Files" {
             let results = rows
@@ -155,7 +164,11 @@ struct Launcher: View {
         HStack(spacing: 12) {
             if model.tab != "Commands" { backButton { model.tab = "Commands" } }
             if model.tab == "Commands" { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
-            SearchField(text: $model.query, placeholder: model.tab == "Commands" ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape).frame(height: 30)
+            SearchField(text: $model.query, placeholder: model.tab == "Commands" ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
+                        back: model.tab == "Screenshots" ? { model.screenshots.move(-1) } : nil,
+                        forward: model.tab == "Screenshots" ? { model.screenshots.move(1) } : nil)
+                .frame(height: 30)
+            if model.tab == "Screenshots" { ScreenshotFilterPicker(library: model.screenshots) }
         }.padding(.horizontal, model.tab == "Commands" ? 19 : 8).frame(height: 61)
     }
     private func commandList(_ results: [Entry]) -> some View {
@@ -252,7 +265,11 @@ struct Launcher: View {
     private var footer: some View {
         GlassEffectContainer(spacing: 8) {
             HStack(alignment: .bottom, spacing: 8) {
-                if model.tab == "Files" || model.tab == "Clipboard" {
+                if model.tab == "Screenshots" {
+                    SecondaryPageBadge(title: "截图管理", symbol: "viewfinder")
+                        .frame(width: 122, height: 36)
+                        .glassEffect(.regular, in: Capsule())
+                } else if model.tab == "Files" || model.tab == "Clipboard" {
                     SecondaryPageBadge(title:model.tab == "Files" ? "文件搜索" : "剪贴板历史",symbol:model.tab == "Files" ? "doc.text.magnifyingglass" : "list.clipboard")
                 } else {
                     expandingControl(application: true)
@@ -263,6 +280,7 @@ struct Launcher: View {
         }.padding(.horizontal, 8).padding(.bottom, 6)
     }
     private func expandingControl(application: Bool) -> some View {
+        let actionWidth: CGFloat = model.tab == "Screenshots" ? 252 : 196
         let open = application ? appMenu : actions
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
         let count = filteredMenu(applicationMenu: application).count
@@ -280,12 +298,12 @@ struct Launcher: View {
                 HStack(spacing: 0) {
                     NativeHoverButton(title: primaryTitle, action: { run() }) { HStack(spacing: 7) { Text(primaryTitle); Keycap(text: "↩") } }.frame(maxWidth: .infinity).frame(height: 28)
                     NativeHoverButton(title: "操作", action: { toggleMenu(application: false) }) { HStack(spacing: 7) { Text("操作"); HStack(spacing: 3) { Keycap(text: "⌘"); Keycap(text: "K") } } }.frame(maxWidth: .infinity).frame(height: 28)
-                }.font(.system(size: 13, weight: .medium)).padding(4).frame(width: 196, height: 36).transition(.opacity)
+                }.font(.system(size: 13, weight: .medium)).padding(4).frame(width: actionWidth, height: 36).transition(.opacity)
             }
         }
         // The container remains in the same hierarchy. Only its size changes; its bottom
         // corner stays fixed. No matched-position or automatic glass transition can slide it.
-        .frame(width: open ? 345 : (application ? 36 : 196), height: open ? menuHeight : 36, alignment: alignment)
+        .frame(width: open ? 345 : (application ? 36 : actionWidth), height: open ? menuHeight : 36, alignment: alignment)
         .clipShape(RoundedRectangle(cornerRadius: open ? 21 : 18))
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: open ? 21 : 18))
         .glassEffectTransition(.identity)
@@ -312,6 +330,7 @@ struct Launcher: View {
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
             ]
         }
+        if model.tab == "Screenshots" { return screenshotActions() }
         if model.tab == "Clipboard" {
             guard let item = model.clipboard.items.first(where: { $0.id == model.clipboard.selectedID }) else { return [] }
             var items = [MenuAction(id: "copy-clip", title: "复制", icon: "doc.on.doc", keys: ["↩"], perform: { model.clipboard.copySelected() }),
@@ -378,8 +397,8 @@ struct Launcher: View {
         submenu = false; actions = !application && open; appMenu = application && open; actionQuery = ""; actionSelection = 0; focusToken += 1
     }
     private func closeMenus() { submenu = false; actions = false; appMenu = false; actionQuery = ""; focusToken += 1 }
-    private var moduleTitle: String { switch model.tab { case "Notes": return "便笺"; case "Clipboard": return "搜索剪贴板历史…"; case "Files": return "搜索文件…"; default: return "设置" } }
-    private var primaryTitle: String { if argumentTarget != nil { return "启动新实例" }; if model.tab == "Clipboard" { return model.clipboard.primaryAction == "paste" ? "粘贴" : "复制" }; return model.tab == "Commands" || model.tab == "Files" ? "打开" : "返回" }
+    private var moduleTitle: String { switch model.tab { case "Notes": return "便笺"; case "Clipboard": return "搜索剪贴板历史…"; case "Screenshots": return "按 name:、text: 或 date: 搜索截图…"; case "Files": return "搜索文件…"; default: return "设置" } }
+    private var primaryTitle: String { if model.tab == "Screenshots" { return "复制到剪贴板" }; if argumentTarget != nil { return "启动新实例" }; if model.tab == "Clipboard" { return model.clipboard.primaryAction == "paste" ? "粘贴" : "复制" }; return model.tab == "Commands" || model.tab == "Files" ? "打开" : "返回" }
     private func argumentEditor(_ target: Entry) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack { backButton { argumentTarget = nil; focusToken += 1 }; Text(target.name).font(.title2.weight(.semibold)) }
@@ -409,10 +428,67 @@ struct Launcher: View {
         Button(action: action) { Image(systemName: "chevron.backward").font(.system(size: 15, weight: .medium)).frame(width: 24, height: 26) }
             .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.large).help("返回").accessibilityLabel("返回")
     }
+    private func chooseScreenshotFolders() {
+        model.screenshots.chooseFolders()
+        (NSApp.delegate as? Delegate)?.showScreenshotLibrary()
+        model.screenshots.refresh()
+    }
+
+    private func screenshotActions() -> [MenuAction] {
+        let controls = [
+            MenuAction(id: "screenshot-refresh", title: "刷新截图", icon: "arrow.clockwise", perform: { model.screenshots.refresh() }),
+            MenuAction(id: "screenshot-folders", title: "添加搜索文件夹…", icon: "folder.badge.plus", perform: chooseScreenshotFolders),
+            MenuAction(id: "screenshot-settings", title: "截图设置…", icon: "gearshape", perform: { model.openSettings(page: "screenshots") })
+        ]
+        guard let item = model.screenshots.selected else { return controls }
+        return [
+            MenuAction(id: "screenshot-copy", title: "复制到剪贴板", icon: "doc.on.doc", keys: ["↩"], perform: { copyScreenshot(item) }),
+            MenuAction(id: "screenshot-preview", title: "快速查看", icon: "eye", perform: { withScreenshot(item) { FilePreview.shared.show(item.url) } }),
+            MenuAction(id: "screenshot-open", title: "打开原文件", icon: "arrow.up.forward.app", perform: {
+                withScreenshot(item) {
+                    guard NSWorkspace.shared.open(item.url) else { throw CocoaError(.fileReadUnknown) }
+                    (NSApp.delegate as? Delegate)?.hideLauncher()
+                }
+            }),
+            MenuAction(id: "screenshot-share", title: "分享…", icon: "square.and.arrow.up", perform: { withScreenshot(item) { FileActionsWindow.shared.show(item.url, page: "share") } }),
+            MenuAction(id: "screenshot-reveal", title: "在 Finder 中显示", icon: "folder", perform: { withScreenshot(item) { NSWorkspace.shared.activateFileViewerSelecting([item.url]) } }),
+            MenuAction(id: "screenshot-trash", title: "移到废纸篓…", icon: "trash", perform: { trashScreenshot(item) })
+        ] + controls
+    }
+
+    private func withScreenshot(_ item: ScreenshotMedia, perform: () throws -> Void) {
+        do { try model.screenshots.validate(item); try perform() }
+        catch { model.error = "截图操作失败：" + error.localizedDescription; model.screenshots.refresh() }
+    }
+
+    private func copyScreenshot(_ item: ScreenshotMedia) {
+        withScreenshot(item) {
+            try model.screenshots.copy(item)
+            (NSApp.delegate as? Delegate)?.hideLauncher()
+        }
+    }
+
+    private func trashScreenshot(_ item: ScreenshotMedia) {
+        let alert = NSAlert()
+        alert.messageText = "将这张截图移到废纸篓？"
+        alert.informativeText = item.name
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true
+        if alert.runModal() == .alertSecondButtonReturn {
+            withScreenshot(item) { try model.screenshots.moveToTrash(item) }
+        }
+        (NSApp.delegate as? Delegate)?.showScreenshotLibrary()
+    }
+
     private func run() {
         if (model.tab == "Files" || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
         if let target = argumentTarget { do { let args = try ArgumentParser.parse(argumentText); model.launch(URL(fileURLWithPath: target.id), arguments: args) } catch { model.error = "参数引号或转义未完成。" }; return }
         if actions || appMenu { let items = filteredMenu(applicationMenu: appMenu); if items.indices.contains(actionSelection) { let item = items[actionSelection]; closeMenus(); item.perform() }; return }
+        if model.tab == "Screenshots" {
+            if let item = model.screenshots.selected { copyScreenshot(item) }
+            return
+        }
         if model.tab == "Clipboard" { if model.clipboard.primaryAction == "paste" { (NSApp.delegate as? Delegate)?.pasteClipboard() } else { model.clipboard.copySelected() }; return }
         if model.tab != "Commands" && model.tab != "Files" { model.tab = "Commands"; return }; let list = rows; if list.indices.contains(selection) { model.perform(list[selection]) } }
 }
