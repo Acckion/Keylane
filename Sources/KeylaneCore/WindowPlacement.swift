@@ -38,6 +38,7 @@ public enum WindowPlacement {
                           width: window.width, height: window.height).fitted(in: next)
         case .restore:
             guard let previous else { return nil }
+            if previous.isCovered(by: displays) { return previous }
             let best = displays.max { previous.overlapArea(with: $0) < previous.overlapArea(with: $1) }
             if let best, previous.overlapArea(with: best) > 0 { return previous.fitted(in: best) }
             return previous.fitted(in: screen)
@@ -49,6 +50,24 @@ private extension CGRect {
     func overlapArea(with rect: CGRect) -> CGFloat {
         let overlap = intersection(rect)
         return overlap.isNull ? 0 : overlap.width * overlap.height
+    }
+
+    func isCovered(by displays: [CGRect]) -> Bool {
+        let overlaps = displays.map { intersection($0) }.filter { !$0.isNull && !$0.isEmpty }
+        let boundaries = Set([minY, maxY] + overlaps.flatMap { [$0.minY, $0.maxY] }).sorted()
+        let leftToRight = overlaps.sorted { $0.minX < $1.minX }
+
+        // Check each horizontal band separately so gaps and overlapping displays
+        // cannot be mistaken for usable space.
+        for (top, bottom) in zip(boundaries, boundaries.dropFirst()) {
+            var coveredThrough = minX
+            for overlap in leftToRight where overlap.minY <= top && overlap.maxY >= bottom {
+                if overlap.minX > coveredThrough { break }
+                coveredThrough = max(coveredThrough, overlap.maxX)
+            }
+            if coveredThrough < maxX { return false }
+        }
+        return !overlaps.isEmpty
     }
 
     func fitted(in screen: CGRect) -> CGRect {

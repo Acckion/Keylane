@@ -13,6 +13,23 @@ final class WindowPlacementTests: XCTestCase {
                        CGRect(x: -1101, y: -381, width: 1101, height: 360))
     }
 
+    func testRestorePreservesFrameAcrossConnectedDisplays() {
+        let primary = CGRect(x: 0, y: 25, width: 1200, height: 750)
+        let secondary = CGRect(x: 1200, y: 50, width: 1200, height: 700)
+        let saved = CGRect(x: 900, y: 100, width: 600, height: 450)
+        XCTAssertEqual(WindowPlacement.restore.frame(for: primary, displays: [primary, secondary], previous: saved), saved)
+        XCTAssertEqual(WindowPlacement.restore.frame(for: primary, displays: [primary], previous: saved),
+                       CGRect(x: 600, y: 100, width: 600, height: 450))
+    }
+
+    func testRestoreDoesNotTreatGapBetweenDisplaysAsUsable() {
+        let primary = CGRect(x: 0, y: 25, width: 1200, height: 750)
+        let secondary = CGRect(x: 1250, y: 25, width: 1200, height: 750)
+        let saved = CGRect(x: 900, y: 100, width: 600, height: 450)
+        XCTAssertEqual(WindowPlacement.restore.frame(for: primary, displays: [primary, secondary], previous: saved),
+                       CGRect(x: 600, y: 100, width: 600, height: 450))
+    }
+
     func testCrossDisplayMoveAndRestoreAfterDisplayDisconnects() throws {
         let primary = CGRect(x: 0, y: 25, width: 1200, height: 750)
         let secondary = CGRect(x: -900, y: -400, width: 900, height: 500)
