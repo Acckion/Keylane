@@ -44,6 +44,13 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let clipboardCapture = SettingsItem(id: "capture", page: "clipboard", title: "记录剪贴板历史", keywords: "文字 图片 文件 保留 采集 置顶 OCR capture clipboard history")
     public static let noteExport = SettingsItem(id: "export", page: "notes", title: "导出便笺", keywords: "笔记 备份 notes backup export")
     public static let quicklink = SettingsItem(id: "quicklink", page: "links", title: "默认快捷链接", keywords: "网址 url quicklink")
+    public static let windowActivation = SettingsItem(id: "advanced-window-activation", page: "advanced", title: "窗口激活行为", keywords: "空间 窗口 window activation behavior spaces")
+    public static let faviconProvider = SettingsItem(id: "advanced-favicon", page: "advanced", title: "网站图标提供方", keywords: "网页 图标 favicon provider")
+    public static let exportPassphrase = SettingsItem(id: "advanced-export-passphrase", page: "advanced", title: "导出口令", keywords: "加密 备份 export passphrase encryption")
+    public static let scheduledExport = SettingsItem(id: "advanced-scheduled-export", page: "advanced", title: "定时导出", keywords: "自动备份 scheduled export backup")
+    public static let exportLocalRecords = SettingsItem(id: "advanced-local-export", page: "advanced", title: "导出本地资料", keywords: "备份 JSON export local records")
+    public static let systemProxy = SettingsItem(id: "advanced-system-proxy", page: "advanced", title: "使用系统代理设置", keywords: "网络 连接 system proxy settings")
+    public static let additionalCertificateAuthority = SettingsItem(id: "advanced-certificate-authority", page: "advanced", title: "额外的证书颁发机构", keywords: "信任 连接 CA certificate authority crt cer pem")
     public static let dataDirectory = SettingsItem(id: "directory", page: "advanced", title: "资料目录", keywords: "数据 sqlite directory storage")
     public static let privacy = SettingsItem(id: "privacy", page: "advanced", title: "隐私与遥测", keywords: "privacy telemetry")
     public static let version = SettingsItem(id: "version", page: "about", title: "关于 Keylane", keywords: "版本 许可 about version license")
@@ -88,6 +95,13 @@ public struct SettingsItem: Identifiable, Equatable {
         clipboardCapture,
         noteExport,
         quicklink,
+        windowActivation,
+        faviconProvider,
+        exportPassphrase,
+        scheduledExport,
+        exportLocalRecords,
+        systemProxy,
+        additionalCertificateAuthority,
         dataDirectory,
         privacy,
         version,

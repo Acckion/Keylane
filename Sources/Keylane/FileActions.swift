@@ -59,6 +59,7 @@ final class FileActionsWindow: NSObject, NSWindowDelegate {
     static let shared = FileActionsWindow()
     let model = FileActionsModel()
     var onEscape: (() -> Void)?
+    var onActivate: ((NSWindow) -> Void)?
     private var window: NSWindow?
     func show(_ file: URL, page: String) {
         model.configure(file,page:page)
@@ -71,7 +72,11 @@ final class FileActionsWindow: NSObject, NSWindowDelegate {
             self.window = window
             model.opened = { [weak self] in self?.window?.orderOut(nil) }
         }
-        window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
+        if let window {
+            onActivate?(window)
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
         if page == "share", model.isAvailable { model.shareRequest += 1 }
     }
 }

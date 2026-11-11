@@ -57,6 +57,11 @@ final class Model: ObservableObject {
     @Published var usage = UserDefaults.standard.dictionary(forKey: "usage") as? [String:Int] ?? [:]
     @Published var bindings: [String:Shortcut] = (UserDefaults.standard.data(forKey: "shortcuts").flatMap { try? JSONDecoder().decode([String:Shortcut].self, from: $0) }) ?? ["launcher": .launcher]
     @Published var navigation = UserDefaults.standard.string(forKey: "navigation") ?? "arrows" { didSet { UserDefaults.standard.set(navigation, forKey: "navigation") } }
+    @Published var windowActivationBehavior = WindowActivationBehavior(
+        rawValue: UserDefaults.standard.string(forKey: "windowActivationBehavior") ?? ""
+    ) ?? .systemDefault {
+        didSet { UserDefaults.standard.set(windowActivationBehavior.rawValue, forKey: "windowActivationBehavior") }
+    }
     @Published var launcherEscapeBehavior = LauncherEscapeBehavior(rawValue: UserDefaults.standard.string(forKey: "launcherEscapeBehavior") ?? "") ?? .backOrClose {
         didSet { UserDefaults.standard.set(launcherEscapeBehavior.rawValue, forKey: "launcherEscapeBehavior") }
     }
@@ -354,6 +359,9 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         FileActionsWindow.shared.onEscape = { [weak self] in self?.closeUtilityWindowOnEscape() }
+        FileActionsWindow.shared.onActivate = { [weak self] window in
+            self?.model.windowActivationBehavior.apply(to: window)
+        }
         installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
         window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.title = "Keylane · Developer Preview"; window.titlebarAppearsTransparent = true; window.titleVisibility = .hidden
@@ -482,7 +490,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settings.delegate = self
             settingsWindow = settings
         }
-        hideLauncher(); settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        hideLauncher()
+        if let settingsWindow {
+            model.windowActivationBehavior.apply(to: settingsWindow)
+            settingsWindow.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
     func hideLauncher(reason: String = "command") {
         dragGuides?.cancel()

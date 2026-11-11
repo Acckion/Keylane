@@ -178,8 +178,7 @@ enum LauncherSettingsContent {
     }
 
     @ViewBuilder static func advanced(_ model: Model) -> some View {
-        SettingsGroup { Text("资料目录").font(.headline); Text("Application Support/Keylane").foregroundStyle(.secondary); Button("在 Finder 中显示") { let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane"); NSWorkspace.shared.open(url) }.buttonStyle(ContentActionButtonStyle()) }.settingsAnchor(.dataDirectory)
-        SettingsGroup { Text("无遥测").font(.headline); Text("默认无遥测。文件 AI 仅在你主动发送时连接所配置的服务；云同步与扩展模块尚未接入。").foregroundStyle(.secondary) }.settingsAnchor(.privacy)
+        AdvancedPreferences(model: model)
     }
 
     @ViewBuilder static func about(_ model: Model) -> some View {

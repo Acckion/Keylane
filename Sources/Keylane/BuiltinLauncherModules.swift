@@ -42,7 +42,7 @@ enum BuiltinLauncherModules {
                          settingsPage(model, "permissions", "权限", "lock.shield", "查看和管理 Keylane 使用的系统权限。", 95) {
                              PermissionsPreferences(model: $0)
                          },
-                         settingsPage(model, "advanced", "高级", "wrench.and.screwdriver", "管理本地资料与隐私设置。", 100, content: LauncherSettingsContent.advanced),
+                         settingsPage(model, "advanced", "高级", "wrench.and.screwdriver", "管理窗口、导出和连接设置。", 100, content: LauncherSettingsContent.advanced),
                          settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 110, content: LauncherSettingsContent.about)])
     }
 
