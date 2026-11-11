@@ -8,15 +8,18 @@ struct SettingsApplicationIcon: View {
     @State private var loaded: (path: String, image: NSImage)?
 
     var body: some View {
+        let cache = SettingsApplicationIcons.shared
+        let image = loaded.flatMap { $0.path == path ? $0.image : nil } ?? cache.cachedImage(for: path)
         Group {
-            if let loaded, loaded.path == path {
-                Image(nsImage: loaded.image).resizable()
+            if let image {
+                Image(nsImage: image).resizable()
             } else {
                 Image(systemName: "app").resizable().scaledToFit().foregroundStyle(.secondary)
             }
         }
         .task(id: path) {
-            guard let image = await SettingsApplicationIcons.shared.image(for: path), !Task.isCancelled else { return }
+            // Cached rows can display immediately without publishing another row update.
+            guard image == nil, let image = await cache.image(for: path), !Task.isCancelled else { return }
             loaded = (path, image)
         }
         .onDisappear { loaded = nil }
@@ -38,9 +41,13 @@ private final class SettingsApplicationIcons: @unchecked Sendable {
     private static let thumbnailPixels = 48
     private static let thumbnailCost = thumbnailPixels * thumbnailPixels * 4
 
+    func cachedImage(for path: String) -> NSImage? {
+        icons.object(forKey: path as NSString)
+    }
+
     func image(for path: String) async -> NSImage? {
         guard !Task.isCancelled else { return nil }
-        if let image = icons.object(forKey: path as NSString) { return image }
+        if let image = cachedImage(for: path) { return image }
         let request = IconLookup()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
