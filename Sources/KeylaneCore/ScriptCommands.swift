@@ -118,6 +118,7 @@ public enum ScriptRunner {
         }
         public let status: Status
         public let output: String
+        /// The stdout stream in Inline mode, or the combined stream in other modes.
         public let standardOutput: String
         public let truncated: Bool
     }
@@ -129,8 +130,11 @@ public enum ScriptRunner {
         let (executable, argv) = try script.invocation(arguments: arguments)
         let process = Process()
         let stdout = Pipe()
-        let stderr = Pipe()
-        let descriptors = [stdout, stderr].map { $0.fileHandleForReading.fileDescriptor }
+        // A shared pipe preserves the child's write order. Inline mode alone needs
+        // separate stdout for its status line and stderr for failure diagnostics.
+        let inline = script.metadata?.effectiveMode == .inline
+        let stderr = inline ? Pipe() : stdout
+        let descriptors = (inline ? [stdout, stderr] : [stdout]).map { $0.fileHandleForReading.fileDescriptor }
         guard descriptors.allSatisfy({ fcntl($0, F_SETFL, O_NONBLOCK) != -1 }) else { throw POSIXError(.EIO) }
         process.executableURL = executable
         process.arguments = argv
@@ -155,7 +159,7 @@ public enum ScriptRunner {
         process.environment = environment
         try process.run()
         try? stdout.fileHandleForWriting.close()
-        try? stderr.fileHandleForWriting.close()
+        if inline { try? stderr.fileHandleForWriting.close() }
         let pid = process.processIdentifier
         let ownsGroup = getpgid(pid) == pid
         func signal(_ value: Int32) {
@@ -164,7 +168,7 @@ public enum ScriptRunner {
         }
 
         var output = Data()
-        var standardOutput = Data()
+        var diagnostics = Data()
         let limit = 256 * 1024
         var truncated = false
         var publishedBytes = 0
@@ -175,10 +179,15 @@ public enum ScriptRunner {
                 for _ in 0..<16 {
                     let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
                     guard count > 0 else { break }
-                    let accepted = min(count, limit - output.count)
-                    output.append(contentsOf: buffer.prefix(accepted))
-                    if index == 0 { standardOutput.append(contentsOf: buffer.prefix(min(count, limit - standardOutput.count))) }
-                    truncated = truncated || accepted < count
+                    if index == 0 {
+                        let accepted = min(count, limit - output.count)
+                        output.append(contentsOf: buffer.prefix(accepted))
+                        truncated = truncated || accepted < count
+                    } else {
+                        let accepted = min(count, limit - diagnostics.count)
+                        diagnostics.append(contentsOf: buffer.prefix(accepted))
+                        truncated = truncated || accepted < count
+                    }
                 }
             }
         }
@@ -207,7 +216,9 @@ public enum ScriptRunner {
         drain()
         let status = interruption ?? (process.terminationReason == .exit
             ? .exited(process.terminationStatus) : .signalled(process.terminationStatus))
-        return .init(status: status, output: String(decoding: output, as: UTF8.self),
-                     standardOutput: String(decoding: standardOutput, as: UTF8.self), truncated: truncated)
+        let stdoutText = String(decoding: output, as: UTF8.self)
+        let diagnosticText = String(decoding: diagnostics, as: UTF8.self)
+        let resultText = status != .exited(0) && !diagnosticText.isEmpty ? diagnosticText : stdoutText
+        return .init(status: status, output: resultText, standardOutput: stdoutText, truncated: truncated)
     }
 }

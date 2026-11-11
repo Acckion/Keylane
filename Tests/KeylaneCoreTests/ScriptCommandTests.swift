@@ -113,6 +113,41 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("unintended").path))
     }
 
+    func testCombinedOutputKeepsWriteOrder() throws {
+        _ = try write("ordered.sh", """
+            printf 'first\\n' >&2
+            printf 'second\\n'
+            printf 'third\\n' >&2
+            printf 'final diagnostic\\n'
+            exit 7
+            """)
+        let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
+        let result = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(result.status, .exited(7))
+        XCTAssertEqual(result.output, "first\nsecond\nthird\nfinal diagnostic\n")
+    }
+
+    func testInlineOutputSeparatesStatusAndDiagnostics() throws {
+        let url = try write("inline.sh", """
+            # @raycast.schemaVersion 1
+            # @raycast.title Inline status
+            # @raycast.mode inline
+            # @raycast.refreshTime 1m
+            printf 'warning\\n' >&2
+            printf 'status\\n'
+            if [ "$1" = fail ]; then
+                printf 'final diagnostic\\n' >&2
+                exit 7
+            fi
+            """)
+        let script = try ScriptCommand.read(url.resolvingSymlinksInPath())
+        let success = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(success.standardOutput, "status\n")
+        let failure = try ScriptRunner.run(script, arguments: ["fail"], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(failure.status, .exited(7))
+        XCTAssertEqual(failure.output, "warning\nfinal diagnostic\n")
+    }
+
     func testTimeoutStopsChildAndCancellationReturnsDistinctStatus() throws {
         _ = try write("slow.sh", """
             (/bin/sleep 1; /usr/bin/touch escaped) &
