@@ -3,7 +3,7 @@ import XCTest
 final class InterfaceTests: XCTestCase {
     func testSettingsSearchFindsActualControlsAcrossLanguages() {
         XCTAssertEqual(SettingsItem.search("深色").map(\.id), ["appearance"])
-        XCTAssertEqual(SettingsItem.search("备份").map(\.id), ["export", "advanced-export-passphrase", "advanced-scheduled-export", "advanced-preferences-export", "advanced-local-export"])
+        XCTAssertEqual(SettingsItem.search("备份").map(\.id), ["advanced-export-passphrase", "advanced-scheduled-export", "advanced-preferences-export", "advanced-local-export"])
         XCTAssertEqual(SettingsItem.search("certificate authority").map(\.page), ["advanced"])
         XCTAssertEqual(SettingsItem.search("窗口激活").map(\.id), ["advanced-window-activation"])
         XCTAssertEqual(SettingsItem.search("CLIPBOARD history").map(\.id), ["capture"])

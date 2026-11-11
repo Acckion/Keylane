@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     metadata = dict(CFBundleExecutable='Keylane', CFBundleIdentifier='org.keylane.launcher', CFBundleName='Keylane', CFBundlePackageType='APPL', CFBundleShortVersionString=version['version'], CFBundleVersion=str(version['build']), LSMinimumSystemVersion='26.0', LSUIElement=True,
                     NSCameraUsageDescription="在你打开相机预览时显示实时画面。",
                     NSContactsUsageDescription='在 Keylane 中查找联系人并复制电话号码和邮箱。',
-                    NSCalendarsFullAccessUsageDescription='读取系统日历并展示日程摘要。', NSAppleEventsUsageDescription='显示所选应用的 Finder 信息、读取 Finder 选中项，或读取 Apple 快捷指令的图标。')
+                    NSCalendarsFullAccessUsageDescription='读取系统日历并展示日程摘要。', NSAppleEventsUsageDescription='显示所选应用的 Finder 信息、读取 Finder 选中项，读取 Apple 快捷指令的图标，或搜索、新建和打开 Apple 备忘录。')
     icon_metadata = pathlib.Path(directory) / 'IconInfo.plist'
     subprocess.run([
         'xcrun', 'actool', '--compile', str(resources), '--platform', 'macosx',

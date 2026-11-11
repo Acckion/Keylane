@@ -177,9 +177,6 @@ enum LauncherSettingsContent {
         ClipboardPreferences(controller: model.clipboard, model: model)
     }
 
-    @ViewBuilder static func notes(_ model: Model) -> some View {
-        NotesSettings(model: model)
-    }
 
     @ViewBuilder static func advanced(_ model: Model) -> some View {
         AdvancedPreferences(model: model)
@@ -187,7 +184,7 @@ enum LauncherSettingsContent {
 
     @ViewBuilder static func about(_ model: Model) -> some View {
         SettingsGroup { LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版")); LabeledContent("许可", value: "PolyForm Noncommercial 1.0.0"); Text("独立实现，非 SuperCmd 或 Raycast 官方产品。").foregroundStyle(.secondary) }.settingsAnchor(.version)
-        SettingsGroup { Text("开发状态").font(.headline); Text("当前支持应用搜索、计算器、多便笺、持久化剪贴板、快捷链接和部分系统工具。窗口管理、AI、扩展、同步等主要模块尚未完成。").foregroundStyle(.secondary) }.settingsAnchor(.developmentStatus)
+        SettingsGroup { Text("开发状态").font(.headline); Text("当前支持应用搜索、计算器、持久化剪贴板、快捷链接和部分系统工具。窗口管理、AI、扩展、同步等主要模块尚未完成。").foregroundStyle(.secondary) }.settingsAnchor(.developmentStatus)
     }
 }
 
@@ -207,20 +204,5 @@ private struct LoginPreferences: View {
         SettingsGroup("启动") {
             Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
         }.settingsAnchor(.login)
-    }
-}
-
-private struct NotesSettings: View {
-    let model: Model
-    @State private var count = 0
-
-    var body: some View {
-        SettingsGroup("便笺") {
-            SettingsRow("已保存便笺") { Text(count.formatted()).foregroundStyle(.secondary) }
-            Divider()
-            SettingsActionRow(title: "便笺数据", actionTitle: "导出…") { model.exportData() }
-        }
-        .settingsAnchor(.noteExport)
-        .onReceive(model.$savedNotes.map(\.count).removeDuplicates()) { count = $0 }
     }
 }

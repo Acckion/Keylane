@@ -210,11 +210,40 @@ public final class Store {
             var statement: OpaquePointer?; sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &statement, nil);
             let version = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : 0
             sqlite3_finalize(statement)
-            guard version <= 1 else { throw StoreError.incompatibleVersion(version) }
-            try execute("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, updated REAL NOT NULL); CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(id UNINDEXED,title,body); PRAGMA user_version=1;")
+            guard version <= 2 else { throw StoreError.incompatibleVersion(version) }
+            try execute("""
+                PRAGMA busy_timeout=2000;
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, updated REAL NOT NULL);
+                CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5(id UNINDEXED,title,body);
+                """)
+            if version < 2 { try removeLegacyNotes() }
         } catch { sqlite3_close(db); db = nil; throw error }
     }
     deinit { sqlite3_close(db) }
+    private func removeLegacyNotes() throws {
+        // Rebuild FTS from surviving rows so deleted text is removed from its
+        // shadow tables as well. Record the migration only after compaction.
+        try execute("PRAGMA secure_delete=ON; BEGIN IMMEDIATE;")
+        do {
+            try execute("""
+                DELETE FROM records WHERE kind='note';
+                DROP TABLE records_fts;
+                CREATE VIRTUAL TABLE records_fts USING fts5(id UNINDEXED,title,body);
+                INSERT INTO records_fts SELECT id,title,body FROM records;
+                COMMIT;
+                """)
+        } catch {
+            try? execute("ROLLBACK;")
+            throw error
+        }
+        try execute("VACUUM;")
+        guard sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil) == SQLITE_OK else {
+            throw StoreError.sqlite(String(cString: sqlite3_errmsg(db)))
+        }
+        try execute("PRAGMA user_version=2;")
+    }
+
     private func execute(_ sql: String) throws { guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw StoreError.sqlite(String(cString: sqlite3_errmsg(db))) } }
     private func statement(_ sql: String, _ values: [String]) throws -> OpaquePointer {
         var stmt: OpaquePointer?; guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else { throw StoreError.sqlite(String(cString: sqlite3_errmsg(db))) }
@@ -232,5 +261,5 @@ public final class Store {
         let stmt = try statement("SELECT id,kind,title,body,updated FROM records WHERE kind=? ORDER BY updated DESC,id ASC", [kind]); defer { sqlite3_finalize(stmt) }; var result: [Record] = []
         while true { let status = sqlite3_step(stmt); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW else { throw StoreError.sqlite(String(cString: sqlite3_errmsg(db))) }; func text(_ index: Int32) -> String { String(cString: sqlite3_column_text(stmt,index)) }; result.append(Record(id: text(0), kind: text(1), title: text(2), body: text(3), updated: sqlite3_column_double(stmt,4))) }; return result
     }
-    public func export(to url: URL) throws { let all = try ["note", "link", "snippet"].flatMap { try records(kind: $0) }; try JSONEncoder().encode(all).write(to: url, options: .atomic) }
+    public func export(to url: URL) throws { let all = try ["link", "snippet"].flatMap { try records(kind: $0) }; try JSONEncoder().encode(all).write(to: url, options: .atomic) }
 }

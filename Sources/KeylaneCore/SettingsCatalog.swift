@@ -58,7 +58,6 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let clipboardRetention = SettingsItem(id: "clipboard-retention", page: "clipboard", title: "剪贴板保留历史记录", keywords: "保留时间 clipboard retention")
     public static let clipboardRecognition = SettingsItem(id: "clipboard-recognition", page: "clipboard", title: "剪贴板文字识别", keywords: "图片 快速 准确 clipboard OCR recognition")
     public static let clipboardExclusions = SettingsItem(id: "clipboard-exclusions", page: "clipboard", title: "不记录这些应用", keywords: "剪贴板 排除 应用 clipboard disabled applications")
-    public static let noteExport = SettingsItem(id: "export", page: "notes", title: "导出便笺", keywords: "笔记 备份 notes backup export")
     public static let snippetExpansion = SettingsItem(id: "snippet-expansion", page: "snippets", title: "文字片段与缩写", keywords: "snippets expansion 片段 缩写 展开")
     public static let quicklink = SettingsItem(id: "quicklink", page: "links", title: "快捷链接", keywords: "网址 参数 别名 热键 url quicklink")
     public static let windowActivation = SettingsItem(id: "advanced-window-activation", page: "advanced", title: "窗口激活行为", keywords: "空间 窗口 window activation behavior spaces")
@@ -120,7 +119,6 @@ public struct SettingsItem: Identifiable, Equatable {
         clipboardRetention,
         clipboardRecognition,
         clipboardExclusions,
-        noteExport,
         quicklink,
         snippetExpansion,
         windowActivation,
