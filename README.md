@@ -83,4 +83,4 @@ Keylane 的功能构想与交互设计受到 [SuperCMD V1](https://supercmd.sh/e
 
 [version.json](version.json) 统一管理版本和构建号。每次合入 `main` 必须同时提升二者，发布 PR 标题为 `release: vX.Y.Z`，并使用 Squash 合并形成一个发布提交。
 
-[GitHub Actions](.github/workflows/ci.yml) 会对 `dev` / `main` 的 PR 和提交执行版本检查、核心测试、Release 构建、包内容与签名校验，并保存构建产物。`main` 检查通过且 DMG 完成 Developer ID 签名与 Apple 公证后，自动创建 `vX.Y.Z` 标签和 GitHub Release，附带 Apple Silicon DMG 和 SHA-256 校验文件。PR 使用临时签名生成测试 DMG。配置发行凭据后，`dev` 构建也会执行签名和公证，供 Alpha／Beta 发布使用。
+[GitHub Actions](.github/workflows/ci.yml) 会对 `dev` / `main` 的 PR 和提交执行版本检查与 Swift 测试。普通 `dev` PR 在合入前完成检查，改动打包相关文件时也构建并验证 DMG。`dev` / `main` 的提交、指向 `main` 的 PR 和手动运行会执行完整打包流程。`main` 检查通过且 DMG 完成 Developer ID 签名与 Apple 公证后，自动创建 `vX.Y.Z` 标签和 GitHub Release，附带 Apple Silicon DMG 和 SHA-256 校验文件。PR 构建的测试 DMG 使用临时签名。配置发行凭据后，`dev` 构建也会执行签名和公证，供 Alpha／Beta 发布使用。
