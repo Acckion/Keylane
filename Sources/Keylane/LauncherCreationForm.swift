@@ -3,6 +3,7 @@ import SwiftUI
 /// Form content for launcher pages. The launcher host supplies the bottom actions.
 struct LauncherCreationForm<Accessory: View, Fields: View>: View {
     let back: () -> Void
+    var spacing: CGFloat = 22
     @ViewBuilder let accessory: () -> Accessory
     @ViewBuilder let fields: () -> Fields
 
@@ -26,7 +27,7 @@ struct LauncherCreationForm<Accessory: View, Fields: View>: View {
             .padding(VisualStyle.launcherEdgeInset)
 
             ScrollView {
-                VStack(spacing: 22, content: fields)
+                VStack(spacing: spacing, content: fields)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 16)
             }
@@ -58,8 +59,8 @@ struct LauncherCreationField<Control: View>: View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 7) {
-                control()
-                    .accessibilityLabel(title)
+                if title.isEmpty { control() }
+                else { control().accessibilityLabel(title) }
                 if let detail {
                     Text(detail)
                         .font(.system(size: 12))

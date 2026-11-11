@@ -432,10 +432,13 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         .sink { [weak self] _ in self?.updateLauncherGeometry() }
         updateLauncherGeometry()
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
-            self?.hideLauncher(reason: "outsideClick")
+            guard let self, self.window.attachedSheet == nil else { return }
+            self.hideLauncher(reason: "outsideClick")
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
-            if let self, event.window !== self.window { self.hideLauncher(reason: "otherWindow") }
+            if let self, event.window !== self.window, self.window.attachedSheet == nil {
+                self.hideLauncher(reason: "otherWindow")
+            }
             return event
         }
         model.menuBar.register(id: "keylane.launcher", owner: "launcher", title: "Keylane", defaultVisible: true,
@@ -497,7 +500,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         toast.hide()
     }
     func windowDidResignKey(_ notification: Notification) {
-        guard let resigned = notification.object as? NSWindow, resigned === window else { return }
+        guard let resigned = notification.object as? NSWindow, resigned === window, window.attachedSheet == nil else { return }
         hideLauncher(reason: "resignKey")
     }
     func applicationWillTerminate(_ notification: Notification) {

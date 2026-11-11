@@ -26,6 +26,7 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     shutil.copyfile(root / 'LICENSE', resources / 'LICENSE')
     for name in ('EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
         shutil.copyfile(root / 'Resources' / name, resources / name)
+    shutil.copytree(root / 'Resources/ModuleArtwork', resources / 'ModuleArtwork')
     metadata = dict(CFBundleExecutable='Keylane', CFBundleIdentifier='org.keylane.launcher', CFBundleName='Keylane', CFBundlePackageType='APPL', CFBundleShortVersionString=version['version'], CFBundleVersion=str(version['build']), LSMinimumSystemVersion='26.0', LSUIElement=True,
                     NSCameraUsageDescription="在你打开相机预览时显示实时画面。",
                     NSContactsUsageDescription='在 Keylane 中查找联系人并复制电话号码和邮箱。',

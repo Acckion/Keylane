@@ -75,6 +75,54 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertEqual(result.output, "Hello from Keylane\n")
     }
 
+    func testRaycastMetadataRoundTripAndTypedArguments() throws {
+        let metadata = try XCTUnwrap(ScriptMetadata.parse("""
+            # @raycast.schemaVersion 1
+            # @raycast.title 搜索资料
+            # @raycast.mode fullOutput
+            # @raycast.packageName 工具
+            # @raycast.needsConfirmation true
+            # @raycast.currentDirectoryPath work
+            # @raycast.argument1 {"placeholder":"关键词","percentEncoded":true}
+            # @raycast.argument2 {"type":"password","placeholder":"密码","optional":true}
+            # @raycast.argument3 {"type":"dropdown","placeholder":"范围","data":[{"title":"全部","value":"all"}]}
+            """))
+        XCTAssertEqual(metadata.arguments.map(\.kind), [.text, .password, .dropdown])
+        XCTAssertEqual(try metadata.arguments[0].value("a +"), "a%20%2B")
+        XCTAssertThrowsError(try metadata.arguments[0].value(""))
+        XCTAssertEqual(try metadata.arguments[1].value(""), "")
+        XCTAssertThrowsError(try metadata.arguments[2].value("invalid"))
+        XCTAssertEqual(try metadata.arguments[2].value("all"), "all")
+
+        let url = folder.appendingPathComponent("generated.bash")
+        try ScriptTemplate.bash.create(at: url, metadata: metadata)
+        XCTAssertThrowsError(try ScriptTemplate.bash.create(at: url, metadata: metadata))
+        let command = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
+        XCTAssertEqual(command.metadata, metadata)
+        XCTAssertEqual(command.workingDirectory.lastPathComponent, "work")
+        let result = try ScriptRunner.run(command, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(result.status, .exited(0))
+        XCTAssertEqual(result.standardOutput, "Hello from Keylane\n")
+    }
+
+    func testInlineIntervalsAndUnsupportedPlatform() throws {
+        var metadata = ScriptMetadata()
+        metadata.mode = .inline
+        XCTAssertEqual(metadata.effectiveMode, .compact)
+        metadata.refreshTime = "1s"
+        XCTAssertEqual(metadata.refreshInterval, 10)
+        XCTAssertEqual(metadata.effectiveMode, .inline)
+        metadata.refreshTime = "2h"
+        XCTAssertEqual(metadata.refreshInterval, 7200)
+        _ = try write("windows.sh", """
+            # @raycast.schemaVersion 1
+            # @raycast.title Windows only
+            # @raycast.mode silent
+            # @raycast.platform windows
+            """)
+        XCTAssertTrue(ScriptCommand.discover(in: [folder.path]).commands.isEmpty)
+    }
+
     func testArgumentsWorkingDirectoryAndFailureOutput() throws {
         _ = try write("test.sh", """
             printf '%s\\n' "$PWD" "$#" "$1" "$2"
@@ -90,6 +138,41 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertEqual(outputDirectory.resolvingSymlinksInPath(), folder.resolvingSymlinksInPath())
         XCTAssertEqual(lines.last, "2\n中文 路径\n$(touch unintended)\nstderr output\n")
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("unintended").path))
+    }
+
+    func testCombinedOutputKeepsWriteOrder() throws {
+        _ = try write("ordered.sh", """
+            printf 'first\\n' >&2
+            printf 'second\\n'
+            printf 'third\\n' >&2
+            printf 'final diagnostic\\n'
+            exit 7
+            """)
+        let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
+        let result = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(result.status, .exited(7))
+        XCTAssertEqual(result.output, "first\nsecond\nthird\nfinal diagnostic\n")
+    }
+
+    func testInlineOutputSeparatesStatusAndDiagnostics() throws {
+        let url = try write("inline.sh", """
+            # @raycast.schemaVersion 1
+            # @raycast.title Inline status
+            # @raycast.mode inline
+            # @raycast.refreshTime 1m
+            printf 'warning\\n' >&2
+            printf 'status\\n'
+            if [ "$1" = fail ]; then
+                printf 'final diagnostic\\n' >&2
+                exit 7
+            fi
+            """)
+        let script = try ScriptCommand.read(url.resolvingSymlinksInPath())
+        let success = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(success.standardOutput, "status\n")
+        let failure = try ScriptRunner.run(script, arguments: ["fail"], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(failure.status, .exited(7))
+        XCTAssertEqual(failure.output, "warning\nfinal diagnostic\n")
     }
 
     func testTimeoutStopsChildAndCancellationReturnsDistinctStatus() throws {

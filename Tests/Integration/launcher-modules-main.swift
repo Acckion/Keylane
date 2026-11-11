@@ -122,7 +122,12 @@ let scopedRegistry = try LauncherModuleRegistry(modules: [
             [Entry(id: "script:demo", commandID: .init(rawValue: "script:demo"), name: "Demo",
                    detail: "Script", symbol: "terminal")]
         }, resolve: { _, _ in nil }),
-        .init(namespace: .prefix("app:"), entries: { _ in unrelatedProviderCalls += 1; return [] }, resolve: { _, _ in nil })
+        .init(namespace: .prefix("app:"), entries: { _ in unrelatedProviderCalls += 1; return [] }, resolve: { _, _ in nil }),
+        .init(namespace: .exact(.init(rawValue: "script-fallback")), entries: { input in
+            guard input.page == .root, !input.query.isEmpty else { return [] }
+            return [Entry(id: "script-fallback", commandID: .init(rawValue: "script-fallback"),
+                          name: "Script fallback", detail: "Script", symbol: "terminal", isFallback: true)]
+        }, resolve: { _, _ in nil })
     ])
 ])
 let scriptsInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:],
@@ -130,3 +135,13 @@ let scriptsInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: 
 precondition(scopedSearch.results(for: scriptsInput, registry: scopedRegistry).map(\.id) == ["script:demo"])
 precondition(unrelatedProviderCalls == 0)
 print("PASS scoped ranking skips unrelated providers")
+
+let noMatch = "nothing-matches"
+let rootFallback = LauncherCommandSearch.Input(query: noMatch, page: .root, aliases: [:], favorites: [], usage: [:])
+precondition(scopedSearch.results(for: rootFallback, registry: scopedRegistry).map(\.id) == ["script-fallback"])
+let rootMatch = LauncherCommandSearch.Input(query: "Demo", page: .root, aliases: [:], favorites: [], usage: [:])
+precondition(scopedSearch.results(for: rootMatch, registry: scopedRegistry).map(\.id) == ["script:demo"])
+let scriptsNoMatch = LauncherCommandSearch.Input(query: noMatch, page: .init(rawValue: "SearchScripts"),
+                                                aliases: [:], favorites: [], usage: [:], namespace: .prefix("script:"))
+precondition(scopedSearch.results(for: scriptsNoMatch, registry: scopedRegistry).isEmpty)
+print("PASS root fallback remains available only without matching commands")
