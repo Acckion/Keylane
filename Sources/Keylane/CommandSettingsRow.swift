@@ -30,6 +30,7 @@ private enum CommandSettingsColumns {
 
 private struct CommandSettingsRow<Icon: View>: View {
     let entry: CommandSettingsEntry<Icon>
+    let commandIdentity: AnyHashable
     @FocusState private var aliasFocused: Bool
     @State private var aliasHovered = false
 
@@ -59,7 +60,9 @@ private struct CommandSettingsRow<Icon: View>: View {
                 .onHover { aliasHovered = $0 }
                 .onTapGesture { aliasFocused = true }
                 .accessibilityLabel("\(entry.title) 搜索别名")
-            ShortcutRecorder(shortcut: entry.shortcut, title: entry.title, icon: AnyView(entry.icon()), changed: entry.setShortcut)
+                .id(commandIdentity)
+            ShortcutRecorder(shortcut: entry.shortcut, title: entry.title, icon: { AnyView(entry.icon()) }, changed: entry.setShortcut)
+                .id(commandIdentity)
                 .frame(width: CommandSettingsColumns.shortcutWidth, alignment: .leading)
             if let isEnabled = entry.isEnabled {
                 checkbox(isEnabled)
@@ -69,6 +72,10 @@ private struct CommandSettingsRow<Icon: View>: View {
         }
         .frame(minHeight: SettingsRowsLayout.rowHeight)
         .disabled(!entry.available)
+        .onChange(of: commandIdentity) { _, _ in
+            aliasFocused = false
+            aliasHovered = false
+        }
     }
 
     private func checkbox(_ enabled: Binding<Bool>) -> some View {
@@ -109,7 +116,7 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
                 CommandSettingsEmptyState(message: emptyMessage)
             }
             if items.count > 64, !voiceOverEnabled {
-                CommandSettingsViewport(items: items, id: id) { item in
+                CommandSettingsViewport(items: items) { item in
                     row(item, lastID: lastID)
                 }
             } else {
@@ -119,16 +126,16 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
     }
 
     @ViewBuilder private func row(_ item: Item, lastID: ID?) -> some View {
-        let row = CommandSettingsListRow(entry: entry(item), showsDivider: item[keyPath: id] != lastID)
+        let identity = item[keyPath: id]
+        let row = CommandSettingsListRow(entry: entry(item), commandIdentity: AnyHashable(identity), showsDivider: identity != lastID)
         if row.entry.renderRevision != nil { row.equatable() }
         else { row }
     }
 }
 
 /// Keeps the full scroll extent while instantiating only the nearby command rows.
-private struct CommandSettingsViewport<Item, ID: Hashable, Row: View>: View {
+private struct CommandSettingsViewport<Item, Row: View>: View {
     let items: [Item]
-    let id: KeyPath<Item, ID>
     @ViewBuilder let row: (Item) -> Row
     @Environment(\.displayScale) private var scale
     @State private var window = 0..<32
@@ -138,11 +145,14 @@ private struct CommandSettingsViewport<Item, ID: Hashable, Row: View>: View {
         let stride = SettingsRowsLayout.rowHeight + line
         let range = window.clamped(to: 0..<items.count)
         let totalHeight = CGFloat(items.count) * stride - line
+        // Nearby rows retain their slots across ordinary scrolling. When a slot
+        // wraps, only its command-specific editor and recorder are replaced.
+        let slotCount = max(64, range.count)
+        let slots = range.map { (id: $0 % slotCount, index: $0) }
         VStack(spacing: 0) {
             Color.clear.frame(height: min(totalHeight, CGFloat(range.lowerBound) * stride)).accessibilityHidden(true)
-            ForEach(items[range], id: id) { item in
-                let isLast = item[keyPath: id] == items.last?[keyPath: id]
-                row(item).frame(height: isLast ? stride - line : stride)
+            ForEach(slots, id: \.id) { slot in
+                row(items[slot.index]).frame(height: slot.index == items.count - 1 ? stride - line : stride)
             }
             Color.clear.frame(height: max(0, totalHeight - CGFloat(range.upperBound) * stride))
                 .accessibilityHidden(true)
@@ -179,16 +189,17 @@ struct CommandSettingsEmptyState: View {
 
 private struct CommandSettingsListRow<Icon: View>: View, Equatable {
     let entry: CommandSettingsEntry<Icon>
+    let commandIdentity: AnyHashable
     let showsDivider: Bool
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         guard let revision = lhs.entry.renderRevision else { return false }
-        return revision == rhs.entry.renderRevision && lhs.showsDivider == rhs.showsDivider
+        return lhs.commandIdentity == rhs.commandIdentity && revision == rhs.entry.renderRevision && lhs.showsDivider == rhs.showsDivider
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            CommandSettingsRow(entry: entry)
+            CommandSettingsRow(entry: entry, commandIdentity: commandIdentity)
                 .padding(.horizontal, 14)
                 .help(entry.help ?? "")
                 .contextMenu {

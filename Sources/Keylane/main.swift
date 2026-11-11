@@ -420,6 +420,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var resizeTarget: NSRect?
     private var launcherHiddenAt: TimeInterval?
     private var idleMemoryTrim: DispatchWorkItem?
+    private var restingLauncherFrame: NSRect?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         FileActionsWindow.shared.onEscape = { [weak self] in self?.closeUtilityWindowOnEscape() }
@@ -634,6 +635,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else { return }
             self.idleMemoryTrim = nil
             guard !self.window.isVisible, self.settingsWindow?.isVisible != true else { return }
+            if self.restingLauncherFrame == nil,
+               self.model.pageID == .root || self.model.activeLauncherPage?.contentPlacement == .fileResults {
+                // The released surface no longer needs a full-size window backing.
+                self.restingLauncherFrame = self.window.frame
+                self.window.setContentSize(NSSize(width: 1, height: 1))
+            }
             WorkspaceItemIcon.discardCachedImages()
             // Let the hidden views finish releasing their objects before
             // returning unused allocator pages to the system.
@@ -646,7 +653,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func updateLauncherGeometry(animated: Bool = true) {
-        guard window != nil else { return }
+        guard window != nil, restingLauncherFrame == nil else { return }
         let backingScale = max(1, window.backingScaleFactor)
         // Align the requested size before comparing it with AppKit's frame.
         // A value like 760 * 1.1 can otherwise round up by an entire point.
@@ -721,6 +728,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     /// Present the current destination without applying the launcher's compact-mode reset.
     private func presentLauncher() {
+        if let frame = restingLauncherFrame {
+            restingLauncherFrame = nil
+            window.setFrame(frame, display: false)
+        }
         launcherHiddenAt = nil
         updateLauncherGeometry(animated: false)
         rememberPreviousApplication()
