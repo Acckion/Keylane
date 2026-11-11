@@ -57,7 +57,7 @@ enum NavigationLauncherModules {
         let activate: (NavigationItem) -> Void = { item in
             guard let delegate = NSApp.delegate as? Delegate else { return }
             controller.perform(item, mode: mode) { [weak delegate] message in
-                if let message { delegate?.navigationToast.show(message) }
+                if let message { delegate?.toast.show(message) }
                 else if item.application.isActive { delegate?.hideLauncher() }
             }
         }
@@ -170,7 +170,7 @@ enum NavigationLauncherModules {
                     model.error = "已复制截图。目标应用已变化，已取消粘贴。"
                     return
                 }
-                delegate.pasteIntoPreviousApplication { [weak model] message in model?.error = message }
+                delegate.pasteIntoPreviousApplication()
             } catch {
                 model.error = "无法复制截图：" + error.localizedDescription
             }

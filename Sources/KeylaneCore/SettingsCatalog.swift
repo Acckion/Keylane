@@ -21,7 +21,12 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let fileSearchInline = SettingsItem(id: "file-search-inline", page: "files", title: "在主界面搜索文件", keywords: "主搜索 启动器 直接 搜索 文件 launcher inline file search")
     public static let menuBar = SettingsItem(id: "menu-bar", page: "menu-bar", title: "菜单栏项目", keywords: "显示 隐藏 状态 图标 menu bar status item")
     public static let systemShortcuts = SettingsItem(id: "system-shortcuts", page: "shortcuts", title: "Apple 快捷指令", keywords: "别名 热键 apple shortcuts alias hotkey")
-    public static let calendarAccess = SettingsItem(id: "calendar-access", page: "calendar", title: "连接系统日历", keywords: "日程 权限 calendar events permission")
+    public static let accessibilityPermission = SettingsItem(id: "permission-accessibility", page: "permissions", title: "辅助功能权限", keywords: "权限 授权 粘贴 窗口 菜单 accessibility permission")
+    public static let inputMonitoringPermission = SettingsItem(id: "permission-input-monitoring", page: "permissions", title: "输入监控", keywords: "权限 授权 键盘 Hyperkey input monitoring permission")
+    public static let contactsPermission = SettingsItem(id: "permission-contacts", page: "permissions", title: "联系人权限", keywords: "授权 通讯录 contacts permission")
+    public static let automationPermission = SettingsItem(id: "permission-automation", page: "permissions", title: "自动化权限", keywords: "授权 Finder 快捷指令 automation permission")
+    public static let folderPermissions = SettingsItem(id: "permission-folders", page: "permissions", title: "文件与文件夹权限", keywords: "授权 搜索范围 截图 files folders permission")
+    public static let calendarAccess = SettingsItem(id: "calendar-access", page: "permissions", title: "日历权限", keywords: "日程 权限 calendar events permission")
     public static let calendarMenuBar = SettingsItem(id: "calendar-menu-bar", page: "calendar", title: "日历菜单栏摘要", keywords: "下一个 日程 日期 calendar agenda menu bar")
     public static let calendarSelection = SettingsItem(id: "calendar-selection", page: "calendar", title: "选择显示的日历", keywords: "日历 筛选 账户 calendar account filter")
     public static let clipboardCapture = SettingsItem(id: "capture", page: "clipboard", title: "记录剪贴板历史", keywords: "文字 图片 文件 保留 采集 置顶 OCR capture clipboard history")
@@ -48,7 +53,12 @@ public struct SettingsItem: Identifiable, Equatable {
         applicationFavorites,
         menuBar,
         systemShortcuts,
+        accessibilityPermission,
+        inputMonitoringPermission,
         calendarAccess,
+        contactsPermission,
+        automationPermission,
+        folderPermissions,
         calendarMenuBar,
         calendarSelection,
         clipboardCapture,

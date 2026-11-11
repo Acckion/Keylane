@@ -1,9 +1,32 @@
 import AppKit
 import SwiftUI
 
+enum ToastStyle {
+    case neutral
+    case success
+    case failure
+
+    var symbol: String? {
+        switch self {
+        case .neutral: nil
+        case .success: "checkmark.circle.fill"
+        case .failure: "exclamationmark.circle.fill"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .neutral: .secondary
+        case .success: .green
+        case .failure: .red
+        }
+    }
+}
+
 /// A short feedback message in a floating capsule.
 struct ToastBubble: View {
     let message: String
+    let style: ToastStyle
     let dismiss: () -> Void
 
     var body: some View {
@@ -17,6 +40,13 @@ struct ToastBubble: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("关闭提示")
+
+            if let symbol = style.symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(style.color)
+                    .accessibilityHidden(true)
+            }
 
             Text(message)
                 .font(.system(size: 14, weight: .medium))
@@ -46,7 +76,7 @@ final class ToastPresenter {
         return window === panel
     }
 
-    func show(_ message: String, duration: TimeInterval = 3) {
+    func show(_ message: String, style: ToastStyle = .neutral, duration: TimeInterval = 3) {
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main else { return }
         dismissal?.cancel()
 
@@ -65,7 +95,7 @@ final class ToastPresenter {
         panel.level = .floating
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .ignoresCycle]
 
-        let host = NSHostingView(rootView: ToastBubble(message: message, dismiss: { [weak self] in self?.hide() }))
+        let host = NSHostingView(rootView: ToastBubble(message: message, style: style, dismiss: { [weak self] in self?.hide() }))
         panel.contentView = host
         let size = host.fittingSize
         let area = screen.visibleFrame

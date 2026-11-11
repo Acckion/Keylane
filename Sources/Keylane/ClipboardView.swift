@@ -137,12 +137,10 @@ struct ClipboardPreferences: View {
                     Text("粘贴到上个应用").tag("paste")
                 }
                 Divider()
-                SettingsActionRow(title: "辅助功能", actionTitle: "允许…") { model.requestKeyboardAccess() }
+                SettingsActionRow(title: "辅助功能", actionTitle: "管理权限…") { model.openSettings(page: "permissions") }
                 if !controller.accessMessage.isEmpty {
                     Divider()
-                    SettingsActionRow(title: "权限状态", detail: controller.accessMessage, actionTitle: "打开系统设置") {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
-                    }
+                    Text(controller.accessMessage).font(.caption).foregroundStyle(.secondary)
                 }
             }
             SettingsGroup {

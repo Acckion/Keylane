@@ -33,6 +33,9 @@ enum BuiltinLauncherModules {
                          settingsPage(model, "menu-bar", "菜单栏", "menubar.rectangle", "选择各模块在菜单栏中显示的项目。", 70) {
                              MenuBarPreferences(registry: $0.menuBar)
                          },
+                         settingsPage(model, "permissions", "权限", "lock.shield", "查看和管理 Keylane 使用的系统权限。", 95) {
+                             PermissionsPreferences(model: $0)
+                         },
                          settingsPage(model, "advanced", "高级", "wrench.and.screwdriver", "管理本地资料与隐私设置。", 100, content: LauncherSettingsContent.advanced),
                          settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 110, content: LauncherSettingsContent.about)])
     }

@@ -119,14 +119,12 @@ enum UtilityLauncherModules {
         let controller = model.emoji
         let pageID = PageID(rawValue: "Emoji")
         let title = EmojiCatalog.label("Emoji 与符号", "Emoji & Symbols")
-        let use: (EmojiItem, Bool) -> Void = { [weak model] item, paste in
-            guard let model else { return }
-            model.error = ""
+        let use: (EmojiItem, Bool) -> Void = { item, paste in
             UtilityActions.copy(item.glyph)
             controller.recordUse(item)
             let delegate = NSApp.delegate as? Delegate
             if paste, let delegate, delegate.pasteTargetName != nil {
-                delegate.pasteIntoPreviousApplication { [weak model] message in model?.error = message }
+                delegate.pasteIntoPreviousApplication()
             } else {
                 delegate?.hideLauncher()
             }
