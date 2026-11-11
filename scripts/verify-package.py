@@ -28,6 +28,14 @@ def verify_app(app, image, version, distribution):
         source = ROOT / 'LICENSE' if name == 'LICENSE' else ROOT / 'Resources' / name
         if (app / relative).read_bytes() != source.read_bytes():
             raise SystemExit(f'Incorrect resource: {name}')
+    artwork = sorted((ROOT / 'Resources/ModuleArtwork').glob('*.png'))
+    if not artwork:
+        raise SystemExit('Missing module artwork')
+    for source in artwork:
+        relative = f'Contents/Resources/ModuleArtwork/{source.name}'
+        expected.add(relative)
+        if (app / relative).read_bytes() != source.read_bytes():
+            raise SystemExit(f'Incorrect resource: {relative}')
     contents = {str(path.relative_to(app)) for path in app.rglob('*') if path.is_file() or path.is_symlink()}
     if contents != expected:
         raise SystemExit(f'Unexpected or missing app contents: {contents ^ expected}')
