@@ -291,12 +291,16 @@ final class LauncherModuleRegistry {
 
     func candidates(for input: LauncherCommandSearch.Input) -> [Entry] {
         commands.compactMap { command in
-            guard commandEnabled(command.declaration.id), command.available() else { return nil }
+            guard input.namespace?.contains(command.declaration.id) != false,
+                  commandEnabled(command.declaration.id), command.available() else { return nil }
             let item = command.declaration
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
                          detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords)
         } + providers.flatMap { provider in
-            provider.entries(input).filter { provider.namespace.contains($0.commandID) }
+            guard input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
+            return provider.entries(input).filter {
+                provider.namespace.contains($0.commandID) && input.namespace?.contains($0.commandID) != false
+            }
         }
     }
 

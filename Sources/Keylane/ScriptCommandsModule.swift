@@ -39,7 +39,7 @@ enum ScriptCommandsModule {
     }
 
     static func results(_ model: Model) -> [Entry] {
-        model.commands.filter { $0.id.hasPrefix(ScriptCommand.namespace) }
+        model.commands(in: .prefix(ScriptCommand.namespace))
     }
 
     static func selectedIndex(_ model: Model, count: Int) -> Int {

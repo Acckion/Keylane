@@ -9,7 +9,7 @@ public struct CommandDescriptor: Identifiable, Codable, Equatable {
     public init(id: String, title: String, aliases: [String] = [], requiredPermissions: [String] = []) { self.id = id; self.title = title; self.aliases = aliases; self.requiredPermissions = requiredPermissions }
 }
 public enum SearchRanker {
-    private final class Terms: NSObject {
+    public final class Name: NSObject {
         let plain: String
         let simplified: String
         let latin: String
@@ -22,26 +22,55 @@ public enum SearchRanker {
             initials = words.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).compactMap(\.first).map(String.init).joined()
         }
     }
-    private static let cache: NSCache<NSString, Terms> = { let value = NSCache<NSString, Terms>(); value.countLimit = 4096; return value }()
-    private static func terms(_ text: String) -> Terms {
+    private static let cache: NSCache<NSString, Name> = { let value = NSCache<NSString, Name>(); value.countLimit = 4096; return value }()
+    public static func prepareName(_ text: String) -> Name {
         if let value = cache.object(forKey: text as NSString) { return value }
-        let value = Terms(text); cache.setObject(value, forKey: text as NSString); return value
+        let value = Name(text); cache.setObject(value, forKey: text as NSString); return value
     }
+    public struct Query {
+        fileprivate let plain: String
+        fileprivate let simplified: String
+        fileprivate let compact: String
+
+        public init(_ text: String) {
+            plain = SearchRanker.normalize(text)
+            simplified = plain.isEmpty ? "" : SearchRanker.prepareName(plain).simplified
+            // Spaces between pinyin syllables do not occur in a compact transliteration.
+            compact = plain.replacingOccurrences(of: " ", with: "")
+        }
+
+        public var isEmpty: Bool { plain.isEmpty }
+    }
+
     public static func score(_ title: String, query: String) -> Int? {
-        let query = normalize(query); if query.isEmpty { return 0 }
-        let value = terms(title)
-        let simplifiedQuery = terms(query).simplified
-        // Spaces in pinyin are syllable boundaries, not characters that must occur
-        // in an app's compact transliteration. Keep normal English phrase matching.
-        let compactQuery = query.replacingOccurrences(of: " ", with: "")
-        let pairs = [(value.plain, query), (value.simplified, simplifiedQuery), (value.latin, compactQuery), (value.initials, compactQuery)]
-        return pairs.compactMap { text, needle -> Int? in
-            if text == needle { return 1000 }; if text.hasPrefix(needle) { return 800 }
-            if text.contains(needle) { return 600 }
-            var remaining = text[...]; var gaps = 0
-            for char in needle { guard let index = remaining.firstIndex(of: char) else { return nil }; gaps += remaining.distance(from: remaining.startIndex, to: index); remaining = remaining[remaining.index(after: index)...] }
-            return max(1, 300 - gaps)
-        }.max()
+        let prepared = Query(query)
+        return prepared.isEmpty ? 0 : score(prepareName(title), query: prepared)
+    }
+
+    public static func score(_ name: Name, query: Query) -> Int? {
+        guard !query.isEmpty else { return 0 }
+        var best = -1
+        func match(_ text: String, _ needle: String) {
+            if text == needle { best = 1000; return }
+            if best >= 800 { return }
+            if text.hasPrefix(needle) { best = 800; return }
+            if best >= 600 { return }
+            if text.contains(needle) { best = 600; return }
+            if best >= 300 { return }
+            var remaining = text[...]
+            var gaps = 0
+            for char in needle {
+                guard let index = remaining.firstIndex(of: char) else { return }
+                gaps += remaining.distance(from: remaining.startIndex, to: index)
+                remaining = remaining[remaining.index(after: index)...]
+            }
+            best = max(best, max(1, 300 - gaps))
+        }
+        match(name.plain, query.plain)
+        match(name.simplified, query.simplified)
+        match(name.latin, query.compact)
+        match(name.initials, query.compact)
+        return best >= 0 ? best : nil
     }
     private static func normalize(_ value: String) -> String {
         value.folding(options: [.diacriticInsensitive, .caseInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))

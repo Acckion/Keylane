@@ -9,8 +9,10 @@ final class LauncherCommandSearch {
         let favorites: Set<String>
         let usage: [String: Int]
         var sensitivity: LauncherSearchRanking.Sensitivity = .low
+        var namespace: LauncherCommandNamespace?
     }
     private var cached: (input: Input, results: [Entry])?
+    private var preparedNames: [String: SearchRanker.Name] = [:]
 
     func invalidate() { cached = nil }
 
@@ -20,17 +22,26 @@ final class LauncherCommandSearch {
         let candidates = registry.candidates(for: input)
         let rank = LauncherSearchRanking(query: input.query, aliases: input.aliases,
                                          favorites: input.favorites, usage: input.usage, sensitivity: input.sensitivity)
+        // Keep the names from the last nonempty query, including catalogs larger than NSCache.
+        var currentNames: [String: SearchRanker.Name] = [:]
+        func prepare(_ name: String) -> SearchRanker.Name {
+            if let prepared = currentNames[name] { return prepared }
+            let prepared = preparedNames[name] ?? SearchRanker.prepareName(name)
+            currentNames[name] = prepared
+            return prepared
+        }
         let results = candidates.compactMap { entry -> (Entry, SearchResultRank)? in
             if let score = entry.matchScore {
                 return (entry, SearchResultRank(score: score, favorite: input.favorites.contains(entry.id),
                                                 uses: input.usage[entry.id, default: 0], title: entry.name, id: entry.id))
             }
-            return rank.match(id: entry.id, title: entry.name, names: entry.aliases, kind: entry.rankingKind)
+            return rank.match(id: entry.id, title: entry.name, names: entry.aliases, kind: entry.rankingKind, prepareName: prepare)
                 .map { (entry, $0) }
         }.sorted { $0.1.precedes($1.1) }.map(\.0)
 
         // File rows form one section, retaining their rank within the section.
         let grouped = results.filter { $0.rankingKind != .file } + results.filter { $0.rankingKind == .file }
+        if !currentNames.isEmpty { preparedNames = currentNames }
         cached = (input, grouped)
         return grouped
     }
