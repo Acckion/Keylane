@@ -7,7 +7,7 @@ struct FileSearchDetail: View {
     var body: some View {
         Group {
             if let url {
-                ResultDetailPane { height in
+                ResultDetailPane(scrollsPreview: false) { height in
                     ResultFilePreview(urls: [url]).frame(height: height)
                 } information: {
                     DetailInformationSection(rows: information(url))
