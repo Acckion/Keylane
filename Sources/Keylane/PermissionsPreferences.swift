@@ -32,41 +32,40 @@ struct PermissionsPreferences: View {
                               actionTitle: accessibilityAllowed ? "管理…" : "申请…") {
                     if !accessibilityAllowed { model.requestKeyboardAccess() }
                     openPrivacy("Accessibility")
-                }
-            }.settingsAnchor(.accessibilityPermission)
-            SettingsGroup {
+                }.settingsAnchor(.accessibilityPermission)
+                Divider()
                 permissionRow("输入监控", detail: "用于 Caps Lock Hyperkey 的键盘事件监听。",
                               status: inputMonitoringAllowed ? "已允许" : "未允许",
                               actionTitle: inputMonitoringAllowed ? "管理…" : "申请…") {
                     if !inputMonitoringAllowed { _ = CGRequestListenEventAccess() }
                     openPrivacy("ListenEvent")
-                }
-            }.settingsAnchor(.inputMonitoringPermission)
-            SettingsGroup {
+                }.settingsAnchor(.inputMonitoringPermission)
+                Divider()
                 permissionRow("日历", detail: "读取日程和菜单栏摘要。",
                               status: calendarAccess.message,
                               actionTitle: calendarAccess == .notRequested || calendarAccess == .writeOnly ? "申请…" : "管理…",
                               requesting: model.calendar.requesting) {
                     if calendarAccess == .notRequested || calendarAccess == .writeOnly { model.calendar.requestAccess() }
                     else { model.calendar.openPrivacySettings() }
-                }
+                }.settingsAnchor(.calendarAccess)
                 if !model.calendar.error.isEmpty { Text(model.calendar.error).font(.caption).foregroundStyle(.secondary) }
-            }.settingsAnchor(.calendarAccess)
-            SettingsGroup {
+                Divider()
                 permissionRow("联系人", detail: "按姓名、公司、电话或邮箱搜索联系人。",
                               status: contactsStatus,
                               actionTitle: contactsAccess == .notDetermined ? "申请…" : "管理…",
                               requesting: model.contacts.requesting) {
                     if contactsAccess == .notDetermined { model.contacts.requestAccess() }
                     else { openPrivacy("Contacts") }
-                }
+                }.settingsAnchor(.contactsPermission)
                 if !model.contacts.error.isEmpty { Text(model.contacts.error).font(.caption).foregroundStyle(.secondary) }
-            }.settingsAnchor(.contactsPermission)
-            if showsAdditionalPermissions {
-                SettingsGroup {
+                if showsAdditionalPermissions {
+                    Divider()
                     SettingsActionRow(title: "自动化", detail: "管理 Finder 和快捷指令的访问权限。",
                                       actionTitle: "打开系统设置…") { openPrivacy("Automation") }
-                }.settingsAnchor(.automationPermission)
+                        .settingsAnchor(.automationPermission)
+                }
+            }
+            if showsAdditionalPermissions {
                 SettingsGroup("文件与文件夹") {
                     SettingsActionRow(title: "文件搜索范围", actionTitle: "选择文件夹…") { model.fileSearch.addScope() }
                     Divider()
