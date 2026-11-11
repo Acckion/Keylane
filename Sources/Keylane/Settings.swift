@@ -181,10 +181,6 @@ enum LauncherSettingsContent {
         NotesSettings(model: model)
     }
 
-    @ViewBuilder static func links(_ model: Model) -> some View {
-        QuicklinkSettings(model: model)
-    }
-
     @ViewBuilder static func advanced(_ model: Model) -> some View {
         AdvancedPreferences(model: model)
     }
@@ -226,24 +222,5 @@ private struct NotesSettings: View {
         }
         .settingsAnchor(.noteExport)
         .onReceive(model.$savedNotes.map(\.count).removeDuplicates()) { count = $0 }
-    }
-}
-
-private struct QuicklinkSettings: View {
-    let model: Model
-    @State private var link = ""
-
-    var body: some View {
-        SettingsGroup("链接") {
-            SettingsRow("默认快捷链接") {
-                TextField("默认快捷链接", text: Binding(get: { link }, set: { model.link = $0 }),
-                          prompt: Text("https://example.com"))
-                    .labelsHidden()
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
-            }
-        }
-        .settingsAnchor(.quicklink)
-        .onReceive(model.$link.removeDuplicates()) { link = $0 }
     }
 }
