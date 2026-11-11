@@ -5,11 +5,17 @@ import KeylaneCore
 
 struct ApplicationPreferences: View {
     @ObservedObject var model: Model
+    @ObservedObject private var catalog: ApplicationSettingsCatalog
     @State private var filter = ""
-    @State private var catalog: [ApplicationPreferenceItem] = []
-    @State private var visibleApplications: [ApplicationPreferenceItem] = []
+    @State private var filteredApplications: [ApplicationPreferenceItem]?
+
+    init(model: Model) {
+        self.model = model
+        catalog = model.applicationSettingsCatalog
+    }
 
     var body: some View {
+        let visibleApplications = filteredApplications ?? catalog.items
         VStack(alignment: .leading, spacing: 18) {
             surface {
                 HStack {
@@ -82,31 +88,12 @@ struct ApplicationPreferences: View {
                 Button("刷新", systemImage: "arrow.clockwise") { model.discovery.refresh() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 14)
         }.font(.system(size: 15))
-            .onReceive(model.$apps.combineLatest(model.$excluded)) { apps, excluded in
-                rebuildCatalog(apps: apps, excluded: excluded)
-            }
+            .onChange(of: catalog.items) { _, _ in updateFilter(filter) }
             .onChange(of: filter) { _, value in updateFilter(value) }
     }
 
-    private func rebuildCatalog(apps: [URL], excluded: Set<String>) {
-        var paths = Set(apps.map(\.path))
-        for path in excluded where !paths.contains(path) && FileManager.default.fileExists(atPath: path) {
-            paths.insert(path)
-        }
-        let updated = paths.map { path in
-            let url = URL(fileURLWithPath: path)
-            return ApplicationPreferenceItem(id: path, url: url, title: model.appName(url), filename: url.lastPathComponent)
-        }.sorted {
-            let comparison = $0.title.localizedStandardCompare($1.title)
-            return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
-        }
-        guard updated != catalog else { return }
-        catalog = updated
-        updateFilter(filter)
-    }
-
     private func updateFilter(_ query: String) {
-        visibleApplications = query.isEmpty ? catalog : catalog.filter {
+        filteredApplications = query.isEmpty ? nil : catalog.items.filter {
             $0.title.localizedCaseInsensitiveContains(query) || $0.filename.localizedCaseInsensitiveContains(query)
         }
     }
@@ -144,6 +131,30 @@ private struct ScopeRow: View {
         }.frame(height: 35).contentShape(Rectangle()).onHover { hovering = $0 }.help(path)
     }
 }
+/// Keeps the settings list ready when switching away from and back to Applications.
+final class ApplicationSettingsCatalog: ObservableObject {
+    @Published fileprivate private(set) var items: [ApplicationPreferenceItem] = []
+    private var changes: AnyCancellable?
+
+    init(model: Model) {
+        changes = model.$apps.combineLatest(model.$excluded).sink { [weak self, weak model] apps, excluded in
+            guard let self, let model else { return }
+            var paths = Set(apps.map(\.path))
+            for path in excluded where !paths.contains(path) && FileManager.default.fileExists(atPath: path) {
+                paths.insert(path)
+            }
+            let updated = paths.map { path in
+                let url = URL(fileURLWithPath: path)
+                return ApplicationPreferenceItem(id: path, url: url, title: model.appName(url), filename: url.lastPathComponent)
+            }.sorted {
+                let comparison = $0.title.localizedStandardCompare($1.title)
+                return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
+            }
+            if items != updated { items = updated }
+        }
+    }
+}
+
 private struct ApplicationPreferenceItem: Identifiable, Equatable {
     let id: String
     let url: URL

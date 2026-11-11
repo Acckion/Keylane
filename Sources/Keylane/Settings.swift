@@ -27,14 +27,31 @@ struct SettingsView: View {
                     List(selection: $searchSelection) {
                         searchClearance
                         ForEach(matches) { item in
-                            VStack(alignment: .leading, spacing: 3) { Text(item.title); Text(pages.first { $0.id == item.page }?.title ?? "").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4).tag(item.id)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.title)
+                                Text(pages.first { $0.id == item.page }?.title ?? "")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                            .overlay { SettingsRowMouseDown { reveal(item) } }
+                            .tag(item.id)
                         }
                     }.onChange(of: searchSelection) { _, id in if let item = settingsItems.first(where: { $0.id == id }) { reveal(item) } }
                     .overlay { if matches.isEmpty { ContentUnavailableView.search(text: query) } }
                 } else {
-                List(selection: $selected) { searchClearance; ForEach(pages) { item in
-                    Label { Text(item.title).font(VisualStyle.rowText) } icon: { SettingsIcon(symbol: item.symbol) }.padding(.vertical, 5).tag(item.id)
-                } }.listStyle(.sidebar)
+                    List(selection: $selected) {
+                        searchClearance
+                        ForEach(pages) { item in
+                            Label { Text(item.title).font(VisualStyle.rowText) } icon: {
+                                SettingsIcon(symbol: item.symbol)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 5)
+                            .overlay { SettingsRowMouseDown { selected = item.id } }
+                            .tag(item.id)
+                        }
+                    }.listStyle(.sidebar)
                 }
                 }.scrollIndicators(.hidden)
                 SettingsSearchField(text: $query, floating: true, submit: { if let item = matches.first { reveal(item) } })
@@ -42,7 +59,7 @@ struct SettingsView: View {
                     .glassEffect(.regular, in: Capsule()).padding(.horizontal, 12).padding(.top, 12)
             }.navigationSplitViewColumnWidth(min: 230, ideal: 230, max: 230)
         } detail: {
-            SettingsPageContainer(title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
+            SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
                 if !model.error.isEmpty {
                     HStack {
                         Text(model.error).foregroundStyle(.red)
@@ -52,7 +69,6 @@ struct SettingsView: View {
                 }
                 page?.content()
             }
-            .id(selected)
         }.toggleStyle(SettingsSwitchStyle())
         .navigationTitle(headerScrolledAway ? (page?.title ?? "设置") : "")
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
@@ -63,7 +79,12 @@ struct SettingsView: View {
             if history[historyIndex] != page { history = Array(history.prefix(historyIndex + 1)); history.append(page); historyIndex = history.count - 1 }
             if model.settingsPage != page { model.settingsPage = page }
         }
-        .onChange(of: model.settingsPage) { _, page in selected = page; query = ""; target = nil }
+        .onChange(of: model.settingsPage) { _, page in
+            guard selected != page else { return }
+            selected = page
+            query = ""
+            target = nil
+        }
         .toolbar {
 
             ToolbarItemGroup(placement: .navigation) {
@@ -81,6 +102,37 @@ struct SettingsView: View {
     private func reveal(_ item: SettingsItem) {
         selected = item.page; target = nil; searchSelection = nil; query = ""
         DispatchQueue.main.async { target = item.id }
+    }
+}
+
+/// Handles the physical press while List still owns selection for keyboard and VoiceOver.
+private struct SettingsRowMouseDown: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> PressView { PressView() }
+
+    func updateNSView(_ view: PressView, context: Context) {
+        view.action = action
+    }
+
+    final class PressView: NSView {
+        var action: (() -> Void)?
+
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            // AppKit normally focuses the table as part of handling its own click.
+            var ancestor = superview
+            while let view = ancestor {
+                if let table = view as? NSTableView {
+                    window?.makeFirstResponder(table)
+                    break
+                }
+                ancestor = view.superview
+            }
+            action?()
+        }
     }
 }
 

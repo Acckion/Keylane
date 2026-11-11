@@ -69,6 +69,7 @@ final class Model: ObservableObject {
     @Published var loginStatus = ""
     @Published var loginEnabled = false
     let discovery = ApplicationDiscovery()
+    private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
     private var workspaceObservers: [NSObjectProtocol] = []
     @Published var apps: [URL] = []
@@ -120,6 +121,7 @@ final class Model: ObservableObject {
     }
     func startApplicationDiscovery() {
         guard workspaceObservers.isEmpty else { return }
+        _ = applicationSettingsCatalog
         reloadCatalog()
         refreshRunningApps()
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
