@@ -32,19 +32,20 @@ struct Launcher: View {
         return model.commands
     }
     var body: some View {
+        let results = model.tab == "Commands" || model.tab == "Files" ? rows : []
         ZStack {
             if let target = argumentTarget { argumentEditor(target).padding(.bottom, 52) }
             else if model.isCompact { Color.clear }
             else {
                 if model.tab == "Files" {
                     ResultDetailLayout {
-                        commandList
+                        commandList(results)
                     } detail: {
-                        FileSearchDetail(url: rows.indices.contains(selection) ? URL(fileURLWithPath: rows[selection].id) : nil)
+                        FileSearchDetail(url: results.indices.contains(selection) ? URL(fileURLWithPath: results[selection].id) : nil)
                             .padding(.top, 61).padding(.bottom, 52)
                     }
                 } else if model.tab == "Clipboard" { ClipboardHistoryView(controller:model.clipboard,query:model.query) }
-                else if model.tab == "Commands" { commandList }
+                else if model.tab == "Commands" { commandList(results) }
                 else { moduleContent.padding(.top, 61).padding(.bottom, 52) }
             }
             if !model.isCompact { VStack(spacing: 0) {
@@ -78,8 +79,15 @@ struct Launcher: View {
             Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
             Button("") { closeMenus(); model.openSettings() }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             Button("") { if model.tab == "Clipboard" { (NSApp.delegate as? Delegate)?.pasteClipboard() } }.keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
-            ForEach(0..<min(10, rows.count), id: \.self) { index in
-                Button("") { if model.tab == "Commands" || model.tab == "Files" { selection = index; model.perform(rows[index]) } }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
+            ForEach(0..<min(10, results.count), id: \.self) { index in
+                Button("") {
+                    guard model.tab == "Commands" || model.tab == "Files" else { return }
+                    let currentResults = rows
+                    guard currentResults.indices.contains(index) else { return }
+                    selection = index
+                    selectedResultID = currentResults[index].id
+                    model.perform(currentResults[index])
+                }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
@@ -110,7 +118,11 @@ struct Launcher: View {
         if model.isCompact { model.compactExpanded = true; return }
         if actions || appMenu { actionSelection = NavigationBounds.move(actionSelection, by: delta, count: filteredMenu(applicationMenu: appMenu).count) }
         else if model.tab == "Clipboard" { model.clipboard.move(delta) }
-        else if model.tab == "Commands" || model.tab == "Files" { selection = NavigationBounds.move(selection, by: delta, count: rows.count); selectedResultID = rows.indices.contains(selection) ? rows[selection].id : nil }
+        else if model.tab == "Commands" || model.tab == "Files" {
+            let results = rows
+            selection = NavigationBounds.move(selection, by: delta, count: results.count)
+            selectedResultID = results.indices.contains(selection) ? results[selection].id : nil
+        }
     }
     private func escape() {
         if submenu { submenu = false; actionQuery = ""; actionSelection = 0; focusToken += 1; return }
@@ -141,14 +153,14 @@ struct Launcher: View {
             SearchField(text: $model.query, placeholder: model.tab == "Commands" ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape).frame(height: 30)
         }.padding(.horizontal, model.tab == "Commands" ? 19 : 8).frame(height: 61)
     }
-    private var commandList: some View {
+    private func commandList(_ results: [Entry]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if rows.isEmpty {
+                    if results.isEmpty {
                         VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(model.tab == "Files" && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(model.tab == "Files" ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if model.tab == "Files" { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(.glass).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
                     }
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    ForEach(Array(results.enumerated()), id: \.element.id) { index, row in
                         if index == 0 { sectionHeader(model.tab == "Files" ? model.fileSearchStatus : (model.query.isEmpty ? "建议" : "搜索结果")) }
                         if index == 5 && model.query.isEmpty && model.tab == "Commands" { sectionHeader("其他") }
                         Button { selection = index; selectedResultID = row.id; if model.tab != "Files" { model.perform(row) } } label: { if model.tab == "Files" { fileResultRow(row, index: index) } else { resultRow(row, index: index) } }.buttonStyle(.plain).id(row.id)
@@ -280,7 +292,10 @@ struct Launcher: View {
         var keys: [String] = []
         let perform: () -> Void
     }
-    private var selectedEntry: Entry? { rows.indices.contains(selection) ? rows[selection] : nil }
+    private var selectedEntry: Entry? {
+        let results = rows
+        return results.indices.contains(selection) ? results[selection] : nil
+    }
     private func menuItems(applicationMenu: Bool) -> [MenuAction] {
         if applicationMenu {
             return [
