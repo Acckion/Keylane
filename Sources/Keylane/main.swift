@@ -278,6 +278,8 @@ final class LauncherPanel: NSPanel {
 }
 final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private(set) var previousApplication: NSRunningApplication?
+    private var pasteRequest: UUID?
+    private var keepingLauncherForPaste = false
     let toast = ToastPresenter()
 
     func rememberPreviousApplication() {
@@ -286,25 +288,82 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         previousApplication = app
         model.launcherModules?.applicationFocused(app)
     }
-    var pasteTargetName: String? {
+    var pasteTarget: NSRunningApplication? {
+        if let active = NSWorkspace.shared.frontmostApplication,
+           active.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+           !active.isTerminated { return active }
         guard let previousApplication, !previousApplication.isTerminated else { return nil }
-        return previousApplication.localizedName
+        return previousApplication
     }
-    func pasteClipboard(plainText: Bool = false) {
-        guard model.clipboard.copySelected(plainText:plainText) else { return }
-        pasteIntoPreviousApplication()
+
+    var pasteTargetName: String? { pasteTarget?.localizedName }
+
+    func pasteClipboard(format: ClipboardPasteFormat = .original, target: NSRunningApplication? = nil,
+                        keepLauncherOpen: Bool = false) {
+        guard model.clipboard.copySelected(format: format) else { return }
+        pasteIntoPreviousApplication(target: target, keepLauncherOpen: keepLauncherOpen)
     }
-    func pasteIntoPreviousApplication() {
+
+    func pasteIntoPreviousApplication(target: NSRunningApplication? = nil, keepLauncherOpen: Bool = false) {
         guard AXIsProcessTrusted() else { showPasteFailure("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
-        guard let target = previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
-        hideLauncher(); target.activate()
+        guard let target = target ?? pasteTarget, !target.isTerminated else {
+            showPasteFailure("已复制，但目标应用已退出或不可用。")
+            return
+        }
+        let keepOpen = keepLauncherOpen && window?.isVisible == true
+        if !keepOpen { hideLauncher() }
+        let request = UUID()
+        pasteRequest = request
+        keepingLauncherForPaste = keepOpen
+        let revision = NSPasteboard.general.changeCount
+        target.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier, !target.isTerminated else { self?.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。"); return }
+            guard let self, self.pasteRequest == request else { return }
+            guard self.isPasteTargetActive(target) else {
+                self.finishPaste(request, target: target)
+                self.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。")
+                return
+            }
+            guard NSPasteboard.general.changeCount == revision else {
+                self.finishPaste(request, target: target)
+                self.showPasteFailure("剪贴板已变化，已停止自动粘贴。")
+                return
+            }
             let source = CGEventSource(stateID: .combinedSessionState)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { self?.showPasteFailure("已复制，无法发送粘贴按键。"); return }
-            down.flags = .maskCommand; up.flags = .maskCommand; down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false) else {
+                self.finishPaste(request, target: target)
+                self.showPasteFailure("已复制，无法发送粘贴按键。")
+                return
+            }
+            down.flags = .maskCommand
+            up.flags = .maskCommand
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            if keepOpen {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    self?.finishPaste(request, target: target)
+                }
+            } else { self.finishPaste(request, target: target) }
         }
     }
+
+    private func isPasteTargetActive(_ target: NSRunningApplication) -> Bool {
+        !target.isTerminated && NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier
+    }
+
+    private func finishPaste(_ request: UUID, target: NSRunningApplication) {
+        guard pasteRequest == request else { return }
+        pasteRequest = nil
+        let keepOpen = keepingLauncherForPaste
+        keepingLauncherForPaste = false
+        guard keepOpen, window.isVisible, !window.isKeyWindow else { return }
+        if isPasteTargetActive(target) {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else { hideLauncher(reason: "pasteFocusChanged") }
+    }
+
     private func showPasteFailure(_ message: String) {
         guard settingsWindow?.isKeyWindow != true else { return }
         toast.show(message, style: .failure)
@@ -412,6 +471,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func windowDidResignKey(_ notification: Notification) {
         guard let resigned = notification.object as? NSWindow, resigned === window else { return }
+        guard !keepingLauncherForPaste else { return }
         hideLauncher(reason: "resignKey")
     }
     func applicationWillTerminate(_ notification: Notification) {
@@ -451,6 +511,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hideLauncher(); settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     func hideLauncher(reason: String = "command") {
+        pasteRequest = nil
+        keepingLauncherForPaste = false
         dragGuides?.cancel()
         guard window.isVisible else { return }
         resizeTimer?.invalidate()

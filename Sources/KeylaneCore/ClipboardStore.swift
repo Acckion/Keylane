@@ -257,6 +257,27 @@ public final class ClipboardStore {
         for id in ids { try remove(id:id) }
         try exec("PRAGMA wal_checkpoint(TRUNCATE)")
     }
+    public func clearRecent(since start: Date, through end: Date) throws {
+        let query = try statement(
+            "DELETE FROM clips WHERE pinned=0 AND copied BETWEEN ? AND ? RETURNING asset",
+            [.number(start.timeIntervalSince1970), .number(end.timeIntervalSince1970)]
+        )
+        var assets: [URL] = []
+        do {
+            defer { sqlite3_finalize(query) }
+            while true {
+                let status = sqlite3_step(query)
+                if status == SQLITE_DONE { break }
+                guard status == SQLITE_ROW else { throw ClipboardError.database }
+                if sqlite3_column_type(query, 0) != SQLITE_NULL, let url = assetURL(string(query, 0)) {
+                    assets.append(url)
+                }
+            }
+        }
+        for url in assets { try? FileManager.default.removeItem(at: url) }
+        try exec("PRAGMA wal_checkpoint(TRUNCATE)")
+    }
+
     public func prune(now: Date = Date()) throws {
         let cutoff = now.addingTimeInterval(-Double(limits.retentionDays)*86400).timeIntervalSince1970
         let pinned = try scalar("SELECT count(*) FROM clips WHERE pinned=1")

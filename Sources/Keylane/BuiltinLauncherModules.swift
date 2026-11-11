@@ -177,16 +177,23 @@ enum BuiltinLauncherModules {
                 else { controller.copySelected() }
             },
             shortcutSubmit: { (NSApp.delegate as? Delegate)?.pasteClipboard() },
-            primaryTitle: { [weak model] in model?.clipboard.primaryAction == "paste" ? "粘贴" : "复制" },
+            primaryTitle: { [weak model] in
+                guard model?.clipboard.primaryAction == "paste" else { return "复制" }
+                return (NSApp.delegate as? Delegate)?.pasteTargetName.map { "粘贴到\($0)" } ?? "粘贴"
+            },
             actions: { [weak model] in
                 guard let controller = model?.clipboard else { return [] }
-                return clipboardActions(controller)
+                return ClipboardResultActions.actions(controller, delegate: NSApp.delegate as? Delegate)
             },
             updates: Publishers.MergeMany([
                 ViewObservation.changes(model.clipboard.$selectedID),
                 ViewObservation.changes(model.clipboard.$items),
                 ViewObservation.changes(model.clipboard.$primaryAction),
-                ViewObservation.changes(model.clipboard.$kind)
+                ViewObservation.changes(model.clipboard.$kind),
+                ViewObservation.changes(model.clipboard.$loadingDetail),
+                ViewObservation.changes(model.clipboard.$searching),
+                ViewObservation.changes(model.clipboard.$total),
+                ViewObservation.changes(model.clipboard.$migrationBackupCount)
             ]).eraseToAnyPublisher(),
             typeFilterWidth: 138,
             typeFilter: { [weak model] open in
@@ -210,22 +217,6 @@ enum BuiltinLauncherModules {
             .init(start: { [weak model] in model?.clipboard.startMonitoring() },
                   stop: { [weak model] in model?.clipboard.stopMonitoring() })
         ])
-    }
-
-    private static func clipboardActions(_ controller: ClipboardController) -> [LauncherAction] {
-        guard let item = controller.items.first(where: { $0.id == controller.selectedID }) else { return [] }
-        var actions = [
-            LauncherAction(id: "copy-clip", title: "复制", icon: "doc.on.doc", keys: ["↩"], perform: { controller.copySelected() }),
-            LauncherAction(id: "copy-plain-clip", title: "复制为纯文本", icon: "text.alignleft", perform: { controller.copySelected(plainText: true) }),
-            LauncherAction(id: "paste-plain-clip", title: "粘贴为纯文本", icon: "text.insert", perform: { (NSApp.delegate as? Delegate)?.pasteClipboard(plainText: true) }),
-            LauncherAction(id: "paste-clip", title: "粘贴到上个应用", icon: "doc.on.clipboard", keys: ["⌘", "↩"], perform: { (NSApp.delegate as? Delegate)?.pasteClipboard() }),
-            LauncherAction(id: "pin-clip", title: item.pinned ? "取消置顶" : "置顶", icon: "pin", perform: { controller.pinSelected() })
-        ]
-        if item.kind == .image {
-            actions.append(.init(id: "ocr-clip", title: "识别图片文字", icon: "text.viewfinder", perform: { controller.recognizeSelected() }))
-        }
-        actions.append(.init(id: "delete-clip", title: "删除记录", icon: "trash", perform: { controller.removeSelected() }))
-        return actions
     }
 
     private static func notes(_ model: Model) -> LauncherModule {

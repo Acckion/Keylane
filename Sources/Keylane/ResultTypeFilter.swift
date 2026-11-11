@@ -120,6 +120,7 @@ struct LauncherMenuRow<Trailing: View>: View {
     let symbol: String
     let selected: Bool
     var style: Style = .action
+    var image: NSImage?
     var enabled = true
     var destructive = false
     let activate: () -> Void
@@ -130,8 +131,15 @@ struct LauncherMenuRow<Trailing: View>: View {
     var body: some View {
         Button(action: activate) {
             HStack(spacing: style == .action ? VisualStyle.actionSpacing : 11) {
-                Image(systemName: symbol).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome)
-                    .frame(width: style == .action ? VisualStyle.actionIconWidth : 20, height: 20)
+                Group {
+                    if let image {
+                        Image(nsImage: image).resizable().interpolation(.high).scaledToFit()
+                    } else {
+                        Image(systemName: symbol).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome)
+                    }
+                }
+                .frame(width: style == .action ? VisualStyle.actionIconWidth : 20, height: 20)
+                .accessibilityHidden(true)
                 Text(title).font(VisualStyle.rowText)
                 Spacer()
                 trailing()

@@ -546,8 +546,8 @@ struct Launcher: View {
                                 if index > 0, items[index - 1].group != item.group {
                                     Divider().padding(.horizontal, 16).frame(height: 9)
                                 }
-                                LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
-                                                enabled: item.enabled, destructive: item.destructive,
+                                LauncherMenuRow(title: item.title, symbol: item.icon, selected: item.enabled && index == actionSelection,
+                                                image: item.image, enabled: item.enabled, destructive: item.destructive,
                                                 activate: { activate(item) }, highlight: { actionSelection = index }) {
                                     HStack(spacing: 3) {
                                         ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) }
@@ -582,7 +582,10 @@ struct Launcher: View {
         let target: Menu = application ? .application : .actions
         let open = menu != target
         closeMenus()
-        if open { menu = target }
+        if open {
+            menu = target
+            actionSelection = menuItems(applicationMenu: application).firstIndex(where: \.enabled) ?? 0
+        }
     }
 
     private func closeMenus() {
