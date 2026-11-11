@@ -4,13 +4,17 @@ on:
   pull_request:
     branches: [dev, main]
   push:
-    branches: [dev, main, "feat/**", "fix/**", "docs/**", "chore/**"]
+    branches: [dev, main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Do not cancel or replace queued main runs: every release commit must be built.
+# Cancel stale PR runs only. Each dev/main push retains its own package run.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   checks:
     name: Checks
@@ -47,6 +51,20 @@ jobs:
           python3 -m compileall -q scripts
           for script in scripts/*.sh; do bash -n "$script"; done
           python3 -m unittest discover -s Tests/ReleaseTests -p 'test_*.py'
+      - name: Determine whether to validate the installer
+        id: installer
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request && "$GITHUB_BASE_REF" == dev ]]; then
+            changed="$(git diff --name-only "$PR_BASE_SHA" HEAD -- \
+              .github/workflows scripts Resources Package.swift Package.resolved .swiftpm LICENSE version.json)"
+            if [[ -z "$changed" ]]; then
+              echo 'required=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo 'required=true' >> "$GITHUB_OUTPUT"
       - name: Core tests
         run: swift test --scratch-path .build-current --disable-sandbox
       - name: Configure distribution signing
@@ -60,6 +78,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.KEYLANE_NOTARY_APP_PASSWORD }}
         run: bash scripts/import-release-certificate.sh
       - name: Build drag-to-Applications DMG
+        if: steps.installer.outputs.required == 'true'
         env:
           KEYLANE_ALLOW_ADHOC: '1'
         run: bash scripts/package.sh
@@ -71,6 +90,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.KEYLANE_NOTARY_APP_PASSWORD }}
         run: bash scripts/notarize-dmg.sh dist/Keylane-*.dmg
       - name: Verify DMG and generate checksum
+        if: steps.installer.outputs.required == 'true'
         id: package
         run: |
           if [[ "${KEYLANE_DISTRIBUTION:-}" == 1 ]]; then
@@ -86,6 +106,7 @@ jobs:
             shasum -a 256 "$image" > "$image.sha256"
           done
       - name: Upload verified package
+        if: steps.installer.outputs.required == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Keylane-${{ steps.version.outputs.version }}-${{ github.sha }}
@@ -94,6 +115,7 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
 
   release:
     name: Publish release
