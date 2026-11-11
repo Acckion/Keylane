@@ -20,6 +20,8 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let fileSearchScope = SettingsItem(id: "file-search-scope", page: "files", title: "文件搜索范围", keywords: "文件 Spotlight 索引 file search index scope")
     public static let fileSearchInline = SettingsItem(id: "file-search-inline", page: "files", title: "在主界面搜索文件", keywords: "主搜索 启动器 直接 搜索 文件 launcher inline file search")
     public static let menuBar = SettingsItem(id: "menu-bar", page: "menu-bar", title: "菜单栏项目", keywords: "显示 隐藏 状态 图标 menu bar status item")
+    public static let scriptFolders = SettingsItem(id: "script-folders", page: "script-commands", title: "脚本搜索范围", keywords: "script folder shell python node 脚本 文件夹")
+    public static let scriptCommands = SettingsItem(id: "script-commands", page: "script-commands", title: "脚本命令", keywords: "script commands alias hotkey 脚本 别名 热键")
     public static let systemShortcuts = SettingsItem(id: "system-shortcuts", page: "shortcuts", title: "Apple 快捷指令", keywords: "别名 热键 apple shortcuts alias hotkey")
     public static let accessibilityPermission = SettingsItem(id: "permission-accessibility", page: "permissions", title: "辅助功能权限", keywords: "权限 授权 粘贴 窗口 菜单 accessibility permission")
     public static let inputMonitoringPermission = SettingsItem(id: "permission-input-monitoring", page: "permissions", title: "输入监控", keywords: "权限 授权 键盘 Hyperkey input monitoring permission")
@@ -53,6 +55,8 @@ public struct SettingsItem: Identifiable, Equatable {
         applicationFavorites,
         menuBar,
         systemShortcuts,
+        scriptFolders,
+        scriptCommands,
         accessibilityPermission,
         inputMonitoringPermission,
         calendarAccess,
