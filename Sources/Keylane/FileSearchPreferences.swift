@@ -45,7 +45,7 @@ struct FileSearchPreferences: View {
             }.settingsAnchor(.fileSearchScope)
             SettingsCard {
                 HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:4) { Text("忽略规则").font(.system(size:14,weight:.medium)); SettingsDescription("默认跳过忽略文件指定的项目。"); Button("了解更多…") { showsIgnoreInfo.toggle() }.buttonStyle(.plain).foregroundStyle(.blue) }
+                    VStack(alignment:.leading,spacing:4) { SettingsTitle("忽略规则", role: .section); SettingsDescription("默认跳过忽略文件指定的项目。"); Button("了解更多…") { showsIgnoreInfo.toggle() }.buttonStyle(.plain).foregroundStyle(.blue) }
                     Spacer(); TextField("添加规则…",text:$pattern).textFieldStyle(.roundedBorder).frame(maxWidth:240).onSubmit { addPattern() }
                     Button { addPattern() } label: { Image(systemName:"plus") }.buttonStyle(.borderless).disabled(pattern.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                 }

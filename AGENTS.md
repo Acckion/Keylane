@@ -26,7 +26,7 @@
 
 - 新增设置页从模块登记，常规分组、命令行和目录操作复用现有设置组件。设置宿主统一导航、工具栏和滚动。接入示例见 `docs/LAUNCHER-ARCHITECTURE.md` 中的「应用程序」和「截图」。
 - 有名称、别名、快捷键和启用状态的列表统一用 `CommandSettingsList`，页面只提供条目和动作。搜索目录和忽略规则统一用 `SettingsCompactList`，目录行复用 `SettingsFolderRow`。修改这些共用组件时，在安装版对照应用程序、快捷指令和截图的行高、控件对齐和分隔线。
-- 设置项和卡片中的附加说明使用 `SettingsDescription`，由组件统一字号、颜色与多行换行。
+- 设置行优先通过 `SettingsRow(title, detail:)` 提供文字，自定义布局使用 `SettingsTitle` 和 `SettingsDescription`，由组件统一标题层级、说明字号和换行。
 - 可搜索的分组复用登记用的 `SettingsItem` 作为定位锚点。修改页面结构时复验搜索跳转、键盘操作和深浅色样式。涉及长列表时，用同一批数据对照切页与滚动。
 
 ## 版本规范
