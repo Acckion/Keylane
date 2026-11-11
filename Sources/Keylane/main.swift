@@ -26,8 +26,9 @@ final class Model: ObservableObject {
     @Published var windowMode = UserDefaults.standard.string(forKey: "windowMode") ?? "expanded" { didSet { UserDefaults.standard.set(windowMode, forKey: "windowMode") } }
     @Published var compactFavorites = (UserDefaults.standard.object(forKey: "compactFavorites") as? Bool) ?? true { didSet { UserDefaults.standard.set(compactFavorites, forKey: "compactFavorites") } }
     @Published var compactExpanded = false
+    let footerFeedback = LauncherFooterFeedbackPresenter()
     var interfaceScale: CGFloat { interfaceSize == "small" ? 0.9 : interfaceSize == "large" ? 1.1 : 1 }
-    var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded }
+    var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded && footerFeedback.current == nil }
     @Published var presentedLauncherHeight: CGFloat = 470
     var launcherHeight: CGFloat { isCompact ? (compactFavorites && !favorites.isEmpty ? 109 : 61) : 470 }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
@@ -451,6 +452,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.$windowMode.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$pageID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$query.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.footerFeedback.$current.map { $0 != nil }.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$compactFavorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$favorites.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
@@ -578,6 +580,14 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
     }
+    func showLauncherFeedback(_ message: String, style: ToastStyle) {
+        if let window, window.isVisible {
+            model.footerFeedback.show(message, style: style, in: window)
+        } else {
+            toast.show(message, style: style)
+        }
+    }
+
     func hideLauncher(reason: String = "command") {
         dragGuides?.cancel()
         guard window.isVisible else { return }
@@ -587,6 +597,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if model.placement == "remember" { window.saveFrame(usingName: "KeylaneLauncher") }
         launcherHiddenAt = ProcessInfo.processInfo.systemUptime
         window.orderOut(nil)
+        model.footerFeedback.clear()
         NotificationCenter.default.post(name: .launcherHidden, object: nil)
         windowDiagnostics.record("hidden:" + reason, launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
     }

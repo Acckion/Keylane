@@ -62,6 +62,7 @@ struct Launcher: View {
             ViewObservation.changes(model.$interfaceSize),
             ViewObservation.changes(model.$windowMode),
             ViewObservation.changes(model.$compactExpanded),
+            ViewObservation.changes(model.footerFeedback.$current),
             ViewObservation.changes(model.$presentedLauncherHeight),
             ViewObservation.changes(model.$compactFavorites),
             ViewObservation.changes(model.$favorites),
@@ -506,7 +507,9 @@ struct Launcher: View {
         let secondary = page?.badge != nil
         let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
         let badgeSymbol = page?.badge?.symbol ?? ""
-        let applicationWidth: CGFloat = secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36
+        let feedback = application ? model.footerFeedback.current : nil
+        let applicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.message) }
+            ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty
         let actionWidth: CGFloat = page?.actionWidth ?? (showsActions ? 196 : 126)
         let primaryEnabled = application || primaryActionEnabled
@@ -519,6 +522,12 @@ struct Launcher: View {
                 menuPanel(applicationMenu: application, items: items)
                     .frame(width: 345, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
+            } else if let feedback {
+                NativeHoverButton(title: "\(feedback.message) · 打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
+                    LauncherFooterFeedbackLabel(feedback: feedback)
+                }
+                .frame(width: applicationWidth, height: 36)
+                .transition(.opacity)
             } else if application && secondary {
                 NativeHoverButton(title: "打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
                     SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol)
@@ -555,7 +564,8 @@ struct Launcher: View {
         // The container remains in the same hierarchy. Only its size changes; its bottom
         // corner stays fixed. No matched-position or automatic glass transition can slide it.
         .frame(width: open ? 345 : (application ? applicationWidth : actionWidth), height: open ? menuHeight : 36, alignment: alignment)
-        .modifier(LauncherMenuSurface(open: open))
+        .modifier(LauncherMenuSurface(open: open, tint: open ? nil : feedback?.style.color.opacity(0.16)))
+        .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
     private typealias MenuAction = LauncherAction
     private var selectedEntry: Entry? {
