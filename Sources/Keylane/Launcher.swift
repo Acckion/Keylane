@@ -70,6 +70,8 @@ struct Launcher: View {
             ViewObservation.changes(model.$excluded),
             ViewObservation.changes(model.$runningPaths),
             ViewObservation.changes(model.$navigation),
+            ViewObservation.changes(model.$rootSearchSensitivity),
+            ViewObservation.changes(model.$rootFileContentSearch),
             ViewObservation.changes(model.$fileResults),
             ViewObservation.changes(model.$fileSearchStatus),
             ViewObservation.changes(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] })
@@ -173,6 +175,15 @@ struct Launcher: View {
                 else { refreshActiveQuery() }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherResetSearch)) { _ in
+            mainSearchQuery = ""
+            mainSearchSelection = 0
+            mainSearchExpanded = false
+            pendingMainSelection = nil
+            selectedResultID = nil
+            selection = 0
+            argumentTarget = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
             launcherVisible = false
             modifiers.stop()
@@ -192,6 +203,17 @@ struct Launcher: View {
         }
         .onChange(of: model.fileSearch.options.searchFromLauncher) { _, _ in
             if model.pageID == .root { if launcherVisible && model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] } }
+        }
+        .onChange(of: model.rootFileContentSearch) { _, _ in
+            if launcherVisible && model.pageID == .root && model.searchesFilesHere {
+                model.searchFiles()
+            }
+        }
+        .onChange(of: model.rootSearchSensitivity) { _, _ in
+            if model.pageID == .root {
+                selection = 0
+                selectedResultID = nil
+            }
         }
         .onChange(of: model.fileResults) { previous, current in
             guard showsFileResults || model.pageID == .root else { return }

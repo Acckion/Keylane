@@ -30,6 +30,9 @@ enum BuiltinLauncherModules {
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general")],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
+                         settingsPage(model, "launcher", "启动器", "magnifyingglass", "管理启动器的显示与搜索行为。", 5) {
+                             LauncherBehaviorPreferences(model: $0)
+                         },
                          settingsPage(model, "menu-bar", "菜单栏", "menubar.rectangle", "选择各模块在菜单栏中显示的项目。", 70) {
                              MenuBarPreferences(registry: $0.menuBar)
                          },

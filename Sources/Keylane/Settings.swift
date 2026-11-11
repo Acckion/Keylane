@@ -154,7 +154,6 @@ enum LauncherSettingsContent {
     @ViewBuilder static func general(_ model: Model) -> some View {
         LoginPreferences(model: model)
         LauncherAppearancePreferences(model: model)
-        WindowPositionPreferences(model: model)
         KeyboardPreferences(model: model).settingsAnchor(.keyboard)
     }
 
@@ -205,22 +204,6 @@ private struct LoginPreferences: View {
         SettingsGroup("启动") {
             Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
         }.settingsAnchor(.login)
-    }
-}
-
-private struct WindowPositionPreferences: View {
-    let model: Model
-    @State private var placement = "activeScreen"
-
-    var body: some View {
-        SettingsGroup("位置") {
-            SettingsPicker("窗口位置", selection: Binding(get: { placement }, set: { model.placement = $0 })) {
-                Text("当前屏幕居中").tag("activeScreen")
-                Text("记住上次位置").tag("remember")
-            }
-        }
-        .settingsAnchor(.windowPosition)
-        .onReceive(model.$placement.removeDuplicates()) { placement = $0 }
     }
 }
 

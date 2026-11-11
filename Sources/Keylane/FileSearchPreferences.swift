@@ -48,8 +48,6 @@ struct FileSearchPreferences: View {
             }
             ignoreRules
             SettingsGroup {
-                option("在主界面搜索文件","在启动器中直接输入文件名，同时搜索应用、命令和文件；文件搜索页面仍然可用。",\.searchFromLauncher).settingsAnchor(.fileSearchInline)
-                Divider()
                 option("内容搜索","搜索文字和 PDF 的内容，不仅仅是文件名。仅在开启后读取正文并保存本地文本索引；不会下载 iCloud 占位文件。",\.contentSearch)
                 Divider(); option("包含隐藏文件","搜索名称以句点开头的文件；忽略规则仍然生效。",\.includeHidden)
                 Divider(); option("使用忽略文件","遵循 .gitignore、.ignore 和 .rayignore。",\.useIgnoreFiles)

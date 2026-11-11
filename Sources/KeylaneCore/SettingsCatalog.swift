@@ -13,12 +13,18 @@ public struct SettingsItem: Identifiable, Equatable {
 
     public static let appearance = SettingsItem(id: "appearance", page: "general", title: "外观", keywords: "主题 深色 浅色 系统 界面 大小 appearance theme dark light size")
     public static let windowMode = SettingsItem(id: "window-mode", page: "general", title: "窗口模式与紧凑收藏", keywords: "紧凑 展开 收藏 compact expanded favorites")
-    public static let windowPosition = SettingsItem(id: "position", page: "general", title: "窗口位置", keywords: "屏幕 显示器 居中 记住 position screen")
+    public static let windowPosition = SettingsItem(id: "position", page: "launcher", title: "窗口位置", keywords: "屏幕 显示器 居中 记住 position screen")
+    public static let launcherReturnDelay = SettingsItem(id: "launcher-return", page: "launcher", title: "返回主搜索", keywords: "返回 重置 查询 隐藏 超时 launcher root reset")
+    public static let rootSearchSensitivity = SettingsItem(id: "root-search-sensitivity", page: "launcher", title: "主搜索灵敏度", keywords: "启动器 模糊 匹配 排序 search sensitivity")
+    public static let launcherSearchHistory = SettingsItem(id: "launcher-search-history", page: "launcher", title: "搜索历史", keywords: "启动器 近期查询 清除 重置 search history")
+    public static let rootFileContentSearch = SettingsItem(id: "root-file-content", page: "launcher", title: "在主搜索中匹配文件内容", keywords: "启动器 正文 PDF file content")
+    public static let rootContactsSearch = SettingsItem(id: "root-contacts", page: "launcher", title: "在主搜索中显示联系人", keywords: "启动器 通讯录 contacts")
+    public static let launcherFallbackCommands = SettingsItem(id: "launcher-fallbacks", page: "launcher", title: "备选命令", keywords: "启动器 回退 后备 搜索 fallback commands")
     public static let keyboard = SettingsItem(id: "keyboard", page: "general", title: "Keylane 热键与键盘", keywords: "唤起 导航 修饰键 hyperkey hotkey keyboard")
     public static let login = SettingsItem(id: "login", page: "general", title: "登录时启动", keywords: "开机 自启动 startup login")
     public static let glass = SettingsItem(id: "glass", page: "general", title: "液态玻璃与辅助功能", keywords: "透明度 动画 对比度 glass transparency motion accessibility")
     public static let fileSearchScope = SettingsItem(id: "file-search-scope", page: "files", title: "文件搜索范围", keywords: "文件 Spotlight 索引 file search index scope")
-    public static let fileSearchInline = SettingsItem(id: "file-search-inline", page: "files", title: "在主界面搜索文件", keywords: "主搜索 启动器 直接 搜索 文件 launcher inline file search")
+    public static let fileSearchInline = SettingsItem(id: "file-search-inline", page: "launcher", title: "在主界面搜索文件", keywords: "主搜索 启动器 直接 搜索 文件 launcher inline file search")
     public static let menuBar = SettingsItem(id: "menu-bar", page: "menu-bar", title: "菜单栏项目", keywords: "显示 隐藏 状态 图标 menu bar status item")
     public static let systemShortcuts = SettingsItem(id: "system-shortcuts", page: "shortcuts", title: "Apple 快捷指令", keywords: "别名 热键 apple shortcuts alias hotkey")
     public static let accessibilityPermission = SettingsItem(id: "permission-accessibility", page: "permissions", title: "辅助功能权限", keywords: "权限 授权 粘贴 窗口 菜单 accessibility permission")
@@ -41,6 +47,12 @@ public struct SettingsItem: Identifiable, Equatable {
         appearance,
         windowMode,
         windowPosition,
+        launcherReturnDelay,
+        rootSearchSensitivity,
+        launcherSearchHistory,
+        rootFileContentSearch,
+        rootContactsSearch,
+        launcherFallbackCommands,
         keyboard,
         login,
         glass,

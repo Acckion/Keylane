@@ -13,6 +13,15 @@ final class Model: ObservableObject {
     @Published private(set) var applicationSettingsPath: String?
     @Published var appearance = UserDefaults.standard.string(forKey: "appearance") ?? "system" { didSet { UserDefaults.standard.set(appearance, forKey: "appearance") } }
     @Published var placement = UserDefaults.standard.string(forKey: "placement") ?? "activeScreen" { didSet { UserDefaults.standard.set(placement, forKey: "placement") } }
+    @Published var launcherReturnDelay = LauncherReturnDelay(rawValue: UserDefaults.standard.object(forKey: "launcherReturnDelay") as? Int ?? 90) ?? .after90Seconds {
+        didSet { UserDefaults.standard.set(launcherReturnDelay.rawValue, forKey: "launcherReturnDelay") }
+    }
+    @Published var rootSearchSensitivity = LauncherSearchRanking.Sensitivity(rawValue: UserDefaults.standard.string(forKey: "rootSearchSensitivity") ?? "") ?? .low {
+        didSet { UserDefaults.standard.set(rootSearchSensitivity.rawValue, forKey: "rootSearchSensitivity") }
+    }
+    @Published var rootFileContentSearch = UserDefaults.standard.object(forKey: "rootFileContentSearch") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(rootFileContentSearch, forKey: "rootFileContentSearch") }
+    }
     @Published var interfaceSize = UserDefaults.standard.string(forKey: "interfaceSize") ?? "medium" { didSet { UserDefaults.standard.set(interfaceSize, forKey: "interfaceSize") } }
     @Published var windowMode = UserDefaults.standard.string(forKey: "windowMode") ?? "expanded" { didSet { UserDefaults.standard.set(windowMode, forKey: "windowMode") } }
     @Published var compactFavorites = (UserDefaults.standard.object(forKey: "compactFavorites") as? Bool) ?? true { didSet { UserDefaults.standard.set(compactFavorites, forKey: "compactFavorites") } }
@@ -231,7 +240,9 @@ final class Model: ObservableObject {
     func discoveredIdentity(for url: URL) -> ApplicationIdentity? { appIdentities[url.path] }
     func appName(_ url: URL) -> String { appIdentities[url.path]?.displayName ?? url.deletingPathExtension().lastPathComponent }
     var searchesFilesHere: Bool { fileSearch.options.enabled && (activeLauncherPage?.contentPlacement == .fileResults || (pageID == .root && fileSearch.options.searchFromLauncher)) }
-    func searchFiles() { fileSearch.search(query) }
+    func searchFiles() {
+        fileSearch.search(query, includeContents: pageID != .root || rootFileContentSearch)
+    }
     func chooseFileSearchFolder(returnToLauncher: Bool = false) {
         fileSearch.addScope()
         if returnToLauncher { (NSApp.delegate as? Delegate)?.revealLauncher() }
@@ -251,7 +262,8 @@ final class Model: ObservableObject {
     var commands: [Entry] {
         guard let launcherModules else { return [] }
         let input = LauncherCommandSearch.Input(query: query, page: pageID,
-                                                aliases: aliases, favorites: favorites, usage: usage)
+                                                aliases: aliases, favorites: favorites, usage: usage,
+                                                sensitivity: rootSearchSensitivity)
         return commandSearch.results(for: input, registry: launcherModules)
     }
 }
@@ -323,6 +335,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var dragGuides: LauncherDragGuides?
     private var resizeTimer: Timer?
     private var resizeTarget: NSRect?
+    private var launcherHiddenAt: TimeInterval?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
@@ -457,6 +470,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         resizeTimer = nil
         resizeTarget = nil
         if model.placement == "remember" { window.saveFrame(usingName: "KeylaneLauncher") }
+        launcherHiddenAt = ProcessInfo.processInfo.systemUptime
         window.orderOut(nil)
         NotificationCenter.default.post(name: .launcherHidden, object: nil)
         windowDiagnostics.record("hidden:" + reason, launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
@@ -519,20 +533,29 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func show() {
         if window.isVisible && window.isKeyWindow { hideLauncher(); return }
-        if model.windowMode == "compact" {
-            model.pageID = .root; model.query = ""; model.compactExpanded = false
+        if !window.isVisible, let hiddenAt = launcherHiddenAt,
+           model.launcherReturnDelay.shouldReturn(hiddenFor: ProcessInfo.processInfo.systemUptime - hiddenAt) {
+            NotificationCenter.default.post(name: .launcherResetSearch, object: nil)
+            model.pageID = .root
+            model.query = ""
+            model.compactExpanded = false
         }
         presentLauncher()
     }
     /// Present the current destination without applying the launcher's compact-mode reset.
     private func presentLauncher() {
+        launcherHiddenAt = nil
         updateLauncherGeometry(animated: false)
         rememberPreviousApplication()
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+        let screens = NSScreen.screens
+        let pointerScreen = screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+        let restored = model.placement == "remember" && window.setFrameUsingName("KeylaneLauncher")
+        let restoredScreen = restored ? window.screen : nil
+        let screen = model.placement == "primaryDisplay" ? screens.first : restoredScreen ?? pointerScreen
         if let area = screen?.visibleFrame {
-            if model.placement == "remember" { _ = window.setFrameUsingName("KeylaneLauncher") }; updateLauncherGeometry(animated: false)
+            updateLauncherGeometry(animated: false)
             var frame = window.frame
-            if model.placement != "remember" || !frame.intersects(area) {
+            if restoredScreen == nil || !frame.intersects(area) {
                 frame.origin = LauncherPositioning.target(size: frame.size, in: area).origin
             }
             frame.origin.x = max(area.minX, min(frame.origin.x, area.maxX - frame.width))

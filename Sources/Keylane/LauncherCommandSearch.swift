@@ -8,6 +8,7 @@ final class LauncherCommandSearch {
         let aliases: [String: String]
         let favorites: Set<String>
         let usage: [String: Int]
+        var sensitivity: LauncherSearchRanking.Sensitivity = .low
     }
     private var cached: (input: Input, results: [Entry])?
 
@@ -18,7 +19,7 @@ final class LauncherCommandSearch {
 
         let candidates = registry.candidates(for: input)
         let rank = LauncherSearchRanking(query: input.query, aliases: input.aliases,
-                                         favorites: input.favorites, usage: input.usage)
+                                         favorites: input.favorites, usage: input.usage, sensitivity: input.sensitivity)
         let results = candidates.compactMap { entry -> (Entry, SearchResultRank)? in
             if let score = entry.matchScore {
                 return (entry, SearchResultRank(score: score, favorite: input.favorites.contains(entry.id),
