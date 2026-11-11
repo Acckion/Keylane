@@ -114,13 +114,15 @@ struct ApplicationPreferences: View {
 }
 
 extension ApplicationPreferenceItem {
+    var commandID: String { "app:" + id }
+
     func commandSettingsEntry(model: Model) -> CommandSettingsEntry<SettingsApplicationIcon> {
         let revision = ApplicationCommandRevision(
-            title: self.title, alias: model.aliases[self.id] ?? "", shortcut: model.bindings["app:" + self.id],
+            title: self.title, alias: model.aliases[self.id] ?? "", shortcut: model.bindings[commandID],
             enabled: !model.excluded.contains(self.id), favorite: model.favorites.contains(self.id)
         )
         return CommandSettingsEntry(
-            title: self.title, model: model, commandID: .init(rawValue: "app:" + self.id), aliasKey: self.id,
+            title: self.title, model: model, commandID: .init(rawValue: commandID), aliasKey: self.id,
             isEnabled: Binding(get: { !model.excluded.contains(self.id) }, set: { value in
                 model.setApplicationEnabled(value, path: self.id)
             }),

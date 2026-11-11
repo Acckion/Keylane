@@ -26,6 +26,8 @@
 
 文件搜索、剪贴板、日历和快捷指令也沿用这些组件与定位方式。文件索引和剪贴板历史的统计分组独立订阅各自的状态。快捷指令长列表使用惰性行布局，保留原有行高和快捷键编辑行为。通用、菜单栏、便笺、快捷链接、高级和关于页复用同一套搜索锚点。
 
+快捷键总览使用模块登记的命令目录。动态条目通过 `dynamicCommandSettings` 提供数据、需要观察的字段和行工厂，并与模块专属设置页共用 `CommandSettingsEntry`。应用路径别名与命令热键 ID 分开传入。浏览总览时只读取展开分组的动态目录，搜索时按名称、别名或快捷键查找。静态与动态命令共用一组列标题和列表分隔线。
+
 设置窗口和入口遵循 Apple 的 [Settings](https://developer.apple.com/design/human-interface-guidelines/settings) 指南。Keylane 使用 AppKit 管理独立设置窗口，SwiftUI 构建内容。标签对齐和分组参考 [SwiftUI Form](https://developer.apple.com/documentation/swiftui/form) 与 [WWDC22 的 macOS 表单演示](https://developer.apple.com/videos/play/wwdc2022/10052/?time=997)。布尔偏好使用开关，命令列表使用复选框，带预览的选项提供明确的选中边框。验收设置页时检查深浅外观、键盘焦点、长标题和设置搜索跳转。
 
 ## 启动器界面组件

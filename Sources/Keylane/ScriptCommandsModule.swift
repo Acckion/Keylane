@@ -256,7 +256,12 @@ enum ScriptCommandsModule {
             ViewObservation.changes(controller.$fallbackID),
             ViewObservation.changes(controller.$disabled)
         ], launcherShown: { controller.refresh() },
-        presentationUpdates: [ViewObservation.changes(controller.$inlineOutput)])
+        presentationUpdates: [ViewObservation.changes(controller.$inlineOutput)],
+        dynamicCommandSettings: .init(
+            model: model, items: { controller.entries }, title: \.title, commandID: \.id,
+            updates: { [ViewObservation.changes(controller.$entries), ViewObservation.changes(controller.$disabled)] },
+            entry: { $0.commandSettingsEntry(model: $1, controller: controller) }
+        ))
     }
 }
 
@@ -381,18 +386,24 @@ private struct ScriptCommandsPreferences: View {
             if controller.scanning { ProgressView().controlSize(.small) }
             if !controller.entries.isEmpty {
                 CommandSettingsList(items: controller.entries, id: \.id) { script in
-                    let id = CommandID(rawValue: script.id)
-                    return CommandSettingsEntry(
-                        title: script.title, model: model, commandID: id,
-                        isEnabled: controller.commandEnabledBinding(script.id),
-                        perform: { model.runCommand(id, origin: .menu) },
-                        icon: { Image(systemName: "terminal").foregroundStyle(.secondary) }
-                    )
+                    script.commandSettingsEntry(model: model, controller: controller)
                 }
                 .disabled(!controller.enabled)
             }
         }
         .onAppear { controller.refresh(force: true) }
+    }
+}
+
+private extension ScriptCommand {
+    func commandSettingsEntry(model: Model, controller: ScriptCommandsController) -> CommandSettingsEntry<some View> {
+        let commandID = CommandID(rawValue: id)
+        return CommandSettingsEntry(
+            title: title, model: model, commandID: commandID,
+            isEnabled: controller.commandEnabledBinding(id),
+            perform: { model.runCommand(commandID, origin: .menu) },
+            icon: { Image(systemName: "terminal").foregroundStyle(.secondary) }
+        )
     }
 }
 

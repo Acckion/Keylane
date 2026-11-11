@@ -1,9 +1,37 @@
+import Combine
 import SwiftUI
 import KeylaneCore
 
+extension DynamicCommandSettings {
+    init<Item: Identifiable, Icon: View>(
+        model: Model,
+        items: @escaping () -> [Item],
+        title: KeyPath<Item, String>,
+        commandID: KeyPath<Item, String>,
+        aliasKey: KeyPath<Item, String>? = nil,
+        updates: @escaping () -> [AnyPublisher<Void, Never>],
+        entry: @escaping (Item, Model) -> CommandSettingsEntry<Icon>
+    ) {
+        self.init(updates: updates, matchingList: { [weak model] matches in
+            let allItems = items()
+            let visible = matches.map { predicate in
+                allItems.filter { item in
+                    predicate(item[keyPath: title], item[keyPath: commandID], aliasKey.map { item[keyPath: $0] })
+                }
+            } ?? allItems
+            guard !visible.isEmpty else { return nil }
+            return { showsColumns in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(CommandSettingsList(items: visible, id: \.id, showsColumns: showsColumns, showsBackground: false) {
+                    entry($0, model)
+                })
+            }
+        })
+    }
+}
+
 struct ShortcutSettingsPreferences: View {
     let model: Model
-    @ObservedObject private var applications: ApplicationSettingsCatalog
     @StateObject private var observation: ViewObservation
     @AppStorage("hiddenShortcutSettingsGroups") private var hiddenGroupIDs = ""
     @State private var expanded: Set<String> = ["keylane.system-tools"]
@@ -14,39 +42,28 @@ struct ShortcutSettingsPreferences: View {
 
     init(model: Model) {
         self.model = model
-        _applications = ObservedObject(wrappedValue: model.applicationSettingsCatalog)
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
-            ViewObservation.changes(model.$disabledCommands),
-            ViewObservation.changes(model.$excluded),
-            ViewObservation.changes(model.$favorites),
-            ViewObservation.changes(model.clipboard.$historyCommandEnabled),
-            ViewObservation.changes(model.screenshots.$disabledCommands),
-            ViewObservation.changes(model.scripts.$disabled),
-            ViewObservation.changes(model.fileAI.$commandsEnabled),
-            ViewObservation.changes(model.systemShortcuts.$entries),
-            ViewObservation.changes(model.systemShortcuts.$disabledIDs),
-            ViewObservation.changes(model.systemShortcuts.$icons)
-        ]))
+            ViewObservation.changes(model.$disabledCommands)
+        ] + (model.launcherModules?.shortcutSettingsUpdates() ?? [])))
     }
 
-    private let applicationsID = "keylane.applications"
     private var groups: [ShortcutCommandGroup] { model.launcherModules?.shortcutCommandGroups ?? [] }
-    private var categories: [(id: String, title: String)] {
-        [(applicationsID, "应用程序")] + groups.map { ($0.id.rawValue, $0.title) }
-    }
     private var hiddenGroups: Set<String> { Set(hiddenGroupIDs.split(separator: "\n").map(String.init)) }
     private var search: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
-        let appRows = isVisible(applicationsID) && (!search.isEmpty || expanded.contains(applicationsID))
-            ? applications.items.filter { matches(title: $0.title, aliasKey: $0.id, commandID: "app:" + $0.id) }
-            : []
-        let visibleGroups = groups.filter { group in
-            isVisible(group.id.rawValue) && (search.isEmpty || groupMatches(group))
+        let searchTerm = search
+        let hidden = hiddenGroups
+        let visibleGroups = groups.compactMap { group -> VisibleGroup? in
+            let id = group.id.rawValue
+            guard !hidden.contains(id), category == nil || category == id else { return nil }
+            let isExpanded = searchTerm.isEmpty ? expanded.contains(id) : !collapsedWhileSearching.contains(id)
+            let content = isExpanded || !searchTerm.isEmpty ? matchingContent(for: group, query: searchTerm) : nil
+            guard searchTerm.isEmpty || content != nil else { return nil }
+            return VisibleGroup(group: group, isExpanded: isExpanded, content: content)
         }
-        let showsApplications = isVisible(applicationsID) && (search.isEmpty || !appRows.isEmpty)
         SettingsPageSections {
             HStack(spacing: 8) {
                 if showsSearch {
@@ -61,56 +78,36 @@ struct ShortcutSettingsPreferences: View {
                 Menu {
                     Picker("分类", selection: $category) {
                         Text("全部分类").tag(nil as String?)
-                        ForEach(categories.filter { !hiddenGroups.contains($0.id) }, id: \.id) { item in
-                            Text(item.title).tag(Optional(item.id))
+                        ForEach(groups.filter { !hidden.contains($0.id.rawValue) }, id: \.id) { item in
+                            Text(item.title).tag(Optional(item.id.rawValue))
                         }
                     }
-                    if !hiddenGroups.isEmpty {
+                    if !hidden.isEmpty {
                         Divider()
                         Menu("恢复隐藏分组") {
-                            ForEach(categories.filter { hiddenGroups.contains($0.id) }, id: \.id) { item in
-                                Button(item.title) { setHidden(item.id, false) }
+                            ForEach(groups.filter { hidden.contains($0.id.rawValue) }, id: \.id) { item in
+                                Button(item.title) { setHidden(item.id.rawValue, false) }
                             }
                             Button("恢复全部") { hiddenGroupIDs = "" }
                         }
                     }
                 } label: {
-                    Label(categories.first { $0.id == category }?.title ?? "全部分类", systemImage: "list.bullet")
+                    Label(groups.first { $0.id.rawValue == category }?.title ?? "全部分类", systemImage: "list.bullet")
                 }.fixedSize()
             }
 
-            if showsApplications {
-                groupCard(id: applicationsID, title: "应用程序", symbol: "square.grid.2x2.fill") {
-                    CommandSettingsList(items: appRows, id: \.id, emptyMessage: "没有匹配的应用", showsColumns: true, showsBackground: false) {
-                        $0.commandSettingsEntry(model: model)
-                    }
-                }
+            ForEach(visibleGroups, id: \.group.id) { visible in
+                groupCard(visible)
             }
-            ForEach(visibleGroups, id: \.id) { group in
-                groupCard(id: group.id.rawValue, title: group.title, symbol: group.symbol) {
-                    commandList(group)
-                    if group.id.rawValue == "keylane.shortcuts", !model.systemShortcuts.entries.isEmpty {
-                        CommandSettingsList(items: model.systemShortcuts.entries.filter {
-                            matches(title: $0.name, aliasKey: $0.commandID, commandID: $0.commandID)
-                        }, id: \.id, emptyMessage: "没有匹配的快捷指令", showsColumns: true, showsBackground: false) {
-                            $0.commandSettingsEntry(model: model, controller: model.systemShortcuts)
-                        }
-                    }
-                }
-            }
-            if categories.allSatisfy({ hiddenGroups.contains($0.id) }) {
+            if groups.allSatisfy({ hidden.contains($0.id.rawValue) }) {
                 ContentUnavailableView("所有分组已隐藏", systemImage: "keyboard")
-            } else if !search.isEmpty, visibleGroups.isEmpty, !showsApplications {
-                ContentUnavailableView.search(text: search)
+            } else if !searchTerm.isEmpty, visibleGroups.isEmpty {
+                ContentUnavailableView.search(text: searchTerm)
             }
         }
         .settingsAnchor(.hotkeys)
         .onChange(of: category) { _, id in if let id { expanded.insert(id) } }
         .onChange(of: search) { _, _ in collapsedWhileSearching.removeAll() }
-    }
-
-    private func isVisible(_ id: String) -> Bool {
-        !hiddenGroups.contains(id) && (category == nil || category == id)
     }
 
     private func setHidden(_ id: String, _ hidden: Bool) {
@@ -122,49 +119,56 @@ struct ShortcutSettingsPreferences: View {
         hiddenGroupIDs = ids.sorted().joined(separator: "\n")
     }
 
-    private func matches(title: String, aliasKey: String, commandID: String) -> Bool {
-        search.isEmpty || [title, model.aliases[aliasKey] ?? "", model.bindings[commandID]?.keycaps.joined() ?? ""]
-            .contains { $0.localizedCaseInsensitiveContains(search) }
+    private struct VisibleGroup {
+        let group: ShortcutCommandGroup
+        let isExpanded: Bool
+        let content: GroupContent?
     }
 
-    private func groupMatches(_ group: ShortcutCommandGroup) -> Bool {
-        if group.commands.contains(where: {
-            matches(title: $0.declaration.title, aliasKey: $0.declaration.id.rawValue, commandID: $0.declaration.id.rawValue)
-        }) { return true }
-        switch group.id.rawValue {
-        case "keylane.host":
-            return matches(title: "Keylane 热键", aliasKey: "launcher", commandID: "launcher")
-        case "keylane.shortcuts":
-            return model.systemShortcuts.entries.contains {
-                matches(title: $0.name, aliasKey: $0.commandID, commandID: $0.commandID)
-            }
-        default:
-            return false
-        }
+    private struct GroupContent {
+        let binding: ShortcutSettingsBinding?
+        let commands: [LauncherModule.Command]
+        let dynamicList: ((Bool) -> AnyView)?
     }
 
-    @ViewBuilder private func commandList(_ group: ShortcutCommandGroup) -> some View {
-        let items = group.commands.filter {
-            matches(title: $0.declaration.title, aliasKey: $0.declaration.id.rawValue, commandID: $0.declaration.id.rawValue)
+    private func matchingContent(for group: ShortcutCommandGroup, query: String) -> GroupContent? {
+        func matches(_ title: String, _ commandID: String, _ aliasKey: String?) -> Bool {
+            query.isEmpty || title.localizedCaseInsensitiveContains(query)
+                || model.aliases[aliasKey ?? commandID]?.localizedCaseInsensitiveContains(query) == true
+                || model.bindings[commandID]?.keycaps.joined().localizedCaseInsensitiveContains(query) == true
         }
-        if group.id.rawValue == "keylane.host", matches(title: "Keylane 热键", aliasKey: "launcher", commandID: "launcher") {
+        let binding = group.binding.flatMap { matches($0.title, $0.id, nil) ? $0 : nil }
+        let commands = group.commands.filter {
+            matches($0.declaration.title, $0.declaration.id.rawValue, nil)
+        }
+        let dynamicList = group.dynamicCommands?.matchingList(query.isEmpty ? nil : matches)
+        guard binding != nil || !commands.isEmpty || dynamicList != nil else { return nil }
+        return GroupContent(binding: binding, commands: commands, dynamicList: dynamicList)
+    }
+
+    @ViewBuilder private func commandList(_ content: GroupContent) -> some View {
+        if let binding = content.binding {
             SettingsGroup {
-                SettingsShortcutBindingRow(title: "Keylane 热键", shortcut: model.bindings["launcher"], symbol: "command") {
-                    model.setShortcut("launcher", value: $0)
+                SettingsShortcutBindingRow(title: binding.title, shortcut: model.bindings[binding.id], symbol: binding.symbol) {
+                    model.setShortcut(binding.id, value: $0)
                 }
             }
         }
-        if !items.isEmpty || group.id.rawValue != "keylane.shortcuts" {
-            CommandSettingsList(items: items, id: \.declaration.id, emptyMessage: "没有匹配的命令",
-                                showsColumns: true, showsBackground: false) { command in
-                command.commandSettingsEntry(model: model)
+        if !content.commands.isEmpty {
+            CommandSettingsList(items: content.commands, id: \.declaration.id, showsColumns: true, showsBackground: false) {
+                $0.commandSettingsEntry(model: model)
             }
+        }
+        if let dynamicList = content.dynamicList {
+            if !content.commands.isEmpty { CommandSettingsListDivider() }
+            dynamicList(content.commands.isEmpty)
         }
     }
 
-    private func groupCard<Content: View>(id: String, title: String, symbol: String,
-                                          @ViewBuilder content: @escaping () -> Content) -> some View {
-        let isExpanded = search.isEmpty ? expanded.contains(id) : !collapsedWhileSearching.contains(id)
+    private func groupCard(_ visible: VisibleGroup) -> some View {
+        let group = visible.group
+        let id = group.id.rawValue
+        let isExpanded = visible.isExpanded
         return SettingsCard(layout: .flush) {
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
@@ -177,17 +181,20 @@ struct ShortcutSettingsPreferences: View {
                         }
                     } label: {
                         HStack(spacing: 8) {
-                            SettingsIcon(symbol: symbol, size: 18)
-                            SettingsTitle(title)
+                            SettingsIcon(symbol: group.symbol, size: 18)
+                            SettingsTitle(group.title)
                             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                                 .font(.caption.weight(.semibold))
                             Spacer(minLength: 0)
                         }.contentShape(Rectangle())
                     }.buttonStyle(.plain)
                         .accessibilityValue(isExpanded ? "已展开" : "已折叠")
-                    SettingsIconButton("隐藏\(title)分组", symbol: "minus", compact: true) { setHidden(id, true) }
+                    SettingsIconButton("隐藏\(group.title)分组", symbol: "minus", compact: true) { setHidden(id, true) }
                 }.padding(.horizontal, 14).frame(minHeight: SettingsRowsLayout.rowHeight)
-                if isExpanded { content() }
+                if isExpanded {
+                    if let content = visible.content { commandList(content) }
+                    else { CommandSettingsEmptyState(message: "暂无命令") }
+                }
             }
         }
     }

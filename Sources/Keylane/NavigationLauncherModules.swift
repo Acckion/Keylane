@@ -153,7 +153,7 @@ enum NavigationLauncherModules {
                               pages: [screenshotsPage(id, model: model)], settings: [settings], searchUpdates: [
             library.$enabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             library.$disabledCommands.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
-        ])
+        ], shortcutSettingsUpdates: [ViewObservation.changes(library.$disabledCommands)])
     }
 
     private static func pasteLatestScreenshot(_ model: Model) {

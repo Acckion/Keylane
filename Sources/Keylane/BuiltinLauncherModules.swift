@@ -7,7 +7,7 @@ import KeylaneCore
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        let modules = [host(model), applications(model), files(model), clipboard(model), notes(model),
+        let modules = [applications(model), host(model), files(model), clipboard(model), notes(model),
                        links(model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model),
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
@@ -71,7 +71,8 @@ enum BuiltinLauncherModules {
                              PermissionsPreferences(model: $0)
                          },
                          settingsPage(model, "advanced", "高级", "wrench.and.screwdriver", "管理窗口、导出和连接设置。", 100, content: LauncherSettingsContent.advanced),
-                         settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 110, content: LauncherSettingsContent.about)])
+                         settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 110, content: LauncherSettingsContent.about)],
+              shortcutSettingsBinding: .init(id: "launcher", title: "Keylane 热键", symbol: "command"))
     }
 
     private static func applications(_ model: Model) -> LauncherModule {
@@ -108,7 +109,18 @@ enum BuiltinLauncherModules {
                      ), content: LauncherSettingsContent.applications)],
                      services: [.init(start: { [weak model] in model?.startApplicationDiscovery() },
                                       stop: { [weak model] in model?.stopApplicationDiscovery() })],
-                     searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)])
+                     searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)],
+                     dynamicCommandSettings: .init(
+                         model: model, items: { [weak model] in model?.applicationSettingsCatalog.items ?? [] },
+                         title: \.title, commandID: \.commandID, aliasKey: \.id,
+                         updates: { [weak model] in
+                             guard let model else { return [] }
+                             return [ViewObservation.changes(model.applicationSettingsCatalog.$items),
+                                     ViewObservation.changes(model.$excluded),
+                                     ViewObservation.changes(model.$favorites)]
+                         },
+                         entry: { $0.commandSettingsEntry(model: $1) }
+                     ))
     }
 
     static func fileEntry(_ file: SpotlightFile) -> Entry {
@@ -161,7 +173,8 @@ enum BuiltinLauncherModules {
                      ), content: LauncherSettingsContent.files)],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
-                           updates(model.fileAI.$commandsEnabled)])
+                           updates(model.fileAI.$commandsEnabled)],
+           shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
 
     private static func fileActions(_ entry: Entry, model: Model) -> [LauncherAction] {
@@ -247,7 +260,8 @@ enum BuiltinLauncherModules {
         ], services: [
             .init(start: { [weak model] in model?.clipboard.startMonitoring() },
                   stop: { [weak model] in model?.clipboard.stopMonitoring() })
-        ], searchUpdates: [updates(controller.$historyCommandEnabled)])
+        ], searchUpdates: [updates(controller.$historyCommandEnabled)],
+        shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
     }
 
     private static func clipboardActions(_ controller: ClipboardController) -> [LauncherAction] {

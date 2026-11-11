@@ -102,13 +102,10 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
                     Color.clear.frame(width: 14, height: 1)
                 }.font(.caption).foregroundStyle(.secondary)
                     .padding(.horizontal, 14).padding(.vertical, 6)
-                Divider().opacity(0.4).padding(.horizontal, 14)
+                CommandSettingsListDivider()
             }
             if items.isEmpty {
-                Text(emptyMessage)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(24)
+                CommandSettingsEmptyState(message: emptyMessage)
             }
             ForEach(items, id: id) { item in
                 let row = CommandSettingsListRow(entry: entry(item), showsDivider: item[keyPath: id] != lastID)
@@ -116,6 +113,23 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
                 else { row }
             }
         }
+    }
+}
+
+struct CommandSettingsListDivider: View {
+    var body: some View {
+        Divider().opacity(0.4).padding(.horizontal, 14)
+    }
+}
+
+struct CommandSettingsEmptyState: View {
+    let message: String
+
+    var body: some View {
+        Text(message)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(24)
     }
 }
 
@@ -136,7 +150,7 @@ private struct CommandSettingsListRow<Icon: View>: View, Equatable {
                 .contextMenu {
                     ForEach(entry.menu) { action in Button(action.title, action: action.perform) }
                 }
-            if showsDivider { Divider().opacity(0.4).padding(.horizontal, 14) }
+            if showsDivider { CommandSettingsListDivider() }
         }
     }
 }
