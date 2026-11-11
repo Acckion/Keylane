@@ -363,6 +363,7 @@ struct SettingsListEmptyState: View {
 
 /// Shared search scope geometry. Pages supply the folder actions and any permission feedback.
 struct SettingsSearchScopeCard<Footer: View>: View {
+    var title = "搜索范围"
     let paths: [String]
     let detail: String
     let anchor: SettingsItem
@@ -372,7 +373,7 @@ struct SettingsSearchScopeCard<Footer: View>: View {
     @ViewBuilder let footer: () -> Footer
 
     var body: some View {
-        SettingsListCard(title: "搜索范围", detail: detail, anchor: anchor) {
+        SettingsListCard(title: title, detail: detail, anchor: anchor) {
             SettingsIconButton("添加搜索文件夹", symbol: "plus", action: add)
         } content: {
             if paths.isEmpty {

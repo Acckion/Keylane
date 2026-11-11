@@ -41,6 +41,7 @@ final class Model: ObservableObject {
     let clipboard = ClipboardController(startTimer: false, presentationActive: false)
     let screenshots = ScreenshotLibrary()
     let systemShortcuts = SystemShortcutsController()
+    let scripts = ScriptCommandsController()
     let contacts = ContactsController()
     let dictionary = DictionaryController()
     let emoji = EmojiSearchController()
