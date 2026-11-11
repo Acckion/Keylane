@@ -15,7 +15,13 @@ private final class ClipboardPreviewRequest: @unchecked Sendable {
 /// Pasteboard reads and published state belong to the main thread. SQLite belongs
 /// exclusively to worker; OCR never blocks that queue or resurrects deleted rows.
 final class ClipboardController: ObservableObject {
-    @Published var captureEnabled: Bool { didSet { preferences.set(captureEnabled, forKey: "clipboardPersistentCapture"); lastChange = board.changeCount } }
+    @Published var captureEnabled: Bool {
+        didSet {
+            preferences.set(captureEnabled, forKey: "clipboardPersistentCapture")
+            lastChange = board.changeCount
+            updateCaptureTimer()
+        }
+    }
     @Published var primaryAction: String { didSet { preferences.set(primaryAction,forKey:"clipboardPrimaryAction") } }
     @Published var automaticOCR: Bool { didSet { preferences.set(automaticOCR, forKey: "clipboardAutomaticOCR") } }
     @Published var retentionDays: Int { didSet { preferences.set(retentionDays, forKey: "clipboardRetentionDays"); updateLimits() } }
@@ -39,7 +45,18 @@ final class ClipboardController: ObservableObject {
     private let previewWorker = DispatchQueue(label: "org.keylane.clipboard.preview", qos: .userInitiated)
     private let ocrWorker = DispatchQueue(label: "org.keylane.clipboard.ocr", qos: .utility)
     private var store: ClipboardStore?
+    private let listThumbnailCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 200; cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
+
+    private var monitoringRequested = false
     private var timer: Timer?
+    private var pollTicks = 0
+    private var capturedChanges = 0
+    private var captureOutcome = "starting"
+    private let diagnosticsEnabled = ProcessInfo.processInfo.environment["KEYLANE_CLIPBOARD_DIAGNOSTICS"] == "1"
     private var lastChange: Int
     private var query = ""
     private var generation = 0
@@ -67,18 +84,31 @@ final class ClipboardController: ObservableObject {
             catch { self.report(error) }
         }
         if startTimer { startMonitoring() }
+        recordMonitorHealth()
     }
 
     func startMonitoring() {
+        monitoringRequested = true
+        updateCaptureTimer()
+    }
+
+    func stopMonitoring() {
+        monitoringRequested = false
+        updateCaptureTimer()
+    }
+
+    private func updateCaptureTimer() {
+        guard monitoringRequested && captureEnabled else {
+            timer?.invalidate()
+            timer = nil
+            recordMonitorHealth()
+            return
+        }
         guard timer == nil else { return }
         let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.poll() }
         self.timer = timer
         RunLoop.main.add(timer, forMode: .common)
-    }
-
-    func stopMonitoring() {
-        timer?.invalidate()
-        timer = nil
+        recordMonitorHealth()
     }
     deinit { timer?.invalidate(); detailRequest?.cancel(); pendingReload?.cancel() }
     private func report(_ error: Error) { DispatchQueue.main.async { self.status = error.localizedDescription } }
@@ -111,7 +141,7 @@ final class ClipboardController: ObservableObject {
         let task = DispatchWorkItem { [weak self] in
             guard let self, let store = self.store else { return }
             do {
-                let records = includeRecords ? try store.list(query: value, kind: filter, pinnedOnly: pins) : []; let count = try store.count(); let backups = try store.migrationBackups().count
+                let records = includeRecords ? try store.list(query: value, kind: filter, pinnedOnly: pins) : []; let count = try store.count(); let backups = (try? store.migrationBackups().count) ?? self.migrationBackupCount
                 DispatchQueue.main.async {
                     guard ticket == self.generation else { return }
                     if self.total != count { self.total = count }
@@ -189,23 +219,75 @@ final class ClipboardController: ObservableObject {
             }
         }
     }
+    /// Decode only a tiny, bounded image for visible rows. Do not load full snapshots
+    /// unless the separately stored image is missing; keep this off the main thread.
+    func loadListThumbnail(for item: ClipItem, completion: @escaping (NSImage?) -> Void) {
+        guard item.kind != .text else { completion(nil); return }
+        let finish: (NSImage?) -> Void = { image in DispatchQueue.main.async { completion(image) } }
+        worker.async { [weak self] in
+            guard let self, let store = self.store else { finish(nil); return }
+            let key = (item.id + (item.kind == .files ? ":" + String(item.copiedAt.timeIntervalSince1970) : "")) as NSString
+            if let image = self.listThumbnailCache.object(forKey: key) { finish(image); return }
+            var scope: URL?
+            defer { scope?.stopAccessingSecurityScopedResource() }
+            var source: CGImageSource?
+            if item.kind == .files {
+                guard let detail = try? store.detail(id: item.id), detail.files.count == 1, let file = detail.files.first else { finish(nil); return }
+                var url = URL(fileURLWithPath: file.path)
+                if let bookmark = file.bookmark {
+                    var stale = false
+                    if let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale) { url = resolved }
+                }
+                guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true else { finish(nil); return }
+                if url.startAccessingSecurityScopedResource() { scope = url }
+                source = CGImageSourceCreateWithURL(url as CFURL, nil)
+            } else {
+                source = item.assetName.flatMap(store.assetURL).flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }
+                if source == nil, let detail = try? store.detail(id: item.id),
+                   let bytes = detail.snapshot?.items.flatMap(\.representations).first(where: { ClipboardCapture.imageFormats.map(\.0).contains($0.type) })?.data {
+                    source = CGImageSourceCreateWithData(bytes as CFData, nil)
+                }
+            }
+            guard let source, let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 64,
+                kCGImageSourceCreateThumbnailWithTransform: true
+            ] as CFDictionary) else { finish(nil); return }
+            let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+            self.listThumbnailCache.setObject(image, forKey: key, cost: cg.bytesPerRow * cg.height)
+            finish(image)
+        }
+    }
     func move(_ delta: Int) {
         let current = items.firstIndex { $0.id == selectedID } ?? 0
         let index = NavigationBounds.move(current, by: delta, count: items.count)
         if items.indices.contains(index) { select(items[index].id) }
     }
+    /// Opt-in local health report contains counts and states only, never pasteboard contents.
+    private func recordMonitorHealth() {
+        guard diagnosticsEnabled else { return }
+        let report: [String:Any] = ["pollTicks":pollTicks,"capturedChanges":capturedChanges,"outcome":captureOutcome,"enabled":captureEnabled,"accessBehavior":board.accessBehavior.rawValue,"observedChangeCount":board.changeCount,"processedChangeCount":lastChange,"timerActive":timer?.isValid ?? false,"queryActive":!query.isEmpty,"pinnedOnly":pinnedOnly,"kind":kind]
+        let destination = FileManager.default.urls(for:.applicationSupportDirectory,in:.userDomainMask)[0].appendingPathComponent("Keylane/Diagnostics/clipboard-health.json")
+        worker.async {
+            var report = report; report["storageReady"] = self.store != nil
+            try? FileManager.default.createDirectory(at:destination.deletingLastPathComponent(),withIntermediateDirectories:true)
+            if let data = try? JSONSerialization.data(withJSONObject:report,options:[.sortedKeys]) { try? data.write(to:destination,options:.atomic) }
+        }
+    }
     func poll() {
+        pollTicks += 1
+        defer { if pollTicks % 4 == 0 { recordMonitorHealth() } }
         if Date().timeIntervalSince(lastMaintenance) > 3600 { lastMaintenance = Date(); mutate { try $0.prune() } }
         guard captureEnabled, board.changeCount != lastChange else { return }
         let observation = board.changeCount
         if board.name == NSPasteboard.general.name, board.accessBehavior == .alwaysDeny {
-            accessMessage = "macOS已拒绝剪贴板读取。请在系统设置中允许Keylane访问剪贴板。"; lastChange = observation; return
+            captureOutcome = "access-denied"; accessMessage = "macOS已拒绝剪贴板读取。请在系统设置中允许Keylane访问剪贴板。"; lastChange = observation; return
         }
-        guard let pasteboardItems = board.pasteboardItems else { accessMessage = "无法读取剪贴板，请检查系统授权。"; lastChange = observation; return }
+        guard let pasteboardItems = board.pasteboardItems else { captureOutcome = "read-unavailable"; accessMessage = "无法读取剪贴板，请检查系统授权。"; lastChange = observation; return }
         let types = pasteboardItems.flatMap { $0.types.map(\.rawValue) }
         let front = NSWorkspace.shared.frontmostApplication
         let source = board.string(forType:.init("org.nspasteboard.source"))
-        guard !ClipboardPolicy.shouldSkip(types:types,source:source,frontmost:front?.bundleIdentifier,excluded:excludedApps) else { lastChange = observation; return }
+        guard !ClipboardPolicy.shouldSkip(types:types,source:source,frontmost:front?.bundleIdentifier,excluded:excludedApps) else { captureOutcome = "excluded"; lastChange = observation; return }
         guard pasteboardItems.count <= 128 else { lastChange = observation; status = ClipboardError.oversized.localizedDescription; return }
         var items: [ClipSnapshotItem] = []; var size = 0
         for item in pasteboardItems {
@@ -225,7 +307,8 @@ final class ClipboardController: ObservableObject {
         }
         guard board.changeCount == observation else { return }
         lastChange = observation; accessMessage = ""
-        guard !items.isEmpty else { status = "此内容没有可保存的文字、图片或文件格式。"; return }
+        guard !items.isEmpty else { captureOutcome = "unsupported"; status = "此内容没有可保存的文字、图片或文件格式。"; return }
+        captureOutcome = "saving"
         let name = source.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier:$0) }.map { FileManager.default.displayName(atPath:$0.path) } ?? front?.localizedName ?? "未知来源"
         let bundle = source ?? front?.bundleIdentifier ?? ""; let ocr = automaticOCR
         let snapshotItems = items; let files = references
@@ -234,8 +317,8 @@ final class ClipboardController: ObservableObject {
             do {
                 let (content,snapshot) = try ClipboardCapture.decode(snapshotItems,fileReferences:files)
                 let id = try store.capture(content,snapshot:snapshot,source:name,bundle:bundle)
-                DispatchQueue.main.async { self.status = ""; self.reload(); if ocr && content.kind == .image { self.recognize(id) } }
-            } catch { self.report(error) }
+                DispatchQueue.main.async { self.capturedChanges += 1; self.captureOutcome = "captured"; self.status = ""; self.reload(); if ocr && content.kind == .image { self.recognize(id) } }
+            } catch { DispatchQueue.main.async { self.captureOutcome = "save-failed" }; self.report(error) }
         }
     }
     private func mutate(_ action: @escaping (ClipboardStore) throws -> Void) {
@@ -295,7 +378,8 @@ final class ClipboardController: ObservableObject {
         board.clearContents()
         guard board.writeObjects(objects) else { status = "无法写入剪贴板，请重试。"; return false }
         if detail.snapshot == nil && !plainText { board.setString("1",forType:.init("org.keylane.clipboard.replay")) }; lastChange = board.changeCount
-        status = "已复制"; return true
+        status = ""
+        return true
     }
     func recognizeSelected() { if let id = selectedID { recognize(id) } }
     private func recognize(_ id: String) {

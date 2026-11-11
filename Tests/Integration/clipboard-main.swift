@@ -45,6 +45,25 @@ board.clearContents(); board.setData(png, forType: .png); controller.poll()
 wait("image capture") { controller.total == 3 }
 let image = controller.items.first { $0.kind == .image }!; controller.select(image.id)
 wait("thumbnail") { controller.thumbnail != nil }
+var listImage: NSImage?
+controller.loadListThumbnail(for:image) { listImage = $0 }
+wait("small list thumbnail") { listImage != nil }
+let smallCG = listImage!.cgImage(forProposedRect:nil,context:nil,hints:nil)!
+precondition(max(smallCG.width,smallCG.height) <= 64)
+var cachedImage: NSImage?
+controller.loadListThumbnail(for:image) { cachedImage = $0 }
+wait("cached list thumbnail") { cachedImage != nil }
+precondition(listImage === cachedImage)
+// A fresh controller must recover from the saved representations if the owned cache is lost.
+let imageAsset = (try! ClipboardStore(directory:root).detail(id:image.id))!.assetURL!
+let movedAsset = imageAsset.appendingPathExtension("fixture-backup")
+try FileManager.default.moveItem(at:imageAsset,to:movedAsset)
+let fallbackController = ClipboardController(directory:root,board:board,preferences:prefs,startTimer:false)
+var fallbackImage: NSImage?
+fallbackController.loadListThumbnail(for:image) { fallbackImage = $0 }
+wait("list thumbnail snapshot fallback") { fallbackImage != nil }
+try FileManager.default.moveItem(at:movedAsset,to:imageAsset)
+
 controller.recognizeSelected()
 wait("Vision OCR") { controller.detail?.ocrText.contains("KEYLANE") == true }
 controller.search("OCR 123"); wait("OCR search") { controller.items.count == 1 && controller.items.first?.id == image.id }
@@ -115,4 +134,39 @@ wait("inert HTML projection") { controller.total == 3 }
 controller.search("猫&狗"); wait("HTML text search") { controller.items.count == 1 && controller.detail?.snapshot?.plainText == "猫&狗" }
 precondition(controller.copySelected(plainText:true)); precondition(board.string(forType:.string) == "猫&狗")
 controller.clear(includePinned:true); wait("cleanup final") { controller.total == 0 }
-print("PASS named pasteboard: rich RTF/HTML exact roundtrip, plain copy, mixed items, inert HTML, stable detail, default-off, text, dedupe, stable pin, replay exclusion, sensitive exclusion, native PNG roundtrip, Vision OCR/search, file roundtrip, original retained, reopen, clear policies")
+// Automatic monitor regression: no explicit poll calls, including while the app is inactive.
+let automaticSuite = suite + ".automatic"
+let automaticPrefs = UserDefaults(suiteName:automaticSuite)!
+automaticPrefs.set(true,forKey:"clipboardPersistentCapture")
+let automaticBoard = NSPasteboard(name:.init(automaticSuite))
+let automatic = ClipboardController(directory:root.appendingPathComponent("automatic"),board:automaticBoard,preferences:automaticPrefs)
+defer { automaticBoard.releaseGlobally(); automaticPrefs.removePersistentDomain(forName:automaticSuite) }
+automaticBoard.clearContents(); automaticBoard.setString("Automatic monitor 中文",forType:.string)
+wait("automatic timer capture") { automatic.total == 1 && automatic.detail?.text == "Automatic monitor 中文" }
+automaticBoard.clearContents(); automaticBoard.setString("Second automatic copy",forType:.string)
+wait("second automatic timer capture") { automatic.total == 2 }
+automaticBoard.clearContents(); automaticBoard.setData(png,forType:.png)
+wait("automatic timer image capture") { automatic.total == 3 && automatic.items.contains { $0.kind == .image } }
+automatic.kind = "text"
+wait("header text filter") { automatic.items.count == 2 && automatic.items.allSatisfy { $0.kind == .text } }
+automatic.kind = "image"
+wait("header image filter") { automatic.items.count == 1 && automatic.detail?.item.kind == .image }
+automaticBoard.clearContents(); automaticBoard.writeObjects([file as NSURL])
+wait("automatic file capture while image filter active") { automatic.total == 4 }
+automatic.kind = "files"
+wait("header files filter") { automatic.items.count == 1 && automatic.detail?.item.kind == .files }
+automatic.kind = "all"
+wait("header all filter") { automatic.items.count == 4 }
+let copiedImageFile = root.appendingPathComponent("thumbnail-file.png")
+try png.write(to:copiedImageFile)
+automaticBoard.clearContents(); automaticBoard.writeObjects([copiedImageFile as NSURL])
+wait("automatic copied image file") { automatic.total == 5 }
+let fileImageItem = automatic.items.first { $0.kind == .files && $0.preview.contains("thumbnail-file.png") }!
+var fileThumbnail: NSImage?
+automatic.loadListThumbnail(for:fileImageItem) { fileThumbnail = $0 }
+wait("copied image file list thumbnail") { fileThumbnail != nil }
+precondition(FileManager.default.fileExists(atPath:copiedImageFile.path))
+
+
+
+print("PASS named pasteboard: automatic timer text/image capture, rich RTF/HTML exact roundtrip, plain copy, mixed items, inert HTML, stable detail, default-off, text, dedupe, stable pin, replay exclusion, sensitive exclusion, native PNG roundtrip, Vision OCR/search, file roundtrip, original retained, reopen, clear policies")

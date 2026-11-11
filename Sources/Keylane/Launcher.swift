@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 import KeylaneCore
 
 private final class IconCache {
@@ -21,7 +22,15 @@ struct Launcher: View {
     @State private var selection = 0
     @State private var pageRevision = 0
     @State private var launcherVisible = false
-    private var showsFileResults: Bool { model.activeLauncherPage?.usesSharedFileResults == true }
+    @State private var presentedPage = PageID.root
+    private var page: LauncherPage? { model.activeLauncherPage }
+    private var showsFileResults: Bool { page?.usesSharedFileResults == true }
+    @State private var fileType = "all"
+    @State private var filterOpen = false
+    @State private var mainSearchQuery = ""
+    @State private var mainSearchSelection = 0
+    @State private var mainSearchExpanded = false
+    @State private var pendingMainSelection: Int?
     @State private var selectedResultID: String?
     @State private var actions = false
     @State private var appMenu = false
@@ -36,13 +45,12 @@ struct Launcher: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     private var rows: [Entry] {
-        if showsFileResults { return model.fileResults.map(BuiltinLauncherModules.fileEntry) }
+        if showsFileResults { return model.fileEntries(ofType: fileType) }
         return model.pageID == .root ? model.commands : []
     }
-    var body: some View {
-        let _ = pageRevision
-        let results = model.pageID == .root || showsFileResults ? rows : []
-        ZStack {
+    private var launcherSurface: some View {
+        let results = rows
+        return ZStack(alignment: .top) {
             if let target = argumentTarget { argumentEditor(target).padding(.bottom, 52) }
             else if model.isCompact { Color.clear }
             else {
@@ -51,12 +59,12 @@ struct Launcher: View {
                         commandList(results)
                     } detail: {
                         FileSearchDetail(url: results.indices.contains(selection) ? URL(fileURLWithPath: results[selection].id) : nil)
-                            .padding(.top, 61).padding(.bottom, 52)
                     }
-                } else if model.pageID == .root { commandList(results) }
-                else if let page = model.activeLauncherPage, let content = page.content {
-                    if page.extendsUnderChrome { content().id(page.id) }
-                    else { content().padding(.top, 61).padding(.bottom, 52).id(page.id) }
+                } else if model.pageID == .root {
+                    commandList(results).frame(height: 470, alignment: .top)
+                } else if let page, let content = page.content {
+                    if page.extendsUnderChrome { content() }
+                    else { content().padding(.top, 61).padding(.bottom, 52) }
                 }
             }
             if !model.isCompact { VStack(spacing: 0) {
@@ -75,10 +83,14 @@ struct Launcher: View {
                 if model.isCompact && model.compactFavorites && !model.favorites.isEmpty { compactFavoritesBar }
                 Spacer(minLength: 0)
             } }
-            if actions || appMenu { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
+            if actions || appMenu || filterOpen { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
             if !model.isCompact { footer.frame(maxHeight: .infinity, alignment: .bottom) }
+            if argumentTarget == nil && showsTypeFilter {
+                typeFilter.frame(maxWidth: .infinity, alignment: .topTrailing)
+                    .padding(VisualStyle.launcherEdgeInset)
+            }
         }
-        .frame(width: 760, height: model.launcherHeight)
+        .frame(width: 760, height: model.launcherHeight, alignment: .top)
         .scaleEffect(model.interfaceScale)
         .frame(width: 760 * model.interfaceScale, height: model.launcherHeight * model.interfaceScale)
         .scrollIndicators(.visible, axes: .vertical)
@@ -88,23 +100,19 @@ struct Launcher: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: appMenu)
         .background {
             Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
-            Button("") { closeMenus(); model.openSettings() }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
-            if let submit = model.activeLauncherPage?.shortcutSubmit {
-                Button("", action: submit).keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
-            }
+            Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
+            Button("") { page?.shortcutSubmit?() }.keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
             ForEach(0..<min(10, results.count), id: \.self) { index in
-                Button("") {
-                    guard model.pageID == .root || showsFileResults else { return }
-                    let currentResults = rows
-                    guard currentResults.indices.contains(index) else { return }
-                    selection = index
-                    selectedResultID = currentResults[index].id
-                    model.perform(currentResults[index])
-                }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
+                Button("") { if model.pageID == .root || showsFileResults { let results = rows; guard results.indices.contains(index) else { return }; selection = index; model.perform(results[index]) } }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: VisualStyle.launcherCornerRadius, style: .continuous))
         .preferredColorScheme(model.colorScheme)
+    }
+
+    var body: some View {
+        let _ = pageRevision
+        launcherSurface
         .onAppear { focusToken += 1; modifiers.start() }
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
         .onDisappear { modifiers.stop() }
@@ -112,28 +120,41 @@ struct Launcher: View {
         .onReceive(model.activePageUpdates) { _ in
             if launcherVisible { pageRevision &+= 1 }
         }
+        .onReceive(model.rootSearchUpdates) { _ in
+            if launcherVisible && model.pageID == .root { pageRevision &+= 1 }
+        }
+        .onReceive(model.launcherModules?.presentationUpdates ?? Empty().eraseToAnyPublisher()) { _ in
+            if launcherVisible && model.pageID == .root { pageRevision &+= 1 }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in
             launcherVisible = true
             modifiers.start()
             closeMenus()
-            refreshActiveQuery()
+            model.launcherModules?.launcherShown()
+            if presentedPage == model.pageID {
+                if let resume = page?.resume { resume() }
+                else { refreshActiveQuery() }
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
             launcherVisible = false
-            modifiers.stop(); actions = false; appMenu = false; actionQuery = ""
-            model.activeLauncherPage?.leave()
-            if !showsFileResults { model.fileSearch.cancel() }
+            modifiers.stop()
+            closeMenus()
+            model.launcherModules?.page(presentedPage)?.leave()
+            if presentedPage == .root { model.fileSearch.cancel() }
         }
+        .onChange(of: fileType) { _, _ in selection = 0; selectedResultID = nil; focusToken += 1 }
         .onChange(of: model.query) { _, _ in
-            selection = 0
+            selection = pendingMainSelection ?? 0
+            pendingMainSelection = nil
             selectedResultID = nil
             if launcherVisible { refreshActiveQuery() }
         }
         .onChange(of: model.fileSearch.options.enabled) { _, _ in
-            if model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] }
+            if launcherVisible && model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] }
         }
         .onChange(of: model.fileSearch.options.searchFromLauncher) { _, _ in
-            if model.pageID == .root { if model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] } }
+            if model.pageID == .root { if launcherVisible && model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] } }
         }
         .onChange(of: model.fileResults) { previous, current in
             guard showsFileResults || model.pageID == .root else { return }
@@ -142,23 +163,47 @@ struct Launcher: View {
             if let oldID, let index = results.firstIndex(where: { $0.id == oldID }) { selection = index }
             else { selection = min(selection,max(0,results.count-1)) }
         }
-        .onChange(of: model.pageID) { previous, _ in
-            model.launcherModules?.page(previous)?.leave()
-            if previous == .root { model.fileSearch.cancel() }
-            let wasEmpty = model.query.isEmpty
-            model.query = ""
-            selection = 0; selectedResultID = nil; focusToken += 1
-            if launcherVisible && wasEmpty { refreshActiveQuery() }
-        }
+        .onChange(of: model.pageID) { previous, current in pageChanged(from: previous, to: current) }
     }
+
+    private func pageChanged(from previous: PageID, to current: PageID) {
+        filterOpen = false
+        if previous == .root { model.fileSearch.cancel() }
+        else if let previousPage = model.launcherModules?.page(previous) {
+            previousPage.leave()
+            previousPage.releasePreview?()
+        }
+        presentedPage = current
+        if previous == .root {
+            mainSearchQuery = model.query
+            mainSearchSelection = selection
+            mainSearchExpanded = model.compactExpanded
+        }
+        let oldQuery = model.query
+        if current == .root {
+            pendingMainSelection = oldQuery == mainSearchQuery ? nil : mainSearchSelection
+            model.query = mainSearchQuery
+            selection = mainSearchSelection
+            model.compactExpanded = mainSearchExpanded
+            if launcherVisible && oldQuery == model.query { refreshActiveQuery() }
+        } else {
+            let seed = launcherVisible ? page?.enter?("") : nil
+            model.query = seed ?? ""
+            selection = 0
+            if launcherVisible && oldQuery == model.query { refreshActiveQuery() }
+        }
+        selectedResultID = nil
+        focusToken += 1
+    }
+
     private func refreshActiveQuery() {
-        if let page = model.activeLauncherPage { page.queryChanged(model.query) }
+        if let page { page.queryChanged(model.query) }
         else if model.searchesFilesHere { model.searchFiles() }
     }
     private func moveSelection(_ delta: Int) {
         if model.isCompact { model.compactExpanded = true; return }
         if actions || appMenu { actionSelection = NavigationBounds.move(actionSelection, by: delta, count: filteredMenu(applicationMenu: appMenu).count) }
-        else if let move = model.activeLauncherPage?.move { move(delta) }
+        else if let move = page?.move { move(delta) }
         else if model.pageID == .root || showsFileResults {
             let results = rows
             selection = NavigationBounds.move(selection, by: delta, count: results.count)
@@ -168,7 +213,7 @@ struct Launcher: View {
     private func escape() {
         if submenu { submenu = false; actionQuery = ""; actionSelection = 0; focusToken += 1; return }
         if argumentTarget != nil { argumentTarget = nil; focusToken += 1; return }
-        if actions || appMenu { closeMenus() }
+        if actions || appMenu || filterOpen { closeMenus() }
         else if model.pageID != .root { model.pageID = .root }
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
     }
@@ -187,37 +232,64 @@ struct Launcher: View {
             }.padding(.horizontal, 19).frame(height: 42)
         }.scrollIndicators(.hidden)
     }
+    private var showsTypeFilter: Bool { showsFileResults || page?.typeFilter != nil }
+
     private var searchBar: some View {
         HStack(spacing: 12) {
             if model.pageID != .root { backButton { model.pageID = .root } }
             if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
-            SearchField(text: $model.query, placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape).frame(height: 30)
-        }.padding(.horizontal, model.pageID == .root ? 19 : 8).frame(height: 61)
+            SearchField(text: $model.query, placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
+                        back: page?.moveHorizontal.map { move in { move(-1) } },
+                        forward: page?.moveHorizontal.map { move in { move(1) } },
+                        navigateWhileTyping: page?.navigateWhileTyping ?? false)
+                .frame(height: 30)
+            if let accessory = page?.searchAccessory { accessory() }
+            else if showsTypeFilter {
+                Color.clear.frame(width: page?.typeFilterWidth ?? 138, height: 36).accessibilityHidden(true)
+            }
+        }.padding(.horizontal, model.pageID == .root ? 19 : VisualStyle.launcherEdgeInset)
+            .frame(height: model.pageID == .root ? 61 : VisualStyle.launcherControlDiameter + 2 * VisualStyle.launcherEdgeInset)
+            .frame(height: 61, alignment: .top)
+    }
+    @ViewBuilder private var typeFilter: some View {
+        if showsFileResults {
+            ResultTypeFilter(selection: $fileType, options: ResultFilterOption.files, open: $filterOpen)
+        } else if let filter = page?.typeFilter { filter($filterOpen) }
     }
     private func commandList(_ results: [Entry]) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+        return ScrollViewReader { proxy in
+            ResultListScrollView {
                     if results.isEmpty {
-                        VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(.glass).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
+                        VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(ContentActionButtonStyle()).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
                     }
                     ForEach(Array(results.enumerated()), id: \.element.id) { index, row in
-                        if index == 0 { sectionHeader(showsFileResults ? model.fileSearchStatus : (model.query.isEmpty ? "建议" : "搜索结果")) }
-                        if index == 5 && model.query.isEmpty && model.pageID == .root { sectionHeader("其他") }
-                        Button { selection = index; selectedResultID = row.id; if !showsFileResults { model.perform(row) } } label: { if showsFileResults { fileResultRow(row, index: index) } else { resultRow(row, index: index) } }.buttonStyle(.plain).id(row.id)
+                        if row.id == "calculator" {
+                            sectionHeader("计算器")
+                        } else if showsFileResults {
+                            if index == 0 { sectionHeader(model.fileSearchStatus) }
+                        } else if row.detail == "File" {
+                            if index == 0 || results[index - 1].detail != "File" { sectionHeader("文件") }
+                        } else {
+                            if index == 0 || results[index - 1].id == "calculator" {
+                                sectionHeader(model.query.isEmpty ? "建议" : "搜索结果")
+                            }
+                            if index == 5 && model.query.isEmpty { sectionHeader("其他") }
+                        }
+                        Button {
+                            selection = index
+                            selectedResultID = row.id
+                            if !showsFileResults { model.perform(row) }
+                        } label: {
+                            if row.id == "calculator" {
+                                CalculatorResultCard(expression: model.query, result: row.name, selected: index == selection)
+                            } else if showsFileResults {
+                                fileResultRow(row, index: index)
+                            } else {
+                                resultRow(row, index: index)
+                            }
+                        }.buttonStyle(.plain).id(row.id)
                     }
-                }.padding(.horizontal, 8).padding(.bottom, 6)
-            }.scrollIndicators(.visible, axes: .vertical)
-            .contentMargins(.top, 61, for: .scrollContent)
-            .contentMargins(.bottom, 52, for: .scrollContent)
-            .contentMargins(.bottom, 52, for: .scrollIndicators)
-            .contentMargins(.top, 61, for: .scrollIndicators)
-            .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-            .mask(LinearGradient(stops: [
-                .init(color: .clear, location: 0), .init(color: .black.opacity(0.2), location: 0.08),
-                .init(color: .black, location: 0.19), .init(color: .black, location: 0.80),
-                .init(color: .black.opacity(0.2), location: 0.96), .init(color: .clear, location: 1)
-            ], startPoint: .top, endPoint: .bottom))
+            }
             .onChange(of: selection) { _, value in let results = rows; if results.indices.contains(value) { proxy.scrollTo(results[value].id) } }
             .onChange(of: model.query) { _, _ in if let first = rows.first { proxy.scrollTo(first.id, anchor: .top) } }
         }
@@ -226,9 +298,9 @@ struct Launcher: View {
     private func fileResultRow(_ row: Entry, index: Int) -> some View {
         let url = URL(fileURLWithPath: row.id)
         let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
-        return HStack(spacing: 10) {
-            Image(nsImage: IconCache.shared.image(row.id)).resizable()
-                .interpolation(.high).frame(width: 26, height: 26)
+        return ResultListRow(selected: index == selection, height: isFolder ? 48 : 40) {
+            Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high)
+        } content: {
             VStack(alignment: .leading, spacing: 3) {
                 HighlightedResultText(text: row.name, query: model.query)
                     .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
@@ -238,11 +310,8 @@ struct Launcher: View {
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.head)
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 10).frame(height: isFolder ? 48 : 40)
-        .background(index == selection ? Color.primary.opacity(contrast == .increased ? 0.22 : 0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
-        .contentShape(Rectangle()).help(url.path)
+            }
+        }.help(url.path)
     }
     private func resultRow(_ row: Entry, index: Int) -> some View {
         HStack(spacing: 13) {
@@ -265,7 +334,7 @@ struct Launcher: View {
         let showingShortcut = modifiers.commandHeld && index < 10
         return Text(resultAttribute(row))
             .font(.system(size:14,weight:.regular)).foregroundStyle(.secondary).lineLimit(1)
-            .frame(width:84,alignment:.trailing)
+            .frame(width: row.detail == SystemSettingsCatalog.resultKind ? 112 : 84, alignment: .trailing)
             // Keep the original attribute in the hierarchy underneath the hint.
             .blur(radius:showingShortcut && !reduceTransparency ? 1.2 : 0)
             .overlay(alignment:.trailing) {
@@ -281,56 +350,60 @@ struct Launcher: View {
     private func resultAttribute(_ row: Entry) -> String {
         if row.detail == "Application" || row.id.hasSuffix(".app") { return "应用" }
         if row.detail == "File" { return "文件" }
+        if row.detail == SystemSettingsCatalog.resultKind {
+            return SystemSettingsCatalog.prefersChinese() ? "系统设置" : "System Settings"
+        }
         if row.id == "calculator" { return "计算结果" }
+        if let detail = model.launcherModules?.displayDetail(for: row) { return detail }
         return "命令"
     }
     private func iconColor(_ id: String) -> Color { switch id { case "notes": return .yellow; case "clipboard": return .orange; case "screenshot": return .purple; case "quicklink": return .blue; default: return .primary.opacity(0.8) } }
     private var footer: some View {
         GlassEffectContainer(spacing: 8) {
             HStack(alignment: .bottom, spacing: 8) {
-                if let badge = model.activeLauncherPage?.badge {
-                    SecondaryPageBadge(title: badge.title, symbol: badge.symbol)
-                } else {
-                    expandingControl(application: true)
-                }
+                expandingControl(application: true)
                 Spacer(minLength: 8)
                 expandingControl(application: false)
             }
-        }.padding(.horizontal, 8).padding(.bottom, 6)
+        }.padding(.horizontal, VisualStyle.launcherEdgeInset).padding(.bottom, VisualStyle.launcherEdgeInset)
     }
     private func expandingControl(application: Bool) -> some View {
+        let secondary = page?.badge != nil
+        let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
+        let badgeSymbol = page?.badge?.symbol ?? ""
+        let applicationWidth: CGFloat = secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36
+        let actionWidth: CGFloat = page?.actionWidth ?? 196
         let open = application ? appMenu : actions
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
-        let count = filteredMenu(applicationMenu: application).count
+        let count = open ? filteredMenu(applicationMenu: application).count : 0
         let menuHeight = CGFloat(87 + (count == 0 ? 48 : count * 39))
         return ZStack(alignment: alignment) {
             if open {
                 menuPanel(applicationMenu: application)
                     .frame(width: 345, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
+            } else if application && secondary {
+                NativeHoverButton(title: "打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
+                    SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol)
+                }.frame(width: applicationWidth, height: 36).transition(.opacity)
             } else if application {
                 NativeHoverButton(title: "Keylane 菜单", action: { toggleMenu(application: true) }) {
                     Image(systemName: "text.menu").font(.system(size: 16)).frame(width: 36, height: 36)
                 }.frame(width: 36, height: 36).clipShape(Circle()).transition(.opacity)
             } else {
                 HStack(spacing: 0) {
-                    NativeHoverButton(title: primaryTitle, action: { run() }) { HStack(spacing: 7) { Text(primaryTitle); Keycap(text: "↩") } }.frame(maxWidth: .infinity).frame(height: 28)
+                    NativeHoverButton(title: primaryTitle, action: { run() }) { HStack(spacing: 7) { Text(primaryTitle).lineLimit(1).truncationMode(.tail); Keycap(text: "↩") }.padding(.horizontal, 6) }.frame(maxWidth: .infinity).frame(height: 28)
                     NativeHoverButton(title: "操作", action: { toggleMenu(application: false) }) { HStack(spacing: 7) { Text("操作"); HStack(spacing: 3) { Keycap(text: "⌘"); Keycap(text: "K") } } }.frame(maxWidth: .infinity).frame(height: 28)
-                }.font(.system(size: 13, weight: .medium)).padding(4).frame(width: 196, height: 36).transition(.opacity)
+                }.font(.system(size: 13, weight: .medium)).padding(4).frame(width: actionWidth, height: 36).transition(.opacity)
             }
         }
         // The container remains in the same hierarchy. Only its size changes; its bottom
         // corner stays fixed. No matched-position or automatic glass transition can slide it.
-        .frame(width: open ? 345 : (application ? 36 : 196), height: open ? menuHeight : 36, alignment: alignment)
-        .clipShape(RoundedRectangle(cornerRadius: open ? 21 : 18))
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: open ? 21 : 18))
-        .glassEffectTransition(.identity)
+        .frame(width: open ? 345 : (application ? applicationWidth : actionWidth), height: open ? menuHeight : 36, alignment: alignment)
+        .modifier(LauncherMenuSurface(open: open))
     }
     private typealias MenuAction = LauncherAction
-    private var selectedEntry: Entry? {
-        let results = rows
-        return results.indices.contains(selection) ? results[selection] : nil
-    }
+    private var selectedEntry: Entry? { let results = rows; return results.indices.contains(selection) ? results[selection] : nil }
     private func menuItems(applicationMenu: Bool) -> [MenuAction] {
         if applicationMenu {
             return [
@@ -342,9 +415,10 @@ struct Launcher: View {
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
             ]
         }
-        if let actions = model.activeLauncherPage?.actions { return actions() }
+        if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
-        var result = [MenuAction(id: "open", title: row.detail == "File" ? "打开文件" : (row.id.hasSuffix(".app") ? "打开应用程序" : "执行命令"), icon: "return", keys: ["↩"], perform: { model.perform(row) })]
+        if let actions = model.launcherModules?.actions(for: row) { return actions }
+        var result = [MenuAction(id: "open", title: row.detail == "File" ? "打开文件" : (row.id.hasSuffix(".app") ? "打开应用程序" : "执行命令"), icon: "return", keys: ["↩"], perform: { model.runCommand(row.commandID, origin: .menu, usageKey: row.id) })]
         if row.id.hasSuffix(".app") {
             let url = URL(fileURLWithPath: row.id)
             if submenu {
@@ -377,7 +451,7 @@ struct Launcher: View {
     private func menuPanel(applicationMenu: Bool) -> some View {
         let items = filteredMenu(applicationMenu: applicationMenu)
         return VStack(alignment: .leading, spacing: 0) {
-            Text(applicationMenu ? "Keylane " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") : (model.activeLauncherPage?.actionTitle ?? selectedEntry?.name ?? "操作") + (submenu ? " › Finder" : "")).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
+            Text(applicationMenu ? "Keylane " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") : (page?.actionTitle ?? selectedEntry?.name ?? "操作") + (submenu ? " › Finder" : "")).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 Button { closeMenus(); item.perform() } label: {
                     HStack(spacing: VisualStyle.actionSpacing) { Image(systemName: item.icon).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome).frame(width: VisualStyle.actionIconWidth, height: 20); Text(item.title).font(VisualStyle.rowText); Spacer(); HStack(spacing: 3) { ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) } } }.padding(.horizontal, 11).frame(height: 39).background(index == actionSelection ? Color.primary.opacity(contrast == .increased ? 0.24 : 0.12) : Color.clear, in: RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
@@ -393,15 +467,20 @@ struct Launcher: View {
         }.frame(width: 345)
     }
     private func toggleMenu(application: Bool) {
+        filterOpen = false
         model.compactExpanded = true
         let open = application ? !appMenu : !actions
         submenu = false; actions = !application && open; appMenu = application && open; actionQuery = ""; actionSelection = 0; focusToken += 1
     }
-    private func closeMenus() { submenu = false; actions = false; appMenu = false; actionQuery = ""; focusToken += 1 }
-    private var moduleTitle: String { model.activeLauncherPage?.placeholder ?? "设置" }
+    private func closeMenus() { filterOpen = false; submenu = false; actions = false; appMenu = false; actionQuery = ""; focusToken += 1 }
+    private var moduleTitle: String { page?.placeholder ?? "设置" }
     private var primaryTitle: String {
         if argumentTarget != nil { return "启动新实例" }
-        if let title = model.activeLauncherPage?.primaryTitle { return title() }
+        if let title = page?.primaryTitle?() { return title }
+        if let row = selectedEntry {
+            if let title = model.launcherModules?.primaryTitle(for: row) { return title }
+            if row.id == "calculator" { return "复制结果" }
+        }
         return model.pageID == .root || showsFileResults ? "打开" : "返回"
     }
     private func argumentEditor(_ target: Entry) -> some View {
@@ -421,8 +500,10 @@ struct Launcher: View {
         if (showsFileResults || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
         if let target = argumentTarget { do { let args = try ArgumentParser.parse(argumentText); model.launch(URL(fileURLWithPath: target.id), arguments: args) } catch { model.error = "参数引号或转义未完成。" }; return }
         if actions || appMenu { let items = filteredMenu(applicationMenu: appMenu); if items.indices.contains(actionSelection) { let item = items[actionSelection]; closeMenus(); item.perform() }; return }
-        if let submit = model.activeLauncherPage?.submit { submit(); return }
-        if model.pageID != .root && !showsFileResults { model.pageID = .root; return }; let list = rows; if list.indices.contains(selection) { model.perform(list[selection]) } }
+        if let submit = page?.submit { submit(); return }
+        if model.pageID != .root && !showsFileResults { model.pageID = .root; return }
+        if let row = selectedEntry { model.perform(row) }
+    }
 }
 
 /// Samples the scrolling content in this window, rather than the desktop behind it.

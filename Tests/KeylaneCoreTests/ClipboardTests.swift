@@ -122,6 +122,23 @@ final class ClipboardTests: XCTestCase {
         try reopened.remove(id:id)
         XCTAssertNil(try reopened.detail(id:id))
     }
+    func testEarlyVersionTwoSnapshotSchemaCanCaptureAfterUpgrade() throws {
+        let directory = directory(); defer { try? FileManager.default.removeItem(at:directory) }
+        let snapshot = ClipSnapshot(items:[.init([.init(type:"public.utf8-plain-text",data:Data("preserve old snapshot".utf8))])],plainText:"preserve old snapshot")
+        var id = ""
+        do { let store = try ClipboardStore(directory:directory); id = try store.capture(.text(snapshot.plainText),snapshot:snapshot); try store.setPinned(id:id,pinned:true) }
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(directory.appendingPathComponent("clipboard.sqlite").path,&db),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db,"ALTER TABLE clip_snapshots DROP COLUMN search_text; PRAGMA user_version=2",nil,nil,nil),SQLITE_OK); sqlite3_close(db)
+        let upgraded = try ClipboardStore(directory:directory)
+        XCTAssertEqual(try upgraded.detail(id:id)?.snapshot,snapshot)
+        XCTAssertTrue(try XCTUnwrap(upgraded.detail(id:id)).item.pinned)
+        let added = try upgraded.capture(.text("new capture"),snapshot:.init(items:[.init([.init(type:"public.utf8-plain-text",data:Data("new capture".utf8))])],plainText:"new capture"))
+        XCTAssertEqual(try upgraded.detail(id:added)?.text,"new capture")
+        XCTAssertEqual(try upgraded.migrationBackups().count,1)
+        XCTAssertTrue(try XCTUnwrap(upgraded.lastMigrationBackupURL).lastPathComponent.hasPrefix("v2-"))
+        do { let reopened = try ClipboardStore(directory:directory); XCTAssertEqual(try reopened.count(),2); XCTAssertNil(reopened.lastMigrationBackupURL) }
+    }
     func testVersionOneMigrationBacksUpDatabaseAndOwnedImages() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at:directory) }
         var image = ""

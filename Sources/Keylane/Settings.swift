@@ -85,7 +85,7 @@ struct SettingsView: View {
 }
 
 enum LauncherSettingsContent {
-    private static func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(18).frame(maxWidth: .infinity, alignment: .leading).modifier(SettingsSurface()) }
+    private static func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { SettingsGroup(content: content) }
     @ViewBuilder static func general(_ model: Model) -> some View {
         card {
             Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
@@ -110,7 +110,7 @@ enum LauncherSettingsContent {
     }
 
     @ViewBuilder static func notes(_ model: Model) -> some View {
-        card { LabeledContent("已保存便笺", value: String(model.savedNotes.count)); Text("使用本机 SQLite 自动保存。").foregroundStyle(.secondary); Button("导出便笺…") { model.exportData() }.buttonStyle(.glass) }.id("export")
+        card { LabeledContent("已保存便笺", value: String(model.savedNotes.count)); Text("使用本机 SQLite 自动保存。").foregroundStyle(.secondary); Button("导出便笺…") { model.exportData() }.buttonStyle(ContentActionButtonStyle()) }.id("export")
     }
 
     @ViewBuilder static func links(_ model: Model) -> some View {
@@ -118,7 +118,7 @@ enum LauncherSettingsContent {
     }
 
     @ViewBuilder static func advanced(_ model: Model) -> some View {
-        card { Text("资料目录").font(.headline); Text("Application Support/Keylane").foregroundStyle(.secondary); Button("在 Finder 中显示") { let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane"); NSWorkspace.shared.open(url) }.buttonStyle(.glass) }.id("directory")
+        card { Text("资料目录").font(.headline); Text("Application Support/Keylane").foregroundStyle(.secondary); Button("在 Finder 中显示") { let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane"); NSWorkspace.shared.open(url) }.buttonStyle(ContentActionButtonStyle()) }.id("directory")
         card { Text("无遥测").font(.headline); Text("默认无遥测。文件 AI 仅在你主动发送时连接所配置的服务；云同步与扩展模块尚未接入。").foregroundStyle(.secondary) }.id("privacy")
     }
 

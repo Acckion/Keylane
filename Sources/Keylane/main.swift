@@ -26,7 +26,16 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let fileAI = FileAIController()
     private var moduleSearchChanges: AnyCancellable?
+    let rootSearchUpdates = PassthroughSubject<Void, Never>()
     let clipboard = ClipboardController(startTimer: false, presentationActive: false)
+    let screenshots = ScreenshotLibrary()
+    let systemShortcuts = SystemShortcutsController()
+    let contacts = ContactsController()
+    let dictionary = DictionaryController()
+    let emoji = EmojiSearchController()
+    let systemNavigation = NavigationController()
+    let menuBar = MenuBarRegistry()
+    lazy var calendar = CalendarController(registry: menuBar)
     @Published var notes: String = UserDefaults.standard.string(forKey: "notes") ?? "" { didSet { saveNote() } }
     @Published var link: String = UserDefaults.standard.string(forKey: "link") ?? "https://github.com/Acckion/Keylane" { didSet { UserDefaults.standard.set(link, forKey: "link") } }
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots
@@ -42,10 +51,20 @@ final class Model: ObservableObject {
     @Published var modifierStatus = ""
     @Published var scanStatus = "正在扫描…"
     let fileSearch = FileSearchController()
-    @Published var fileSearchFolder: URL?
-    @Published var fileResults: [SpotlightFile] = []
+    @Published var fileResults: [SpotlightFile] = [] {
+        didSet { filteredFileEntries.removeAll() }
+    }
+    private var filteredFileEntries: [String: [Entry]] = [:]
+
+    func fileEntries(ofType type: String) -> [Entry] {
+        if let cached = filteredFileEntries[type] { return cached }
+        let entries = fileResults.lazy.filter { FileResultTypeFilter.includes($0.url, selection: type) }
+            .map(BuiltinLauncherModules.fileEntry)
+        let result = Array(entries)
+        filteredFileEntries[type] = result
+        return result
+    }
     @Published var fileSearchStatus = "输入文件名，搜索Spotlight已索引的文件。"
-    @Published var fileSearchScope = UserDefaults.standard.string(forKey: "fileSearchScope") ?? "local" { didSet { UserDefaults.standard.set(fileSearchScope, forKey: "fileSearchScope"); if activeLauncherPage?.usesSharedFileResults == true { searchFiles() } } }
     @Published var lastScanSeconds = 0.0
     @Published var loginStatus = ""
     @Published var loginEnabled = false
@@ -62,11 +81,11 @@ final class Model: ObservableObject {
         }
     }()
     var activeLauncherPage: LauncherPage? { launcherModules?.page(pageID) }
-    var activePageUpdates: AnyPublisher<Void, Never> {
+    lazy var activePageUpdates: AnyPublisher<Void, Never> = {
         $pageID.removeDuplicates().map { [weak self] pageID in
             self?.launcherModules?.page(pageID)?.updates ?? Empty().eraseToAnyPublisher()
         }.switchToLatest().receive(on: DispatchQueue.main).eraseToAnyPublisher()
-    }
+    }()
 
     private var appIdentities: [String: ApplicationIdentity] = [:] {
         didSet { commandSearch.invalidate() }
@@ -91,18 +110,28 @@ final class Model: ObservableObject {
         fileSearch.updated = { [weak self] files, status in
             guard let self else { return }; if self.fileResults != files { self.fileResults = files }; if self.fileSearchStatus != status { self.fileSearchStatus = status }
         }
-        reloadCatalog()
         refreshLogin()
+        moduleSearchChanges = launcherModules?.searchUpdates
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.commandSearch.invalidate()
+                self?.rootSearchUpdates.send()
+            }
+    }
+    func startApplicationDiscovery() {
+        guard workspaceObservers.isEmpty else { return }
+        reloadCatalog()
         refreshRunningApps()
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refreshRunningApps(); self?.discovery.refresh() })
         }
-        moduleSearchChanges = launcherModules?.searchUpdates.sink { [weak self] in
-            self?.commandSearch.invalidate()
-            self?.objectWillChange.send()
-        }
     }
-    deinit { workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
+    func stopApplicationDiscovery() {
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+        discovery.stop()
+    }
+    deinit { stopApplicationDiscovery() }
     func refreshRunningApps() { runningPaths = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.resolvingSymlinksInPath().path }) }
     func reloadCatalog() {
         UserDefaults.standard.set(roots, forKey: "applicationRoots"); UserDefaults.standard.set(Array(excluded), forKey: "excludedApps")
@@ -119,8 +148,7 @@ final class Model: ObservableObject {
             switch destination {
             case .action: break
             case let .page(page):
-                self.pageID = page
-                if origin == .shortcut { (NSApp.delegate as? Delegate)?.revealLauncher() }
+                self.openPage(page, origin: origin)
             case let .settings(page): self.openSettings(page: page)
             }
         }) else { return }
@@ -129,6 +157,11 @@ final class Model: ObservableObject {
             UserDefaults.standard.set(usage, forKey: "usage")
         }
         action()
+    }
+    func openPage(_ page: PageID, origin: LauncherCommandOrigin) {
+        guard launcherModules?.page(page) != nil else { return }
+        pageID = page
+        if origin != .search { (NSApp.delegate as? Delegate)?.revealLauncher() }
     }
     func launch(_ url: URL) {
         if NSWorkspace.shared.open(url) { (NSApp.delegate as? Delegate)?.hideLauncher() }
@@ -171,7 +204,6 @@ final class Model: ObservableObject {
         fileSearch.addScope()
         if returnToLauncher { (NSApp.delegate as? Delegate)?.revealLauncher() }
     }
-    func clearFileSearchFolder() { fileSearchFolder = nil; UserDefaults.standard.removeObject(forKey: "fileSearchBookmark") }
     func openFile(_ url: URL) {
         guard !fileSearch.isSearching else { return }
         guard FileManager.default.fileExists(atPath: url.path), NSWorkspace.shared.open(url) else { error = "文件无法打开，可能已移走、删除或没有访问权限。"; searchFiles(); return }
@@ -196,27 +228,37 @@ final class LauncherPanel: NSPanel {
     override var canBecomeMain: Bool { true }
 }
 final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
-    private var previousApplication: NSRunningApplication?
-    private func rememberPreviousApplication() {
-        if let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != ProcessInfo.processInfo.processIdentifier { previousApplication = app }
+    private(set) var previousApplication: NSRunningApplication?
+    let navigationToast = ToastPresenter()
+
+    func rememberPreviousApplication() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        previousApplication = app
+        model.launcherModules?.applicationFocused(app)
+    }
+    var pasteTargetName: String? {
+        guard let previousApplication, !previousApplication.isTerminated else { return nil }
+        return previousApplication.localizedName
     }
     func pasteClipboard(plainText: Bool = false) {
         guard model.clipboard.copySelected(plainText:plainText) else { return }
-        guard AXIsProcessTrusted() else { model.clipboard.feedback("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
-        guard let target = previousApplication, !target.isTerminated else { model.clipboard.feedback("已复制，但上一个应用已退出或不可用。"); return }
+        pasteIntoPreviousApplication(feedback: model.clipboard.feedback)
+    }
+    func pasteIntoPreviousApplication(feedback: @escaping (String) -> Void) {
+        guard AXIsProcessTrusted() else { feedback("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
+        guard let target = previousApplication, !target.isTerminated else { feedback("已复制，但上一个应用已退出或不可用。"); return }
         hideLauncher(); target.activate()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self else { return }
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier, !target.isTerminated else { self.model.clipboard.feedback("已复制。目标应用未获得焦点，已停止自动粘贴。"); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier, !target.isTerminated else { feedback("已复制。目标应用未获得焦点，已停止自动粘贴。"); return }
             let source = CGEventSource(stateID: .combinedSessionState)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { self.model.clipboard.feedback("已复制，无法发送粘贴按键。"); return }
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { feedback("已复制，无法发送粘贴按键。"); return }
             down.flags = .maskCommand; up.flags = .maskCommand; down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
         }
     }
     let model = Model()
     var settingsWindow: NSWindow?
     var window: NSWindow!
-    var status: NSStatusItem!
     let shortcuts = ShortcutManager()
     let modifiers = ModifierShortcuts()
     var outsideMonitor: Any?
@@ -227,7 +269,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var geometrySubscription: AnyCancellable?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        installApplicationMenu(settingsTarget: self, settingsAction: #selector(showSettings))
+        installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
         window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.title = "Keylane · Developer Preview"; window.titlebarAppearsTransparent = true; window.titleVisibility = .hidden
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
@@ -242,7 +284,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         glass.layer?.cornerCurve = .continuous
         glass.layer?.masksToBounds = true
         glass.layer?.borderWidth = 0
-        // Glass remains noninteractive by default; keep compatibility with the macOS 26 SDK.
+        // Detect the macOS 27 setter at runtime so the macOS 26 SDK can build this.
+        if #available(macOS 27.0, *),
+           glass.responds(to: NSSelectorFromString("setEffectIsInteractive:")) {
+            glass.setValue(false, forKey: "effectIsInteractive")
+        }
         glass.contentView = NSHostingView(rootView: Launcher(model: model))
         window.contentView = glass; window.isReleasedWhenClosed = false; window.center()
         window.delegate = self
@@ -271,8 +317,13 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             if let self, event.window !== self.window { self.hideLauncher(reason: "otherWindow") }
             return event
         }
-        status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength); status.button?.image = NSImage(systemSymbolName: "command", accessibilityDescription: "Open launcher")
-        let menu = NSMenu(); menu.addItem(withTitle: "Open Launcher", action: #selector(show), keyEquivalent: ""); menu.addItem(.separator()); menu.addItem(withTitle: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); menu.items.first?.target = self; status.menu = menu
+        model.menuBar.register(id: "keylane.launcher", owner: "launcher", title: "Keylane", defaultVisible: true,
+                               presentation: .init(symbol: "command", toolTip: "打开 Keylane")) { [weak self] in
+            [.init(title: "打开 Keylane", symbol: "command", action: { self?.revealLauncher() }),
+             .init(title: "我的日程", symbol: "calendar", action: { self?.model.runCommand(.init(rawValue: "calendar"), origin: .menu) }),
+             .init(title: "设置…", symbol: "gearshape", action: { self?.openLauncherSettings() }),
+             .separator, .init(title: "退出 Keylane", action: { NSApplication.shared.terminate(nil) })]
+        }
         shortcuts.fired = { [weak self] action in
             guard let self else { return }
             if action == "launcher" { self.show() }
@@ -289,7 +340,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc func revealLauncher() {
         rememberPreviousApplication()
-        if !window.isVisible { show() }
+        if !window.isVisible { presentLauncher() }
         else { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); NotificationCenter.default.post(name: .launcherShown, object: nil) }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -303,11 +354,15 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) {
         model.launcherModules?.stopServices()
+        model.menuBar.shutdown()
         if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
-        shortcuts.stop(); modifiers.stop(); model.discovery.stop()
+        shortcuts.stop(); modifiers.stop()
     }
-    @objc func showSettings() {
+    @objc private func openLauncherSettings() {
+        model.runCommand(.init(rawValue: "settings"), origin: .menu)
+    }
+    func showSettings() {
         if settingsWindow == nil {
             let view = NSHostingView(rootView: SettingsView(model: model))
             let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 730), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -360,6 +415,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if model.windowMode == "compact" {
             model.pageID = .root; model.query = ""; model.compactExpanded = false
         }
+        presentLauncher()
+    }
+    /// Present the current destination without applying the launcher's compact-mode reset.
+    private func presentLauncher() {
         updateLauncherGeometry()
         rememberPreviousApplication()
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main

@@ -46,7 +46,34 @@ struct CommandSettingsRow<Icon: View>: View {
             Toggle("启用 \(title)", isOn: $isEnabled)
                 .labelsHidden().toggleStyle(.checkbox).controlSize(.small)
         }
-        .frame(minHeight: 54)
+        .frame(minHeight: 46)
         .disabled(!available)
+    }
+}
+
+/// Command rows already size themselves. Use this card to group commands
+/// so settings groups do not add a second layer of row spacing.
+struct CommandSettingsList<Item, ID: Hashable, Row: View>: View {
+    let items: [Item]
+    let id: KeyPath<Item, ID>
+    var emptyMessage = "暂无命令"
+    @ViewBuilder let row: (Item) -> Row
+
+    var body: some View {
+        LazyVStack(spacing: 0) {
+            if items.isEmpty {
+                Text(emptyMessage)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(24)
+            }
+            ForEach(items, id: id) { item in
+                row(item).padding(.horizontal, 14)
+                if items.last.map({ $0[keyPath: id] }) != item[keyPath: id] {
+                    Divider().opacity(0.4).padding(.horizontal, 14)
+                }
+            }
+        }
+        .modifier(SettingsSurface())
     }
 }

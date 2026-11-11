@@ -14,6 +14,7 @@ struct Entry: Identifiable {
     let symbol: String
     var aliases: [String] = []
     var rankingKind: LauncherSearchRanking.Kind = .command
+    var matchScore: Int?
 }
 
 struct LauncherAction: Identifiable {
@@ -40,6 +41,16 @@ struct LauncherPage {
     var primaryTitle: (() -> String)?
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
+    var searchAccessory: (() -> AnyView)?
+    var enter: ((String) -> String?)?
+    var resume: (() -> Void)?
+    var moveHorizontal: ((Int) -> Void)?
+    var navigateWhileTyping = false
+    var typeFilterWidth: CGFloat?
+    var typeFilter: ((Binding<Bool>) -> AnyView)?
+    var badgeTitle: (() -> String)?
+    var actionWidth: CGFloat?
+    var releasePreview: (() -> Void)?
 }
 
 struct LauncherSettingsPage: Identifiable {
@@ -64,6 +75,9 @@ struct LauncherModule {
         let namespace: LauncherCommandNamespace
         let entries: (LauncherCommandSearch.Input) -> [Entry]
         let resolve: (CommandID, LauncherCommandOrigin) -> (() -> Void)?
+        var primaryTitle: ((Entry) -> String?)?
+        var actions: ((Entry) -> [LauncherAction]?)?
+        var displayDetail: ((Entry) -> String?)?
     }
 
     struct Service {
@@ -78,6 +92,9 @@ struct LauncherModule {
     var settings: [LauncherSettingsPage] = []
     var services: [Service] = []
     var searchUpdates: [AnyPublisher<Void, Never>] = []
+    var launcherShown: (() -> Void)?
+    var presentationUpdates: [AnyPublisher<Void, Never>] = []
+    var applicationFocused: ((NSRunningApplication) -> Void)?
 }
 
 /// The registry stores native factories and handlers. Validation never runs a
@@ -89,8 +106,11 @@ final class LauncherModuleRegistry {
     private let pages: [PageID: LauncherPage]
     let settings: [LauncherSettingsPage]
     private let services: [LauncherModule.Service]
+    private let launcherShownHandlers: [() -> Void]
+    private let applicationFocusedHandlers: [(NSRunningApplication) -> Void]
     private var servicesRunning = false
     let searchUpdates: AnyPublisher<Void, Never>
+    let presentationUpdates: AnyPublisher<Void, Never>
 
     init(modules: [LauncherModule]) throws {
         _ = try LauncherModuleCatalog(modules: modules.map {
@@ -104,7 +124,17 @@ final class LauncherModuleRegistry {
         pages = Dictionary(uniqueKeysWithValues: modules.flatMap(\.pages).map { ($0.id, $0) })
         settings = modules.flatMap(\.settings).sorted { $0.order < $1.order }
         services = modules.flatMap(\.services)
+        launcherShownHandlers = modules.compactMap(\.launcherShown)
+        applicationFocusedHandlers = modules.compactMap(\.applicationFocused)
+        presentationUpdates = Publishers.MergeMany(modules.flatMap(\.presentationUpdates))
+            .receive(on: DispatchQueue.main).eraseToAnyPublisher()
         searchUpdates = Publishers.MergeMany(modules.flatMap(\.searchUpdates)).eraseToAnyPublisher()
+    }
+
+    func launcherShown() { launcherShownHandlers.forEach { $0() } }
+    func applicationFocused(_ app: NSRunningApplication) {
+        guard servicesRunning else { return }
+        applicationFocusedHandlers.forEach { $0(app) }
     }
 
     func startServices() {
@@ -120,6 +150,14 @@ final class LauncherModuleRegistry {
     func declaration(_ id: CommandID) -> LauncherCommandDeclaration? { byID[id]?.declaration }
 
     func page(_ id: PageID) -> LauncherPage? { pages[id] }
+
+    private func provider(for entry: Entry) -> LauncherModule.Provider? {
+        providers.first { $0.namespace.contains(entry.commandID) }
+    }
+
+    func actions(for entry: Entry) -> [LauncherAction]? { provider(for: entry)?.actions?(entry) }
+    func primaryTitle(for entry: Entry) -> String? { provider(for: entry)?.primaryTitle?(entry) }
+    func displayDetail(for entry: Entry) -> String? { provider(for: entry)?.displayDetail?(entry) }
 
     func candidates(for input: LauncherCommandSearch.Input) -> [Entry] {
         commands.compactMap { command in
@@ -137,8 +175,9 @@ final class LauncherModuleRegistry {
         if let command = byID[id] {
             guard command.available() else { return nil }
             return {
+                command.execute(origin)
                 switch command.declaration.destination {
-                case .action: command.execute(origin)
+                case .action: break
                 case .page, .settings: navigate(command.declaration.destination)
                 }
             }

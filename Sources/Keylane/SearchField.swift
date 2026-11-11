@@ -15,6 +15,7 @@ struct SearchField: View {
     let escape: () -> Void
     var back: (() -> Void)? = nil
     var forward: (() -> Void)? = nil
+    var navigateWhileTyping = false
     @FocusState private var focused: Bool
     var body: some View {
         TextField(placeholder, text: $text)
@@ -23,8 +24,8 @@ struct SearchField: View {
             .focused($focused)
             .accessibilityLabel(placeholder)
             .onSubmit { if !Self.isComposing { submit() } }
-            .onKeyPress(.leftArrow) { guard text.isEmpty, !Self.isComposing, let back else { return .ignored }; back(); return .handled }
-            .onKeyPress(.rightArrow) { guard text.isEmpty, !Self.isComposing, let forward else { return .ignored }; forward(); return .handled }
+            .onKeyPress(keys: [.leftArrow], phases: [.down, .repeat]) { guard (text.isEmpty || (navigateWhileTyping && $0.modifiers == .option)), !Self.isComposing, let back else { return .ignored }; back(); return .handled }
+            .onKeyPress(keys: [.rightArrow], phases: [.down, .repeat]) { guard (text.isEmpty || (navigateWhileTyping && $0.modifiers == .option)), !Self.isComposing, let forward else { return .ignored }; forward(); return .handled }
             .onKeyPress(.downArrow) { guard !Self.isComposing else { return .ignored }; move(1); return .handled }
             .onKeyPress(.upArrow) { guard !Self.isComposing else { return .ignored }; move(-1); return .handled }
             .onKeyPress(phases: .down) { press in

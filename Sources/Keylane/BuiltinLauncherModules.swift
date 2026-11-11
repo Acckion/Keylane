@@ -8,7 +8,8 @@ import KeylaneCore
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
         [host(model), applications(model), files(model), clipboard(model), notes(model),
-         links(model), calculator(model), systemTools()]
+         links(model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model)]
+        + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
     }
 
     private static func command(_ id: String, _ title: String, _ detail: String, _ symbol: String,
@@ -29,8 +30,11 @@ enum BuiltinLauncherModules {
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general")],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
-                         settingsPage(model, "advanced", "高级", "wrench.and.screwdriver", "管理本地资料与隐私设置。", 6, content: LauncherSettingsContent.advanced),
-                         settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 7, content: LauncherSettingsContent.about)])
+                         settingsPage(model, "menu-bar", "菜单栏", "menubar.rectangle", "选择各模块在菜单栏中显示的项目。", 70) {
+                             MenuBarPreferences(registry: $0.menuBar)
+                         },
+                         settingsPage(model, "advanced", "高级", "wrench.and.screwdriver", "管理本地资料与隐私设置。", 100, content: LauncherSettingsContent.advanced),
+                         settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 110, content: LauncherSettingsContent.about)])
     }
 
     private static func applications(_ model: Model) -> LauncherModule {
@@ -55,7 +59,9 @@ enum BuiltinLauncherModules {
             }
         })
         return .init(id: .init(rawValue: "keylane.applications"), providers: [provider],
-                     settings: [settingsPage(model, "applications", "应用程序", "square.grid.2x2.fill", "快速查找并启动已安装的应用程序。", 1, content: LauncherSettingsContent.applications)],
+                     settings: [settingsPage(model, "applications", "应用程序", "square.grid.2x2.fill", "快速查找并启动已安装的应用程序。", 10, content: LauncherSettingsContent.applications)],
+                     services: [.init(start: { [weak model] in model?.startApplicationDiscovery() },
+                                      stop: { [weak model] in model?.stopApplicationDiscovery() })],
                      searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)])
     }
 
@@ -83,21 +89,23 @@ enum BuiltinLauncherModules {
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
                     available: { [weak model] in model?.fileSearch.options.enabled == true }),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
-                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-files"] != false } ?? false }) { [weak model] origin in
+                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-files"] != false } ?? false }, execute: { [weak model] origin in
                 guard let model else { return }
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model.fileAI.present(model.fileResults.map(\.url))
-            },
+            }),
             command("ask-finder", "询问 Finder", "AI", "sparkles", ["Ask Finder"], settings: "files",
-                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false }) { [weak model] origin in
+                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false }, execute: { [weak model] origin in
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model?.fileAI.presentFinder()
-            }
+            })
         ], providers: [provider], pages: [
             LauncherPage(id: page, placeholder: "搜索文件…", badge: ("文件搜索", "doc.text.magnifyingglass"),
                          usesSharedFileResults: true, queryChanged: { [weak model] in model?.fileSearch.search($0) },
-                         leave: { [weak model] in model?.fileSearch.cancel() })
-        ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 2, content: LauncherSettingsContent.files)],
+                         leave: { [weak model] in model?.fileSearch.cancel() },
+                         updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                         releasePreview: { FilePreview.shared.dismiss() })
+        ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, content: LauncherSettingsContent.files)],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
                            updates(model.fileAI.$commandsEnabled)])
@@ -126,13 +134,19 @@ enum BuiltinLauncherModules {
                 guard let controller = model?.clipboard else { return [] }
                 return clipboardActions(controller)
             },
-            updates: model.clipboard.objectWillChange.eraseToAnyPublisher()
+            updates: model.clipboard.objectWillChange.eraseToAnyPublisher(),
+            typeFilterWidth: 138,
+            typeFilter: { [weak model] open in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(ResultTypeFilter(selection: Binding(get: { model.clipboard.kind }, set: { model.clipboard.kind = $0 }),
+                                         options: ResultFilterOption.clipboard, open: open))
+            }
         )
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
                     ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard")
         ], pages: [page], settings: [
-            settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 3, content: LauncherSettingsContent.clipboard)
+            settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, content: LauncherSettingsContent.clipboard)
         ], services: [
             .init(start: { [weak model] in model?.clipboard.startMonitoring() },
                   stop: { [weak model] in model?.clipboard.stopMonitoring() })
@@ -163,7 +177,7 @@ enum BuiltinLauncherModules {
         ], pages: [LauncherPage(id: id, placeholder: "便笺", content: { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(LauncherNotesPage(model: model))
-        })], settings: [settingsPage(model, "notes", "便笺", "note.text", "保存你的想法，随时继续。", 4, content: LauncherSettingsContent.notes)])
+        })], settings: [settingsPage(model, "notes", "便笺", "note.text", "保存你的想法，随时继续。", 80, content: LauncherSettingsContent.notes)])
     }
 
     private static func links(_ model: Model) -> LauncherModule {
@@ -174,7 +188,7 @@ enum BuiltinLauncherModules {
                     NSWorkspace.shared.open(url)
                 }
             }
-        ], settings: [settingsPage(model, "links", "快捷链接", "link", "设置常用链接，快速打开。", 5, content: LauncherSettingsContent.links)],
+        ], settings: [settingsPage(model, "links", "快捷链接", "link", "设置常用链接，快速打开。", 90, content: LauncherSettingsContent.links)],
            searchUpdates: [updates(model.$link)])
     }
 
@@ -182,7 +196,7 @@ enum BuiltinLauncherModules {
         let id = CommandID(rawValue: "calculator")
         let provider = LauncherModule.Provider(namespace: .exact(id), entries: { input in
             guard let result = calculatorResult(input.query) else { return [] }
-            return [Entry(id: id.rawValue, commandID: id, name: result, detail: "Calculator · copy result",
+            return [Entry(id: id.rawValue, commandID: id, name: result, detail: "回车复制结果",
                           symbol: "equal", rankingKind: .calculator)]
         }, resolve: { [weak model] command, origin in
             guard command == id, origin != .shortcut, let query = model?.query, let result = calculatorResult(query) else { return nil }
@@ -191,24 +205,38 @@ enum BuiltinLauncherModules {
                 NSPasteboard.general.setString(result, forType: .string)
             }
         })
-        return .init(id: .init(rawValue: "keylane.calculator"), providers: [provider])
+        let hintID = CommandID(rawValue: "calculator-hint")
+        let hint = LauncherModule.Provider(namespace: .exact(hintID), entries: { input in
+            let query = input.query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard query.folding(options: .widthInsensitive, locale: .current).hasPrefix("="),
+                  calculatorResult(query) == nil else { return [] }
+            let message = query.count == 1 ? "输入计算表达式，如 2 × (3 + 4)" : "表达式不完整或无法计算"
+            return [Entry(id: hintID.rawValue, commandID: hintID, name: message,
+                          detail: "计算器", symbol: "equal", rankingKind: .calculator)]
+        }, resolve: { _, _ in nil })
+        return .init(id: .init(rawValue: "keylane.calculator"), commands: [
+            command("calculator-help", "计算器", "在搜索框输入表达式", "equal.circle", ["Calculator", "计算"], execute: { [weak model] _ in
+                model?.query = "="
+            })
+        ], providers: [provider, hint])
     }
 
-    static func calculatorResult(_ query: String) -> String? {
-        guard let value = Calculator.evaluate(query), query.contains(where: { "+-*/".contains($0) }) else { return nil }
+    private static func calculatorResult(_ query: String) -> String? {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard Calculator.isExpression(trimmed), let value = Calculator.evaluate(trimmed) else { return nil }
         return String(format: "%.12g", value)
     }
 
     private static func systemTools() -> LauncherModule {
         .init(id: .init(rawValue: "keylane.system-tools"), commands: [
-            command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", []) { _ in
-                NSApp.keyWindow?.orderOut(nil)
+            command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", [], execute: { _ in
+                (NSApp.delegate as? Delegate)?.hideLauncher()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { SystemTools.shared.screenshot() }
-            },
-            command("color", "Pick Color / 取色", "Sample screen color", "eyedropper", []) { _ in SystemTools.shared.colorPicker() },
-            command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", []) { _ in SystemTools.shared.readClipboard() },
-            command("stop-speaking", "Stop Reading / 停止朗读", "Stop speech playback", "stop.circle", []) { _ in SystemTools.shared.stopReading() },
-            command("finder", "Open Home / 个人文件夹", "Finder", "folder", []) { _ in NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) }
+            }),
+            command("color", "Pick Color / 取色", "Copy hex color", "eyedropper", [], execute: { _ in SystemTools.shared.colorPicker() }),
+            command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", [], execute: { _ in SystemTools.shared.readClipboard() }),
+            command("stop-speaking", "Stop Reading / 停止朗读", "Stop speech playback", "stop.circle", [], execute: { _ in SystemTools.shared.stopReading() }),
+            command("finder", "Open Home / 个人文件夹", "Finder", "folder", [], execute: { _ in NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) })
         ])
     }
 
