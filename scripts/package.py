@@ -40,7 +40,10 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
         metadata.update(plistlib.load(file))
     with (app/'Contents/Info.plist').open('wb') as file:
         plistlib.dump(metadata, file)
-    signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--timestamp=none']
+    signing_options = ['--timestamp=none']
+    if distribution:
+        entitlements = root / 'Resources/Keylane.entitlements'
+        signing_options = ['--options', 'runtime', '--timestamp', '--entitlements', str(entitlements)]
     subprocess.run(['codesign', '--force', '--sign', identity, *signing_options, str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
     (image_contents / 'Applications').symlink_to('/Applications', target_is_directory=True)

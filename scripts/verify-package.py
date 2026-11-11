@@ -43,7 +43,7 @@ def verify_app(app, image, version, distribution):
     architectures = subprocess.check_output(['lipo', '-archs', str(binary)], text=True).strip()
     if architectures not in ('arm64', 'x86_64') or image.name != f"Keylane-{version['version']}-macos-{architectures}.dmg":
         raise SystemExit(f'Filename/architecture mismatch: {architectures}')
-    requirement = [DEVELOPER_ID_REQUIREMENT] if distribution else []
+    requirement = [DEVELOPER_ID_REQUIREMENT + ' and entitlement["com.apple.security.automation.apple-events"] = true'] if distribution else []
     subprocess.run(['codesign', '--verify', '--deep', '--strict', *requirement, str(app)], check=True)
     if distribution:
         subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose', str(app)], check=True)
