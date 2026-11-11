@@ -12,27 +12,29 @@ struct SystemShortcutsPreferences: View {
         VStack(spacing: 16) {
             SettingsGroup {
                 HStack {
-                    TextField("查找快捷指令…", text: $filter).textFieldStyle(.plain)
+                    SettingsSearchField(text: $filter, placeholder: "查找快捷指令…")
+                        .frame(height: 24)
                     Button("刷新", systemImage: "arrow.clockwise") { controller.refresh(force: true) }.disabled(controller.loading)
                     Button("打开快捷指令") { UtilityActions.openApplication("com.apple.shortcuts") }
-                }.buttonStyle(ContentActionButtonStyle())
+                }.buttonStyle(.bordered).controlSize(.small)
                 if controller.loading { ProgressView().controlSize(.small) }
                 if !controller.message.isEmpty { Text(controller.message).foregroundStyle(.secondary) }
                 if !controller.loading, controller.entries.isEmpty, controller.message.isEmpty { Text("系统中没有快捷指令").foregroundStyle(.secondary) }
             }.id("system-shortcuts")
             if !controller.entries.isEmpty {
-                SettingsGroup {
-                    ForEach(controller.entries.filter { filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter) }) { entry in
-                        CommandSettingsRow(title: entry.name,
-                            alias: Binding(get: { model.aliases[entry.commandID] ?? "" }, set: { model.setAlias(entry.commandID, value: $0) }),
-                            shortcut: model.bindings[entry.commandID],
-                            isEnabled: Binding(get: { !controller.disabledIDs.contains(entry.id) }, set: { enabled in
-                                if enabled { controller.disabledIDs.remove(entry.id) } else { controller.disabledIDs.insert(entry.id) }
-                            }),
-                            setShortcut: { model.setShortcut(entry.commandID, value: $0) },
-                            icon: { ShortcutArtwork(image: controller.icons[entry.id]) },
-                            perform: { controller.run(entry.id) })
-                    }
+                let entries = controller.entries.filter {
+                    filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter)
+                }
+                CommandSettingsList(items: entries, id: \.id, emptyMessage: "没有匹配的快捷指令") { entry in
+                    CommandSettingsRow(title: entry.name,
+                        alias: Binding(get: { model.aliases[entry.commandID] ?? "" }, set: { model.setAlias(entry.commandID, value: $0) }),
+                        shortcut: model.bindings[entry.commandID],
+                        isEnabled: Binding(get: { !controller.disabledIDs.contains(entry.id) }, set: { enabled in
+                            if enabled { controller.disabledIDs.remove(entry.id) } else { controller.disabledIDs.insert(entry.id) }
+                        }),
+                        setShortcut: { model.setShortcut(entry.commandID, value: $0) },
+                        icon: { ShortcutArtwork(image: controller.icons[entry.id]) },
+                        perform: { controller.run(entry.id) })
                 }
             }
         }.onAppear { controller.refresh(force: true) }

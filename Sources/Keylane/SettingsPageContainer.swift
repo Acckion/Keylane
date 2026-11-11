@@ -23,14 +23,14 @@ struct SettingsPageContainer<Content: View>: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: 16) {
                     SettingsPageHeader(title: title, symbol: symbol, subtitle: subtitle)
                         .onGeometryChange(for: Bool.self) {
                             $0.frame(in: .scrollView).maxY <= 0
                         } action: { headerScrolledAway = $0 }
                     content()
                 }
-                .padding(.horizontal, 18).padding(.top, 20).padding(.bottom, 30)
+                .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 30)
                 .frame(maxWidth: 820).frame(maxWidth: .infinity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

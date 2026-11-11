@@ -46,13 +46,14 @@ struct CommandSettingsRow<Icon: View>: View {
             Toggle("启用 \(title)", isOn: $isEnabled)
                 .labelsHidden().toggleStyle(.checkbox).controlSize(.small)
         }
-        .frame(minHeight: 46)
+        .frame(minHeight: SettingsRowsLayout.rowHeight)
+        .layoutValue(key: SettingsOwnRowHeight.self, value: true)
         .disabled(!available)
     }
 }
 
-/// Command rows already size themselves. Use this card to group commands
-/// so settings groups do not add a second layer of row spacing.
+
+/// Command rows size themselves. Group them here to avoid adding row spacing twice.
 struct CommandSettingsList<Item, ID: Hashable, Row: View>: View {
     let items: [Item]
     let id: KeyPath<Item, ID>

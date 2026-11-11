@@ -34,16 +34,25 @@ struct DetailInformationSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("信息").font(VisualStyle.sectionText).foregroundStyle(.secondary).padding(.horizontal, 9)
-            VStack(spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                    HStack(alignment: .top, spacing: 12) {
-                        Text(row.title).foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
-                        if let icon = row.icon { Image(nsImage: icon).resizable().scaledToFit().frame(width: 15, height: 15) }
-                        Text(row.value).multilineTextAlignment(.trailing).lineLimit(1).truncationMode(.middle).textSelection(.enabled).help(row.value)
-                    }.font(.system(size: 12)).padding(9).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(index.isMultiple(of: 2) ? Color.primary.opacity(0.035) : .clear, in: RoundedRectangle(cornerRadius: 6))
-                }
+            DetailInformationRows(rows: rows)
+        }
+    }
+}
+
+struct DetailInformationRows: View {
+    let rows: [DetailInformationValue]
+    var verticalPadding: CGFloat = 9
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                HStack(alignment: .top, spacing: 12) {
+                    Text(row.title).foregroundStyle(.secondary)
+                    Spacer(minLength: 8)
+                    if let icon = row.icon { Image(nsImage: icon).resizable().scaledToFit().frame(width: 15, height: 15) }
+                    Text(row.value).multilineTextAlignment(.trailing).lineLimit(1).truncationMode(.middle).textSelection(.enabled).help(row.value)
+                }.font(.system(size: 12)).padding(.horizontal, 9).padding(.vertical, verticalPadding).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(index.isMultiple(of: 2) ? Color.primary.opacity(0.035) : .clear, in: RoundedRectangle(cornerRadius: 6))
             }
         }
     }

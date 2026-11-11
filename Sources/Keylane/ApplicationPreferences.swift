@@ -15,40 +15,37 @@ struct ApplicationPreferences: View {
         let visibleApplications = applications
         VStack(alignment: .leading, spacing: 18) {
             surface {
-                HStack {
-                    caption("自动退出", "停止使用应用一段时间后自动退出。")
-                    Spacer(); Text("未实现").font(.caption).foregroundStyle(.tertiary)
-                    Image(systemName: "chevron.forward")
-                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
-                }.padding(14)
+                SettingsRow("自动退出", detail: "停止使用应用一段时间后自动退出。") {
+                    HStack {
+                        Text("未实现").font(.caption).foregroundStyle(.tertiary)
+                        Image(systemName: "chevron.forward")
+                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
+                    }
+                }.padding(.horizontal, 18)
             }.help("自动退出将在系统工具阶段实现；当前不会自动退出任何应用。")
             surface {
-                HStack(alignment: .top) {
-                    caption("快捷键行为", "触发应用快捷键时执行的操作。")
-                    Spacer(minLength: 8)
+                SettingsRow("快捷键行为", detail: "触发应用快捷键时执行的操作。") {
                     Picker("快捷键行为", selection: $model.applicationHotkeyAction) {
                         Text("激活应用").tag("activate")
                         Text("切换显示与隐藏").tag("toggle")
                     }.pickerStyle(.menu).buttonStyle(.borderless).labelsHidden().fixedSize().padding(.top, 1)
-                }.padding(14)
+                }.padding(.horizontal, 18)
             }.id("hotkey-action")
             surface {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .top) {
-                        caption("搜索范围", "选择搜索应用程序时包含的其他文件夹。")
-                        Spacer(minLength: 8)
+                VStack(alignment: .leading, spacing: 0) {
+                    SettingsRow("搜索范围", detail: "选择搜索应用程序时包含的其他文件夹。") {
                         Button { model.addRoot() } label: { Image(systemName: "plus").font(.system(size: 12, weight: .medium)) }
-                            .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small).help("添加搜索文件夹")
-                    }.padding(.bottom, 4)
+                            .buttonStyle(ContentActionButtonStyle()).buttonBorderShape(.circle).controlSize(.small).help("添加搜索文件夹")
+                    }
                     VStack(spacing: 0) {
-                        ForEach(Array(model.roots.enumerated()), id: \.element) { index, path in
+                        SettingsCompactList(items: model.roots, id: \.self) { path in
                             ScopeRow(path: path) { model.roots.removeAll { $0 == path }; model.reloadCatalog() }
-                            if index < model.roots.count - 1 { Divider().opacity(0.4) }
                         }
+                        .padding(.bottom, model.roots.isEmpty ? 0 : 5)
                         if model.roots.isEmpty { Text("尚未添加搜索范围").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 14) }
                     }
-                }.padding(14)
+                }.padding(.horizontal, 18)
             }.id("scopes")
 
             Text("命令").font(.system(size: 15, weight: .medium)).padding(.leading, 14).padding(.top, 10)
@@ -64,14 +61,8 @@ struct ApplicationPreferences: View {
                 Spacer()
                 SettingsSearchField(text: $filter, placeholder: "筛选应用…").frame(width: 170, height: 24)
             }.padding(.horizontal, 14).padding(.top, 10)
-            surface {
-                LazyVStack(spacing: 0) {
-                    ForEach(visibleApplications, id: \.path) { url in
-                        ApplicationPreferenceRow(model: model, url: url)
-                        if url != visibleApplications.last { Divider().opacity(0.4).padding(.horizontal, 14) }
-                    }
-                    if visibleApplications.isEmpty { Text("没有匹配的应用").foregroundStyle(.secondary).padding(24) }
-                }
+            CommandSettingsList(items: visibleApplications, id: \.path, emptyMessage: "没有匹配的应用") { url in
+                ApplicationPreferenceRow(model: model, url: url)
             }.id("favorites")
             HStack {
                 Text(model.scanStatus).font(.caption).foregroundStyle(.secondary)
@@ -79,12 +70,6 @@ struct ApplicationPreferences: View {
                 Button("刷新", systemImage: "arrow.clockwise") { model.discovery.refresh() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 14)
         }.font(.system(size: 15))
-    }
-    private func caption(_ title: String, _ subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).fontWeight(.medium)
-            Text(subtitle).font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
     }
     private func surface<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         content().frame(maxWidth: .infinity, alignment: .leading)
@@ -106,11 +91,11 @@ private struct ScopeRow: View {
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: "folder").font(VisualStyle.actionSymbol).frame(width: 18)
-            Text((path as NSString).abbreviatingWithTildeInPath).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            Text((path as NSString).abbreviatingWithTildeInPath).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             Spacer(minLength: 4)
             Button(action: remove) { Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary) }
                 .buttonStyle(.plain).opacity(hovering ? 1 : 0).help("移除此搜索范围").accessibilityLabel("移除 \(path)")
-        }.frame(height: 35).contentShape(Rectangle()).onHover { hovering = $0 }.help(path)
+        }.contentShape(Rectangle()).onHover { hovering = $0 }.help(path)
     }
 }
 private struct ApplicationPreferenceRow: View {
@@ -128,7 +113,6 @@ private struct ApplicationPreferenceRow: View {
             setShortcut: { model.setShortcut("app:" + url.path, value: $0) },
             icon: { Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable() }
         )
-        .padding(.horizontal, 14)
         .help(url.path)
         .contextMenu {
             Button(model.favorites.contains(url.path) ? "取消收藏" : "加入收藏") { model.toggleFavorite(url.path) }

@@ -67,25 +67,53 @@ struct ClipboardPreferences: View {
         VStack(spacing: 16) {
             card {
                 Toggle("记录剪贴板历史", isOn: $controller.captureEnabled)
+                Divider()
                 Toggle("自动识别新图片中的文字", isOn: $controller.automaticOCR)
             }.id("capture")
             card {
-                LabeledContent("剪贴板快捷键") { ShortcutRecorder(shortcut:model.bindings["clipboard"]) { model.setShortcut("clipboard",value:$0) } }
-                SettingsPicker("回车动作",selection:$controller.primaryAction) { Text("仅复制").tag("copy"); Text("粘贴到上个应用").tag("paste") }
-                Button("允许辅助功能…") { model.requestKeyboardAccess() }.buttonStyle(ContentActionButtonStyle())
-                if !controller.accessMessage.isEmpty { Text(controller.accessMessage).font(.caption).foregroundStyle(.orange); Button("打开系统设置") { NSWorkspace.shared.open(URL(fileURLWithPath:"/System/Applications/System Settings.app")) }.buttonStyle(ContentActionButtonStyle()) }
+                SettingsRow("剪贴板快捷键") {
+                    ShortcutRecorder(shortcut: model.bindings["clipboard"], compact: true,
+                                     title: "剪贴板快捷键", icon: AnyView(Image(systemName: "clipboard"))) {
+                        model.setShortcut("clipboard", value: $0)
+                    }
+                }
+                Divider()
+                SettingsPicker("回车动作", selection: $controller.primaryAction) {
+                    Text("仅复制").tag("copy")
+                    Text("粘贴到上个应用").tag("paste")
+                }
+                Divider()
+                SettingsActionRow(title: "辅助功能", actionTitle: "允许…") {
+                    model.requestKeyboardAccess()
+                }
+                if !controller.accessMessage.isEmpty {
+                    Divider()
+                    SettingsActionRow(title: "权限状态", detail: controller.accessMessage,
+                                      actionTitle: "打开系统设置") {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+                    }
+                }
             }
             card {
                 SettingsPicker("保留时间", selection: $controller.retentionDays) { Text("7天").tag(7); Text("30天").tag(30); Text("90天").tag(90); Text("1年").tag(365) }
+                Divider()
                 SettingsPicker("记录上限", selection: $controller.maxItems) { Text("100项").tag(100); Text("500项").tag(500); Text("1000项").tag(1000) }
             }
-            card {
-                HStack { Text("不记录这些应用").font(.headline); Spacer(); Button("添加应用…", systemImage: "plus") { controller.addExcludedApplication() }.buttonStyle(ContentActionButtonStyle()) }
+            SettingsGroup(compact: true) {
+                SettingsRow("不记录这些应用") {
+                    Button("添加应用…", systemImage: "plus") { controller.addExcludedApplication() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
                 ForEach(controller.excludedApps.sorted(), id: \.self) { id in
-                    HStack {
-                        Text(NSWorkspace.shared.urlForApplication(withBundleIdentifier: id).map { FileManager.default.displayName(atPath: $0.path) } ?? id).font(.caption)
-                        Spacer()
-                        if !ClipboardPolicy.defaultExcluded.contains(id) { Button("移除") { controller.excludedApps.remove(id) }.buttonStyle(.plain) }
+                    Divider()
+                    SettingsRow(NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
+                        .map { FileManager.default.displayName(atPath: $0.path) } ?? id) {
+                        if !ClipboardPolicy.defaultExcluded.contains(id) {
+                            Button("移除") { controller.excludedApps.remove(id) }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                        }
                     }
                 }
             }
