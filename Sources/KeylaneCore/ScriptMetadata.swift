@@ -159,7 +159,7 @@ public struct ScriptMetadata: Equatable, Sendable {
 }
 
 public enum ScriptTemplate: String, CaseIterable, Sendable {
-    case bash, zsh, sh, python, node, ruby, php, swift, appleScript
+    case bash, zsh, sh, python, node, ruby, php, swift, appleScript, csharp, powerShell
 
     public var title: String {
         switch self {
@@ -172,6 +172,8 @@ public enum ScriptTemplate: String, CaseIterable, Sendable {
         case .php: "PHP"
         case .swift: "Swift"
         case .appleScript: "AppleScript"
+        case .csharp: "C# (.NET 10)"
+        case .powerShell: "PowerShell"
         }
     }
 
@@ -181,6 +183,8 @@ public enum ScriptTemplate: String, CaseIterable, Sendable {
         case .node: "js"
         case .ruby: "rb"
         case .appleScript: "applescript"
+        case .csharp: "cs"
+        case .powerShell: "ps1"
         default: rawValue
         }
     }
@@ -198,6 +202,8 @@ public enum ScriptTemplate: String, CaseIterable, Sendable {
         case .php: (prefix, comment, body) = ("<?php", "//", "echo \"Hello from Keylane\\n\";")
         case .swift: (prefix, comment, body) = ("#!/usr/bin/swift", "//", "print(\"Hello from Keylane\")")
         case .appleScript: (prefix, comment, body) = ("#!/usr/bin/osascript", "--", "return \"Hello from Keylane\"")
+        case .csharp: (prefix, comment, body) = ("#!/usr/bin/env dotnet", "//", "Console.WriteLine(\"Hello from Keylane\");")
+        case .powerShell: (prefix, comment, body) = ("#!/usr/bin/env pwsh", "#", "Write-Output 'Hello from Keylane'")
         }
         guard url.pathExtension.lowercased() == fileExtension else {
             throw CocoaError(.fileWriteInvalidFileName, userInfo: [NSFilePathErrorKey: url.path])

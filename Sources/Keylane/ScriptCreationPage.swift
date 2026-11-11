@@ -7,7 +7,7 @@ struct ScriptCreationPage: View {
     @FocusState private var focus: String?
 
     var body: some View {
-        LauncherCreationForm(back: back) { EmptyView() } fields: {
+        LauncherCreationForm(back: back, spacing: 16) { EmptyView() } fields: {
             LauncherCreationField("模板") {
                 LauncherCreationControl {
                     Picker("模板", selection: $controller.template) {

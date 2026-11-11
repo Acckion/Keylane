@@ -6,7 +6,7 @@
 
 「创建脚本命令」打开启动器内的表单。选择模板、运行模式，填写标题和所需元数据，再按 ⌘↩ 或点「创建脚本」选择保存位置。已有文件会保留。新目录会加入搜索范围，保存后在访达显示脚本。
 
-内置模板包括 Shell（Bash、Zsh、sh）、Python、Node.js、Ruby、PHP、Swift 和 AppleScript。导入时也支持编译的 AppleScript（.scpt）、PowerShell（.ps1）及其他带 shebang 的可执行脚本。脚本使用本机解释器。Swift 和其他外部解释器可用性取决于本机配置。
+内置模板包括 Shell（Bash、Zsh、sh）、Python、Node.js、Ruby、PHP、Swift、AppleScript、C#（.NET 10）和 PowerShell。导入时也支持编译的 AppleScript（.scpt）及其他带 shebang 的可执行脚本。脚本使用本机解释器。Swift 和其他外部解释器可用性取决于本机配置。
 
 ## 导入与运行
 

@@ -65,7 +65,7 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
         "py": "python3", "js": "node", "mjs": "node", "cjs": "node",
         "rb": "ruby", "php": "php", "swift": "/usr/bin/swift",
         "applescript": "/usr/bin/osascript", "scpt": "/usr/bin/osascript",
-        "ps1": "pwsh"
+        "ps1": "pwsh", "cs": "dotnet"
     ]
 
     public static func createTemplate(at url: URL) throws {
