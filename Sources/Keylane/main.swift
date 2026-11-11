@@ -437,7 +437,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.hideLauncher(reason: "outsideClick")
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
-            if let self, event.window !== self.window, self.window.attachedSheet == nil {
+            if let self, event.window !== self.window, self.window.attachedSheet == nil,
+               !FilePreview.shared.owns(event.window) {
                 self.hideLauncher(reason: "otherWindow")
             }
             return event
@@ -501,7 +502,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         toast.hide()
     }
     func windowDidResignKey(_ notification: Notification) {
-        guard let resigned = notification.object as? NSWindow, resigned === window, window.attachedSheet == nil else { return }
+        guard let resigned = notification.object as? NSWindow, resigned === window, window.attachedSheet == nil,
+              !FilePreview.shared.takesLauncherFocus else { return }
         hideLauncher(reason: "resignKey")
     }
     func applicationWillTerminate(_ notification: Notification) {
