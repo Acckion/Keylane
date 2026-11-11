@@ -18,6 +18,7 @@ final class Model: ObservableObject {
     @Published var compactExpanded = false
     var interfaceScale: CGFloat { interfaceSize == "small" ? 0.9 : interfaceSize == "large" ? 1.1 : 1 }
     var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded }
+    @Published var presentedLauncherHeight: CGFloat = 470
     var launcherHeight: CGFloat { isCompact ? (compactFavorites && !favorites.isEmpty ? 109 : 61) : 470 }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
     @Published var savedNotes: [KeylaneCore.Record] = []
@@ -279,6 +280,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var hotkeyStatus: Int32 = 0
     var appearanceSubscription: AnyCancellable?
     var geometrySubscription: AnyCancellable?
+    private var resizeTimer: Timer?
+    private var resizeTarget: NSRect?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
@@ -406,12 +409,15 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func hideLauncher(reason: String = "command") {
         guard window.isVisible else { return }
+        resizeTimer?.invalidate()
+        resizeTimer = nil
+        resizeTarget = nil
         if model.placement == "remember" { window.saveFrame(usingName: "KeylaneLauncher") }
         window.orderOut(nil)
         NotificationCenter.default.post(name: .launcherHidden, object: nil)
         windowDiagnostics.record("hidden:" + reason, launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
     }
-    func updateLauncherGeometry() {
+    func updateLauncherGeometry(animated: Bool = true) {
         guard window != nil else { return }
         let backingScale = max(1, window.backingScaleFactor)
         // Align the requested size before comparing it with AppKit's frame.
@@ -420,18 +426,52 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             width: (760 * model.interfaceScale * backingScale).rounded() / backingScale,
             height: (model.launcherHeight * model.interfaceScale * backingScale).rounded() / backingScale
         )
-        let current = window.frame.size
+        let start = window.frame
         let tolerance = 1 / backingScale
-        guard abs(current.width - size.width) >= tolerance || abs(current.height - size.height) >= tolerance else { return }
-        var frame = window.frame
-        frame.origin.x += (frame.width - size.width) / 2
-        frame.origin.y += frame.height - size.height
-        frame.size = size
+        if animated, resizeTarget?.size == size { return }
+        resizeTimer?.invalidate()
+        resizeTimer = nil
+        resizeTarget = nil
+
+        var target = start
+        target.origin.x += (start.width - size.width) / 2
+        target.origin.y = start.maxY - size.height
+        target.size = size
         if let area = window.screen?.visibleFrame {
-            frame.origin.x = max(area.minX, min(frame.origin.x, area.maxX - size.width))
-            frame.origin.y = max(area.minY, min(frame.origin.y, area.maxY - size.height))
+            target.origin.x = max(area.minX, min(target.origin.x, area.maxX - size.width))
+            target.origin.y = max(area.minY, min(target.origin.y, area.maxY - size.height))
         }
-        window.setFrame(frame, display: true)
+        guard abs(start.width - size.width) >= tolerance || abs(start.height - size.height) >= tolerance else {
+            model.presentedLauncherHeight = model.launcherHeight
+            return
+        }
+        let scale = model.interfaceScale
+        guard animated, window.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+              abs(start.height - target.height) > 1, abs(start.width - target.width) < tolerance else {
+            model.presentedLauncherHeight = model.launcherHeight
+            window.setFrame(target, display: true)
+            return
+        }
+        resizeTarget = target
+        let began = ProcessInfo.processInfo.systemUptime
+        let duration = target.height > start.height ? 0.22 : 0.18
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let progress = min(1, (ProcessInfo.processInfo.systemUptime - began) / duration)
+            let eased = 1 - pow(1 - progress, 3)
+            let height = start.height + (target.height - start.height) * eased
+            let top = start.maxY + (target.maxY - start.maxY) * eased
+            let x = start.minX + (target.minX - start.minX) * eased
+            self.model.presentedLauncherHeight = progress == 1 ? self.model.launcherHeight : height / scale
+            self.window.setFrame(NSRect(x: x, y: top - height, width: target.width, height: height), display: true)
+            if progress == 1 {
+                timer.invalidate()
+                self.resizeTimer = nil
+                self.resizeTarget = nil
+            }
+        }
+        resizeTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
     @objc func show() {
         if window.isVisible && window.isKeyWindow { hideLauncher(); return }
@@ -442,11 +482,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     /// Present the current destination without applying the launcher's compact-mode reset.
     private func presentLauncher() {
-        updateLauncherGeometry()
+        updateLauncherGeometry(animated: false)
         rememberPreviousApplication()
         let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
         if let area = screen?.visibleFrame {
-            if model.placement == "remember" { _ = window.setFrameUsingName("KeylaneLauncher") }; updateLauncherGeometry()
+            if model.placement == "remember" { _ = window.setFrameUsingName("KeylaneLauncher") }; updateLauncherGeometry(animated: false)
             var frame = window.frame
             if model.placement != "remember" || !frame.intersects(area) { frame.origin = NSPoint(x: area.midX - frame.width / 2, y: area.midY + 235 * model.interfaceScale - frame.height) }
             frame.origin.x = max(area.minX, min(frame.origin.x, area.maxX - frame.width))
