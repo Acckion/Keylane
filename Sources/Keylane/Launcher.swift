@@ -239,7 +239,13 @@ struct Launcher: View {
     }
     private func moveSelection(_ delta: Int) {
         if model.isCompact { model.compactExpanded = true; return }
-        if actions || appMenu { actionSelection = NavigationBounds.move(actionSelection, by: delta, count: filteredMenu(applicationMenu: appMenu).count) }
+        if actions || appMenu {
+            let items = filteredMenu(applicationMenu: appMenu)
+            let enabled = items.indices.filter { items[$0].enabled }
+            if let current = enabled.firstIndex(of: actionSelection) {
+                actionSelection = enabled[NavigationBounds.move(current, by: delta, count: enabled.count)]
+            } else if let first = enabled.first { actionSelection = first }
+        }
         else if let move = page?.move { move(delta) }
         else if model.pageID == .root || showsFileResults {
             let results = rows
@@ -326,6 +332,17 @@ struct Launcher: View {
                         resultRow(row, index: index)
                     }
                 }.buttonStyle(.plain).id(row.id)
+                    .contextMenu {
+                        if row.commandID.rawValue.hasPrefix("app:") {
+                            Button("使用参数启动…", systemImage: "terminal") {
+                                closeMenus()
+                                argumentText = ""
+                                argumentTarget = .init(title: row.name) { [weak model] arguments in
+                                    model?.launch(URL(fileURLWithPath: row.id), arguments: arguments)
+                                }
+                            }
+                        }
+                    }
             }
         }
     }
@@ -424,11 +441,11 @@ struct Launcher: View {
         let actionWidth: CGFloat = page?.actionWidth ?? 196
         let open = application ? appMenu : actions
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
-        let count = open ? filteredMenu(applicationMenu: application).count : 0
-        let menuHeight = CGFloat(87 + (count == 0 ? 48 : count * 39))
+        let items = open ? filteredMenu(applicationMenu: application) : []
+        let menuHeight = menuRowsHeight(items) + 87
         return ZStack(alignment: alignment) {
             if open {
-                menuPanel(applicationMenu: application)
+                menuPanel(applicationMenu: application, items: items)
                     .frame(width: 345, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
             } else if application && secondary {
@@ -484,6 +501,7 @@ struct Launcher: View {
         focusToken += 1
     }
     private func activate(_ item: MenuAction) {
+        guard item.enabled else { return }
         if let next = item.submenu {
             submenu = next
             actionQuery = ""
@@ -493,15 +511,17 @@ struct Launcher: View {
             dismissSubmenu()
         } else {
             closeMenus()
-            if let form = item.argumentForm {
-                argumentTarget = form
-                argumentText = ""
-            } else { item.perform() }
+            item.perform()
         }
     }
     private func filteredMenu(applicationMenu: Bool) -> [MenuAction] { menuItems(applicationMenu: applicationMenu).filter { actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery) } }
-    private func menuPanel(applicationMenu: Bool) -> some View {
-        let items = filteredMenu(applicationMenu: applicationMenu)
+    private func menuRowsHeight(_ items: [MenuAction]) -> CGFloat {
+        guard !items.isEmpty else { return 48 }
+        let breaks = zip(items, items.dropFirst()).filter { $0.group != $1.group }.count
+        return min(320, CGFloat(items.count * 39 + breaks * 9))
+    }
+
+    private func menuPanel(applicationMenu: Bool, items: [MenuAction]) -> some View {
         let title: String
         if applicationMenu {
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版"
@@ -516,22 +536,45 @@ struct Launcher: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
-                                activate: { activate(item) }, highlight: { actionSelection = index }) {
-                    HStack(spacing: 3) {
-                        ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) }
+            if items.isEmpty {
+                Text("没有匹配的操作").font(.caption).foregroundStyle(.secondary).padding(16)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                if index > 0, items[index - 1].group != item.group {
+                                    Divider().padding(.horizontal, 16).frame(height: 9)
+                                }
+                                LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
+                                                enabled: item.enabled, destructive: item.destructive,
+                                                activate: { activate(item) }, highlight: { actionSelection = index }) {
+                                    HStack(spacing: 3) {
+                                        ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) }
+                                    }
+                                }
+                                .padding(.horizontal, 8)
+                                .id(item.id)
+                            }
+                        }
+                    }
+                    .scrollIndicators(.automatic)
+                    .frame(height: menuRowsHeight(items))
+                    .onChange(of: actionSelection) { _, index in
+                        if items.indices.contains(index) { proxy.scrollTo(items[index].id) }
+                    }
+                    .onChange(of: actionQuery) { _, _ in
+                        if let first = items.first { proxy.scrollTo(first.id, anchor: .top) }
                     }
                 }
-                .padding(.horizontal, 8)
             }
-            if items.isEmpty { Text("没有匹配的操作").font(.caption).foregroundStyle(.secondary).padding(16) }
             Divider().padding(.top, 9)
             SearchField(text: $actionQuery, placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, fontSize: 14, navigation: model.navigation, submit: {
                 if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
             }, move: moveSelection, escape: escape, back: { escape() }, forward: {
                 if items.indices.contains(actionSelection), items[actionSelection].submenu != nil { activate(items[actionSelection]) }
-            }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10).onChange(of: actionQuery) { _, _ in actionSelection = 0 }
+            }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10)
+                .onChange(of: actionQuery) { _, _ in actionSelection = items.firstIndex(where: \.enabled) ?? 0 }
         }.frame(width: 345)
     }
     private func toggleMenu(application: Bool) {

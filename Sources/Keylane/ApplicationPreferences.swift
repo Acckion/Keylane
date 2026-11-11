@@ -15,6 +15,7 @@ struct ApplicationPreferences: View {
         catalog = model.applicationSettingsCatalog
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$applicationHotkeyAction),
+            ViewObservation.changes(model.$applicationSettingsPath),
             ViewObservation.changes(model.$roots),
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
@@ -25,8 +26,27 @@ struct ApplicationPreferences: View {
     }
 
     var body: some View {
+        if let path = model.applicationSettingsPath {
+            SettingsPageSections {
+                HStack {
+                    Text("命令设置").font(.headline)
+                    Spacer()
+                    Button("显示所有应用") { model.showAllApplicationSettings() }
+                        .buttonStyle(.bordered)
+                }.padding(.horizontal, 14)
+                CommandSettingsList(items: catalog.items.filter { $0.id == path }, id: \.id,
+                                    emptyMessage: "应用已移走或删除") { item in
+                    applicationCommand(item)
+                }
+            }
+        } else {
+            allApplications
+        }
+    }
+
+    private var allApplications: some View {
         let visibleApplications = filteredApplications ?? catalog.items
-        SettingsPageSections {
+        return SettingsPageSections {
             SettingsGroup {
                 SettingsRow("自动退出", detail: "停止使用应用一段时间后自动退出。") {
                     HStack {
@@ -99,8 +119,7 @@ struct ApplicationPreferences: View {
         return CommandSettingsEntry(
             title: item.title, model: model, commandID: .init(rawValue: "app:" + item.id), aliasKey: item.id,
             isEnabled: Binding(get: { !model.excluded.contains(item.id) }, set: { value in
-                if value { model.excluded.remove(item.id) } else { model.excluded.insert(item.id) }
-                model.reloadCatalog()
+                model.setApplicationEnabled(value, path: item.id)
             }),
             help: item.id,
             menu: [
