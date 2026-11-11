@@ -80,9 +80,9 @@ public final class ClipboardStore {
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { sqlite3_close(db); throw ClipboardError.database }
         do {
             let version = try scalar("PRAGMA user_version")
-            guard version <= 2 else { throw ClipboardError.newerSchema }
+            guard version <= 3 else { throw ClipboardError.newerSchema }
             try exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=2000; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;")
-            if version == 1 { lastMigrationBackupURL = try migrationBackup() }
+            if version == 1 || version == 2 { lastMigrationBackupURL = try migrationBackup(version:version) }
             try exec("BEGIN IMMEDIATE")
             try exec("""
                 CREATE TABLE IF NOT EXISTS clips(rowid INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, kind TEXT NOT NULL,
@@ -97,14 +97,18 @@ public final class ClipboardStore {
                   INSERT INTO clips_fts(clips_fts,rowid,searchable) VALUES('delete',old.rowid,old.searchable);
                   INSERT INTO clips_fts(rowid,searchable) VALUES(new.rowid,new.searchable); END;
                 CREATE TABLE IF NOT EXISTS clip_snapshots(clip_id TEXT PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE, payload BLOB NOT NULL, search_text TEXT NOT NULL DEFAULT '');
-                PRAGMA user_version=2;
-                COMMIT;
                 """)
+            // Early development builds used version 2 both before and after adding
+            // search_text. Inspect the table rather than trusting that version alone.
+            if try scalar("SELECT count(*) FROM pragma_table_info('clip_snapshots') WHERE name='search_text'") == 0 {
+                try exec("ALTER TABLE clip_snapshots ADD COLUMN search_text TEXT NOT NULL DEFAULT ''")
+            }
+            try exec("PRAGMA user_version=3; COMMIT;")
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
         } catch { try? exec("ROLLBACK"); sqlite3_close(db); db = nil; throw error }
     }
-    private func migrationBackup() throws -> URL {
-        let folder = directory.appendingPathComponent("migrations/v1-" + UUID().uuidString,isDirectory:true)
+    private func migrationBackup(version: Int) throws -> URL {
+        let folder = directory.appendingPathComponent("migrations/v\(version)-" + UUID().uuidString,isDirectory:true)
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
         let target = folder.appendingPathComponent("clipboard.sqlite")
         var destination: OpaquePointer?
@@ -123,7 +127,7 @@ public final class ClipboardStore {
                 try FileManager.default.copyItem(at:source,to:images.appendingPathComponent(name))
             }
         }
-        try Data("Complete v1 database and owned-image migration backup.\n".utf8).write(to:folder.appendingPathComponent("complete.txt"),options:.atomic)
+        try Data("Complete v\(version) database and owned-image migration backup.\n".utf8).write(to:folder.appendingPathComponent("complete.txt"),options:.atomic)
         return folder
     }
     deinit { sqlite3_close(db) }
@@ -272,7 +276,7 @@ public final class ClipboardStore {
         let values = try root.resourceValues(forKeys:[.isDirectoryKey,.isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink != true else { throw ClipboardError.database }
         return try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:[.isDirectoryKey,.isSymbolicLinkKey]).filter { url in
-            guard url.lastPathComponent.hasPrefix("v1-"), UUID(uuidString:String(url.lastPathComponent.dropFirst(3))) != nil,
+            guard ["v1-","v2-"].contains(where:url.lastPathComponent.hasPrefix), UUID(uuidString:String(url.lastPathComponent.dropFirst(3))) != nil,
                   let value = try? url.resourceValues(forKeys:[.isDirectoryKey,.isSymbolicLinkKey]), value.isDirectory == true, value.isSymbolicLink != true else { return false }
             return FileManager.default.fileExists(atPath:url.appendingPathComponent("complete.txt").path)
         }

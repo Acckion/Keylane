@@ -2,6 +2,11 @@ import SwiftUI
 
 /// Shared typography and symbol metrics for navigation and action rows.
 enum VisualStyle {
+    // The 36pt circular controls and capsules share a center with the 28pt window corner:
+    // 28pt outer radius - 18pt control radius = 10pt inset.
+    static let launcherCornerRadius: CGFloat = 28
+    static let launcherControlDiameter: CGFloat = 36
+    static let launcherEdgeInset: CGFloat = 10
     static let rowText = Font.system(size: 14, weight: .regular)
     static let actionSymbol = Font.system(size: 15, weight: .regular)
     static let sectionText = Font.system(size: 12, weight: .medium)

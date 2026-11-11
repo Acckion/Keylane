@@ -16,6 +16,11 @@ archive = Path(sys.argv[1]) if len(sys.argv) == 2 else ROOT / 'dist' / f"Keylane
 with zipfile.ZipFile(archive) as bundle, tempfile.TemporaryDirectory(prefix='keylane-package-') as temporary:
     names = bundle.namelist()
     expected = {'Keylane.app/Contents/MacOS/Keylane', 'Keylane.app/Contents/Info.plist', 'Keylane.app/Contents/Resources/LICENSE', 'Keylane.app/Contents/Resources/Assets.car', 'Keylane.app/Contents/Resources/Keylane.icns', 'Keylane.app/Contents/_CodeSignature/CodeResources'}
+    for resource in ('EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
+        name = f'Keylane.app/Contents/Resources/{resource}'
+        expected.add(name)
+        if name not in names or bundle.read(name) != (ROOT / 'Resources' / resource).read_bytes():
+            raise SystemExit(f'missing or different resource: {resource}')
     if set(names) != expected or len(names) != len(expected):
         raise SystemExit('unexpected/missing package contents: ' + repr(names))
     info = plistlib.loads(bundle.read('Keylane.app/Contents/Info.plist'))

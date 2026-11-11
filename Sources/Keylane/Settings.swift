@@ -13,7 +13,7 @@ struct SettingsView: View {
     @State private var history = ["applications"]
     @State private var historyIndex = 0
     @Environment(\.colorScheme) private var scheme
-    private let pages: [(String,String,String)] = [("general","通用","slider.horizontal.3"),("applications","应用程序","square.grid.2x2.fill"),("files","文件搜索","doc.text.magnifyingglass"),("clipboard","剪贴板历史","clipboard.fill"),("notes","便笺","note.text"),("links","快捷链接","link"),("advanced","高级","wrench.and.screwdriver"),("about","关于 Keylane","info.circle")]
+    private let pages: [(String,String,String)] = [("general","通用","slider.horizontal.3"),("applications","应用程序","square.grid.2x2.fill"),("files","文件搜索","doc.text.magnifyingglass"),("clipboard","剪贴板历史","clipboard.fill"),("calendar","日历","calendar"),("shortcuts","快捷指令","square.stack.3d.up"),("menu-bar","菜单栏","menubar.rectangle"),("notes","便笺","note.text"),("links","快捷链接","link"),("advanced","高级","wrench.and.screwdriver"),("about","关于 Keylane","info.circle")]
     private var page: (String,String,String) { pages.first { $0.0 == selected } ?? pages[0] }
     var body: some View {
         NavigationSplitView {
@@ -78,8 +78,8 @@ struct SettingsView: View {
         selected = item.page; target = nil; searchSelection = nil; query = ""
         DispatchQueue.main.async { target = item.id }
     }
-    private var subtitle: String { switch selected { case "applications": return "快速查找并启动已安装的应用程序。"; case "files": return "搜索电脑上的文件与文件夹。"; case "general": return "管理外观、快捷键和启动方式。"; case "links": return "设置常用链接，快速打开。"; case "advanced": return "管理本地资料与隐私设置。"; case "clipboard": return "查找本地保存的文字、图片和文件引用。"; case "notes": return "保存你的想法，随时继续。"; case "about": return "独立、原生、以键盘为中心。"; default: return "按照你的习惯使用 Keylane。" } }
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(18).frame(maxWidth: .infinity, alignment: .leading).modifier(SettingsSurface()) }
+    private var subtitle: String { switch selected { case "applications": return "快速查找并启动已安装的应用程序。"; case "files": return "搜索电脑上的文件与文件夹。"; case "general": return "管理外观、快捷键和启动方式。"; case "links": return "设置常用链接，快速打开。"; case "advanced": return "管理本地资料与隐私设置。"; case "clipboard": return "查找本地保存的文字、图片和文件引用。"; case "shortcuts": return "为系统快捷指令设置搜索别名与热键。"; case "calendar": return "查看日程和会议。"; case "menu-bar": return "选择各模块在菜单栏中显示的项目。"; case "notes": return "保存你的想法，随时继续。"; case "about": return "独立、原生、以键盘为中心。"; default: return "按照你的习惯使用 Keylane。" } }
+    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { SettingsGroup(content: content) }
     @ViewBuilder private var settingsContent: some View {
         switch selected {
         case "general":
@@ -95,14 +95,20 @@ struct SettingsView: View {
             ApplicationPreferences(model: model)
         case "files":
             FileSearchPreferences(controller: model.fileSearch, model: model)
+        case "menu-bar":
+            MenuBarPreferences(registry: model.menuBar)
+        case "shortcuts":
+            SystemShortcutsPreferences(model: model, controller: model.systemShortcuts)
+        case "calendar":
+            CalendarPreferences(model: model)
         case "clipboard":
             ClipboardPreferences(controller: model.clipboard, model: model)
         case "notes":
-            card { LabeledContent("已保存便笺", value: String(model.savedNotes.count)); Text("使用本机 SQLite 自动保存。").foregroundStyle(.secondary); Button("导出便笺…") { model.exportData() }.buttonStyle(.glass) }.id("export")
+            card { LabeledContent("已保存便笺", value: String(model.savedNotes.count)); Text("使用本机 SQLite 自动保存。").foregroundStyle(.secondary); Button("导出便笺…") { model.exportData() }.buttonStyle(ContentActionButtonStyle()) }.id("export")
         case "links":
             card { Text("默认快捷链接").font(.headline); TextField("https://example.com", text: $model.link).textFieldStyle(.roundedBorder); Text("当前支持一个默认链接。链接集合与参数化功能尚未实现。").foregroundStyle(.secondary) }.id("quicklink")
         case "advanced":
-            card { Text("资料目录").font(.headline); Text("Application Support/Keylane").foregroundStyle(.secondary); Button("在 Finder 中显示") { let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane"); NSWorkspace.shared.open(url) }.buttonStyle(.glass) }.id("directory")
+            card { Text("资料目录").font(.headline); Text("Application Support/Keylane").foregroundStyle(.secondary); Button("在 Finder 中显示") { let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane"); NSWorkspace.shared.open(url) }.buttonStyle(ContentActionButtonStyle()) }.id("directory")
             card { Text("无遥测").font(.headline); Text("默认无遥测。文件 AI 仅在你主动发送时连接所配置的服务；云同步与扩展模块尚未接入。").foregroundStyle(.secondary) }.id("privacy")
         default:
             card { LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版")); LabeledContent("许可", value: "PolyForm Noncommercial 1.0.0"); Text("独立实现，非 SuperCmd 或 Raycast 官方产品。").foregroundStyle(.secondary) }.id("version")

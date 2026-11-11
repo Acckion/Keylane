@@ -50,8 +50,7 @@ final class LauncherTests: XCTestCase {
         tap.cancel(); XCTAssertFalse(tap.update(pressed:true,time:2)); XCTAssertFalse(tap.update(pressed:false,time:2.8))
     }
     func testRealCatalogSearchBaseline() throws {
-        // Query assertions below intentionally use Chinese; do not depend on the runner login language.
-        let apps = ApplicationCatalog.scan(roots: ApplicationCatalog.defaultRoots, excluded: [], languages: ["zh-Hans"])
+        let apps = ApplicationCatalog.scan(roots: ApplicationCatalog.defaultRoots, excluded: [])
         guard !apps.isEmpty else { throw XCTSkip("No installed applications available") }
         var samples: [Double] = []
         for query in ["系统", "System Settings", "xtsz", "Terminal", "vsc", "Safari", "计算器", "Calculator", "设置", "mail", "notes", "finder"] {

@@ -1,11 +1,12 @@
 import SwiftUI
+import AppKit
 
 /// Reusable secondary-screen layout. Each pane owns its scrolling and selection.
 struct ResultDetailLayout<Results: View, Detail: View>: View {
     @ViewBuilder let results: () -> Results
     @ViewBuilder let detail: () -> Detail
 
-    var resultsFraction: CGFloat = 0.44
+    var resultsFraction: CGFloat = 0.40
 
     var body: some View {
         GeometryReader { geometry in
@@ -18,20 +19,27 @@ struct ResultDetailLayout<Results: View, Detail: View>: View {
     }
 }
 
-/// Identifies a secondary screen without exposing the home menu.
+/// Shared icon-and-title label used inside secondary-screen menu buttons.
 struct SecondaryPageBadge: View {
     let title: String
     let symbol: String
+    static func width(for title: String) -> CGFloat {
+        let textWidth = (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium)]).width
+        // Keep the icon centered on the left arc; tighten the trailing inset slightly.
+        return 18 + 10.5 + 8 + textWidth + 12
+    }
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: symbol)
-                .font(.system(size: 14, weight: .medium)).foregroundStyle(.white)
-                .frame(width: 25, height: 25)
+                .font(.system(size: 12.5, weight: .medium)).foregroundStyle(.white)
+                .frame(width: 21, height: 21)
                 .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 5))
-            Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+            Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.primary).lineLimit(1)
         }
-        .padding(.leading, 8).padding(.trailing, 13).frame(height: 36)
-        .glassEffect(.regular, in: Capsule())
+        .padding(.leading, (VisualStyle.launcherControlDiameter - 21) / 2)
+        .padding(.trailing, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: VisualStyle.launcherControlDiameter)
         .accessibilityElement(children: .combine)
     }
 }
