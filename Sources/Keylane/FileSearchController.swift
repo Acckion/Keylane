@@ -442,26 +442,42 @@ final class FileSearchController: ObservableObject {
     }
     private var churn: [String:(Date,Int)] = [:]
     private func changed(_ paths: [String], requiresFullScan: Bool) {
-        var changedExclusions = false
+        var exclusions = automaticExclusions
+        var newExclusions: Set<String> = []
+        var changedPaths: [String] = []
         for path in paths {
-            if let i = automaticExclusions.firstIndex(where: { path == $0.path || path.hasPrefix($0.path + "/") }) { automaticExclusions[i].events += 1; changedExclusions = true; continue }
-            let directory = URL(fileURLWithPath:path).deletingLastPathComponent()
-            guard ["build","output","dist","cache","target"].contains(directory.lastPathComponent.lowercased()), !restored.contains(directory.path) else { continue }
-            let previous = churn[directory.path] ?? (Date(),0)
-            let value = Date().timeIntervalSince(previous.0) < 60 ? (previous.0,previous.1+1) : (Date(),1)
-            churn[directory.path] = value
-            if value.1 >= 120 { automaticExclusions.append(.init(path:directory.path,reason:"一分钟内持续变化的构建或缓存目录",events:0)); changedExclusions = true }
+            if let i = exclusions.firstIndex(where: { path == $0.path || path.hasPrefix($0.path + "/") }) {
+                exclusions[i].events += 1
+                continue
+            }
+            changedPaths.append(path)
+            let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+            guard ["build", "output", "dist", "cache", "target"].contains(directory.lastPathComponent.lowercased()),
+                  !restored.contains(directory.path) else { continue }
+            let now = Date()
+            let previous = churn[directory.path] ?? (now, 0)
+            let value = now.timeIntervalSince(previous.0) < 60 ? (previous.0, previous.1 + 1) : (now, 1)
+            if value.1 >= 120 {
+                exclusions.append(.init(path: directory.path, reason: "一分钟内持续变化的构建或缓存目录", events: 0))
+                newExclusions.insert(directory.path)
+                churn.removeValue(forKey: directory.path)
+            } else {
+                churn[directory.path] = value
+            }
         }
-        if changedExclusions { saveAutomatic() }
+        if exclusions != automaticExclusions {
+            automaticExclusions = exclusions
+            saveAutomatic()
+        }
         let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
-        let changedPaths = paths.map { path in
+        let targets = changedPaths.map { path in
             let url = URL(fileURLWithPath: path)
             guard options.useIgnoreFiles else { return path }
             if [".gitignore", ".ignore", ".rayignore"].contains(url.lastPathComponent) { return url.deletingLastPathComponent().path }
             if path.hasSuffix("/.git/info/exclude") { return String(path.dropLast("/.git/info/exclude".count)) }
             return path
         }
-        let relevant = changedPaths.filter { path in
+        let relevant = targets.filter { path in
             guard options.roots.contains(where: { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }) else { return false }
             if !options.includeHidden && path.split(separator:"/").contains(where:{ $0.hasPrefix(".") }) { return false }
             if path == library || path.hasPrefix(library + "/") {
@@ -470,7 +486,11 @@ final class FileSearchController: ObservableObject {
             return !automaticExclusions.contains { path == $0.path || path.hasPrefix($0.path + "/") } && !options.ignorePatterns.contains { FileSearchRules.glob($0,matches:path) }
         }
         dirtyPaths.formUnion(relevant)
-        if requiresFullScan || changedExclusions || dirtyPaths.count > 256 {
+        // Purge newly excluded subtrees even though their own events are filtered above.
+        dirtyPaths.formUnion(newExclusions.filter { path in
+            options.roots.contains { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
+        })
+        if requiresFullScan || dirtyPaths.count > 256 {
             needsFullScan = true
             dirtyPaths.removeAll()
         }
