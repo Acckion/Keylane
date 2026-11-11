@@ -64,6 +64,13 @@ public final class FileSearchIndex {
     }
     public func transaction(_ body: () throws -> Void) throws { try exec("BEGIN IMMEDIATE"); do { try body(); try exec("COMMIT") } catch { try? exec("ROLLBACK"); throw error } }
     public func removeUnseen(root: String, epoch: String) throws { try write("DELETE FROM files WHERE root=? AND epoch<>?",[root,epoch]) }
+    /// Limit reconciliation to the changed entry and its descendants.
+    public func removeUnseen(root: String, subtree: String, epoch: String) throws {
+        let lower = subtree + "/"
+        let upper = subtree + "0" // The next byte after the slash, under SQLite's binary collation.
+        try write("DELETE FROM files WHERE root=? AND epoch<>? AND path IN (SELECT path FROM files WHERE path=? UNION ALL SELECT path FROM files WHERE path>=? AND path<?)",
+                  [root, epoch, subtree, lower, upper])
+    }
     public func removeScope(_ root: String) throws { try write("DELETE FROM files WHERE root=?",[root]) }
     public func removeUnavailableVolumes() throws {
         let s = try statement("SELECT DISTINCT volume FROM files"); var volumes: [String] = []
@@ -80,6 +87,9 @@ public final class FileSearchIndex {
         return result
     }
     public func search(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, isCancelled: @escaping () -> Bool = { false }) throws -> [SpotlightFile] {
+        try searchRanked(query, options: options, excluded: excluded, limit: limit, isCancelled: isCancelled).map(\.file)
+    }
+    public func searchRanked(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, isCancelled: @escaping () -> Bool = { false }) throws -> [RankedFile] {
         guard !isCancelled() else { return [] }
         let cancellation = QueryCancellation(isCancelled)
         sqlite3_progress_handler(db, 1000, { raw in
@@ -104,7 +114,16 @@ public final class FileSearchIndex {
         if !options.externalVolumes { conditions.append("external=0") }
         // Root ownership is stored separately from the path: no user text becomes SQL.
         conditions.append("root IN (" + options.roots.map { _ in "?" }.joined(separator: ",") + ")"); values += options.roots
-        let s = try statement("SELECT path,modified FROM files WHERE " + conditions.joined(separator:" AND ") + " ORDER BY modified DESC,path LIMIT 2000",values); defer { sqlite3_finalize(s) }
+        // Names are already folded in storage. Apply relevance before the candidate cap
+        // so an older exact hit cannot be excluded by newer substring or body matches.
+        let phrase = FileSearchRules.fold(query.trimmingCharacters(in: .whitespacesAndNewlines))
+        let allNameWords = words.map { _ in "instr(name, ?) > 0" }.joined(separator: " AND ")
+        let relevance = "CASE WHEN name=? THEN 0 WHEN instr(name,?)=1 THEN 1 WHEN instr(name,?)>0 THEN 2 WHEN (" + allNameWords + ") THEN 3 ELSE 4 END"
+        values += [phrase, phrase, phrase] + words
+        let sql = "SELECT path,modified FROM files WHERE " + conditions.joined(separator: " AND ")
+            + " ORDER BY " + relevance + ",modified DESC,path LIMIT 2000"
+        let s = try statement(sql, values)
+        defer { sqlite3_finalize(s) }
         var results: [SpotlightFile] = []
         let ignored = FileSearchRules.pathFilter(options.ignorePatterns)
         while true {
@@ -115,8 +134,7 @@ public final class FileSearchIndex {
                   !ignored(path,url.lastPathComponent) else { continue }
             results.append(SpotlightFile(url:url,name:url.lastPathComponent,modified:Date(timeIntervalSince1970:sqlite3_column_double(s,1))))
         }
-        let ranked = results.map { (file: $0, score: FileSearchRules.rank($0.name, query: query)) }
-        return Array(ranked.sorted { a,b in a.score == b.score ? (a.file.modified == b.file.modified ? a.file.id < b.file.id : a.file.modified > b.file.modified) : a.score > b.score }.prefix(max(1,min(200,limit)))).map(\.file)
+        return RankedFile.top(results, query: query, limit: max(1, min(200, limit)))
     }
     public static func content(at url: URL) -> String {
         guard let values = try? url.resourceValues(forKeys:[.fileSizeKey,.isRegularFileKey,.isUbiquitousItemKey,.isSymbolicLinkKey]), values.isRegularFile == true, values.isSymbolicLink != true,

@@ -50,6 +50,10 @@ wait("Vision OCR") { controller.detail?.ocrText.contains("KEYLANE") == true }
 controller.search("OCR 123"); wait("OCR search") { controller.items.count == 1 && controller.items.first?.id == image.id }
 precondition(controller.copySelected()); precondition(board.data(forType: .png) == png)
 controller.search(""); wait("reset") { controller.items.count == 3 }
+let textItem = controller.items.first { $0.kind == .text }!
+for _ in 0..<24 { controller.select(image.id); controller.select(textItem.id) }
+wait("rapid selection keeps latest detail") { controller.detail?.item.id == textItem.id && !controller.loadingDetail }
+precondition(controller.thumbnail == nil)
 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 let file = root.appendingPathComponent("fixture.txt"); try Data("OWN FIXTURE".utf8).write(to: file)
 board.clearContents(); board.writeObjects([file as NSURL]); controller.poll()
