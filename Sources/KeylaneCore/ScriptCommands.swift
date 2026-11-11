@@ -44,6 +44,19 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
         "py": "python3", "js": "node", "mjs": "node", "cjs": "node"
     ]
 
+    public static func createTemplate(at url: URL) throws {
+        let content: String
+        switch url.pathExtension.lowercased() {
+        case "sh": content = "#!/bin/sh\nprintf '%s\\n' 'Hello from Keylane'\n"
+        case "bash": content = "#!/bin/bash\nprintf '%s\\n' 'Hello from Keylane'\n"
+        case "zsh": content = "#!/bin/zsh\nprintf '%s\\n' 'Hello from Keylane'\n"
+        case "py": content = "print('Hello from Keylane')\n"
+        case "js", "mjs", "cjs": content = "console.log('Hello from Keylane');\n"
+        default: throw CocoaError(.fileWriteInvalidFileName, userInfo: [NSFilePathErrorKey: url.path])
+        }
+        try Data(content.utf8).write(to: url, options: .withoutOverwriting)
+    }
+
     private static func hasShebang(_ file: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return false }
         defer { try? handle.close() }

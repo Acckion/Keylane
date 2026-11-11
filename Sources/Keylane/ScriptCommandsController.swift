@@ -3,6 +3,17 @@ import Combine
 import KeylaneCore
 
 final class ScriptCommandsController: ObservableObject {
+    @Published var enabled: Bool {
+        didSet {
+            preferences.set(enabled, forKey: "scriptCommands.enabled")
+            if enabled { refresh(force: true) }
+            else {
+                scanRevision += 1
+                scanning = false
+            }
+        }
+    }
+    @Published var searchSelection = 0
     @Published private(set) var folders: [String]
     @Published private(set) var entries: [ScriptCommand] = []
     @Published private(set) var unavailable: [String] = []
@@ -27,12 +38,13 @@ final class ScriptCommandsController: ObservableObject {
 
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
+        enabled = preferences.object(forKey: "scriptCommands.enabled") as? Bool ?? true
         folders = Self.canonicalFolders(preferences.stringArray(forKey: "scriptCommands.folders") ?? [])
         disabled = Set(preferences.stringArray(forKey: "scriptCommands.disabled") ?? [])
     }
 
-    func refresh(force: Bool = false) {
-        guard force || (!scanning && Date().timeIntervalSince(lastScan) > 15) else { return }
+    func refresh(force: Bool = false, completion: ((Int) -> Void)? = nil) {
+        guard enabled, force || (!scanning && Date().timeIntervalSince(lastScan) > 15) else { return }
         lastScan = Date()
         scanRevision += 1
         let revision = scanRevision
@@ -45,7 +57,33 @@ final class ScriptCommandsController: ObservableObject {
                 self.entries = catalog.commands
                 self.unavailable = catalog.unavailable
                 self.scanning = false
+                completion?(catalog.commands.count)
             }
+        }
+    }
+
+    func createScript() {
+        guard enabled else { return }
+        let panel = NSSavePanel()
+        panel.title = "创建脚本命令"
+        panel.nameFieldStringValue = "新建脚本.sh"
+        panel.message = "使用 .sh、.bash、.zsh、.py、.js、.mjs 或 .cjs 扩展名。保存位置会加入脚本搜索范围。"
+        panel.directoryURL = folders.first.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        panel.canCreateDirectories = true
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let toast = (NSApp.delegate as? Delegate)?.toast
+        do {
+            try ScriptCommand.createTemplate(at: url)
+            let folder = url.deletingLastPathComponent().resolvingSymlinksInPath().path
+            if folders.contains(where: { folder == $0 || folder.hasPrefix($0 == "/" ? "/" : $0 + "/") }) {
+                refresh(force: true)
+            } else {
+                setFolders(folders + [folder])
+            }
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            toast?.show("无法创建脚本：\(error.localizedDescription)", style: .failure)
         }
     }
 
@@ -80,7 +118,7 @@ final class ScriptCommandsController: ObservableObject {
     }
 
     func canRun(_ script: ScriptCommand) -> Bool {
-        !disabled.contains(script.id) && folders.contains { Self.contains(script, in: $0) }
+        enabled && !disabled.contains(script.id) && folders.contains { Self.contains(script, in: $0) }
     }
 
     func select(_ script: ScriptCommand) {

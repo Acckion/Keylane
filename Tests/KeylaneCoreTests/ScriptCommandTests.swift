@@ -32,6 +32,22 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("ran").path))
     }
 
+    func testCreateTemplateDoesNotOverwriteFiles() throws {
+        let scriptURL = folder.appendingPathComponent("新建脚本.sh")
+        try ScriptCommand.createTemplate(at: scriptURL)
+        let original = try Data(contentsOf: scriptURL)
+        XCTAssertThrowsError(try ScriptCommand.createTemplate(at: scriptURL))
+        XCTAssertEqual(try Data(contentsOf: scriptURL), original)
+        let unsupported = folder.appendingPathComponent("unsupported.txt")
+        XCTAssertThrowsError(try ScriptCommand.createTemplate(at: unsupported))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unsupported.path))
+
+        let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
+        let result = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(result.status, .exited(0))
+        XCTAssertEqual(result.output, "Hello from Keylane\n")
+    }
+
     func testArgumentsWorkingDirectoryAndFailureOutput() throws {
         _ = try write("test.sh", """
             printf '%s\\n' "$PWD" "$#" "$1" "$2"
