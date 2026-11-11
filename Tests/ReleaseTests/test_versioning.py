@@ -42,7 +42,7 @@ class ReleasePolicyTests(unittest.TestCase):
             event.write_text(json.dumps({'pull_request': {'head': {'ref': branch, 'repo': {'full_name': repo}}, 'title': title}}))
             environment = {'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': event_name, 'GITHUB_REPOSITORY': 'Acckion/Keylane', 'GITHUB_REF': 'refs/heads/main'}
             tag_result = subprocess.CompletedProcess([], 0 if tag_commit else 1, stdout=(tag_commit or ''), stderr='')
-            with patch.dict(os.environ, environment, clear=True), patch.object(sys, 'argv', ['check-version.py', '--release-policy']), patch.object(check_version.subprocess, 'run', return_value=tag_result), patch.object(check_version, 'git', return_value='current-commit'):
+            with patch.dict(os.environ, environment, clear=True), patch.object(sys, 'argv', ['check-version.py', '--release-policy']), patch.object(check_version.subprocess, 'run', return_value=tag_result), patch.object(check_version, 'git', return_value='current-commit'), patch.object(check_version, 'load_version', return_value={'version': '0.10.0', 'build': 22}):
                 check_version.main()
 
     def test_main_accepts_only_own_dev_and_matching_version_title(self):
