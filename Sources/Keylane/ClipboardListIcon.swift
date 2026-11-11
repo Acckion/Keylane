@@ -21,9 +21,7 @@ struct ClipboardListIcon: View {
             .accessibilityHidden(true)
             .task(id: item.id + (item.kind == .files ? String(item.copiedAt.timeIntervalSince1970) : "")) {
                 thumbnail = nil
-                let image: NSImage? = await withCheckedContinuation { continuation in
-                    controller.loadListThumbnail(for: item) { continuation.resume(returning: $0) }
-                }
+                let image = await controller.listThumbnail(for: item)
                 guard !Task.isCancelled else { return }
                 thumbnail = image
             }

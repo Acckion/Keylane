@@ -33,8 +33,9 @@ struct ClipboardDetail: View {
                     .font(.system(size: 12))
             }
         }
-        .task(id: detail.item.id) {
+        .task(id: detail.files) {
             releaseScopes()
+            metrics = nil
             urls = detail.files.map { file in
                 if let bookmark = file.bookmark {
                     var stale = false

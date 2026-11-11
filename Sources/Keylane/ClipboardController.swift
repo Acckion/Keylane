@@ -43,6 +43,7 @@ final class ClipboardController: ObservableObject {
     private let preferences: UserDefaults
     private let worker = DispatchQueue(label: "org.keylane.clipboard.storage", qos: .utility)
     private let previewWorker = DispatchQueue(label: "org.keylane.clipboard.preview", qos: .userInitiated)
+    private let listPreviewWorker = DispatchQueue(label: "org.keylane.clipboard.list-preview", qos: .utility)
     private let ocrWorker = DispatchQueue(label: "org.keylane.clipboard.ocr", qos: .utility)
     private var store: ClipboardStore?
     private let listThumbnailCache: NSCache<NSString, NSImage> = {
@@ -219,44 +220,82 @@ final class ClipboardController: ObservableObject {
             }
         }
     }
-    /// Decode only a tiny, bounded image for visible rows. Do not load full snapshots
-    /// unless the separately stored image is missing; keep this off the main thread.
+    func listThumbnail(for item: ClipItem) async -> NSImage? {
+        let request = ClipboardPreviewRequest()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                loadListThumbnail(for: item, request: request) { continuation.resume(returning: $0) }
+            }
+        } onCancel: {
+            request.cancel()
+        }
+    }
+
     func loadListThumbnail(for item: ClipItem, completion: @escaping (NSImage?) -> Void) {
-        guard item.kind != .text else { completion(nil); return }
-        let finish: (NSImage?) -> Void = { image in DispatchQueue.main.async { completion(image) } }
+        loadListThumbnail(for: item, request: ClipboardPreviewRequest(), completion: completion)
+    }
+
+    /// SQLite supplies the image reference; thumbnail decoding never occupies the storage queue.
+    private func loadListThumbnail(for item: ClipItem, request: ClipboardPreviewRequest,
+                                   completion: @escaping (NSImage?) -> Void) {
+        guard item.kind != .text, !request.cancelled else { completion(nil); return }
+        let finish: (NSImage?) -> Void = { image in
+            DispatchQueue.main.async { completion(request.cancelled ? nil : image) }
+        }
+        let key = (item.id + (item.kind == .files ? ":" + String(item.copiedAt.timeIntervalSince1970) : "")) as NSString
+        if let image = listThumbnailCache.object(forKey: key) { finish(image); return }
         worker.async { [weak self] in
-            guard let self, let store = self.store else { finish(nil); return }
-            let key = (item.id + (item.kind == .files ? ":" + String(item.copiedAt.timeIntervalSince1970) : "")) as NSString
-            if let image = self.listThumbnailCache.object(forKey: key) { finish(image); return }
-            var scope: URL?
-            defer { scope?.stopAccessingSecurityScopedResource() }
-            var source: CGImageSource?
+            guard let self, let store = self.store, !request.cancelled else { finish(nil); return }
+            let file: ClipFile?
+            let imageSource: CGImageSource?
             if item.kind == .files {
-                guard let detail = try? store.detail(id: item.id), detail.files.count == 1, let file = detail.files.first else { finish(nil); return }
-                var url = URL(fileURLWithPath: file.path)
-                if let bookmark = file.bookmark {
-                    var stale = false
-                    if let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale) { url = resolved }
-                }
-                guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true else { finish(nil); return }
-                if url.startAccessingSecurityScopedResource() { scope = url }
-                source = CGImageSourceCreateWithURL(url as CFURL, nil)
+                guard let detail = try? store.detail(id: item.id), detail.files.count == 1 else { finish(nil); return }
+                file = detail.files.first
+                imageSource = nil
             } else {
-                source = item.assetName.flatMap(store.assetURL).flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }
-                if source == nil, let detail = try? store.detail(id: item.id),
-                   let bytes = detail.snapshot?.items.flatMap(\.representations).first(where: { ClipboardCapture.imageFormats.map(\.0).contains($0.type) })?.data {
-                    source = CGImageSourceCreateWithData(bytes as CFData, nil)
+                file = nil
+                let asset = item.assetName.flatMap(store.assetURL)
+                if let source = asset.flatMap({ CGImageSourceCreateWithURL($0 as CFURL, nil) }) {
+                    imageSource = source
+                } else {
+                    let detail = try? store.detail(id: item.id)
+                    let bytes = detail?.snapshot?.items.lazy.flatMap(\.representations).first { representation in
+                        ClipboardCapture.imageFormats.contains { $0.0 == representation.type }
+                    }?.data
+                    imageSource = bytes.flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }
                 }
             }
-            guard let source, let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 64,
-                kCGImageSourceCreateThumbnailWithTransform: true
-            ] as CFDictionary) else { finish(nil); return }
-            let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-            self.listThumbnailCache.setObject(image, forKey: key, cost: cg.bytesPerRow * cg.height)
-            finish(image)
+            self.listPreviewWorker.async {
+                guard !request.cancelled else { finish(nil); return }
+                if let cached = self.listThumbnailCache.object(forKey: key) { finish(cached); return }
+                let cg = file.flatMap(Self.makeFileListThumbnail) ?? imageSource.flatMap(Self.makeListThumbnail)
+                guard let cg, !request.cancelled else { finish(nil); return }
+                let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+                self.listThumbnailCache.setObject(image, forKey: key, cost: cg.bytesPerRow * cg.height)
+                finish(image)
+            }
         }
+    }
+
+    private static func makeFileListThumbnail(_ file: ClipFile) -> CGImage? {
+        var url = URL(fileURLWithPath: file.path)
+        if let bookmark = file.bookmark {
+            var stale = false
+            if let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI],
+                                       relativeTo: nil, bookmarkDataIsStale: &stale) { url = resolved }
+        }
+        guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true else { return nil }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return CGImageSourceCreateWithURL(url as CFURL, nil).flatMap(makeListThumbnail)
+    }
+
+    private static func makeListThumbnail(_ source: CGImageSource) -> CGImage? {
+        CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 64,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ] as CFDictionary)
     }
     func move(_ delta: Int) {
         let current = items.firstIndex { $0.id == selectedID } ?? 0

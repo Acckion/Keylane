@@ -1,38 +1,37 @@
 import SwiftUI
 import AppKit
+import Combine
 import KeylaneCore
 
 struct ClipboardHistoryView: View {
-    @ObservedObject var controller: ClipboardController
+    let controller: ClipboardController
     let query: String
+
     var body: some View {
         ResultDetailLayout {
-            results
+            ClipboardHistoryList(controller: controller, query: query)
         } detail: {
-            if let detail = controller.detail {
-                ClipboardDetail(detail: detail, thumbnail: controller.thumbnail,
-                                status: controller.status, accessMessage: controller.accessMessage)
-                    .id(detail.item.id)
-            } else {
-                VStack(spacing: 10) {
-                    Spacer()
-                    ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
-                    Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
-                        .buttonStyle(ContentActionButtonStyle())
-                    Spacer()
-                    if !controller.accessMessage.isEmpty {
-                        Text(controller.accessMessage).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
-                    }
-                    if !controller.status.isEmpty {
-                        Text(controller.status).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).textSelection(.enabled)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
-            }
-        }.onAppear { controller.reload() }
+            ClipboardHistoryDetail(controller: controller)
+        }
+        .onAppear { controller.reload() }
     }
-    private var results: some View {
+}
+
+private struct ClipboardHistoryList: View {
+    let controller: ClipboardController
+    let query: String
+    @StateObject private var observation: ViewObservation
+
+    init(controller: ClipboardController, query: String) {
+        self.controller = controller
+        self.query = query
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$items),
+            ViewObservation.changes(controller.$selectedID)
+        ]))
+    }
+
+    var body: some View {
         SelectableResultList(selection: controller.selectedID, query: query, firstResult: controller.items.first?.id) {
             if controller.items.isEmpty {
                 Text("没有匹配记录").font(VisualStyle.sectionText).foregroundStyle(.secondary)
@@ -50,7 +49,47 @@ struct ClipboardHistoryView: View {
             }
         }
     }
+}
 
+private struct ClipboardHistoryDetail: View {
+    let controller: ClipboardController
+    @StateObject private var observation: ViewObservation
+
+    init(controller: ClipboardController) {
+        self.controller = controller
+        _observation = StateObject(wrappedValue: ViewObservation([
+            controller.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            ViewObservation.changes(controller.$thumbnail),
+            ViewObservation.changes(controller.$items.map(\.isEmpty)),
+            ViewObservation.changes(controller.$captureEnabled),
+            ViewObservation.changes(controller.$status),
+            ViewObservation.changes(controller.$accessMessage)
+        ]))
+    }
+
+    var body: some View {
+        if let detail = controller.detail {
+            ClipboardDetail(detail: detail, thumbnail: controller.thumbnail,
+                            status: controller.status, accessMessage: controller.accessMessage)
+                .id(detail.item.id)
+        } else {
+            VStack(spacing: 10) {
+                Spacer()
+                ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
+                Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
+                    .buttonStyle(ContentActionButtonStyle())
+                Spacer()
+                if !controller.accessMessage.isEmpty {
+                    Text(controller.accessMessage).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
+                }
+                if !controller.status.isEmpty {
+                    Text(controller.status).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
+        }
+    }
 }
 
 struct ClipboardPreferences: View {
