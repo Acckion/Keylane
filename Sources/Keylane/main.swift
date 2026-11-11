@@ -523,6 +523,16 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         else { window.makeKeyAndOrderFront(nil); windowDiagnostics.record("reopen", launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus) }
         return false
     }
+    func windowWillClose(_ notification: Notification) {
+        guard let settings = notification.object as? NSWindow, settings === settingsWindow else { return }
+        // AppKit is still completing the close. Detach on the next turn so
+        // a closed settings window does not retain its SwiftUI pages and rows.
+        DispatchQueue.main.async { [weak self, weak settings] in
+            guard let self, let settings, settings === self.settingsWindow, !settings.isVisible else { return }
+            settings.contentView = nil
+            self.settingsWindow = nil
+        }
+    }
     func windowDidBecomeKey(_ notification: Notification) {
         guard let settingsWindow, notification.object as? NSWindow === settingsWindow else { return }
         toast.hide()

@@ -3,19 +3,6 @@ import AppKit
 import Combine
 import KeylaneCore
 
-private final class IconCache {
-    static let shared = IconCache()
-    private let icons = NSCache<NSString, NSImage>()
-    private init() { icons.countLimit = 512 }
-
-    func image(_ path: String) -> NSImage {
-        let key = path as NSString
-        if let image = icons.object(forKey: key) { return image }
-        let image = NSWorkspace.shared.icon(forFile: path)
-        icons.setObject(image, forKey: key)
-        return image
-    }
-}
 struct Launcher: View {
     let model: Model
     @StateObject private var observation: ViewObservation
@@ -333,7 +320,7 @@ struct Launcher: View {
                     Button { model.perform(row) } label: {
                         Group {
                             if let artwork = model.launcherModules?.artwork(for: row) { artwork }
-                            else if row.id.hasSuffix(".app") { Image(nsImage: IconCache.shared.image(row.id)).resizable() }
+                            else if row.id.hasSuffix(".app") { WorkspaceItemIcon(path: row.id) }
                             else { Image(systemName: row.symbol).resizable().scaledToFit() }
                         }.frame(width: 26, height: 26)
                     }.buttonStyle(.plain).help(row.name).accessibilityLabel(row.name)
@@ -414,7 +401,7 @@ struct Launcher: View {
         let url = URL(fileURLWithPath: row.id)
         let isFolder = row.isDirectory
         return ResultListRow(selected: selected, height: isFolder ? 48 : 40) {
-            Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high)
+            WorkspaceItemIcon(path: row.id, fallbackSymbol: isFolder ? "folder" : "doc")
         } content: {
             VStack(alignment: .leading, spacing: 3) {
                 HighlightedResultText(text: row.name, query: model.query)
@@ -432,7 +419,7 @@ struct Launcher: View {
         ResultListRow(selected: selected, layout: .root) {
             Group {
                 if let artwork = model.launcherModules?.artwork(for: row) { artwork }
-                else if row.id.hasSuffix(".app") || row.detail == "File" { Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high) }
+                else if row.id.hasSuffix(".app") || row.detail == "File" { WorkspaceItemIcon(path: row.id, fallbackSymbol: row.detail == "File" ? (row.isDirectory ? "folder" : "doc") : "app") }
                 else { Image(systemName: row.symbol).font(.system(size: 21, weight: .regular)).foregroundStyle(iconColor(row.id)) }
             }
             .frame(width: 26, height: 26)
