@@ -500,8 +500,20 @@ struct Launcher: View {
     private func filteredMenu(applicationMenu: Bool) -> [MenuAction] { menuItems(applicationMenu: applicationMenu).filter { actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery) } }
     private func menuPanel(applicationMenu: Bool) -> some View {
         let items = filteredMenu(applicationMenu: applicationMenu)
+        let title: String
+        if applicationMenu {
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版"
+            title = "Keylane " + version
+        } else {
+            let base = page?.actionTitle ?? selectedEntry?.name ?? "操作"
+            title = submenu.map { base + " › " + $0.title } ?? base
+        }
         return VStack(alignment: .leading, spacing: 0) {
-            Text(applicationMenu ? "Keylane " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") : (page?.actionTitle ?? selectedEntry?.name ?? "操作") + (submenu.map { " › " + $0.title } ?? "")).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
                                 activate: { activate(item) }, highlight: { actionSelection = index }) {
