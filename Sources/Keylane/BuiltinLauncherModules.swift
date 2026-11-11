@@ -173,6 +173,7 @@ enum BuiltinLauncherModules {
 
     private static func clipboard(_ model: Model) -> LauncherModule {
         let id = PageID(rawValue: "Clipboard")
+        let controller = model.clipboard
         let page = LauncherPage(
             id: id, placeholder: "搜索剪贴板历史…", badge: ("剪贴板历史", "list.clipboard"), actionTitle: "剪贴板操作",
             contentPlacement: .underChrome,
@@ -211,7 +212,13 @@ enum BuiltinLauncherModules {
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
                     ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard")
         ], pages: [page], settings: [
-            settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, content: LauncherSettingsContent.clipboard)
+            settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: .init(
+                title: SettingsItem.clipboardCapture.title,
+                help: "控制后台采集，已保存的记录仍可查看。",
+                enabled: Binding(get: { controller.captureEnabled }, set: { controller.captureEnabled = $0 }),
+                updates: controller.$captureEnabled.removeDuplicates().eraseToAnyPublisher(),
+                searchItem: .clipboardCapture
+            ), content: LauncherSettingsContent.clipboard)
         ], services: [
             .init(start: { [weak model] in model?.clipboard.startMonitoring() },
                   stop: { [weak model] in model?.clipboard.stopMonitoring() })

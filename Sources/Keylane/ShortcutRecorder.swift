@@ -9,7 +9,6 @@ struct ShortcutRecorder: View {
     let changed: (Shortcut?) -> Void
     @State private var recording = false
     @State private var hovering = false
-    @State private var clearHovered = false
     @State private var monitor: Any?
     @State private var draft: Shortcut?
     @State private var liveModifiers: [String] = []
@@ -27,23 +26,13 @@ struct ShortcutRecorder: View {
             .help("录制快捷键，Escape 取消")
 
             if shortcut != nil && !recording {
-                Button { clearHovered = false; changed(nil) } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .medium))
-                        .frame(width: 18, height: 24)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(clearHovered ? Color.primary : Color.secondary)
-                .onHover { clearHovered = $0 }
-                .accessibilityLabel("清除快捷键")
-                .help("清除快捷键")
+                SettingsIconButton("清除快捷键", symbol: "xmark", compact: true) { changed(nil) }
             }
         }
         .padding(.horizontal, 7)
         .background(.primary.opacity(hovering || recording ? 0.13 : 0.08), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(RoundedRectangle(cornerRadius: 8))
-        .onHover { hovering = $0; if !$0 { clearHovered = false } }
+        .onHover { hovering = $0 }
         .popover(isPresented: $recording, arrowEdge: .bottom) {
             recordingPanel
         }

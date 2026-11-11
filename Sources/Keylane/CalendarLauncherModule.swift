@@ -43,6 +43,11 @@ enum CalendarLauncherModule {
             settings: [.init(
                 id: settingsID, title: "日历", symbol: "calendar", subtitle: "查看日程和会议。", order: 50,
                 items: SettingsItem.all.filter { $0.page == settingsID },
+                titlebar: .init(
+                    title: "启用日历",
+                    enabled: Binding(get: { calendar.enabled }, set: { calendar.enabled = $0 }),
+                    updates: calendar.$enabled.removeDuplicates().eraseToAnyPublisher()
+                ),
                 content: { [weak model] in
                     guard let model else { return AnyView(EmptyView()) }
                     return AnyView(CalendarPreferences(model: model))

@@ -373,7 +373,7 @@ struct SettingsSearchScopeCard<Footer: View>: View {
 
     var body: some View {
         SettingsListCard(title: "搜索范围", detail: detail, anchor: anchor) {
-            SettingsAddItemButton(title: "添加搜索文件夹", action: add)
+            SettingsIconButton("添加搜索文件夹", symbol: "plus", action: add)
         } content: {
             if paths.isEmpty {
                 SettingsListEmptyState(title: "尚未添加搜索范围")
@@ -381,10 +381,9 @@ struct SettingsSearchScopeCard<Footer: View>: View {
                 SettingsCompactList(items: paths, id: \.self) { path in
                     SettingsFolderRow(path: path, selectable: true, showsActionsOnHover: true) {
                         if let reauthorize {
-                            Button { reauthorize(path) } label: { Image(systemName: "key") }
-                                .buttonStyle(.plain)
-                                .help("重新选择文件夹以授权")
-                                .accessibilityLabel("重新授权 \(path)")
+                            SettingsIconButton("重新授权 \(path)", symbol: "key", help: "重新选择文件夹以授权", compact: true) {
+                                reauthorize(path)
+                            }
                         }
                         SettingsRemoveItemButton(label: "移除 \(path)", help: "移除搜索范围") { remove(path) }
                     }
@@ -396,29 +395,61 @@ struct SettingsSearchScopeCard<Footer: View>: View {
     }
 }
 
-struct SettingsAddItemButton: View {
+/// Standalone settings actions use a visible button surface even before hover.
+struct SettingsIconButton: View {
     let title: String
+    let symbol: String
+    var help: String?
+    var compact: Bool
+    var role: ButtonRole?
     let action: () -> Void
+    @State private var hovered = false
+
+    init(_ title: String, symbol: String, help: String? = nil, compact: Bool = false,
+         role: ButtonRole? = nil, action: @escaping () -> Void) {
+        self.title = title
+        self.symbol = symbol
+        self.help = help
+        self.compact = compact
+        self.role = role
+        self.action = action
+    }
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "plus").font(.system(size: 12, weight: .medium))
-        }
-        .buttonStyle(ContentActionButtonStyle()).buttonBorderShape(.circle).controlSize(.small)
-        .accessibilityLabel(title).help(title)
+        Button(title, systemImage: symbol, role: role, action: action)
+            .labelStyle(.iconOnly)
+            .font(.system(size: compact ? 11 : 12, weight: .medium))
+            .buttonStyle(SettingsIconButtonStyle(size: compact ? 22 : 28, hovered: hovered))
+            .onHover { hovered = $0 }
+            .accessibilityLabel(title)
+            .help(help ?? title)
+    }
+}
+
+private struct SettingsIconButtonStyle: ButtonStyle {
+    let size: CGFloat
+    let hovered: Bool
+    @Environment(\.isEnabled) private var enabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 7)
+        configuration.label
+            .frame(width: size, height: size)
+            .foregroundStyle(configuration.role == .destructive ? Color.red : Color.primary)
+            .background(.primary.opacity(configuration.isPressed ? 0.20 : hovered && enabled ? 0.16 : 0.10), in: shape)
+            .contentShape(shape)
+            .opacity(enabled ? 1 : 0.7)
     }
 }
 
 struct SettingsRemoveItemButton: View {
     let label: String
     let help: String
+    var role: ButtonRole? = nil
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
-        }
-        .buttonStyle(.plain).accessibilityLabel(label).help(help)
+        SettingsIconButton(label, symbol: "minus", help: help, compact: true, role: role, action: action)
     }
 }
 

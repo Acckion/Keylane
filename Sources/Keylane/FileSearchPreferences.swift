@@ -63,7 +63,6 @@ struct FileSearchPreferences: View {
             CommandSettingsList(items: ["file-search"], id: \.self) { id in
                 CommandSettingsEntry(title: "搜索文件",
                     model: model, commandID: .init(rawValue: id),
-                    isEnabled: Binding(get: { controller.options.enabled }, set: { controller.options.enabled = $0 }),
                     icon: { Image(systemName: "doc.text.magnifyingglass").font(VisualStyle.actionSymbol) })
             }
             SettingsSectionTitle(title: "AI 扩展")
@@ -82,18 +81,12 @@ struct FileSearchPreferences: View {
     private var ignoreRules: some View {
         SettingsListCard(title: "忽略规则", detail: "默认跳过忽略文件指定的项目。") {
             HStack(spacing: 6) {
-                Button {
-                    showsIgnoreInfo.toggle()
-                } label: {
-                    Image(systemName: "info.circle")
-                }
-                .buttonStyle(ContentActionButtonStyle()).controlSize(.small)
-                .accessibilityLabel("了解更多").accessibilityValue(showsIgnoreInfo ? "已展开" : "已折叠")
-                .help("了解更多")
+                SettingsIconButton("了解更多", symbol: "info.circle") { showsIgnoreInfo.toggle() }
+                    .accessibilityValue(showsIgnoreInfo ? "已展开" : "已折叠")
                 TextField("添加规则…", text: $pattern)
                     .textFieldStyle(.roundedBorder).controlSize(.small).frame(width: 150)
                     .onSubmit(addPattern)
-                SettingsAddItemButton(title: "添加忽略规则", action: addPattern)
+                SettingsIconButton("添加忽略规则", symbol: "plus", action: addPattern)
                     .disabled(!canAddRule)
             }
         } content: {

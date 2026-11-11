@@ -138,7 +138,12 @@ enum NavigationLauncherModules {
         }
         let settings = LauncherSettingsPage(
             id: "screenshots", title: "截图", symbol: "viewfinder", subtitle: "搜索和管理截图与录屏。",
-            order: 30, items: SettingsItem.all.filter { $0.page == "screenshots" }
+            order: 30, items: SettingsItem.all.filter { $0.page == "screenshots" },
+            titlebar: .init(
+                title: "启用截图管理",
+                enabled: Binding(get: { library.enabled }, set: { library.enabled = $0 }),
+                updates: library.$enabled.removeDuplicates().eraseToAnyPublisher()
+            )
         ) { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(ScreenshotPreferences(library: library, model: model))

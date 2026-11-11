@@ -101,7 +101,6 @@ struct ClipboardPreferences: View {
         self.controller = controller
         self.model = model
         _observation = StateObject(wrappedValue: ViewObservation([
-            ViewObservation.changes(controller.$captureEnabled),
             ViewObservation.changes(controller.$automaticOCR),
             ViewObservation.changes(controller.$primaryAction),
             ViewObservation.changes(controller.$retentionDays),
@@ -126,10 +125,8 @@ struct ClipboardPreferences: View {
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                Toggle("记录剪贴板历史", isOn: binding(\.captureEnabled))
-                Divider()
                 Toggle("自动识别新图片中的文字", isOn: binding(\.automaticOCR))
-            }.settingsAnchor(.clipboardCapture)
+            }
             SettingsGroup {
                 SettingsShortcutBindingRow(title: "剪贴板快捷键", shortcut: model.bindings["clipboard"], symbol: "clipboard") {
                     model.setShortcut("clipboard", value: $0)
