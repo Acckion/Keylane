@@ -26,3 +26,21 @@
 Apple文档：
 https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements
 https://developer.apple.com/library/archive/technotes/tn2206/
+
+## GitHub Actions 发行签名
+
+在仓库的 **Settings → Secrets and variables → Actions** 添加以下 Secrets：
+
+| Secret | 内容 |
+| --- | --- |
+| `KEYLANE_DEVELOPER_ID_P12` | Developer ID Application 证书和对应私钥导出的密码保护 `.p12`，以 Base64 编码 |
+| `KEYLANE_DEVELOPER_ID_PASSWORD` | 导出 `.p12` 时设置的密码 |
+| `KEYLANE_NOTARY_APPLE_ID` | 用于 Apple 公证的 Apple Account 邮箱 |
+| `KEYLANE_NOTARY_TEAM_ID` | Apple Developer Team ID |
+| `KEYLANE_NOTARY_APP_PASSWORD` | 上述 Apple Account 生成的 App 专用密码 |
+
+CI 只在 `dev` 和 `main` 的分支构建中使用这些凭据。它对应用启用 Hardened Runtime 和安全时间戳，签名 DMG，然后提交 Apple 公证并附上票据。验证通过后才生成 SHA-256 校验文件。配置后可在 Actions 手动运行 `dev` 验证签名和公证，再从 GitHub 下载 DMG 试装。
+
+缺少全部凭据时，`dev` 仍生成临时签名的测试 DMG，`main` 会停止发布。仅设置部分凭据也会使发行构建失败。
+
+参阅 [Apple Developer ID 证书](https://developer.apple.com/help/account/certificates/create-developer-id-certificates) 和 [Apple 公证流程](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)。

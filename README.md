@@ -30,7 +30,7 @@ swift build -c release
 bash scripts/package.sh
 ```
 
-解压 `dist/Keylane-<版本号>-macos-<架构>.zip`，将 `Keylane.app` 放入“应用程序”后打开。默认使用 **Option + Space** 唤起，也可从菜单栏打开；按 **Escape** 隐藏。
+打开 `dist/Keylane-<版本号>-macos-<架构>.dmg`，把 `Keylane.app` 拖到窗口内的“应用程序”（Applications），再从“应用程序”打开。默认使用 **Option + Space** 唤起，也可从菜单栏打开；按 **Escape** 隐藏。
 
 打包脚本默认使用本机 Apple Development 证书并固定签名身份。无证书时，仅用于本地试用可显式选择临时签名：
 
@@ -38,7 +38,7 @@ bash scripts/package.sh
 KEYLANE_ALLOW_ADHOC=1 bash scripts/package.sh
 ```
 
-临时签名更新后可能需要重新授权。项目尚未公证；当前主要在 Apple Silicon 上开发，Intel 及通用二进制发行尚未验证。签名配置见 [签名与升级授权](docs/SIGNING.md)。
+临时签名更新后可能需要重新授权。已发布的早期 Alpha 使用临时签名，尚未公证。当前主要在 Apple Silicon 上开发，Intel 及通用二进制发行尚未验证。签名配置见 [签名与升级授权](docs/SIGNING.md)。
 
 ## 数据与权限
 
@@ -83,4 +83,4 @@ Keylane 的功能构想与交互设计受到 [SuperCMD V1](https://supercmd.sh/e
 
 [version.json](version.json) 统一管理版本和构建号。每次合入 `main` 必须同时提升二者，发布 PR 标题为 `release: vX.Y.Z`，并使用 Squash 合并形成一个发布提交。
 
-[GitHub Actions](.github/workflows/ci.yml) 会对 `dev` / `main` 的 PR 和提交执行版本检查、核心测试、Release 构建、包内容与签名校验，并保存构建产物。只有 `main` 检查成功后才自动创建 `vX.Y.Z` 标签及 GitHub Release，附带 Apple Silicon ZIP 和 SHA-256 校验文件。当前自动构建使用临时签名，**未进行 Apple 公证**。
+[GitHub Actions](.github/workflows/ci.yml) 会对 `dev` / `main` 的 PR 和提交执行版本检查、核心测试、Release 构建、包内容与签名校验，并保存构建产物。`main` 检查通过且 DMG 完成 Developer ID 签名与 Apple 公证后，自动创建 `vX.Y.Z` 标签和 GitHub Release，附带 Apple Silicon DMG 和 SHA-256 校验文件。PR 使用临时签名生成测试 DMG。配置发行凭据后，`dev` 构建也会执行签名和公证，供 Alpha／Beta 发布使用。

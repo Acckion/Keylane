@@ -1,45 +1,79 @@
 #!/usr/bin/env python3
-"""Verify the distributable, not a developer's installed app."""
+"""Mount and verify the exact disk image intended for distribution."""
+import argparse
+import os
 import platform
 import plistlib
 import subprocess
-import sys
 import tempfile
-import zipfile
 from pathlib import Path
+
 from versioning import ROOT, load_version
 
-version = load_version()
-if len(sys.argv) > 2:
-    raise SystemExit('usage: verify-package.py [one ZIP path]')
-archive = Path(sys.argv[1]) if len(sys.argv) == 2 else ROOT / 'dist' / f"Keylane-{version['version']}-macos-{platform.machine()}.zip"
-with zipfile.ZipFile(archive) as bundle, tempfile.TemporaryDirectory(prefix='keylane-package-') as temporary:
-    names = bundle.namelist()
-    expected = {'Keylane.app/Contents/MacOS/Keylane', 'Keylane.app/Contents/Info.plist', 'Keylane.app/Contents/Resources/LICENSE', 'Keylane.app/Contents/Resources/Assets.car', 'Keylane.app/Contents/Resources/Keylane.icns', 'Keylane.app/Contents/_CodeSignature/CodeResources'}
-    for resource in ('EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
-        name = f'Keylane.app/Contents/Resources/{resource}'
-        expected.add(name)
-        if name not in names or bundle.read(name) != (ROOT / 'Resources' / resource).read_bytes():
-            raise SystemExit(f'missing or different resource: {resource}')
-    if set(names) != expected or len(names) != len(expected):
-        raise SystemExit('unexpected/missing package contents: ' + repr(names))
-    info = plistlib.loads(bundle.read('Keylane.app/Contents/Info.plist'))
+DEVELOPER_ID = 'anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+
+
+def verify_app(app, image, version, distribution):
+    expected = {
+        'Contents/MacOS/Keylane',
+        'Contents/Info.plist',
+        'Contents/Resources/Assets.car',
+        'Contents/Resources/Keylane.icns',
+        'Contents/_CodeSignature/CodeResources',
+    }
+    for name in ('LICENSE', 'EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
+        relative = f'Contents/Resources/{name}'
+        expected.add(relative)
+        source = ROOT / 'LICENSE' if name == 'LICENSE' else ROOT / 'Resources' / name
+        if (app / relative).read_bytes() != source.read_bytes():
+            raise SystemExit(f'Incorrect resource: {name}')
+    contents = {str(path.relative_to(app)) for path in app.rglob('*') if path.is_file() or path.is_symlink()}
+    if contents != expected:
+        raise SystemExit(f'Unexpected or missing app contents: {contents ^ expected}')
+    info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
     if info['CFBundleShortVersionString'] != version['version'] or info['CFBundleVersion'] != str(version['build']):
-        raise SystemExit('package version does not match version.json')
+        raise SystemExit('Package version does not match version.json')
     if info['CFBundleIdentifier'] != 'org.keylane.launcher' or info['LSMinimumSystemVersion'] != '26.0':
-        raise SystemExit('unexpected bundle identity or deployment target')
+        raise SystemExit('Unexpected bundle identity or deployment target')
     if info.get('CFBundleIconName') != 'Keylane' or info.get('CFBundleIconFile') != 'Keylane':
-        raise SystemExit('missing or incorrect application icon metadata')
-    if bundle.read('Keylane.app/Contents/Resources/LICENSE') != (ROOT / 'LICENSE').read_bytes():
-        raise SystemExit('missing or different license')
-    if not bundle.getinfo('Keylane.app/Contents/MacOS/Keylane').external_attr >> 16 & 0o111:
-        raise SystemExit('ZIP executable permission missing')
-    bundle.extractall(temporary)
-    app = Path(temporary) / 'Keylane.app'
+        raise SystemExit('Missing or incorrect application icon metadata')
     binary = app / 'Contents/MacOS/Keylane'
-    binary.chmod(0o755)
-    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+    if not os.access(binary, os.X_OK):
+        raise SystemExit('Application executable permission missing')
     architectures = subprocess.check_output(['lipo', '-archs', str(binary)], text=True).strip()
-    if architectures not in ('arm64', 'x86_64') or archive.name != f"Keylane-{version['version']}-macos-{architectures}.zip":
-        raise SystemExit('filename/architecture mismatch: ' + architectures)
-print('Package metadata, license, file inventory, architecture and signature: OK')
+    if architectures not in ('arm64', 'x86_64') or image.name != f"Keylane-{version['version']}-macos-{architectures}.dmg":
+        raise SystemExit(f'Filename/architecture mismatch: {architectures}')
+    requirement = ['-R', DEVELOPER_ID] if distribution else []
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', *requirement, str(app)], check=True)
+    if distribution:
+        subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose', str(app)], check=True)
+
+
+def main():
+    version = load_version()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--distribution', action='store_true', help='require Developer ID and an Apple notarization ticket')
+    parser.add_argument('image', nargs='?', type=Path,
+                        default=ROOT / 'dist' / f"Keylane-{version['version']}-macos-{platform.machine()}.dmg")
+    args = parser.parse_args()
+    image = args.image.resolve()
+    if args.distribution:
+        subprocess.run(['codesign', '--verify', '-R', DEVELOPER_ID, str(image)], check=True)
+        subprocess.run(['xcrun', 'stapler', 'validate', str(image)], check=True)
+    with tempfile.TemporaryDirectory(prefix='keylane-package-') as temporary:
+        mount = Path(temporary) / 'image'
+        subprocess.run([
+            'hdiutil', 'attach', '-readonly', '-nobrowse', '-mountpoint', str(mount), str(image),
+        ], check=True)
+        try:
+            shortcut = mount / 'Applications'
+            if not shortcut.is_symlink() or os.readlink(shortcut) != '/Applications':
+                raise SystemExit('DMG must contain a shortcut to /Applications')
+            verify_app(mount / 'Keylane.app', image, version, args.distribution)
+        finally:
+            subprocess.run(['hdiutil', 'detach', str(mount)], check=True)
+    print('DMG layout, app metadata, license, file inventory, architecture and signature: OK')
+
+
+if __name__ == '__main__':
+    main()
