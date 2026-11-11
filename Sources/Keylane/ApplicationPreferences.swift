@@ -27,32 +27,28 @@ struct ApplicationPreferences: View {
     var body: some View {
         let visibleApplications = filteredApplications ?? catalog.items
         SettingsPageSections {
-            SettingsCard(layout: .flush) {
-                HStack {
-                    SettingsCaption(title: "自动退出", detail: "停止使用应用一段时间后自动退出。")
-                    Spacer(); Text("未实现").font(.caption).foregroundStyle(.tertiary)
-                    Image(systemName: "chevron.forward")
-                        .font(.system(size: 12, weight: .semibold)).foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
-                }.padding(14)
+            SettingsGroup {
+                SettingsRow("自动退出", detail: "停止使用应用一段时间后自动退出。") {
+                    HStack {
+                        Text("未实现").font(.caption).foregroundStyle(.tertiary)
+                        Image(systemName: "chevron.forward")
+                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.tertiary)
+                            .accessibilityHidden(true)
+                    }
+                }
             }.help("自动退出将在系统工具阶段实现；当前不会自动退出任何应用。")
-            SettingsCard(layout: .flush) {
-                HStack(alignment: .top) {
-                    SettingsCaption(title: "快捷键行为", detail: "触发应用快捷键时执行的操作。")
-                    Spacer(minLength: 8)
-                    Picker("快捷键行为", selection: Binding(get: { model.applicationHotkeyAction }, set: { model.applicationHotkeyAction = $0 })) {
-                        Text("激活应用").tag("activate")
-                        Text("切换显示与隐藏").tag("toggle")
-                    }.pickerStyle(.menu).buttonStyle(.borderless).labelsHidden().fixedSize().padding(.top, 1)
-                }.padding(14)
+            SettingsGroup {
+                SettingsPicker("快捷键行为", detail: "触发应用快捷键时执行的操作。",
+                               selection: Binding(get: { model.applicationHotkeyAction }, set: { model.applicationHotkeyAction = $0 })) {
+                    Text("激活应用").tag("activate")
+                    Text("切换显示与隐藏").tag("toggle")
+                }
             }.id("hotkey-action")
             SettingsCard(layout: .flush, anchor: .applicationScopes) {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .top) {
-                        SettingsCaption(title: "搜索范围", detail: "选择搜索应用程序时包含的其他文件夹。")
-                        Spacer(minLength: 8)
+                VStack(alignment: .leading, spacing: 0) {
+                    SettingsRow("搜索范围", detail: "选择搜索应用程序时包含的其他文件夹。") {
                         SettingsAddFolderButton(symbolFont: .system(size: 12, weight: .medium), action: model.addRoot)
-                    }.padding(.bottom, 4)
+                    }
                     VStack(spacing: 0) {
                         SettingsCompactList(items: model.roots, id: \.self) { path in
                             SettingsFolderRow(path: path, showsActionsOnHover: true) {
@@ -62,9 +58,10 @@ struct ApplicationPreferences: View {
                                 .buttonStyle(.plain).help("移除此搜索范围").accessibilityLabel("移除 \(path)")
                             }
                         }
+                        .padding(.bottom, model.roots.isEmpty ? 0 : 5)
                         if model.roots.isEmpty { Text("尚未添加搜索范围").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 14) }
                     }
-                }.padding(14).padding(.bottom, 5)
+                }.padding(.horizontal, 18)
             }
 
             SettingsSectionTitle(title: "命令")

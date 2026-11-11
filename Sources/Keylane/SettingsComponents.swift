@@ -166,17 +166,19 @@ struct SettingsSwitchStyle: ToggleStyle {
 
 struct SettingsPicker<Selection: Hashable, Options: View>: View {
     let title: String
+    let detail: String?
     @Binding var selection: Selection
     let options: Options
 
-    init(_ title: String, selection: Binding<Selection>, @ViewBuilder content: () -> Options) {
+    init(_ title: String, detail: String? = nil, selection: Binding<Selection>, @ViewBuilder content: () -> Options) {
         self.title = title
+        self.detail = detail
         self._selection = selection
         self.options = content()
     }
 
     var body: some View {
-        SettingsRow(title) {
+        SettingsRow(title, detail: detail) {
             Picker(title, selection: $selection) { options }
                 .labelsHidden()
                 .pickerStyle(.menu)
@@ -296,7 +298,7 @@ struct SettingsAddFolderButton: View {
 
     var body: some View {
         Button(action: action) { Image(systemName: "plus").font(symbolFont) }
-            .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
+            .buttonStyle(ContentActionButtonStyle()).buttonBorderShape(.circle).controlSize(.small)
             .help("添加搜索文件夹")
     }
 }

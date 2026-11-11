@@ -38,8 +38,9 @@ struct FileSearchPreferences: View {
                     }
                 }
                 if !controller.inaccessible.isEmpty {
+                    if !controller.options.roots.isEmpty { Divider().opacity(0.4) }
                     Label("部分目录无法访问。若下载或文稿中的文件缺失，请选择并授权对应文件夹。",systemImage:"exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                    Button("授权下载文件夹…") { controller.addScope(suggested:FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")) }.buttonStyle(.glass)
+                    Button("授权下载文件夹…") { controller.addScope(suggested:FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")) }.buttonStyle(ContentActionButtonStyle())
                 }
             }.settingsAnchor(.fileSearchScope)
             SettingsCard {
@@ -52,6 +53,7 @@ struct FileSearchPreferences: View {
                 SettingsCompactList(items: controller.options.ignorePatterns, id: \.self) { value in
                     HStack { Text(value).font(.system(size:12)).foregroundStyle(.secondary).textSelection(.enabled); Spacer(); Button { controller.options.ignorePatterns.removeAll { $0 == value } } label: { Image(systemName:"minus.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain).help("移除规则") }
                 }
+                if !controller.options.ignorePatterns.isEmpty { Divider().opacity(0.4) }
                 SettingsCaption(title: "自动排除", detail: "跳过构建输出或依赖缓存。恢复后重新索引该目录。")
                 if controller.automaticExclusions.isEmpty { Text("暂无自动排除的目录").font(.caption).foregroundStyle(.tertiary) }
                 SettingsCompactList(items: controller.automaticExclusions, id: \.id) { entry in

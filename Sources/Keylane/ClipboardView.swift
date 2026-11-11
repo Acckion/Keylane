@@ -119,8 +119,10 @@ struct ClipboardPreferences: View {
                 SettingsPicker("记录上限", selection: binding(\.maxItems)) { Text("100项").tag(100); Text("500项").tag(500); Text("1000项").tag(1000) }
             }
             SettingsCard {
-                SettingsActionRow(title: "不记录这些应用", actionTitle: "添加应用…") {
-                    controller.addExcludedApplication()
+                SettingsRow("不记录这些应用") {
+                    Button("添加应用…", systemImage: "plus") { controller.addExcludedApplication() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
                 }
                 SettingsCompactList(items: controller.excludedApps.sorted(), id: \.self) { id in
                     SettingsRow(excludedNames[id] ?? id) {
