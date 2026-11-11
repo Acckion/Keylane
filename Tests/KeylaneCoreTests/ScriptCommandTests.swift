@@ -32,6 +32,24 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("ran").path))
     }
 
+    func testOverlappingRootsPreserveExplicitHiddenDirectoryAndCanCancel() throws {
+        let nested = folder.appendingPathComponent("nested", isDirectory: true)
+        let hidden = nested.appendingPathComponent(".hidden", isDirectory: true)
+        try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
+        try "exit 0".write(to: nested.appendingPathComponent("visible.sh"), atomically: true, encoding: .utf8)
+        try "exit 0".write(to: hidden.appendingPathComponent("explicit.sh"), atomically: true, encoding: .utf8)
+
+        let roots = [hidden.path, nested.path, folder.path]
+        XCTAssertEqual(ScriptCommand.discover(in: roots).commands.map(\.title), ["explicit", "visible"])
+        var checks = 0
+        let cancelled = ScriptCommand.discover(in: roots) {
+            checks += 1
+            return checks >= 2
+        }
+        XCTAssertEqual(checks, 2)
+        XCTAssertTrue(cancelled.commands.isEmpty)
+    }
+
     func testCreateTemplateDoesNotOverwriteFiles() throws {
         let scriptURL = folder.appendingPathComponent("新建脚本.sh")
         try ScriptCommand.createTemplate(at: scriptURL)

@@ -111,3 +111,22 @@ do {
     precondition(error == .wrongPage(item: "scopes", expected: "unrelated"))
 }
 print("PASS settings catalog lookup, ordering and page ownership")
+
+
+var unrelatedProviderCalls = 0
+let scopedSearch = LauncherCommandSearch()
+let scopedRegistry = try LauncherModuleRegistry(modules: [
+    module,
+    .init(id: .init(rawValue: "fixture.providers"), providers: [
+        .init(namespace: .prefix("script:"), entries: { _ in
+            [Entry(id: "script:demo", commandID: .init(rawValue: "script:demo"), name: "Demo",
+                   detail: "Script", symbol: "terminal")]
+        }, resolve: { _, _ in nil }),
+        .init(namespace: .prefix("app:"), entries: { _ in unrelatedProviderCalls += 1; return [] }, resolve: { _, _ in nil })
+    ])
+])
+let scriptsInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:],
+                                              namespace: .prefix("script:"))
+precondition(scopedSearch.results(for: scriptsInput, registry: scopedRegistry).map(\.id) == ["script:demo"])
+precondition(unrelatedProviderCalls == 0)
+print("PASS scoped ranking skips unrelated providers")
