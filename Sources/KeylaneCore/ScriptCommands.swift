@@ -11,6 +11,7 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
         let manager = FileManager.default
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
         let roots = Set(folders.map { URL(fileURLWithPath: $0, isDirectory: true).resolvingSymlinksInPath().path })
+        let rootNames = Set(roots.map { ($0 as NSString).lastPathComponent })
         var covered: Set<String> = []
         var commands: [String: Self] = [:]
         var unavailable = Set<String>()
@@ -34,10 +35,13 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
             var reached: Set<String> = []
             for case let file as URL in children {
                 if isCancelled() { return ([], []) }
-                if roots.contains(file.path),
-                   let metadata = try? file.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey, .isSymbolicLinkKey]),
-                   metadata.isDirectory == true, metadata.isPackage != true, metadata.isSymbolicLink != true {
-                    reached.insert(file.path)
+                if file.hasDirectoryPath, rootNames.contains(file.lastPathComponent) {
+                    let path = file.resolvingSymlinksInPath().path
+                    if roots.contains(path),
+                       let metadata = try? file.resourceValues(forKeys: [.isPackageKey, .isSymbolicLinkKey]),
+                       metadata.isPackage != true, metadata.isSymbolicLink != true {
+                        reached.insert(path)
+                    }
                 }
                 guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true,
                       values.isSymbolicLink != true, supports(file) else { continue }

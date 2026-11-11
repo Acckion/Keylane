@@ -107,10 +107,17 @@ public final class FileSearchIndex {
                 conditions.append("rowid IN (SELECT rowid FROM file_fts WHERE file_fts MATCH ?)")
                 values.append(options.contentSearch ? phrase : "name : " + phrase)
             } else {
-                // Names and bodies are already folded. Match the literal substring directly.
-                conditions.append(options.contentSearch ? "(instr(name, ?) > 0 OR instr(body, ?) > 0)" : "instr(name, ?) > 0")
-                values.append(word)
-                if options.contentSearch { values.append(word) }
+                // Names are already folded. Match the literal substring directly.
+                if options.contentSearch {
+                    let literal = "%" + word.replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "%", with: "\\%")
+                        .replacingOccurrences(of: "_", with: "\\_") + "%"
+                    conditions.append("(instr(name, ?) > 0 OR body LIKE ? ESCAPE '\\')")
+                    values += [word, literal]
+                } else {
+                    conditions.append("instr(name, ?) > 0")
+                    values.append(word)
+                }
             }
         }
         if !options.externalVolumes { conditions.append("external=0") }
