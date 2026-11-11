@@ -16,4 +16,19 @@ final class InterfaceTests: XCTestCase {
         XCTAssertEqual(NavigationBounds.move(8, by: 1, count: 2),1)
         XCTAssertEqual(NavigationBounds.move(1, by: -1, count: 2),0)
     }
+    func testGridMovementKeepsColumnAndHandlesShortRowsAndEmptySections() {
+        let counts = [6, 0, 8]
+        let shortRow = NavigationBounds.moveGrid(section: 0, item: 3, by: 1, vertical: true, columns: 4, counts: counts)
+        XCTAssertEqual(shortRow?.section, 0)
+        XCTAssertEqual(shortRow?.item, 5)
+        let nextSection = NavigationBounds.moveGrid(section: 0, item: 5, by: 1, vertical: true, columns: 4, counts: counts)
+        XCTAssertEqual(nextSection?.section, 2)
+        XCTAssertEqual(nextSection?.item, 1)
+        let previousSection = NavigationBounds.moveGrid(section: 2, item: 3, by: -1, vertical: true, columns: 4, counts: counts)
+        XCTAssertEqual(previousSection?.section, 0)
+        XCTAssertEqual(previousSection?.item, 5)
+        XCTAssertEqual(NavigationBounds.moveGrid(section: 2, item: 4, by: 1, vertical: true, columns: 4, counts: counts)?.item, 4)
+        XCTAssertEqual(NavigationBounds.moveGrid(section: 0, item: 5, by: 1, vertical: false, columns: 4, counts: counts)?.item, 0)
+        XCTAssertNil(NavigationBounds.moveGrid(section: 0, item: 0, by: 1, vertical: true, columns: 4, counts: []))
+    }
 }

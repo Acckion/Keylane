@@ -2,23 +2,32 @@ import SwiftUI
 import AppKit
 import QuickLookUI
 
-/// Shared by file search and clipboard: preview occupies the upper area, then information.
+/// Results stay on the left; the preview and information on the right scroll independently.
 struct ResultDetailPane<Preview: View, Information: View>: View {
-    @ViewBuilder let preview: () -> Preview
+    @ViewBuilder let preview: (CGFloat) -> Preview
     @ViewBuilder let information: () -> Information
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                preview().frame(maxWidth: .infinity).frame(height: 220).clipped()
-                information()
-            }.padding(18)
+        GeometryReader { geometry in
+            let previewHeight = max(0, (geometry.size.height - VisualStyle.launcherTopInset - VisualStyle.launcherBottomInset - 1) / 2)
+            VStack(spacing: 0) {
+                ScrollView {
+                    preview(max(0, previewHeight - 36))
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: max(0, previewHeight - 36))
+                        .padding(18)
+                }
+                .launcherScrollInsets(bottom: false)
+                .frame(height: previewHeight + VisualStyle.launcherTopInset)
+                Divider()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18, content: information)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(18)
+                }
+                .launcherScrollInsets(top: false)
+            }
         }
-        .scrollIndicators(.visible, axes: .vertical)
-        .contentMargins(.top, 61, for: .scrollContent)
-        .contentMargins(.bottom, 52, for: .scrollContent)
-        .contentMargins(.top, 61, for: .scrollIndicators)
-        .contentMargins(.bottom, 52, for: .scrollIndicators)
-        .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
     }
 }
 

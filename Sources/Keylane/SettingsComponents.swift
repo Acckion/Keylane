@@ -71,15 +71,44 @@ extension SettingsRow where Label == SettingsRowLabel {
     }
 }
 
+/// Settings pages choose a role; the shared component owns typography.
+struct SettingsTitle: View {
+    enum Role { case row, section }
+
+    let text: String
+    let role: Role
+
+    init(_ text: String, role: Role = .row) {
+        self.text = text
+        self.role = role
+    }
+
+    var body: some View {
+        Text(text).font(role == .row ? VisualStyle.rowText : .system(size: 15, weight: .medium))
+    }
+}
+
+/// Secondary copy describing a setting, shared by rows and cards.
+struct SettingsDescription: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text).font(.system(size: 13)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 struct SettingsRowLabel: View {
     let title: String
     let detail: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
+            SettingsTitle(title)
             if let detail, !detail.isEmpty {
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+                SettingsDescription(detail)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -274,7 +303,7 @@ struct SettingsSectionTitle: View {
     let title: String
 
     var body: some View {
-        Text(title).font(.system(size: 15, weight: .medium))
+        SettingsTitle(title, role: .section)
             .padding(.leading, 14).padding(.top, 10)
     }
 }
@@ -285,9 +314,8 @@ struct SettingsCaption: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: 15, weight: .medium))
-            Text(detail).font(.system(size: 13)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            SettingsTitle(title, role: .section)
+            SettingsDescription(detail)
         }
     }
 }

@@ -54,6 +54,14 @@ var cachedImage: NSImage?
 controller.loadListThumbnail(for:image) { cachedImage = $0 }
 wait("cached list thumbnail") { cachedImage != nil }
 precondition(listImage === cachedImage)
+var cancelledThumbnailFinished = false
+let cancelledThumbnail = Task { @MainActor in
+    let result = await controller.listThumbnail(for: image)
+    precondition(result == nil)
+    cancelledThumbnailFinished = true
+}
+cancelledThumbnail.cancel()
+wait("cancelled row thumbnail completes without publishing") { cancelledThumbnailFinished }
 // A fresh controller must recover from the saved representations if the owned cache is lost.
 let imageAsset = (try! ClipboardStore(directory:root).detail(id:image.id))!.assetURL!
 let movedAsset = imageAsset.appendingPathExtension("fixture-backup")
@@ -73,6 +81,12 @@ let textItem = controller.items.first { $0.kind == .text }!
 for _ in 0..<24 { controller.select(image.id); controller.select(textItem.id) }
 wait("rapid selection keeps latest detail") { controller.detail?.item.id == textItem.id && !controller.loadingDetail }
 precondition(controller.thumbnail == nil)
+controller.select(image.id)
+controller.endPresentation()
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(controller.detail == nil && controller.thumbnail == nil && !controller.loadingDetail)
+controller.search("")
+wait("reopen after cancelling an in-flight preview") { controller.detail?.item.id == image.id && controller.thumbnail != nil }
 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 let file = root.appendingPathComponent("fixture.txt"); try Data("OWN FIXTURE".utf8).write(to: file)
 board.clearContents(); board.writeObjects([file as NSURL]); controller.poll()

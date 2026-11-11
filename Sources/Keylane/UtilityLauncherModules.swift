@@ -10,9 +10,11 @@ enum UtilityLauncherModules {
 
     private static func contacts(_ controller: ContactsController) -> LauncherModule {
         let pageID = PageID(rawValue: "Contacts")
+        let selectedContact = controller.$visible.combineLatest(controller.$selectedID)
+            .map { results, id in results.first { $0.id == id } }
         var page = LauncherPage(id: pageID, placeholder: "搜索联系人…",
                                 badge: ("联系人", "person.crop.circle"),
-                                extendsUnderChrome: true,
+                                contentPlacement: .underChrome,
                                 content: { AnyView(ContactsPage(controller: controller)) },
                                 queryChanged: { controller.query = $0 },
                                 leave: controller.stop,
@@ -23,7 +25,7 @@ enum UtilityLauncherModules {
                                 },
                                 primaryTitle: { controller.selected?.firstValue == nil ? "打开联系人" : "复制" },
                                 actions: { contactActions(controller) },
-                                updates: controller.objectWillChange.eraseToAnyPublisher())
+                                updates: ViewObservation.changes(selectedContact))
         page.enter = { query in
             controller.query = query
             controller.start()
@@ -73,7 +75,6 @@ enum UtilityLauncherModules {
         })
         var page = LauncherPage(id: pageID, placeholder: "输入要查询的词语…",
                                 badge: ("词典", "book.closed"),
-                                extendsUnderChrome: true,
                                 content: { AnyView(DictionaryPage(controller: controller)) },
                                 queryChanged: controller.search,
                                 leave: { controller.search("") },
@@ -83,7 +84,7 @@ enum UtilityLauncherModules {
                                 },
                                 primaryTitle: { controller.definition == nil ? "打开词典" : "复制释义" },
                                 actions: { dictionaryActions(controller) },
-                                updates: controller.objectWillChange.eraseToAnyPublisher())
+                                updates: ViewObservation.changes(controller.$definition))
         page.enter = { _ in
             let term = controller.initialTerm
             controller.initialTerm = ""
@@ -133,7 +134,7 @@ enum UtilityLauncherModules {
         var page = LauncherPage(id: pageID,
                                 placeholder: EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"),
                                 badge: (title, "face.smiling"),
-                                extendsUnderChrome: true,
+                                contentPlacement: .underChrome,
                                 content: { AnyView(EmojiSearchPage(controller: controller) { use($0, true) }) },
                                 queryChanged: { controller.query = $0 },
                                 move: { controller.move($0, vertical: true) },
@@ -148,21 +149,24 @@ enum UtilityLauncherModules {
                                                        icon: "doc.on.doc", perform: { use(item, false) })
                                     ]
                                 },
-                                updates: controller.objectWillChange.eraseToAnyPublisher())
+                                updates: Publishers.Merge(ViewObservation.changes(controller.$selection),
+                                                          ViewObservation.changes(controller.$category)).eraseToAnyPublisher())
         page.enter = { query in
             controller.query = query
             controller.start()
             return nil
         }
+        page.leave = controller.stop
+        page.resume = controller.start
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
         page.actionWidth = 258
         page.typeFilterWidth = 174
-        page.typeFilter = { open in
+        page.typeFilter = { [weak model] open in
             AnyView(ResultTypeFilter(
                 selection: Binding(get: { controller.category }, set: { controller.category = $0 }),
-                options: EmojiCatalog.categories, open: open, width: 174,
+                options: EmojiCatalog.categories, open: open, navigation: model?.navigation ?? "arrows", width: 174,
                 searchPlaceholder: EmojiCatalog.label("搜索分类…", "Search categories…")
             ))
         }

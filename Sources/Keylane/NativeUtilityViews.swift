@@ -5,21 +5,21 @@ import KeylaneCore
 
 struct SystemShortcutsPreferences: View {
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
     let controller: SystemShortcutsController
     @State private var filter = ""
 
     init(model: Model, controller: SystemShortcutsController) {
         self.model = model
         self.controller = controller
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$aliases),
-            SettingsPageObservation.changes(model.$bindings),
-            SettingsPageObservation.changes(controller.$entries),
-            SettingsPageObservation.changes(controller.$loading),
-            SettingsPageObservation.changes(controller.$message),
-            SettingsPageObservation.changes(controller.$icons),
-            SettingsPageObservation.changes(controller.$disabledIDs)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$bindings),
+            ViewObservation.changes(controller.$entries),
+            ViewObservation.changes(controller.$loading),
+            ViewObservation.changes(controller.$message),
+            ViewObservation.changes(controller.$icons),
+            ViewObservation.changes(controller.$disabledIDs)
         ]))
     }
 
@@ -59,18 +59,16 @@ struct ContactsPage: View {
     @ObservedObject var controller: ContactsController
     var body: some View {
         ResultDetailLayout {
-            ScrollViewReader { proxy in
-                ResultListScrollView {
-                    ForEach(controller.visible) { contact in
-                        Button { controller.select(contact.id) } label: {
-                            ResultListRow(selected: contact.id == controller.selectedID) {
-                                Image(systemName: "person.crop.circle.fill").font(.system(size: 23)).foregroundStyle(.blue)
-                            } content: {
-                                HighlightedResultText(text: contact.name, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
-                            }
-                        }.buttonStyle(.plain).id(contact.id)
+            SelectableResultList(selection: controller.selectedID) {
+                ForEach(controller.visible) { contact in
+                    ResultListButton(id: contact.id, action: { controller.select(contact.id) }) {
+                        ResultListRow(selected: contact.id == controller.selectedID) {
+                            Image(systemName: "person.crop.circle.fill").font(.system(size: 23)).foregroundStyle(.blue)
+                        } content: {
+                            HighlightedResultText(text: contact.name, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
+                        }
                     }
-                }.onChange(of: controller.selectedID) { _, id in if let id { proxy.scrollTo(id) } }
+                }
             }
         } detail: {
             Group {
@@ -82,12 +80,12 @@ struct ContactsPage: View {
                         Button("重试") { controller.refresh() }.buttonStyle(ContentActionButtonStyle())
                     }
                 } else if let contact = controller.selected {
-                    ResultDetailPane {
+                    ResultDetailPane { height in
                         VStack(spacing: 12) {
                             Image(systemName: "person.crop.circle.fill").font(.system(size: 66)).foregroundStyle(.blue)
                             Text(contact.name).font(.title2.weight(.semibold)).textSelection(.enabled)
                             if !contact.organization.isEmpty { Text(contact.organization).foregroundStyle(.secondary) }
-                        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }.frame(maxWidth: .infinity, minHeight: height)
                     } information: {
                         DetailInformationSection(rows: contact.phones.enumerated().map {
                             .init(title: $0.offset == 0 ? "电话" : "电话 \($0.offset + 1)", value: $0.element)
@@ -138,6 +136,6 @@ struct DictionaryPage: View {
             } else {
                 ContentUnavailableView("没有找到释义", systemImage: "book.closed", description: Text("试试其他拼写，或检查系统词典中已启用的词库。"))
             }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(.top, 61).padding(.bottom, 52)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

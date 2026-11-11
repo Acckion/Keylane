@@ -2,15 +2,15 @@ import SwiftUI
 
 struct LauncherAppearancePreferences: View {
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
 
     init(model: Model) {
         self.model = model
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$appearance),
-            SettingsPageObservation.changes(model.$interfaceSize),
-            SettingsPageObservation.changes(model.$windowMode),
-            SettingsPageObservation.changes(model.$compactFavorites)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$appearance),
+            ViewObservation.changes(model.$interfaceSize),
+            ViewObservation.changes(model.$windowMode),
+            ViewObservation.changes(model.$compactFavorites)
         ]))
     }
 

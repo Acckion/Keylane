@@ -65,7 +65,7 @@ final class ScreenshotLibrary: ObservableObject {
     @Published var accurate: Bool { didSet { defaults.set(accurate, forKey: "screenshotOCRAccurate") } }
     @Published var allowCloudOCR: Bool { didSet { defaults.set(allowCloudOCR, forKey: "screenshotCloudOCR") } }
     @Published private(set) var scopes: [ScreenshotScope] = []
-    @Published var filter = ScreenshotFilter.all { didSet { search(query) } }
+    @Published var filter = ScreenshotFilter.all { didSet { if oldValue != filter { search(query) } } }
     @Published var selection: ResultGridSelection<String>?
     @Published private(set) var results: [ScreenshotMedia] = []
     @Published private(set) var scanning = false
@@ -195,15 +195,9 @@ final class ScreenshotLibrary: ObservableObject {
         }
     }
 
-    func move(_ offset: Int) {
-        let index = results.firstIndex { $0.id == selection?.itemID } ?? 0
-        guard !results.isEmpty else { return }
-        let target = NavigationBounds.move(index, by: offset, count: results.count)
-        selection = .init(sectionID: Self.section, itemID: results[target].id)
-    }
-
-    func select(_ item: ScreenshotMedia) {
-        selection = .init(sectionID: Self.section, itemID: item.id)
+    func move(_ delta: Int, vertical: Bool) {
+        let next = selection?.moving(delta, vertical: vertical, columns: columns, in: sections)
+        if next != selection { selection = next }
     }
 
     var sections: [ResultGridSection<ScreenshotMedia>] {
@@ -212,9 +206,9 @@ final class ScreenshotLibrary: ObservableObject {
     }
 
     private func publish(_ results: [ScreenshotMedia]) {
-        self.results = results
-        if let selection, results.contains(where: { $0.id == selection.itemID }) { return }
-        selection = results.first.map { .init(sectionID: Self.section, itemID: $0.id) }
+        if self.results != results { self.results = results }
+        let next = ResultGridSelection.retaining(selection, in: sections)
+        if selection != next { selection = next }
     }
 
     func latest(_ completion: @escaping (ScreenshotMedia?) -> Void) {

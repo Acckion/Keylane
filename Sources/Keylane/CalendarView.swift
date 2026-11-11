@@ -6,33 +6,25 @@ struct CalendarPage: View {
     @ObservedObject var controller: CalendarController
     var body: some View {
         ResultDetailLayout {
-            ScrollViewReader { proxy in
-                ResultListScrollView {
-                    if controller.access == .allowed, controller.enabled {
-                        if controller.filteredEvents.isEmpty {
-                            Text(controller.loading ? "正在加载日程…" : "当天没有匹配的日程")
-                                .font(VisualStyle.sectionText).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
-                        }
-                        ForEach(controller.filteredEvents) { event in
-                            Button { controller.select(event.id) } label: {
-                                ResultListRow(selected: event.id == controller.selectedID, height: 48) {
-                                    Image(systemName: event.allDay ? "sun.max.fill" : "calendar").font(.system(size: 21)).foregroundStyle(.blue)
-                                } content: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
-                                        Text(event.allDay ? "全天 · \(event.calendarTitle)" : "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened)) · \(event.calendarTitle)")
-                                            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                                    }
+            SelectableResultList(selection: controller.selectedID, revealAfterLoading: !controller.loading) {
+                if controller.access == .allowed, controller.enabled {
+                    if controller.filteredEvents.isEmpty {
+                        Text(controller.loading ? "正在加载日程…" : "当天没有匹配的日程")
+                            .font(VisualStyle.sectionText).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
+                    }
+                    ForEach(controller.filteredEvents) { event in
+                        ResultListButton(id: event.id, action: { controller.select(event.id) }) {
+                            ResultListRow(selected: event.id == controller.selectedID, height: 48) {
+                                Image(systemName: event.allDay ? "sun.max.fill" : "calendar").font(.system(size: 21)).foregroundStyle(.blue)
+                            } content: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
+                                    Text(event.allDay ? "全天 · \(event.calendarTitle)" : "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened)) · \(event.calendarTitle)")
+                                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                                 }
-                            }.buttonStyle(.plain).id(event.id)
+                            }
                         }
                     }
-                }
-                .onChange(of: controller.selectedID) { _, id in
-                    if let id { proxy.scrollTo(id) }
-                }
-                .onChange(of: controller.loading) { _, loading in
-                    if !loading, let id = controller.selectedID { proxy.scrollTo(id) }
                 }
             }
         } detail: {
@@ -40,14 +32,14 @@ struct CalendarPage: View {
                 if !controller.enabled { ContentUnavailableView("日历已关闭", systemImage: "calendar", description: Text("可在日历设置中重新开启。")) }
                 else if controller.access != .allowed { CalendarConnectionView(controller: controller) }
                 else if let event = controller.selectedEvent {
-                    ResultDetailPane {
+                    ResultDetailPane { height in
                         VStack(alignment: .leading, spacing: 14) {
                             Label(event.calendarTitle, systemImage: "calendar").font(.system(size: 12)).foregroundStyle(.secondary)
                             Text(event.title).font(.system(size: 21, weight: .semibold)).textSelection(.enabled)
                             Text(event.start.formatted(date: .complete, time: .omitted)).font(.system(size: 13))
                             Text(event.allDay ? "全天" : "\(event.start.formatted(date: .omitted, time: .shortened)) – \(event.end.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
                             Spacer(minLength: 0)
-                        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(9)
+                        }.frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading).padding(9)
                     } information: {
                         DetailInformationSection(rows: [
                             .init(title: "日历", value: event.calendarTitle),
@@ -59,7 +51,7 @@ struct CalendarPage: View {
                 } else { ContentUnavailableView(controller.loading ? "正在加载" : "没有日程", systemImage: "calendar", description: Text("选择其他日期，或在日历设置中选择要显示的日历。")) }
             }
         }
-        .overlay(alignment: .bottom) { if !controller.error.isEmpty { Text(controller.error).font(.caption).foregroundStyle(.orange).padding(10).padding(.bottom, 52) } }
+        .overlay(alignment: .bottom) { if !controller.error.isEmpty { Text(controller.error).font(.caption).foregroundStyle(.orange).padding(10).padding(.bottom, VisualStyle.launcherBottomInset) } }
     }
 }
 
@@ -78,11 +70,19 @@ struct CalendarConnectionView: View {
 }
 
 struct CalendarDateNavigation: View {
-    @ObservedObject var controller: CalendarController
+    let controller: CalendarController
+    @StateObject private var observation: ViewObservation
+
+    init(controller: CalendarController) {
+        self.controller = controller
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$selectedDate)
+        ]))
+    }
     var body: some View {
         HStack(spacing: 4) {
             Button { controller.shiftDay(-1) } label: { Image(systemName: "chevron.left") }.help("前一天")
-            DatePicker("日期", selection: $controller.selectedDate, displayedComponents: .date).labelsHidden().datePickerStyle(.field).fixedSize()
+            DatePicker("日期", selection: Binding(get: { controller.selectedDate }, set: { controller.selectedDate = $0 }), displayedComponents: .date).labelsHidden().datePickerStyle(.field).fixedSize()
             Button { controller.shiftDay(1) } label: { Image(systemName: "chevron.right") }.help("后一天")
             Button("今天") { controller.showToday() }
         }.buttonStyle(ContentActionButtonStyle()).controlSize(.small)
@@ -93,7 +93,8 @@ struct MenuBarPreferences: View {
     @ObservedObject var registry: MenuBarRegistry
     var body: some View {
         SettingsGroup {
-            ForEach(registry.descriptors) { descriptor in
+            ForEach(Array(registry.descriptors.enumerated()), id: \.element.id) { index, descriptor in
+                if index > 0 { Divider() }
                 Toggle(descriptor.title, isOn: Binding(get: { registry.isEnabled(descriptor.id) }, set: { registry.setEnabled(descriptor.id, $0) }))
             }
         }.settingsAnchor(.menuBar)
@@ -111,7 +112,7 @@ struct CalendarPreferences: View {
 private struct CalendarSettingsGroups: View {
     let model: Model
     let controller: CalendarController
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
     @ObservedObject var registry: MenuBarRegistry
     @State private var showsCalendars = false
 
@@ -119,15 +120,15 @@ private struct CalendarSettingsGroups: View {
         self.model = model
         self.controller = controller
         self.registry = registry
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$aliases.map { $0["calendar"] }),
-            SettingsPageObservation.changes(model.$bindings.map { $0["calendar"] }),
-            SettingsPageObservation.changes(controller.$enabled),
-            SettingsPageObservation.changes(controller.$access),
-            SettingsPageObservation.changes(controller.$calendars),
-            SettingsPageObservation.changes(controller.$selectedCalendarIDs),
-            SettingsPageObservation.changes(controller.$menuDisplay),
-            SettingsPageObservation.changes(controller.$error)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$aliases.map { $0["calendar"] }),
+            ViewObservation.changes(model.$bindings.map { $0["calendar"] }),
+            ViewObservation.changes(controller.$enabled),
+            ViewObservation.changes(controller.$access),
+            ViewObservation.changes(controller.$calendars),
+            ViewObservation.changes(controller.$selectedCalendarIDs),
+            ViewObservation.changes(controller.$menuDisplay),
+            ViewObservation.changes(controller.$error)
         ]))
     }
 

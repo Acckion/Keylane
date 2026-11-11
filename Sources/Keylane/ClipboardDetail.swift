@@ -14,8 +14,8 @@ struct ClipboardDetail: View {
     @State private var metrics: ClipboardDetailMetrics?
 
     var body: some View {
-        ResultDetailPane {
-            preview
+        ResultDetailPane { height in
+            preview(height: height)
         } information: {
             DetailInformationSection(rows: information)
             if !accessMessage.isEmpty {
@@ -33,8 +33,9 @@ struct ClipboardDetail: View {
                     .font(.system(size: 12))
             }
         }
-        .task(id: detail.item.id) {
+        .task(id: detail.files) {
             releaseScopes()
+            metrics = nil
             urls = detail.files.map { file in
                 if let bookmark = file.bookmark {
                     var stale = false
@@ -54,13 +55,12 @@ struct ClipboardDetail: View {
         .onDisappear { releaseScopes() }
     }
 
-    @ViewBuilder private var preview: some View {
+    @ViewBuilder private func preview(height: CGFloat) -> some View {
         switch detail.item.kind {
         case .text:
-            ScrollView {
-                Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading).padding(.horizontal, 9).padding(.top, 4)
-            }
+            Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
+                .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+                .padding(.horizontal, 9).padding(.top, 4)
         case .image:
             if let thumbnail {
                 GeometryReader { geometry in
@@ -70,11 +70,11 @@ struct ClipboardDetail: View {
                         .frame(width: width, height: width / ratio)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .frame(width: geometry.size.width, height: geometry.size.height)
-                }
+                }.frame(height: height)
             } else { ContentUnavailableView("图片无法预览", systemImage: "photo", description: Text("历史图片可能已丢失。")) }
         case .files:
             if urls.isEmpty { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
-            else { ResultFilePreview(urls: urls) }
+            else { ResultFilePreview(urls: urls).frame(height: height) }
         }
     }
 

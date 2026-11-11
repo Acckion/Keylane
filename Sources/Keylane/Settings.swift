@@ -190,12 +190,12 @@ enum LauncherSettingsContent {
 
 private struct LoginPreferences: View {
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
 
     init(model: Model) {
         self.model = model
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$loginEnabled)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$loginEnabled)
         ]))
     }
 

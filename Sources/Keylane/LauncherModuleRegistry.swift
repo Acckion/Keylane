@@ -15,23 +15,41 @@ struct Entry: Identifiable {
     var aliases: [String] = []
     var rankingKind: LauncherSearchRanking.Kind = .command
     var matchScore: Int?
+    var isDirectory = false
 }
 
 struct LauncherAction: Identifiable {
+    struct Submenu {
+        let title: String
+        let items: [LauncherAction]
+    }
+
+    struct ArgumentForm {
+        let title: String
+        let submit: ([String]) -> Void
+    }
+
     let id: String
     let title: String
     let icon: String
     var keys: [String] = []
-    let perform: () -> Void
+    var submenu: Submenu?
+    var argumentForm: ArgumentForm?
+    var perform: () -> Void = {}
 }
 
 struct LauncherPage {
+    enum ContentPlacement {
+        case inset
+        case underChrome
+        case fileResults
+    }
+
     let id: PageID
     let placeholder: String
     var badge: (title: String, symbol: String)?
     var actionTitle: String?
-    var usesSharedFileResults = false
-    var extendsUnderChrome = false
+    var contentPlacement: ContentPlacement = .inset
     var content: (() -> AnyView)?
     var queryChanged: (String) -> Void = { _ in }
     var leave: () -> Void = {}

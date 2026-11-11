@@ -2,15 +2,15 @@ import SwiftUI
 
 struct KeyboardPreferences: View {
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
 
     init(model: Model) {
         self.model = model
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$bindings),
-            SettingsPageObservation.changes(model.$navigation),
-            SettingsPageObservation.changes(model.$doubleTap),
-            SettingsPageObservation.changes(model.$hyperkey)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$bindings),
+            ViewObservation.changes(model.$navigation),
+            ViewObservation.changes(model.$doubleTap),
+            ViewObservation.changes(model.$hyperkey)
         ]))
     }
 

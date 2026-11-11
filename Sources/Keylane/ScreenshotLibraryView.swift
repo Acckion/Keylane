@@ -10,7 +10,7 @@ struct ScreenshotLibraryPage: View {
     var body: some View {
         ResultGrid(sections: library.sections, selection: $library.selection, columnCount: library.columns,
                    contentInset: 0, caption: { caption($0.date) },
-                   itemTitle: { $0.name }, activate: { _ in }) { item in
+                   itemTitle: { $0.name }) { item in
             ScreenshotThumbnail(item: item)
         } emptyState: {
             VStack(spacing: 14) {
@@ -21,11 +21,11 @@ struct ScreenshotLibraryPage: View {
                     Button("启用文字识别") {
                         library.recognizesText = true
                         library.search(query)
-                    }.buttonStyle(.glass)
+                    }.buttonStyle(ContentActionButtonStyle())
                 } else {
                     Image(systemName: "viewfinder").font(.system(size: 30))
                     Text(library.inaccessibleFolders > 0 ? "部分搜索文件夹不可访问" : "没有匹配的截图或录屏")
-                    Button("添加搜索文件夹…", action: chooseFolders).buttonStyle(.glass)
+                    Button("添加搜索文件夹…", action: chooseFolders).buttonStyle(ContentActionButtonStyle())
                 }
             }.foregroundStyle(.secondary).padding(.top, 68)
         }
@@ -48,27 +48,6 @@ struct ScreenshotLibraryPage: View {
     }
 }
 
-struct ScreenshotFilterPicker: View {
-    @ObservedObject var library: ScreenshotLibrary
-
-    var body: some View {
-        Menu {
-            Picker("媒体类型", selection: $library.filter) {
-                ForEach(ScreenshotFilter.allCases) { filter in
-                    Label(filter.title, systemImage: filter.symbol).tag(filter)
-                }
-            }
-        } label: {
-            Label(library.filter.title, systemImage: library.filter.symbol)
-                .font(.system(size: 14, weight: .medium))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .padding(.trailing, 8)
-        .accessibilityLabel("筛选截图与录屏")
-    }
-}
-
 private struct ScreenshotThumbnail: View {
     private static let cache: NSCache<NSString, NSImage> = {
         let value = NSCache<NSString, NSImage>()
@@ -76,6 +55,11 @@ private struct ScreenshotThumbnail: View {
         value.totalCostLimit = 48 * 1024 * 1024
         return value
     }()
+    private struct Revision: Equatable {
+        let item: ScreenshotMedia
+        let scale: CGFloat
+    }
+
     let item: ScreenshotMedia
     @State private var thumbnail: NSImage?
     @Environment(\.displayScale) private var scale
@@ -96,7 +80,7 @@ private struct ScreenshotThumbnail: View {
             }
         }
         .accessibilityHidden(true)
-        .task(id: item) {
+        .task(id: Revision(item: item, scale: scale)) {
             thumbnail = nil
             guard !item.needsCloudAccess else { return }
             let key = "\(item.url.absoluteString)|\(item.modified.timeIntervalSince1970)|\(item.size)|\(scale)" as NSString

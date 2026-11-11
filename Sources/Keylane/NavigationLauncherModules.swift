@@ -64,7 +64,7 @@ enum NavigationLauncherModules {
         let placeholder = mode == .windows ? NavigationText.label("搜索窗口…", "Search Windows…")
                                           : NavigationText.label("搜索菜单项…", "Search Menu Items…")
         var page = LauncherPage(id: id, placeholder: placeholder, badge: (mode.title, mode.symbol))
-        page.extendsUnderChrome = true
+        page.contentPlacement = .underChrome
         page.actionWidth = 258
         page.content = { [weak model] in
             AnyView(NavigationPage(controller: controller, mode: mode, requestAccess: { [weak model] in
@@ -91,7 +91,10 @@ enum NavigationLauncherModules {
             return [LauncherAction(id: "run-navigation", title: mode.action, icon: mode.symbol, keys: ["↩"],
                                    perform: { activate(item) }), refresh]
         }
-        page.updates = controller.objectWillChange.eraseToAnyPublisher()
+        page.updates = Publishers.Merge(
+            ViewObservation.changes(controller.$selection),
+            controller.$results.dropFirst().map { _ in () }
+        ).eraseToAnyPublisher()
         return page
     }
 
@@ -176,13 +179,22 @@ enum NavigationLauncherModules {
             model?.runCommand(.init(rawValue: ScreenshotCommand.search.rawValue), origin: .menu)
         }
         var page = LauncherPage(id: id, placeholder: "按 name:、text: 或 date: 搜索截图…", badge: ("截图管理", "viewfinder"))
-        page.extendsUnderChrome = true
+        page.contentPlacement = .underChrome
         page.actionWidth = 258
         page.releasePreview = { FilePreview.shared.dismiss() }
         page.content = { [weak model] in
             AnyView(ScreenshotLibraryPage(library: library, query: model?.query ?? "", chooseFolders: chooseFolders))
         }
-        page.searchAccessory = { AnyView(ScreenshotFilterPicker(library: library)) }
+        page.typeFilterWidth = 138
+        page.typeFilter = { [weak model] open in
+            AnyView(ResultTypeFilter(
+                selection: Binding(get: { library.filter.rawValue }, set: {
+                    if let filter = ScreenshotFilter(rawValue: $0) { library.filter = filter }
+                }),
+                options: ScreenshotFilter.allCases.map { .init(id: $0.id, title: $0.title, symbol: $0.symbol) },
+                open: open, navigation: model?.navigation ?? "arrows"
+            ))
+        }
         page.enter = { query in
             library.search(query)
             library.refresh()
@@ -191,8 +203,8 @@ enum NavigationLauncherModules {
         page.resume = library.refresh
         page.queryChanged = library.search
         page.leave = library.stop
-        page.move = { library.move($0 * library.columns) }
-        page.moveHorizontal = library.move
+        page.move = { library.move($0, vertical: true) }
+        page.moveHorizontal = { library.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.submit = { [weak model] in
             guard let model, let item = library.selected else { return }
@@ -203,7 +215,12 @@ enum NavigationLauncherModules {
             guard let model else { return [] }
             return screenshotActions(model, chooseFolders: chooseFolders)
         }
-        page.updates = library.objectWillChange.eraseToAnyPublisher()
+        let selectedMedia = library.$results.combineLatest(library.$selection)
+            .map { results, selection in results.first { $0.id == selection?.itemID } }
+        page.updates = Publishers.Merge(
+            ViewObservation.changes(library.$filter),
+            ViewObservation.changes(selectedMedia)
+        ).eraseToAnyPublisher()
         return page
     }
 

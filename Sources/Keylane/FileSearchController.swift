@@ -227,7 +227,7 @@ final class FileSearchController: ObservableObject {
             var seen = Set<String>()
             let ordered = (local + allowed).filter { seen.insert($0.file.id).inserted }
                 .sorted { $0.precedes($1) }
-            let best = ordered.prefix(200).map(\.file)
+            let best = ordered.prefix(200).map { $0.file.readingResourceMetadata() }
             let truncated = ordered.count >= 200
             DispatchQueue.main.async {
                 guard let self, self.mergeVersion == ticket, self.currentQuery == query else { return }

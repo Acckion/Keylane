@@ -23,7 +23,7 @@ enum CalendarLauncherModule {
             )],
             pages: [.init(
                 id: pageID, placeholder: "搜索日程…", badge: ("日历", "calendar"), actionTitle: "日历操作",
-                extendsUnderChrome: true,
+                contentPlacement: .underChrome,
                 content: { AnyView(CalendarPage(controller: calendar)) },
                 queryChanged: { calendar.updatePresentation(query: $0) },
                 leave: { calendar.endPresentation() },

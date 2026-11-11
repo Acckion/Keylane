@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import KeylaneCore
+import UniformTypeIdentifiers
 
 let app = NSApplication.shared
 let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYLANE_FILE_TEST_ROOT"]!)
@@ -34,6 +35,14 @@ controller.search("")
 precondition(!controller.indexing, "Opening an empty search should not start a full scan")
 controller.search("作业")
 wait("Chinese filename") { !controller.indexing && results.contains { $0.name == "作业-2.pdf" } }
+precondition(results.first(where: { $0.name == "作业-2.pdf" })?.contentType?.conforms(to: .pdf) == true,
+             "Published search results must carry the type used by the UI filter")
+let directory = scope.appendingPathComponent("keylane-filter-folder.pdf", isDirectory: true)
+try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+controller.search("keylane-filter-folder")
+wait("Folder metadata") { results.first?.isDirectory == true }
+controller.search("作业")
+wait("Restore original query") { !controller.isSearching && results.first?.name == "作业-2.pdf" }
 recordsRefresh = true
 controller.search("作业"); controller.search("作业")
 controller.startIndex(); wait("Stable index refresh") { !controller.indexing }

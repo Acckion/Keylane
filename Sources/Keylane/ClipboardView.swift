@@ -1,79 +1,114 @@
 import SwiftUI
 import AppKit
+import Combine
 import KeylaneCore
 
 struct ClipboardHistoryView: View {
-    @ObservedObject var controller: ClipboardController
+    let controller: ClipboardController
     let query: String
+
     var body: some View {
         ResultDetailLayout {
-            results
+            ClipboardHistoryList(controller: controller, query: query)
         } detail: {
-            if let detail = controller.detail {
-                ClipboardDetail(detail: detail, thumbnail: controller.thumbnail,
-                                status: controller.status, accessMessage: controller.accessMessage)
-                    .id(detail.item.id)
-            } else {
-                VStack(spacing: 10) {
-                    Spacer()
-                    ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
-                    Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
-                        .buttonStyle(ContentActionButtonStyle())
-                    Spacer()
-                    if !controller.accessMessage.isEmpty {
-                        Text(controller.accessMessage).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
-                    }
-                    if !controller.status.isEmpty {
-                        Text(controller.status).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).textSelection(.enabled)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.top, 61).padding(.bottom, 52)
-            }
-        }.onAppear { controller.reload() }
-    }
-    private var results: some View {
-        ScrollViewReader { proxy in
-            ResultListScrollView {
-                if controller.items.isEmpty {
-                    Text("没有匹配记录").font(VisualStyle.sectionText).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity).padding(.top, 80)
-                }
-                ForEach(controller.items) { item in
-                    Button { controller.select(item.id) } label: {
-                        ResultListRow(selected: item.id == controller.selectedID) {
-                            ClipboardListIcon(item: item, controller: controller)
-                        } content: {
-                            HighlightedResultText(text: item.preview.replacingOccurrences(of: "\n", with: " "), query: query)
-                                .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
-                        }
-                    }.buttonStyle(.plain).id(item.id)
-                }
-            }
-            .onChange(of: controller.selectedID) { _, id in if let id { proxy.scrollTo(id) } }
-            .onChange(of: query) { _, _ in if let first = controller.items.first { proxy.scrollTo(first.id, anchor: .top) } }
+            ClipboardHistoryDetail(controller: controller)
         }
+        .onAppear { controller.reload() }
+    }
+}
+
+private struct ClipboardHistoryList: View {
+    let controller: ClipboardController
+    let query: String
+    @StateObject private var observation: ViewObservation
+
+    init(controller: ClipboardController, query: String) {
+        self.controller = controller
+        self.query = query
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$items),
+            ViewObservation.changes(controller.$selectedID)
+        ]))
     }
 
+    var body: some View {
+        SelectableResultList(selection: controller.selectedID, query: query, firstResult: controller.items.first?.id) {
+            if controller.items.isEmpty {
+                Text("没有匹配记录").font(VisualStyle.sectionText).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.top, 80)
+            }
+            ForEach(controller.items) { item in
+                ResultListButton(id: item.id, action: { controller.select(item.id) }) {
+                    ResultListRow(selected: item.id == controller.selectedID) {
+                        ClipboardListIcon(item: item, controller: controller)
+                    } content: {
+                        HighlightedResultText(text: item.preview.replacingOccurrences(of: "\n", with: " "), query: query)
+                            .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ClipboardHistoryDetail: View {
+    let controller: ClipboardController
+    @StateObject private var observation: ViewObservation
+
+    init(controller: ClipboardController) {
+        self.controller = controller
+        _observation = StateObject(wrappedValue: ViewObservation([
+            controller.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            ViewObservation.changes(controller.$thumbnail),
+            ViewObservation.changes(controller.$items.map(\.isEmpty)),
+            ViewObservation.changes(controller.$captureEnabled),
+            ViewObservation.changes(controller.$status),
+            ViewObservation.changes(controller.$accessMessage)
+        ]))
+    }
+
+    var body: some View {
+        if let detail = controller.detail {
+            ClipboardDetail(detail: detail, thumbnail: controller.thumbnail,
+                            status: controller.status, accessMessage: controller.accessMessage)
+                .id(detail.item.id)
+        } else {
+            VStack(spacing: 10) {
+                Spacer()
+                ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
+                Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
+                    .buttonStyle(ContentActionButtonStyle())
+                Spacer()
+                if !controller.accessMessage.isEmpty {
+                    Text(controller.accessMessage).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
+                }
+                if !controller.status.isEmpty {
+                    Text(controller.status).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
+        }
+    }
 }
 
 struct ClipboardPreferences: View {
     let controller: ClipboardController
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
 
     init(controller: ClipboardController, model: Model) {
         self.controller = controller
         self.model = model
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(controller.$captureEnabled),
-            SettingsPageObservation.changes(controller.$automaticOCR),
-            SettingsPageObservation.changes(controller.$primaryAction),
-            SettingsPageObservation.changes(controller.$retentionDays),
-            SettingsPageObservation.changes(controller.$maxItems),
-            SettingsPageObservation.changes(controller.$excludedApps),
-            SettingsPageObservation.changes(controller.$accessMessage),
-            SettingsPageObservation.changes(model.$bindings.map { $0["clipboard"] })
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$captureEnabled),
+            ViewObservation.changes(controller.$automaticOCR),
+            ViewObservation.changes(controller.$primaryAction),
+            ViewObservation.changes(controller.$retentionDays),
+            ViewObservation.changes(controller.$maxItems),
+            ViewObservation.changes(controller.$excludedApps),
+            ViewObservation.changes(controller.$accessMessage),
+            ViewObservation.changes(model.$bindings.map { $0["clipboard"] })
         ]))
     }
 
@@ -143,23 +178,23 @@ struct ClipboardPreferences: View {
 
 private struct ClipboardHistoryStatistics: View {
     let controller: ClipboardController
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
     @State private var confirmsClear = false
     @State private var clearAll = false
 
     init(controller: ClipboardController) {
         self.controller = controller
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(controller.$total),
-            SettingsPageObservation.changes(controller.$migrationBackupCount),
-            SettingsPageObservation.changes(controller.$status)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$total),
+            ViewObservation.changes(controller.$migrationBackupCount),
+            ViewObservation.changes(controller.$status)
         ]))
     }
 
     var body: some View {
         SettingsGroup {
             LabeledContent("已保存", value: "\(controller.total)项")
-            if controller.migrationBackupCount > 0 { Text("保留了\(controller.migrationBackupCount)份升级前备份，包含旧历史与自有图片。清理全部历史时会一并删除；清理未置顶历史时保留备份。").font(.caption).foregroundStyle(.secondary) }
+            if controller.migrationBackupCount > 0 { SettingsDescription("保留了\(controller.migrationBackupCount)份升级前备份，包含旧历史与自有图片。清理全部历史时会一并删除；清理未置顶历史时保留备份。") }
             HStack { Button("清理未置顶历史…", role: .destructive) { clearAll = false; confirmsClear = true }; Button("清理全部历史…", role: .destructive) { clearAll = true; confirmsClear = true } }.buttonStyle(ContentActionButtonStyle())
             if !controller.status.isEmpty { Text(controller.status).font(.caption).foregroundStyle(.secondary) }
         }
