@@ -85,6 +85,7 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
     var showsColumns = false
     var showsBackground = true
     let entry: (Item) -> CommandSettingsEntry<Icon>
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
 
     var body: some View {
         if showsBackground { rows.modifier(SettingsSurface()) }
@@ -107,12 +108,55 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
             if items.isEmpty {
                 CommandSettingsEmptyState(message: emptyMessage)
             }
-            ForEach(items, id: id) { item in
-                let row = CommandSettingsListRow(entry: entry(item), showsDivider: item[keyPath: id] != lastID)
-                if row.entry.renderRevision != nil { row.equatable() }
-                else { row }
+            if items.count > 64, !voiceOverEnabled {
+                CommandSettingsViewport(items: items, id: id) { item in
+                    row(item, lastID: lastID)
+                }
+            } else {
+                ForEach(items, id: id) { row($0, lastID: lastID) }
             }
         }
+    }
+
+    @ViewBuilder private func row(_ item: Item, lastID: ID?) -> some View {
+        let row = CommandSettingsListRow(entry: entry(item), showsDivider: item[keyPath: id] != lastID)
+        if row.entry.renderRevision != nil { row.equatable() }
+        else { row }
+    }
+}
+
+/// Keeps the full scroll extent while instantiating only the nearby command rows.
+private struct CommandSettingsViewport<Item, ID: Hashable, Row: View>: View {
+    let items: [Item]
+    let id: KeyPath<Item, ID>
+    @ViewBuilder let row: (Item) -> Row
+    @Environment(\.displayScale) private var scale
+    @State private var window = 0..<32
+
+    var body: some View {
+        let line = 1 / max(1, scale)
+        let stride = SettingsRowsLayout.rowHeight + line
+        let range = window.clamped(to: 0..<items.count)
+        let totalHeight = CGFloat(items.count) * stride - line
+        VStack(spacing: 0) {
+            Color.clear.frame(height: min(totalHeight, CGFloat(range.lowerBound) * stride)).accessibilityHidden(true)
+            ForEach(items[range], id: id) { item in
+                let isLast = item[keyPath: id] == items.last?[keyPath: id]
+                row(item).frame(height: isLast ? stride - line : stride)
+            }
+            Color.clear.frame(height: max(0, totalHeight - CGFloat(range.upperBound) * stride))
+                .accessibilityHidden(true)
+        }
+        .frame(height: totalHeight, alignment: .top)
+        .onGeometryChange(for: Range<Int>.self) { geometry in
+            guard let viewport = geometry.bounds(of: .scrollView(axis: .vertical)) else { return 0..<min(32, items.count) }
+            // Retain a few rows on each side for keyboard focus and fast scrolling.
+            let first = Int(floor(viewport.minY / stride))
+            let last = Int(ceil(viewport.maxY / stride))
+            let start = max(0, min(items.count, first - 8))
+            let end = max(start, min(items.count, last + 8))
+            return start..<end
+        } action: { window = $0 }
     }
 }
 
