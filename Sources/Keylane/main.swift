@@ -184,6 +184,7 @@ final class Model: ObservableObject {
     }
 
     private func buildCommands(for input: CommandSearchInput) -> [Entry] {
+        let settingsQuery = SystemSettingsCatalog.pageQuery(input.query)
         var rows = [
             Entry(id: "clipboard", name: "剪贴板历史", detail: "本地文字、图片和文件历史", symbol: "clipboard", aliases: ["Clipboard History", "剪切板", "剪贴板", "复制历史"], action: { [weak self] in self?.tab = "Clipboard" }),
             Entry(id: "notes", name: "便笺", detail: "本地便笺", symbol: "note.text", aliases: ["Notes", "便签", "笔记"], action: { [weak self] in self?.tab = "Notes" }),
@@ -197,6 +198,20 @@ final class Model: ObservableObject {
             Entry(id: "stop-speaking", name: "Stop Reading / 停止朗读", detail: "Stop speech playback", symbol: "stop.circle", action: { SystemTools.shared.stopReading() }),
             Entry(id: "finder", name: "Open Home / 个人文件夹", detail: "Finder", symbol: "folder", action: { NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) })
         ]
+        rows += SystemSettingsCatalog.pages.compactMap { page in
+            guard !settingsQuery.isEmpty || input.favorites.contains(page.id) else { return nil }
+            return Entry(id: page.id, name: page.title(), detail: SystemSettingsCatalog.resultKind,
+                         symbol: page.symbol, aliases: page.searchNames, action: { [weak self] in
+                if NSWorkspace.shared.open(page.url) {
+                    (NSApp.delegate as? Delegate)?.hideLauncher()
+                } else {
+                    let message = SystemSettingsCatalog.prefersChinese()
+                        ? "无法打开「\(page.title())」。请在系统设置中查找该页面。"
+                        : "Could not open \(page.title()). Look for it in System Settings."
+                    self?.error = message
+                }
+            })
+        }
         if input.askFiles { rows.append(Entry(id:"ask-files",name:"询问文件搜索",detail:"AI",symbol:"sparkles",aliases:["Ask File Search"],action:{ [weak self] in if let self { self.fileAI.present(self.fileResults.map(\.url)) } })) }
         if input.askFinder { rows.append(Entry(id:"ask-finder",name:"询问 Finder",detail:"AI",symbol:"sparkles",aliases:["Ask Finder"],action:{ [weak self] in self?.fileAI.presentFinder() })) }
         rows += input.apps.map { url in
@@ -226,7 +241,10 @@ final class Model: ObservableObject {
                 let alias = input.aliases[row.id] ?? ""
                 let exactAlias = !alias.isEmpty && alias.localizedCaseInsensitiveCompare(trimmedQuery) == .orderedSame
                 let aliasScore = exactAlias ? 1500 : (SearchRanker.score(alias, query: query) ?? -1)
-                let nameScore = ([row.name] + row.aliases).compactMap { SearchRanker.score($0, query: query) }.max()
+                let isSystemSetting = row.detail == SystemSettingsCatalog.resultKind
+                let namesQuery = isSystemSetting ? settingsQuery : query
+                let nameScore = ([row.name] + row.aliases).compactMap { SearchRanker.score($0, query: namesQuery) }.max()
+                if isSystemSetting && !namesQuery.isEmpty && max(nameScore ?? -1, aliasScore) < 600 { return nil }
                 guard let matchScore = nameScore ?? (aliasScore >= 0 ? aliasScore : nil) else { return nil }
                 score = max(matchScore, aliasScore)
             }
