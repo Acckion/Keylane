@@ -124,7 +124,11 @@ final class MenuBarRegistry: NSObject, ObservableObject, NSMenuDelegate {
                 } else {
                     item.image = image
                 }
-                if #available(macOS 27.0, *) { item.preferredImageVisibility = .visible }
+                if #available(macOS 27.0, *),
+                   item.responds(to: NSSelectorFromString("setPreferredImageVisibility:")) {
+                    // NSMenuItemImageVisibilityVisible in the macOS 27 AppKit header.
+                    item.setValue(1, forKey: "preferredImageVisibility")
+                }
             }
             if !command.children.isEmpty { let submenu = NSMenu(); populate(submenu, with: command.children); item.submenu = submenu }
             if let action = command.action { let target = Action(action); item.target = target; item.action = #selector(Action.invoke(_:)); item.representedObject = target }
