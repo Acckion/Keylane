@@ -43,7 +43,7 @@ enum BuiltinLauncherModules {
     private static func applications(_ model: Model) -> LauncherModule {
         let provider = LauncherModule.Provider(namespace: .prefix("app:"), entries: { [weak model] _ in
             guard let model, model.applicationsEnabled else { return [] }
-            return model.apps.map { url in
+            return model.apps.filter { !model.excluded.contains($0.path) }.map { url in
                 let identity = model.discoveredIdentity(for: url)
                 let path = url.path
                 return Entry(id: path, commandID: .init(rawValue: "app:" + path),
@@ -60,7 +60,7 @@ enum BuiltinLauncherModules {
                 if origin == .shortcut { model?.launchFromHotkey(url) }
                 else { model?.launch(url) }
             }
-        }, actions: { [weak model] entry in model.map { applicationActions(entry, model: $0) } })
+        }, actions: { [weak model] entry in model.map { $0.applicationResultActions.actions(for: entry, model: $0) } })
         return .init(id: .init(rawValue: "keylane.applications"), providers: [provider],
                      settings: [settingsPage(model, "applications", "应用程序", "square.grid.2x2.fill", "快速查找并启动已安装的应用程序。", 10, titlebar: SettingsTitlebarContribution(
                          title: "启用应用程序", help: "启用应用搜索和应用快捷键",
@@ -126,22 +126,6 @@ enum BuiltinLauncherModules {
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
                            updates(model.fileAI.$commandsEnabled)])
-    }
-
-    private static func applicationActions(_ entry: Entry, model: Model) -> [LauncherAction] {
-        let url = URL(fileURLWithPath: entry.id)
-        return [
-            openAction("打开应用程序", entry: entry, model: model),
-            .init(id: "finder", title: "Finder 操作", icon: "folder", keys: ["›"], submenu: .init(title: "Finder", items: [
-                .init(id: "reveal", title: "在 Finder 中显示", icon: "folder") { NSWorkspace.shared.activateFileViewerSelecting([url]) },
-                .init(id: "contents", title: "显示包内容", icon: "shippingbox") { NSWorkspace.shared.open(url.appendingPathComponent("Contents")) },
-                copyPathAction(id: "path", url: url)
-            ])),
-            .init(id: "arguments", title: "使用参数启动…", icon: "terminal",
-                  argumentForm: .init(title: entry.name, submit: { [weak model] arguments in model?.launch(url, arguments: arguments) })),
-            .init(id: "configure", title: "配置别名和快捷键…", icon: "keyboard") { [weak model] in model?.openSettings(page: "applications") },
-            model.favoriteAction(for: entry)
-        ]
     }
 
     private static func fileActions(_ entry: Entry, model: Model) -> [LauncherAction] {
