@@ -232,6 +232,11 @@ final class Model: ObservableObject {
     }
 }
 final class LauncherPanel: NSPanel {
+    var dragHandler: ((NSEvent) -> Void)?
+    override func performDrag(with event: NSEvent) {
+        if let dragHandler { dragHandler(event) }
+        else { super.performDrag(with: event) }
+    }
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 }
@@ -275,6 +280,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var hotkeyStatus: Int32 = 0
     var appearanceSubscription: AnyCancellable?
     var geometrySubscription: AnyCancellable?
+    private var dragGuides: LauncherDragGuides?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
@@ -300,6 +306,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         glass.contentView = NSHostingView(rootView: Launcher(model: model))
         window.contentView = glass; window.isReleasedWhenClosed = false; window.center()
         window.delegate = self
+        dragGuides = LauncherDragGuides(window: window)
+        (window as? LauncherPanel)?.dragHandler = { [weak self] event in self?.dragGuides?.performDrag(with: event) }
         window.autorecalculatesKeyViewLoop = true
         appearanceSubscription = model.$appearance.sink { [weak self] value in
             let appearance = value == "dark" ? NSAppearance(named: .darkAqua) : value == "light" ? NSAppearance(named: .aqua) : nil
@@ -396,6 +404,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hideLauncher(); settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     func hideLauncher(reason: String = "command") {
+        dragGuides?.cancel()
         guard window.isVisible else { return }
         if model.placement == "remember" { window.saveFrame(usingName: "KeylaneLauncher") }
         window.orderOut(nil)
@@ -439,7 +448,9 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let area = screen?.visibleFrame {
             if model.placement == "remember" { _ = window.setFrameUsingName("KeylaneLauncher") }; updateLauncherGeometry()
             var frame = window.frame
-            if model.placement != "remember" || !frame.intersects(area) { frame.origin = NSPoint(x: area.midX - frame.width / 2, y: area.midY + 235 * model.interfaceScale - frame.height) }
+            if model.placement != "remember" || !frame.intersects(area) {
+                frame.origin = LauncherPositioning.target(size: frame.size, in: area).origin
+            }
             frame.origin.x = max(area.minX, min(frame.origin.x, area.maxX - frame.width))
             frame.origin.y = max(area.minY, min(frame.origin.y, area.maxY - frame.height))
             window.setFrame(frame, display: false)
