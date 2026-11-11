@@ -425,7 +425,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.model.windowActivationBehavior.apply(to: window)
         }
         installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
-        window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: VisualStyle.launcherWidth, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.title = "Keylane · Developer Preview"; window.titlebarAppearsTransparent = true; window.titleVisibility = .hidden
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
         window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -615,7 +615,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Align the requested size before comparing it with AppKit's frame.
         // A value like 760 * 1.1 can otherwise round up by an entire point.
         let size = NSSize(
-            width: (760 * model.interfaceScale * backingScale).rounded() / backingScale,
+            width: (VisualStyle.launcherWidth * model.interfaceScale * backingScale).rounded() / backingScale,
             height: (model.launcherHeight * model.interfaceScale * backingScale).rounded() / backingScale
         )
         let start = window.frame
