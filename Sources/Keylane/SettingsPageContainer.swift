@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Owns the scrolling and navigation chrome for every settings destination.
-/// Pages supply only their controls; none install their own toolbar background.
+/// The settings window applies toolbar styling outside the scrolling content.
 struct SettingsPageContainer<Content: View>: View {
     private enum Anchor: Hashable { case top }
 
@@ -42,8 +42,6 @@ struct SettingsPageContainer<Content: View>: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(scheme == .dark ? Color(white: 0.065) : Color(white: 0.965))
-            .toolbarBackground(.regularMaterial, for: .windowToolbar)
-            .toolbarBackground(.visible, for: .windowToolbar)
             .onChange(of: pageID) { _, _ in proxy.scrollTo(Anchor.top, anchor: .top) }
             .onChange(of: target) { _, value in
                 if let value { proxy.scrollTo(value, anchor: .center) }

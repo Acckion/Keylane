@@ -77,3 +77,17 @@ struct CommandSettingsList<Item, ID: Hashable, Row: View>: View {
         .modifier(SettingsSurface())
     }
 }
+
+extension CommandSettingsRow {
+    /// Application aliases use the path, while their shortcut IDs retain the app: namespace.
+    init(title: String, model: Model, commandID: CommandID, aliasKey: String? = nil,
+         isEnabled: Binding<Bool>, @ViewBuilder icon: @escaping () -> Icon) {
+        let key = aliasKey ?? commandID.rawValue
+        self.init(title: title,
+                  alias: Binding(get: { model.aliases[key] ?? "" }, set: { model.setAlias(key, value: $0) }),
+                  shortcut: model.bindings[commandID.rawValue],
+                  isEnabled: isEnabled,
+                  setShortcut: { model.setShortcut(commandID.rawValue, value: $0) },
+                  icon: icon)
+    }
+}

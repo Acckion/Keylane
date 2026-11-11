@@ -4,7 +4,8 @@ import Combine
 import KeylaneCore
 
 struct ApplicationPreferences: View {
-    @ObservedObject var model: Model
+    let model: Model
+    @StateObject private var observation: SettingsPageObservation
     @ObservedObject private var catalog: ApplicationSettingsCatalog
     @State private var filter = ""
     @State private var filteredApplications: [ApplicationPreferenceItem]?
@@ -12,37 +13,45 @@ struct ApplicationPreferences: View {
     init(model: Model) {
         self.model = model
         catalog = model.applicationSettingsCatalog
+        _observation = StateObject(wrappedValue: SettingsPageObservation([
+            SettingsPageObservation.changes(model.$applicationHotkeyAction),
+            SettingsPageObservation.changes(model.$roots),
+            SettingsPageObservation.changes(model.$aliases),
+            SettingsPageObservation.changes(model.$bindings),
+            SettingsPageObservation.changes(model.$excluded),
+            SettingsPageObservation.changes(model.$favorites),
+            SettingsPageObservation.changes(model.$scanStatus)
+        ]))
     }
 
     var body: some View {
         let visibleApplications = filteredApplications ?? catalog.items
         VStack(alignment: .leading, spacing: 18) {
-            surface {
+            SettingsCard(layout: .flush) {
                 HStack {
-                    caption("自动退出", "停止使用应用一段时间后自动退出。")
+                    SettingsCaption(title: "自动退出", detail: "停止使用应用一段时间后自动退出。")
                     Spacer(); Text("未实现").font(.caption).foregroundStyle(.tertiary)
                     Image(systemName: "chevron.forward")
                         .font(.system(size: 12, weight: .semibold)).foregroundStyle(.tertiary)
                         .accessibilityHidden(true)
                 }.padding(14)
             }.help("自动退出将在系统工具阶段实现；当前不会自动退出任何应用。")
-            surface {
+            SettingsCard(layout: .flush) {
                 HStack(alignment: .top) {
-                    caption("快捷键行为", "触发应用快捷键时执行的操作。")
+                    SettingsCaption(title: "快捷键行为", detail: "触发应用快捷键时执行的操作。")
                     Spacer(minLength: 8)
-                    Picker("快捷键行为", selection: $model.applicationHotkeyAction) {
+                    Picker("快捷键行为", selection: Binding(get: { model.applicationHotkeyAction }, set: { model.applicationHotkeyAction = $0 })) {
                         Text("激活应用").tag("activate")
                         Text("切换显示与隐藏").tag("toggle")
                     }.pickerStyle(.menu).buttonStyle(.borderless).labelsHidden().fixedSize().padding(.top, 1)
                 }.padding(14)
             }.id("hotkey-action")
-            surface {
+            SettingsCard(layout: .flush, anchor: .applicationScopes) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .top) {
-                        caption("搜索范围", "选择搜索应用程序时包含的其他文件夹。")
+                        SettingsCaption(title: "搜索范围", detail: "选择搜索应用程序时包含的其他文件夹。")
                         Spacer(minLength: 8)
-                        Button { model.addRoot() } label: { Image(systemName: "plus").font(.system(size: 12, weight: .medium)) }
-                            .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small).help("添加搜索文件夹")
+                        SettingsAddFolderButton(symbolFont: .system(size: 12, weight: .medium), action: model.addRoot)
                     }.padding(.bottom, 4)
                     VStack(spacing: 0) {
                         ForEach(Array(model.roots.enumerated()), id: \.element) { index, path in
@@ -52,10 +61,10 @@ struct ApplicationPreferences: View {
                         if model.roots.isEmpty { Text("尚未添加搜索范围").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 14) }
                     }
                 }.padding(14)
-            }.id("scopes")
+            }
 
             Text("命令").font(.system(size: 15, weight: .medium)).padding(.leading, 14).padding(.top, 10)
-            surface {
+            SettingsCard(layout: .flush) {
                 VStack(spacing: 0) {
                     unavailableCommand("管理自动退出", icon: "app.badge.clock", color: .gray)
                     Divider().opacity(0.4)
@@ -67,7 +76,7 @@ struct ApplicationPreferences: View {
                 Spacer()
                 SettingsSearchField(text: $filter, placeholder: "筛选应用…").frame(width: 170, height: 24)
             }.padding(.horizontal, 14).padding(.top, 10)
-            surface {
+            SettingsCard(layout: .flush, anchor: .applicationFavorites) {
                 LazyVStack(spacing: 0) {
                     ForEach(visibleApplications) { item in
                         ApplicationPreferenceRow(
@@ -81,7 +90,7 @@ struct ApplicationPreferences: View {
                     }
                     if visibleApplications.isEmpty { Text("没有匹配的应用").foregroundStyle(.secondary).padding(24) }
                 }
-            }.id("favorites")
+            }
             HStack {
                 Text(model.scanStatus).font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -98,16 +107,6 @@ struct ApplicationPreferences: View {
         }
     }
 
-    private func caption(_ title: String, _ subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).fontWeight(.medium)
-            Text(subtitle).font(.system(size: 13)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-    }
-    private func surface<C: View>(@ViewBuilder _ content: () -> C) -> some View {
-        content().frame(maxWidth: .infinity, alignment: .leading)
-            .modifier(SettingsSurface())
-    }
     private func unavailableCommand(_ name: String, icon: String, color: Color) -> some View {
         CommandSettingsRow(title: name, alias: .constant(""), shortcut: nil,
                            isEnabled: .constant(false), setShortcut: { _ in },
@@ -181,13 +180,11 @@ private struct ApplicationPreferenceRow: View, Equatable {
         VStack(spacing: 0) {
             CommandSettingsRow(
                 title: item.title,
-                alias: Binding(get: { model.aliases[item.id] ?? "" }, set: { model.setAlias(item.id, value: $0) }),
-                shortcut: shortcut,
+                model: model, commandID: CommandID(rawValue: "app:" + item.id), aliasKey: item.id,
                 isEnabled: Binding(get: { !model.excluded.contains(item.id) }, set: { value in
                     if value { model.excluded.remove(item.id) } else { model.excluded.insert(item.id) }
                     model.reloadCatalog()
                 }),
-                setShortcut: { model.setShortcut("app:" + item.id, value: $0) },
                 icon: { SettingsApplicationIcon(path: item.id) }
             )
             .padding(.horizontal, 14)
@@ -213,4 +210,17 @@ struct ApplicationsIcon: View {
         }
     }
     private func tile(_ colors: [Color]) -> some View { RoundedRectangle(cornerRadius: 6).fill(LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom)) }
+}
+
+
+struct ApplicationSettingsInfo: View {
+    let model: Model
+    @State private var status = ""
+
+    var body: some View {
+        Group {
+            Text(status)
+            Text("关闭模块会停用应用搜索和应用快捷键，已保存的配置保留。自动退出和卸载命令尚未实现。")
+        }.onReceive(model.$scanStatus.removeDuplicates()) { status = $0 }
+    }
 }

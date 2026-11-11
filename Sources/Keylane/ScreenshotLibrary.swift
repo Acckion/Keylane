@@ -38,7 +38,7 @@ enum ScreenshotFilter: String, CaseIterable, Identifiable {
     }
 }
 
-struct ScreenshotScope: Codable, Identifiable {
+struct ScreenshotScope: Codable, Identifiable, Equatable {
     let path: String
     let bookmark: Data?
     var id: String { path }

@@ -1,15 +1,34 @@
 import SwiftUI
+import KeylaneCore
 
 struct ScreenshotPreferences: View {
-    @ObservedObject var library: ScreenshotLibrary
-    @ObservedObject var model: Model
+    let library: ScreenshotLibrary
+    let model: Model
+    @StateObject private var observation: SettingsPageObservation
+
+    init(library: ScreenshotLibrary, model: Model) {
+        self.library = library
+        self.model = model
+        _observation = StateObject(wrappedValue: SettingsPageObservation([
+            SettingsPageObservation.changes(model.$aliases),
+            SettingsPageObservation.changes(model.$bindings),
+            SettingsPageObservation.changes(library.$enabled),
+            SettingsPageObservation.changes(library.$columns),
+            SettingsPageObservation.changes(library.$scopes),
+            SettingsPageObservation.changes(library.$includeAll),
+            SettingsPageObservation.changes(library.$recognizesText),
+            SettingsPageObservation.changes(library.$accurate),
+            SettingsPageObservation.changes(library.$allowCloudOCR),
+            SettingsPageObservation.changes(library.$disabledCommands)
+        ]))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            card {
-                Toggle("启用截图管理", isOn: $library.enabled)
+            SettingsCard {
+                Toggle("启用截图管理", isOn: binding(\.enabled))
             }
-            card {
+            SettingsCard(anchor: .screenshotColumns) {
                 Text("列数").font(VisualStyle.rowText)
                 HStack {
                     ForEach(3...6, id: \.self) { count in
@@ -25,14 +44,12 @@ struct ScreenshotPreferences: View {
                         .accessibilityAddTraits(library.columns == count ? .isSelected : [])
                     }
                 }
-            }.id("screenshot-columns")
-            card {
+            }
+            SettingsCard(anchor: .screenshotScopes) {
                 HStack {
-                    caption("搜索范围", "搜索这些文件夹及其子目录。")
+                    SettingsCaption(title: "搜索范围", detail: "搜索这些文件夹及其子目录。", style: .compact)
                     Spacer()
-                    Button { library.chooseFolders() } label: { Image(systemName: "plus") }
-                        .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
-                        .help("添加搜索文件夹")
+                    SettingsAddFolderButton { library.chooseFolders() }
                 }
                 if library.scopes.isEmpty {
                     ForEach(library.folders, id: \.path) { url in folderRow(url.path) }
@@ -47,54 +64,42 @@ struct ScreenshotPreferences: View {
                         }
                     }
                 }
-            }.id("screenshot-scopes")
-            card {
-                Toggle(isOn: $library.includeAll) {
-                    caption("包含所有媒体", "搜索指定文件夹中的全部图片和视频。")
+            }
+            SettingsCard {
+                Toggle(isOn: binding(\.includeAll)) {
+                    SettingsCaption(title: "包含所有媒体", detail: "搜索指定文件夹中的全部图片和视频。", style: .compact)
                 }
             }
-            card {
-                Toggle(isOn: $library.recognizesText) {
-                    caption("文字识别", "使用本机文字识别，在搜索框输入 text: 或「文字:」查找图片内容。")
+            SettingsCard(anchor: .screenshotText) {
+                Toggle(isOn: binding(\.recognizesText)) {
+                    SettingsCaption(title: "文字识别", detail: "使用本机文字识别，在搜索框输入 text: 或「文字:」查找图片内容。", style: .compact)
                 }
                 Divider()
-                SettingsPicker("识别模式", selection: $library.accurate) {
+                SettingsPicker("识别模式", selection: binding(\.accurate)) {
                     Text("准确").tag(true)
                     Text("快速").tag(false)
                 }.disabled(!library.recognizesText)
                 Divider()
-                Toggle(isOn: $library.allowCloudOCR) {
-                    caption("允许识别云端文件", "识别尚未下载的图片时，云盘可能会下载原文件。")
+                Toggle(isOn: binding(\.allowCloudOCR)) {
+                    SettingsCaption(title: "允许识别云端文件", detail: "识别尚未下载的图片时，云盘可能会下载原文件。", style: .compact)
                 }.disabled(!library.recognizesText)
-            }.id("screenshot-text")
+            }
             Text("命令").font(VisualStyle.rowText).padding(.leading, 12)
             CommandSettingsList(items: ScreenshotCommand.allCases, id: \.rawValue) { command in
                 CommandSettingsRow(title: command.title,
-                    alias: Binding(get: { model.aliases[command.rawValue] ?? "" },
-                                   set: { model.setAlias(command.rawValue, value: $0) }),
-                    shortcut: model.bindings[command.rawValue],
+                    model: model, commandID: CommandID(rawValue: command.rawValue),
                     isEnabled: Binding(get: { !library.disabledCommands.contains(command.rawValue) }, set: { enabled in
                         if enabled { library.disabledCommands.remove(command.rawValue) }
                         else { library.disabledCommands.insert(command.rawValue) }
-                    }),
-                    setShortcut: { model.setShortcut(command.rawValue, value: $0) }) {
+                    })) {
                         SettingsIcon(symbol: command.symbol)
                     }
             }.disabled(!library.enabled)
         }
     }
 
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 11, content: content)
-            .padding(14).modifier(SettingsSurface())
-    }
-
-    private func caption(_ title: String, _ description: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(VisualStyle.rowText)
-            Text(description).font(.system(size: 12)).foregroundStyle(.secondary)
-        }
-        .fixedSize(horizontal: false, vertical: true)
+    private func binding<Value>(_ key: ReferenceWritableKeyPath<ScreenshotLibrary, Value>) -> Binding<Value> {
+        Binding(get: { library[keyPath: key] }, set: { library[keyPath: key] = $0 })
     }
 
     private func folderRow(_ path: String) -> some View {

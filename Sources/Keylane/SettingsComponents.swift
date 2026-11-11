@@ -1,4 +1,5 @@
 import SwiftUI
+import KeylaneCore
 
 /// Shared surfaces for all settings pages; colors follow the system appearance.
 struct SettingsSurface: ViewModifier {
@@ -124,4 +125,58 @@ struct SettingsGroup<Content: View>: View {
     let content: Content
     init(@ViewBuilder content: () -> Content) { self.content = content() }
     var body: some View { SettingsRows { content }.modifier(SettingsSurface()) }
+}
+
+/// Standard card surfaces, with the two content layouts already used by settings.
+struct SettingsCard<Content: View>: View {
+    enum Layout {
+        case flush
+        case padded
+    }
+
+    var layout: Layout = .padded
+    var anchor: SettingsItem?
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if let anchor { surface.id(anchor.id) }
+        else { surface }
+    }
+
+    @ViewBuilder private var surface: some View {
+        switch layout {
+        case .flush:
+            content().frame(maxWidth: .infinity, alignment: .leading).modifier(SettingsSurface())
+        case .padded:
+            VStack(alignment: .leading, spacing: 11, content: content)
+                .padding(14).modifier(SettingsSurface())
+        }
+    }
+}
+
+struct SettingsCaption: View {
+    enum Style { case standard, compact }
+    let title: String
+    let detail: String
+    var style: Style = .standard
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: style == .standard ? 5 : 3) {
+            if style == .standard { Text(title).fontWeight(.medium) }
+            else { Text(title).font(VisualStyle.rowText) }
+            Text(detail).font(.system(size: style == .standard ? 13 : 12)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: style == .standard)
+        }.fixedSize(horizontal: false, vertical: style == .compact)
+    }
+}
+
+struct SettingsAddFolderButton: View {
+    var symbolFont: Font?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) { Image(systemName: "plus").font(symbolFont) }
+            .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
+            .help("添加搜索文件夹")
+    }
 }

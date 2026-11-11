@@ -53,6 +53,14 @@ struct LauncherPage {
     var releasePreview: (() -> Void)?
 }
 
+struct SettingsTitlebarContribution {
+    let title: String
+    var help: String?
+    let enabled: Binding<Bool>
+    let updates: AnyPublisher<Bool, Never>
+    var info: (() -> AnyView)?
+}
+
 struct LauncherSettingsPage: Identifiable {
     let id: String
     let title: String
@@ -60,7 +68,25 @@ struct LauncherSettingsPage: Identifiable {
     let subtitle: String
     let order: Int
     let items: [SettingsItem]
+    var titlebar: SettingsTitlebarContribution?
     let content: () -> AnyView
+}
+
+struct SettingsWindowCatalog {
+    let pages: [LauncherSettingsPage]
+    let items: [SettingsItem]
+    private let pagesByID: [String: LauncherSettingsPage]
+    private let itemsByID: [String: SettingsItem]
+
+    init(pages: [LauncherSettingsPage]) {
+        self.pages = pages
+        items = pages.flatMap(\.items)
+        pagesByID = Dictionary(pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        itemsByID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    func page(_ id: String) -> LauncherSettingsPage? { pagesByID[id] }
+    func item(_ id: String) -> SettingsItem? { itemsByID[id] }
 }
 
 struct LauncherModule {
@@ -101,11 +127,16 @@ struct LauncherModule {
 /// The registry stores native factories and handlers. Validation never runs a
 /// handler, constructs a view, or touches a permission-protected service.
 final class LauncherModuleRegistry {
+    enum SettingsRegistrationError: Error, Equatable {
+        case wrongPage(item: String, expected: String)
+        case duplicateItem(String)
+    }
     private let commands: [LauncherModule.Command]
     private let byID: [CommandID: LauncherModule.Command]
     private let providers: [LauncherModule.Provider]
     private let pages: [PageID: LauncherPage]
-    let settings: [LauncherSettingsPage]
+    let settingsCatalog: SettingsWindowCatalog
+    var settings: [LauncherSettingsPage] { settingsCatalog.pages }
     private let services: [LauncherModule.Service]
     private let launcherShownHandlers: [() -> Void]
     private let applicationFocusedHandlers: [(NSRunningApplication) -> Void]
@@ -123,7 +154,19 @@ final class LauncherModuleRegistry {
         byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.declaration.id, $0) })
         providers = modules.flatMap(\.providers)
         pages = Dictionary(uniqueKeysWithValues: modules.flatMap(\.pages).map { ($0.id, $0) })
-        settings = modules.flatMap(\.settings).sorted { $0.order < $1.order }
+        let settingsPages = modules.flatMap(\.settings).sorted { $0.order < $1.order }
+        var itemIDs: Set<String> = []
+        for page in settingsPages {
+            for item in page.items {
+                guard item.page == page.id else {
+                    throw SettingsRegistrationError.wrongPage(item: item.id, expected: page.id)
+                }
+                guard itemIDs.insert(item.id).inserted else {
+                    throw SettingsRegistrationError.duplicateItem(item.id)
+                }
+            }
+        }
+        settingsCatalog = SettingsWindowCatalog(pages: settingsPages)
         services = modules.flatMap(\.services)
         launcherShownHandlers = modules.compactMap(\.launcherShown)
         applicationFocusedHandlers = modules.compactMap(\.applicationFocused)

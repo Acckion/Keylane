@@ -366,14 +366,15 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func showSettings() {
         if settingsWindow == nil {
-            let view = NSHostingView(rootView: SettingsView(model: model))
+            let state = SettingsWindowState(model: model)
+            let view = NSHostingView(rootView: SettingsView(state: state))
             let settings = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 740, height: 730), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             settings.title = "Keylane 设置"; settings.titlebarAppearsTransparent = false; settings.titleVisibility = .visible; settings.isReleasedWhenClosed = false
             settings.appearance = window.appearance; settings.autorecalculatesKeyViewLoop = true
             settings.contentView = view
             let trailingActions = NSTitlebarAccessoryViewController()
             trailingActions.layoutAttribute = .right
-            trailingActions.view = NSHostingView(rootView: SettingsWindowActions(model: model))
+            trailingActions.view = NSHostingView(rootView: SettingsWindowActions(state: state))
             trailingActions.view.frame = NSRect(x: 0, y: 0, width: 106, height: 44)
             settings.addTitlebarAccessoryViewController(trailingActions)
             settings.center()

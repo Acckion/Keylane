@@ -59,7 +59,16 @@ enum BuiltinLauncherModules {
             }
         })
         return .init(id: .init(rawValue: "keylane.applications"), providers: [provider],
-                     settings: [settingsPage(model, "applications", "应用程序", "square.grid.2x2.fill", "快速查找并启动已安装的应用程序。", 10, content: LauncherSettingsContent.applications)],
+                     settings: [settingsPage(model, "applications", "应用程序", "square.grid.2x2.fill", "快速查找并启动已安装的应用程序。", 10, titlebar: SettingsTitlebarContribution(
+                         title: "启用应用程序", help: "启用应用搜索和应用快捷键",
+                         enabled: Binding(get: { [weak model] in model?.applicationsEnabled ?? false },
+                                          set: { [weak model] in model?.applicationsEnabled = $0 }),
+                         updates: model.$applicationsEnabled.removeDuplicates().eraseToAnyPublisher(),
+                         info: { [weak model] in
+                             guard let model else { return AnyView(EmptyView()) }
+                             return AnyView(ApplicationSettingsInfo(model: model))
+                         }
+                     ), content: LauncherSettingsContent.applications)],
                      services: [.init(start: { [weak model] in model?.startApplicationDiscovery() },
                                       stop: { [weak model] in model?.stopApplicationDiscovery() })],
                      searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)])
@@ -105,7 +114,12 @@ enum BuiltinLauncherModules {
                          leave: { [weak model] in model?.fileSearch.cancel() },
                          updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
                          releasePreview: { FilePreview.shared.dismiss() })
-        ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, content: LauncherSettingsContent.files)],
+        ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: SettingsTitlebarContribution(
+                         title: "启用文件搜索",
+                         enabled: Binding(get: { [weak model] in model?.fileSearch.options.enabled ?? false },
+                                          set: { [weak model] in model?.fileSearch.options.enabled = $0 }),
+                         updates: model.fileSearch.$options.map(\.enabled).removeDuplicates().eraseToAnyPublisher()
+                     ), content: LauncherSettingsContent.files)],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
                            updates(model.fileAI.$commandsEnabled)])
@@ -246,8 +260,8 @@ enum BuiltinLauncherModules {
     }
 
     private static func settingsPage<Content: View>(_ model: Model, _ id: String, _ title: String, _ symbol: String,
-                                     _ subtitle: String, _ order: Int, content: @escaping (Model) -> Content) -> LauncherSettingsPage {
-        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }) { [weak model] in
+                                     _ subtitle: String, _ order: Int, titlebar: SettingsTitlebarContribution? = nil, content: @escaping (Model) -> Content) -> LauncherSettingsPage {
+        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar) { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(content(model))
         }

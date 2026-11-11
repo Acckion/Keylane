@@ -47,3 +47,21 @@ registry.stopServices()
 precondition(starts == 1 && stops == 1)
 withExtendedLifetime(change) {}
 print("PASS native module registry: lazy registration, unified dispatch, availability, cache invalidation and service lifecycle")
+
+
+let applications = LauncherSettingsPage(id: "applications", title: "应用程序", symbol: "app", subtitle: "", order: 10,
+                                        items: [.applicationScopes, .applicationFavorites], content: { AnyView(EmptyView()) })
+let settingsModule = LauncherModule(id: .init(rawValue: "keylane.applications"), settings: [applications])
+let settingsRegistry = try LauncherModuleRegistry(modules: [settingsModule, module])
+precondition(settingsRegistry.settingsCatalog.pages.map(\.id) == ["clipboard", "applications"])
+precondition(settingsRegistry.settingsCatalog.item("favorites") == .applicationFavorites)
+precondition(settingsRegistry.settingsCatalog.page("applications")?.items.count == 2)
+let invalidPage = LauncherSettingsPage(id: "unrelated", title: "", symbol: "", subtitle: "", order: 0,
+                                       items: [.applicationScopes], content: { AnyView(EmptyView()) })
+do {
+    _ = try LauncherModuleRegistry(modules: [.init(id: .init(rawValue: "invalid"), settings: [invalidPage])])
+    preconditionFailure("Settings items must belong to their registered page")
+} catch let error as LauncherModuleRegistry.SettingsRegistrationError {
+    precondition(error == .wrongPage(item: "scopes", expected: "unrelated"))
+}
+print("PASS settings catalog lookup, ordering and page ownership")
