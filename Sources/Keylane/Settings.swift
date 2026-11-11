@@ -33,6 +33,7 @@ struct SettingsView: View {
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .preferredColorScheme(state.colorScheme)
+        .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
         .onAppear { selected = state.page; history = [selected]; historyIndex = 0 }
         .onChange(of: selected) { _, page in
             if history[historyIndex] != page { history = Array(history.prefix(historyIndex + 1)); history.append(page); historyIndex = history.count - 1 }
@@ -48,8 +49,8 @@ struct SettingsView: View {
 
             ToolbarItemGroup(placement: .navigation) {
                 ControlGroup {
-                    Button { historyIndex -= 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.backward") }.disabled(historyIndex == 0).help("后退")
-                    Button { historyIndex += 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.forward") }.disabled(historyIndex == history.count - 1).help("前进")
+                    Button { historyIndex -= 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.backward") }.keyboardShortcut(state.navigationKeys.back, modifiers: .command).disabled(historyIndex == 0).help("后退")
+                    Button { historyIndex += 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.forward") }.keyboardShortcut(state.navigationKeys.forward, modifiers: .command).disabled(historyIndex == history.count - 1).help("前进")
                 }.controlGroupStyle(.navigation)
             }
 
@@ -154,8 +155,6 @@ enum LauncherSettingsContent {
     @ViewBuilder static func general(_ model: Model) -> some View {
         LoginPreferences(model: model)
         LauncherAppearancePreferences(model: model)
-        WindowPositionPreferences(model: model)
-        KeyboardPreferences(model: model).settingsAnchor(.keyboard)
     }
 
     @ViewBuilder static func applications(_ model: Model) -> some View {
@@ -179,8 +178,7 @@ enum LauncherSettingsContent {
     }
 
     @ViewBuilder static func advanced(_ model: Model) -> some View {
-        SettingsGroup { Text("资料目录").font(.headline); Text("Application Support/Keylane").foregroundStyle(.secondary); Button("在 Finder 中显示") { let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane"); NSWorkspace.shared.open(url) }.buttonStyle(ContentActionButtonStyle()) }.settingsAnchor(.dataDirectory)
-        SettingsGroup { Text("无遥测").font(.headline); Text("默认无遥测。文件 AI 仅在你主动发送时连接所配置的服务；云同步与扩展模块尚未接入。").foregroundStyle(.secondary) }.settingsAnchor(.privacy)
+        AdvancedPreferences(model: model)
     }
 
     @ViewBuilder static func about(_ model: Model) -> some View {
@@ -205,22 +203,6 @@ private struct LoginPreferences: View {
         SettingsGroup("启动") {
             Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
         }.settingsAnchor(.login)
-    }
-}
-
-private struct WindowPositionPreferences: View {
-    let model: Model
-    @State private var placement = "activeScreen"
-
-    var body: some View {
-        SettingsGroup("位置") {
-            SettingsPicker("窗口位置", selection: Binding(get: { placement }, set: { model.placement = $0 })) {
-                Text("当前屏幕居中").tag("activeScreen")
-                Text("记住上次位置").tag("remember")
-            }
-        }
-        .settingsAnchor(.windowPosition)
-        .onReceive(model.$placement.removeDuplicates()) { placement = $0 }
     }
 }
 

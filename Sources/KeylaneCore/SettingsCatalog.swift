@@ -13,12 +13,24 @@ public struct SettingsItem: Identifiable, Equatable {
 
     public static let appearance = SettingsItem(id: "appearance", page: "general", title: "外观", keywords: "主题 深色 浅色 系统 界面 大小 appearance theme dark light size")
     public static let windowMode = SettingsItem(id: "window-mode", page: "general", title: "窗口模式与紧凑收藏", keywords: "紧凑 展开 收藏 compact expanded favorites")
-    public static let windowPosition = SettingsItem(id: "position", page: "general", title: "窗口位置", keywords: "屏幕 显示器 居中 记住 position screen")
-    public static let keyboard = SettingsItem(id: "keyboard", page: "general", title: "Keylane 热键与键盘", keywords: "唤起 导航 修饰键 hyperkey hotkey keyboard")
+    public static let windowPosition = SettingsItem(id: "position", page: "launcher", title: "窗口位置", keywords: "屏幕 显示器 居中 记住 position screen")
+    public static let launcherReturnDelay = SettingsItem(id: "launcher-return", page: "launcher", title: "返回主搜索", keywords: "返回 重置 查询 隐藏 超时 launcher root reset")
+    public static let rootSearchSensitivity = SettingsItem(id: "root-search-sensitivity", page: "launcher", title: "主搜索灵敏度", keywords: "启动器 模糊 匹配 排序 search sensitivity")
+    public static let launcherSearchHistory = SettingsItem(id: "launcher-search-history", page: "launcher", title: "搜索历史", keywords: "启动器 近期查询 清除 重置 search history")
+    public static let rootFileContentSearch = SettingsItem(id: "root-file-content", page: "launcher", title: "在主搜索中匹配文件内容", keywords: "启动器 正文 PDF file content")
+    public static let rootContactsSearch = SettingsItem(id: "root-contacts", page: "launcher", title: "在主搜索中显示联系人", keywords: "启动器 通讯录 contacts")
+    public static let launcherFallbackCommands = SettingsItem(id: "launcher-fallbacks", page: "launcher", title: "备选命令", keywords: "启动器 回退 后备 搜索 fallback commands")
+    public static let keyboard = SettingsItem(id: "keyboard-launcher-hotkey", page: "keyboard", title: "Keylane 热键", keywords: "唤起 导航 修饰键 hyperkey hotkey keyboard")
+    public static let keyboardEscapeBehavior = SettingsItem(id: "keyboard-escape", page: "keyboard", title: "Escape 键行为", keywords: "键盘 返回 隐藏 esc escape")
+    public static let keyboardCloseWindow = SettingsItem(id: "keyboard-close-window", page: "keyboard", title: "Escape 键关闭窗口", keywords: "键盘 设置 关闭 esc escape")
+    public static let keyboardInputSource = SettingsItem(id: "keyboard-input-source", page: "keyboard", title: "自动切换输入源", keywords: "键盘 输入法 ABC IME input source")
+    public static let keyboardNavigation = SettingsItem(id: "keyboard-navigation", page: "keyboard", title: "导航绑定", keywords: "键盘 方向键 Vim Emacs navigation")
+    public static let keyboardPageNavigation = SettingsItem(id: "keyboard-page-navigation", page: "keyboard", title: "页面导航键", keywords: "键盘 方括号 前进 后退 navigation brackets")
+    public static let keyboardHyperKey = SettingsItem(id: "keyboard-hyper", page: "keyboard", title: "Hyper Key", keywords: "键盘 修饰键 大写锁定 Caps Lock Shift Hyperkey")
     public static let login = SettingsItem(id: "login", page: "general", title: "登录时启动", keywords: "开机 自启动 startup login")
     public static let glass = SettingsItem(id: "glass", page: "general", title: "液态玻璃与辅助功能", keywords: "透明度 动画 对比度 glass transparency motion accessibility")
     public static let fileSearchScope = SettingsItem(id: "file-search-scope", page: "files", title: "文件搜索范围", keywords: "文件 Spotlight 索引 file search index scope")
-    public static let fileSearchInline = SettingsItem(id: "file-search-inline", page: "files", title: "在主界面搜索文件", keywords: "主搜索 启动器 直接 搜索 文件 launcher inline file search")
+    public static let fileSearchInline = SettingsItem(id: "file-search-inline", page: "launcher", title: "在主界面搜索文件", keywords: "主搜索 启动器 直接 搜索 文件 launcher inline file search")
     public static let menuBar = SettingsItem(id: "menu-bar", page: "menu-bar", title: "菜单栏项目", keywords: "显示 隐藏 状态 图标 menu bar status item")
     public static let scriptFolders = SettingsItem(id: "script-folders", page: "script-commands", title: "脚本搜索范围", keywords: "script folder shell python node 脚本 文件夹")
     public static let scriptCommands = SettingsItem(id: "script-commands", page: "script-commands", title: "脚本命令", keywords: "script commands alias hotkey 脚本 别名 热键")
@@ -34,6 +46,13 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let clipboardCapture = SettingsItem(id: "capture", page: "clipboard", title: "记录剪贴板历史", keywords: "文字 图片 文件 保留 采集 置顶 OCR capture clipboard history")
     public static let noteExport = SettingsItem(id: "export", page: "notes", title: "导出便笺", keywords: "笔记 备份 notes backup export")
     public static let quicklink = SettingsItem(id: "quicklink", page: "links", title: "默认快捷链接", keywords: "网址 url quicklink")
+    public static let windowActivation = SettingsItem(id: "advanced-window-activation", page: "advanced", title: "窗口激活行为", keywords: "空间 窗口 window activation behavior spaces")
+    public static let faviconProvider = SettingsItem(id: "advanced-favicon", page: "advanced", title: "网站图标提供方", keywords: "网页 图标 favicon provider")
+    public static let exportPassphrase = SettingsItem(id: "advanced-export-passphrase", page: "advanced", title: "导出口令", keywords: "加密 备份 export passphrase encryption")
+    public static let scheduledExport = SettingsItem(id: "advanced-scheduled-export", page: "advanced", title: "定时导出", keywords: "自动备份 scheduled export backup")
+    public static let exportLocalRecords = SettingsItem(id: "advanced-local-export", page: "advanced", title: "导出本地资料", keywords: "备份 JSON export local records")
+    public static let systemProxy = SettingsItem(id: "advanced-system-proxy", page: "advanced", title: "使用系统代理设置", keywords: "网络 连接 system proxy settings")
+    public static let additionalCertificateAuthority = SettingsItem(id: "advanced-certificate-authority", page: "advanced", title: "额外的证书颁发机构", keywords: "信任 连接 CA certificate authority crt cer pem")
     public static let dataDirectory = SettingsItem(id: "directory", page: "advanced", title: "资料目录", keywords: "数据 sqlite directory storage")
     public static let privacy = SettingsItem(id: "privacy", page: "advanced", title: "隐私与遥测", keywords: "privacy telemetry")
     public static let version = SettingsItem(id: "version", page: "about", title: "关于 Keylane", keywords: "版本 许可 about version license")
@@ -43,7 +62,19 @@ public struct SettingsItem: Identifiable, Equatable {
         appearance,
         windowMode,
         windowPosition,
+        launcherReturnDelay,
+        rootSearchSensitivity,
+        launcherSearchHistory,
+        rootFileContentSearch,
+        rootContactsSearch,
+        launcherFallbackCommands,
         keyboard,
+        keyboardEscapeBehavior,
+        keyboardCloseWindow,
+        keyboardInputSource,
+        keyboardNavigation,
+        keyboardPageNavigation,
+        keyboardHyperKey,
         login,
         glass,
         applicationScopes,
@@ -68,6 +99,13 @@ public struct SettingsItem: Identifiable, Equatable {
         clipboardCapture,
         noteExport,
         quicklink,
+        windowActivation,
+        faviconProvider,
+        exportPassphrase,
+        scheduledExport,
+        exportLocalRecords,
+        systemProxy,
+        additionalCertificateAuthority,
         dataDirectory,
         privacy,
         version,

@@ -70,6 +70,8 @@ struct Launcher: View {
             ViewObservation.changes(model.$excluded),
             ViewObservation.changes(model.$runningPaths),
             ViewObservation.changes(model.$navigation),
+            ViewObservation.changes(model.$rootSearchSensitivity),
+            ViewObservation.changes(model.$rootFileContentSearch),
             ViewObservation.changes(model.$fileResults),
             ViewObservation.changes(model.$fileSearchStatus),
             ViewObservation.changes(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] })
@@ -178,6 +180,15 @@ struct Launcher: View {
                 else { refreshActiveQuery() }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherResetSearch)) { _ in
+            mainSearchQuery = ""
+            mainSearchSelection = 0
+            mainSearchExpanded = false
+            pendingMainSelection = nil
+            selectedResultID = nil
+            selection = 0
+            argumentTarget = nil
+        }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
             launcherVisible = false
             modifiers.stop()
@@ -197,6 +208,17 @@ struct Launcher: View {
         }
         .onChange(of: model.fileSearch.options.searchFromLauncher) { _, _ in
             if model.pageID == .root { if launcherVisible && model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] } }
+        }
+        .onChange(of: model.rootFileContentSearch) { _, _ in
+            if launcherVisible && model.pageID == .root && model.searchesFilesHere {
+                model.searchFiles()
+            }
+        }
+        .onChange(of: model.rootSearchSensitivity) { _, _ in
+            if model.pageID == .root {
+                selection = 0
+                selectedResultID = nil
+            }
         }
         .onChange(of: model.fileResults) { previous, current in
             guard showsFileResults || model.pageID == .root else { return }
@@ -262,7 +284,7 @@ struct Launcher: View {
         if submenu != nil { dismissSubmenu(); return }
         if argumentTarget != nil { argumentTarget = nil; focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
-        else if model.pageID != .root { model.pageID = .root }
+        else if model.pageID != .root && model.launcherEscapeBehavior == .backOrClose { model.pageID = .root }
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
     }
 
@@ -554,9 +576,7 @@ struct Launcher: View {
                                 LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
                                                 enabled: item.enabled, destructive: item.destructive,
                                                 activate: { activate(item) }, highlight: { actionSelection = index }) {
-                                    HStack(spacing: 3) {
-                                        ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) }
-                                    }
+                                    if !item.keys.isEmpty { Keycaps(keys: item.keys) }
                                 }
                                 .padding(.horizontal, 8)
                                 .id(item.id)

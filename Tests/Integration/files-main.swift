@@ -63,6 +63,11 @@ controller.search("LOCAL CONTENT"); RunLoop.current.run(until:Date().addingTimeI
 controller.options.contentSearch = true
 wait("Opt-in content index") { !controller.indexing && results.first?.name == "报告 预算2026.txt" }
 controller.search("PDF DOCUMENT NEEDLE"); wait("PDF text extraction") { results.first?.name == "作业-2.pdf" }
+controller.search("PDF DOCUMENT NEEDLE", includeContents: false)
+wait("Same query restricted to file names") { !controller.isSearching && results.isEmpty }
+precondition(controller.options.contentSearch && !controller.indexing)
+controller.search("PDF DOCUMENT NEEDLE")
+wait("Dedicated file search can still use indexed content") { results.first?.name == "作业-2.pdf" }
 controller.options.includeHidden = true
 wait("Hidden index scan") { !controller.indexing }
 controller.search("隐藏文件"); wait("Hidden name search") { results.first?.name == ".隐藏文件.txt" }

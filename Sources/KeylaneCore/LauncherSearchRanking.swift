@@ -4,21 +4,35 @@ import Foundation
 public struct LauncherSearchRanking {
     public enum Kind { case command, file, calculator, systemSetting }
 
+    public enum Sensitivity: String, CaseIterable {
+        case low, medium, high
+
+        fileprivate var minimumScore: Int {
+            switch self {
+            case .low: 0
+            case .medium: 600
+            case .high: 800
+            }
+        }
+    }
+
     private let query: String
     private let trimmedQuery: String
     private let settingsQuery: String
     private let aliases: [String: String]
     private let favorites: Set<String>
     private let usage: [String: Int]
+    private let sensitivity: Sensitivity
     private let rankFile: (String) -> Int
 
-    public init(query: String, aliases: [String: String], favorites: Set<String>, usage: [String: Int]) {
+    public init(query: String, aliases: [String: String], favorites: Set<String>, usage: [String: Int], sensitivity: Sensitivity = .low) {
         self.query = query
         trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         settingsQuery = SystemSettingsCatalog.pageQuery(query)
         self.aliases = aliases
         self.favorites = favorites
         self.usage = usage
+        self.sensitivity = sensitivity
         rankFile = FileSearchRules.ranker(for: query)
     }
 
@@ -37,6 +51,7 @@ public struct LauncherSearchRanking {
             let nameScore = ([title] + names).compactMap { SearchRanker.score($0, query: namesQuery) }.max()
             guard let match = nameScore ?? (aliasScore >= 0 ? aliasScore : nil) else { return nil }
             score = max(match, aliasScore)
+            if kind == .command && !trimmedQuery.isEmpty && score < sensitivity.minimumScore { return nil }
             if kind == .systemSetting && !namesQuery.isEmpty && score < 600 { return nil }
         }
         return SearchResultRank(score: score, favorite: favorites.contains(id), uses: usage[id, default: 0],

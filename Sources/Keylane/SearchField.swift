@@ -34,6 +34,10 @@ struct SearchField: View {
                 let up = navigation == "vim" ? "k" : navigation == "emacs" ? "p" : ""
                 if !down.isEmpty && press.characters == down { move(1); return .handled }
                 if !up.isEmpty && press.characters == up { move(-1); return .handled }
+                if navigation == "vim" {
+                    if press.characters == "h", let back { back(); return .handled }
+                    if press.characters == "l", let forward { forward(); return .handled }
+                }
                 return .ignored
             }
             .onExitCommand { if !Self.isComposing { escape() } }
@@ -48,4 +52,5 @@ struct SearchField: View {
 extension Notification.Name {
     static let launcherShown = Notification.Name("Keylane.launcherShown")
     static let launcherHidden = Notification.Name("Keylane.launcherHidden")
+    static let launcherResetSearch = Notification.Name("Keylane.launcherResetSearch")
 }

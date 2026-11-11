@@ -3,12 +3,21 @@ import XCTest
 final class InterfaceTests: XCTestCase {
     func testSettingsSearchFindsActualControlsAcrossLanguages() {
         XCTAssertEqual(SettingsItem.search("深色").map(\.id), ["appearance"])
-        XCTAssertEqual(SettingsItem.search("备份").map(\.id), ["export"])
+        XCTAssertEqual(SettingsItem.search("备份").map(\.id), ["export", "advanced-export-passphrase", "advanced-scheduled-export", "advanced-local-export"])
+        XCTAssertEqual(SettingsItem.search("certificate authority").map(\.page), ["advanced"])
+        XCTAssertEqual(SettingsItem.search("窗口激活").map(\.id), ["advanced-window-activation"])
         XCTAssertEqual(SettingsItem.search("CLIPBOARD history").map(\.id), ["capture"])
         XCTAssertTrue(SettingsItem.search("不存在的配置项").isEmpty)
         XCTAssertTrue(SettingsItem.search("  \n").isEmpty)
         XCTAssertEqual(Set(SettingsItem.all.map(\.id)).count,SettingsItem.all.count)
     }
+    func testKeyboardSettingsSearchUsesDedicatedPage() {
+        XCTAssertEqual(SettingsItem.keyboard.page, "keyboard")
+        XCTAssertTrue(SettingsItem.search("输入源").contains(.keyboardInputSource))
+        XCTAssertTrue(SettingsItem.search("方括号").contains(.keyboardPageNavigation))
+        XCTAssertTrue(SettingsItem.search("Caps Lock").contains(.keyboardHyperKey))
+    }
+
     func testKeyboardSelectionClampsEmptyAndShrinkingLists() {
         XCTAssertEqual(NavigationBounds.move(0, by: -1, count: 5),0)
         XCTAssertEqual(NavigationBounds.move(4, by: 1, count: 5),4)
