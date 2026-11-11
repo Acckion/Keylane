@@ -61,10 +61,31 @@ public struct SearchResultRank {
     public var uses: Int
     public var title: String
     public var id: String
-    public init(score: Int, favorite: Bool, uses: Int, title: String, id: String) { self.score = score; self.favorite = favorite; self.uses = uses; self.title = title; self.id = id }
+    private let priority: Int
+    private let relevanceBand: Int
+    private let queryUsage: Double
+    private let overallUsage: Double
+
+    public init(score: Int, favorite: Bool, uses: Int, title: String, id: String,
+                priority: Int = 0, relevanceBand: Int? = nil, queryUsage: Double = 0, overallUsage: Double = 0) {
+        self.score = score
+        self.favorite = favorite
+        self.uses = uses
+        self.title = title
+        self.id = id
+        self.priority = priority
+        self.relevanceBand = relevanceBand ?? score
+        self.queryUsage = queryUsage
+        self.overallUsage = overallUsage
+    }
+
     public func precedes(_ other: SearchResultRank) -> Bool {
-        if score != other.score { return score > other.score }
+        if priority != other.priority { return priority > other.priority }
+        if relevanceBand != other.relevanceBand { return relevanceBand > other.relevanceBand }
         if favorite != other.favorite { return favorite }
+        if queryUsage != other.queryUsage { return queryUsage > other.queryUsage }
+        if overallUsage != other.overallUsage { return overallUsage > other.overallUsage }
+        if score != other.score { return score > other.score }
         if uses != other.uses { return uses > other.uses }
         let result = title.localizedStandardCompare(other.title)
         return result == .orderedSame ? id < other.id : result == .orderedAscending

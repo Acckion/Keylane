@@ -145,3 +145,23 @@ let scriptsNoMatch = LauncherCommandSearch.Input(query: noMatch, page: .init(raw
                                                 aliases: [:], favorites: [], usage: [:], namespace: .prefix("script:"))
 precondition(scopedSearch.results(for: scriptsNoMatch, registry: scopedRegistry).isEmpty)
 print("PASS root fallback remains available only without matching commands")
+
+let dictionaryID = CommandID(rawValue: "fixture-dictionary")
+let scriptID = CommandID(rawValue: "fixture-define-task")
+let explicitRankingRegistry = try LauncherModuleRegistry(modules: [
+    .init(id: .init(rawValue: "fixture.explicit-ranking"), commands: [
+        .init(declaration: .init(id: scriptID, title: "Define a task", detail: "Script",
+                                 symbol: "terminal", keywords: []))
+    ], providers: [
+        .init(namespace: .exact(dictionaryID), entries: { _ in
+            [Entry(id: dictionaryID.rawValue, commandID: dictionaryID, name: "a",
+                   detail: "Dictionary", symbol: "book.closed", matchScore: 2000)]
+        }, resolve: { _, _ in nil })
+    ])
+])
+let dictionaryInput = LauncherCommandSearch.Input(query: "define a", page: .root,
+                                                   aliases: [scriptID.rawValue: "define a"], favorites: [scriptID.rawValue],
+                                                   usage: [scriptID.rawValue: 100])
+precondition(LauncherCommandSearch().results(for: dictionaryInput, registry: explicitRankingRegistry)
+    .map(\.commandID) == [dictionaryID, scriptID])
+print("PASS explicit dictionary result outranks matching commands")
