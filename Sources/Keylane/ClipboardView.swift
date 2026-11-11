@@ -110,7 +110,6 @@ struct ClipboardPreferences: View {
             ViewObservation.changes(controller.$primaryAction),
             ViewObservation.changes(controller.$retentionDays),
             ViewObservation.changes(controller.$excludedApps),
-            ViewObservation.changes(controller.$accessMessage),
             ViewObservation.changes(model.$aliases.map { $0["clipboard"] }),
             ViewObservation.changes(model.$bindings.map { $0["clipboard"] })
         ]))
@@ -209,14 +208,7 @@ struct ClipboardPreferences: View {
                     Text("仅复制").tag("copy")
                     Text("粘贴到上个应用").tag("paste")
                 }
-                Divider()
-                SettingsActionRow(title: "辅助功能", actionTitle: "管理权限…") {
-                    showsHistorySettings = false
-                    model.openSettings(page: "permissions")
-                }
-                if !controller.accessMessage.isEmpty {
-                    SettingsDescription(controller.accessMessage)
-                }
+
             }
             ClipboardHistoryStatistics(controller: controller)
             Button("完成") { showsHistorySettings = false }

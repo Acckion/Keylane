@@ -27,8 +27,7 @@ struct KeyboardPreferences: View {
             ViewObservation.changes(model.$doubleTap),
             ViewObservation.changes(model.$hyperkey),
             ViewObservation.changes(model.$hyperIncludesShift),
-            ViewObservation.changes(model.$replaceHyperKeycaps),
-            ViewObservation.changes(model.$modifierStatus)
+            ViewObservation.changes(model.$replaceHyperKeycaps)
         ]))
     }
 
@@ -100,13 +99,6 @@ struct KeyboardPreferences: View {
                     Text("Option").tag("option")
                     Text("Control").tag("control")
                     Text("Shift").tag("shift")
-                }
-                Divider()
-                SettingsRow("辅助功能", detail: model.modifierStatus) {
-                    HStack(spacing: 8) {
-                        Button("管理权限…") { model.openSettings(page: "permissions") }
-                        Button("重新启用") { model.configureModifiers() }
-                    }.buttonStyle(ContentActionButtonStyle())
                 }
             }
         }

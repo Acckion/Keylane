@@ -13,7 +13,6 @@ struct FileSearchPreferences: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(controller.$options),
             ViewObservation.changes(controller.$automaticExclusions),
-            ViewObservation.changes(controller.$inaccessible),
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(model.fileAI.$commandsEnabled)
@@ -27,25 +26,11 @@ struct FileSearchPreferences: View {
         SettingsPageSections {
             SettingsSearchScopeCard(
                 paths: controller.options.roots,
-                detail: "添加要搜索的文件夹；通过选择面板授予访问权限。",
+                detail: "选择要纳入索引的文件夹。",
                 anchor: .fileSearchScope,
                 add: { controller.addScope() },
-                remove: controller.removeScope,
-                reauthorize: { controller.addScope(suggested: URL(fileURLWithPath: $0)) }
-            ) {
-                if !controller.inaccessible.isEmpty {
-                    if !controller.options.roots.isEmpty { Divider().opacity(0.4) }
-                    VStack(alignment: .leading, spacing: 7) {
-                        Label("部分目录无法访问。若下载或文稿中的文件缺失，请选择并授权对应文件夹。",
-                              systemImage: "exclamationmark.triangle")
-                            .font(.caption).foregroundStyle(.orange)
-                        Button("授权下载文件夹…") {
-                            let downloads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
-                            controller.addScope(suggested: downloads)
-                        }.buttonStyle(ContentActionButtonStyle())
-                    }.padding(.vertical, 10)
-                }
-            }
+                remove: controller.removeScope
+            ) { EmptyView() }
             ignoreRules
             SettingsGroup {
                 option("内容搜索","搜索文字和 PDF 的内容，不仅仅是文件名。仅在开启后读取正文并保存本地文本索引；不会下载 iCloud 占位文件。",\.contentSearch)

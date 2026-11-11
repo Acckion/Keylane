@@ -47,6 +47,8 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let inputMonitoringPermission = SettingsItem(id: "permission-input-monitoring", page: "permissions", title: "输入监控", keywords: "权限 授权 键盘 Hyperkey input monitoring permission")
     public static let contactsPermission = SettingsItem(id: "permission-contacts", page: "permissions", title: "联系人权限", keywords: "授权 通讯录 contacts permission")
     public static let automationPermission = SettingsItem(id: "permission-automation", page: "permissions", title: "自动化权限", keywords: "授权 Finder 快捷指令 automation permission")
+    public static let pasteboardPermission = SettingsItem(id: "permission-pasteboard", page: "permissions", title: "剪贴板访问", keywords: "权限 授权 读取 clipboard pasteboard permission")
+    public static let fileSearchPermissions = SettingsItem(id: "permission-file-search", page: "permissions", title: "文件搜索授权", keywords: "权限 文件夹 下载 重新授权 search folders permission")
     public static let folderPermissions = SettingsItem(id: "permission-folders", page: "permissions", title: "文件与文件夹权限", keywords: "授权 搜索范围 截图 files folders permission")
     public static let calendarAccess = SettingsItem(id: "calendar-access", page: "permissions", title: "日历权限", keywords: "日程 权限 calendar events permission")
     public static let calendarMenuBar = SettingsItem(id: "calendar-menu-bar", page: "calendar", title: "日历菜单栏摘要", keywords: "下一个 日程 日期 calendar agenda menu bar")
@@ -106,6 +108,8 @@ public struct SettingsItem: Identifiable, Equatable {
         contactsPermission,
         automationPermission,
         folderPermissions,
+        pasteboardPermission,
+        fileSearchPermissions,
         calendarMenuBar,
         calendarSelection,
         clipboardCapture,
