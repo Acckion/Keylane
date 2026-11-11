@@ -19,6 +19,7 @@ public struct LauncherSearchRanking {
     private let query: SearchRanker.Query
     private let trimmedQuery: String
     private let settingsQuery: SearchRanker.Query
+    private let hasSettingsQuery: Bool
     private let aliases: [String: String]
     private let favorites: Set<String>
     private let usage: [String: Int]
@@ -28,7 +29,9 @@ public struct LauncherSearchRanking {
     public init(query: String, aliases: [String: String], favorites: Set<String>, usage: [String: Int], sensitivity: Sensitivity = .low) {
         self.query = SearchRanker.Query(query)
         trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        settingsQuery = SearchRanker.Query(SystemSettingsCatalog.pageQuery(query))
+        let settingsText = SystemSettingsCatalog.pageQuery(query)
+        settingsQuery = SearchRanker.Query(settingsText)
+        hasSettingsQuery = !settingsText.isEmpty
         self.aliases = aliases
         self.favorites = favorites
         self.usage = usage
@@ -56,7 +59,7 @@ public struct LauncherSearchRanking {
             guard best >= 0 else { return nil }
             score = best
             if kind == .command && !trimmedQuery.isEmpty && score < sensitivity.minimumScore { return nil }
-            if kind == .systemSetting && !namesQuery.isEmpty && score < 600 { return nil }
+            if kind == .systemSetting && hasSettingsQuery && score < 600 { return nil }
         }
         return SearchResultRank(score: score, favorite: favorites.contains(id), uses: usage[id, default: 0],
                                 title: title, id: id)
