@@ -24,10 +24,10 @@ public struct SettingsItem: Identifiable, Equatable {
         .init(id: "version", page: "about", title: "关于 Keylane", keywords: "版本 许可 about version license"),
         .init(id: "status", page: "about", title: "开发状态", keywords: "功能 限制 roadmap status")
     ]
-    public static func search(_ query: String) -> [SettingsItem] {
+    public static func search(_ query: String, in items: [SettingsItem] = all) -> [SettingsItem] {
         let words = query.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         guard !words.isEmpty else { return [] }
-        return all.filter { item in words.allSatisfy { (item.title + " " + item.keywords).localizedCaseInsensitiveContains($0) } }
+        return items.filter { item in words.allSatisfy { (item.title + " " + item.keywords).localizedCaseInsensitiveContains($0) } }
     }
 }
 public enum NavigationBounds {

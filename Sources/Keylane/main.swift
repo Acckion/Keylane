@@ -6,7 +6,6 @@ import ServiceManagement
 import ApplicationServices
 import KeylaneCore
 
-struct Entry: Identifiable { let id: String; let name: String; let detail: String; let symbol: String; var aliases: [String] = []; let action: () -> Void }
 final class Model: ObservableObject {
     let store: Store?
     @Published var error = ""
@@ -18,17 +17,16 @@ final class Model: ObservableObject {
     @Published var compactFavorites = (UserDefaults.standard.object(forKey: "compactFavorites") as? Bool) ?? true { didSet { UserDefaults.standard.set(compactFavorites, forKey: "compactFavorites") } }
     @Published var compactExpanded = false
     var interfaceScale: CGFloat { interfaceSize == "small" ? 0.9 : interfaceSize == "large" ? 1.1 : 1 }
-    var isCompact: Bool { windowMode == "compact" && tab == "Commands" && query.isEmpty && !compactExpanded }
+    var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded }
     var launcherHeight: CGFloat { isCompact ? (compactFavorites && !favorites.isEmpty ? 109 : 61) : 470 }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
     @Published var savedNotes: [KeylaneCore.Record] = []
     @Published var noteID = "scratchpad"
     @Published var query = ""
-    @Published var tab = "Commands"
+    @Published var pageID = PageID.root
     let fileAI = FileAIController()
-    private var fileAIChanges: AnyCancellable?
-    let clipboard = ClipboardController()
-    private var clipboardChanges: AnyCancellable?
+    private var moduleSearchChanges: AnyCancellable?
+    let clipboard = ClipboardController(startTimer: false, presentationActive: false)
     @Published var notes: String = UserDefaults.standard.string(forKey: "notes") ?? "" { didSet { saveNote() } }
     @Published var link: String = UserDefaults.standard.string(forKey: "link") ?? "https://github.com/Acckion/Keylane" { didSet { UserDefaults.standard.set(link, forKey: "link") } }
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots
@@ -44,11 +42,10 @@ final class Model: ObservableObject {
     @Published var modifierStatus = ""
     @Published var scanStatus = "正在扫描…"
     let fileSearch = FileSearchController()
-    private var fileSearchChanges: AnyCancellable?
     @Published var fileSearchFolder: URL?
     @Published var fileResults: [SpotlightFile] = []
     @Published var fileSearchStatus = "输入文件名，搜索Spotlight已索引的文件。"
-    @Published var fileSearchScope = UserDefaults.standard.string(forKey: "fileSearchScope") ?? "local" { didSet { UserDefaults.standard.set(fileSearchScope, forKey: "fileSearchScope"); if tab == "Files" { searchFiles() } } }
+    @Published var fileSearchScope = UserDefaults.standard.string(forKey: "fileSearchScope") ?? "local" { didSet { UserDefaults.standard.set(fileSearchScope, forKey: "fileSearchScope"); if activeLauncherPage?.usesSharedFileResults == true { searchFiles() } } }
     @Published var lastScanSeconds = 0.0
     @Published var loginStatus = ""
     @Published var loginEnabled = false
@@ -56,8 +53,23 @@ final class Model: ObservableObject {
     @Published var runningPaths: Set<String> = []
     private var workspaceObservers: [NSObjectProtocol] = []
     @Published var apps: [URL] = []
+    private let commandSearch = LauncherCommandSearch()
+    private(set) lazy var launcherModules: LauncherModuleRegistry? = {
+        do { return try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) }
+        catch {
+            NSLog("Keylane: invalid built-in module catalog: %@", String(describing: error))
+            return nil
+        }
+    }()
+    var activeLauncherPage: LauncherPage? { launcherModules?.page(pageID) }
+    var activePageUpdates: AnyPublisher<Void, Never> {
+        $pageID.removeDuplicates().map { [weak self] pageID in
+            self?.launcherModules?.page(pageID)?.updates ?? Empty().eraseToAnyPublisher()
+        }.switchToLatest().receive(on: DispatchQueue.main).eraseToAnyPublisher()
+    }
+
     private var appIdentities: [String: ApplicationIdentity] = [:] {
-        didSet { cachedCommands = nil }
+        didSet { commandSearch.invalidate() }
     }
     @Published var favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
     func toggleFavorite(_ id: String) { if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }; UserDefaults.standard.set(Array(favorites), forKey: "favorites") }
@@ -85,9 +97,10 @@ final class Model: ObservableObject {
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refreshRunningApps(); self?.discovery.refresh() })
         }
-        fileAIChanges = fileAI.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        fileSearchChanges = Publishers.Merge(fileSearch.$options.removeDuplicates().map { _ in () }, fileSearch.$isSearching.removeDuplicates().map { _ in () }).sink { [weak self] _ in self?.objectWillChange.send() }
-        clipboardChanges = clipboard.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        moduleSearchChanges = launcherModules?.searchUpdates.sink { [weak self] in
+            self?.commandSearch.invalidate()
+            self?.objectWillChange.send()
+        }
     }
     deinit { workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
     func refreshRunningApps() { runningPaths = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.resolvingSymlinksInPath().path }) }
@@ -97,7 +110,26 @@ final class Model: ObservableObject {
     }
     func addRoot() { let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; if panel.runModal() == .OK, let url = panel.url, !roots.contains(url.path) { roots.append(url.path); reloadCatalog() } }
     func setAlias(_ id: String, value: String) { aliases[id] = value.trimmingCharacters(in: .whitespacesAndNewlines); UserDefaults.standard.set(aliases, forKey: "aliases") }
-    func perform(_ entry: Entry) { usage[entry.id, default: 0] += 1; UserDefaults.standard.set(usage, forKey: "usage"); entry.action() }
+    func perform(_ entry: Entry) {
+        runCommand(entry.commandID, origin: .search, usageKey: entry.id)
+    }
+    func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil) {
+        guard let action = launcherModules?.resolve(id, origin: origin, navigate: { [weak self] destination in
+            guard let self else { return }
+            switch destination {
+            case .action: break
+            case let .page(page):
+                self.pageID = page
+                if origin == .shortcut { (NSApp.delegate as? Delegate)?.revealLauncher() }
+            case let .settings(page): self.openSettings(page: page)
+            }
+        }) else { return }
+        if let usageKey {
+            usage[usageKey, default: 0] += 1
+            UserDefaults.standard.set(usage, forKey: "usage")
+        }
+        action()
+    }
     func launch(_ url: URL) {
         if NSWorkspace.shared.open(url) { (NSApp.delegate as? Delegate)?.hideLauncher() }
         else { error = "无法打开应用，路径可能已经失效。"; discovery.refresh() }
@@ -131,8 +163,9 @@ final class Model: ObservableObject {
     func setLogin(_ enabled: Bool) {
         do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } } catch { self.error = error.localizedDescription }; refreshLogin()
     }
+    func discoveredIdentity(for url: URL) -> ApplicationIdentity? { appIdentities[url.path] }
     func appName(_ url: URL) -> String { appIdentities[url.path]?.displayName ?? url.deletingPathExtension().lastPathComponent }
-    var searchesFilesHere: Bool { fileSearch.options.enabled && (tab == "Files" || (tab == "Commands" && fileSearch.options.searchFromLauncher)) }
+    var searchesFilesHere: Bool { fileSearch.options.enabled && (activeLauncherPage?.usesSharedFileResults == true || (pageID == .root && fileSearch.options.searchFromLauncher)) }
     func searchFiles() { fileSearch.search(query) }
     func chooseFileSearchFolder(returnToLauncher: Bool = false) {
         fileSearch.addScope()
@@ -151,88 +184,11 @@ final class Model: ObservableObject {
             running.hide()
         } else { launch(url) }
     }
-    private struct CommandSearchInput: Equatable {
-        let query: String
-        let link: String
-        let apps: [URL]
-        let files: [SpotlightFile]
-        let fileSearchEnabled: Bool
-        let askFiles: Bool
-        let askFinder: Bool
-        let aliases: [String: String]
-        let favorites: Set<String>
-        let usage: [String: Int]
-    }
-    private var cachedCommands: (input: CommandSearchInput, results: [Entry])?
-
     var commands: [Entry] {
-        let options = fileSearch.options
-        let includesFiles = tab == "Commands" && options.enabled && options.searchFromLauncher
-            && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let input = CommandSearchInput(
-            query: query, link: link, apps: applicationsEnabled ? apps : [],
-            files: includesFiles ? fileResults : [], fileSearchEnabled: options.enabled,
-            askFiles: fileAI.commandsEnabled["ask-files"] != false,
-            askFinder: fileAI.commandsEnabled["ask-finder"] != false,
-            aliases: aliases, favorites: favorites, usage: usage
-        )
-        if let cachedCommands, cachedCommands.input == input { return cachedCommands.results }
-
-        let results = buildCommands(for: input)
-        cachedCommands = (input, results)
-        return results
-    }
-
-    private func buildCommands(for input: CommandSearchInput) -> [Entry] {
-        var rows = [
-            Entry(id: "clipboard", name: "剪贴板历史", detail: "本地文字、图片和文件历史", symbol: "clipboard", aliases: ["Clipboard History", "剪切板", "剪贴板", "复制历史"], action: { [weak self] in self?.tab = "Clipboard" }),
-            Entry(id: "notes", name: "便笺", detail: "本地便笺", symbol: "note.text", aliases: ["Notes", "便签", "笔记"], action: { [weak self] in self?.tab = "Notes" }),
-            Entry(id: "quicklink", name: "快捷链接", detail: input.link, symbol: "link", aliases: ["Quick Link", "快速链接", "网址"], action: { [weak self] in if let link = self?.link, let url = URL(string: link), ["https", "http"].contains(url.scheme ?? "") { NSWorkspace.shared.open(url) } }),
-            Entry(id: "settings", name: "Keylane 设置", detail: "偏好设置与隐私", symbol: "gearshape", aliases: ["Settings", "Preferences", "设置", "偏好设置"], action: { [weak self] in self?.openSettings() })]
-        rows += [
-            Entry(id: "file-search", name: "搜索文件", detail: "Spotlight", symbol: "doc.text.magnifyingglass", aliases: ["File Search", "Spotlight"], action: { [weak self] in self?.tab = "Files" }),
-            Entry(id: "screenshot", name: "Screenshot / 截图", detail: "Select region · copy image", symbol: "camera.viewfinder", action: { NSApp.keyWindow?.orderOut(nil); DispatchQueue.main.asyncAfter(deadline: .now()+0.25) { SystemTools.shared.screenshot() } }),
-            Entry(id: "color", name: "Pick Color / 取色", detail: "Copy hex color", symbol: "eyedropper", action: { SystemTools.shared.colorPicker() }),
-            Entry(id: "speak", name: "Read Clipboard / 朗读", detail: "System text to speech", symbol: "speaker.wave.2", action: { SystemTools.shared.readClipboard() }),
-            Entry(id: "stop-speaking", name: "Stop Reading / 停止朗读", detail: "Stop speech playback", symbol: "stop.circle", action: { SystemTools.shared.stopReading() }),
-            Entry(id: "finder", name: "Open Home / 个人文件夹", detail: "Finder", symbol: "folder", action: { NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) })
-        ]
-        if input.askFiles { rows.append(Entry(id:"ask-files",name:"询问文件搜索",detail:"AI",symbol:"sparkles",aliases:["Ask File Search"],action:{ [weak self] in if let self { self.fileAI.present(self.fileResults.map(\.url)) } })) }
-        if input.askFinder { rows.append(Entry(id:"ask-finder",name:"询问 Finder",detail:"AI",symbol:"sparkles",aliases:["Ask Finder"],action:{ [weak self] in self?.fileAI.presentFinder() })) }
-        rows += input.apps.map { url in
-            let identity = appIdentities[url.path] ?? ApplicationIdentity(url: url)
-            return Entry(id: url.path, name: identity.displayName, detail: "Application", symbol: "app", aliases: identity.aliases, action: { [weak self] in self?.launch(url) })
-        }
-        rows += input.files.filter { $0.url.pathExtension.lowercased() != "app" }.prefix(10).map { file in
-            Entry(id: file.id, name: file.name, detail: "File", symbol: "doc", action: { [weak self] in
-                guard let self, !self.fileSearch.isSearching else { return }
-                self.openFile(file.url)
-            })
-        }
-        let query = input.query
-        if let value = Calculator.evaluate(query), query.contains(where: { "+-*/".contains($0) }) {
-            let result = String(format: "%.12g", value)
-            rows.insert(Entry(id: "calculator", name: result, detail: "Calculator · copy result", symbol: "equal", action: { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(result, forType: .string) }), at: 0)
-        }
-        if !input.fileSearchEnabled { rows.removeAll { $0.id == "file-search" } }
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return rows.compactMap { row -> (entry: Entry, rank: SearchResultRank)? in
-            let score: Int
-            if row.id == "calculator" {
-                score = 2000
-            } else if row.detail == "File" {
-                score = FileSearchRules.rank(row.name, query: query)
-            } else {
-                let alias = input.aliases[row.id] ?? ""
-                let exactAlias = !alias.isEmpty && alias.localizedCaseInsensitiveCompare(trimmedQuery) == .orderedSame
-                let aliasScore = exactAlias ? 1500 : (SearchRanker.score(alias, query: query) ?? -1)
-                let nameScore = ([row.name] + row.aliases).compactMap { SearchRanker.score($0, query: query) }.max()
-                guard let matchScore = nameScore ?? (aliasScore >= 0 ? aliasScore : nil) else { return nil }
-                score = max(matchScore, aliasScore)
-            }
-            return (row, SearchResultRank(score: score, favorite: input.favorites.contains(row.id),
-                                          uses: input.usage[row.id, default: 0], title: row.name, id: row.id))
-        }.sorted { $0.rank.precedes($1.rank) }.map(\.entry)
+        guard let launcherModules else { return [] }
+        let input = LauncherCommandSearch.Input(query: query, page: pageID,
+                                                aliases: aliases, favorites: favorites, usage: usage)
+        return commandSearch.results(for: input, registry: launcherModules)
     }
 }
 final class LauncherPanel: NSPanel {
@@ -299,7 +255,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         geometrySubscription = Publishers.MergeMany([
             model.$interfaceSize.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$windowMode.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.$tab.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$pageID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$query.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$compactFavorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
@@ -320,16 +276,15 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         shortcuts.fired = { [weak self] action in
             guard let self else { return }
             if action == "launcher" { self.show() }
-            else if action == "settings" { self.showSettings() }
-            else if action == "clipboard" { self.model.tab = "Clipboard"; self.revealLauncher() }
-            else if action == "file-search", self.model.fileSearch.options.enabled { self.model.tab = "Files"; self.revealLauncher() }
-            else if action == "ask-files", self.model.fileAI.commandsEnabled[action] != false { self.hideLauncher(); self.model.fileAI.present(self.model.fileResults.map(\.url)) }
-            else if action == "ask-finder", self.model.fileAI.commandsEnabled[action] != false { self.hideLauncher(); self.model.fileAI.presentFinder() }
-            else if action.hasPrefix("app:") { let path = String(action.dropFirst(4)); self.model.usage[path, default: 0] += 1; UserDefaults.standard.set(self.model.usage, forKey: "usage"); self.model.launchFromHotkey(URL(fileURLWithPath: path)) }
+            else {
+                let appKey = action.hasPrefix("app:") ? String(action.dropFirst("app:".count)) : nil
+                self.model.runCommand(.init(rawValue: action), origin: .shortcut, usageKey: appKey)
+            }
         }
         do { try shortcuts.apply(model.bindings); hotkeyStatus = 0 } catch { hotkeyStatus = -1; model.error = error.localizedDescription }
         modifiers.activate = { [weak self] in self?.show() }
         model.configureModifiers()
+        model.launcherModules?.startServices()
         show()
     }
     @objc func revealLauncher() {
@@ -347,6 +302,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hideLauncher(reason: "resignKey")
     }
     func applicationWillTerminate(_ notification: Notification) {
+        model.launcherModules?.stopServices()
         if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         shortcuts.stop(); modifiers.stop(); model.discovery.stop()
@@ -402,7 +358,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func show() {
         if window.isVisible && window.isKeyWindow { hideLauncher(); return }
         if model.windowMode == "compact" {
-            model.tab = "Commands"; model.query = ""; model.compactExpanded = false
+            model.pageID = .root; model.query = ""; model.compactExpanded = false
         }
         updateLauncherGeometry()
         rememberPreviousApplication()

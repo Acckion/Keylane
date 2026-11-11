@@ -70,6 +70,14 @@ let reopenedCount = try reopened.count(); precondition(reopenedCount == 3)
 controller.clear(includePinned: false); wait("clear unpinned") { controller.total == 1 }
 precondition(controller.items.first?.pinned == true)
 controller.clear(includePinned: true); wait("clear all") { controller.total == 0 }
+controller.endPresentation()
+write("Captured with the page closed")
+wait("background capture without preview") { controller.total == 1 }
+precondition(controller.detail == nil && controller.thumbnail == nil && !controller.loadingDetail)
+controller.search("Captured with the page closed")
+wait("reopen after background capture") { controller.detail?.text == "Captured with the page closed" }
+controller.clear(includePinned: true); wait("clear closed-page fixture") { controller.total == 0 }
+controller.search(""); wait("reset closed-page fixture query") { !controller.searching }
 let richString = "富文本格式示例"
 let attributed = NSAttributedString(string:richString,attributes:[.font:NSFont.boldSystemFont(ofSize:18)])
 let rtf = try attributed.data(from:NSRange(location:0,length:attributed.length),documentAttributes:[.documentType:NSAttributedString.DocumentType.rtf])

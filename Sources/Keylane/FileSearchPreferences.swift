@@ -60,9 +60,9 @@ struct FileSearchPreferences: View {
             }
             Text("AI 扩展").font(.headline).padding(.leading,14)
             surface {
-                aiRow("ask-files", "询问文件搜索") { model.fileAI.present(model.fileResults.map(\.url)) }
+                aiRow("ask-files")
                 Divider()
-                aiRow("ask-finder", "询问 Finder") { model.fileAI.presentFinder() }
+                aiRow("ask-finder")
                 Text("使用你配置的 OpenAI 兼容服务。先查看发送范围并主动发送；API密钥保存至钥匙串，未配置时先填写服务地址与模型。").font(.caption).foregroundStyle(.secondary)
             }
             surface {
@@ -73,13 +73,16 @@ struct FileSearchPreferences: View {
             }
         }.confirmationDialog("恢复文件搜索默认设置？",isPresented:$resets,titleVisibility:.visible) { Button("恢复默认",role:.destructive) { controller.reset() }; Button("取消",role:.cancel) {} }.onAppear { if controller.stats.entries == 0 && !controller.indexing { controller.startIndex() } }
     }
-    private func aiRow(_ id: String, _ title: String, _ action: @escaping () -> Void) -> some View {
-        CommandSettingsRow(title: title,
+    private func aiRow(_ id: String) -> some View {
+        let commandID = CommandID(rawValue: id)
+        let declaration = model.launcherModules?.declaration(commandID)
+        return CommandSettingsRow(title: declaration?.title ?? id,
             alias: Binding(get: { model.aliases[id] ?? "" }, set: { model.setAlias(id, value: $0) }),
             shortcut: model.bindings[id],
             isEnabled: Binding(get: { model.fileAI.commandsEnabled[id] != false }, set: { model.fileAI.commandsEnabled[id] = $0 }),
             setShortcut: { model.setShortcut(id, value: $0) },
-            icon: { Image(systemName: "sparkles").font(VisualStyle.actionSymbol) }, perform: action)
+            icon: { Image(systemName: declaration?.symbol ?? "sparkles").font(VisualStyle.actionSymbol) },
+            perform: { model.runCommand(commandID, origin: .menu) })
     }
 
     private func addPattern() { let value = pattern.trimmingCharacters(in:.whitespacesAndNewlines); guard !value.isEmpty, value.utf8.count <= 1024, !controller.options.ignorePatterns.contains(value) else { return }; controller.options.ignorePatterns.append(value); pattern = "" }

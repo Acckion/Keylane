@@ -19,6 +19,9 @@ struct Launcher: View {
     @ObservedObject var model: Model
     @StateObject private var modifiers = LauncherModifiers()
     @State private var selection = 0
+    @State private var pageRevision = 0
+    @State private var launcherVisible = false
+    private var showsFileResults: Bool { model.activeLauncherPage?.usesSharedFileResults == true }
     @State private var selectedResultID: String?
     @State private var actions = false
     @State private var appMenu = false
@@ -33,25 +36,28 @@ struct Launcher: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
     private var rows: [Entry] {
-        if model.tab == "Files" { return model.fileResults.map { file in Entry(id: file.url.path, name: file.name, detail: "File", symbol: "doc", action: { model.openFile(file.url) }) } }
-        return model.commands
+        if showsFileResults { return model.fileResults.map(BuiltinLauncherModules.fileEntry) }
+        return model.pageID == .root ? model.commands : []
     }
     var body: some View {
-        let results = model.tab == "Commands" || model.tab == "Files" ? rows : []
+        let _ = pageRevision
+        let results = model.pageID == .root || showsFileResults ? rows : []
         ZStack {
             if let target = argumentTarget { argumentEditor(target).padding(.bottom, 52) }
             else if model.isCompact { Color.clear }
             else {
-                if model.tab == "Files" {
+                if showsFileResults {
                     ResultDetailLayout {
                         commandList(results)
                     } detail: {
                         FileSearchDetail(url: results.indices.contains(selection) ? URL(fileURLWithPath: results[selection].id) : nil)
                             .padding(.top, 61).padding(.bottom, 52)
                     }
-                } else if model.tab == "Clipboard" { ClipboardHistoryView(controller:model.clipboard,query:model.query) }
-                else if model.tab == "Commands" { commandList(results) }
-                else { moduleContent.padding(.top, 61).padding(.bottom, 52) }
+                } else if model.pageID == .root { commandList(results) }
+                else if let page = model.activeLauncherPage, let content = page.content {
+                    if page.extendsUnderChrome { content().id(page.id) }
+                    else { content().padding(.top, 61).padding(.bottom, 52).id(page.id) }
+                }
             }
             if !model.isCompact { VStack(spacing: 0) {
                 if argumentTarget == nil {
@@ -83,10 +89,12 @@ struct Launcher: View {
         .background {
             Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
             Button("") { closeMenus(); model.openSettings() }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
-            Button("") { if model.tab == "Clipboard" { (NSApp.delegate as? Delegate)?.pasteClipboard() } }.keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
+            if let submit = model.activeLauncherPage?.shortcutSubmit {
+                Button("", action: submit).keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
+            }
             ForEach(0..<min(10, results.count), id: \.self) { index in
                 Button("") {
-                    guard model.tab == "Commands" || model.tab == "Files" else { return }
+                    guard model.pageID == .root || showsFileResults else { return }
                     let currentResults = rows
                     guard currentResults.indices.contains(index) else { return }
                     selection = index
@@ -101,29 +109,57 @@ struct Launcher: View {
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
         .onDisappear { modifiers.stop() }
         .onExitCommand { if !SearchField.isComposing { escape() } }
-        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in modifiers.start(); closeMenus(); if model.searchesFilesHere { model.searchFiles() } }
-        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in modifiers.stop(); actions = false; appMenu = false; actionQuery = ""; model.fileSearch.cancel() }
-        .onChange(of: model.query) { _, _ in selection = 0; selectedResultID = nil; if model.searchesFilesHere { model.searchFiles() }; if model.tab == "Clipboard" { model.clipboard.search(model.query) } }
+        .onReceive(model.activePageUpdates) { _ in
+            if launcherVisible { pageRevision &+= 1 }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in
+            launcherVisible = true
+            modifiers.start()
+            closeMenus()
+            refreshActiveQuery()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
+            launcherVisible = false
+            modifiers.stop(); actions = false; appMenu = false; actionQuery = ""
+            model.activeLauncherPage?.leave()
+            if !showsFileResults { model.fileSearch.cancel() }
+        }
+        .onChange(of: model.query) { _, _ in
+            selection = 0
+            selectedResultID = nil
+            if launcherVisible { refreshActiveQuery() }
+        }
         .onChange(of: model.fileSearch.options.enabled) { _, _ in
             if model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] }
         }
         .onChange(of: model.fileSearch.options.searchFromLauncher) { _, _ in
-            if model.tab == "Commands" { if model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] } }
+            if model.pageID == .root { if model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] } }
         }
         .onChange(of: model.fileResults) { previous, current in
-            guard model.tab == "Files" || model.tab == "Commands" else { return }
-            let oldID = selectedResultID ?? (model.tab == "Files" && previous.indices.contains(selection) ? previous[selection].id : nil)
+            guard showsFileResults || model.pageID == .root else { return }
+            let oldID = selectedResultID ?? (showsFileResults && previous.indices.contains(selection) ? previous[selection].id : nil)
             let results = rows
             if let oldID, let index = results.firstIndex(where: { $0.id == oldID }) { selection = index }
             else { selection = min(selection,max(0,results.count-1)) }
         }
-        .onChange(of: model.tab) { _, _ in model.fileSearch.cancel(); model.query = ""; selection = 0; selectedResultID = nil; focusToken += 1; if model.searchesFilesHere { model.searchFiles() }; if model.tab == "Clipboard" { model.clipboard.search("") } }
+        .onChange(of: model.pageID) { previous, _ in
+            model.launcherModules?.page(previous)?.leave()
+            if previous == .root { model.fileSearch.cancel() }
+            let wasEmpty = model.query.isEmpty
+            model.query = ""
+            selection = 0; selectedResultID = nil; focusToken += 1
+            if launcherVisible && wasEmpty { refreshActiveQuery() }
+        }
+    }
+    private func refreshActiveQuery() {
+        if let page = model.activeLauncherPage { page.queryChanged(model.query) }
+        else if model.searchesFilesHere { model.searchFiles() }
     }
     private func moveSelection(_ delta: Int) {
         if model.isCompact { model.compactExpanded = true; return }
         if actions || appMenu { actionSelection = NavigationBounds.move(actionSelection, by: delta, count: filteredMenu(applicationMenu: appMenu).count) }
-        else if model.tab == "Clipboard" { model.clipboard.move(delta) }
-        else if model.tab == "Commands" || model.tab == "Files" {
+        else if let move = model.activeLauncherPage?.move { move(delta) }
+        else if model.pageID == .root || showsFileResults {
             let results = rows
             selection = NavigationBounds.move(selection, by: delta, count: results.count)
             selectedResultID = results.indices.contains(selection) ? results[selection].id : nil
@@ -133,7 +169,7 @@ struct Launcher: View {
         if submenu { submenu = false; actionQuery = ""; actionSelection = 0; focusToken += 1; return }
         if argumentTarget != nil { argumentTarget = nil; focusToken += 1; return }
         if actions || appMenu { closeMenus() }
-        else if model.tab != "Commands" { model.tab = "Commands" }
+        else if model.pageID != .root { model.pageID = .root }
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
     }
 
@@ -153,22 +189,22 @@ struct Launcher: View {
     }
     private var searchBar: some View {
         HStack(spacing: 12) {
-            if model.tab != "Commands" { backButton { model.tab = "Commands" } }
-            if model.tab == "Commands" { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
-            SearchField(text: $model.query, placeholder: model.tab == "Commands" ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape).frame(height: 30)
-        }.padding(.horizontal, model.tab == "Commands" ? 19 : 8).frame(height: 61)
+            if model.pageID != .root { backButton { model.pageID = .root } }
+            if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
+            SearchField(text: $model.query, placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape).frame(height: 30)
+        }.padding(.horizontal, model.pageID == .root ? 19 : 8).frame(height: 61)
     }
     private func commandList(_ results: [Entry]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if results.isEmpty {
-                        VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(model.tab == "Files" && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(model.tab == "Files" ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if model.tab == "Files" { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(.glass).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
+                        VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(.glass).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
                     }
                     ForEach(Array(results.enumerated()), id: \.element.id) { index, row in
-                        if index == 0 { sectionHeader(model.tab == "Files" ? model.fileSearchStatus : (model.query.isEmpty ? "建议" : "搜索结果")) }
-                        if index == 5 && model.query.isEmpty && model.tab == "Commands" { sectionHeader("其他") }
-                        Button { selection = index; selectedResultID = row.id; if model.tab != "Files" { model.perform(row) } } label: { if model.tab == "Files" { fileResultRow(row, index: index) } else { resultRow(row, index: index) } }.buttonStyle(.plain).id(row.id)
+                        if index == 0 { sectionHeader(showsFileResults ? model.fileSearchStatus : (model.query.isEmpty ? "建议" : "搜索结果")) }
+                        if index == 5 && model.query.isEmpty && model.pageID == .root { sectionHeader("其他") }
+                        Button { selection = index; selectedResultID = row.id; if !showsFileResults { model.perform(row) } } label: { if showsFileResults { fileResultRow(row, index: index) } else { resultRow(row, index: index) } }.buttonStyle(.plain).id(row.id)
                     }
                 }.padding(.horizontal, 8).padding(.bottom, 6)
             }.scrollIndicators(.visible, axes: .vertical)
@@ -216,7 +252,7 @@ struct Launcher: View {
             }.frame(width: 26, height: 26)
                 .overlay(alignment: .bottomLeading) { if model.runningPaths.contains(row.id) { Circle().fill(.green).frame(width: 5, height: 5).offset(x: -1, y: 3).accessibilityLabel("正在运行") } }
             HighlightedResultText(text: row.name, query: model.query).font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
-            if row.detail == "File" && model.tab != "Files" { Text(URL(fileURLWithPath: row.id).deletingLastPathComponent().path).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
+            if row.detail == "File" && !showsFileResults { Text(URL(fileURLWithPath: row.id).deletingLastPathComponent().path).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
             if row.detail == "AI" { Text("AI").font(.system(size:12)).foregroundStyle(.secondary) }
             if let alias = model.aliases[row.id], !alias.isEmpty { Text(alias).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 5).padding(.vertical, 2).background(.quaternary, in: RoundedRectangle(cornerRadius: 4)) }
             Spacer(minLength: 8)
@@ -252,8 +288,8 @@ struct Launcher: View {
     private var footer: some View {
         GlassEffectContainer(spacing: 8) {
             HStack(alignment: .bottom, spacing: 8) {
-                if model.tab == "Files" || model.tab == "Clipboard" {
-                    SecondaryPageBadge(title:model.tab == "Files" ? "文件搜索" : "剪贴板历史",symbol:model.tab == "Files" ? "doc.text.magnifyingglass" : "list.clipboard")
+                if let badge = model.activeLauncherPage?.badge {
+                    SecondaryPageBadge(title: badge.title, symbol: badge.symbol)
                 } else {
                     expandingControl(application: true)
                 }
@@ -290,13 +326,7 @@ struct Launcher: View {
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: open ? 21 : 18))
         .glassEffectTransition(.identity)
     }
-    private struct MenuAction: Identifiable {
-        let id: String
-        let title: String
-        let icon: String
-        var keys: [String] = []
-        let perform: () -> Void
-    }
+    private typealias MenuAction = LauncherAction
     private var selectedEntry: Entry? {
         let results = rows
         return results.indices.contains(selection) ? results[selection] : nil
@@ -305,24 +335,14 @@ struct Launcher: View {
         if applicationMenu {
             return [
                 MenuAction(id: "about", title: "关于 Keylane", icon: "app.badge", perform: { model.openSettings(page: "about") }),
-                MenuAction(id: "settings", title: "设置…", icon: "gearshape", keys: ["⌘", ","], perform: { model.openSettings() }),
-                MenuAction(id: "clipboard", title: "剪贴板历史", icon: "list.clipboard", perform: { navigate("Clipboard") }),
-                MenuAction(id: "notes", title: "便笺", icon: "note", perform: { navigate("Notes") }),
+                MenuAction(id: "settings", title: "设置…", icon: "gearshape", keys: ["⌘", ","], perform: { model.runCommand(.init(rawValue: "settings"), origin: .menu) }),
+                MenuAction(id: "clipboard", title: "剪贴板历史", icon: "list.clipboard", perform: { model.runCommand(.init(rawValue: "clipboard"), origin: .menu) }),
+                MenuAction(id: "notes", title: "便笺", icon: "note", perform: { model.runCommand(.init(rawValue: "notes"), origin: .menu) }),
                 MenuAction(id: "hide", title: "隐藏 Keylane", icon: "rectangle.compress.vertical", keys: ["esc"], perform: { (NSApp.delegate as? Delegate)?.hideLauncher() }),
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
             ]
         }
-        if model.tab == "Clipboard" {
-            guard let item = model.clipboard.items.first(where: { $0.id == model.clipboard.selectedID }) else { return [] }
-            var items = [MenuAction(id: "copy-clip", title: "复制", icon: "doc.on.doc", keys: ["↩"], perform: { model.clipboard.copySelected() }),
-                MenuAction(id: "copy-plain-clip", title: "复制为纯文本", icon: "text.alignleft", perform: { model.clipboard.copySelected(plainText:true) }),
-                MenuAction(id: "paste-plain-clip", title: "粘贴为纯文本", icon: "text.insert", perform: { (NSApp.delegate as? Delegate)?.pasteClipboard(plainText:true) }),
-                MenuAction(id: "paste-clip", title: "粘贴到上个应用", icon: "doc.on.clipboard", keys: ["⌘", "↩"], perform: { (NSApp.delegate as? Delegate)?.pasteClipboard() }),
-                MenuAction(id: "pin-clip", title: item.pinned ? "取消置顶" : "置顶", icon: "pin", perform: { model.clipboard.pinSelected() })]
-            if item.kind == .image { items.append(MenuAction(id: "ocr-clip", title: "识别图片文字", icon: "text.viewfinder", perform: { model.clipboard.recognizeSelected() })) }
-            items.append(MenuAction(id: "delete-clip", title: "删除记录", icon: "trash", perform: { model.clipboard.removeSelected() }))
-            return items
-        }
+        if let actions = model.activeLauncherPage?.actions { return actions() }
         guard let row = selectedEntry else { return [] }
         var result = [MenuAction(id: "open", title: row.detail == "File" ? "打开文件" : (row.id.hasSuffix(".app") ? "打开应用程序" : "执行命令"), icon: "return", keys: ["↩"], perform: { model.perform(row) })]
         if row.id.hasSuffix(".app") {
@@ -357,7 +377,7 @@ struct Launcher: View {
     private func menuPanel(applicationMenu: Bool) -> some View {
         let items = filteredMenu(applicationMenu: applicationMenu)
         return VStack(alignment: .leading, spacing: 0) {
-            Text(applicationMenu ? "Keylane " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") : (model.tab == "Clipboard" ? "剪贴板操作" : (selectedEntry?.name ?? "操作")) + (submenu ? " › Finder" : "")).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
+            Text(applicationMenu ? "Keylane " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") : (model.activeLauncherPage?.actionTitle ?? selectedEntry?.name ?? "操作") + (submenu ? " › Finder" : "")).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 Button { closeMenus(); item.perform() } label: {
                     HStack(spacing: VisualStyle.actionSpacing) { Image(systemName: item.icon).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome).frame(width: VisualStyle.actionIconWidth, height: 20); Text(item.title).font(VisualStyle.rowText); Spacer(); HStack(spacing: 3) { ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) } } }.padding(.horizontal, 11).frame(height: 39).background(index == actionSelection ? Color.primary.opacity(contrast == .increased ? 0.24 : 0.12) : Color.clear, in: RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
@@ -378,8 +398,12 @@ struct Launcher: View {
         submenu = false; actions = !application && open; appMenu = application && open; actionQuery = ""; actionSelection = 0; focusToken += 1
     }
     private func closeMenus() { submenu = false; actions = false; appMenu = false; actionQuery = ""; focusToken += 1 }
-    private var moduleTitle: String { switch model.tab { case "Notes": return "便笺"; case "Clipboard": return "搜索剪贴板历史…"; case "Files": return "搜索文件…"; default: return "设置" } }
-    private var primaryTitle: String { if argumentTarget != nil { return "启动新实例" }; if model.tab == "Clipboard" { return model.clipboard.primaryAction == "paste" ? "粘贴" : "复制" }; return model.tab == "Commands" || model.tab == "Files" ? "打开" : "返回" }
+    private var moduleTitle: String { model.activeLauncherPage?.placeholder ?? "设置" }
+    private var primaryTitle: String {
+        if argumentTarget != nil { return "启动新实例" }
+        if let title = model.activeLauncherPage?.primaryTitle { return title() }
+        return model.pageID == .root || showsFileResults ? "打开" : "返回"
+    }
     private func argumentEditor(_ target: Entry) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack { backButton { argumentTarget = nil; focusToken += 1 }; Text(target.name).font(.title2.weight(.semibold)) }
@@ -389,32 +413,16 @@ struct Launcher: View {
             Spacer()
         }.padding(22).frame(maxWidth: .infinity, maxHeight: .infinity).task { await Task.yield(); guard !Task.isCancelled else { return }; argumentsFocused = true }
     }
-    @ViewBuilder private var moduleContent: some View {
-        switch model.tab {
-        case "Notes": HSplitView {
-            VStack { Button("新建便笺", systemImage: "plus") { model.newNote() }.padding(10); List(model.savedNotes.filter { model.query.isEmpty || $0.body.localizedCaseInsensitiveContains(model.query) }) { note in Button(note.title.isEmpty ? "未命名" : note.title) { model.noteID = note.id; model.notes = note.body }.buttonStyle(.plain) } }.frame(minWidth: 160, idealWidth: 190, maxWidth: 230)
-            TextEditor(text: $model.notes).font(.system(size: 15)).scrollContentBackground(.hidden).padding(12)
-        }
-        case "Clipboard": ClipboardHistoryView(controller:model.clipboard,query:model.query)
-        default: Form {
-            Section("剪贴板") { Button("剪贴板设置…") { model.openSettings(page: "clipboard") } }
-            Section("快捷链接") { TextField("网址", text: $model.link) }
-            Section("备份") { Button("导出便笺…") { model.exportData() } }
-            Section("键盘") { LabeledContent("显示 / 隐藏") { Keycaps(keys: model.bindings["launcher"]?.keycaps ?? []) }; HStack { Keycaps(keys: ["↑", "↓"]); Text("选择"); Keycap(text: "↩"); Text("打开"); Keycaps(keys: ["⌘", "K"]); Text("操作"); Keycap(text: "Esc"); Text("返回") } }
-        }.formStyle(.grouped).scrollContentBackground(.hidden)
-        }
-    }
-    private func navigate(_ tab: String) { closeMenus(); model.tab = tab }
     private func backButton(_ action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: "chevron.backward").font(.system(size: 15, weight: .medium)).frame(width: 24, height: 26) }
             .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.large).help("返回").accessibilityLabel("返回")
     }
     private func run() {
-        if (model.tab == "Files" || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
+        if (showsFileResults || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
         if let target = argumentTarget { do { let args = try ArgumentParser.parse(argumentText); model.launch(URL(fileURLWithPath: target.id), arguments: args) } catch { model.error = "参数引号或转义未完成。" }; return }
         if actions || appMenu { let items = filteredMenu(applicationMenu: appMenu); if items.indices.contains(actionSelection) { let item = items[actionSelection]; closeMenus(); item.perform() }; return }
-        if model.tab == "Clipboard" { if model.clipboard.primaryAction == "paste" { (NSApp.delegate as? Delegate)?.pasteClipboard() } else { model.clipboard.copySelected() }; return }
-        if model.tab != "Commands" && model.tab != "Files" { model.tab = "Commands"; return }; let list = rows; if list.indices.contains(selection) { model.perform(list[selection]) } }
+        if let submit = model.activeLauncherPage?.submit { submit(); return }
+        if model.pageID != .root && !showsFileResults { model.pageID = .root; return }; let list = rows; if list.indices.contains(selection) { model.perform(list[selection]) } }
 }
 
 /// Samples the scrolling content in this window, rather than the desktop behind it.

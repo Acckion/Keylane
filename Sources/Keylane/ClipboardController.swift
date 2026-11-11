@@ -46,9 +46,11 @@ final class ClipboardController: ObservableObject {
     private var pendingSearch: DispatchWorkItem?
     private var pendingReload: DispatchWorkItem?
     private var detailRequest: ClipboardPreviewRequest?
+    private var presentationActive: Bool
     private var lastMaintenance = Date()
     private var recognizing: Set<String> = []
-    init(directory: URL? = nil, board: NSPasteboard = .general, preferences: UserDefaults = .standard, startTimer: Bool = true) {
+    init(directory: URL? = nil, board: NSPasteboard = .general, preferences: UserDefaults = .standard, startTimer: Bool = true, presentationActive: Bool = true) {
+        self.presentationActive = presentationActive
         self.board = board; self.preferences = preferences; lastChange = board.changeCount
         // The old memory-only opt-in does not silently become permission to persist.
         captureEnabled = preferences.bool(forKey: "clipboardPersistentCapture")
@@ -64,27 +66,60 @@ final class ClipboardController: ObservableObject {
             do { self.store = try ClipboardStore(directory: root, limits: limits); try self.store?.prune(); DispatchQueue.main.async { self.reload() } }
             catch { self.report(error) }
         }
-        if startTimer { let timer = Timer(timeInterval:0.25,repeats:true) { [weak self] _ in self?.poll() }; self.timer = timer; RunLoop.main.add(timer,forMode:.common) }
+        if startTimer { startMonitoring() }
+    }
+
+    func startMonitoring() {
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.poll() }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func stopMonitoring() {
+        timer?.invalidate()
+        timer = nil
     }
     deinit { timer?.invalidate(); detailRequest?.cancel(); pendingReload?.cancel() }
     private func report(_ error: Error) { DispatchQueue.main.async { self.status = error.localizedDescription } }
     func feedback(_ text: String) { status = text }
     func search(_ value: String) {
+        presentationActive = true
         query = value; searching = true; pendingSearch?.cancel(); pendingReload?.cancel(); generation += 1
         let work = DispatchWorkItem { [weak self] in self?.reload() }; pendingSearch = work
         DispatchQueue.main.asyncAfter(deadline:.now()+0.06,execute:work)
     }
+    /// Closing the page ends preview work; capture and storage remain independent.
+    func endPresentation() {
+        guard presentationActive else { return }
+        presentationActive = false
+        generation += 1
+        pendingSearch?.cancel()
+        pendingReload?.cancel()
+        detailRequest?.cancel()
+        detailRequest = nil
+        detail = nil
+        thumbnail = nil
+        searching = false
+        loadingDetail = false
+        reload()
+    }
     func reload() {
         generation += 1; let ticket = generation; let value = query; let filter = ClipKind(rawValue: kind); let pins = pinnedOnly
+        let includeRecords = presentationActive
         pendingReload?.cancel()
         let task = DispatchWorkItem { [weak self] in
             guard let self, let store = self.store else { return }
             do {
-                let records = try store.list(query: value, kind: filter, pinnedOnly: pins); let count = try store.count(); let backups = try store.migrationBackups().count
+                let records = includeRecords ? try store.list(query: value, kind: filter, pinnedOnly: pins) : []; let count = try store.count(); let backups = try store.migrationBackups().count
                 DispatchQueue.main.async {
                     guard ticket == self.generation else { return }
+                    if self.total != count { self.total = count }
+                    if self.migrationBackupCount != backups { self.migrationBackupCount = backups }
+                    self.searching = false
+                    guard includeRecords, self.presentationActive else { return }
                     let previousItems = self.items
-                    if self.items != records { self.items = records }; if self.total != count { self.total = count }; if self.migrationBackupCount != backups { self.migrationBackupCount = backups }; self.searching = false
+                    if self.items != records { self.items = records }
                     let id = records.contains(where:{ $0.id == self.selectedID }) ? self.selectedID : records.first?.id
                     let item = records.first { $0.id == id }
                     let priorItem = previousItems.first { $0.id == id }
@@ -104,6 +139,7 @@ final class ClipboardController: ObservableObject {
         worker.async(execute: task)
     }
     func select(_ id: String?, force: Bool = false) {
+        guard presentationActive else { return }
         if !force, id == selectedID {
             if loadingDetail || (detail != nil && detail?.item == items.first(where: { $0.id == id })) { return }
         }

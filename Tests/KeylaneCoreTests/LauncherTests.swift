@@ -33,6 +33,19 @@ final class LauncherTests: XCTestCase {
         XCTAssertNil(SearchRanker.score("AppCleaner", query: "系统设置"))
         XCTAssertNil(SearchRanker.score("AppCleaner", query: "剪贴板"))
     }
+    func testLauncherRankingUsesTypedCandidatesAndUserPreferences() throws {
+        let ranking = LauncherSearchRanking(query: "  编辑器 ", aliases: ["shortcut": "编辑器"],
+                                           favorites: ["shortcut"], usage: ["shortcut": 7])
+        let shortcut = try XCTUnwrap(ranking.match(id: "shortcut", title: "Utility"))
+        let application = try XCTUnwrap(ranking.match(id: "app", title: "Editor", names: ["编辑器"]))
+        let file = try XCTUnwrap(ranking.match(id: "file", title: "编辑器.txt", kind: .file))
+        let calculator = try XCTUnwrap(ranking.match(id: "expression", title: "42", kind: .calculator))
+        XCTAssertEqual([shortcut.score, application.score, file.score, calculator.score], [1500, 1000, 800, 2000])
+        XCTAssertTrue(shortcut.favorite)
+        XCTAssertEqual(shortcut.uses, 7)
+        XCTAssertNil(ranking.match(id: "unrelated", title: "Calendar"))
+    }
+
     func testRankingKeepsMatchQualityAheadOfFavoritesAndFrequency() {
         let exact = SearchResultRank(score:1000,favorite:false,uses:0,title:"A",id:"1")
         let fuzzy = SearchResultRank(score:300,favorite:true,uses:999,title:"B",id:"2")
