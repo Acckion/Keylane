@@ -191,8 +191,8 @@ enum NavigationLauncherModules {
         page.resume = library.refresh
         page.queryChanged = library.search
         page.leave = library.stop
-        page.move = { library.move($0 * library.columns) }
-        page.moveHorizontal = library.move
+        page.move = { library.move($0, vertical: true) }
+        page.moveHorizontal = { library.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.submit = { [weak model] in
             guard let model, let item = library.selected else { return }

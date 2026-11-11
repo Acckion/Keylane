@@ -195,15 +195,8 @@ final class ScreenshotLibrary: ObservableObject {
         }
     }
 
-    func move(_ offset: Int) {
-        let index = results.firstIndex { $0.id == selection?.itemID } ?? 0
-        guard !results.isEmpty else { return }
-        let target = NavigationBounds.move(index, by: offset, count: results.count)
-        selection = .init(sectionID: Self.section, itemID: results[target].id)
-    }
-
-    func select(_ item: ScreenshotMedia) {
-        selection = .init(sectionID: Self.section, itemID: item.id)
+    func move(_ delta: Int, vertical: Bool) {
+        selection = selection?.moving(delta, vertical: vertical, columns: columns, in: sections)
     }
 
     var sections: [ResultGridSection<ScreenshotMedia>] {
@@ -213,8 +206,7 @@ final class ScreenshotLibrary: ObservableObject {
 
     private func publish(_ results: [ScreenshotMedia]) {
         self.results = results
-        if let selection, results.contains(where: { $0.id == selection.itemID }) { return }
-        selection = results.first.map { .init(sectionID: Self.section, itemID: $0.id) }
+        selection = .retaining(selection, in: sections)
     }
 
     func latest(_ completion: @escaping (ScreenshotMedia?) -> Void) {

@@ -101,26 +101,7 @@ final class EmojiSearchController: ObservableObject {
     }
 
     func move(_ delta: Int, vertical: Bool) {
-        guard let selection,
-              let sectionIndex = sections.firstIndex(where: { $0.id == selection.sectionID }),
-              let index = sections[sectionIndex].items.firstIndex(where: { $0.id == selection.itemID }) else { return }
-        let section = sections[sectionIndex]
-        let columns = Self.columnCount
-        let destination = index + (vertical ? columns : 1) * delta
-        if section.items.indices.contains(destination) {
-            select(section, index: destination)
-        } else if vertical && delta > 0 && (index / columns + 1) * columns < section.items.count {
-            select(section, index: section.items.count - 1)
-        } else if sections.indices.contains(sectionIndex + delta) {
-            let next = sections[sectionIndex + delta]
-            let start = delta < 0 ? next.items.count - 1 : 0
-            let target = vertical ? (start / columns) * columns + index % columns : start
-            select(next, index: min(target, next.items.count - 1))
-        }
-    }
-
-    private func select(_ section: ResultGridSection<EmojiItem>, index: Int) {
-        selection = .init(sectionID: section.id, itemID: section.items[index].id)
+        selection = selection?.moving(delta, vertical: vertical, columns: Self.columnCount, in: sections)
     }
 
     private func refresh(resetSelection: Bool) {
@@ -161,12 +142,7 @@ final class EmojiSearchController: ObservableObject {
             if !ranked.isEmpty { updated.append(.init(id: "results", title: EmojiCatalog.label("搜索结果", "Results"), items: ranked)) }
         }
         sections = updated
-        if !resetSelection, let selection,
-           updated.first(where: { $0.id == selection.sectionID })?.items.contains(where: { $0.id == selection.itemID }) == true {
-            return
-        }
-        if let first = updated.first { select(first, index: 0) }
-        else { selection = nil }
+        selection = .retaining(resetSelection ? nil : selection, in: updated)
     }
 }
 

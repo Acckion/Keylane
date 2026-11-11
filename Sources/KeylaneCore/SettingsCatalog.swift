@@ -67,4 +67,32 @@ public struct SettingsItem: Identifiable, Equatable {
 }
 public enum NavigationBounds {
     public static func move(_ index: Int, by delta: Int, count: Int) -> Int { min(max(0, index + delta), max(0, count - 1)) }
+
+    /// Keeps the column when crossing rows or sections and clamps only on a short row.
+    public static func moveGrid(section: Int, item: Int, by delta: Int, vertical: Bool,
+                                columns: Int, counts: [Int]) -> (section: Int, item: Int)? {
+        guard counts.indices.contains(section), (0..<counts[section]).contains(item),
+              columns > 0, delta == -1 || delta == 1 else { return nil }
+        let count = counts[section]
+        if vertical {
+            let row = item / columns + delta
+            if row >= 0 && row <= (count - 1) / columns {
+                return (section, min(row * columns + item % columns, count - 1))
+            }
+        } else if (0..<count).contains(item + delta) {
+            return (section, item + delta)
+        }
+
+        var next = section + delta
+        while counts.indices.contains(next) {
+            let nextCount = counts[next]
+            if nextCount > 0 {
+                let boundary = delta < 0 ? nextCount - 1 : 0
+                let target = vertical ? (boundary / columns) * columns + item % columns : boundary
+                return (next, min(target, nextCount - 1))
+            }
+            next += delta
+        }
+        return (section, item)
+    }
 }
