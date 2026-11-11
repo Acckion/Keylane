@@ -381,7 +381,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         glass.layer?.cornerCurve = .continuous
         glass.layer?.masksToBounds = true
         glass.layer?.borderWidth = 0
-        if #available(macOS 27.0, *) { glass.effectIsInteractive = false }
+        // Detect the macOS 27 setter at runtime so the macOS 26 SDK can build this.
+        if #available(macOS 27.0, *),
+           glass.responds(to: NSSelectorFromString("setEffectIsInteractive:")) {
+            glass.setValue(false, forKey: "effectIsInteractive")
+        }
         glass.contentView = NSHostingView(rootView: Launcher(model: model))
         window.contentView = glass; window.isReleasedWhenClosed = false; window.center()
         window.delegate = self
