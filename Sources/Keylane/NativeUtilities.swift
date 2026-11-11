@@ -210,14 +210,14 @@ struct ContactSummary: Identifiable, Sendable {
 }
 
 final class ContactsController: ObservableObject {
-    @Published private(set) var access = CNContactStore.authorizationStatus(for: .contacts)
+    @Published private(set) var access: CNAuthorizationStatus = .notDetermined
     @Published private(set) var visible: [ContactSummary] = []
     @Published private(set) var selectedID: String?
     @Published private(set) var loading = false
     @Published private(set) var requesting = false
     @Published private(set) var error = ""
     @Published var query = "" { didSet { updateResults() } }
-    private let worker = DispatchQueue(label: "org.keylane.contacts", qos: .userInitiated)
+    private var fetch: Task<Void, Never>?
     private var contacts: [ContactSummary] = []
     private var observation: NSObjectProtocol?
     private var generation = 0
@@ -236,6 +236,8 @@ final class ContactsController: ObservableObject {
     func stop() {
         active = false
         generation += 1
+        fetch?.cancel()
+        fetch = nil
         if let observation { NotificationCenter.default.removeObserver(observation) }
         observation = nil
         contacts = []
@@ -245,7 +247,7 @@ final class ContactsController: ObservableObject {
     }
 
     func requestAccess() {
-        guard access == .notDetermined, !requesting else { return }
+        guard active, access == .notDetermined, !requesting else { return }
         requesting = true
         CNContactStore().requestAccess(for: .contacts) { [weak self] _, failure in
             DispatchQueue.main.async {
@@ -261,26 +263,36 @@ final class ContactsController: ObservableObject {
         access = CNContactStore.authorizationStatus(for: .contacts)
         generation += 1
         let ticket = generation
+        fetch?.cancel()
+        fetch = nil
         guard canRead else {
             contacts = []; updateResults(); loading = false
             return
         }
         loading = true
         error = ""
-        worker.async { [weak self] in
+        fetch = Task.detached(priority: .userInitiated) { [weak self] in
+            guard !Task.isCancelled else { return }
             let keys: [CNKeyDescriptor] = [CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
                 CNContactNicknameKey as NSString, CNContactOrganizationNameKey as NSString,
                 CNContactPhoneNumbersKey as NSString, CNContactEmailAddressesKey as NSString]
             let request = CNContactFetchRequest(keysToFetch: keys)
             let result = Result { () -> [ContactSummary] in
                 var rows: [ContactSummary] = []
-                try CNContactStore().enumerateContacts(with: request) { contact, _ in
-                    rows.append(ContactSummary(contact: contact))
+                try CNContactStore().enumerateContacts(with: request) { contact, stop in
+                    if Task.isCancelled {
+                        stop.pointee = true
+                    } else {
+                        rows.append(ContactSummary(contact: contact))
+                    }
                 }
+                guard !Task.isCancelled else { return [] }
                 return rows.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             }
+            guard !Task.isCancelled else { return }
             DispatchQueue.main.async {
                 guard let self, self.generation == ticket else { return }
+                self.fetch = nil
                 self.loading = false
                 switch result {
                 case .success(let rows):

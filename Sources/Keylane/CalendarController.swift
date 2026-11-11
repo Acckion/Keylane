@@ -30,8 +30,8 @@ enum CalendarAccess: String {
 /// No calendar data is written to disk, uploaded, or modified through EventKit.
 final class CalendarController: ObservableObject {
     @Published var enabled: Bool { didSet { preferences.set(enabled, forKey: "calendar.enabled"); if started { configure() } } }
-    @Published var selectedDate = Date() { didSet { refresh() } }
-    @Published var query = "" { didSet { maintainSelection() } }
+    @Published var selectedDate = Date() { didSet { if presenting { refresh() } } }
+    @Published private(set) var query = "" { didSet { maintainSelection() } }
     @Published var selectedCalendarIDs: Set<String>? { didSet { preferences.set(selectedCalendarIDs.map { Array($0) }, forKey: "calendar.selectedIDs"); refresh() } }
     @Published var menuDisplay: String { didSet { preferences.set(menuDisplay, forKey: "calendar.menuDisplay"); updateMenuBar() } }
     @Published private(set) var access: CalendarAccess = .notRequested
@@ -55,18 +55,22 @@ final class CalendarController: ObservableObject {
     private var observers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var started = false
+    private var presenting = false
     private var dismissedUntil: [String: Date] = [:]
     init(registry: MenuBarRegistry, preferences: UserDefaults = .standard) {
         self.registry = registry; self.preferences = preferences
         enabled = preferences.object(forKey: "calendar.enabled") as? Bool ?? true
         menuDisplay = preferences.string(forKey: "calendar.menuDisplay") ?? "next"
         selectedCalendarIDs = preferences.stringArray(forKey: "calendar.selectedIDs").map(Set.init)
-        access = .current
     }
     var filteredEvents: [AgendaEvent] { AgendaPolicy.matching(events, query: query) }
     var selectedEvent: AgendaEvent? { filteredEvents.first { $0.id == selectedID } }
     func start() {
-        guard !started else { return }; started = true
+        guard !started else { return }
+        started = true
+        configure()
+    }
+    private func startObserving() {
         let center = NotificationCenter.default
         for name in [Notification.Name.EKEventStoreChanged, .NSCalendarDayChanged, NSNotification.Name.NSSystemTimeZoneDidChange] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refresh() })
@@ -75,23 +79,47 @@ final class CalendarController: ObservableObject {
             workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refresh() })
         }
         observers.append(center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.refresh() })
-        configure()
     }
     func stop() {
         generation += 1; started = false; pending?.cancel(); timer?.invalidate(); timer = nil
+        loading = false
+        endPresentation()
+        stopObserving()
+        registry.unregister(owner: "calendar")
+    }
+    private func stopObserving() {
         observers.forEach(NotificationCenter.default.removeObserver); observers = []
         workspaceObservers.forEach(NSWorkspace.shared.notificationCenter.removeObserver); workspaceObservers = []
-        registry.unregister(owner: "calendar")
     }
     private func configure() {
         timer?.invalidate(); timer = nil
         if enabled {
+            if observers.isEmpty { startObserving() }
             registry.register(id: "calendar.agenda", owner: "calendar", title: "日历", defaultVisible: false,
                               presentation: .init(symbol: "calendar", toolTip: "日历")) { [weak self] in self?.menuCommands() ?? [] }
             let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.refresh() }
             self.timer = timer; RunLoop.main.add(timer, forMode: .common)
-        } else { registry.unregister(owner: "calendar") }
+        } else {
+            stopObserving()
+            registry.unregister(owner: "calendar")
+        }
         refresh()
+    }
+    func updatePresentation(query: String) {
+        if !presenting {
+            presenting = true
+            refresh()
+        }
+        if self.query != query { self.query = query }
+    }
+    func endPresentation() {
+        guard presenting else { return }
+        presenting = false
+        let interruptedRefresh = loading
+        events = []
+        selectedID = nil
+        if !query.isEmpty { query = "" }
+        if interruptedRefresh { refresh() }
     }
     func requestAccess() {
         guard enabled, !requesting else { return }
@@ -107,57 +135,58 @@ final class CalendarController: ObservableObject {
     }
     func refresh() {
         precondition(Thread.isMainThread)
+        guard started || presenting else { return }
         generation += 1; let ticket = generation; pending?.cancel()
         access = .current
         guard enabled, access == .allowed else {
             events = []; upcoming = []; calendars = []; selectedID = nil; loading = false; lastUpdated = nil; updateMenuBar(); writeAcceptanceReport(); return
         }
-        loading = true
+        let includesDay = presenting
+        loading = includesDay
         let date = selectedDate; let selected = selectedCalendarIDs; let now = Date(); let calendar = Calendar.current
         let job = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.worker.async {
-                let store = self.eventStore
-                let all = store.calendars(for: .event)
-                let choices = all.map { CalendarChoice(id: $0.calendarIdentifier, title: $0.title, source: $0.source.title) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-                let targets = selected.map { ids in all.filter { ids.contains($0.calendarIdentifier) } } ?? all
-                let dayStart = calendar.startOfDay(for: date)
-                let today = calendar.startOfDay(for: now)
-                guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart),
-                      let weekEnd = calendar.date(byAdding: .day, value: 7, to: today) else {
-                    DispatchQueue.main.async {
-                        guard ticket == self.generation else { return }
-                        self.loading = false
-                        self.error = "无法读取这个日期的日程。"
-                    }
-                    return
-                }
-                func fetch(_ start: Date, _ end: Date) -> [AgendaEvent] {
-                    guard !targets.isEmpty else { return [] }
-                    let predicate = store.predicateForEvents(withStart: start, end: end, calendars: targets)
-                    return store.events(matching: predicate).filter { $0.status != .canceled }.map { event in
-                        AgendaEvent(id: (event.eventIdentifier ?? event.calendarItemIdentifier) + ":" + String(event.startDate.timeIntervalSince1970),
-                                    calendarID: event.calendar.calendarIdentifier, calendarTitle: event.calendar.title,
-                                    title: event.title?.isEmpty == false ? String(event.title.prefix(1000)) : "无标题日程",
-                                    start: event.startDate, end: event.endDate, allDay: event.isAllDay,
-                                    location: String((event.location ?? "").prefix(2000)), notes: String((event.notes ?? "").prefix(8000)),
-                                    calendarColor: Self.calendarColor(event.calendar),
-                                    accepted: event.attendees?.contains { $0.isCurrentUser && $0.participantStatus == .accepted } ?? false)
-                    }
-                }
-                let daily = AgendaPolicy.day(fetch(dayStart, dayEnd), date: date, calendar: calendar)
-                let future = AgendaPolicy.upcoming(fetch(today, weekEnd), now: now)
+            let store = self.eventStore
+            let all = store.calendars(for: .event)
+            let choices = all.map { CalendarChoice(id: $0.calendarIdentifier, title: $0.title, source: $0.source.title) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            let targets = selected.map { ids in all.filter { ids.contains($0.calendarIdentifier) } } ?? all
+            let dayStart = calendar.startOfDay(for: date)
+            let today = calendar.startOfDay(for: now)
+            guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart),
+                  let weekEnd = calendar.date(byAdding: .day, value: 7, to: today) else {
                 DispatchQueue.main.async {
-                    guard ticket == self.generation, self.enabled else { return }
-                    guard CalendarAccess.current == .allowed else { self.refresh(); return }
-                    if self.calendars != choices { self.calendars = choices }
-                    if self.events != daily { self.events = daily }
-                    if self.upcoming != future { self.upcoming = future }
-                    self.loading = false; self.error = ""; self.lastUpdated = Date(); self.maintainSelection(); self.updateMenuBar(); self.writeAcceptanceReport()
+                    guard ticket == self.generation else { return }
+                    self.loading = false
+                    self.error = "无法读取这个日期的日程。"
+                }
+                return
+            }
+            func fetch(_ start: Date, _ end: Date) -> [AgendaEvent] {
+                guard !targets.isEmpty else { return [] }
+                let predicate = store.predicateForEvents(withStart: start, end: end, calendars: targets)
+                return store.events(matching: predicate).filter { $0.status != .canceled }.map { event in
+                    AgendaEvent(id: (event.eventIdentifier ?? event.calendarItemIdentifier) + ":" + String(event.startDate.timeIntervalSince1970),
+                                calendarID: event.calendar.calendarIdentifier, calendarTitle: event.calendar.title,
+                                title: event.title?.isEmpty == false ? String(event.title.prefix(1000)) : "无标题日程",
+                                start: event.startDate, end: event.endDate, allDay: event.isAllDay,
+                                location: String((event.location ?? "").prefix(2000)), notes: String((event.notes ?? "").prefix(8000)),
+                                calendarColor: Self.calendarColor(event.calendar),
+                                accepted: event.attendees?.contains { $0.isCurrentUser && $0.participantStatus == .accepted } ?? false)
                 }
             }
+            let daily = includesDay ? AgendaPolicy.day(fetch(dayStart, dayEnd), date: date, calendar: calendar) : []
+            let future = AgendaPolicy.upcoming(fetch(today, weekEnd), now: now)
+            DispatchQueue.main.async {
+                guard ticket == self.generation, self.enabled else { return }
+                guard CalendarAccess.current == .allowed else { self.refresh(); return }
+                if self.calendars != choices { self.calendars = choices }
+                if self.events != daily { self.events = daily }
+                if self.upcoming != future { self.upcoming = future }
+                self.loading = false; self.error = ""; self.lastUpdated = Date(); self.maintainSelection(); self.updateMenuBar(); self.writeAcceptanceReport()
+            }
         }
-        pending = job; DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: job)
+        pending = job
+        worker.asyncAfter(deadline: .now() + 0.12, execute: job)
         updateMenuBar()
     }
     func select(_ id: String?) { selectedID = id }

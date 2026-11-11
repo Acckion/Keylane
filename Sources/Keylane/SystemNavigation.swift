@@ -67,11 +67,7 @@ final class SystemNavigation {
         let pid = app.processIdentifier
         queue.async {
             if self.observedPID != pid {
-                if let observer = self.observer {
-                    CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
-                }
-                self.observer = nil
-                self.observedPID = nil
+                self.removeFocusObserver()
                 var newObserver: AXObserver?
                 if AXObserverCreate(pid, { _, element, _, context in
                     guard let context else { return }
@@ -92,6 +88,21 @@ final class SystemNavigation {
             }
             self.recordFocus(self.applicationElement(pid), pid: pid)
         }
+    }
+
+    func stopObservingFocus() {
+        queue.async {
+            self.removeFocusObserver()
+            self.recent.removeAll()
+        }
+    }
+
+    private func removeFocusObserver() {
+        if let observer {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
+        }
+        observer = nil
+        observedPID = nil
     }
 
     private func recordFocus(_ application: AXUIElement, pid: pid_t) {

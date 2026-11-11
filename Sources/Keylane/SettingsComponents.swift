@@ -1,4 +1,5 @@
 import SwiftUI
+import KeylaneCore
 
 /// Shared surfaces for all settings pages; colors follow the system appearance.
 struct SettingsSurface: ViewModifier {
@@ -11,15 +12,15 @@ struct SettingsSurface: ViewModifier {
 
 struct SettingsIcon: View {
     let symbol: String
-    var large = false
+    var size: CGFloat = 24
 
     var body: some View {
         Image(systemName: symbol)
             .symbolRenderingMode(.monochrome)
-            .font(.system(size: large ? 28 : 14, weight: .medium))
+            .font(.system(size: 14 * size / 24, weight: .medium))
             .foregroundStyle(.white)
-            .frame(width: large ? 56 : 24, height: large ? 56 : 24)
-            .background(.gray.gradient, in: RoundedRectangle(cornerRadius: large ? 13 : 6))
+            .frame(width: size, height: size)
+            .background(.gray.gradient, in: RoundedRectangle(cornerRadius: size / 4))
             .accessibilityHidden(true)
     }
 }
@@ -34,7 +35,7 @@ struct SettingsPageHeader: View {
             if symbol == "calendar" {
                 CalendarSettingsIcon(size: 36)
             } else {
-                SettingsIcon(symbol: symbol).scaleEffect(1.4).frame(width: 36, height: 36)
+                SettingsIcon(symbol: symbol, size: 36)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.system(size: 21, weight: .semibold))
@@ -165,43 +166,23 @@ struct SettingsSwitchStyle: ToggleStyle {
 
 struct SettingsPicker<Selection: Hashable, Options: View>: View {
     let title: String
+    let detail: String?
     @Binding var selection: Selection
     let options: Options
 
-    init(_ title: String, selection: Binding<Selection>, @ViewBuilder content: () -> Options) {
+    init(_ title: String, detail: String? = nil, selection: Binding<Selection>, @ViewBuilder content: () -> Options) {
         self.title = title
+        self.detail = detail
         self._selection = selection
         self.options = content()
     }
 
     var body: some View {
-        SettingsRow(title) {
+        SettingsRow(title, detail: detail) {
             Picker(title, selection: $selection) { options }
                 .labelsHidden()
                 .pickerStyle(.menu)
         }
-    }
-}
-
-struct SettingsOwnRowHeight: LayoutValueKey {
-    static let defaultValue = false
-}
-
-struct SettingsCompactList<Item, ID: Hashable, Row: View>: View {
-    let items: [Item]
-    let id: KeyPath<Item, ID>
-    @ViewBuilder let row: (Item) -> Row
-
-    var body: some View {
-        SettingsRowsLayout(compact: true) {
-            ForEach(items, id: id) { item in
-                if item[keyPath: id] != items.first?[keyPath: id] {
-                    Divider().opacity(0.4)
-                }
-                row(item)
-            }
-        }
-        .layoutValue(key: SettingsOwnRowHeight.self, value: true)
     }
 }
 
@@ -212,7 +193,7 @@ struct SettingsRowsLayout: Layout {
     var compact = false
     private func height(_ view: LayoutSubview, width: CGFloat?) -> CGFloat {
         let contentHeight = view.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
-        if view[SettingsOwnRowHeight.self] || contentHeight <= 1 { return contentHeight }
+        if contentHeight <= 1 { return contentHeight }
         return compact ? max(32, contentHeight + 8) : max(Self.rowHeight, contentHeight + 16)
     }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
@@ -229,26 +210,17 @@ struct SettingsRowsLayout: Layout {
 }
 struct SettingsRows<Content: View>: View {
     let content: Content
-    let compact: Bool
-    init(compact: Bool = false, @ViewBuilder content: () -> Content) {
-        self.compact = compact
-        self.content = content()
-    }
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
     var body: some View {
-        SettingsRowsLayout(compact: compact) { content }.padding(.horizontal, 18)
+        SettingsRowsLayout { content }.padding(.horizontal, 18)
     }
 }
 struct SettingsGroup<Content: View>: View {
     let title: String?
-    let footer: String?
     let content: Content
 
-    let compact: Bool
-
-    init(_ title: String? = nil, footer: String? = nil, compact: Bool = false, @ViewBuilder content: () -> Content) {
-        self.compact = compact
+    init(_ title: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
-        self.footer = footer
         self.content = content()
     }
 
@@ -258,12 +230,140 @@ struct SettingsGroup<Content: View>: View {
                 Text(title).font(.headline).padding(.horizontal, 18)
                     .accessibilityAddTraits(.isHeader)
             }
-            SettingsRows(compact: compact) { content }.modifier(SettingsSurface())
-            if let footer {
-                Text(footer).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 18)
+            SettingsRows { content }.modifier(SettingsSurface())
+        }
+    }
+}
+
+/// Standard card surfaces using existing settings layout metrics.
+struct SettingsCard<Content: View>: View {
+    enum Layout {
+        case flush
+        case padded
+    }
+
+    var layout: Layout = .padded
+    var anchor: SettingsItem?
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if let anchor { surface.id(anchor.id) }
+        else { surface }
+    }
+
+    @ViewBuilder private var surface: some View {
+        switch layout {
+        case .flush:
+            content().frame(maxWidth: .infinity, alignment: .leading).modifier(SettingsSurface())
+        case .padded:
+            VStack(alignment: .leading, spacing: 11, content: content)
+                .padding(14).modifier(SettingsSurface())
+        }
+    }
+}
+
+struct SettingsPageSections<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18, content: content)
+    }
+}
+
+struct SettingsSectionTitle: View {
+    let title: String
+
+    var body: some View {
+        Text(title).font(.system(size: 15, weight: .medium))
+            .padding(.leading, 14).padding(.top, 10)
+    }
+}
+
+struct SettingsCaption: View {
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.system(size: 15, weight: .medium))
+            Text(detail).font(.system(size: 13)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+struct SettingsAddFolderButton: View {
+    var symbolFont: Font?
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) { Image(systemName: "plus").font(symbolFont) }
+            .buttonStyle(ContentActionButtonStyle()).buttonBorderShape(.circle).controlSize(.small)
+            .help("添加搜索文件夹")
+    }
+}
+
+
+extension View {
+    func settingsAnchor(_ item: SettingsItem) -> some View { id(item.id) }
+}
+
+
+struct SettingsCompactList<Item, ID: Hashable, Row: View>: View {
+    let items: [Item]
+    let id: KeyPath<Item, ID>
+    @ViewBuilder let row: (Item) -> Row
+
+    var body: some View {
+        let firstID = items.first.map { $0[keyPath: id] }
+        SettingsRowsLayout(compact: true) {
+            ForEach(items, id: id) { item in
+                if item[keyPath: id] != firstID { Divider().opacity(0.4) }
+                row(item)
             }
+        }
+    }
+}
+
+struct SettingsFolderRow<Actions: View>: View {
+    let path: String
+    var selectable = false
+    var showsActionsOnHover = false
+    @ViewBuilder let actions: () -> Actions
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "folder").font(VisualStyle.actionSymbol).frame(width: 18)
+            Group {
+                if selectable { pathLabel.textSelection(.enabled) }
+                else { pathLabel }
+            }
+            Spacer(minLength: 4)
+            actions().opacity(!showsActionsOnHover || hovering ? 1 : 0)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }.help(path)
+    }
+
+    private var pathLabel: some View {
+        Text((path as NSString).abbreviatingWithTildeInPath)
+            .font(.system(size: 12)).foregroundStyle(.secondary)
+            .lineLimit(selectable ? 2 : 1).truncationMode(.middle)
+    }
+}
+
+
+/// Shortcut-only settings share the same label and recorder alignment.
+struct SettingsShortcutBindingRow: View {
+    let title: String
+    let shortcut: Shortcut?
+    var symbol = "keyboard"
+    let change: (Shortcut?) -> Void
+
+    var body: some View {
+        SettingsRow(title) {
+            ShortcutRecorder(shortcut: shortcut, title: title, icon: AnyView(Image(systemName: symbol)), changed: change)
         }
     }
 }

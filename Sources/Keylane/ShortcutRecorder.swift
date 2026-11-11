@@ -4,7 +4,6 @@ import KeylaneCore
 
 struct ShortcutRecorder: View {
     let shortcut: Shortcut?
-    var compact = false
     var title = "快捷键"
     var icon: AnyView = AnyView(Image(systemName: "keyboard"))
     let changed: (Shortcut?) -> Void
@@ -54,7 +53,7 @@ struct ShortcutRecorder: View {
     }
     @ViewBuilder private var recorderLabel: some View {
         if let shortcut { Keycaps(keys: shortcut.keycaps) }
-        else { Text(compact ? "添加快捷键" : "录制快捷键") }
+        else { Text("添加快捷键") }
     }
 
     private var recordingPanel: some View {
