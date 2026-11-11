@@ -16,6 +16,7 @@ struct Keycap: View {
         case "⌫", "delete": return "delete.left"
         case "⇥", "tab": return "arrow.right.to.line"
         case "caps lock": return "capslock"
+        case "hyper key": return "sparkle"
         case "←": return "arrow.left"
         case "→", "›": return "arrow.right"
         case "↑": return "arrow.up"
@@ -35,8 +36,24 @@ struct Keycap: View {
 }
 struct Keycaps: View {
     let keys: [String]
+    @AppStorage("hyperkey") private var hyperEnabled = false
+    @AppStorage("hyperIncludesShift") private var includesShift = true
+    @AppStorage("replaceHyperKeycaps") private var replacesHyperKeycaps = false
+
+    private var visibleKeys: [String] {
+        guard hyperEnabled, replacesHyperKeycaps else { return keys }
+        let modifiers: Set<String> = ["⌃", "⌥", "⇧", "⌘"]
+        let leading = keys.prefix(while: modifiers.contains)
+        let combination: Set<String> = includesShift ? modifiers : ["⌃", "⌥", "⌘"]
+        guard leading.count == combination.count, Set(leading) == combination else { return keys }
+        return ["Hyper Key"] + keys.dropFirst(leading.count)
+    }
+
     var body: some View {
-        HStack(spacing: 3) { ForEach(Array(keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) } }
-            .fixedSize().accessibilityElement(children: .ignore).accessibilityLabel(keys.joined(separator: " + "))
+        let visible = visibleKeys
+        return HStack(spacing: 3) {
+            ForEach(Array(visible.enumerated()), id: \.offset) { _, key in Keycap(text: key) }
+        }
+        .fixedSize().accessibilityElement(children: .ignore).accessibilityLabel(visible.joined(separator: " + "))
     }
 }

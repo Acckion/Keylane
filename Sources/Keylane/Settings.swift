@@ -33,6 +33,7 @@ struct SettingsView: View {
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .preferredColorScheme(state.colorScheme)
+        .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
         .onAppear { selected = state.page; history = [selected]; historyIndex = 0 }
         .onChange(of: selected) { _, page in
             if history[historyIndex] != page { history = Array(history.prefix(historyIndex + 1)); history.append(page); historyIndex = history.count - 1 }
@@ -48,8 +49,8 @@ struct SettingsView: View {
 
             ToolbarItemGroup(placement: .navigation) {
                 ControlGroup {
-                    Button { historyIndex -= 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.backward") }.disabled(historyIndex == 0).help("后退")
-                    Button { historyIndex += 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.forward") }.disabled(historyIndex == history.count - 1).help("前进")
+                    Button { historyIndex -= 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.backward") }.keyboardShortcut(state.navigationKeys.back, modifiers: .command).disabled(historyIndex == 0).help("后退")
+                    Button { historyIndex += 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.forward") }.keyboardShortcut(state.navigationKeys.forward, modifiers: .command).disabled(historyIndex == history.count - 1).help("前进")
                 }.controlGroupStyle(.navigation)
             }
 
@@ -154,7 +155,6 @@ enum LauncherSettingsContent {
     @ViewBuilder static func general(_ model: Model) -> some View {
         LoginPreferences(model: model)
         LauncherAppearancePreferences(model: model)
-        KeyboardPreferences(model: model).settingsAnchor(.keyboard)
     }
 
     @ViewBuilder static func applications(_ model: Model) -> some View {

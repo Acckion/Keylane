@@ -279,7 +279,7 @@ struct Launcher: View {
         if submenu != nil { dismissSubmenu(); return }
         if argumentTarget != nil { argumentTarget = nil; focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
-        else if model.pageID != .root { model.pageID = .root }
+        else if model.pageID != .root && model.launcherEscapeBehavior == .backOrClose { model.pageID = .root }
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
     }
 
@@ -571,9 +571,7 @@ struct Launcher: View {
                                 LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
                                                 enabled: item.enabled, destructive: item.destructive,
                                                 activate: { activate(item) }, highlight: { actionSelection = index }) {
-                                    HStack(spacing: 3) {
-                                        ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) }
-                                    }
+                                    if !item.keys.isEmpty { Keycaps(keys: item.keys) }
                                 }
                                 .padding(.horizontal, 8)
                                 .id(item.id)

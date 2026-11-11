@@ -57,6 +57,21 @@ final class Model: ObservableObject {
     @Published var usage = UserDefaults.standard.dictionary(forKey: "usage") as? [String:Int] ?? [:]
     @Published var bindings: [String:Shortcut] = (UserDefaults.standard.data(forKey: "shortcuts").flatMap { try? JSONDecoder().decode([String:Shortcut].self, from: $0) }) ?? ["launcher": .launcher]
     @Published var navigation = UserDefaults.standard.string(forKey: "navigation") ?? "arrows" { didSet { UserDefaults.standard.set(navigation, forKey: "navigation") } }
+    @Published var launcherEscapeBehavior = LauncherEscapeBehavior(rawValue: UserDefaults.standard.string(forKey: "launcherEscapeBehavior") ?? "") ?? .backOrClose {
+        didSet { UserDefaults.standard.set(launcherEscapeBehavior.rawValue, forKey: "launcherEscapeBehavior") }
+    }
+    @Published var escapeClosesUtilityWindows = UserDefaults.standard.object(forKey: "escapeClosesUtilityWindows") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(escapeClosesUtilityWindows, forKey: "escapeClosesUtilityWindows") }
+    }
+    @Published var pageNavigationKeys = PageNavigationKeys(rawValue: UserDefaults.standard.string(forKey: "pageNavigationKeys") ?? "") ?? .brackets {
+        didSet { UserDefaults.standard.set(pageNavigationKeys.rawValue, forKey: "pageNavigationKeys") }
+    }
+    @Published var hyperIncludesShift = UserDefaults.standard.object(forKey: "hyperIncludesShift") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(hyperIncludesShift, forKey: "hyperIncludesShift") }
+    }
+    @Published var replaceHyperKeycaps = UserDefaults.standard.bool(forKey: "replaceHyperKeycaps") {
+        didSet { UserDefaults.standard.set(replaceHyperKeycaps, forKey: "replaceHyperKeycaps") }
+    }
     @Published var doubleTap = UserDefaults.standard.string(forKey: "doubleTap") ?? "off"
     @Published var hyperkey = UserDefaults.standard.bool(forKey: "hyperkey")
     @Published var modifierStatus = ""
@@ -223,7 +238,7 @@ final class Model: ObservableObject {
     }
     func configureModifiers() {
         guard let delegate = NSApp.delegate as? Delegate else { return }
-        if let issue = delegate.modifiers.configure(doubleTap: doubleTap, hyper: hyperkey) {
+        if let issue = delegate.modifiers.configure(doubleTap: doubleTap, hyper: hyperkey, includeShift: hyperIncludesShift) {
             modifierStatus = issue
         } else { modifierStatus = doubleTap == "off" && !hyperkey ? "未启用" : "已启用（需实际键盘验证）" }
         UserDefaults.standard.set(doubleTap, forKey: "doubleTap"); UserDefaults.standard.set(hyperkey, forKey: "hyperkey")
@@ -338,6 +353,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var launcherHiddenAt: TimeInterval?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        FileActionsWindow.shared.onEscape = { [weak self] in self?.closeUtilityWindowOnEscape() }
         installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
         window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.title = "Keylane · Developer Preview"; window.titlebarAppearsTransparent = true; window.titleVisibility = .hidden
@@ -436,6 +452,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     @objc private func openLauncherSettings() {
         model.runCommand(.init(rawValue: "settings"), origin: .menu)
+    }
+    func closeUtilityWindowOnEscape() {
+        guard model.escapeClosesUtilityWindows, !SearchField.isComposing, NSApp.modalWindow == nil,
+              let keyWindow = NSApp.keyWindow, keyWindow !== window, keyWindow.attachedSheet == nil else { return }
+        keyWindow.performClose(nil)
     }
     func showSettings() {
         if settingsWindow == nil {

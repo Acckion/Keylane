@@ -9,6 +9,13 @@ final class InterfaceTests: XCTestCase {
         XCTAssertTrue(SettingsItem.search("  \n").isEmpty)
         XCTAssertEqual(Set(SettingsItem.all.map(\.id)).count,SettingsItem.all.count)
     }
+    func testKeyboardSettingsSearchUsesDedicatedPage() {
+        XCTAssertEqual(SettingsItem.keyboard.page, "keyboard")
+        XCTAssertTrue(SettingsItem.search("输入源").contains(.keyboardInputSource))
+        XCTAssertTrue(SettingsItem.search("方括号").contains(.keyboardPageNavigation))
+        XCTAssertTrue(SettingsItem.search("Caps Lock").contains(.keyboardHyperKey))
+    }
+
     func testKeyboardSelectionClampsEmptyAndShrinkingLists() {
         XCTAssertEqual(NavigationBounds.move(0, by: -1, count: 5),0)
         XCTAssertEqual(NavigationBounds.move(4, by: 1, count: 5),4)

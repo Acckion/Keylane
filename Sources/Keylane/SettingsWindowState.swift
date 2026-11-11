@@ -4,6 +4,7 @@ import SwiftUI
 /// Window-level state. Launcher queries and feature progress are observed by their own views.
 final class SettingsWindowState: ObservableObject {
     @Published private(set) var page: String
+    @Published private(set) var navigationKeys: PageNavigationKeys
     @Published private(set) var error: String
     @Published private(set) var colorScheme: ColorScheme?
     let catalog: SettingsWindowCatalog
@@ -14,11 +15,13 @@ final class SettingsWindowState: ObservableObject {
     init(model: Model) {
         self.model = model
         page = model.settingsPage
+        navigationKeys = model.pageNavigationKeys
         error = model.error
         colorScheme = model.colorScheme
         catalog = model.launcherModules?.settingsCatalog ?? SettingsWindowCatalog(pages: [])
 
         model.$settingsPage.removeDuplicates().dropFirst().sink { [weak self] in self?.page = $0 }.store(in: &changes)
+        model.$pageNavigationKeys.removeDuplicates().dropFirst().sink { [weak self] in self?.navigationKeys = $0 }.store(in: &changes)
         model.$error.removeDuplicates().dropFirst().sink { [weak self] in self?.error = $0 }.store(in: &changes)
         model.$appearance.removeDuplicates().dropFirst().sink { [weak self] in
             self?.colorScheme = $0 == "dark" ? .dark : $0 == "light" ? .light : nil

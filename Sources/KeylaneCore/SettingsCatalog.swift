@@ -20,7 +20,13 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let rootFileContentSearch = SettingsItem(id: "root-file-content", page: "launcher", title: "在主搜索中匹配文件内容", keywords: "启动器 正文 PDF file content")
     public static let rootContactsSearch = SettingsItem(id: "root-contacts", page: "launcher", title: "在主搜索中显示联系人", keywords: "启动器 通讯录 contacts")
     public static let launcherFallbackCommands = SettingsItem(id: "launcher-fallbacks", page: "launcher", title: "备选命令", keywords: "启动器 回退 后备 搜索 fallback commands")
-    public static let keyboard = SettingsItem(id: "keyboard", page: "general", title: "Keylane 热键与键盘", keywords: "唤起 导航 修饰键 hyperkey hotkey keyboard")
+    public static let keyboard = SettingsItem(id: "keyboard-launcher-hotkey", page: "keyboard", title: "Keylane 热键", keywords: "唤起 导航 修饰键 hyperkey hotkey keyboard")
+    public static let keyboardEscapeBehavior = SettingsItem(id: "keyboard-escape", page: "keyboard", title: "Escape 键行为", keywords: "键盘 返回 隐藏 esc escape")
+    public static let keyboardCloseWindow = SettingsItem(id: "keyboard-close-window", page: "keyboard", title: "Escape 键关闭窗口", keywords: "键盘 设置 关闭 esc escape")
+    public static let keyboardInputSource = SettingsItem(id: "keyboard-input-source", page: "keyboard", title: "自动切换输入源", keywords: "键盘 输入法 ABC IME input source")
+    public static let keyboardNavigation = SettingsItem(id: "keyboard-navigation", page: "keyboard", title: "导航绑定", keywords: "键盘 方向键 Vim Emacs navigation")
+    public static let keyboardPageNavigation = SettingsItem(id: "keyboard-page-navigation", page: "keyboard", title: "页面导航键", keywords: "键盘 方括号 前进 后退 navigation brackets")
+    public static let keyboardHyperKey = SettingsItem(id: "keyboard-hyper", page: "keyboard", title: "Hyper Key", keywords: "键盘 修饰键 大写锁定 Caps Lock Shift Hyperkey")
     public static let login = SettingsItem(id: "login", page: "general", title: "登录时启动", keywords: "开机 自启动 startup login")
     public static let glass = SettingsItem(id: "glass", page: "general", title: "液态玻璃与辅助功能", keywords: "透明度 动画 对比度 glass transparency motion accessibility")
     public static let fileSearchScope = SettingsItem(id: "file-search-scope", page: "files", title: "文件搜索范围", keywords: "文件 Spotlight 索引 file search index scope")
@@ -54,6 +60,12 @@ public struct SettingsItem: Identifiable, Equatable {
         rootContactsSearch,
         launcherFallbackCommands,
         keyboard,
+        keyboardEscapeBehavior,
+        keyboardCloseWindow,
+        keyboardInputSource,
+        keyboardNavigation,
+        keyboardPageNavigation,
+        keyboardHyperKey,
         login,
         glass,
         applicationScopes,
