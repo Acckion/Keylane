@@ -369,7 +369,6 @@ struct SettingsSearchScopeCard<Footer: View>: View {
     let anchor: SettingsItem
     let add: () -> Void
     let remove: (String) -> Void
-    var reauthorize: ((String) -> Void)? = nil
     @ViewBuilder let footer: () -> Footer
 
     var body: some View {
@@ -381,11 +380,6 @@ struct SettingsSearchScopeCard<Footer: View>: View {
             } else {
                 SettingsCompactList(items: paths, id: \.self) { path in
                     SettingsFolderRow(path: path, selectable: true, showsActionsOnHover: true) {
-                        if let reauthorize {
-                            SettingsIconButton("重新授权 \(path)", symbol: "key", help: "重新选择文件夹以授权", compact: true) {
-                                reauthorize(path)
-                            }
-                        }
                         SettingsRemoveItemButton(label: "移除 \(path)", help: "移除搜索范围") { remove(path) }
                     }
                 }

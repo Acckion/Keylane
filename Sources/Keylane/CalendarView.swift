@@ -176,14 +176,6 @@ private struct CalendarSettingsGroups: View {
                 }
             }.settingsAnchor(.calendarSelection)
 
-            if controller.enabled && controller.access != .allowed {
-                SettingsGroup {
-                    SettingsActionRow(title: "日历权限", detail: controller.access.message, actionTitle: "管理…") {
-                        model.openSettings(page: "permissions")
-                    }
-                }
-            }
-
             SettingsGroup {
                 Toggle("在菜单栏显示日历", isOn: Binding(
                     get: { registry.isEnabled("calendar.agenda") },

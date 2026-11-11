@@ -20,7 +20,11 @@ struct PermissionsPreferences: View {
             ViewObservation.changes(model.calendar.$requesting),
             ViewObservation.changes(model.calendar.$error),
             ViewObservation.changes(model.contacts.$requesting),
-            ViewObservation.changes(model.contacts.$error)
+            ViewObservation.changes(model.contacts.$error),
+            ViewObservation.changes(model.clipboard.$accessMessage),
+            ViewObservation.changes(model.$modifierStatus),
+            ViewObservation.changes(model.fileSearch.$options.map(\.roots).removeDuplicates()),
+            ViewObservation.changes(model.fileSearch.$inaccessible)
         ]))
     }
 
@@ -33,6 +37,12 @@ struct PermissionsPreferences: View {
                     if !accessibilityAllowed { model.requestKeyboardAccess() }
                     openPrivacy("Accessibility")
                 }.settingsAnchor(.accessibilityPermission)
+                if showsAdditionalPermissions && (model.doubleTap != "off" || model.hyperkey) {
+                    Divider()
+                    SettingsActionRow(title: "修饰键快捷方式", detail: model.modifierStatus, actionTitle: "重新启用") {
+                        model.configureModifiers()
+                    }
+                }
                 Divider()
                 permissionRow("输入监控", detail: "用于 Caps Lock Hyperkey 的键盘事件监听。",
                               status: inputMonitoringAllowed ? "已允许" : "未允许",
@@ -63,6 +73,12 @@ struct PermissionsPreferences: View {
                     SettingsActionRow(title: "自动化", detail: "管理 Finder 和快捷指令的访问权限。",
                                       actionTitle: "打开系统设置…") { openPrivacy("Automation") }
                         .settingsAnchor(.automationPermission)
+                    Divider()
+                    SettingsActionRow(title: "剪贴板访问",
+                                      detail: model.clipboard.accessMessage.isEmpty ? "用于记录剪贴板历史。" : model.clipboard.accessMessage,
+                                      actionTitle: "打开系统设置…") {
+                        openPrivacy()
+                    }.settingsAnchor(.pasteboardPermission)
                 }
             }
             if showsAdditionalPermissions {
@@ -73,6 +89,20 @@ struct PermissionsPreferences: View {
                     Divider()
                     SettingsActionRow(title: "系统文件与文件夹权限", actionTitle: "打开系统设置…") { openPrivacy("FilesAndFolders") }
                 }.settingsAnchor(.folderPermissions)
+
+                SettingsListCard(title: "文件搜索授权", detail: fileAccessDetail) {
+                    SettingsIconButton("授权下载文件夹", symbol: "arrow.down.circle") {
+                        model.fileSearch.addScope(suggested: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads"))
+                    }
+                } content: {
+                    SettingsCompactList(items: model.fileSearch.options.roots, id: \.self) { path in
+                        SettingsFolderRow(path: path, selectable: true, showsActionsOnHover: false) {
+                            SettingsIconButton("重新授权 \(path)", symbol: "key", help: "重新选择文件夹以授权", compact: true) {
+                                model.fileSearch.addScope(suggested: URL(fileURLWithPath: path))
+                            }
+                        }
+                    }.padding(.bottom, 5)
+                }.settingsAnchor(.fileSearchPermissions)
             }
         }
         .onAppear(perform: refreshStatus)
@@ -80,6 +110,12 @@ struct PermissionsPreferences: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshStatus() }
         .onChange(of: model.calendar.requesting) { _, requesting in if !requesting { refreshStatus() } }
         .onChange(of: model.contacts.requesting) { _, requesting in if !requesting { refreshStatus() } }
+    }
+
+    private var fileAccessDetail: String {
+        model.fileSearch.inaccessible.isEmpty
+            ? "重新选择文件夹以更新访问授权。"
+            : "部分目录无法访问，请重新授权相应的文件夹。"
     }
 
     private var contactsStatus: String {
@@ -119,8 +155,9 @@ struct PermissionsPreferences: View {
         hasRefreshed = true
     }
 
-    private func openPrivacy(_ pane: String) {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_\(pane)") else { return }
+    private func openPrivacy(_ pane: String? = nil) {
+        let suffix = pane.map { "?Privacy_\($0)" } ?? ""
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security" + suffix) else { return }
         NSWorkspace.shared.open(url)
     }
 }
