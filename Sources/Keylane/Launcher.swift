@@ -20,10 +20,12 @@ struct Launcher: View {
     let model: Model
     @StateObject private var observation: ViewObservation
     @StateObject private var modifiers = LauncherModifiers()
-    @State private var selection = 0
+    @State private var selection = LauncherResultSelection()
+    @State private var selectionQuery = ""
     @State private var pageRevision = 0
-    @State private var launcherVisible = false
-    @State private var presentedPage = PageID.root
+    @State private var presentation = LauncherPagePresentation()
+    @State private var dispatchedQuery: String?
+    private var launcherVisible: Bool { presentation.visible }
     private var page: LauncherPage? { model.activeLauncherPage }
     private var showsFileResults: Bool { page?.contentPlacement == .fileResults }
     @State private var fileType = "all"
@@ -39,10 +41,8 @@ struct Launcher: View {
         })
     }
     @State private var mainSearchQuery = ""
-    @State private var mainSearchSelection = 0
+    @State private var mainSearchSelection = LauncherResultSelection()
     @State private var mainSearchExpanded = false
-    @State private var pendingMainSelection: Int?
-    @State private var selectedResultID: String?
     @State private var actionQuery = ""
     @State private var actionSelection = 0
     @State private var focusToken = 0
@@ -73,6 +73,7 @@ struct Launcher: View {
             ViewObservation.changes(model.$rootSearchSensitivity),
             ViewObservation.changes(model.$rootFileContentSearch),
             ViewObservation.changes(model.$fileResults),
+            ViewObservation.changes(model.fileSearch.$isSearching),
             ViewObservation.changes(model.$fileSearchStatus),
             ViewObservation.changes(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] })
         ]))
@@ -82,8 +83,36 @@ struct Launcher: View {
         if showsFileResults { return model.fileEntries(ofType: fileType) }
         return model.pageID == .root ? model.commands : []
     }
+    private var selectionIsCurrent: Bool {
+        presentation.page == model.pageID && selectionQuery == model.query
+    }
+
+    private func selectionIndex(in results: [Entry]) -> Int? {
+        guard selectionIsCurrent else { return nil }
+        return selection.index(in: results, identifiedBy: \.commandID)
+    }
+
+    private func firstSelectable(_ results: [Entry]) -> CommandID? {
+        guard let first = results.first,
+              !(first.detail == "File" && model.fileSearch.isSearching) else { return nil }
+        return first.commandID
+    }
+
+    private func resetResultSelection(to restored: LauncherResultSelection = .init()) {
+        selectionQuery = model.query
+        selection = restored
+        selection.selectDefault(firstSelectable(rows))
+    }
+
+    private func activateResult(_ id: CommandID, selectOnly: Bool = false) {
+        guard selectionIsCurrent, let row = rows.first(where: { $0.commandID == id }) else { return }
+        selection.id = id
+        if !selectOnly { model.perform(row) }
+    }
+
     private var launcherSurface: some View {
         let results = rows
+        let selectedIndex = selectionIndex(in: results)
         let showsSearchBar = argumentTarget == nil && page?.contentPlacement != .form
         let compactSurface = model.isCompact && model.presentedLauncherHeight <= model.launcherHeight + 0.5
         return ZStack(alignment: .top) {
@@ -92,12 +121,12 @@ struct Launcher: View {
             else {
                 if showsFileResults {
                     ResultDetailLayout {
-                        commandList(results)
+                        commandList(results, selectedIndex: selectedIndex)
                     } detail: {
-                        FileSearchDetail(url: results.indices.contains(selection) ? URL(fileURLWithPath: results[selection].id) : nil)
+                        FileSearchDetail(url: selectedIndex.map { URL(fileURLWithPath: results[$0].id) })
                     }
                 } else if model.pageID == .root {
-                    commandList(results).frame(height: 470, alignment: .top)
+                    commandList(results, selectedIndex: selectedIndex).frame(height: 470, alignment: .top)
                 } else if let page, let content = page.content {
                     switch page.contentPlacement {
                     case .underChrome: content()
@@ -143,8 +172,11 @@ struct Launcher: View {
             Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             Button("") { page?.shortcutSubmit?() }.keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
             ForEach(0..<min(10, results.count), id: \.self) { index in
-                Button("") { if model.pageID == .root || showsFileResults { let results = rows; guard results.indices.contains(index) else { return }; selection = index; model.perform(results[index]) } }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
+                Button("") { activateResult(results[index].commandID) }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
             }
+        }
+        .onChange(of: firstSelectable(results), initial: true) { _, first in
+            if selectionIsCurrent { selection.selectDefault(first) }
         }
         .clipShape(RoundedRectangle(cornerRadius: VisualStyle.launcherCornerRadius, style: .continuous))
         .preferredColorScheme(model.colorScheme)
@@ -154,12 +186,11 @@ struct Launcher: View {
         let _ = pageRevision
         launcherSurface
         .onAppear {
-            launcherVisible = (NSApp.delegate as? Delegate)?.window?.isVisible == true
+            updatePresentation(visible: (NSApp.delegate as? Delegate)?.window?.isVisible == true)
             focusToken += 1
-            modifiers.start()
         }
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
-        .onDisappear { modifiers.stop() }
+        .onDisappear { updatePresentation(visible: false) }
         .onExitCommand { if !SearchField.isComposing { escape() } }
         .onReceive(model.activePageUpdates) { _ in
             if launcherVisible { pageRevision &+= 1 }
@@ -171,37 +202,24 @@ struct Launcher: View {
             if launcherVisible && model.pageID == .root { pageRevision &+= 1 }
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in
-            launcherVisible = true
-            modifiers.start()
-            closeMenus()
-            model.launcherModules?.launcherShown()
-            if presentedPage == model.pageID {
-                if let resume = page?.resume { resume() }
-                else { refreshActiveQuery() }
-            }
+            if launcherVisible && presentation.page == model.pageID { closeMenus() }
+            updatePresentation(visible: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherResetSearch)) { _ in
             mainSearchQuery = ""
-            mainSearchSelection = 0
+            mainSearchSelection = .init()
             mainSearchExpanded = false
-            pendingMainSelection = nil
-            selectedResultID = nil
-            selection = 0
-            argumentTarget = nil
+            if presentation.page == .root { resetResultSelection() }
+            dismissArgumentEditor()
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
-            launcherVisible = false
-            modifiers.stop()
-            closeMenus()
-            model.launcherModules?.page(presentedPage)?.leave()
-            if presentedPage == .root { model.fileSearch.cancel() }
+            updatePresentation(visible: false)
         }
-        .onChange(of: fileType) { _, _ in selection = 0; selectedResultID = nil; focusToken += 1 }
+        .onChange(of: fileType) { _, _ in resetResultSelection(); focusToken += 1 }
         .onChange(of: model.query) { _, _ in
-            selection = pendingMainSelection ?? 0
-            pendingMainSelection = nil
-            selectedResultID = nil
+            guard presentation.page == model.pageID else { return }
             if launcherVisible { refreshActiveQuery() }
+            if selectionQuery != model.query { resetResultSelection() }
         }
         .onChange(of: model.fileSearch.options.enabled) { _, _ in
             if launcherVisible && model.searchesFilesHere { model.searchFiles() } else { model.fileSearch.cancel(); model.fileResults = [] }
@@ -215,52 +233,72 @@ struct Launcher: View {
             }
         }
         .onChange(of: model.rootSearchSensitivity) { _, _ in
-            if model.pageID == .root {
-                selection = 0
-                selectedResultID = nil
-            }
+            if model.pageID == .root { resetResultSelection() }
         }
-        .onChange(of: model.fileResults) { previous, current in
-            guard showsFileResults || model.pageID == .root else { return }
-            let oldID = selectedResultID ?? (showsFileResults && previous.indices.contains(selection) ? previous[selection].id : nil)
-            let results = rows
-            if let oldID, let index = results.firstIndex(where: { $0.id == oldID }) { selection = index }
-            else { selection = min(selection,max(0,results.count-1)) }
-        }
-        .onChange(of: model.pageID) { previous, current in pageChanged(from: previous, to: current) }
+        .onChange(of: model.pageID) { _, _ in updatePresentation(visible: launcherVisible) }
     }
 
-    private func pageChanged(from previous: PageID, to current: PageID) {
-        closeMenus()
-        if previous == .root { model.fileSearch.cancel() }
-        else if let previousPage = model.launcherModules?.page(previous) {
-            previousPage.leave()
-            previousPage.releasePreview?()
+    private func updatePresentation(visible: Bool) {
+        let wasVisible = launcherVisible
+        let current = model.pageID
+        let change = presentation.update(page: current, visible: visible)
+        if wasVisible != visible {
+            if visible {
+                modifiers.start()
+                model.launcherModules?.launcherShown()
+            } else {
+                modifiers.stop()
+            }
         }
-        presentedPage = current
-        if previous == .root {
-            mainSearchQuery = model.query
-            mainSearchSelection = selection
-            mainSearchExpanded = model.compactExpanded
+        if wasVisible != visible || change.previousPage != nil { closeMenus() }
+        if let previous = change.deactivation {
+            dispatchedQuery = nil
+            if previous == .root {
+                model.fileSearch.cancel()
+                FilePreview.shared.dismiss()
+            } else if let previousPage = model.launcherModules?.page(previous) {
+                previousPage.leave()
+                previousPage.releasePreview?()
+            }
         }
-        let oldQuery = model.query
-        if current == .root {
-            pendingMainSelection = oldQuery == mainSearchQuery ? nil : mainSearchSelection
-            model.query = mainSearchQuery
-            selection = mainSearchSelection
-            model.compactExpanded = mainSearchExpanded
-            if launcherVisible && oldQuery == model.query { refreshActiveQuery() }
-        } else {
-            let seed = launcherVisible ? page?.enter?("") : nil
-            model.query = seed ?? ""
-            selection = 0
-            if launcherVisible && oldQuery == model.query { refreshActiveQuery() }
+
+        if let previous = change.previousPage {
+            dismissArgumentEditor()
+            if previous == .root {
+                mainSearchQuery = model.query
+                mainSearchSelection = selection
+                mainSearchExpanded = model.compactExpanded
+            }
+            if current == .root {
+                model.query = mainSearchQuery
+                model.compactExpanded = mainSearchExpanded
+            } else {
+                model.query = ""
+            }
         }
-        selectedResultID = nil
-        focusToken += 1
+
+        switch change.activation {
+        case .enter:
+            if let seed = page?.enter?(model.query) { model.query = seed }
+            refreshActiveQuery()
+        case .resume:
+            if let resume = page?.resume {
+                dispatchedQuery = model.query
+                resume()
+            } else { refreshActiveQuery() }
+        case nil:
+            break
+        }
+        if change.previousPage != nil {
+            resetResultSelection(to: current == .root ? mainSearchSelection : .init())
+        } else if change.activation != nil, selectionQuery != model.query {
+            resetResultSelection()
+        }
     }
 
     private func refreshActiveQuery() {
+        guard dispatchedQuery != model.query else { return }
+        dispatchedQuery = model.query
         if let page { page.queryChanged(model.query) }
         else if model.searchesFilesHere { model.searchFiles() }
     }
@@ -275,14 +313,13 @@ struct Launcher: View {
         }
         else if let move = page?.move { move(delta) }
         else if model.pageID == .root || showsFileResults {
-            let results = rows
-            selection = NavigationBounds.move(selection, by: delta, count: results.count)
-            selectedResultID = results.indices.contains(selection) ? results[selection].id : nil
+            guard selectionIsCurrent else { return }
+            selection.move(by: delta, in: rows, identifiedBy: \.commandID)
         }
     }
     private func escape() {
         if submenu != nil { dismissSubmenu(); return }
-        if argumentTarget != nil { argumentTarget = nil; focusToken += 1; return }
+        if argumentTarget != nil { dismissArgumentEditor(); focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
         else if model.pageID != .root && model.launcherEscapeBehavior == .backOrClose { model.pageID = .root }
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
@@ -327,13 +364,13 @@ struct Launcher: View {
             ResultTypeFilter(selection: $fileType, options: ResultFilterOption.files, open: filterBinding, navigation: model.navigation)
         } else if let filter = page?.typeFilter { filter(filterBinding) }
     }
-    private func commandList(_ results: [Entry]) -> some View {
-        SelectableResultList(selection: results.indices.contains(selection) ? results[selection].id : nil,
-                             query: model.query, firstResult: results.first?.id) {
+    private func commandList(_ results: [Entry], selectedIndex: Int?) -> some View {
+        SelectableResultList(selection: selectedIndex.map { results[$0].commandID },
+                             query: model.query, firstResult: results.first?.commandID) {
             if results.isEmpty {
                 VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(ContentActionButtonStyle()).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
             }
-            ForEach(Array(results.enumerated()), id: \.element.id) { index, row in
+            ForEach(Array(results.enumerated()), id: \.element.commandID) { index, row in
                 if row.id == "calculator" {
                     sectionHeader("计算器")
                 } else if showsFileResults {
@@ -346,19 +383,17 @@ struct Launcher: View {
                     }
                     if index == 5 && model.query.isEmpty { sectionHeader("其他") }
                 }
-                Button {
-                    selection = index
-                    selectedResultID = row.id
-                    if !showsFileResults { model.perform(row) }
-                } label: {
+                ResultListButton(id: row.commandID, action: {
+                    activateResult(row.commandID, selectOnly: showsFileResults)
+                }) {
                     if row.id == "calculator" {
-                        CalculatorResultCard(expression: model.query, result: row.name, selected: index == selection)
+                        CalculatorResultCard(expression: model.query, result: row.name, selected: index == selectedIndex)
                     } else if showsFileResults {
-                        fileResultRow(row, index: index)
+                        fileResultRow(row, selected: index == selectedIndex)
                     } else {
-                        resultRow(row, index: index)
+                        resultRow(row, index: index, selected: index == selectedIndex)
                     }
-                }.buttonStyle(.plain).id(row.id)
+                }
                     .contextMenu {
                         if row.commandID.rawValue.hasPrefix("app:") {
                             Button("使用参数启动…", systemImage: "terminal") {
@@ -374,10 +409,10 @@ struct Launcher: View {
         }
     }
     private func sectionHeader(_ title: String) -> some View { Text(title).font(VisualStyle.sectionText).foregroundStyle(.secondary).padding(.leading, 14).padding(.top, 5).padding(.bottom, 5).frame(height: 26) }
-    private func fileResultRow(_ row: Entry, index: Int) -> some View {
+    private func fileResultRow(_ row: Entry, selected: Bool) -> some View {
         let url = URL(fileURLWithPath: row.id)
         let isFolder = row.isDirectory
-        return ResultListRow(selected: index == selection, height: isFolder ? 48 : 40) {
+        return ResultListRow(selected: selected, height: isFolder ? 48 : 40) {
             Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high)
         } content: {
             VStack(alignment: .leading, spacing: 3) {
@@ -392,8 +427,8 @@ struct Launcher: View {
             }
         }.help(url.path)
     }
-    private func resultRow(_ row: Entry, index: Int) -> some View {
-        ResultListRow(selected: index == selection, layout: .root) {
+    private func resultRow(_ row: Entry, index: Int, selected: Bool) -> some View {
+        ResultListRow(selected: selected, layout: .root) {
             Group {
                 if let artwork = model.launcherModules?.artwork(for: row) { artwork }
                 else if row.id.hasSuffix(".app") || row.detail == "File" { Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high) }
@@ -474,6 +509,7 @@ struct Launcher: View {
         let applicationWidth: CGFloat = secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36
         let showsActions = page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty
         let actionWidth: CGFloat = page?.actionWidth ?? (showsActions ? 196 : 126)
+        let primaryEnabled = application || primaryActionEnabled
         let open = application ? appMenu : actions
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
         let items = open ? filteredMenu(applicationMenu: application) : []
@@ -503,8 +539,8 @@ struct Launcher: View {
                         }.padding(.horizontal, 6)
                     }
                     .frame(maxWidth: .infinity).frame(height: 28)
-                    .disabled(page?.primaryEnabled?() == false)
-                    .opacity(page?.primaryEnabled?() == false ? 0.45 : 1)
+                    .disabled(!primaryEnabled)
+                    .opacity(primaryEnabled ? 1 : 0.45)
                     if showsActions {
                         NativeHoverButton(title: "操作", action: { toggleMenu(application: false) }) {
                             HStack(spacing: 7) {
@@ -522,7 +558,10 @@ struct Launcher: View {
         .modifier(LauncherMenuSurface(open: open))
     }
     private typealias MenuAction = LauncherAction
-    private var selectedEntry: Entry? { let results = rows; return results.indices.contains(selection) ? results[selection] : nil }
+    private var selectedEntry: Entry? {
+        let results = rows
+        return selectionIndex(in: results).map { results[$0] }
+    }
     private func menuItems(applicationMenu: Bool) -> [MenuAction] {
         if applicationMenu {
             return [
@@ -645,6 +684,16 @@ struct Launcher: View {
         focusToken += 1
     }
     private var moduleTitle: String { page?.placeholder ?? "设置" }
+    private var primaryActionEnabled: Bool {
+        guard presentation.page == model.pageID else { return false }
+        if argumentTarget != nil { return true }
+        if model.pageID == .root || showsFileResults {
+            guard let row = selectedEntry else { return false }
+            return row.detail != "File" || !model.fileSearch.isSearching
+        }
+        return page?.primaryEnabled?() != false
+    }
+
     private var primaryTitle: String {
         if argumentTarget != nil { return "启动新实例" }
         if let title = page?.primaryTitle?() { return title }
@@ -654,9 +703,15 @@ struct Launcher: View {
         }
         return model.pageID == .root || showsFileResults ? "打开" : "返回"
     }
+    private func dismissArgumentEditor() {
+        argumentTarget = nil
+        argumentText = ""
+        argumentsFocused = false
+    }
+
     private func argumentEditor(_ target: LauncherAction.ArgumentForm) -> some View {
         LauncherCreationForm(back: {
-            argumentTarget = nil
+            dismissArgumentEditor()
             focusToken += 1
         }) {
             Text(target.title).foregroundStyle(.secondary)
@@ -688,9 +743,18 @@ struct Launcher: View {
             .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.large).help("返回").accessibilityLabel("返回")
     }
     private func run() {
+        guard presentation.page == model.pageID else { return }
+        if let target = argumentTarget {
+            do { target.submit(try ArgumentParser.parse(argumentText)) }
+            catch { model.error = "参数引号或转义未完成。" }
+            return
+        }
         if (showsFileResults || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
-        if let target = argumentTarget { do { let args = try ArgumentParser.parse(argumentText); target.submit(args) } catch { model.error = "参数引号或转义未完成。" }; return }
-        if actions || appMenu { let items = filteredMenu(applicationMenu: appMenu); if items.indices.contains(actionSelection) { activate(items[actionSelection]) }; return }
+        if actions || appMenu {
+            let items = filteredMenu(applicationMenu: appMenu)
+            if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
+            return
+        }
         if let submit = page?.submit { submit(); return }
         if model.pageID != .root && !showsFileResults { model.pageID = .root; return }
         if let row = selectedEntry { model.perform(row) }
