@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon
+import KeylaneCore
 
 enum NavigationMode {
     case windows, menus
@@ -59,7 +60,88 @@ final class SystemNavigation {
     private var observedPID: pid_t?
     private var recent: [(pid: pid_t, window: AXUIElement)] = []
 
+    private var previousFrames: [(window: AXUIElement, frame: CGRect)] = []
+
     private init() {}
+
+    func placeWindow(_ placement: WindowPlacement, in app: NSRunningApplication?,
+                     completion: @escaping (String?) -> Void) {
+        guard AXIsProcessTrusted() else {
+            completion(NavigationText.label("请在系统设置中允许 Keylane 使用辅助功能。", "Allow Keylane in Accessibility settings."))
+            return
+        }
+        guard let app, !app.isTerminated else {
+            completion(NavigationText.label("没有可调整的应用窗口。", "No application window to arrange."))
+            return
+        }
+        let screens = NSScreen.screens
+        let top = screens.first?.frame.maxY ?? 0
+        let displays = screens.map { screen -> CGRect in
+            let frame = screen.visibleFrame
+            return CGRect(x: frame.minX, y: top - frame.maxY, width: frame.width, height: frame.height)
+        }
+        queue.async {
+            let message = self.applyPlacement(placement, pid: app.processIdentifier, displays: displays)
+            DispatchQueue.main.async { completion(message) }
+        }
+    }
+
+    private func applyPlacement(_ placement: WindowPlacement, pid: pid_t, displays: [CGRect]) -> String? {
+        let application = applicationElement(pid)
+        guard let window = element(application, kAXFocusedWindowAttribute) else {
+            return NavigationText.label("目标应用没有聚焦的窗口。", "The target app has no focused window.")
+        }
+        guard value(window, "AXFullScreen") as? Bool != true else {
+            return NavigationText.label("请先退出窗口的全屏模式。", "Exit full screen before arranging this window.")
+        }
+        guard let current = frame(of: window) else {
+            return NavigationText.label("无法读取目标窗口的位置和大小。", "Could not read the target window frame.")
+        }
+        let saved = previousFrames.first { CFEqual($0.window, window) }?.frame
+        guard let target = placement.frame(for: current, displays: displays, previous: saved) else {
+            return placement == .restore
+                ? NavigationText.label("此窗口没有可恢复的位置。", "There is no saved position for this window.")
+                : NavigationText.label("没有其他可用的显示器。", "No other display is available.")
+        }
+        guard current != target else { return nil }
+        guard writeFrame(target, to: window, resizing: current.size != target.size),
+              let actual = frame(of: window),
+              abs(actual.minX - target.minX) <= 2, abs(actual.minY - target.minY) <= 2,
+              abs(actual.width - target.width) <= 2, abs(actual.height - target.height) <= 2 else {
+            let actual = frame(of: window)
+            if actual != current {
+                _ = writeFrame(current, to: window, resizing: actual?.size != current.size)
+            }
+            return NavigationText.label("窗口不支持所选布局，请检查窗口状态。", "The window could not apply this layout. Check its current state.")
+        }
+        previousFrames.removeAll { CFEqual($0.window, window) }
+        if placement != .restore { previousFrames.insert((window, current), at: 0) }
+        if previousFrames.count > 64 { previousFrames.removeLast() }
+        return nil
+    }
+
+    private func frame(of window: AXUIElement) -> CGRect? {
+        let attributes = values(window, [kAXPositionAttribute, kAXSizeAttribute])
+        return windowFrame(position: attributes[0], size: attributes[1])
+    }
+
+    private func writeFrame(_ frame: CGRect, to window: AXUIElement, resizing: Bool) -> Bool {
+        var origin = frame.origin
+        var size = frame.size
+        var movable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(window, kAXPositionAttribute as CFString, &movable) == .success,
+              movable.boolValue, let position = AXValueCreate(.cgPoint, &origin) else { return false }
+        if resizing {
+            var resizable = DarwinBoolean(false)
+            guard AXUIElementIsAttributeSettable(window, kAXSizeAttribute as CFString, &resizable) == .success,
+                  resizable.boolValue, let dimensions = AXValueCreate(.cgSize, &size) else { return false }
+            // AppKit can clamp a resize to the space available at the old position.
+            // Set the origin first, then resize and reapply the origin if the app adjusted it.
+            guard AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position) == .success,
+                  AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, dimensions) == .success else { return false }
+        }
+        return AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position) == .success
+    }
 
     func observeFocus(of app: NSRunningApplication) {
         guard AXIsProcessTrusted(), app.activationPolicy == .regular,

@@ -9,7 +9,8 @@ enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
         let modules = [applications(model), host(model), files(model), clipboard(model), notes(model),
                        links(model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model),
-                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model)]
+                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model),
+                       SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
             guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
