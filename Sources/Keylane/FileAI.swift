@@ -13,6 +13,10 @@ final class FileAIController: NSObject, ObservableObject, NSWindowDelegate {
     @Published var endpoint: String { didSet { preferences.set(endpoint,forKey:"fileAIEndpoint"); refreshSavedKey() } }
     @Published var modelName: String { didSet { preferences.set(modelName,forKey:"fileAIModel") } }
     @Published var commandsEnabled: [String:Bool] { didSet { preferences.set(commandsEnabled,forKey:"fileAICommandsEnabled") } }
+    func commandEnabledBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { self.commandsEnabled[id] != false }, set: { self.commandsEnabled[id] = $0 })
+    }
+
     @Published var keyInput = ""
     @Published private(set) var keySaved = false
     @Published var question = ""
