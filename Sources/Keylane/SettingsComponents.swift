@@ -71,6 +71,18 @@ extension SettingsRow where Label == SettingsRowLabel {
     }
 }
 
+/// Secondary copy describing a setting, shared by rows and cards.
+struct SettingsDescription: View {
+    let text: String
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text).font(.system(size: 13)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 struct SettingsRowLabel: View {
     let title: String
     let detail: String?
@@ -79,7 +91,7 @@ struct SettingsRowLabel: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
             if let detail, !detail.isEmpty {
-                Text(detail).font(.caption).foregroundStyle(.secondary)
+                SettingsDescription(detail)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
@@ -286,8 +298,7 @@ struct SettingsCaption: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.system(size: 15, weight: .medium))
-            Text(detail).font(.system(size: 13)).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            SettingsDescription(detail)
         }
     }
 }

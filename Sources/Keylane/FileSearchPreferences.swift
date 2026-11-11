@@ -45,11 +45,11 @@ struct FileSearchPreferences: View {
             }.settingsAnchor(.fileSearchScope)
             SettingsCard {
                 HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:4) { Text("忽略规则").font(.system(size:14,weight:.medium)); Text("默认跳过忽略文件指定的项目。").font(.caption).foregroundStyle(.secondary); Button("了解更多…") { showsIgnoreInfo.toggle() }.buttonStyle(.plain).foregroundStyle(.blue) }
+                    VStack(alignment:.leading,spacing:4) { Text("忽略规则").font(.system(size:14,weight:.medium)); SettingsDescription("默认跳过忽略文件指定的项目。"); Button("了解更多…") { showsIgnoreInfo.toggle() }.buttonStyle(.plain).foregroundStyle(.blue) }
                     Spacer(); TextField("添加规则…",text:$pattern).textFieldStyle(.roundedBorder).frame(maxWidth:240).onSubmit { addPattern() }
                     Button { addPattern() } label: { Image(systemName:"plus") }.buttonStyle(.borderless).disabled(pattern.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                 }
-                if showsIgnoreInfo { Text("支持 *、?、** 和简单字符组。无斜线规则匹配任意层级的名称；带斜线规则匹配路径。启用忽略文件后读取目录中的 .gitignore、.ignore 和 .rayignore，按目录继承并支持 ! 取消忽略；已忽略的父目录不会继续遍历。不运行 Git 或 Shell 命令。").font(.caption).foregroundStyle(.secondary) }
+                if showsIgnoreInfo { SettingsDescription("支持 *、?、** 和简单字符组。无斜线规则匹配任意层级的名称；带斜线规则匹配路径。启用忽略文件后读取目录中的 .gitignore、.ignore 和 .rayignore，按目录继承并支持 ! 取消忽略；已忽略的父目录不会继续遍历。不运行 Git 或 Shell 命令。") }
                 SettingsCompactList(items: controller.options.ignorePatterns, id: \.self) { value in
                     HStack { Text(value).font(.system(size:12)).foregroundStyle(.secondary).textSelection(.enabled); Spacer(); Button { controller.options.ignorePatterns.removeAll { $0 == value } } label: { Image(systemName:"minus.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain).help("移除规则") }
                 }
@@ -81,8 +81,7 @@ struct FileSearchPreferences: View {
             }
             SettingsSectionTitle(title: "AI 扩展")
             CommandSettingsList(items: ["ask-files", "ask-finder"], id: \.self, entry: aiCommand)
-            Text("使用你配置的 OpenAI 兼容服务。先查看发送范围并主动发送；API密钥保存至钥匙串，未配置时先填写服务地址与模型。")
-                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14)
+            SettingsDescription("使用你配置的 OpenAI 兼容服务。先查看发送范围并主动发送；API密钥保存至钥匙串，未配置时先填写服务地址与模型。").padding(.horizontal, 14)
             FileIndexStatistics(controller: controller)
         }.confirmationDialog("恢复文件搜索默认设置？",isPresented:$resets,titleVisibility:.visible) { Button("恢复默认",role:.destructive) { controller.reset() }; Button("取消",role:.cancel) {} }.onAppear { if controller.stats.entries == 0 && !controller.indexing { controller.startIndex() } }
     }

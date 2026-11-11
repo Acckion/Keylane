@@ -53,7 +53,7 @@ struct ScreenshotPreferences: View {
                 }
                 if library.scopes.isEmpty {
                     SettingsCompactList(items: library.folders, id: \.path) { url in SettingsFolderRow(path: url.path) { EmptyView() } }
-                    Text("正在使用 macOS 的截图保存位置。").font(.caption).foregroundStyle(.secondary)
+                    SettingsDescription("正在使用 macOS 的截图保存位置。")
                 } else {
                     SettingsCompactList(items: library.scopes, id: \.id) { scope in
                         SettingsFolderRow(path: scope.url.path) {

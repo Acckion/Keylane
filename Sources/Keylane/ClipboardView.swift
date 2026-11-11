@@ -194,7 +194,7 @@ private struct ClipboardHistoryStatistics: View {
     var body: some View {
         SettingsGroup {
             LabeledContent("已保存", value: "\(controller.total)项")
-            if controller.migrationBackupCount > 0 { Text("保留了\(controller.migrationBackupCount)份升级前备份，包含旧历史与自有图片。清理全部历史时会一并删除；清理未置顶历史时保留备份。").font(.caption).foregroundStyle(.secondary) }
+            if controller.migrationBackupCount > 0 { SettingsDescription("保留了\(controller.migrationBackupCount)份升级前备份，包含旧历史与自有图片。清理全部历史时会一并删除；清理未置顶历史时保留备份。") }
             HStack { Button("清理未置顶历史…", role: .destructive) { clearAll = false; confirmsClear = true }; Button("清理全部历史…", role: .destructive) { clearAll = true; confirmsClear = true } }.buttonStyle(ContentActionButtonStyle())
             if !controller.status.isEmpty { Text(controller.status).font(.caption).foregroundStyle(.secondary) }
         }
