@@ -49,7 +49,7 @@ struct ScreenshotPreferences: View {
                 HStack {
                     SettingsCaption(title: "搜索范围", detail: "搜索这些文件夹及其子目录。")
                     Spacer()
-                    SettingsAddFolderButton { library.chooseFolders() }
+                    SettingsAddItemButton(title: "添加搜索文件夹") { library.chooseFolders() }
                 }
                 if library.scopes.isEmpty {
                     SettingsCompactList(items: library.folders, id: \.path) { url in SettingsFolderRow(path: url.path) { EmptyView() } }
