@@ -28,30 +28,26 @@ struct ClipboardHistoryView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.top, 61).padding(.bottom, 52)
+                .padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
             }
         }.onAppear { controller.reload() }
     }
     private var results: some View {
-        ScrollViewReader { proxy in
-            ResultListScrollView {
-                if controller.items.isEmpty {
-                    Text("没有匹配记录").font(VisualStyle.sectionText).foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity).padding(.top, 80)
-                }
-                ForEach(controller.items) { item in
-                    Button { controller.select(item.id) } label: {
-                        ResultListRow(selected: item.id == controller.selectedID) {
-                            ClipboardListIcon(item: item, controller: controller)
-                        } content: {
-                            HighlightedResultText(text: item.preview.replacingOccurrences(of: "\n", with: " "), query: query)
-                                .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
-                        }
-                    }.buttonStyle(.plain).id(item.id)
-                }
+        SelectableResultList(selection: controller.selectedID, query: query, firstResult: controller.items.first?.id) {
+            if controller.items.isEmpty {
+                Text("没有匹配记录").font(VisualStyle.sectionText).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity).padding(.top, 80)
             }
-            .onChange(of: controller.selectedID) { _, id in if let id { proxy.scrollTo(id) } }
-            .onChange(of: query) { _, _ in if let first = controller.items.first { proxy.scrollTo(first.id, anchor: .top) } }
+            ForEach(controller.items) { item in
+                Button { controller.select(item.id) } label: {
+                    ResultListRow(selected: item.id == controller.selectedID) {
+                        ClipboardListIcon(item: item, controller: controller)
+                    } content: {
+                        HighlightedResultText(text: item.preview.replacingOccurrences(of: "\n", with: " "), query: query)
+                            .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
+                    }
+                }.buttonStyle(.plain).id(item.id)
+            }
         }
     }
 
@@ -60,20 +56,20 @@ struct ClipboardHistoryView: View {
 struct ClipboardPreferences: View {
     let controller: ClipboardController
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
 
     init(controller: ClipboardController, model: Model) {
         self.controller = controller
         self.model = model
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(controller.$captureEnabled),
-            SettingsPageObservation.changes(controller.$automaticOCR),
-            SettingsPageObservation.changes(controller.$primaryAction),
-            SettingsPageObservation.changes(controller.$retentionDays),
-            SettingsPageObservation.changes(controller.$maxItems),
-            SettingsPageObservation.changes(controller.$excludedApps),
-            SettingsPageObservation.changes(controller.$accessMessage),
-            SettingsPageObservation.changes(model.$bindings.map { $0["clipboard"] })
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$captureEnabled),
+            ViewObservation.changes(controller.$automaticOCR),
+            ViewObservation.changes(controller.$primaryAction),
+            ViewObservation.changes(controller.$retentionDays),
+            ViewObservation.changes(controller.$maxItems),
+            ViewObservation.changes(controller.$excludedApps),
+            ViewObservation.changes(controller.$accessMessage),
+            ViewObservation.changes(model.$bindings.map { $0["clipboard"] })
         ]))
     }
 
@@ -143,16 +139,16 @@ struct ClipboardPreferences: View {
 
 private struct ClipboardHistoryStatistics: View {
     let controller: ClipboardController
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
     @State private var confirmsClear = false
     @State private var clearAll = false
 
     init(controller: ClipboardController) {
         self.controller = controller
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(controller.$total),
-            SettingsPageObservation.changes(controller.$migrationBackupCount),
-            SettingsPageObservation.changes(controller.$status)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$total),
+            ViewObservation.changes(controller.$migrationBackupCount),
+            ViewObservation.changes(controller.$status)
         ]))
     }
 

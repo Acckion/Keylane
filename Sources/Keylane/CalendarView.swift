@@ -40,14 +40,14 @@ struct CalendarPage: View {
                 if !controller.enabled { ContentUnavailableView("日历已关闭", systemImage: "calendar", description: Text("可在日历设置中重新开启。")) }
                 else if controller.access != .allowed { CalendarConnectionView(controller: controller) }
                 else if let event = controller.selectedEvent {
-                    ResultDetailPane {
+                    ResultDetailPane { height in
                         VStack(alignment: .leading, spacing: 14) {
                             Label(event.calendarTitle, systemImage: "calendar").font(.system(size: 12)).foregroundStyle(.secondary)
                             Text(event.title).font(.system(size: 21, weight: .semibold)).textSelection(.enabled)
                             Text(event.start.formatted(date: .complete, time: .omitted)).font(.system(size: 13))
                             Text(event.allDay ? "全天" : "\(event.start.formatted(date: .omitted, time: .shortened)) – \(event.end.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
                             Spacer(minLength: 0)
-                        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading).padding(9)
+                        }.frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading).padding(9)
                     } information: {
                         DetailInformationSection(rows: [
                             .init(title: "日历", value: event.calendarTitle),
@@ -59,7 +59,7 @@ struct CalendarPage: View {
                 } else { ContentUnavailableView(controller.loading ? "正在加载" : "没有日程", systemImage: "calendar", description: Text("选择其他日期，或在日历设置中选择要显示的日历。")) }
             }
         }
-        .overlay(alignment: .bottom) { if !controller.error.isEmpty { Text(controller.error).font(.caption).foregroundStyle(.orange).padding(10).padding(.bottom, 52) } }
+        .overlay(alignment: .bottom) { if !controller.error.isEmpty { Text(controller.error).font(.caption).foregroundStyle(.orange).padding(10).padding(.bottom, VisualStyle.launcherBottomInset) } }
     }
 }
 
@@ -111,7 +111,7 @@ struct CalendarPreferences: View {
 private struct CalendarSettingsGroups: View {
     let model: Model
     let controller: CalendarController
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
     @ObservedObject var registry: MenuBarRegistry
     @State private var showsCalendars = false
 
@@ -119,15 +119,15 @@ private struct CalendarSettingsGroups: View {
         self.model = model
         self.controller = controller
         self.registry = registry
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$aliases.map { $0["calendar"] }),
-            SettingsPageObservation.changes(model.$bindings.map { $0["calendar"] }),
-            SettingsPageObservation.changes(controller.$enabled),
-            SettingsPageObservation.changes(controller.$access),
-            SettingsPageObservation.changes(controller.$calendars),
-            SettingsPageObservation.changes(controller.$selectedCalendarIDs),
-            SettingsPageObservation.changes(controller.$menuDisplay),
-            SettingsPageObservation.changes(controller.$error)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$aliases.map { $0["calendar"] }),
+            ViewObservation.changes(model.$bindings.map { $0["calendar"] }),
+            ViewObservation.changes(controller.$enabled),
+            ViewObservation.changes(controller.$access),
+            ViewObservation.changes(controller.$calendars),
+            ViewObservation.changes(controller.$selectedCalendarIDs),
+            ViewObservation.changes(controller.$menuDisplay),
+            ViewObservation.changes(controller.$error)
         ]))
     }
 

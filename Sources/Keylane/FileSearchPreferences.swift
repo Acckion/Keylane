@@ -5,18 +5,18 @@ import KeylaneCore
 struct FileSearchPreferences: View {
     let controller: FileSearchController
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
 
     init(controller: FileSearchController, model: Model) {
         self.controller = controller
         self.model = model
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(controller.$options),
-            SettingsPageObservation.changes(controller.$automaticExclusions),
-            SettingsPageObservation.changes(controller.$inaccessible),
-            SettingsPageObservation.changes(model.$aliases),
-            SettingsPageObservation.changes(model.$bindings),
-            SettingsPageObservation.changes(model.fileAI.$commandsEnabled)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$options),
+            ViewObservation.changes(controller.$automaticExclusions),
+            ViewObservation.changes(controller.$inaccessible),
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$bindings),
+            ViewObservation.changes(model.fileAI.$commandsEnabled)
         ]))
     }
     @State private var pattern = ""
@@ -102,14 +102,14 @@ struct FileSearchPreferences: View {
 
 private struct FileIndexStatistics: View {
     let controller: FileSearchController
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
 
     init(controller: FileSearchController) {
         self.controller = controller
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(controller.$stats),
-            SettingsPageObservation.changes(controller.$indexStatus),
-            SettingsPageObservation.changes(controller.$indexing)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$stats),
+            ViewObservation.changes(controller.$indexStatus),
+            ViewObservation.changes(controller.$indexing)
         ]))
     }
 

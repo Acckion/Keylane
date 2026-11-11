@@ -17,7 +17,8 @@ private final class IconCache {
     }
 }
 struct Launcher: View {
-    @ObservedObject var model: Model
+    let model: Model
+    @StateObject private var observation: ViewObservation
     @StateObject private var modifiers = LauncherModifiers()
     @State private var selection = 0
     @State private var pageRevision = 0
@@ -44,6 +45,29 @@ struct Launcher: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
+    init(model: Model) {
+        self.model = model
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$pageID),
+            ViewObservation.changes(model.$query),
+            ViewObservation.changes(model.$error),
+            ViewObservation.changes(model.$appearance),
+            ViewObservation.changes(model.$interfaceSize),
+            ViewObservation.changes(model.$windowMode),
+            ViewObservation.changes(model.$compactExpanded),
+            ViewObservation.changes(model.$compactFavorites),
+            ViewObservation.changes(model.$favorites),
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$usage),
+            ViewObservation.changes(model.$excluded),
+            ViewObservation.changes(model.$runningPaths),
+            ViewObservation.changes(model.$navigation),
+            ViewObservation.changes(model.$fileResults),
+            ViewObservation.changes(model.$fileSearchStatus),
+            ViewObservation.changes(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] })
+        ]))
+    }
+
     private var rows: [Entry] {
         if showsFileResults { return model.fileEntries(ofType: fileType) }
         return model.pageID == .root ? model.commands : []
@@ -51,7 +75,7 @@ struct Launcher: View {
     private var launcherSurface: some View {
         let results = rows
         return ZStack(alignment: .top) {
-            if let target = argumentTarget { argumentEditor(target).padding(.bottom, 52) }
+            if let target = argumentTarget { argumentEditor(target).padding(.bottom, VisualStyle.launcherBottomInset) }
             else if model.isCompact { Color.clear }
             else {
                 if showsFileResults {
@@ -64,7 +88,7 @@ struct Launcher: View {
                     commandList(results).frame(height: 470, alignment: .top)
                 } else if let page, let content = page.content {
                     if page.extendsUnderChrome { content() }
-                    else { content().padding(.top, 61).padding(.bottom, 52) }
+                    else { content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset) }
                 }
             }
             if !model.isCompact { VStack(spacing: 0) {
@@ -243,7 +267,7 @@ struct Launcher: View {
         HStack(spacing: 12) {
             if model.pageID != .root { backButton { model.pageID = .root } }
             if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
-            SearchField(text: $model.query, placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
+            SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
                         back: page?.moveHorizontal.map { move in { move(-1) } },
                         forward: page?.moveHorizontal.map { move in { move(1) } },
                         navigateWhileTyping: page?.navigateWhileTyping ?? false)
@@ -262,41 +286,38 @@ struct Launcher: View {
         } else if let filter = page?.typeFilter { filter($filterOpen) }
     }
     private func commandList(_ results: [Entry]) -> some View {
-        return ScrollViewReader { proxy in
-            ResultListScrollView {
-                    if results.isEmpty {
-                        VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(ContentActionButtonStyle()).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
-                    }
-                    ForEach(Array(results.enumerated()), id: \.element.id) { index, row in
-                        if row.id == "calculator" {
-                            sectionHeader("计算器")
-                        } else if showsFileResults {
-                            if index == 0 { sectionHeader(model.fileSearchStatus) }
-                        } else if row.detail == "File" {
-                            if index == 0 || results[index - 1].detail != "File" { sectionHeader("文件") }
-                        } else {
-                            if index == 0 || results[index - 1].id == "calculator" {
-                                sectionHeader(model.query.isEmpty ? "建议" : "搜索结果")
-                            }
-                            if index == 5 && model.query.isEmpty { sectionHeader("其他") }
-                        }
-                        Button {
-                            selection = index
-                            selectedResultID = row.id
-                            if !showsFileResults { model.perform(row) }
-                        } label: {
-                            if row.id == "calculator" {
-                                CalculatorResultCard(expression: model.query, result: row.name, selected: index == selection)
-                            } else if showsFileResults {
-                                fileResultRow(row, index: index)
-                            } else {
-                                resultRow(row, index: index)
-                            }
-                        }.buttonStyle(.plain).id(row.id)
-                    }
+        SelectableResultList(selection: results.indices.contains(selection) ? results[selection].id : nil,
+                             query: model.query, firstResult: results.first?.id) {
+            if results.isEmpty {
+                VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(ContentActionButtonStyle()).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
             }
-            .onChange(of: selection) { _, value in let results = rows; if results.indices.contains(value) { proxy.scrollTo(results[value].id) } }
-            .onChange(of: model.query) { _, _ in if let first = rows.first { proxy.scrollTo(first.id, anchor: .top) } }
+            ForEach(Array(results.enumerated()), id: \.element.id) { index, row in
+                if row.id == "calculator" {
+                    sectionHeader("计算器")
+                } else if showsFileResults {
+                    if index == 0 { sectionHeader(model.fileSearchStatus) }
+                } else if row.detail == "File" {
+                    if index == 0 || results[index - 1].detail != "File" { sectionHeader("文件") }
+                } else {
+                    if index == 0 || results[index - 1].id == "calculator" {
+                        sectionHeader(model.query.isEmpty ? "建议" : "搜索结果")
+                    }
+                    if index == 5 && model.query.isEmpty { sectionHeader("其他") }
+                }
+                Button {
+                    selection = index
+                    selectedResultID = row.id
+                    if !showsFileResults { model.perform(row) }
+                } label: {
+                    if row.id == "calculator" {
+                        CalculatorResultCard(expression: model.query, result: row.name, selected: index == selection)
+                    } else if showsFileResults {
+                        fileResultRow(row, index: index)
+                    } else {
+                        resultRow(row, index: index)
+                    }
+                }.buttonStyle(.plain).id(row.id)
+            }
         }
     }
     private func sectionHeader(_ title: String) -> some View { Text(title).font(VisualStyle.sectionText).foregroundStyle(.secondary).padding(.leading, 14).padding(.top, 5).padding(.bottom, 5).frame(height: 26) }

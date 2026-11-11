@@ -5,7 +5,7 @@ import KeylaneCore
 
 struct ApplicationPreferences: View {
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
     @ObservedObject private var catalog: ApplicationSettingsCatalog
     @State private var filter = ""
     @State private var filteredApplications: [ApplicationPreferenceItem]?
@@ -13,14 +13,14 @@ struct ApplicationPreferences: View {
     init(model: Model) {
         self.model = model
         catalog = model.applicationSettingsCatalog
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$applicationHotkeyAction),
-            SettingsPageObservation.changes(model.$roots),
-            SettingsPageObservation.changes(model.$aliases),
-            SettingsPageObservation.changes(model.$bindings),
-            SettingsPageObservation.changes(model.$excluded),
-            SettingsPageObservation.changes(model.$favorites),
-            SettingsPageObservation.changes(model.$scanStatus)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$applicationHotkeyAction),
+            ViewObservation.changes(model.$roots),
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$bindings),
+            ViewObservation.changes(model.$excluded),
+            ViewObservation.changes(model.$favorites),
+            ViewObservation.changes(model.$scanStatus)
         ]))
     }
 

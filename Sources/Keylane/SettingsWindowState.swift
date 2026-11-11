@@ -30,8 +30,8 @@ final class SettingsWindowState: ObservableObject {
 }
 
 
-/// Observe only the values a settings page renders, even if they share a controller.
-final class SettingsPageObservation: ObservableObject {
+/// Observe only the values a view renders, even if they share a controller.
+final class ViewObservation: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     private var changes: AnyCancellable?
 

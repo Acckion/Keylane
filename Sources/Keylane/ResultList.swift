@@ -8,17 +8,45 @@ struct ResultListScrollView<Content: View>: View {
             LazyVStack(alignment: .leading, spacing: 0) { content() }
                 .padding(.horizontal, VisualStyle.launcherEdgeInset)
                 .padding(.bottom, VisualStyle.launcherEdgeInset)
-        }.scrollIndicators(.visible, axes: .vertical)
-            .contentMargins(.top, 61, for: .scrollContent)
-            .contentMargins(.bottom, 52, for: .scrollContent)
-            .contentMargins(.top, 61, for: .scrollIndicators)
-            .contentMargins(.bottom, 52, for: .scrollIndicators)
-            .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+        }
+            .launcherScrollInsets()
             .mask(LinearGradient(stops: [
                 .init(color: .clear, location: 0), .init(color: .black.opacity(0.2), location: 0.08),
                 .init(color: .black, location: 0.19), .init(color: .black, location: 0.80),
                 .init(color: .black.opacity(0.2), location: 0.96), .init(color: .clear, location: 1)
             ], startPoint: .top, endPoint: .bottom))
+    }
+}
+
+struct SelectableResultList<ID: Hashable, Content: View>: View {
+    let selection: ID?
+    var query: String? = nil
+    var firstResult: ID? = nil
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ResultListScrollView(content: content)
+                .onChange(of: selection) { _, id in
+                    if let id { proxy.scrollTo(id) }
+                }
+                .onChange(of: query) { _, _ in
+                    if let firstResult { proxy.scrollTo(firstResult, anchor: .top) }
+                }
+        }
+    }
+}
+
+extension View {
+    func launcherScrollInsets(top: Bool = true, bottom: Bool = true) -> some View {
+        let topInset = top ? VisualStyle.launcherTopInset : 0
+        let bottomInset = bottom ? VisualStyle.launcherBottomInset : 0
+        return scrollIndicators(.visible, axes: .vertical)
+            .contentMargins(.top, topInset, for: .scrollContent)
+            .contentMargins(.bottom, bottomInset, for: .scrollContent)
+            .contentMargins(.top, topInset, for: .scrollIndicators)
+            .contentMargins(.bottom, bottomInset, for: .scrollIndicators)
+            .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
     }
 }
 

@@ -194,7 +194,12 @@ enum BuiltinLauncherModules {
                 guard let controller = model?.clipboard else { return [] }
                 return clipboardActions(controller)
             },
-            updates: model.clipboard.objectWillChange.eraseToAnyPublisher(),
+            updates: Publishers.MergeMany([
+                ViewObservation.changes(model.clipboard.$selectedID),
+                ViewObservation.changes(model.clipboard.$items),
+                ViewObservation.changes(model.clipboard.$primaryAction),
+                ViewObservation.changes(model.clipboard.$kind)
+            ]).eraseToAnyPublisher(),
             typeFilterWidth: 138,
             typeFilter: { [weak model] open in
                 guard let model else { return AnyView(EmptyView()) }

@@ -4,22 +4,22 @@ import KeylaneCore
 struct ScreenshotPreferences: View {
     let library: ScreenshotLibrary
     let model: Model
-    @StateObject private var observation: SettingsPageObservation
+    @StateObject private var observation: ViewObservation
 
     init(library: ScreenshotLibrary, model: Model) {
         self.library = library
         self.model = model
-        _observation = StateObject(wrappedValue: SettingsPageObservation([
-            SettingsPageObservation.changes(model.$aliases),
-            SettingsPageObservation.changes(model.$bindings),
-            SettingsPageObservation.changes(library.$enabled),
-            SettingsPageObservation.changes(library.$columns),
-            SettingsPageObservation.changes(library.$scopes),
-            SettingsPageObservation.changes(library.$includeAll),
-            SettingsPageObservation.changes(library.$recognizesText),
-            SettingsPageObservation.changes(library.$accurate),
-            SettingsPageObservation.changes(library.$allowCloudOCR),
-            SettingsPageObservation.changes(library.$disabledCommands)
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$bindings),
+            ViewObservation.changes(library.$enabled),
+            ViewObservation.changes(library.$columns),
+            ViewObservation.changes(library.$scopes),
+            ViewObservation.changes(library.$includeAll),
+            ViewObservation.changes(library.$recognizesText),
+            ViewObservation.changes(library.$accurate),
+            ViewObservation.changes(library.$allowCloudOCR),
+            ViewObservation.changes(library.$disabledCommands)
         ]))
     }
 

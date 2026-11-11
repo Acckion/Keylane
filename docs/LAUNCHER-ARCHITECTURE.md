@@ -18,7 +18,7 @@
 
 ## 设置页组件
 
-「应用程序」和「截图」是设置页接入样例。模块登记页面、搜索项及所需的标题栏开关，设置窗口负责侧栏、搜索、页头、滚动和历史。设置窗口只订阅路由、外观与窗口反馈。页面通过 `SettingsPageObservation` 订阅自己渲染的字段。
+「应用程序」和「截图」是设置页接入样例。模块登记页面、搜索项及所需的标题栏开关，设置窗口负责侧栏、搜索、页头、滚动和历史。设置窗口只订阅路由、外观与窗口反馈。页面通过 `ViewObservation` 订阅自己渲染的字段。
 
 常规分组使用 `SettingsCard` 或 `SettingsGroup`，说明文字和目录添加分别使用 `SettingsCaption` 和 `SettingsAddFolderButton`。可搜索的分组将登记用的 `SettingsItem` 直接传给 `SettingsCard(anchor:)`。命令列表使用 `CommandSettingsList`，条目通过 `CommandSettingsEntry` 的 `CommandID` 接口接入别名和热键。行高、分隔线和列对齐均由列表管理。应用别名继续使用应用路径。长列表保留惰性布局、稳定的行 ID 和后台缩略图缓存。功能专属控件可以放进共用卡片，例如截图列数预览。
 
