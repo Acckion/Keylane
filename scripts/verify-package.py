@@ -45,6 +45,10 @@ def verify_app(app, image, version, distribution):
         raise SystemExit(f'Filename/architecture mismatch: {architectures}')
     requirement = [DEVELOPER_ID_REQUIREMENT] if distribution else []
     subprocess.run(['codesign', '--verify', '--deep', '--strict', *requirement, str(app)], check=True)
+    entitlements = plistlib.loads(subprocess.check_output(
+        ['codesign', '-d', '--entitlements', '-', '--xml', str(app)], stderr=subprocess.DEVNULL))
+    if not info.get('NSCameraUsageDescription') or entitlements.get('com.apple.security.device.camera') is not True:
+        raise SystemExit('Missing camera usage description or entitlement')
     if distribution:
         subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose', str(app)], check=True)
 
