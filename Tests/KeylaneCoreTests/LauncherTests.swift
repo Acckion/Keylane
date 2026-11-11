@@ -46,6 +46,46 @@ final class LauncherTests: XCTestCase {
         XCTAssertNil(ranking.match(id: "unrelated", title: "Calendar"))
     }
 
+    func testSelectionRetainsCommandAcrossAsyncResultChanges() {
+        let first = CommandID(rawValue: "first")
+        let selected = CommandID(rawValue: "selected")
+        let inserted = CommandID(rawValue: "inserted")
+        var selection = LauncherResultSelection()
+        selection.selectDefault(first)
+        selection.move(by: 1, in: [first, selected], identifiedBy: \.self)
+        let updated = [inserted, first, selected]
+        selection.selectDefault(inserted)
+        let activationIndex = selection.index(in: updated, identifiedBy: \.self)
+        XCTAssertEqual(activationIndex.map { updated[$0] }, selected)
+        XCTAssertNil(selection.index(in: [inserted, first], identifiedBy: \.self))
+        selection.move(by: 1, in: [inserted, first], identifiedBy: \.self)
+        XCTAssertEqual(selection.id, inserted)
+    }
+
+    func testPageLifecycleDoesNotLeaveHiddenPageTwice() {
+        let files = PageID(rawValue: "files")
+        let notes = PageID(rawValue: "notes")
+        var presentation = LauncherPagePresentation()
+
+        XCTAssertEqual(presentation.update(page: .root, visible: true).activation, .enter)
+        let toFiles = presentation.update(page: files, visible: true)
+        XCTAssertEqual(toFiles.previousPage, .root)
+        XCTAssertEqual(toFiles.deactivation, .root)
+        XCTAssertEqual(toFiles.activation, .enter)
+        XCTAssertNil(presentation.update(page: files, visible: true).activation)
+
+        XCTAssertEqual(presentation.update(page: files, visible: false).deactivation, files)
+        XCTAssertNil(presentation.update(page: files, visible: false).deactivation)
+        XCTAssertEqual(presentation.update(page: files, visible: true).activation, .resume)
+        XCTAssertEqual(presentation.update(page: files, visible: false).deactivation, files)
+
+        let switchWhileHidden = presentation.update(page: notes, visible: false)
+        XCTAssertEqual(switchWhileHidden.previousPage, files)
+        XCTAssertNil(switchWhileHidden.deactivation)
+        XCTAssertNil(switchWhileHidden.activation)
+        XCTAssertEqual(presentation.update(page: notes, visible: true).activation, .enter)
+    }
+
     func testLauncherReturnDelayIncludesBoundaryAndNever() {
         XCTAssertTrue(LauncherReturnDelay.immediately.shouldReturn(hiddenFor: 0))
         XCTAssertFalse(LauncherReturnDelay.after90Seconds.shouldReturn(hiddenFor: 89.9))
