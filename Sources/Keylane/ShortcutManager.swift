@@ -30,19 +30,53 @@ final class ShortcutManager {
         var newIDs: [UInt32:String] = [:]
         do {
             for action in proposed.keys.sorted() {
-                guard let spec = proposed[action], specs[action] != spec || refs[action] == nil else { continue }
-                var reference: EventHotKeyRef?
-                let id = nextID; nextID += 1
-                let result = RegisterEventHotKey(spec.key, spec.modifiers, EventHotKeyID(signature: 0x4B4C414E, id: id), GetApplicationEventTarget(), 0, &reference)
-                guard result == noErr, let reference else { throw Failure("快捷键已被系统或其他应用占用（\(result)）。原绑定保持不变。") }
-                additions[action] = reference; newIDs[id] = action
+                guard let spec = proposed[action], specs[action] != spec else { continue }
+                let registration = try register(spec)
+                additions[action] = registration.reference
+                newIDs[registration.id] = action
             }
         } catch { for reference in additions.values { UnregisterEventHotKey(reference) }; throw error }
         for (action, reference) in refs where proposed[action] != specs[action] { UnregisterEventHotKey(reference); refs.removeValue(forKey: action); ids = ids.filter { $0.value != action } }
         refs.merge(additions) { _, new in new }; ids.merge(newIDs) { _, new in new }; specs = proposed
     }
+    /// Restore independent bindings even when one is invalid or reserved by another app.
+    func restore(_ saved: [String: Shortcut]) throws {
+        suspend()
+        suspended = false
+        specs = saved
+        var registered = Set<Shortcut>()
+        var failures: [String] = []
+        let actions = (saved["launcher"] == nil ? [] : ["launcher"]) + saved.keys.filter { $0 != "launcher" }.sorted()
+        for action in actions {
+            guard let shortcut = saved[action] else { continue }
+            do {
+                if let reason = ShortcutValidation.conflict(in: [action: shortcut]) { throw Failure(reason) }
+                guard !registered.contains(shortcut) else { throw Failure("快捷键与已恢复的绑定重复。") }
+                let registration = try register(shortcut)
+                refs[action] = registration.reference
+                ids[registration.id] = action
+                registered.insert(shortcut)
+            } catch {
+                failures.append("\(action)：\(error.localizedDescription)")
+            }
+        }
+        if !failures.isEmpty {
+            throw Failure("部分快捷键未能恢复：\n" + failures.joined(separator: "\n"))
+        }
+    }
+
+    private func register(_ shortcut: Shortcut) throws -> (id: UInt32, reference: EventHotKeyRef) {
+        var reference: EventHotKeyRef?
+        let id = nextID
+        nextID += 1
+        let result = RegisterEventHotKey(shortcut.key, shortcut.modifiers, EventHotKeyID(signature: 0x4B4C414E, id: id),
+                                         GetApplicationEventTarget(), 0, &reference)
+        guard result == noErr, let reference else { throw Failure("快捷键已被系统或其他应用占用（\(result)）。") }
+        return (id, reference)
+    }
+
     func suspend() { for reference in refs.values { UnregisterEventHotKey(reference) }; refs = [:]; ids = [:]; suspended = true }
-    func resume() throws { suspended = false; try apply(specs) }
+    func resume() throws { try restore(specs) }
     func stop() { suspend(); if let handler { RemoveEventHandler(handler) }; handler = nil }
     struct Failure: LocalizedError { let errorDescription: String?; init(_ text: String) { errorDescription = text } }
 }

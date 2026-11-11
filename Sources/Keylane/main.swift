@@ -448,7 +448,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.model.runCommand(.init(rawValue: action), origin: .shortcut, usageKey: appKey)
             }
         }
-        do { try shortcuts.apply(model.bindings); hotkeyStatus = 0 } catch { hotkeyStatus = -1; model.error = error.localizedDescription }
+        do { try shortcuts.restore(model.bindings); hotkeyStatus = 0 } catch { hotkeyStatus = -1; model.error = error.localizedDescription }
         modifiers.activate = { [weak self] in self?.show() }
         model.configureModifiers()
         model.launcherModules?.startServices()
