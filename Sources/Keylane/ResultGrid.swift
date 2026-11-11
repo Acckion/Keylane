@@ -43,19 +43,22 @@ struct ResultGrid<Item: Identifiable, Tile: View, EmptyState: View>: View {
     var contentInset: CGFloat = 8
     var caption: ((Item) -> String)? = nil
     let itemTitle: (Item) -> String
-    let activate: (Item) -> Void
+    var activate: ((Item) -> Void)? = nil
     @ViewBuilder let tile: (Item) -> Tile
     @ViewBuilder let emptyState: () -> EmptyState
 
     private let spacing: CGFloat = 8
 
     var body: some View {
+        let visibleSections = sections.filter { !$0.items.isEmpty }
+        let columns = Array(repeating: GridItem(.flexible(minimum: 0), spacing: spacing),
+                            count: max(1, columnCount))
         ScrollViewReader { proxy in
             ResultListScrollView {
-                if sections.allSatisfy({ $0.items.isEmpty }) {
+                if visibleSections.isEmpty {
                     emptyState().frame(maxWidth: .infinity)
                 }
-                ForEach(sections.filter { !$0.items.isEmpty }) { section in
+                ForEach(visibleSections) { section in
                     VStack(alignment: .leading, spacing: spacing) {
                         HStack(spacing: 10) {
                             Text(section.title)
@@ -69,14 +72,13 @@ struct ResultGrid<Item: Identifiable, Tile: View, EmptyState: View>: View {
                         .foregroundStyle(.secondary)
                         .accessibilityAddTraits(.isHeader)
 
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: spacing),
-                                                  count: max(1, columnCount)), spacing: spacing) {
+                        LazyVGrid(columns: columns, spacing: spacing) {
                             ForEach(section.items) { item in
                                 let id = ResultGridSelection(sectionID: section.id, itemID: item.id)
                                 VStack(alignment: .leading, spacing: 7) {
                                     ResultGridTile(selected: selection == id, inset: contentInset) {
-                                        selection = id
-                                        activate(item)
+                                        if selection != id { selection = id }
+                                        activate?(item)
                                     } content: {
                                         tile(item)
                                     }

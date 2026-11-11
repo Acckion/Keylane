@@ -212,7 +212,12 @@ enum NavigationLauncherModules {
             guard let model else { return [] }
             return screenshotActions(model, chooseFolders: chooseFolders)
         }
-        page.updates = library.objectWillChange.eraseToAnyPublisher()
+        let selectedMedia = library.$results.combineLatest(library.$selection)
+            .map { results, selection in results.first { $0.id == selection?.itemID } }
+        page.updates = Publishers.Merge(
+            ViewObservation.changes(library.$filter),
+            ViewObservation.changes(selectedMedia)
+        ).eraseToAnyPublisher()
         return page
     }
 

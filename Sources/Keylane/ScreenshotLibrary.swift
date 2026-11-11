@@ -65,7 +65,7 @@ final class ScreenshotLibrary: ObservableObject {
     @Published var accurate: Bool { didSet { defaults.set(accurate, forKey: "screenshotOCRAccurate") } }
     @Published var allowCloudOCR: Bool { didSet { defaults.set(allowCloudOCR, forKey: "screenshotCloudOCR") } }
     @Published private(set) var scopes: [ScreenshotScope] = []
-    @Published var filter = ScreenshotFilter.all { didSet { search(query) } }
+    @Published var filter = ScreenshotFilter.all { didSet { if oldValue != filter { search(query) } } }
     @Published var selection: ResultGridSelection<String>?
     @Published private(set) var results: [ScreenshotMedia] = []
     @Published private(set) var scanning = false
@@ -196,7 +196,8 @@ final class ScreenshotLibrary: ObservableObject {
     }
 
     func move(_ delta: Int, vertical: Bool) {
-        selection = selection?.moving(delta, vertical: vertical, columns: columns, in: sections)
+        let next = selection?.moving(delta, vertical: vertical, columns: columns, in: sections)
+        if next != selection { selection = next }
     }
 
     var sections: [ResultGridSection<ScreenshotMedia>] {
@@ -205,8 +206,9 @@ final class ScreenshotLibrary: ObservableObject {
     }
 
     private func publish(_ results: [ScreenshotMedia]) {
-        self.results = results
-        selection = .retaining(selection, in: sections)
+        if self.results != results { self.results = results }
+        let next = ResultGridSelection.retaining(selection, in: sections)
+        if selection != next { selection = next }
     }
 
     func latest(_ completion: @escaping (ScreenshotMedia?) -> Void) {

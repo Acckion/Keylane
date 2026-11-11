@@ -148,12 +148,15 @@ enum UtilityLauncherModules {
                                                        icon: "doc.on.doc", perform: { use(item, false) })
                                     ]
                                 },
-                                updates: controller.objectWillChange.eraseToAnyPublisher())
+                                updates: Publishers.Merge(ViewObservation.changes(controller.$selection),
+                                                          ViewObservation.changes(controller.$category)).eraseToAnyPublisher())
         page.enter = { query in
             controller.query = query
             controller.start()
             return nil
         }
+        page.leave = controller.stop
+        page.resume = controller.start
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }

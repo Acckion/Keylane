@@ -67,11 +67,15 @@ final class EmojiSearchController: ObservableObject {
 
     @Published private(set) var sections: [ResultGridSection<EmojiItem>] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var isSearching = false
     @Published private(set) var loadFailed = false
     @Published var selection: ResultGridSelection<String>?
     @Published var category = "all" { didSet { if oldValue != category { refresh(resetSelection: true) } } }
     var query = "" { didSet { if oldValue != query { refresh(resetSelection: true) } } }
 
+    private var searchTask: Task<Void, Never>?
+    private var searchRevision = 0
+    private var active = false
     private var items: [EmojiItem] = []
     private var grouped: [String: [EmojiItem]] = [:]
     private var itemsByID: [String: EmojiItem] = [:]
@@ -80,7 +84,9 @@ final class EmojiSearchController: ObservableObject {
     var selected: EmojiItem? { selection.flatMap { itemsByID[$0.itemID] } }
 
     func start() {
-        guard items.isEmpty, !isLoading else { return }
+        active = true
+        if !items.isEmpty { refresh(resetSelection: false); return }
+        guard !isLoading else { return }
         isLoading = true
         loadFailed = false
         Task { @MainActor in
@@ -97,14 +103,29 @@ final class EmojiSearchController: ObservableObject {
     func recordUse(_ item: EmojiItem) {
         history[item.id, default: 0] += 1
         UserDefaults.standard.set(history, forKey: Self.recentsKey)
-        refresh(resetSelection: false)
+        if query.split(whereSeparator: \.isWhitespace).isEmpty { refresh(resetSelection: false) }
     }
 
     func move(_ delta: Int, vertical: Bool) {
-        selection = selection?.moving(delta, vertical: vertical, columns: Self.columnCount, in: sections)
+        let next = selection?.moving(delta, vertical: vertical, columns: Self.columnCount, in: sections)
+        if next != selection { selection = next }
+    }
+
+    func stop() {
+        active = false
+        cancelSearch()
+    }
+
+    private func cancelSearch() {
+        searchRevision &+= 1
+        searchTask?.cancel()
+        searchTask = nil
+        if isSearching { isSearching = false }
     }
 
     private func refresh(resetSelection: Bool) {
+        guard active else { return }
+        cancelSearch()
         let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
         let groups = EmojiCatalog.categories.dropFirst().filter { category == "all" || category == $0.id }
         var updated: [ResultGridSection<EmojiItem>] = []
@@ -130,19 +151,50 @@ final class EmojiSearchController: ObservableObject {
         } else {
             let enabled = Set(groups.map(\.id))
             let phrase = terms.joined(separator: " ")
-            let ranked = items.enumerated().compactMap { index, item -> (Int, Int, EmojiItem)? in
-                guard enabled.contains(item.category) else { return nil }
-                let score: Int
-                if item.glyph == phrase || item.english.lowercased() == phrase || item.chinese == phrase { score = 0 }
-                else if item.english.lowercased().hasPrefix(phrase) || item.chinese.hasPrefix(phrase) { score = 1 }
-                else if terms.allSatisfy({ item.searchTerms.contains($0) || item.glyph.contains($0) }) { score = 2 }
-                else { return nil }
-                return (score, index, item)
-            }.sorted { $0.0 == $1.0 ? $0.1 < $1.1 : $0.0 < $1.0 }.map { $0.2 }
-            if !ranked.isEmpty { updated.append(.init(id: "results", title: EmojiCatalog.label("搜索结果", "Results"), items: ranked)) }
+            let candidates = items
+            let terms = terms.map(String.init)
+            let revision = searchRevision
+            let priorSelection = resetSelection ? nil : selection
+            // Drop the old selection immediately so Return cannot activate a stale result.
+            publish([], retaining: nil)
+            guard !candidates.isEmpty else { return }
+            isSearching = true
+            searchTask = Task.detached(priority: .userInitiated) { [weak self] in
+                let ranked = Self.rank(candidates, categories: enabled, phrase: phrase, terms: terms)
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    guard let self, self.active, self.searchRevision == revision else { return }
+                    let updated: [ResultGridSection<EmojiItem>] = ranked.isEmpty ? [] : [
+                        .init(id: "results", title: EmojiCatalog.label("搜索结果", "Results"), items: ranked)
+                    ]
+                    self.publish(updated, retaining: priorSelection)
+                    self.isSearching = false
+                    self.searchTask = nil
+                }
+            }
+            return
         }
-        sections = updated
-        selection = .retaining(resetSelection ? nil : selection, in: updated)
+        publish(updated, retaining: resetSelection ? nil : selection)
+    }
+
+    private func publish(_ updated: [ResultGridSection<EmojiItem>], retaining priorSelection: ResultGridSelection<String>?) {
+        if !sections.isEmpty || !updated.isEmpty { sections = updated }
+        let next = ResultGridSelection.retaining(priorSelection, in: updated)
+        if next != selection { selection = next }
+    }
+
+    private static func rank(_ items: [EmojiItem], categories: Set<String>, phrase: String, terms: [String]) -> [EmojiItem] {
+        // Three stable buckets preserve the original score and catalogue ordering without sorting.
+        var matches = Array(repeating: [EmojiItem](), count: 3)
+        for item in items {
+            if Task.isCancelled { return [] }
+            guard categories.contains(item.category) else { continue }
+            let english = item.english.lowercased()
+            if item.glyph == phrase || english == phrase || item.chinese == phrase { matches[0].append(item) }
+            else if english.hasPrefix(phrase) || item.chinese.hasPrefix(phrase) { matches[1].append(item) }
+            else if terms.allSatisfy({ item.searchTerms.contains($0) || item.glyph.contains($0) }) { matches[2].append(item) }
+        }
+        return matches.flatMap { $0 }
     }
 }
 
@@ -159,7 +211,7 @@ struct EmojiSearchPage: View {
                 .minimumScaleFactor(0.55)
         } emptyState: {
             Group {
-                if controller.isLoading { ProgressView() }
+                if controller.isLoading || controller.isSearching { ProgressView() }
                 else if controller.loadFailed {
                     Button(EmojiCatalog.label("重新加载符号目录", "Reload Symbol Catalog")) { controller.start() }
                         .buttonStyle(ContentActionButtonStyle())

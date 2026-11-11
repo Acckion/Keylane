@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import QuickLookThumbnailing
 
 @main
@@ -27,6 +28,17 @@ struct ScreenshotLibraryCheck {
             throw CheckError.failure("Fixture not indexed (\(library.inaccessibleFolders) unreadable folders)")
         }
         try require(item.url.resolvingSymlinksInPath() == image.resolvingSymlinksInPath(), "Unexpected fixture path")
+
+        var selectionUpdates = 0
+        let observation = library.$selection.dropFirst().sink { _ in selectionUpdates += 1 }
+        library.move(-1, vertical: false)
+        library.move(1, vertical: true)
+        try require(selectionUpdates == 0, "Grid boundary must not republish the same selection")
+        library.filter = .movies
+        try require(library.results.isEmpty && library.selected == nil, "Filtering must clear the old selection")
+        library.filter = .images
+        try require(library.selected?.id == item.id, "Filtering back must restore a valid selection")
+        observation.cancel()
 
         let request = QLThumbnailGenerator.Request(fileAt: image, size: CGSize(width: 240, height: 240),
                                                    scale: 1, representationTypes: .thumbnail)

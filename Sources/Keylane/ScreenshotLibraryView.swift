@@ -10,7 +10,7 @@ struct ScreenshotLibraryPage: View {
     var body: some View {
         ResultGrid(sections: library.sections, selection: $library.selection, columnCount: library.columns,
                    contentInset: 0, caption: { caption($0.date) },
-                   itemTitle: { $0.name }, activate: { _ in }) { item in
+                   itemTitle: { $0.name }) { item in
             ScreenshotThumbnail(item: item)
         } emptyState: {
             VStack(spacing: 14) {
@@ -55,6 +55,11 @@ private struct ScreenshotThumbnail: View {
         value.totalCostLimit = 48 * 1024 * 1024
         return value
     }()
+    private struct Revision: Equatable {
+        let item: ScreenshotMedia
+        let scale: CGFloat
+    }
+
     let item: ScreenshotMedia
     @State private var thumbnail: NSImage?
     @Environment(\.displayScale) private var scale
@@ -75,7 +80,7 @@ private struct ScreenshotThumbnail: View {
             }
         }
         .accessibilityHidden(true)
-        .task(id: item) {
+        .task(id: Revision(item: item, scale: scale)) {
             thumbnail = nil
             guard !item.needsCloudAccess else { return }
             let key = "\(item.url.absoluteString)|\(item.modified.timeIntervalSince1970)|\(item.size)|\(scale)" as NSString
