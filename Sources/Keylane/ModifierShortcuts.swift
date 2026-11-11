@@ -5,6 +5,13 @@ import KeylaneCore
 
 /// No persistent system key remapping. Event tap is opt-in and removed on disable/quit.
 final class ModifierShortcuts {
+    private static let unmodifiedEventMarker: Int64 = 0x4B4C4E455241574B
+
+    static func postWithoutHyperRemapping(_ event: CGEvent) {
+        event.setIntegerValueField(.eventSourceUserData, value: unmodifiedEventMarker)
+        event.post(tap: .cghidEventTap)
+    }
+
     private var global: Any?
     private var local: Any?
     private var tracker = ModifierTapTracker()
@@ -32,6 +39,9 @@ final class ModifierShortcuts {
                 let owner = Unmanaged<ModifierShortcuts>.fromOpaque(context).takeUnretainedValue()
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { if let tap = owner.tap { CGEvent.tapEnable(tap: tap, enable: true) }; owner.hyperHeld = false; return Unmanaged.passUnretained(event) }
                 if IsSecureEventInputEnabled() { owner.hyperHeld = false; return Unmanaged.passUnretained(event) }
+                if event.getIntegerValueField(.eventSourceUserData) == ModifierShortcuts.unmodifiedEventMarker {
+                    return Unmanaged.passUnretained(event)
+                }
                 let key = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
                 if key == 57 {
                     owner.hyperHeld = CGEventSource.keyState(.hidSystemState, key: 57)
