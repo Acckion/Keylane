@@ -233,6 +233,18 @@ final class Model: ObservableObject {
 }
 final class LauncherPanel: NSPanel {
     var dragHandler: ((NSEvent) -> Void)?
+    override func sendEvent(_ event: NSEvent) {
+        // Keep a narrow drag area above the hosted search field.
+        let point = event.locationInWindow
+        if event.type == .leftMouseDown, dragHandler != nil,
+           point.y >= frame.height - 10, point.y < frame.height,
+           point.x >= 28, point.x <= frame.width - 28 {
+            performDrag(with: event)
+            return
+        }
+        super.sendEvent(event)
+    }
+
     override func performDrag(with event: NSEvent) {
         if let dragHandler { dragHandler(event) }
         else { super.performDrag(with: event) }
