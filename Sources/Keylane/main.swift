@@ -50,7 +50,6 @@ final class Model: ObservableObject {
     let menuBar = MenuBarRegistry()
     lazy var calendar = CalendarController(registry: menuBar)
     @Published var notes: String = UserDefaults.standard.string(forKey: "notes") ?? "" { didSet { saveNote() } }
-    @Published var link: String = UserDefaults.standard.string(forKey: "link") ?? "https://github.com/Acckion/Keylane" { didSet { UserDefaults.standard.set(link, forKey: "link") } }
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots
     @Published var excluded = Set(UserDefaults.standard.stringArray(forKey: "excludedApps") ?? [])
     @Published var applicationsEnabled = (UserDefaults.standard.object(forKey: "applicationsEnabled") as? Bool) ?? true { didSet { UserDefaults.standard.set(applicationsEnabled, forKey: "applicationsEnabled") } }
