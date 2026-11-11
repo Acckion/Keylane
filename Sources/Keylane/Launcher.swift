@@ -113,7 +113,11 @@ struct Launcher: View {
     var body: some View {
         let _ = pageRevision
         launcherSurface
-        .onAppear { focusToken += 1; modifiers.start() }
+        .onAppear {
+            launcherVisible = (NSApp.delegate as? Delegate)?.window?.isVisible == true
+            focusToken += 1
+            modifiers.start()
+        }
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
         .onDisappear { modifiers.stop() }
         .onExitCommand { if !SearchField.isComposing { escape() } }
@@ -224,7 +228,8 @@ struct Launcher: View {
                 ForEach(model.commands.filter { model.favorites.contains($0.id) }) { row in
                     Button { model.perform(row) } label: {
                         Group {
-                            if row.id.hasSuffix(".app") { Image(nsImage: IconCache.shared.image(row.id)).resizable() }
+                            if let artwork = model.launcherModules?.artwork(for: row) { artwork }
+                            else if row.id.hasSuffix(".app") { Image(nsImage: IconCache.shared.image(row.id)).resizable() }
                             else { Image(systemName: row.symbol).resizable().scaledToFit() }
                         }.frame(width: 26, height: 26)
                     }.buttonStyle(.plain).help(row.name).accessibilityLabel(row.name)
@@ -316,7 +321,8 @@ struct Launcher: View {
     private func resultRow(_ row: Entry, index: Int) -> some View {
         HStack(spacing: 13) {
             Group {
-                if row.id.hasSuffix(".app") || row.detail == "File" { Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high) }
+                if let artwork = model.launcherModules?.artwork(for: row) { artwork }
+                else if row.id.hasSuffix(".app") || row.detail == "File" { Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high) }
                 else { Image(systemName: row.symbol).font(.system(size: 21, weight: .regular)).foregroundStyle(iconColor(row.id)).frame(width: 26, height: 26) }
             }.frame(width: 26, height: 26)
                 .overlay(alignment: .bottomLeading) { if model.runningPaths.contains(row.id) { Circle().fill(.green).frame(width: 5, height: 5).offset(x: -1, y: 3).accessibilityLabel("正在运行") } }

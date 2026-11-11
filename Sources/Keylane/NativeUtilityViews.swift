@@ -30,7 +30,7 @@ struct SystemShortcutsPreferences: View {
                                 if enabled { controller.disabledIDs.remove(entry.id) } else { controller.disabledIDs.insert(entry.id) }
                             }),
                             setShortcut: { model.setShortcut(entry.commandID, value: $0) },
-                            icon: { Image(systemName: "square.stack.3d.up.fill").foregroundStyle(.purple) },
+                            icon: { ShortcutArtwork(image: controller.icons[entry.id]) },
                             perform: {
                                 model.runCommand(CommandID(rawValue: entry.commandID), origin: .menu)
                             })

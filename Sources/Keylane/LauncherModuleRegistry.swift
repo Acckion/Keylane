@@ -78,6 +78,7 @@ struct LauncherModule {
         var primaryTitle: ((Entry) -> String?)?
         var actions: ((Entry) -> [LauncherAction]?)?
         var displayDetail: ((Entry) -> String?)?
+        var artwork: ((Entry) -> AnyView)?
     }
 
     struct Service {
@@ -158,6 +159,8 @@ final class LauncherModuleRegistry {
     func actions(for entry: Entry) -> [LauncherAction]? { provider(for: entry)?.actions?(entry) }
     func primaryTitle(for entry: Entry) -> String? { provider(for: entry)?.primaryTitle?(entry) }
     func displayDetail(for entry: Entry) -> String? { provider(for: entry)?.displayDetail?(entry) }
+
+    func artwork(for entry: Entry) -> AnyView? { provider(for: entry)?.artwork?(entry) }
 
     func candidates(for input: LauncherCommandSearch.Input) -> [Entry] {
         commands.compactMap { command in

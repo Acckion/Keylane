@@ -199,7 +199,9 @@ enum UtilityLauncherModules {
         }, actions: { [weak model] row in
             guard let model else { return nil }
             return shortcutActions(for: row, model: model)
-        }, displayDetail: { _ in "快捷指令" })
+        }, displayDetail: { _ in "快捷指令" }, artwork: { row in
+            AnyView(ShortcutArtwork(image: controller.icon(forCommandID: row.id)))
+        })
         let settings = LauncherSettingsPage(id: pageID, title: "快捷指令", symbol: "square.stack.3d.up",
                                             subtitle: "为系统快捷指令设置搜索别名与热键。", order: 60,
                                             items: SettingsItem.all.filter { $0.page == pageID },
@@ -222,7 +224,8 @@ enum UtilityLauncherModules {
         ], searchUpdates: [searchUpdates])
         module.launcherShown = { controller.refresh() }
         module.presentationUpdates = [
-            controller.$runningID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
+            controller.$runningID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            controller.$icons.dropFirst().map { _ in () }.eraseToAnyPublisher()
         ]
         return module
     }
