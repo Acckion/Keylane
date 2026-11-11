@@ -1,12 +1,29 @@
 import Foundation
 import CoreServices
+import UniformTypeIdentifiers
 
 public struct SpotlightFile: Identifiable, Equatable, Sendable {
     public var id: String { url.path }
     public let url: URL
     public let name: String
     public let modified: Date
-    public init(url: URL, name: String, modified: Date) { self.url = url; self.name = name; self.modified = modified }
+    public let isDirectory: Bool
+    public let contentType: UTType?
+
+    public init(url: URL, name: String, modified: Date, isDirectory: Bool = false, contentType: UTType? = nil) {
+        self.url = url
+        self.name = name
+        self.modified = modified
+        self.isDirectory = isDirectory
+        self.contentType = contentType
+    }
+
+    /// Resolve presentation metadata on the search worker after ranking limits the result set.
+    public func readingResourceMetadata() -> Self {
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentTypeKey])
+        return Self(url: url, name: name, modified: modified, isDirectory: values?.isDirectory == true,
+                    contentType: values?.contentType ?? UTType(filenameExtension: url.pathExtension))
+    }
 }
 
 /// A candidate scored for the current query. Both search sources share the ordering.

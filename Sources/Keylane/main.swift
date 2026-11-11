@@ -58,7 +58,7 @@ final class Model: ObservableObject {
 
     func fileEntries(ofType type: String) -> [Entry] {
         if let cached = filteredFileEntries[type] { return cached }
-        let entries = fileResults.lazy.filter { FileResultTypeFilter.includes($0.url, selection: type) }
+        let entries = fileResults.lazy.filter { FileResultTypeFilter.includes($0, selection: type) }
             .map(BuiltinLauncherModules.fileEntry)
         let result = Array(entries)
         filteredFileEntries[type] = result
@@ -92,6 +92,12 @@ final class Model: ObservableObject {
         didSet { commandSearch.invalidate() }
     }
     @Published var favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
+    func favoriteAction(for entry: Entry) -> LauncherAction {
+        let favorite = favorites.contains(entry.id)
+        return .init(id: "favorite", title: favorite ? "取消收藏" : "加入收藏", icon: favorite ? "star.fill" : "star") { [weak self] in
+            self?.toggleFavorite(entry.id)
+        }
+    }
     func toggleFavorite(_ id: String) { if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }; UserDefaults.standard.set(Array(favorites), forKey: "favorites") }
     func openSettings(page: String? = nil) { if let page { settingsPage = page }; (NSApp.delegate as? Delegate)?.showSettings() }
     func saveNote() { do { try store?.save(KeylaneCore.Record(id: noteID, kind: "note", title: String(notes.prefix(60)), body: notes)); savedNotes = try store?.records(kind: "note") ?? [] } catch { self.error = error.localizedDescription } }

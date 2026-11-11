@@ -1,4 +1,5 @@
 import SwiftUI
+import KeylaneCore
 import UniformTypeIdentifiers
 
 struct ResultFilterOption: Identifiable {
@@ -86,13 +87,11 @@ struct ResultTypeFilter: View {
 }
 
 enum FileResultTypeFilter {
-    static func includes(_ url: URL, selection: String) -> Bool {
-        guard selection != "all" else { return true }
-        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentTypeKey])
-        let directory = values?.isDirectory == true
-        if selection == "folder" { return directory }
-        if selection == "file" { return !directory }
-        guard !directory, let type = values?.contentType ?? UTType(filenameExtension: url.pathExtension) else { return false }
+    static func includes(_ file: SpotlightFile, selection: String) -> Bool {
+        if selection == "all" { return true }
+        if selection == "folder" { return file.isDirectory }
+        if selection == "file" { return !file.isDirectory }
+        guard !file.isDirectory, let type = file.contentType else { return false }
         switch selection {
         case "archive": return type.conforms(to: .archive)
         case "document": return type.conforms(to: .text) || type.conforms(to: .pdf) || type.conforms(to: .compositeContent)

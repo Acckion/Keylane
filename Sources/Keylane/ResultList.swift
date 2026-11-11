@@ -22,18 +22,31 @@ struct ResultListScrollView<Content: View>: View {
     }
 }
 
-/// One row style for file search and clipboard: icon, content, shared selection and sizing.
+enum ResultListRowLayout {
+    case standard
+    case root
+
+    var horizontalInset: CGFloat {
+        switch self {
+        case .standard: return 10
+        case .root: return 13
+        }
+    }
+}
+
+/// Owns result selection, icon size and row metrics for root and secondary lists.
 struct ResultListRow<Icon: View, Content: View>: View {
     let selected: Bool
     var height: CGFloat = 40
+    var layout: ResultListRowLayout = .standard
     @ViewBuilder let icon: () -> Icon
     @ViewBuilder let content: () -> Content
     @Environment(\.colorSchemeContrast) private var contrast
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: layout.horizontalInset) {
             icon().frame(width: 26, height: 26)
             content().frame(maxWidth: .infinity, alignment: .leading)
-        }.padding(.horizontal, 10).frame(height: height)
+        }.padding(.horizontal, layout.horizontalInset).frame(height: height)
             .background(selected ? Color.primary.opacity(contrast == .increased ? 0.22 : 0.10) : .clear, in: RoundedRectangle(cornerRadius: 9))
             .contentShape(Rectangle())
     }

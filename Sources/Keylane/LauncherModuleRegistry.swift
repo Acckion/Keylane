@@ -15,14 +15,27 @@ struct Entry: Identifiable {
     var aliases: [String] = []
     var rankingKind: LauncherSearchRanking.Kind = .command
     var matchScore: Int?
+    var isDirectory = false
 }
 
 struct LauncherAction: Identifiable {
+    struct Submenu {
+        let title: String
+        let items: [LauncherAction]
+    }
+
+    struct ArgumentForm {
+        let title: String
+        let submit: ([String]) -> Void
+    }
+
     let id: String
     let title: String
     let icon: String
     var keys: [String] = []
-    let perform: () -> Void
+    var submenu: Submenu?
+    var argumentForm: ArgumentForm?
+    var perform: () -> Void = {}
 }
 
 struct LauncherPage {

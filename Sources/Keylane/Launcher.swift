@@ -37,8 +37,8 @@ struct Launcher: View {
     @State private var actionQuery = ""
     @State private var actionSelection = 0
     @State private var focusToken = 0
-    @State private var submenu = false
-    @State private var argumentTarget: Entry?
+    @State private var submenu: LauncherAction.Submenu?
+    @State private var argumentTarget: LauncherAction.ArgumentForm?
     @State private var argumentText = ""
     @FocusState private var argumentsFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -215,7 +215,7 @@ struct Launcher: View {
         }
     }
     private func escape() {
-        if submenu { submenu = false; actionQuery = ""; actionSelection = 0; focusToken += 1; return }
+        if submenu != nil { dismissSubmenu(); return }
         if argumentTarget != nil { argumentTarget = nil; focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
         else if model.pageID != .root { model.pageID = .root }
@@ -302,7 +302,7 @@ struct Launcher: View {
     private func sectionHeader(_ title: String) -> some View { Text(title).font(VisualStyle.sectionText).foregroundStyle(.secondary).padding(.leading, 14).padding(.top, 5).padding(.bottom, 5).frame(height: 26) }
     private func fileResultRow(_ row: Entry, index: Int) -> some View {
         let url = URL(fileURLWithPath: row.id)
-        let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        let isFolder = row.isDirectory
         return ResultListRow(selected: index == selection, height: isFolder ? 48 : 40) {
             Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high)
         } content: {
@@ -319,22 +319,35 @@ struct Launcher: View {
         }.help(url.path)
     }
     private func resultRow(_ row: Entry, index: Int) -> some View {
-        HStack(spacing: 13) {
+        ResultListRow(selected: index == selection, layout: .root) {
             Group {
                 if let artwork = model.launcherModules?.artwork(for: row) { artwork }
                 else if row.id.hasSuffix(".app") || row.detail == "File" { Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high) }
-                else { Image(systemName: row.symbol).font(.system(size: 21, weight: .regular)).foregroundStyle(iconColor(row.id)).frame(width: 26, height: 26) }
-            }.frame(width: 26, height: 26)
-                .overlay(alignment: .bottomLeading) { if model.runningPaths.contains(row.id) { Circle().fill(.green).frame(width: 5, height: 5).offset(x: -1, y: 3).accessibilityLabel("正在运行") } }
-            HighlightedResultText(text: row.name, query: model.query).font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
-            if row.detail == "File" && !showsFileResults { Text(URL(fileURLWithPath: row.id).deletingLastPathComponent().path).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }
-            if row.detail == "AI" { Text("AI").font(.system(size:12)).foregroundStyle(.secondary) }
-            if let alias = model.aliases[row.id], !alias.isEmpty { Text(alias).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 5).padding(.vertical, 2).background(.quaternary, in: RoundedRectangle(cornerRadius: 4)) }
-            Spacer(minLength: 8)
-            resultAttributeBadge(row, index: index)
-        }.padding(.horizontal, 13).frame(height: 40)
-        .background(index == selection ? Color.primary.opacity(contrast == .increased ? 0.22 : 0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
-        .contentShape(Rectangle())
+                else { Image(systemName: row.symbol).font(.system(size: 21, weight: .regular)).foregroundStyle(iconColor(row.id)) }
+            }
+            .frame(width: 26, height: 26)
+            .overlay(alignment: .bottomLeading) {
+                if model.runningPaths.contains(row.id) {
+                    Circle().fill(.green).frame(width: 5, height: 5).offset(x: -1, y: 3)
+                        .accessibilityLabel("正在运行")
+                }
+            }
+        } content: {
+            HStack(spacing: ResultListRowLayout.root.horizontalInset) {
+                HighlightedResultText(text: row.name, query: model.query).font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
+                if row.detail == "File" {
+                    Text(URL(fileURLWithPath: row.id).deletingLastPathComponent().path).font(.system(size: 11))
+                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                if row.detail == "AI" { Text("AI").font(.system(size: 12)).foregroundStyle(.secondary) }
+                if let alias = model.aliases[row.id], !alias.isEmpty {
+                    Text(alias).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 5).padding(.vertical, 2)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+                }
+                Spacer(minLength: 8)
+                resultAttributeBadge(row, index: index)
+            }
+        }
     }
     private func resultAttributeBadge(_ row: Entry, index: Int) -> some View {
         let showingShortcut = modifiers.commandHeld && index < 10
@@ -421,54 +434,57 @@ struct Launcher: View {
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
             ]
         }
+        if let submenu {
+            return [MenuAction(id: "back", title: "返回", icon: "chevron.left", perform: dismissSubmenu)] + submenu.items
+        }
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
         if let actions = model.launcherModules?.actions(for: row) { return actions }
-        var result = [MenuAction(id: "open", title: row.detail == "File" ? "打开文件" : (row.id.hasSuffix(".app") ? "打开应用程序" : "执行命令"), icon: "return", keys: ["↩"], perform: { model.runCommand(row.commandID, origin: .menu, usageKey: row.id) })]
-        if row.id.hasSuffix(".app") {
-            let url = URL(fileURLWithPath: row.id)
-            if submenu {
-                return [MenuAction(id: "back", title: "返回", icon: "chevron.left", perform: { actions = true; submenu = false; focusToken += 1 }),
-                    MenuAction(id: "reveal", title: "在 Finder 中显示", icon: "folder", perform: { NSWorkspace.shared.activateFileViewerSelecting([url]) }),
-                    MenuAction(id: "contents", title: "显示包内容", icon: "shippingbox", perform: { NSWorkspace.shared.open(url.appendingPathComponent("Contents")) }),
-                    MenuAction(id: "path", title: "复制路径", icon: "doc.on.doc", perform: { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.path, forType: .string) })]
-            }
-            result += [
-                MenuAction(id: "finder", title: "Finder 操作", icon: "folder", keys: ["›"], perform: { actions = true; appMenu = false; submenu = true; actionQuery = ""; actionSelection = 0; focusToken += 1 }),
-                MenuAction(id: "arguments", title: "使用参数启动…", icon: "terminal", perform: { argumentTarget = row; argumentText = "" }),
-                MenuAction(id: "configure", title: "配置别名和快捷键…", icon: "keyboard", perform: { model.openSettings(page: "applications") })
-            ]
+        return [
+            MenuAction(id: "open", title: "执行命令", icon: "return", keys: ["↩"]) {
+                model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
+            },
+            model.favoriteAction(for: row)
+        ]
+    }
+    private func dismissSubmenu() {
+        submenu = nil
+        actionQuery = ""
+        actionSelection = 0
+        focusToken += 1
+    }
+    private func activate(_ item: MenuAction) {
+        if let next = item.submenu {
+            submenu = next
+            actionQuery = ""
+            actionSelection = 0
+            focusToken += 1
+        } else if item.id == "back", submenu != nil {
+            dismissSubmenu()
+        } else {
+            closeMenus()
+            if let form = item.argumentForm {
+                argumentTarget = form
+                argumentText = ""
+            } else { item.perform() }
         }
-        if row.detail == "File" {
-            let url = URL(fileURLWithPath: row.id)
-            result += [
-                MenuAction(id: "preview", title: "快速查看", icon: "eye", perform: { if FileManager.default.fileExists(atPath: url.path) { FilePreview.shared.show(url) } else { model.error = "文件已移走或删除。"; model.searchFiles() } }),
-                MenuAction(id: "open-with-file", title: "打开方式…", icon: "app", perform: { FileActionsWindow.shared.show(url,page:"open") }),
-                MenuAction(id: "share-file", title: "分享…", icon: "square.and.arrow.up", perform: { FileActionsWindow.shared.show(url,page:"share") }),
-                MenuAction(id: "ask-file", title: "询问此文件…", icon: "sparkles", perform: { model.fileAI.present([url]) }),
-                MenuAction(id: "reveal-file", title: "在 Finder 中显示", icon: "folder", perform: { NSWorkspace.shared.activateFileViewerSelecting([url]) }),
-                MenuAction(id: "copy-file-path", title: "复制路径", icon: "doc.on.doc", perform: { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(url.path, forType: .string) })
-            ]
-        }
-        result.append(MenuAction(id: "favorite", title: model.favorites.contains(row.id) ? "取消收藏" : "加入收藏", icon: model.favorites.contains(row.id) ? "star.fill" : "star", perform: { model.toggleFavorite(row.id) }))
-        return result
     }
     private func filteredMenu(applicationMenu: Bool) -> [MenuAction] { menuItems(applicationMenu: applicationMenu).filter { actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery) } }
     private func menuPanel(applicationMenu: Bool) -> some View {
         let items = filteredMenu(applicationMenu: applicationMenu)
         return VStack(alignment: .leading, spacing: 0) {
-            Text(applicationMenu ? "Keylane " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") : (page?.actionTitle ?? selectedEntry?.name ?? "操作") + (submenu ? " › Finder" : "")).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
+            Text(applicationMenu ? "Keylane " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") : (page?.actionTitle ?? selectedEntry?.name ?? "操作") + (submenu.map { " › " + $0.title } ?? "")).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                Button { closeMenus(); item.perform() } label: {
+                Button { activate(item) } label: {
                     HStack(spacing: VisualStyle.actionSpacing) { Image(systemName: item.icon).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome).frame(width: VisualStyle.actionIconWidth, height: 20); Text(item.title).font(VisualStyle.rowText); Spacer(); HStack(spacing: 3) { ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) } } }.padding(.horizontal, 11).frame(height: 39).background(index == actionSelection ? Color.primary.opacity(contrast == .increased ? 0.24 : 0.12) : Color.clear, in: RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
                 }.buttonStyle(.plain).padding(.horizontal, 8).onHover { inside in if inside { actionSelection = index } }
             }
             if items.isEmpty { Text("没有匹配的操作").font(.caption).foregroundStyle(.secondary).padding(16) }
             Divider().padding(.top, 9)
             SearchField(text: $actionQuery, placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, fontSize: 14, navigation: model.navigation, submit: {
-                if items.indices.contains(actionSelection) { let action = items[actionSelection]; closeMenus(); action.perform() }
+                if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
             }, move: moveSelection, escape: escape, back: { escape() }, forward: {
-                if items.indices.contains(actionSelection), items[actionSelection].id == "finder" { let item = items[actionSelection]; closeMenus(); item.perform() }
+                if items.indices.contains(actionSelection), items[actionSelection].submenu != nil { activate(items[actionSelection]) }
             }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10).onChange(of: actionQuery) { _, _ in actionSelection = 0 }
         }.frame(width: 345)
     }
@@ -476,9 +492,9 @@ struct Launcher: View {
         filterOpen = false
         model.compactExpanded = true
         let open = application ? !appMenu : !actions
-        submenu = false; actions = !application && open; appMenu = application && open; actionQuery = ""; actionSelection = 0; focusToken += 1
+        submenu = nil; actions = !application && open; appMenu = application && open; actionQuery = ""; actionSelection = 0; focusToken += 1
     }
-    private func closeMenus() { filterOpen = false; submenu = false; actions = false; appMenu = false; actionQuery = ""; focusToken += 1 }
+    private func closeMenus() { filterOpen = false; submenu = nil; actions = false; appMenu = false; actionQuery = ""; focusToken += 1 }
     private var moduleTitle: String { page?.placeholder ?? "设置" }
     private var primaryTitle: String {
         if argumentTarget != nil { return "启动新实例" }
@@ -489,9 +505,9 @@ struct Launcher: View {
         }
         return model.pageID == .root || showsFileResults ? "打开" : "返回"
     }
-    private func argumentEditor(_ target: Entry) -> some View {
+    private func argumentEditor(_ target: LauncherAction.ArgumentForm) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack { backButton { argumentTarget = nil; focusToken += 1 }; Text(target.name).font(.title2.weight(.semibold)) }
+            HStack { backButton { argumentTarget = nil; focusToken += 1 }; Text(target.title).font(.title2.weight(.semibold)) }
             Text("启动一个新实例，并传入以下参数。参数是否生效取决于目标应用；不会通过 Shell 执行。").foregroundStyle(.secondary)
             TextField("例如：--profile \"Work Profile\"", text: $argumentText).textFieldStyle(.roundedBorder).focused($argumentsFocused).onSubmit { run() }
             if let arguments = try? ArgumentParser.parse(argumentText) { Text(arguments.enumerated().map { "[\($0.offset)] \($0.element)" }.joined(separator: "\n")).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
@@ -504,8 +520,8 @@ struct Launcher: View {
     }
     private func run() {
         if (showsFileResults || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
-        if let target = argumentTarget { do { let args = try ArgumentParser.parse(argumentText); model.launch(URL(fileURLWithPath: target.id), arguments: args) } catch { model.error = "参数引号或转义未完成。" }; return }
-        if actions || appMenu { let items = filteredMenu(applicationMenu: appMenu); if items.indices.contains(actionSelection) { let item = items[actionSelection]; closeMenus(); item.perform() }; return }
+        if let target = argumentTarget { do { let args = try ArgumentParser.parse(argumentText); target.submit(args) } catch { model.error = "参数引号或转义未完成。" }; return }
+        if actions || appMenu { let items = filteredMenu(applicationMenu: appMenu); if items.indices.contains(actionSelection) { activate(items[actionSelection]) }; return }
         if let submit = page?.submit { submit(); return }
         if model.pageID != .root && !showsFileResults { model.pageID = .root; return }
         if let row = selectedEntry { model.perform(row) }

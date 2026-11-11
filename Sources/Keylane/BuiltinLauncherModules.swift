@@ -57,7 +57,7 @@ enum BuiltinLauncherModules {
                 if origin == .shortcut { model?.launchFromHotkey(url) }
                 else { model?.launch(url) }
             }
-        })
+        }, actions: { [weak model] entry in model.map { applicationActions(entry, model: $0) } })
         return .init(id: .init(rawValue: "keylane.applications"), providers: [provider],
                      settings: [settingsPage(model, "applications", "应用程序", "square.grid.2x2.fill", "快速查找并启动已安装的应用程序。", 10, titlebar: SettingsTitlebarContribution(
                          title: "启用应用程序", help: "启用应用搜索和应用快捷键",
@@ -76,7 +76,7 @@ enum BuiltinLauncherModules {
 
     static func fileEntry(_ file: SpotlightFile) -> Entry {
         Entry(id: file.id, commandID: .init(rawValue: "file:" + file.id),
-              name: file.name, detail: "File", symbol: "doc", rankingKind: .file)
+              name: file.name, detail: "File", symbol: "doc", rankingKind: .file, isDirectory: file.isDirectory)
     }
 
     private static func files(_ model: Model) -> LauncherModule {
@@ -92,7 +92,7 @@ enum BuiltinLauncherModules {
             let path = String(id.rawValue.dropFirst("file:".count))
             guard let file = model.fileResults.first(where: { $0.id == path }) else { return nil }
             return { [weak model] in model?.openFile(file.url) }
-        })
+        }, actions: { [weak model] entry in model.map { fileActions(entry, model: $0) } })
         return .init(id: .init(rawValue: "keylane.files"), commands: [
             command("file-search", "搜索文件", "Spotlight", "doc.text.magnifyingglass",
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
@@ -123,6 +123,52 @@ enum BuiltinLauncherModules {
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
                            updates(model.fileAI.$commandsEnabled)])
+    }
+
+    private static func applicationActions(_ entry: Entry, model: Model) -> [LauncherAction] {
+        let url = URL(fileURLWithPath: entry.id)
+        return [
+            openAction("打开应用程序", entry: entry, model: model),
+            .init(id: "finder", title: "Finder 操作", icon: "folder", keys: ["›"], submenu: .init(title: "Finder", items: [
+                .init(id: "reveal", title: "在 Finder 中显示", icon: "folder") { NSWorkspace.shared.activateFileViewerSelecting([url]) },
+                .init(id: "contents", title: "显示包内容", icon: "shippingbox") { NSWorkspace.shared.open(url.appendingPathComponent("Contents")) },
+                copyPathAction(id: "path", url: url)
+            ])),
+            .init(id: "arguments", title: "使用参数启动…", icon: "terminal",
+                  argumentForm: .init(title: entry.name, submit: { [weak model] arguments in model?.launch(url, arguments: arguments) })),
+            .init(id: "configure", title: "配置别名和快捷键…", icon: "keyboard") { [weak model] in model?.openSettings(page: "applications") },
+            model.favoriteAction(for: entry)
+        ]
+    }
+
+    private static func fileActions(_ entry: Entry, model: Model) -> [LauncherAction] {
+        let url = URL(fileURLWithPath: entry.id)
+        return [
+            openAction("打开文件", entry: entry, model: model),
+            .init(id: "preview", title: "快速查看", icon: "eye") { [weak model] in
+                if FileManager.default.fileExists(atPath: url.path) { FilePreview.shared.show(url) }
+                else { model?.error = "文件已移走或删除。"; model?.searchFiles() }
+            },
+            .init(id: "open-with-file", title: "打开方式…", icon: "app") { FileActionsWindow.shared.show(url, page: "open") },
+            .init(id: "share-file", title: "分享…", icon: "square.and.arrow.up") { FileActionsWindow.shared.show(url, page: "share") },
+            .init(id: "ask-file", title: "询问此文件…", icon: "sparkles") { [weak model] in model?.fileAI.present([url]) },
+            .init(id: "reveal-file", title: "在 Finder 中显示", icon: "folder") { NSWorkspace.shared.activateFileViewerSelecting([url]) },
+            copyPathAction(id: "copy-file-path", url: url),
+            model.favoriteAction(for: entry)
+        ]
+    }
+
+    private static func openAction(_ title: String, entry: Entry, model: Model) -> LauncherAction {
+        .init(id: "open", title: title, icon: "return", keys: ["↩"]) { [weak model] in
+            model?.runCommand(entry.commandID, origin: .menu, usageKey: entry.id)
+        }
+    }
+
+    private static func copyPathAction(id: String, url: URL) -> LauncherAction {
+        .init(id: id, title: "复制路径", icon: "doc.on.doc") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(url.path, forType: .string)
+        }
     }
 
     private static func clipboard(_ model: Model) -> LauncherModule {
