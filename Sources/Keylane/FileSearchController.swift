@@ -35,6 +35,7 @@ final class FileSearchController: ObservableObject {
     private var lastPublishedQuery = ""
     private var lastPublishedStatus = ""
     private var currentQuery = ""
+    private var includesQueryContents = true
     private var localQueryResolved = false
     private var didStart = false
     private var grants: [String: Data]
@@ -104,7 +105,7 @@ final class FileSearchController: ObservableObject {
             let query = currentQuery
             currentQuery = ""
             startIndex()
-            search(query)
+            search(query, includeContents: includesQueryContents)
         }
         else { indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
@@ -141,9 +142,11 @@ final class FileSearchController: ObservableObject {
         cancelMerge()
         queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
     }
-    func search(_ text: String, homeOnly: Bool = false, root: URL? = nil) {
-        let changed = currentQuery != text
+    func search(_ text: String, homeOnly: Bool = false, root: URL? = nil, includeContents: Bool = true) {
+        let scopeChanged = includesQueryContents != includeContents
+        let changed = currentQuery != text || scopeChanged
         currentQuery = text
+        includesQueryContents = includeContents
         guard options.enabled else { emit([], "文件搜索已关闭，请在设置中开启。"); return }
         guard !FileSearchRules.tokens(text).isEmpty, text.count <= 256 else {
             cancelMerge()
@@ -158,6 +161,7 @@ final class FileSearchController: ObservableObject {
             spotlight.cancel(); spotlightResults = []; localResults = []
             localQueryResolved = false
             isSearching = true
+            if scopeChanged { emit([], "正在搜索…") }
             if !options.useIgnoreFiles { spotlight.search(text, root: options.roots.count == 1 ? URL(fileURLWithPath:options.roots[0]) : nil) }
         }
         refreshQuery(delay: changed ? 0.06 : 0)
@@ -167,13 +171,17 @@ final class FileSearchController: ObservableObject {
         pendingQuery?.cancel(); queryCancellation.cancel(); queryCancellation = FileScanCancellation()
         let cancellation = queryCancellation
         queryVersion += 1; let ticket = queryVersion
-        let text = currentQuery; let config = options; let excluded = automaticExclusions.map(\.path)
+        let text = currentQuery
+        var config = options
+        config.contentSearch = config.contentSearch && includesQueryContents
+        let queryOptions = config
+        let excluded = automaticExclusions.map(\.path)
         let work = DispatchWorkItem { [weak self] in
             guard let self, !cancellation.cancelled else { return }
             self.reader.async { [weak self] in
                 guard let self, !cancellation.cancelled else { return }
                 do {
-                    let result = try self.readDB?.searchRanked(text, options: config, excluded: excluded, isCancelled: { cancellation.cancelled }) ?? []
+                    let result = try self.readDB?.searchRanked(text, options: queryOptions, excluded: excluded, isCancelled: { cancellation.cancelled }) ?? []
                     DispatchQueue.main.async {
                         guard self.queryVersion == ticket, !cancellation.cancelled else { return }
                         self.localResults = result

@@ -13,6 +13,15 @@ final class Model: ObservableObject {
     @Published private(set) var applicationSettingsPath: String?
     @Published var appearance = UserDefaults.standard.string(forKey: "appearance") ?? "system" { didSet { UserDefaults.standard.set(appearance, forKey: "appearance") } }
     @Published var placement = UserDefaults.standard.string(forKey: "placement") ?? "activeScreen" { didSet { UserDefaults.standard.set(placement, forKey: "placement") } }
+    @Published var launcherReturnDelay = LauncherReturnDelay(rawValue: UserDefaults.standard.object(forKey: "launcherReturnDelay") as? Int ?? 90) ?? .after90Seconds {
+        didSet { UserDefaults.standard.set(launcherReturnDelay.rawValue, forKey: "launcherReturnDelay") }
+    }
+    @Published var rootSearchSensitivity = LauncherSearchRanking.Sensitivity(rawValue: UserDefaults.standard.string(forKey: "rootSearchSensitivity") ?? "") ?? .low {
+        didSet { UserDefaults.standard.set(rootSearchSensitivity.rawValue, forKey: "rootSearchSensitivity") }
+    }
+    @Published var rootFileContentSearch = UserDefaults.standard.object(forKey: "rootFileContentSearch") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(rootFileContentSearch, forKey: "rootFileContentSearch") }
+    }
     @Published var interfaceSize = UserDefaults.standard.string(forKey: "interfaceSize") ?? "medium" { didSet { UserDefaults.standard.set(interfaceSize, forKey: "interfaceSize") } }
     @Published var windowMode = UserDefaults.standard.string(forKey: "windowMode") ?? "expanded" { didSet { UserDefaults.standard.set(windowMode, forKey: "windowMode") } }
     @Published var compactFavorites = (UserDefaults.standard.object(forKey: "compactFavorites") as? Bool) ?? true { didSet { UserDefaults.standard.set(compactFavorites, forKey: "compactFavorites") } }
@@ -56,6 +65,26 @@ final class Model: ObservableObject {
     }
     @Published var bindings: [String:Shortcut] = (UserDefaults.standard.data(forKey: "shortcuts").flatMap { try? JSONDecoder().decode([String:Shortcut].self, from: $0) }) ?? ["launcher": .launcher]
     @Published var navigation = UserDefaults.standard.string(forKey: "navigation") ?? "arrows" { didSet { UserDefaults.standard.set(navigation, forKey: "navigation") } }
+    @Published var windowActivationBehavior = WindowActivationBehavior(
+        rawValue: UserDefaults.standard.string(forKey: "windowActivationBehavior") ?? ""
+    ) ?? .systemDefault {
+        didSet { UserDefaults.standard.set(windowActivationBehavior.rawValue, forKey: "windowActivationBehavior") }
+    }
+    @Published var launcherEscapeBehavior = LauncherEscapeBehavior(rawValue: UserDefaults.standard.string(forKey: "launcherEscapeBehavior") ?? "") ?? .backOrClose {
+        didSet { UserDefaults.standard.set(launcherEscapeBehavior.rawValue, forKey: "launcherEscapeBehavior") }
+    }
+    @Published var escapeClosesUtilityWindows = UserDefaults.standard.object(forKey: "escapeClosesUtilityWindows") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(escapeClosesUtilityWindows, forKey: "escapeClosesUtilityWindows") }
+    }
+    @Published var pageNavigationKeys = PageNavigationKeys(rawValue: UserDefaults.standard.string(forKey: "pageNavigationKeys") ?? "") ?? .brackets {
+        didSet { UserDefaults.standard.set(pageNavigationKeys.rawValue, forKey: "pageNavigationKeys") }
+    }
+    @Published var hyperIncludesShift = UserDefaults.standard.object(forKey: "hyperIncludesShift") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(hyperIncludesShift, forKey: "hyperIncludesShift") }
+    }
+    @Published var replaceHyperKeycaps = UserDefaults.standard.bool(forKey: "replaceHyperKeycaps") {
+        didSet { UserDefaults.standard.set(replaceHyperKeycaps, forKey: "replaceHyperKeycaps") }
+    }
     @Published var doubleTap = UserDefaults.standard.string(forKey: "doubleTap") ?? "off"
     @Published var hyperkey = UserDefaults.standard.bool(forKey: "hyperkey")
     @Published var modifierStatus = ""
@@ -234,7 +263,7 @@ final class Model: ObservableObject {
     }
     func configureModifiers() {
         guard let delegate = NSApp.delegate as? Delegate else { return }
-        if let issue = delegate.modifiers.configure(doubleTap: doubleTap, hyper: hyperkey) {
+        if let issue = delegate.modifiers.configure(doubleTap: doubleTap, hyper: hyperkey, includeShift: hyperIncludesShift) {
             modifierStatus = issue
         } else { modifierStatus = doubleTap == "off" && !hyperkey ? "未启用" : "已启用（需实际键盘验证）" }
         UserDefaults.standard.set(doubleTap, forKey: "doubleTap"); UserDefaults.standard.set(hyperkey, forKey: "hyperkey")
@@ -251,7 +280,9 @@ final class Model: ObservableObject {
     func discoveredIdentity(for url: URL) -> ApplicationIdentity? { appIdentities[url.path] }
     func appName(_ url: URL) -> String { appIdentities[url.path]?.displayName ?? url.deletingPathExtension().lastPathComponent }
     var searchesFilesHere: Bool { fileSearch.options.enabled && (activeLauncherPage?.contentPlacement == .fileResults || (pageID == .root && fileSearch.options.searchFromLauncher)) }
-    func searchFiles() { fileSearch.search(query) }
+    func searchFiles() {
+        fileSearch.search(query, includeContents: pageID != .root || rootFileContentSearch)
+    }
     func chooseFileSearchFolder(returnToLauncher: Bool = false) {
         fileSearch.addScope()
         if returnToLauncher { (NSApp.delegate as? Delegate)?.revealLauncher() }
@@ -271,7 +302,8 @@ final class Model: ObservableObject {
     var commands: [Entry] {
         guard let launcherModules else { return [] }
         let input = LauncherCommandSearch.Input(query: query, page: pageID,
-                                                aliases: aliases, favorites: favorites, usage: usage)
+                                                aliases: aliases, favorites: favorites, usage: usage,
+                                                sensitivity: rootSearchSensitivity)
         return commandSearch.results(for: input, registry: launcherModules)
     }
 }
@@ -344,8 +376,13 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var dragGuides: LauncherDragGuides?
     private var resizeTimer: Timer?
     private var resizeTarget: NSRect?
+    private var launcherHiddenAt: TimeInterval?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        FileActionsWindow.shared.onEscape = { [weak self] in self?.closeUtilityWindowOnEscape() }
+        FileActionsWindow.shared.onActivate = { [weak self] window in
+            self?.model.windowActivationBehavior.apply(to: window)
+        }
         installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
         window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.title = "Keylane · Developer Preview"; window.titlebarAppearsTransparent = true; window.titleVisibility = .hidden
@@ -456,6 +493,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func openLauncherSettings() {
         model.runCommand(.init(rawValue: "settings"), origin: .menu)
     }
+    func closeUtilityWindowOnEscape() {
+        guard model.escapeClosesUtilityWindows, !SearchField.isComposing, NSApp.modalWindow == nil,
+              let keyWindow = NSApp.keyWindow, keyWindow !== window, keyWindow.attachedSheet == nil else { return }
+        keyWindow.performClose(nil)
+    }
     func showSettings() {
         if settingsWindow == nil {
             let state = SettingsWindowState(model: model)
@@ -480,7 +522,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settings.delegate = self
             settingsWindow = settings
         }
-        hideLauncher(); settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        hideLauncher()
+        if let settingsWindow {
+            model.windowActivationBehavior.apply(to: settingsWindow)
+            settingsWindow.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
     }
     func hideLauncher(reason: String = "command") {
         dragGuides?.cancel()
@@ -489,6 +536,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         resizeTimer = nil
         resizeTarget = nil
         if model.placement == "remember" { window.saveFrame(usingName: "KeylaneLauncher") }
+        launcherHiddenAt = ProcessInfo.processInfo.systemUptime
         window.orderOut(nil)
         NotificationCenter.default.post(name: .launcherHidden, object: nil)
         windowDiagnostics.record("hidden:" + reason, launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
@@ -555,20 +603,29 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         if window.isVisible && window.isKeyWindow { hideLauncher(); return }
-        if model.windowMode == "compact" {
-            model.pageID = .root; model.query = ""; model.compactExpanded = false
+        if !window.isVisible, let hiddenAt = launcherHiddenAt,
+           model.launcherReturnDelay.shouldReturn(hiddenFor: ProcessInfo.processInfo.systemUptime - hiddenAt) {
+            NotificationCenter.default.post(name: .launcherResetSearch, object: nil)
+            model.pageID = .root
+            model.query = ""
+            model.compactExpanded = false
         }
         presentLauncher()
     }
     /// Present the current destination without applying the launcher's compact-mode reset.
     private func presentLauncher() {
+        launcherHiddenAt = nil
         updateLauncherGeometry(animated: false)
         rememberPreviousApplication()
-        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main
+        let screens = NSScreen.screens
+        let pointerScreen = screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+        let restored = model.placement == "remember" && window.setFrameUsingName("KeylaneLauncher")
+        let restoredScreen = restored ? window.screen : nil
+        let screen = model.placement == "primaryDisplay" ? screens.first : restoredScreen ?? pointerScreen
         if let area = screen?.visibleFrame {
-            if model.placement == "remember" { _ = window.setFrameUsingName("KeylaneLauncher") }; updateLauncherGeometry(animated: false)
+            updateLauncherGeometry(animated: false)
             var frame = window.frame
-            if model.placement != "remember" || !frame.intersects(area) {
+            if restoredScreen == nil || !frame.intersects(area) {
                 frame.origin = LauncherPositioning.target(size: frame.size, in: area).origin
             }
             frame.origin.x = max(area.minX, min(frame.origin.x, area.maxX - frame.width))

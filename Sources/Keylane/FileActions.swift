@@ -58,17 +58,25 @@ final class FileActionsModel: ObservableObject {
 final class FileActionsWindow: NSObject, NSWindowDelegate {
     static let shared = FileActionsWindow()
     let model = FileActionsModel()
+    var onEscape: (() -> Void)?
+    var onActivate: ((NSWindow) -> Void)?
     private var window: NSWindow?
     func show(_ file: URL, page: String) {
         model.configure(file,page:page)
         if window == nil {
             let window = NSWindow(contentRect:NSRect(x:0,y:0,width:520,height:350),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false)
             window.title = "文件操作"; window.titlebarAppearsTransparent = true; window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView:FileActionsView(model:model)); window.minSize = NSSize(width:450,height:300); window.center(); window.delegate = self
+            window.contentView = NSHostingView(rootView: FileActionsView(model: model)
+                .onExitCommand { [weak self] in self?.onEscape?() })
+            window.minSize = NSSize(width:450,height:300); window.center(); window.delegate = self
             self.window = window
             model.opened = { [weak self] in self?.window?.orderOut(nil) }
         }
-        window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
+        if let window {
+            onActivate?(window)
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
         if page == "share", model.isAvailable { model.shareRequest += 1 }
     }
 }

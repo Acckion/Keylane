@@ -46,6 +46,28 @@ final class LauncherTests: XCTestCase {
         XCTAssertNil(ranking.match(id: "unrelated", title: "Calendar"))
     }
 
+    func testLauncherReturnDelayIncludesBoundaryAndNever() {
+        XCTAssertTrue(LauncherReturnDelay.immediately.shouldReturn(hiddenFor: 0))
+        XCTAssertFalse(LauncherReturnDelay.after90Seconds.shouldReturn(hiddenFor: 89.9))
+        XCTAssertTrue(LauncherReturnDelay.after90Seconds.shouldReturn(hiddenFor: 90))
+        XCTAssertFalse(LauncherReturnDelay.never.shouldReturn(hiddenFor: 10_000))
+    }
+
+    func testSearchSensitivityFiltersWeakMatchesAndPreservesAliases() {
+        func ranking(_ query: String, _ sensitivity: LauncherSearchRanking.Sensitivity) -> LauncherSearchRanking {
+            LauncherSearchRanking(query: query, aliases: ["alias": "bc"], favorites: [], usage: [:],
+                                  sensitivity: sensitivity)
+        }
+        XCTAssertNotNil(ranking("bc", .low).match(id: "fuzzy", title: "Abxdc"))
+        // A single word avoids initials becoming an exact alternative.
+        XCTAssertNil(ranking("bc", .medium).match(id: "fuzzy", title: "Abxdc"))
+        XCTAssertNotNil(ranking("bc", .medium).match(id: "substring", title: "Abcd"))
+        XCTAssertNil(ranking("bc", .high).match(id: "substring", title: "Abcd"))
+        XCTAssertNotNil(ranking("bc", .high).match(id: "prefix", title: "Bcde"))
+        XCTAssertNotNil(ranking("bc", .high).match(id: "alias", title: "Utility"))
+        XCTAssertNotNil(ranking("", .high).match(id: "default", title: "Utility"))
+    }
+
     func testRankingKeepsMatchQualityAheadOfFavoritesAndFrequency() {
         let exact = SearchResultRank(score:1000,favorite:false,uses:0,title:"A",id:"1")
         let fuzzy = SearchResultRank(score:300,favorite:true,uses:999,title:"B",id:"2")
