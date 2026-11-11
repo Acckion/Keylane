@@ -151,7 +151,7 @@ enum ScriptCommandsModule {
                                     keywords: ["Script Commands", "脚本", "Shell", "Python", "Node"],
                                     destination: .settings(settingsID), settingsPage: settingsID))
         ] + actionCommands(controller), providers: [provider], pages: [searchPage(model), page], settings: [settings],
-        services: [.init(start: { controller.refresh() }, stop: controller.cancel)],
+        services: [.init(start: { controller.refresh() }, stop: { controller.stopScanning(); controller.cancel() })],
         searchUpdates: [
             ViewObservation.changes(controller.$entries),
             ViewObservation.changes(controller.$enabled),

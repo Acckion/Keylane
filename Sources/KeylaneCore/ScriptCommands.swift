@@ -7,27 +7,46 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
     public var id: String { Self.namespace + url.path }
     public var title: String { url.deletingPathExtension().lastPathComponent }
 
-    public static func discover(in folders: [String]) -> (commands: [Self], unavailable: [String]) {
+    public static func discover(in folders: [String], isCancelled: () -> Bool = { false }) -> (commands: [Self], unavailable: [String]) {
         let manager = FileManager.default
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
+        let roots = Set(folders.map { URL(fileURLWithPath: $0, isDirectory: true).resolvingSymlinksInPath().path })
+        var covered: Set<String> = []
         var commands: [String: Self] = [:]
         var unavailable = Set<String>()
-        for folder in folders {
-            let root = URL(fileURLWithPath: folder, isDirectory: true).resolvingSymlinksInPath()
+        // A parent precedes its descendants. Only skip a configured root if a
+        // completed scan actually reached it, including the enumerator's skip rules.
+        for folder in roots.sorted() where !covered.contains(folder) {
+            if isCancelled() { return ([], []) }
+            let root = URL(fileURLWithPath: folder, isDirectory: true)
+            var complete = true
             guard manager.isReadableFile(atPath: root.path),
                   let children = manager.enumerator(at: root, includingPropertiesForKeys: Array(keys),
                                                     options: [.skipsHiddenFiles, .skipsPackageDescendants],
-                                                    errorHandler: { _, _ in unavailable.insert(folder); return true }) else {
+                                                    errorHandler: { _, _ in
+                                                        complete = false
+                                                        unavailable.insert(folder)
+                                                        return true
+                                                    }) else {
                 unavailable.insert(folder)
                 continue
             }
+            var reached: Set<String> = []
             for case let file as URL in children {
+                if isCancelled() { return ([], []) }
+                if file.hasDirectoryPath, roots.contains(file.path),
+                   let metadata = try? file.resourceValues(forKeys: [.isPackageKey, .isSymbolicLinkKey]),
+                   metadata.isPackage == false, metadata.isSymbolicLink == false {
+                    reached.insert(file.path)
+                }
                 guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true,
                       values.isSymbolicLink != true, supports(file) else { continue }
                 let command = Self(url: file.standardizedFileURL)
                 commands[command.id] = command
             }
+            if complete { covered.formUnion(reached) }
         }
+        if isCancelled() { return ([], []) }
         return (commands.values.sorted {
             let order = $0.title.localizedStandardCompare($1.title)
             return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending

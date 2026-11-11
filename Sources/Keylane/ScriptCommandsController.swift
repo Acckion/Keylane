@@ -8,10 +8,7 @@ final class ScriptCommandsController: ObservableObject {
         didSet {
             preferences.set(enabled, forKey: "scriptCommands.enabled")
             if enabled { refresh(force: true) }
-            else {
-                scanRevision += 1
-                scanning = false
-            }
+            else { stopScanning() }
         }
     }
     @Published var searchSelection = 0
@@ -33,7 +30,7 @@ final class ScriptCommandsController: ObservableObject {
     private let preferences: UserDefaults
     private let scanner = DispatchQueue(label: "org.keylane.scripts.scan", qos: .utility)
     private let worker = DispatchQueue(label: "org.keylane.scripts.run", qos: .userInitiated)
-    private var scanRevision = 0
+    private var scanToken: DispatchWorkItem?
     private var lastScan = Date.distantPast
     private var cancellation: DispatchWorkItem?
 
@@ -47,20 +44,30 @@ final class ScriptCommandsController: ObservableObject {
     func refresh(force: Bool = false, completion: ((Int) -> Void)? = nil) {
         guard enabled, force || (!scanning && Date().timeIntervalSince(lastScan) > 15) else { return }
         lastScan = Date()
-        scanRevision += 1
-        let revision = scanRevision
+        scanToken?.cancel()
+        let token = DispatchWorkItem {}
+        scanToken = token
         let paths = folders
         scanning = !paths.isEmpty
         scanner.async { [weak self] in
-            let catalog = ScriptCommand.discover(in: paths)
+            guard !token.isCancelled else { return }
+            let catalog = ScriptCommand.discover(in: paths, isCancelled: { token.isCancelled })
             DispatchQueue.main.async {
-                guard let self, self.scanRevision == revision else { return }
+                guard let self, !token.isCancelled else { return }
+                self.scanToken = nil
                 self.entries = catalog.commands
                 self.unavailable = catalog.unavailable
                 self.scanning = false
                 completion?(catalog.commands.count)
             }
         }
+    }
+
+    func stopScanning() {
+        scanToken?.cancel()
+        scanToken = nil
+        scanning = false
+        lastScan = .distantPast
     }
 
     func createScript() {
