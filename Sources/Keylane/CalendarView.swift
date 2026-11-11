@@ -93,7 +93,8 @@ struct MenuBarPreferences: View {
     @ObservedObject var registry: MenuBarRegistry
     var body: some View {
         SettingsGroup {
-            ForEach(registry.descriptors) { descriptor in
+            ForEach(Array(registry.descriptors.enumerated()), id: \.element.id) { index, descriptor in
+                if index > 0 { Divider() }
                 Toggle(descriptor.title, isOn: Binding(get: { registry.isEnabled(descriptor.id) }, set: { registry.setEnabled(descriptor.id, $0) }))
             }
         }.settingsAnchor(.menuBar)
