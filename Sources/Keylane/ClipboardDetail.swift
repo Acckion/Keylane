@@ -14,7 +14,7 @@ struct ClipboardDetail: View {
     @State private var metrics: ClipboardDetailMetrics?
 
     var body: some View {
-        ResultDetailPane { height in
+        ResultDetailPane(scrollsPreview: detail.item.kind == .text) { height in
             preview(height: height)
         } information: {
             DetailInformationSection(rows: information)

@@ -4,6 +4,7 @@ import QuickLookUI
 
 /// Results stay on the left; the preview and information on the right scroll independently.
 struct ResultDetailPane<Preview: View, Information: View>: View {
+    var scrollsPreview = true
     @ViewBuilder let preview: (CGFloat) -> Preview
     @ViewBuilder let information: () -> Information
 
@@ -11,14 +12,8 @@ struct ResultDetailPane<Preview: View, Information: View>: View {
         GeometryReader { geometry in
             let previewHeight = max(0, (geometry.size.height - VisualStyle.launcherTopInset - VisualStyle.launcherBottomInset - 1) / 2)
             VStack(spacing: 0) {
-                ScrollView {
-                    preview(max(0, previewHeight - 36))
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: max(0, previewHeight - 36))
-                        .padding(18)
-                }
-                .launcherScrollInsets(bottom: false)
-                .frame(height: previewHeight + VisualStyle.launcherTopInset)
+                previewRegion(height: previewHeight)
+                    .frame(height: previewHeight + VisualStyle.launcherTopInset)
                 Divider()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18, content: information)
@@ -27,6 +22,25 @@ struct ResultDetailPane<Preview: View, Information: View>: View {
                 }
                 .launcherScrollInsets(top: false)
             }
+        }
+    }
+
+    @ViewBuilder private func previewRegion(height: CGFloat) -> some View {
+        let contentHeight = max(0, height - 36)
+        if scrollsPreview {
+            ScrollView {
+                preview(contentHeight)
+                    .frame(maxWidth: .infinity, minHeight: contentHeight)
+                    .padding(18)
+            }
+            .launcherScrollInsets(bottom: false)
+        } else {
+            // Quick Look handles its own scrolling. Images fit the same viewport.
+            preview(contentHeight)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(18)
+                .padding(.top, VisualStyle.launcherTopInset)
+                .clipped()
         }
     }
 }
