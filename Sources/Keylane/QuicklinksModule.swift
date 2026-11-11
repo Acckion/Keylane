@@ -47,7 +47,7 @@ final class QuicklinksController: ObservableObject {
                 presentParameters()
             }
         } catch {
-            (NSApp.delegate as? Delegate)?.toast.show(error.localizedDescription, style: .failure)
+            (NSApp.delegate as? Delegate)?.showLauncherFeedback(error.localizedDescription, style: .failure)
         }
     }
 

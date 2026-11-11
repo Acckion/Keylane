@@ -18,9 +18,10 @@ private enum UtilityVerification {
 }
 
 enum UtilityActions {
-    static func copy(_ value: String) {
+    @discardableResult
+    static func copy(_ value: String) -> Bool {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
+        return NSPasteboard.general.setString(value, forType: .string)
     }
 
     static func openApplication(_ identifier: String) {

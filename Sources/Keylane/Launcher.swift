@@ -62,6 +62,7 @@ struct Launcher: View {
             ViewObservation.changes(model.$interfaceSize),
             ViewObservation.changes(model.$windowMode),
             ViewObservation.changes(model.$compactExpanded),
+            ViewObservation.changes(model.footerFeedback.$current),
             ViewObservation.changes(model.$presentedLauncherHeight),
             ViewObservation.changes(model.$compactFavorites),
             ViewObservation.changes(model.$favorites),
@@ -159,9 +160,9 @@ struct Launcher: View {
                     .padding(VisualStyle.launcherEdgeInset)
             }
         }
-        .frame(width: 760, height: model.presentedLauncherHeight, alignment: .top)
+        .frame(width: VisualStyle.launcherWidth, height: model.presentedLauncherHeight, alignment: .top)
         .scaleEffect(model.interfaceScale)
-        .frame(width: 760 * model.interfaceScale, height: model.presentedLauncherHeight * model.interfaceScale)
+        .frame(width: VisualStyle.launcherWidth * model.interfaceScale, height: model.presentedLauncherHeight * model.interfaceScale)
         .scrollIndicators(.visible, axes: .vertical)
 
         .background { if reduceTransparency { Color(nsColor: .windowBackgroundColor) } }
@@ -494,11 +495,14 @@ struct Launcher: View {
         return "命令"
     }
     private func iconColor(_ id: String) -> Color { switch id { case "notes": return .yellow; case "clipboard": return .orange; case "screenshot": return .purple; case "quicklink": return .blue; default: return .primary.opacity(0.8) } }
+    private static let footerMenuWidth: CGFloat = 345
+    private static let footerMinimumGap: CGFloat = 24
+
     private var footer: some View {
         GlassEffectContainer(spacing: 8) {
-            HStack(alignment: .bottom, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 0) {
                 expandingControl(application: true)
-                Spacer(minLength: 8)
+                Spacer(minLength: Self.footerMinimumGap)
                 expandingControl(application: false)
             }
         }.padding(.horizontal, VisualStyle.launcherEdgeInset).padding(.bottom, VisualStyle.launcherEdgeInset)
@@ -507,9 +511,15 @@ struct Launcher: View {
         let secondary = page?.badge != nil
         let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
         let badgeSymbol = page?.badge?.symbol ?? ""
-        let applicationWidth: CGFloat = secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36
+        let feedback = application ? model.footerFeedback.current : nil
+        let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.message) }
+            ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty
         let actionWidth: CGFloat = page?.actionWidth ?? (showsActions ? 196 : 126)
+        let rightWidth = actions ? Self.footerMenuWidth : actionWidth
+        let availableApplicationWidth = VisualStyle.launcherWidth - 2 * VisualStyle.launcherEdgeInset
+            - Self.footerMinimumGap - rightWidth
+        let applicationWidth = min(preferredApplicationWidth, availableApplicationWidth)
         let primaryEnabled = application || primaryActionEnabled
         let open = application ? appMenu : actions
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
@@ -518,8 +528,14 @@ struct Launcher: View {
         return ZStack(alignment: alignment) {
             if open {
                 menuPanel(applicationMenu: application, items: items)
-                    .frame(width: 345, height: menuHeight, alignment: .bottom)
+                    .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
+            } else if let feedback {
+                NativeHoverButton(title: "\(feedback.message) · 打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
+                    LauncherFooterFeedbackLabel(feedback: feedback)
+                }
+                .frame(width: applicationWidth, height: 36)
+                .transition(.opacity)
             } else if application && secondary {
                 NativeHoverButton(title: "打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
                     SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol)
@@ -555,8 +571,9 @@ struct Launcher: View {
         }
         // The container remains in the same hierarchy. Only its size changes; its bottom
         // corner stays fixed. No matched-position or automatic glass transition can slide it.
-        .frame(width: open ? 345 : (application ? applicationWidth : actionWidth), height: open ? menuHeight : 36, alignment: alignment)
-        .modifier(LauncherMenuSurface(open: open))
+        .frame(width: open ? Self.footerMenuWidth : (application ? applicationWidth : actionWidth), height: open ? menuHeight : 36, alignment: alignment)
+        .modifier(LauncherMenuSurface(open: open, tint: open ? nil : feedback?.style.color.opacity(0.16)))
+        .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
     private typealias MenuAction = LauncherAction
     private var selectedEntry: Entry? {
@@ -670,7 +687,7 @@ struct Launcher: View {
                 if items.indices.contains(actionSelection), items[actionSelection].submenu != nil { activate(items[actionSelection]) }
             }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10)
                 .onChange(of: actionQuery) { _, _ in actionSelection = items.firstIndex(where: \.enabled) ?? 0 }
-        }.frame(width: 345)
+        }.frame(width: Self.footerMenuWidth)
     }
     private func toggleMenu(application: Bool) {
         if !application, page?.contentPlacement == .form, menuItems(applicationMenu: false).isEmpty { return }
