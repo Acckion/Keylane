@@ -35,11 +35,16 @@ final class SystemShortcutsController: ObservableObject {
     @Published private(set) var loading = false
     @Published private(set) var runningID: String?
     @Published private(set) var message = ""
+    @Published private(set) var icons: [String: NSImage] = [:]
+    @Published private(set) var iconAccess: IconAccess = .inactive
+    enum IconAccess { case inactive, loading, allowed, denied, unavailable }
     @Published var disabledIDs: Set<String> {
         didSet { UserDefaults.standard.set(Array(disabledIDs), forKey: "systemShortcuts.disabled") }
     }
     private let catalogQueue = DispatchQueue(label: "org.keylane.shortcuts.catalog", qos: .utility)
     private let runQueue = DispatchQueue(label: "org.keylane.shortcuts.run", qos: .userInitiated)
+    private let iconQueue = DispatchQueue(label: "org.keylane.shortcuts.icons", qos: .utility)
+    private let iconAccessKey = "systemShortcuts.useNativeIcons"
     private var lastRefresh = Date.distantPast
     var onRunFailure: ((String) -> Void)?
 
@@ -60,11 +65,81 @@ final class SystemShortcutsController: ObservableObject {
                 self.loading = false
                 if let records {
                     self.entries = records
+                    self.refreshIcons(force: force)
                     UtilityVerification.record("shortcuts", count: records.count)
                 } else {
                     self.message = "无法读取快捷指令。打开系统快捷指令后再刷新。"
                 }
             }
+        }
+    }
+
+    func icon(forCommandID commandID: String) -> NSImage? {
+        guard commandID.hasPrefix("shortcut:") else { return nil }
+        return icons[String(commandID.dropFirst("shortcut:".count))]
+    }
+
+    func refreshIcons(force: Bool = false, requestAccess: Bool = false) {
+        guard iconAccess != .loading, !entries.isEmpty,
+              requestAccess || UserDefaults.standard.bool(forKey: iconAccessKey) else { return }
+        let ids = entries.map(\.id)
+        guard force || requestAccess || (iconAccess == .allowed && ids.contains(where: { icons[$0] == nil })) || iconAccess == .inactive else { return }
+        iconAccess = .loading
+
+        let load: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.iconQueue.async { [weak self] in
+                let permission = ShortcutIconReader.permission(prompt: requestAccess)
+                guard permission == noErr else {
+                    DispatchQueue.main.async {
+                        self?.icons = [:]
+                        self?.iconAccess = permission == -1743 || permission == -1744 ? .denied : .unavailable
+                    }
+                    return
+                }
+                var rendered: [String: CGImage] = [:]
+                var denied = false
+                for id in ids {
+                    do { rendered[id] = try ShortcutIconReader.image(id: id) }
+                    catch let error as NSError {
+                        if error.code == -1743 || error.code == -1744 { denied = true; break }
+                        if error.code == -1712 || error.code == -600 { break }
+                    }
+                }
+                let result = rendered
+                let authorizationLost = denied
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if authorizationLost {
+                        self.icons = [:]
+                        self.iconAccess = .denied
+                        return
+                    }
+                    UserDefaults.standard.set(true, forKey: self.iconAccessKey)
+                    let currentIDs = Set(self.entries.map(\.id))
+                    self.icons = result.filter { currentIDs.contains($0.key) }.mapValues {
+                        NSImage(cgImage: $0, size: .zero)
+                    }
+                    self.iconAccess = self.icons.isEmpty ? .unavailable : .allowed
+                }
+            }
+        }
+
+        let identifier = ShortcutIconReader.bundleIdentifier
+        if !NSRunningApplication.runningApplications(withBundleIdentifier: identifier).isEmpty {
+            load()
+        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = false
+            configuration.addsToRecentItems = false
+            NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, error in
+                DispatchQueue.main.async {
+                    if app == nil || error != nil { self?.iconAccess = .unavailable }
+                    else { load() }
+                }
+            }
+        } else {
+            iconAccess = .unavailable
         }
     }
 

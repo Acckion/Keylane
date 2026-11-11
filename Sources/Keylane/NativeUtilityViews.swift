@@ -17,6 +17,7 @@ struct SystemShortcutsPreferences: View {
                     Button("打开快捷指令") { UtilityActions.openApplication("com.apple.shortcuts") }
                 }.buttonStyle(ContentActionButtonStyle())
                 if controller.loading { ProgressView().controlSize(.small) }
+                if !controller.entries.isEmpty { iconAccessRow }
                 if !controller.message.isEmpty { Text(controller.message).foregroundStyle(.secondary) }
                 if !controller.loading, controller.entries.isEmpty, controller.message.isEmpty { Text("系统中没有快捷指令").foregroundStyle(.secondary) }
             }.id("system-shortcuts")
@@ -30,12 +31,30 @@ struct SystemShortcutsPreferences: View {
                                 if enabled { controller.disabledIDs.remove(entry.id) } else { controller.disabledIDs.insert(entry.id) }
                             }),
                             setShortcut: { model.setShortcut(entry.commandID, value: $0) },
-                            icon: { Image(systemName: "square.stack.3d.up.fill").foregroundStyle(.purple) },
+                            icon: { ShortcutArtwork(image: controller.icons[entry.id]) },
                             perform: { controller.run(entry.id) })
                     }
                 }
             }
         }.onAppear { controller.refresh(force: true) }
+    }
+
+    @ViewBuilder private var iconAccessRow: some View {
+        switch controller.iconAccess {
+        case .inactive, .denied, .unavailable:
+            HStack {
+                Text(controller.iconAccess == .denied ? "请在「隐私与安全性 → 自动化」允许 Keylane 访问快捷指令。" :
+                    "允许访问后显示每条指令在 Apple 快捷指令中的原始图标。")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Button("读取原始图标") { controller.refreshIcons(requestAccess: true) }
+                    .buttonStyle(ContentActionButtonStyle())
+            }
+        case .loading:
+            ProgressView("正在读取图标…").controlSize(.small)
+        case .allowed:
+            EmptyView()
+        }
     }
 }
 
