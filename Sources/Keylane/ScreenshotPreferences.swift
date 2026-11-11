@@ -25,9 +25,6 @@ struct ScreenshotPreferences: View {
 
     var body: some View {
         SettingsPageSections {
-            SettingsCard {
-                Toggle("启用截图管理", isOn: binding(\.enabled))
-            }
             SettingsCard(anchor: .screenshotColumns) {
                 Text("列数").font(VisualStyle.rowText)
                 HStack {
@@ -49,7 +46,7 @@ struct ScreenshotPreferences: View {
                 HStack {
                     SettingsCaption(title: "搜索范围", detail: "搜索这些文件夹及其子目录。")
                     Spacer()
-                    SettingsAddItemButton(title: "添加搜索文件夹") { library.chooseFolders() }
+                    SettingsIconButton("添加搜索文件夹", symbol: "plus") { library.chooseFolders() }
                 }
                 if library.scopes.isEmpty {
                     SettingsCompactList(items: library.folders, id: \.path) { url in SettingsFolderRow(path: url.path) { EmptyView() } }
@@ -57,8 +54,9 @@ struct ScreenshotPreferences: View {
                 } else {
                     SettingsCompactList(items: library.scopes, id: \.id) { scope in
                         SettingsFolderRow(path: scope.url.path) {
-                            Button(role: .destructive) { library.removeFolder(scope) } label: { Image(systemName: "minus.circle.fill") }
-                                .buttonStyle(.plain).help("移除搜索范围")
+                            SettingsRemoveItemButton(label: "移除 \(scope.url.path)", help: "移除搜索范围", role: .destructive) {
+                                library.removeFolder(scope)
+                            }
                         }
                     }
                 }

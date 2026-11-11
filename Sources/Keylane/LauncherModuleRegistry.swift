@@ -77,6 +77,7 @@ struct SettingsTitlebarContribution {
     let enabled: Binding<Bool>
     let updates: AnyPublisher<Bool, Never>
     var info: (() -> AnyView)?
+    var searchItem: SettingsItem?
 }
 
 struct LauncherSettingsPage: Identifiable {

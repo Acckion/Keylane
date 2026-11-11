@@ -204,7 +204,6 @@ private struct CalendarSettingsGroups: View {
                 CommandSettingsEntry(
                     title: "我的日程",
                     model: model, commandID: .init(rawValue: id),
-                    isEnabled: Binding(get: { controller.enabled }, set: { controller.enabled = $0 }),
                     perform: { model.runCommand(.init(rawValue: id), origin: .menu) },
                     icon: { CalendarSettingsIcon(size: 24) }
                 )

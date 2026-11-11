@@ -5,7 +5,7 @@ struct CommandSettingsEntry<Icon: View> {
     let title: String
     let alias: Binding<String>
     let shortcut: Shortcut?
-    let isEnabled: Binding<Bool>
+    let isEnabled: Binding<Bool>?
     let setShortcut: (Shortcut?) -> Void
     @ViewBuilder let icon: () -> Icon
     var perform: (() -> Void)? = nil
@@ -55,11 +55,19 @@ private struct CommandSettingsRow<Icon: View>: View {
                 .accessibilityLabel("\(entry.title) 搜索别名")
             ShortcutRecorder(shortcut: entry.shortcut, title: entry.title, icon: AnyView(entry.icon()), changed: entry.setShortcut)
                 .frame(width: 112, alignment: .leading)
-            Toggle("启用 \(entry.title)", isOn: entry.isEnabled)
-                .labelsHidden().toggleStyle(.checkbox).controlSize(.small)
+            if let isEnabled = entry.isEnabled {
+                checkbox(isEnabled)
+            } else {
+                checkbox(.constant(false)).hidden().accessibilityHidden(true)
+            }
         }
         .frame(minHeight: SettingsRowsLayout.rowHeight)
         .disabled(!entry.available)
+    }
+
+    private func checkbox(_ enabled: Binding<Bool>) -> some View {
+        Toggle("启用 \(entry.title)", isOn: enabled)
+            .labelsHidden().toggleStyle(.checkbox).controlSize(.small)
     }
 }
 
@@ -114,7 +122,7 @@ private struct CommandSettingsListRow<Icon: View>: View, Equatable {
 extension CommandSettingsEntry {
     /// Application aliases use the path, while their shortcut IDs retain the app: namespace.
     init(title: String, model: Model, commandID: CommandID, aliasKey: String? = nil,
-         isEnabled: Binding<Bool>, perform: (() -> Void)? = nil, help: String? = nil,
+         isEnabled: Binding<Bool>? = nil, perform: (() -> Void)? = nil, help: String? = nil,
          menu: [CommandSettingsAction] = [], renderRevision: AnyHashable? = nil, @ViewBuilder icon: @escaping () -> Icon) {
         let key = aliasKey ?? commandID.rawValue
         self.init(title: title,

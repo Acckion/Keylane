@@ -23,7 +23,7 @@ struct SettingsView: View {
                     HStack {
                         Text(state.error).foregroundStyle(.red)
                         Spacer()
-                        Button { state.clearError() } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain)
+                        SettingsIconButton("关闭错误提示", symbol: "xmark", compact: true) { state.clearError() }
                     }.padding(12).background(.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
                 }
                 page?.content()
@@ -113,7 +113,9 @@ struct SettingsView: View {
     }
     private func reveal(_ item: SettingsItem) {
         selected = item.page; target = nil; searchSelection = nil; query = ""
-        DispatchQueue.main.async { target = item.id }
+        if state.catalog.page(item.page)?.titlebar?.searchItem?.id != item.id {
+            DispatchQueue.main.async { target = item.id }
+        }
     }
 }
 
