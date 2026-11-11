@@ -96,12 +96,12 @@ struct MenuBarPreferences: View {
             ForEach(registry.descriptors) { descriptor in
                 Toggle(descriptor.title, isOn: Binding(get: { registry.isEnabled(descriptor.id) }, set: { registry.setEnabled(descriptor.id, $0) }))
             }
-        }
+        }.settingsAnchor(.menuBar)
     }
 }
 
 struct CalendarPreferences: View {
-    @ObservedObject var model: Model
+    let model: Model
 
     var body: some View {
         CalendarSettingsGroups(model: model, controller: model.calendar, registry: model.menuBar)
@@ -109,10 +109,27 @@ struct CalendarPreferences: View {
 }
 
 private struct CalendarSettingsGroups: View {
-    @ObservedObject var model: Model
-    @ObservedObject var controller: CalendarController
+    let model: Model
+    let controller: CalendarController
+    @StateObject private var observation: SettingsPageObservation
     @ObservedObject var registry: MenuBarRegistry
     @State private var showsCalendars = false
+
+    init(model: Model, controller: CalendarController, registry: MenuBarRegistry) {
+        self.model = model
+        self.controller = controller
+        self.registry = registry
+        _observation = StateObject(wrappedValue: SettingsPageObservation([
+            SettingsPageObservation.changes(model.$aliases.map { $0["calendar"] }),
+            SettingsPageObservation.changes(model.$bindings.map { $0["calendar"] }),
+            SettingsPageObservation.changes(controller.$enabled),
+            SettingsPageObservation.changes(controller.$access),
+            SettingsPageObservation.changes(controller.$calendars),
+            SettingsPageObservation.changes(controller.$selectedCalendarIDs),
+            SettingsPageObservation.changes(controller.$menuDisplay),
+            SettingsPageObservation.changes(controller.$error)
+        ]))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -156,13 +173,13 @@ private struct CalendarSettingsGroups: View {
                         Text("系统中没有可用日历").foregroundStyle(.secondary)
                     }
                 }
-            }.id("calendar-selection")
+            }.settingsAnchor(.calendarSelection)
 
             if controller.enabled && controller.access != .allowed {
                 SettingsGroup {
                     CalendarConnectionView(controller: controller)
                         .frame(minHeight: 170)
-                }.id("calendar-access")
+                }.settingsAnchor(.calendarAccess)
             }
 
             SettingsGroup {
@@ -171,25 +188,23 @@ private struct CalendarSettingsGroups: View {
                     set: { registry.setEnabled("calendar.agenda", $0) }
                 ))
                 Divider()
-                SettingsPicker("显示内容", selection: $controller.menuDisplay) {
+                SettingsPicker("显示内容", selection: Binding(get: { controller.menuDisplay }, set: { controller.menuDisplay = $0 })) {
                     Text("下一个日程").tag("next")
                     Text("日期").tag("date")
                     Text("仅图标").tag("icon")
                 }
             }
             .disabled(!controller.enabled)
-            .id("calendar-menu-bar")
+            .settingsAnchor(.calendarMenuBar)
 
             Text("日历命令").font(.headline).padding(.leading, 18)
             SettingsGroup {
                 CommandSettingsRow(
                     title: "我的日程",
-                    alias: Binding(get: { model.aliases["calendar"] ?? "" }, set: { model.setAlias("calendar", value: $0) }),
-                    shortcut: model.bindings["calendar"],
-                    isEnabled: $controller.enabled,
-                    setShortcut: { model.setShortcut("calendar", value: $0) },
-                    icon: { CalendarSettingsIcon(size: 24) },
-                    perform: { model.runCommand(.init(rawValue: "calendar"), origin: .menu) }
+                    model: model, commandID: .init(rawValue: "calendar"),
+                    isEnabled: Binding(get: { controller.enabled }, set: { controller.enabled = $0 }),
+                    perform: { model.runCommand(.init(rawValue: "calendar"), origin: .menu) },
+                    icon: { CalendarSettingsIcon(size: 24) }
                 )
             }.id("calendar-command")
             if !controller.error.isEmpty {

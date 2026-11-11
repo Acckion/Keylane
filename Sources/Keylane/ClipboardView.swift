@@ -58,43 +58,90 @@ struct ClipboardHistoryView: View {
 }
 
 struct ClipboardPreferences: View {
-    @ObservedObject var controller: ClipboardController
-    @ObservedObject var model: Model
-    @State private var confirmsClear = false
-    @State private var clearAll = false
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { SettingsGroup(content: content) }
+    let controller: ClipboardController
+    let model: Model
+    @StateObject private var observation: SettingsPageObservation
+
+    init(controller: ClipboardController, model: Model) {
+        self.controller = controller
+        self.model = model
+        _observation = StateObject(wrappedValue: SettingsPageObservation([
+            SettingsPageObservation.changes(controller.$captureEnabled),
+            SettingsPageObservation.changes(controller.$automaticOCR),
+            SettingsPageObservation.changes(controller.$primaryAction),
+            SettingsPageObservation.changes(controller.$retentionDays),
+            SettingsPageObservation.changes(controller.$maxItems),
+            SettingsPageObservation.changes(controller.$excludedApps),
+            SettingsPageObservation.changes(controller.$accessMessage),
+            SettingsPageObservation.changes(model.$bindings.map { $0["clipboard"] })
+        ]))
+    }
+
+    private func binding<Value>(_ key: ReferenceWritableKeyPath<ClipboardController, Value>) -> Binding<Value> {
+        Binding(get: { controller[keyPath: key] }, set: { controller[keyPath: key] = $0 })
+    }
+    @State private var excludedNames: [String: String] = [:]
+
+    private func updateExcludedNames(_ ids: Set<String>) {
+        excludedNames = Dictionary(uniqueKeysWithValues: ids.map { id in
+            (id, NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
+                .map { FileManager.default.displayName(atPath: $0.path) } ?? id)
+        })
+    }
     var body: some View {
         VStack(spacing: 16) {
-            card {
-                Toggle("记录剪贴板历史", isOn: $controller.captureEnabled)
-                Toggle("自动识别新图片中的文字", isOn: $controller.automaticOCR)
-            }.id("capture")
-            card {
+            SettingsGroup {
+                Toggle("记录剪贴板历史", isOn: binding(\.captureEnabled))
+                Toggle("自动识别新图片中的文字", isOn: binding(\.automaticOCR))
+            }.settingsAnchor(.clipboardCapture)
+            SettingsGroup {
                 LabeledContent("剪贴板快捷键") { ShortcutRecorder(shortcut:model.bindings["clipboard"]) { model.setShortcut("clipboard",value:$0) } }
-                SettingsPicker("回车动作",selection:$controller.primaryAction) { Text("仅复制").tag("copy"); Text("粘贴到上个应用").tag("paste") }
+                SettingsPicker("回车动作",selection:binding(\.primaryAction)) { Text("仅复制").tag("copy"); Text("粘贴到上个应用").tag("paste") }
                 Button("允许辅助功能…") { model.requestKeyboardAccess() }.buttonStyle(ContentActionButtonStyle())
                 if !controller.accessMessage.isEmpty { Text(controller.accessMessage).font(.caption).foregroundStyle(.orange); Button("打开系统设置") { NSWorkspace.shared.open(URL(fileURLWithPath:"/System/Applications/System Settings.app")) }.buttonStyle(ContentActionButtonStyle()) }
             }
-            card {
-                SettingsPicker("保留时间", selection: $controller.retentionDays) { Text("7天").tag(7); Text("30天").tag(30); Text("90天").tag(90); Text("1年").tag(365) }
-                SettingsPicker("记录上限", selection: $controller.maxItems) { Text("100项").tag(100); Text("500项").tag(500); Text("1000项").tag(1000) }
+            SettingsGroup {
+                SettingsPicker("保留时间", selection: binding(\.retentionDays)) { Text("7天").tag(7); Text("30天").tag(30); Text("90天").tag(90); Text("1年").tag(365) }
+                SettingsPicker("记录上限", selection: binding(\.maxItems)) { Text("100项").tag(100); Text("500项").tag(500); Text("1000项").tag(1000) }
             }
-            card {
+            SettingsGroup {
                 HStack { Text("不记录这些应用").font(.headline); Spacer(); Button("添加应用…", systemImage: "plus") { controller.addExcludedApplication() }.buttonStyle(ContentActionButtonStyle()) }
                 ForEach(controller.excludedApps.sorted(), id: \.self) { id in
                     HStack {
-                        Text(NSWorkspace.shared.urlForApplication(withBundleIdentifier: id).map { FileManager.default.displayName(atPath: $0.path) } ?? id).font(.caption)
+                        Text(excludedNames[id] ?? id).font(.caption)
                         Spacer()
                         if !ClipboardPolicy.defaultExcluded.contains(id) { Button("移除") { controller.excludedApps.remove(id) }.buttonStyle(.plain) }
                     }
                 }
             }
-            card {
-                LabeledContent("已保存", value: "\(controller.total)项")
-                if controller.migrationBackupCount > 0 { Text("保留了\(controller.migrationBackupCount)份升级前备份，包含旧历史与自有图片。清理全部历史时会一并删除；清理未置顶历史时保留备份。").font(.caption).foregroundStyle(.secondary) }
-                HStack { Button("清理未置顶历史…", role: .destructive) { clearAll = false; confirmsClear = true }; Button("清理全部历史…", role: .destructive) { clearAll = true; confirmsClear = true } }.buttonStyle(ContentActionButtonStyle())
-                if !controller.status.isEmpty { Text(controller.status).font(.caption).foregroundStyle(.secondary) }
-            }
+            ClipboardHistoryStatistics(controller: controller)
+        }
+        .onAppear { updateExcludedNames(controller.excludedApps) }
+        .onChange(of: controller.excludedApps) { _, ids in updateExcludedNames(ids) }
+    }
+}
+
+private struct ClipboardHistoryStatistics: View {
+    let controller: ClipboardController
+    @StateObject private var observation: SettingsPageObservation
+    @State private var confirmsClear = false
+    @State private var clearAll = false
+
+    init(controller: ClipboardController) {
+        self.controller = controller
+        _observation = StateObject(wrappedValue: SettingsPageObservation([
+            SettingsPageObservation.changes(controller.$total),
+            SettingsPageObservation.changes(controller.$migrationBackupCount),
+            SettingsPageObservation.changes(controller.$status)
+        ]))
+    }
+
+    var body: some View {
+        SettingsGroup {
+            LabeledContent("已保存", value: "\(controller.total)项")
+            if controller.migrationBackupCount > 0 { Text("保留了\(controller.migrationBackupCount)份升级前备份，包含旧历史与自有图片。清理全部历史时会一并删除；清理未置顶历史时保留备份。").font(.caption).foregroundStyle(.secondary) }
+            HStack { Button("清理未置顶历史…", role: .destructive) { clearAll = false; confirmsClear = true }; Button("清理全部历史…", role: .destructive) { clearAll = true; confirmsClear = true } }.buttonStyle(ContentActionButtonStyle())
+            if !controller.status.isEmpty { Text(controller.status).font(.caption).foregroundStyle(.secondary) }
         }
         .confirmationDialog("清理剪贴板历史？", isPresented: $confirmsClear, titleVisibility: .visible) {
             Button(clearAll ? "删除全部记录、历史图片及升级备份" : "删除未置顶记录及历史图片", role: .destructive) { controller.clear(includePinned: clearAll) }

@@ -127,11 +127,12 @@ struct SettingsGroup<Content: View>: View {
     var body: some View { SettingsRows { content }.modifier(SettingsSurface()) }
 }
 
-/// Standard card surfaces, with the two content layouts already used by settings.
+/// Standard card surfaces using existing settings layout metrics.
 struct SettingsCard<Content: View>: View {
     enum Layout {
         case flush
         case padded
+        case inset
     }
 
     var layout: Layout = .padded
@@ -150,19 +151,23 @@ struct SettingsCard<Content: View>: View {
         case .padded:
             VStack(alignment: .leading, spacing: 11, content: content)
                 .padding(14).modifier(SettingsSurface())
+        case .inset:
+            VStack(alignment: .leading, spacing: 12, content: content)
+                .padding(16).frame(maxWidth: .infinity, alignment: .leading).modifier(SettingsSurface())
         }
     }
 }
 
 struct SettingsCaption: View {
-    enum Style { case standard, compact }
+    enum Style { case standard, compact, inset }
     let title: String
     let detail: String
     var style: Style = .standard
 
     var body: some View {
-        VStack(alignment: .leading, spacing: style == .standard ? 5 : 3) {
+        VStack(alignment: .leading, spacing: style == .standard ? 5 : style == .inset ? 4 : 3) {
             if style == .standard { Text(title).fontWeight(.medium) }
+            else if style == .inset { Text(title).font(.system(size: 14, weight: .medium)) }
             else { Text(title).font(VisualStyle.rowText) }
             Text(detail).font(.system(size: style == .standard ? 13 : 12)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: style == .standard)
@@ -179,4 +184,9 @@ struct SettingsAddFolderButton: View {
             .buttonStyle(.glass).buttonBorderShape(.circle).controlSize(.small)
             .help("添加搜索文件夹")
     }
+}
+
+
+extension View {
+    func settingsAnchor(_ item: SettingsItem) -> some View { id(item.id) }
 }

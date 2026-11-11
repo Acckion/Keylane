@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 import PDFKit
 
-public struct FileIndexStats: Codable {
+public struct FileIndexStats: Codable, Equatable {
     public var entries = 0, files = 0, directories = 0, symlinks = 0, invalid = 0, bytes = 0
     public var seconds: Double = 0
     public init() {}
