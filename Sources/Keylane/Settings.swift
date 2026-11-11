@@ -86,11 +86,10 @@ struct SettingsView: View {
             card {
                 Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
                 Text(model.loginStatus).font(.caption).foregroundStyle(.secondary)
-                Button("打开系统登录项设置") { SMAppService.openSystemSettingsLoginItems() }.buttonStyle(.glass)
             }.id("login")
             LauncherAppearancePreferences(model: model)
             card { SettingsPicker("窗口位置", selection: $model.placement) { Text("当前屏幕居中").tag("activeScreen"); Text("记住上次位置").tag("remember") } }.id("position")
-            card { KeyboardPreferences(model: model) }.id("keyboard")
+            KeyboardPreferences(model: model).id("keyboard")
         case "applications":
             ApplicationPreferences(model: model)
         case "screenshots":

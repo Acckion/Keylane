@@ -17,18 +17,15 @@ struct ShortcutRecorder: View {
     @State private var keyHeld = false
     var body: some View {
         HStack(spacing: 4) {
-            if compact {
-                Button { start() } label: {
-                    recorderLabel.font(.system(size: 12))
-                        .frame(minHeight: 28)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(recording || shortcut != nil ? .primary : .tertiary)
-                .help("录制快捷键，Escape 取消")
-            } else {
-                Button { start() } label: { recorderLabel }.buttonStyle(.glass)
+            Button { start() } label: {
+                recorderLabel.font(.system(size: 12))
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .accessibilityLabel(title)
+            .help("录制快捷键，Escape 取消")
 
             if shortcut != nil && !recording {
                 Button { clearHovered = false; changed(nil) } label: {
@@ -40,15 +37,12 @@ struct ShortcutRecorder: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(clearHovered ? Color.primary : Color.secondary)
                 .onHover { clearHovered = $0 }
-                .opacity(hovering ? 1 : 0)
-                .allowsHitTesting(hovering)
                 .accessibilityLabel("清除快捷键")
                 .help("清除快捷键")
             }
         }
         .padding(.horizontal, 7)
-        .padding(.vertical, compact ? 0 : 3)
-        .background(.primary.opacity(hovering || recording ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 8))
+        .background(.primary.opacity(hovering || recording ? 0.13 : 0.08), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .onHover { hovering = $0; if !$0 { clearHovered = false } }
         .popover(isPresented: $recording, arrowEdge: .bottom) {
@@ -70,11 +64,11 @@ struct ShortcutRecorder: View {
                     .font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
                 if !liveModifiers.isEmpty && draft == nil {
                     Keycaps(keys: liveModifiers).padding(10)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 8))
+                        .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                 }
                 if let draft {
                     Keycaps(keys: liveModifiers.isEmpty ? draft.keycaps : liveModifiers).padding(10)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 8))
+                        .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                         .help("直接按键可重新录制；下方可调整修饰键")
                     HStack(spacing: 8) {
                         ForEach([UInt32(4096), 2048, 512, 256], id: \.self) { mask in
@@ -83,7 +77,7 @@ struct ShortcutRecorder: View {
                             } label: {
                                 Text(mask == 4096 ? "⌃" : mask == 2048 ? "⌥" : mask == 512 ? "⇧" : "⌘")
                                     .foregroundStyle(draft.modifiers & mask != 0 ? Color.primary : Color.secondary)
-                            }.buttonStyle(.glass)
+                            }.buttonStyle(ContentActionButtonStyle())
                         }
                     }
                 } else if liveModifiers.isEmpty {
