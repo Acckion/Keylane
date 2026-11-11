@@ -264,6 +264,17 @@ final class LauncherModuleRegistry {
         servicesRunning = false
         for service in services.reversed() { service.stop() }
     }
+    /// Preserve a prior disable from the host when a module supplies its own command preference.
+    func migrateDisabledCommands(_ disabled: Set<String>) -> Set<String> {
+        var remaining = disabled
+        for id in disabled {
+            guard let preference = byID[CommandID(rawValue: id)]?.settingsEnabled else { continue }
+            if preference.wrappedValue { preference.wrappedValue = false }
+            remaining.remove(id)
+        }
+        return remaining
+    }
+
     func declaration(_ id: CommandID) -> LauncherCommandDeclaration? { byID[id]?.declaration }
 
     func page(_ id: PageID) -> LauncherPage? { pages[id] }

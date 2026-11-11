@@ -109,6 +109,13 @@ final class ScreenshotLibrary: ObservableObject {
         return results.first { $0.id == selection.itemID }
     }
 
+    func commandEnabledBinding(_ command: ScreenshotCommand) -> Binding<Bool> {
+        Binding(get: { !self.disabledCommands.contains(command.rawValue) }, set: { enabled in
+            if enabled { self.disabledCommands.remove(command.rawValue) }
+            else { self.disabledCommands.insert(command.rawValue) }
+        })
+    }
+
     func isEnabled(_ command: ScreenshotCommand) -> Bool {
         enabled && !disabledCommands.contains(command.rawValue)
     }
