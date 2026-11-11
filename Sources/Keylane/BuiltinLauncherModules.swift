@@ -292,24 +292,34 @@ enum BuiltinLauncherModules {
     }
 
     private static func calculator(_ model: Model) -> LauncherModule {
+        let exchange = CalculatorExchangeRates()
+        func result(_ query: String) -> (value: String?, detail: String)? {
+            if let conversion = CalculatorConversion(query) {
+                if let value = conversion.unitResult { return (value, "单位换算") }
+                if let value = exchange.result(conversion) { return value }
+                return (nil, "单位不支持或无法互相换算")
+            }
+            return calculatorResult(query).map { ($0, "回车复制结果") }
+        }
         let id = CommandID(rawValue: "calculator")
         let provider = LauncherModule.Provider(namespace: .exact(id), entries: { input in
-            guard let result = calculatorResult(input.query) else { return [] }
-            return [Entry(id: id.rawValue, commandID: id, name: result, detail: "回车复制结果",
+            guard let result = result(input.query), let value = result.value else { return [] }
+            return [Entry(id: id.rawValue, commandID: id, name: value, detail: result.detail,
                           symbol: "equal", rankingKind: .calculator)]
         }, resolve: { [weak model] command, origin in
-            guard command == id, origin != .shortcut, let query = model?.query, let result = calculatorResult(query) else { return nil }
+            guard command == id, origin != .shortcut, let query = model?.query, let value = result(query)?.value else { return nil }
             return {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(result, forType: .string)
+                NSPasteboard.general.setString(value, forType: .string)
             }
         })
         let hintID = CommandID(rawValue: "calculator-hint")
         let hint = LauncherModule.Provider(namespace: .exact(hintID), entries: { input in
             let query = input.query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard query.folding(options: .widthInsensitive, locale: .current).hasPrefix("="),
-                  calculatorResult(query) == nil else { return [] }
-            let message = query.count == 1 ? "输入计算表达式，如 2 × (3 + 4)" : "表达式不完整或无法计算"
+            let outcome = result(query)
+            guard outcome?.value == nil,
+                  outcome != nil || query.folding(options: .widthInsensitive, locale: .current).hasPrefix("=") else { return [] }
+            let message = outcome?.detail ?? (query.count == 1 ? "例如 2 × (3 + 4)、5 km to mi、100 美元转人民币" : "表达式不完整或无法计算")
             return [Entry(id: hintID.rawValue, commandID: hintID, name: message,
                           detail: "计算器", symbol: "equal", rankingKind: .calculator)]
         }, resolve: { _, _ in nil })
@@ -317,7 +327,7 @@ enum BuiltinLauncherModules {
             command("calculator-help", "计算器", "在搜索框输入表达式", "equal.circle", ["Calculator", "计算"], execute: { [weak model] _ in
                 model?.query = "="
             })
-        ], providers: [provider, hint])
+        ], providers: [provider, hint], searchUpdates: [exchange.updates])
     }
 
     private static func calculatorResult(_ query: String) -> String? {

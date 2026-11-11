@@ -4,12 +4,13 @@ struct CalculatorResultCard: View {
     let expression: String
     let result: String
     let selected: Bool
+    let conversionDetail: String?
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         HStack(spacing: 0) {
-            column(styledExpression, badge: operation)
-            column(Text(result).monospacedDigit(), badge: resultInWords)
+            column(styledExpression, badge: conversionDetail == nil ? operation : "换算")
+            column(Text(result).monospacedDigit(), badge: conversionDetail ?? resultInWords)
         }
         .frame(height: 126)
         .overlay {
@@ -28,7 +29,7 @@ struct CalculatorResultCard: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text("\(expression) 等于 \(result)"))
+        .accessibilityLabel(Text("\(expression) 等于 \(result) \(conversionDetail ?? "")"))
         .accessibilityHint("复制计算结果")
     }
 
@@ -39,7 +40,7 @@ struct CalculatorResultCard: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             Text(badge)
                 .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
+                .lineLimit(1).minimumScaleFactor(0.7)
                 .padding(.horizontal, 8).padding(.vertical, 4)
                 .background(.primary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
                 .padding(.bottom, 12)
