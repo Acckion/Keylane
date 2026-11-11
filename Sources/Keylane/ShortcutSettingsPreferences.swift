@@ -22,6 +22,9 @@ struct ShortcutSettingsPreferences: View {
             ViewObservation.changes(model.$excluded),
             ViewObservation.changes(model.$favorites),
             ViewObservation.changes(model.clipboard.$historyCommandEnabled),
+            ViewObservation.changes(model.screenshots.$disabledCommands),
+            ViewObservation.changes(model.scripts.$disabled),
+            ViewObservation.changes(model.fileAI.$commandsEnabled),
             ViewObservation.changes(model.systemShortcuts.$entries),
             ViewObservation.changes(model.systemShortcuts.$disabledIDs),
             ViewObservation.changes(model.systemShortcuts.$icons)
