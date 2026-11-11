@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon
+import KeylaneCore
 
 @main
 struct NavigationChecks {
@@ -61,6 +62,12 @@ struct NavigationChecks {
         let switchError = try perform(a, mode: .windows)
         try require(switchError.isEmpty, "Window focus failed: " + switchError)
 
+        let placementError = try place(.left, in: fixture)
+        try require(placementError.isEmpty, "Left-half placement failed: " + placementError)
+        try require(try place(.restore, in: fixture).isEmpty, "Window restore failed")
+        try require(try !place(.restore, in: fixture).isEmpty, "Restore remained available after use")
+        print("Native window placement and restore passed")
+
         var menus: NavigationScan?
         _ = navigation.scan(.menus, target: fixture) { menus = $0 }
         let commands = awaitValue(timeout: 8, { menus })?.items ?? []
@@ -92,6 +99,13 @@ struct NavigationChecks {
         var outcome: String?
         SystemNavigation.shared.perform(item, mode: mode) { outcome = $0 ?? "" }
         guard let outcome = awaitValue(timeout: 4, { outcome }) else { throw CheckError.failed("Navigation action timed out") }
+        return outcome
+    }
+
+    private static func place(_ placement: WindowPlacement, in app: NSRunningApplication) throws -> String {
+        var outcome: String?
+        SystemNavigation.shared.placeWindow(placement, in: app) { outcome = $0 ?? "" }
+        guard let outcome = awaitValue(timeout: 4, { outcome }) else { throw CheckError.failed("Window placement timed out") }
         return outcome
     }
 
@@ -134,7 +148,7 @@ private final class NavigationFixture: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         for (index, letter) in ["A", "B"].enumerated() {
             let window = NSWindow(contentRect: NSRect(x: 250 + index * 60, y: 330, width: 420, height: 240),
-                                  styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             window.title = "Navigation Fixture " + letter
             windows.append(window)
             window.makeKeyAndOrderFront(nil)

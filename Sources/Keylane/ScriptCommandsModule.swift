@@ -116,7 +116,7 @@ enum ScriptCommandsModule {
                       })
             }
         }, resolve: { [weak model] id, origin in
-            guard let model, let script = controller.entries.first(where: { $0.id == id.rawValue }),
+            guard let model, let script = controller.command(withID: id.rawValue),
                   controller.canRun(script) else { return nil }
             return {
                 if controller.running && controller.selected != script {
@@ -132,7 +132,7 @@ enum ScriptCommandsModule {
                 }
             }
         }, primaryTitle: { _ in "运行脚本" }, actions: { [weak model] row in
-            guard let model, let script = controller.entries.first(where: { $0.id == row.id }) else { return nil }
+            guard let model, let script = controller.command(withID: row.id) else { return nil }
             if controller.runningScript?.id == script.id {
                 return [.init(id: "cancel-script", title: "取消运行", icon: "stop.circle", perform: controller.cancel),
                         model.favoriteAction(for: row)]
@@ -166,7 +166,7 @@ enum ScriptCommandsModule {
                 model.favoriteAction(for: row)
             ]
         }, displayDetail: { _ in "脚本命令" }, artwork: { row in
-            guard let script = controller.entries.first(where: { $0.id == row.id }) else {
+            guard let script = controller.command(withID: row.id) else {
                 return AnyView(Image(systemName: symbol))
             }
             return AnyView(ScriptArtwork(script: script))
@@ -250,14 +250,15 @@ enum ScriptCommandsModule {
                                     keywords: ["Script Commands", "脚本", "Shell", "Python", "Node"],
                                     destination: .settings(settingsID), settingsPage: settingsID))
         ] + actionCommands(controller), providers: [provider, cancellation, fallback], pages: [searchPage(model), page, create], settings: [settings],
-        services: [.init(start: { controller.refresh(); controller.startInlineRefresh() }, stop: controller.stop)],
+        services: [.init(start: controller.start, stop: controller.stop)],
         searchUpdates: [
             ViewObservation.changes(controller.$entries),
             ViewObservation.changes(controller.$runningScript),
             ViewObservation.changes(controller.$enabled),
             ViewObservation.changes(controller.$fallbackID),
             ViewObservation.changes(controller.$disabled)
-        ], launcherShown: { controller.refresh() },
+        ], launcherShown: { controller.setLauncherVisible(true) },
+        launcherHidden: { controller.setLauncherVisible(false) },
         presentationUpdates: [ViewObservation.changes(controller.$inlineOutput)],
         dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.title, commandID: \.id,
@@ -393,7 +394,7 @@ private struct ScriptCommandsPreferences: View {
                 .disabled(!controller.enabled)
             }
         }
-        .onAppear { controller.refresh(force: true) }
+        .onAppear { controller.refresh() }
     }
 }
 

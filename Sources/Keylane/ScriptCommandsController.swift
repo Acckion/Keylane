@@ -7,11 +7,13 @@ final class ScriptCommandsController: ObservableObject {
     @Published var enabled: Bool {
         didSet {
             preferences.set(enabled, forKey: "scriptCommands.enabled")
-            if enabled { refresh(force: true) }
+            guard enabled != oldValue else { return }
+            if enabled, serviceRunning { restartDiscovery() }
             else {
-                stopScanning()
+                stopDiscovery()
                 inlineDue.removeAll()
-                inlineOutput.removeAll()
+                if !inlineOutput.isEmpty { inlineOutput.removeAll() }
+                suspendInlineRefresh()
             }
         }
     }
@@ -24,7 +26,12 @@ final class ScriptCommandsController: ObservableObject {
     @Published private(set) var unavailable: [String] = []
     @Published private(set) var scanning = false
     @Published var disabled: Set<String> {
-        didSet { preferences.set(Array(disabled), forKey: "scriptCommands.disabled") }
+        didSet {
+            preferences.set(Array(disabled), forKey: "scriptCommands.disabled")
+            guard disabled != oldValue else { return }
+            pruneInlineState()
+            scheduleInlineRefresh()
+        }
     }
     @Published private(set) var selected: ScriptCommand?
     @Published private(set) var runningScript: ScriptCommand?
@@ -42,6 +49,9 @@ final class ScriptCommandsController: ObservableObject {
     @Published private(set) var creationError = ""
     private var inlineDue: [String: TimeInterval] = [:]
     private var inlineTimer: Timer?
+    private var inlineRun: (script: ScriptCommand, token: DispatchWorkItem)?
+    private var launcherVisible = false
+    private var serviceRunning = false
     @Published var directory = ""
     @Published var timeout = "30"
 
@@ -49,7 +59,12 @@ final class ScriptCommandsController: ObservableObject {
     private let scanner = DispatchQueue(label: "org.keylane.scripts.scan", qos: .utility)
     private let worker = DispatchQueue(label: "org.keylane.scripts.run", qos: .userInitiated)
     private var scanToken: DispatchWorkItem?
-    private var lastScan = Date.distantPast
+    private var lastScan: TimeInterval?
+    private let folderWatcher = ScriptFolderWatcher()
+    private var pendingFolderRefresh: DispatchWorkItem?
+    private var rebuildWatch = false
+    private var rescanRequested = false
+    private var entriesByID: [String: ScriptCommand] = [:]
     private var cancellation: DispatchWorkItem?
 
     init(preferences: UserDefaults = .standard) {
@@ -60,39 +75,104 @@ final class ScriptCommandsController: ObservableObject {
         disabled = Set(preferences.stringArray(forKey: "scriptCommands.disabled") ?? [])
     }
 
+    func start() {
+        guard !serviceRunning else { return }
+        serviceRunning = true
+        if enabled { restartDiscovery() }
+        scheduleInlineRefresh()
+    }
+
+    func setLauncherVisible(_ visible: Bool) {
+        guard launcherVisible != visible else { return }
+        launcherVisible = visible
+        if visible {
+            refresh()
+            scheduleInlineRefresh()
+        } else {
+            suspendInlineRefresh()
+        }
+    }
+
+    private func restartDiscovery() {
+        stopDiscovery()
+        folderWatcher.changed = { [weak self] rebuild in self?.folderChanged(rebuild: rebuild) }
+        folderWatcher.start(roots: folders)
+        refresh(force: true)
+    }
+
+    private func folderChanged(rebuild: Bool) {
+        rebuildWatch = rebuildWatch || rebuild
+        guard pendingFolderRefresh == nil else { return }
+        let task = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingFolderRefresh = nil
+            if self.rebuildWatch {
+                self.rebuildWatch = false
+                self.folderWatcher.start(roots: self.folders)
+            }
+            if self.scanToken != nil { self.rescanRequested = true }
+            else { self.refresh(force: true) }
+        }
+        pendingFolderRefresh = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: task)
+    }
+
     func refresh(force: Bool = false, completion: ((Int) -> Void)? = nil) {
-        guard enabled, force || (!scanning && Date().timeIntervalSince(lastScan) > 15) else { return }
-        lastScan = Date()
+        guard serviceRunning, enabled else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        // The visibility and settings entry points only retry when a watch could not start.
+        guard force || (!folders.isEmpty && scanToken == nil && !folderWatcher.isWatching && now - (lastScan ?? -.infinity) > 15) else { return }
+        if !force { folderWatcher.start(roots: folders) }
+        lastScan = now
         scanToken?.cancel()
+        scanToken = nil
+        rescanRequested = false
+        let paths = folders
+        guard !paths.isEmpty else {
+            replaceEntries([])
+            if !unavailable.isEmpty { unavailable = [] }
+            if scanning { scanning = false }
+            completion?(0)
+            return
+        }
+
         let token = DispatchWorkItem {}
         scanToken = token
-        let paths = folders
-        scanning = !paths.isEmpty
+        if !scanning { scanning = true }
         scanner.async { [weak self] in
             guard !token.isCancelled else { return }
             let catalog = ScriptCommand.discover(in: paths, isCancelled: { token.isCancelled })
             DispatchQueue.main.async {
-                guard let self, !token.isCancelled else { return }
+                guard let self, self.scanToken === token, !token.isCancelled else { return }
                 self.scanToken = nil
-                if self.entries != catalog.commands {
-                    let incoming = Dictionary(uniqueKeysWithValues: catalog.commands.map { ($0.id, $0) })
-                    let unchanged = Set(self.entries.filter { incoming[$0.id] == $0 }.map(\.id))
-                    self.inlineDue = self.inlineDue.filter { unchanged.contains($0.key) }
-                    self.inlineOutput = self.inlineOutput.filter { unchanged.contains($0.key) }
-                    self.entries = catalog.commands
-                }
-                self.unavailable = catalog.unavailable
-                self.scanning = false
+                self.replaceEntries(catalog.commands)
+                if self.unavailable != catalog.unavailable { self.unavailable = catalog.unavailable }
+                if self.rescanRequested { self.refresh(force: true) }
+                else { self.scanning = false }
                 completion?(catalog.commands.count)
             }
         }
     }
 
-    func stopScanning() {
+    private func replaceEntries(_ updated: [ScriptCommand]) {
+        guard entries != updated else { return }
+        let previous = entriesByID
+        entriesByID = Dictionary(uniqueKeysWithValues: updated.map { ($0.id, $0) })
+        pruneInlineState { previous[$0] == entriesByID[$0] }
+        entries = updated
+        scheduleInlineRefresh()
+    }
+
+    private func stopDiscovery() {
+        folderWatcher.stop()
+        pendingFolderRefresh?.cancel()
+        pendingFolderRefresh = nil
+        rebuildWatch = false
+        rescanRequested = false
         scanToken?.cancel()
         scanToken = nil
-        scanning = false
-        lastScan = .distantPast
+        if scanning { scanning = false }
+        lastScan = nil
     }
 
     func prepareCreation() {
@@ -193,10 +273,12 @@ final class ScriptCommandsController: ObservableObject {
     }
 
     private func setFolders(_ paths: [String]) {
-        folders = Self.canonicalFolders(paths)
-        entries = entries.filter { command in folders.contains { Self.contains(command, in: $0) } }
+        let updated = Self.canonicalFolders(paths)
+        guard folders != updated else { return }
+        folders = updated
+        replaceEntries(entries.filter { command in folders.contains { Self.contains(command, in: $0) } })
         preferences.set(folders, forKey: "scriptCommands.folders")
-        refresh(force: true)
+        if serviceRunning, enabled { restartDiscovery() }
     }
 
     private static func canonicalFolders(_ paths: [String]) -> [String] {
@@ -220,15 +302,18 @@ final class ScriptCommandsController: ObservableObject {
         enabled && !disabled.contains(script.id) && folders.contains { Self.contains(script, in: $0) }
     }
 
-    var fallbackEntries: [ScriptCommand] {
-        entries.filter { script in
-            guard let args = script.metadata?.arguments else { return false }
-            return args.first?.kind == .text && args.dropFirst().allSatisfy { $0.optional == true }
-        }
+    func command(withID id: String) -> ScriptCommand? { entriesByID[id] }
+
+    private func acceptsFallbackInput(_ script: ScriptCommand) -> Bool {
+        guard let args = script.metadata?.arguments else { return false }
+        return args.first?.kind == .text && args.dropFirst().allSatisfy { $0.optional == true }
     }
 
+    var fallbackEntries: [ScriptCommand] { entries.filter(acceptsFallbackInput) }
+
     var fallback: ScriptCommand? {
-        fallbackEntries.first { $0.id == fallbackID && canRun($0) }
+        guard let script = command(withID: fallbackID), canRun(script), acceptsFallbackInput(script) else { return nil }
+        return script
     }
 
     func select(_ script: ScriptCommand) {
@@ -297,38 +382,66 @@ final class ScriptCommandsController: ObservableObject {
                 timeout: TimeInterval(seconds), background: false)
     }
 
-    func startInlineRefresh() {
-        guard inlineTimer == nil else { return }
-        inlineTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refreshInlineIfDue() }
-    }
-
     func stop() {
-        stopScanning()
-        inlineTimer?.invalidate()
-        inlineTimer = nil
+        serviceRunning = false
+        launcherVisible = false
+        stopDiscovery()
+        suspendInlineRefresh()
         cancel()
     }
 
-    private func refreshInlineIfDue() {
-        guard enabled, !running, let window = (NSApp?.delegate as? Delegate)?.window, window.isVisible else { return }
-        refresh()
-        let now = ProcessInfo.processInfo.systemUptime
-        let active = entries.filter { canRun($0) && $0.metadata?.effectiveMode == .inline && $0.metadata?.needsConfirmation == false }
-            .filter { inlineDue[$0.id] != nil }.prefix(10)
-        guard let script = active.first(where: { (inlineDue[$0.id] ?? .infinity) <= now }) else { return }
-        execute(script, arguments: [], directory: script.workingDirectory, timeout: 30, background: true)
+    private func suspendInlineRefresh() {
+        inlineTimer?.invalidate()
+        inlineTimer = nil
+        inlineRun?.token.cancel()
+    }
+
+    private func pruneInlineState(keep: (String) -> Bool = { _ in true }) {
+        inlineDue = inlineDue.filter { entriesByID[$0.key] != nil && !disabled.contains($0.key) && keep($0.key) }
+        let output = inlineOutput.filter { entriesByID[$0.key] != nil && !disabled.contains($0.key) && keep($0.key) }
+        if inlineOutput != output { inlineOutput = output }
+        if let run = inlineRun, entriesByID[run.script.id] != run.script || !canRun(run.script) {
+            run.token.cancel()
+        }
+    }
+
+    private func scheduleInlineRefresh() {
+        inlineTimer?.invalidate()
+        inlineTimer = nil
+        guard serviceRunning, enabled, launcherVisible, !running, inlineRun == nil, !inlineDue.isEmpty else { return }
+        let eligible: [ScriptCommand]
+        if inlineDue.count <= 10 {
+            eligible = inlineDue.keys.compactMap { entriesByID[$0] }.filter(canRun)
+        } else {
+            eligible = Array(entries.lazy.filter { self.inlineDue[$0.id] != nil && self.canRun($0) }.prefix(10))
+        }
+        guard let script = eligible.min(by: { inlineDue[$0.id, default: .infinity] < inlineDue[$1.id, default: .infinity] }),
+              let due = inlineDue[script.id] else { return }
+        let delay = max(0.01, due - ProcessInfo.processInfo.systemUptime)
+        let timer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.inlineTimer = nil
+            self.execute(script, arguments: [], directory: script.workingDirectory, timeout: 30, background: true)
+        }
+        timer.tolerance = min(0.25, delay / 10)
+        inlineTimer = timer
     }
 
     private func execute(_ script: ScriptCommand, arguments: [String], directory: URL,
                          timeout: TimeInterval, background: Bool) {
         let token = DispatchWorkItem {}
-        cancellation = token
-        runningScript = script
+        if background {
+            inlineRun = (script, token)
+        } else {
+            suspendInlineRefresh()
+            cancellation = token
+            runningScript = script
+        }
         let mode = script.metadata?.effectiveMode ?? .fullOutput
         worker.async { [weak self] in
             let outcome = Result {
                 // A changed header must go through routing and confirmation again.
-                guard try ScriptCommand.read(script.url).metadata == script.metadata else {
+                if !token.isCancelled, try ScriptCommand.read(script.url).metadata != script.metadata {
                     throw ScriptMetadata.ValidationError.invalidHeader
                 }
                 return try ScriptRunner.run(script, arguments: arguments, directory: directory,
@@ -340,9 +453,16 @@ final class ScriptCommandsController: ObservableObject {
             }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.runningScript = nil
-                self.cancellation = nil
-                self.finish(script, mode: mode, outcome: outcome, background: background)
+                if background {
+                    guard self.inlineRun?.token === token else { return }
+                    self.inlineRun = nil
+                    if !token.isCancelled { self.finish(script, mode: mode, outcome: outcome, background: true) }
+                } else {
+                    self.runningScript = nil
+                    self.cancellation = nil
+                    self.finish(script, mode: mode, outcome: outcome, background: false)
+                }
+                self.scheduleInlineRefresh()
             }
         }
     }
@@ -350,20 +470,22 @@ final class ScriptCommandsController: ObservableObject {
     private func finish(_ script: ScriptCommand, mode: ScriptMetadata.Mode,
                         outcome: Result<ScriptRunner.Result, Error>, background: Bool) {
         let toast = (NSApp?.delegate as? Delegate)?.toast
+        let acceptsInlineOutput = mode == .inline && serviceRunning && canRun(script) && entriesByID[script.id] == script
         switch outcome {
         case .success(let value):
-            if mode == .inline {
+            if acceptsInlineOutput {
                 if value.status == .cancelled {
                     inlineDue.removeValue(forKey: script.id)
-                } else if enabled, script.metadata?.needsConfirmation == false, let interval = script.metadata?.refreshInterval {
+                } else if script.metadata?.needsConfirmation == false, let interval = script.metadata?.refreshInterval {
                     inlineDue[script.id] = ProcessInfo.processInfo.systemUptime + interval
                 }
             }
             let succeeded = value.status == .exited(0)
             let lines = (succeeded ? value.standardOutput : value.output).split(whereSeparator: \.isNewline)
-            if mode == .inline {
+            if acceptsInlineOutput, value.status != .cancelled {
                 let line = succeeded ? lines.first : lines.last
-                inlineOutput[script.id] = line.map(String.init) ?? (succeeded ? "" : "运行失败")
+                let text = line.map(String.init) ?? (succeeded ? "" : "运行失败")
+                if inlineOutput[script.id] != text { inlineOutput[script.id] = text }
             }
             guard !background else { return }
             result = value
@@ -372,8 +494,11 @@ final class ScriptCommandsController: ObservableObject {
                 toast?.show(text, style: succeeded ? .success : .failure)
             }
         case .failure(let failure):
-            if mode == .inline { inlineDue.removeValue(forKey: script.id) }
-            if background { inlineOutput[script.id] = "运行失败"; return }
+            if acceptsInlineOutput {
+                inlineDue.removeValue(forKey: script.id)
+                if background, inlineOutput[script.id] != "运行失败" { inlineOutput[script.id] = "运行失败" }
+            }
+            if background { return }
             error = "无法运行脚本：\(failure.localizedDescription)"
             if mode != .fullOutput { toast?.show(error, style: .failure) }
         }
