@@ -7,17 +7,21 @@ struct ApplicationPreferences: View {
     let model: Model
     @StateObject private var observation: ViewObservation
     @ObservedObject private var catalog: ApplicationSettingsCatalog
+    @ObservedObject private var autoQuit: ApplicationAutoQuit
     @State private var filter = ""
     @State private var filteredApplications: [ApplicationPreferenceItem]?
 
     init(model: Model) {
         self.model = model
         catalog = model.applicationSettingsCatalog
+        autoQuit = model.applicationAutoQuit
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$applicationHotkeyAction),
             ViewObservation.changes(model.$applicationSettingsPath),
             ViewObservation.changes(model.$roots),
             ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$applicationsEnabled),
+            ViewObservation.changes(model.$disabledCommands),
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(model.$excluded),
             ViewObservation.changes(model.$favorites),
@@ -34,6 +38,12 @@ struct ApplicationPreferences: View {
                     Button("显示所有应用") { model.showAllApplicationSettings() }
                         .buttonStyle(.bordered)
                 }.padding(.horizontal, 14)
+                let url = URL(fileURLWithPath: path)
+                if autoQuit.canConfigure(url) {
+                    SettingsGroup {
+                        autoQuitPicker("自动退出", detail: "应用离开前台后开始计时。应用可按正常退出流程提示保存。", url: url)
+                    }.disabled(!model.applicationsEnabled)
+                }
                 CommandSettingsList(items: catalog.items.filter { $0.id == path }, id: \.id,
                                     emptyMessage: "应用已移走或删除") { item in
                     item.commandSettingsEntry(model: model)
@@ -48,15 +58,21 @@ struct ApplicationPreferences: View {
         let visibleApplications = filteredApplications ?? catalog.items
         return SettingsPageSections {
             SettingsGroup {
-                SettingsRow("自动退出", detail: "停止使用应用一段时间后自动退出。") {
-                    HStack {
-                        Text("未实现").font(.caption).foregroundStyle(.tertiary)
-                        Image(systemName: "chevron.forward")
-                            .font(.system(size: 12, weight: .semibold)).foregroundStyle(.tertiary)
-                            .accessibilityHidden(true)
+                SettingsRow("自动退出", detail: "在下方应用列表的操作菜单中为应用开启。再次切到前台会重置计时。") {
+                    Text(autoQuit.rules.isEmpty ? "未开启" : "已配置 \(autoQuit.rules.count) 个应用")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(autoQuit.rules.keys.sorted(), id: \.self) { path in
+                    let url = URL(fileURLWithPath: path)
+                    if autoQuit.minutes(for: url) > 0 {
+                        autoQuitPicker(model.appName(url), detail: path, url: url)
+                    } else {
+                        SettingsRow(model.appName(url), detail: "原应用已移动、删除或替换。") {
+                            Button("移除规则") { autoQuit.removeRule(at: path) }
+                        }
                     }
                 }
-            }.help("自动退出将在系统工具阶段实现；当前不会自动退出任何应用。")
+            }.settingsAnchor(.applicationAutoQuit).disabled(!model.applicationsEnabled)
             SettingsGroup {
                 SettingsPicker("快捷键行为", detail: "触发应用快捷键时执行的操作。",
                                selection: Binding(get: { model.applicationHotkeyAction }, set: { model.applicationHotkeyAction = $0 })) {
@@ -76,10 +92,18 @@ struct ApplicationPreferences: View {
             ) { EmptyView() }
 
             SettingsSectionTitle(title: "命令")
-            CommandSettingsList(items: ["管理自动退出", "卸载应用程序"], id: \.self) { title in
-                unavailableCommand(title, icon: title == "管理自动退出" ? "app.badge.clock" : "trash.square.fill",
-                                   color: title == "管理自动退出" ? .gray : .red)
-            }
+            CommandSettingsList(items: ["manage-auto-quit", "uninstall-application"], id: \.self) { id in
+                let commandID = CommandID(rawValue: id)
+                let manage = id == "manage-auto-quit"
+                return CommandSettingsEntry(title: manage ? "管理自动退出" : "卸载应用程序",
+                                     model: model, commandID: commandID,
+                                     isEnabled: Binding(get: { !model.disabledCommands.contains(id) }, set: { value in
+                                         if value { model.disabledCommands.remove(id) }
+                                         else { model.disabledCommands.insert(id) }
+                                     }),
+                                     perform: { model.runCommand(commandID, origin: .menu) },
+                                     icon: { Image(systemName: manage ? "app.badge.clock" : "trash") })
+            }.disabled(!model.applicationsEnabled)
             HStack {
                 Text("应用程序").font(.system(size: 15, weight: .medium))
                 Spacer()
@@ -104,11 +128,15 @@ struct ApplicationPreferences: View {
         }
     }
 
-    private func unavailableCommand(_ title: String, icon: String, color: Color) -> CommandSettingsEntry<some View> {
-        CommandSettingsEntry(title: title, alias: .constant(""), shortcut: nil,
-                             isEnabled: .constant(false), setShortcut: { _ in },
-                             icon: { Image(systemName: icon).font(VisualStyle.actionSymbol).foregroundStyle(color) },
-                             available: false, help: "此命令尚未实现，不能启用或设置快捷键。")
+    private func autoQuitPicker(_ title: String, detail: String, url: URL) -> some View {
+        SettingsPicker(title, detail: detail,
+                       selection: Binding(get: { autoQuit.minutes(for: url) },
+                                          set: { autoQuit.setMinutes($0, for: url) })) {
+            Text("关闭").tag(0)
+            ForEach(ApplicationAutoQuit.intervals, id: \.self) { minutes in
+                Text("\(minutes) 分钟").tag(minutes)
+            }
+        }
     }
 
 }
@@ -130,7 +158,9 @@ extension ApplicationPreferenceItem {
             menu: [
                 .init(title: revision.favorite ? "取消收藏" : "加入收藏") { model.toggleFavorite(self.id) },
                 .init(title: "在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([self.url]) }
-            ],
+            ] + (model.applicationAutoQuit.canConfigure(url) ? [
+                .init(title: "配置自动退出…") { model.openApplicationCommandSettings(path: self.id) }
+            ] : []),
             renderRevision: revision,
             icon: { SettingsApplicationIcon(path: self.id) }
         )
@@ -199,7 +229,7 @@ struct ApplicationSettingsInfo: View {
     var body: some View {
         Group {
             Text(status)
-            Text("关闭模块会停用应用搜索和应用快捷键，已保存的配置保留。自动退出和卸载命令尚未实现。")
+            Text("关闭模块会停用应用搜索、应用快捷键和自动退出。已保存的配置会保留。")
         }.onReceive(model.$scanStatus.removeDuplicates()) { status = $0 }
     }
 }
