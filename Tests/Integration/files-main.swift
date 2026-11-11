@@ -30,6 +30,8 @@ func wait(_ label: String, _ condition: () -> Bool) {
     while !condition(), Date() < deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.03)) }
     precondition(condition(),label + " status=" + controller.indexStatus)
 }
+controller.search("")
+precondition(!controller.indexing, "Opening an empty search should not start a full scan")
 controller.search("作业")
 wait("Chinese filename") { !controller.indexing && results.contains { $0.name == "作业-2.pdf" } }
 recordsRefresh = true
@@ -58,10 +60,21 @@ controller.search("隐藏文件"); wait("Hidden name search") { results.first?.n
 controller.options.useIgnoreFiles = false
 wait("Ignore setting update") { !controller.indexing }
 controller.search("skip.log"); wait("Ignore disabled") { results.first?.name == "skip.log" }
-// Actual FSEvents refresh, not a manual reindex after the file is created.
-try Data("event fixture".utf8).write(to:scope.appendingPathComponent("实时新增文件.txt"))
-controller.search("实时新增")
-wait("FSEvents refresh") { results.contains { $0.name == "实时新增文件.txt" } }
+// A record outside the changed path remains untouched. A full sweep would remove it.
+let index = try FileSearchIndex(url: root.appendingPathComponent("index/index.sqlite"))
+let sentinel = scope.appendingPathComponent("sentinel-unvisited.txt").path
+try index.put(.init(path: sentinel, name: "sentinel-unvisited.txt", volume: "/", modified: 0,
+                    directory: false, symlink: false), root: scope.path, epoch: "fixture")
+let added = scope.appendingPathComponent("实时新增文件.txt")
+let renamed = scope.appendingPathComponent("实时重命名文件.txt")
+try Data("event fixture".utf8).write(to: added)
+controller.search("实时")
+wait("FSEvents refresh") { results.contains { $0.url == added } }
+precondition(try! index.search("sentinel", options: controller.options).first?.id == sentinel)
+try FileManager.default.moveItem(at: added, to: renamed)
+wait("FSEvents rename reconciles both paths") { results.map(\.url) == [renamed] }
+try FileManager.default.removeItem(at: renamed)
+wait("FSEvents deletion removes stale row") { results.isEmpty }
 let stats = controller.stats
 precondition(stats.entries > 0 && stats.files > 0 && stats.bytes > 0)
 try FileManager.default.moveItem(at:scope,to:root.appendingPathComponent("disconnected"))

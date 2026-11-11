@@ -28,6 +28,23 @@ final class FileIndexTests: XCTestCase {
         try db.removeUnseen(root:"/fixtures",epoch:"new")
         XCTAssertEqual(try db.stats().entries,0)
     }
+    func testRelevanceBeforeCandidateLimit() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let db = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        let root = "/fixture"
+        func insert(_ name: String, modified: Double) throws {
+            try db.put(.init(path: root + "/" + name, name: name, volume: "/", modified: modified,
+                             directory: false, symlink: false), root: root, epoch: "n:fixture")
+        }
+        try db.transaction {
+            try insert("作业", modified: 0)
+            try insert("作业原稿", modified: 1)
+            for i in 0..<2000 { try insert("备份作业-\(i)", modified: Double(i + 2)) }
+        }
+        let hits = try db.search("作业", options: .init(roots: [root]), limit: 2)
+        XCTAssertEqual(hits.map(\.name), ["作业", "作业原稿"])
+    }
     func testLauncherOptionDecodesOldSettingsWithoutLosingScopes() throws {
         var config = FileSearchOptions(roots:["/preserved-scope"]); config.contentSearch = true
         let data = try JSONEncoder().encode(config)
@@ -48,6 +65,17 @@ final class FileIndexTests: XCTestCase {
         XCTAssertEqual(try db.search("作业",options:config).count,200)
     }
     func testGlobsAndInheritedIgnoreRules() {
+        let patterns = ["*.tmp", "build/", "**/[Cc]ache/**", "/root/exact.txt"]
+        let paths = ["/root/build", "/root/Cache", "/root/a.tmp", "/root/exact.txt", "/root/文档"]
+        for directory in [false, true] {
+            let filter = FileSearchRules.pathFilter(patterns, directory: directory)
+            for path in paths {
+                let name = URL(fileURLWithPath: path).lastPathComponent
+                XCTAssertEqual(filter(path, name), patterns.contains {
+                    FileSearchRules.glob($0, matches: path, directory: directory)
+                }, path)
+            }
+        }
         XCTAssertTrue(FileSearchRules.glob("node_modules",matches:"/root/node_modules",directory:true))
         XCTAssertTrue(FileSearchRules.glob("**/[Cc]ache/**",matches:"/root/Cache",directory:true))
         XCTAssertTrue(FileSearchRules.glob("**/.git/**",matches:"/root/.git",directory:true))

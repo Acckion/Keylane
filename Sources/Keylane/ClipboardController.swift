@@ -5,6 +5,13 @@ import Vision
 import UniformTypeIdentifiers
 import KeylaneCore
 
+private final class ClipboardPreviewRequest: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+    var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
+    func cancel() { lock.lock(); stopped = true; lock.unlock() }
+}
+
 /// Pasteboard reads and published state belong to the main thread. SQLite belongs
 /// exclusively to worker; OCR never blocks that queue or resurrects deleted rows.
 final class ClipboardController: ObservableObject {
@@ -29,6 +36,7 @@ final class ClipboardController: ObservableObject {
     private let board: NSPasteboard
     private let preferences: UserDefaults
     private let worker = DispatchQueue(label: "org.keylane.clipboard.storage", qos: .utility)
+    private let previewWorker = DispatchQueue(label: "org.keylane.clipboard.preview", qos: .userInitiated)
     private let ocrWorker = DispatchQueue(label: "org.keylane.clipboard.ocr", qos: .utility)
     private var store: ClipboardStore?
     private var timer: Timer?
@@ -36,7 +44,8 @@ final class ClipboardController: ObservableObject {
     private var query = ""
     private var generation = 0
     private var pendingSearch: DispatchWorkItem?
-    private var detailGeneration = 0
+    private var pendingReload: DispatchWorkItem?
+    private var detailRequest: ClipboardPreviewRequest?
     private var lastMaintenance = Date()
     private var recognizing: Set<String> = []
     init(directory: URL? = nil, board: NSPasteboard = .general, preferences: UserDefaults = .standard, startTimer: Bool = true) {
@@ -57,46 +66,91 @@ final class ClipboardController: ObservableObject {
         }
         if startTimer { let timer = Timer(timeInterval:0.25,repeats:true) { [weak self] _ in self?.poll() }; self.timer = timer; RunLoop.main.add(timer,forMode:.common) }
     }
-    deinit { timer?.invalidate() }
+    deinit { timer?.invalidate(); detailRequest?.cancel(); pendingReload?.cancel() }
     private func report(_ error: Error) { DispatchQueue.main.async { self.status = error.localizedDescription } }
     func feedback(_ text: String) { status = text }
     func search(_ value: String) {
-        query = value; searching = true; pendingSearch?.cancel(); generation += 1
+        query = value; searching = true; pendingSearch?.cancel(); pendingReload?.cancel(); generation += 1
         let work = DispatchWorkItem { [weak self] in self?.reload() }; pendingSearch = work
         DispatchQueue.main.asyncAfter(deadline:.now()+0.06,execute:work)
     }
     func reload() {
         generation += 1; let ticket = generation; let value = query; let filter = ClipKind(rawValue: kind); let pins = pinnedOnly
-        worker.async { [weak self] in
+        pendingReload?.cancel()
+        let task = DispatchWorkItem { [weak self] in
             guard let self, let store = self.store else { return }
             do {
                 let records = try store.list(query: value, kind: filter, pinnedOnly: pins); let count = try store.count(); let backups = try store.migrationBackups().count
                 DispatchQueue.main.async {
                     guard ticket == self.generation else { return }
+                    let previousItems = self.items
                     if self.items != records { self.items = records }; if self.total != count { self.total = count }; if self.migrationBackupCount != backups { self.migrationBackupCount = backups }; self.searching = false
                     let id = records.contains(where:{ $0.id == self.selectedID }) ? self.selectedID : records.first?.id
-                    if id != self.selectedID || self.detail?.item != records.first(where:{ $0.id == id }) { self.select(id) }
+                    let item = records.first { $0.id == id }
+                    let priorItem = previousItems.first { $0.id == id }
+                    if id != self.selectedID || self.detail?.item != item {
+                        self.select(id, force: self.loadingDetail && priorItem != item)
+                    }
                 }
-            } catch { self.report(error) }
+            } catch {
+                DispatchQueue.main.async {
+                    guard ticket == self.generation else { return }
+                    self.searching = false
+                    self.status = error.localizedDescription
+                }
+            }
         }
+        pendingReload = task
+        worker.async(execute: task)
     }
     func select(_ id: String?, force: Bool = false) {
-        if !force, id == selectedID, detail != nil, detail?.item == items.first(where:{ $0.id == id }) { return }
+        if !force, id == selectedID {
+            if loadingDetail || (detail != nil && detail?.item == items.first(where: { $0.id == id })) { return }
+        }
         let changed = selectedID != id
-        selectedID = id; if changed { detail = nil; thumbnail = nil }; detailGeneration += 1; let ticket = detailGeneration
+        selectedID = id
+        if changed { detail = nil; thumbnail = nil }
+        detailRequest?.cancel()
+        detailRequest = nil
         guard let id else { detail = nil; thumbnail = nil; loadingDetail = false; return }
+        let request = ClipboardPreviewRequest()
+        detailRequest = request
         loadingDetail = true
+        let finish: (ClipDetail?, NSImage?) -> Void = { [weak self] record, image in
+            DispatchQueue.main.async {
+                guard let self, self.detailRequest === request else { return }
+                self.detail = record; self.thumbnail = image; self.loadingDetail = false
+            }
+        }
         worker.async { [weak self] in
-            guard let self else { return }
+            guard let self, !request.cancelled else { return }
             do {
                 let record = try self.store?.detail(id: id)
-                var image: NSImage?
-                let imageSource = record?.assetURL.flatMap { CGImageSourceCreateWithURL($0 as CFURL,nil) } ?? record?.snapshot?.items.flatMap(\.representations).first(where:{ ClipboardCapture.imageFormats.map(\.0).contains($0.type) }).flatMap { CGImageSourceCreateWithData($0.data as CFData,nil) }
-                if let source = imageSource,
-                   let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 640, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary) { image = NSImage(cgImage: cg, size: .zero) }
-                let preview = image
-                DispatchQueue.main.async { guard self.detailGeneration == ticket else { return }; self.detail = record; self.thumbnail = preview; self.loadingDetail = false }
-            } catch { self.report(error) }
+                guard !request.cancelled else { return }
+                let asset = record?.assetURL
+                let data = record?.snapshot?.items.lazy.flatMap(\.representations)
+                    .first(where: { representation in ClipboardCapture.imageFormats.contains { $0.0 == representation.type } })?.data
+                guard asset != nil || data != nil else { finish(record, nil); return }
+                self.previewWorker.async {
+                    guard !request.cancelled else { return }
+                    let source = asset.flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }
+                        ?? data.flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }
+                    let image = source.flatMap {
+                        CGImageSourceCreateThumbnailAtIndex($0, 0, [
+                            kCGImageSourceCreateThumbnailFromImageAlways: true,
+                            kCGImageSourceThumbnailMaxPixelSize: 640,
+                            kCGImageSourceCreateThumbnailWithTransform: true
+                        ] as CFDictionary)
+                    }.map { NSImage(cgImage: $0, size: .zero) }
+                    if !request.cancelled { finish(record, image) }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard self.detailRequest === request else { return }
+                    self.loadingDetail = false
+                    self.status = error.localizedDescription
+                }
+            }
         }
     }
     func move(_ delta: Int) {

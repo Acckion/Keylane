@@ -295,9 +295,18 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let appearance = value == "dark" ? NSAppearance(named: .darkAqua) : value == "light" ? NSAppearance(named: .aqua) : nil
             self?.window.appearance = appearance; self?.settingsWindow?.appearance = appearance
         }
-        geometrySubscription = model.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.updateLauncherGeometry() }
-        }
+        // Observe geometry inputs only. Other model changes do not resize the window.
+        geometrySubscription = Publishers.MergeMany([
+            model.$interfaceSize.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$windowMode.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$tab.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$query.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$compactFavorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.$favorites.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
+        ])
+        .debounce(for: .zero, scheduler: DispatchQueue.main)
+        .sink { [weak self] _ in self?.updateLauncherGeometry() }
         updateLauncherGeometry()
         outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
             self?.hideLauncher(reason: "outsideClick")
@@ -376,7 +385,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func updateLauncherGeometry() {
         guard window != nil else { return }
         let size = NSSize(width: 760 * model.interfaceScale, height: model.launcherHeight * model.interfaceScale)
-        guard window.frame.size != size else { return }
+        let current = window.frame.size
+        // AppKit can round a requested frame to the backing pixel grid.
+        let tolerance = 1 / max(1, window.backingScaleFactor)
+        guard abs(current.width - size.width) >= tolerance || abs(current.height - size.height) >= tolerance else { return }
         var frame = window.frame
         frame.origin.x += (frame.width - size.width) / 2
         frame.origin.y += frame.height - size.height
