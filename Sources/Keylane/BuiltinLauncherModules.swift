@@ -202,8 +202,7 @@ enum BuiltinLauncherModules {
 
     private static func copyPathAction(id: String, url: URL) -> LauncherAction {
         .init(id: id, title: "复制路径", icon: "doc.on.doc") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(url.path, forType: .string)
+            UtilityActions.copy(url.path, feedback: "已复制路径")
         }
     }
 
@@ -223,7 +222,7 @@ enum BuiltinLauncherModules {
             submit: { [weak model] in
                 guard let controller = model?.clipboard else { return }
                 if controller.primaryAction == "paste" { (NSApp.delegate as? Delegate)?.pasteClipboard() }
-                else { controller.copySelected() }
+                else { copyClipboardItem(controller) }
             },
             shortcutSubmit: { (NSApp.delegate as? Delegate)?.pasteClipboard() },
             primaryTitle: { [weak model] in model?.clipboard.primaryAction == "paste" ? "粘贴" : "复制" },
@@ -264,11 +263,17 @@ enum BuiltinLauncherModules {
         shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
     }
 
+    private static func copyClipboardItem(_ controller: ClipboardController, plainText: Bool = false) {
+        let copied = controller.copySelected(plainText: plainText)
+        let message = copied ? (plainText ? "已复制纯文本" : "已复制到剪贴板") : controller.status
+        (NSApp.delegate as? Delegate)?.showLauncherFeedback(message, style: copied ? .success : .failure)
+    }
+
     private static func clipboardActions(_ controller: ClipboardController) -> [LauncherAction] {
         guard let item = controller.items.first(where: { $0.id == controller.selectedID }) else { return [] }
         var actions = [
-            LauncherAction(id: "copy-clip", title: "复制", icon: "doc.on.doc", keys: ["↩"], perform: { controller.copySelected() }),
-            LauncherAction(id: "copy-plain-clip", title: "复制为纯文本", icon: "text.alignleft", perform: { controller.copySelected(plainText: true) }),
+            LauncherAction(id: "copy-clip", title: "复制", icon: "doc.on.doc", keys: ["↩"], perform: { copyClipboardItem(controller) }),
+            LauncherAction(id: "copy-plain-clip", title: "复制为纯文本", icon: "text.alignleft", perform: { copyClipboardItem(controller, plainText: true) }),
             LauncherAction(id: "paste-plain-clip", title: "粘贴为纯文本", icon: "text.insert", perform: { (NSApp.delegate as? Delegate)?.pasteClipboard(plainText: true) }),
             LauncherAction(id: "paste-clip", title: "粘贴到上个应用", icon: "doc.on.clipboard", keys: ["⌘", "↩"], perform: { (NSApp.delegate as? Delegate)?.pasteClipboard() }),
             LauncherAction(id: "pin-clip", title: item.pinned ? "取消置顶" : "置顶", icon: "pin", perform: { controller.pinSelected() })

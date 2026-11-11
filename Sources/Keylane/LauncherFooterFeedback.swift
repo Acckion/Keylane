@@ -58,3 +58,11 @@ struct LauncherFooterFeedbackLabel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+
+extension UtilityActions {
+    static func copy(_ value: String, feedback: String) {
+        let copied = copy(value)
+        (NSApp.delegate as? Delegate)?.showLauncherFeedback(copied ? feedback : "无法复制到剪贴板",
+                                                            style: copied ? .success : .failure)
+    }
+}

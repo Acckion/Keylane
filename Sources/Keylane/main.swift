@@ -145,10 +145,17 @@ final class Model: ObservableObject {
     func favoriteAction(for entry: Entry) -> LauncherAction {
         let favorite = favorites.contains(entry.id)
         return .init(id: "favorite", title: favorite ? "取消收藏" : "加入收藏", icon: favorite ? "star.fill" : "star") { [weak self] in
-            self?.toggleFavorite(entry.id)
+            self?.toggleFavorite(entry.id, showsFeedback: true)
         }
     }
-    func toggleFavorite(_ id: String) { if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }; UserDefaults.standard.set(Array(favorites), forKey: "favorites") }
+    func toggleFavorite(_ id: String, showsFeedback: Bool = false) {
+        let added = favorites.remove(id) == nil
+        if added { favorites.insert(id) }
+        UserDefaults.standard.set(Array(favorites), forKey: "favorites")
+        if showsFeedback {
+            (NSApp.delegate as? Delegate)?.showLauncherFeedback(added ? "已加入收藏" : "已取消收藏", style: .success)
+        }
+    }
     func openSettings(page: String? = nil) {
         applicationSettingsPath = nil
         if let page { settingsPage = page }
@@ -190,8 +197,9 @@ final class Model: ObservableObject {
 
     func resetRankingAction(for entry: Entry) -> LauncherAction {
         .init(id: "reset-ranking", title: "重置优先级", icon: "arrow.counterclockwise", group: 3) { [weak self] in
-            self?.resetUsage(for: entry.id)
-            (NSApp.delegate as? Delegate)?.toast.show("已重置「\(entry.name)」的搜索优先级。", style: .success)
+            guard let self else { return }
+            self.resetUsage(for: entry.id)
+            (NSApp.delegate as? Delegate)?.showLauncherFeedback("已重置「\(entry.name)」的搜索优先级。", style: .success)
         }
     }
     func saveNote() { do { try store?.save(KeylaneCore.Record(id: noteID, kind: "note", title: String(notes.prefix(60)), body: notes)); savedNotes = try store?.records(kind: "note") ?? [] } catch { self.error = error.localizedDescription } }
@@ -392,7 +400,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private func showPasteFailure(_ message: String) {
         guard settingsWindow?.isKeyWindow != true else { return }
-        toast.show(message, style: .failure)
+        showLauncherFeedback(message, style: .failure)
     }
     let model = Model()
     var settingsWindow: NSWindow?
