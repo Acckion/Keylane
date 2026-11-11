@@ -321,7 +321,7 @@ struct Launcher: View {
         let showingShortcut = modifiers.commandHeld && index < 10
         return Text(resultAttribute(row))
             .font(.system(size:14,weight:.regular)).foregroundStyle(.secondary).lineLimit(1)
-            .frame(width:84,alignment:.trailing)
+            .frame(width: row.detail == SystemSettingsCatalog.resultKind ? 112 : 84, alignment: .trailing)
             // Keep the original attribute in the hierarchy underneath the hint.
             .blur(radius:showingShortcut && !reduceTransparency ? 1.2 : 0)
             .overlay(alignment:.trailing) {
@@ -337,6 +337,9 @@ struct Launcher: View {
     private func resultAttribute(_ row: Entry) -> String {
         if row.detail == "Application" || row.id.hasSuffix(".app") { return "应用" }
         if row.detail == "File" { return "文件" }
+        if row.detail == SystemSettingsCatalog.resultKind {
+            return SystemSettingsCatalog.prefersChinese() ? "系统设置" : "System Settings"
+        }
         if row.id == "calculator" { return "计算结果" }
         if row.detail == "Shortcut" { return "快捷指令" }
         return "命令"
