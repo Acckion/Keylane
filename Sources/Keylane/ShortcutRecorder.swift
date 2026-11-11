@@ -80,7 +80,7 @@ struct ShortcutRecorder: View {
                 Spacer()
                 Button("取消") { finish() }.buttonStyle(.plain)
                 Keycap(text: "Esc")
-                Button("完成") { changed(draft); finish() }.buttonStyle(.plain)
+                Button("完成", action: commitDraft).buttonStyle(.plain)
                 Keycap(text: "↩")
             }.padding(16)
         }
@@ -106,13 +106,19 @@ struct ShortcutRecorder: View {
             liveModifiers = []
             if modifiers.isEmpty {
                 if event.keyCode == 53 { finish(); return nil }
-                if event.keyCode == 36 { changed(draft); finish(); return nil }
+                if event.keyCode == 36 { commitDraft(); return nil }
                 if event.keyCode == 51 || event.keyCode == 117 { draft = nil; return nil }
             }
             draft = Shortcut(event: event)
             return nil
         }
     }
+    private func commitDraft() {
+        let value = draft
+        finish()
+        changed(value)
+    }
+
     private func finish() {
         liveModifiers = []; keyHeld = false
         if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil

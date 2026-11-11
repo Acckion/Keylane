@@ -194,11 +194,19 @@ final class Model: ObservableObject {
         }
     }
     func setShortcut(_ action: String, value: Shortcut?) {
-        var proposed = bindings; proposed[action] = value
         do {
-            try (NSApp.delegate as? Delegate)?.shortcuts.apply(proposed)
-            bindings = proposed; UserDefaults.standard.set(try JSONEncoder().encode(proposed), forKey: "shortcuts"); error = ""
+            try updateShortcut(action, value: value)
+            error = ""
         } catch { self.error = error.localizedDescription }
+    }
+
+    func updateShortcut(_ action: String, value: Shortcut?) throws {
+        var proposed = bindings
+        proposed[action] = value
+        let data = try JSONEncoder().encode(proposed)
+        try (NSApp.delegate as? Delegate)?.shortcuts.apply(proposed)
+        bindings = proposed
+        UserDefaults.standard.set(data, forKey: "shortcuts")
     }
     func configureModifiers() {
         guard let delegate = NSApp.delegate as? Delegate else { return }
@@ -299,6 +307,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     let model = Model()
     var settingsWindow: NSWindow?
+    private let onboarding = OnboardingWindowController()
     var window: NSWindow!
     let shortcuts = ShortcutManager()
     let modifiers = ModifierShortcuts()
@@ -382,15 +391,26 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         modifiers.activate = { [weak self] in self?.show() }
         model.configureModifiers()
         model.launcherModules?.startServices()
-        show()
+        if onboarding.isComplete { show() }
+        else { showOnboarding() }
     }
+    func showOnboarding() {
+        hideLauncher()
+        onboarding.show(model: model) { [weak self] in self?.revealLauncher() }
+    }
+
     @objc func revealLauncher() {
+        if onboarding.isVisible {
+            onboarding.bringToFront()
+            return
+        }
         rememberPreviousApplication()
         if !window.isVisible { presentLauncher() }
         else { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); NotificationCenter.default.post(name: .launcherShown, object: nil) }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !window.isVisible { show() }
+        if onboarding.isVisible { onboarding.bringToFront() }
+        else if !window.isVisible { show() }
         else { window.makeKeyAndOrderFront(nil); windowDiagnostics.record("reopen", launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus) }
         return false
     }
@@ -506,6 +526,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         RunLoop.main.add(timer, forMode: .common)
     }
     @objc func show() {
+        if onboarding.isVisible {
+            onboarding.bringToFront()
+            return
+        }
         if window.isVisible && window.isKeyWindow { hideLauncher(); return }
         if model.windowMode == "compact" {
             model.pageID = .root; model.query = ""; model.compactExpanded = false

@@ -5,6 +5,7 @@ import KeylaneCore
 
 struct PermissionsPreferences: View {
     let model: Model
+    let showsAdditionalPermissions: Bool
     @StateObject private var observation: ViewObservation
     @State private var hasRefreshed = false
     @State private var accessibilityAllowed = false
@@ -12,8 +13,9 @@ struct PermissionsPreferences: View {
     @State private var calendarAccess = CalendarAccess.notRequested
     @State private var contactsAccess = CNAuthorizationStatus.notDetermined
 
-    init(model: Model) {
+    init(model: Model, showsAdditionalPermissions: Bool = true) {
         self.model = model
+        self.showsAdditionalPermissions = showsAdditionalPermissions
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.calendar.$requesting),
             ViewObservation.changes(model.calendar.$error),
@@ -60,17 +62,19 @@ struct PermissionsPreferences: View {
                 }
                 if !model.contacts.error.isEmpty { Text(model.contacts.error).font(.caption).foregroundStyle(.secondary) }
             }.settingsAnchor(.contactsPermission)
-            SettingsGroup {
-                SettingsActionRow(title: "自动化", detail: "管理 Finder 和快捷指令的访问权限。",
-                                  actionTitle: "打开系统设置…") { openPrivacy("Automation") }
-            }.settingsAnchor(.automationPermission)
-            SettingsGroup("文件与文件夹") {
-                SettingsActionRow(title: "文件搜索范围", actionTitle: "选择文件夹…") { model.fileSearch.addScope() }
-                Divider()
-                SettingsActionRow(title: "截图搜索范围", actionTitle: "选择文件夹…") { model.screenshots.chooseFolders() }
-                Divider()
-                SettingsActionRow(title: "系统文件与文件夹权限", actionTitle: "打开系统设置…") { openPrivacy("FilesAndFolders") }
-            }.settingsAnchor(.folderPermissions)
+            if showsAdditionalPermissions {
+                SettingsGroup {
+                    SettingsActionRow(title: "自动化", detail: "管理 Finder 和快捷指令的访问权限。",
+                                      actionTitle: "打开系统设置…") { openPrivacy("Automation") }
+                }.settingsAnchor(.automationPermission)
+                SettingsGroup("文件与文件夹") {
+                    SettingsActionRow(title: "文件搜索范围", actionTitle: "选择文件夹…") { model.fileSearch.addScope() }
+                    Divider()
+                    SettingsActionRow(title: "截图搜索范围", actionTitle: "选择文件夹…") { model.screenshots.chooseFolders() }
+                    Divider()
+                    SettingsActionRow(title: "系统文件与文件夹权限", actionTitle: "打开系统设置…") { openPrivacy("FilesAndFolders") }
+                }.settingsAnchor(.folderPermissions)
+            }
         }
         .onAppear(perform: refreshStatus)
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in refreshStatus() }

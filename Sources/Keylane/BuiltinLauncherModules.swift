@@ -48,7 +48,11 @@ enum BuiltinLauncherModules {
     private static func host(_ model: Model) -> LauncherModule {
         .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
-                                 ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general")],
+                                 ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general"),
+                         command("show-onboarding", "Show Onboarding", "重新打开 Keylane 的首次引导",
+                                 "sparkles.rectangle.stack", ["onboarding", "welcome", "首次引导", "新手引导"]) { _ in
+                             (NSApp.delegate as? Delegate)?.showOnboarding()
+                         }],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
                          settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 5) {
                              ShortcutSettingsPreferences(model: $0)
