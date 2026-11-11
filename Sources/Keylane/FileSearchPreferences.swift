@@ -25,24 +25,27 @@ struct FileSearchPreferences: View {
     private func option(_ title: String, _ detail: String, _ path: WritableKeyPath<FileSearchOptions,Bool>) -> some View { Toggle(isOn: Binding(get: { controller.options[keyPath:path] }, set: { controller.options[keyPath:path] = $0 })) { SettingsRowLabel(title: title, detail: detail) }.toggleStyle(SettingsSwitchStyle()).controlSize(.small) }
     var body: some View {
         SettingsPageSections {
-            SettingsCard() {
-                HStack(alignment:.top) { SettingsCaption(title: "搜索范围", detail: "添加要搜索的文件夹；通过选择面板授予访问权限。"); Spacer(); SettingsAddFolderButton { controller.addScope() } }
-                SettingsCompactList(items: controller.options.roots, id: \.self) { path in
-                    SettingsFolderRow(path: path, selectable: true) {
-                        Button { controller.addScope(suggested: URL(fileURLWithPath: path)) } label: {
-                            Image(systemName: "key")
-                        }.buttonStyle(.plain).help("重新选择文件夹以授权")
-                        Button { controller.removeScope(path) } label: {
-                            Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
-                        }.buttonStyle(.plain).help("移除搜索范围")
-                    }
-                }
+            SettingsSearchScopeCard(
+                paths: controller.options.roots,
+                detail: "添加要搜索的文件夹；通过选择面板授予访问权限。",
+                anchor: .fileSearchScope,
+                add: { controller.addScope() },
+                remove: controller.removeScope,
+                reauthorize: { controller.addScope(suggested: URL(fileURLWithPath: $0)) }
+            ) {
                 if !controller.inaccessible.isEmpty {
                     if !controller.options.roots.isEmpty { Divider().opacity(0.4) }
-                    Label("部分目录无法访问。若下载或文稿中的文件缺失，请选择并授权对应文件夹。",systemImage:"exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                    Button("授权下载文件夹…") { controller.addScope(suggested:FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")) }.buttonStyle(ContentActionButtonStyle())
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("部分目录无法访问。若下载或文稿中的文件缺失，请选择并授权对应文件夹。",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                        Button("授权下载文件夹…") {
+                            let downloads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+                            controller.addScope(suggested: downloads)
+                        }.buttonStyle(ContentActionButtonStyle())
+                    }.padding(.vertical, 10)
                 }
-            }.settingsAnchor(.fileSearchScope)
+            }
             SettingsCard {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:4) { SettingsTitle("忽略规则", role: .section); SettingsDescription("默认跳过忽略文件指定的项目。"); Button("了解更多…") { showsIgnoreInfo.toggle() }.buttonStyle(.plain).foregroundStyle(.blue) }

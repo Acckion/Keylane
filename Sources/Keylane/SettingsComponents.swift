@@ -95,7 +95,7 @@ struct SettingsDescription: View {
     init(_ text: String) { self.text = text }
 
     var body: some View {
-        Text(text).font(.system(size: 13)).foregroundStyle(.secondary)
+        Text(text).font(.system(size: 12)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
@@ -105,14 +105,14 @@ struct SettingsRowLabel: View {
     let detail: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             SettingsTitle(title)
             if let detail, !detail.isEmpty {
                 SettingsDescription(detail)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.vertical, detail?.isEmpty == false ? 9 : 0)
+        .padding(.vertical, detail?.isEmpty == false ? 4 : 0)
     }
 }
 
@@ -320,6 +320,51 @@ struct SettingsCaption: View {
     }
 }
 
+/// Shared card for the application and file search scopes. Pages supply only their folder actions.
+struct SettingsSearchScopeCard<Footer: View>: View {
+    let paths: [String]
+    let detail: String
+    let anchor: SettingsItem
+    let add: () -> Void
+    let remove: (String) -> Void
+    var reauthorize: ((String) -> Void)? = nil
+    @ViewBuilder let footer: () -> Footer
+
+    var body: some View {
+        SettingsCard(layout: .flush, anchor: anchor) {
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsRow("搜索范围", detail: detail) {
+                    SettingsAddFolderButton(symbolFont: .system(size: 12, weight: .medium), action: add)
+                }
+                if paths.isEmpty {
+                    SettingsDescription("尚未添加搜索范围")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 14)
+                } else {
+                    SettingsCompactList(items: paths, id: \.self) { path in
+                        SettingsFolderRow(path: path, selectable: true, showsActionsOnHover: true) {
+                            if let reauthorize {
+                                Button { reauthorize(path) } label: { Image(systemName: "key") }
+                                    .buttonStyle(.plain)
+                                    .help("重新选择文件夹以授权")
+                                    .accessibilityLabel("重新授权 \(path)")
+                            }
+                            Button { remove(path) } label: {
+                                Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("移除搜索范围")
+                            .accessibilityLabel("移除 \(path)")
+                        }
+                    }
+                    .padding(.bottom, 5)
+                }
+                footer()
+            }.padding(.horizontal, 18)
+        }
+    }
+}
+
 struct SettingsAddFolderButton: View {
     var symbolFont: Font?
     let action: () -> Void
@@ -377,7 +422,7 @@ struct SettingsFolderRow<Actions: View>: View {
     private var pathLabel: some View {
         Text((path as NSString).abbreviatingWithTildeInPath)
             .font(.system(size: 12)).foregroundStyle(.secondary)
-            .lineLimit(selectable ? 2 : 1).truncationMode(.middle)
+            .lineLimit(1).truncationMode(.middle)
     }
 }
 

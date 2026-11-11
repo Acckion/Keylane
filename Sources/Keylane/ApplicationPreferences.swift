@@ -44,25 +44,16 @@ struct ApplicationPreferences: View {
                     Text("切换显示与隐藏").tag("toggle")
                 }
             }.id("hotkey-action")
-            SettingsCard(layout: .flush, anchor: .applicationScopes) {
-                VStack(alignment: .leading, spacing: 0) {
-                    SettingsRow("搜索范围", detail: "选择搜索应用程序时包含的其他文件夹。") {
-                        SettingsAddFolderButton(symbolFont: .system(size: 12, weight: .medium), action: model.addRoot)
-                    }
-                    VStack(spacing: 0) {
-                        SettingsCompactList(items: model.roots, id: \.self) { path in
-                            SettingsFolderRow(path: path, showsActionsOnHover: true) {
-                                Button { model.roots.removeAll { $0 == path }; model.reloadCatalog() } label: {
-                                    Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
-                                }
-                                .buttonStyle(.plain).help("移除此搜索范围").accessibilityLabel("移除 \(path)")
-                            }
-                        }
-                        .padding(.bottom, model.roots.isEmpty ? 0 : 5)
-                        if model.roots.isEmpty { Text("尚未添加搜索范围").foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 14) }
-                    }
-                }.padding(.horizontal, 18)
-            }
+            SettingsSearchScopeCard(
+                paths: model.roots,
+                detail: "选择搜索应用程序时包含的其他文件夹。",
+                anchor: .applicationScopes,
+                add: model.addRoot,
+                remove: { path in
+                    model.roots.removeAll { $0 == path }
+                    model.reloadCatalog()
+                }
+            ) { EmptyView() }
 
             SettingsSectionTitle(title: "命令")
             CommandSettingsList(items: ["管理自动退出", "卸载应用程序"], id: \.self) { title in
