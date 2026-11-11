@@ -135,15 +135,15 @@ enum BuiltinLauncherModules {
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
                     available: { [weak model] in model?.fileSearch.options.enabled == true }),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
-                    settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"),
-                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-files"] != false } ?? false }, execute: { [weak model] origin in
+                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
+                    settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"), execute: { [weak model] origin in
                 guard let model else { return }
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model.fileAI.present(model.fileResults.map(\.url))
             }),
             command("ask-finder", "询问 Finder", "AI", "sparkles", ["Ask Finder"], settings: "files",
-                    settingsEnabled: model.fileAI.commandEnabledBinding("ask-finder"),
-                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false }, execute: { [weak model] origin in
+                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false },
+                    settingsEnabled: model.fileAI.commandEnabledBinding("ask-finder"), execute: { [weak model] origin in
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model?.fileAI.presentFinder()
             })
