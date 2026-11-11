@@ -79,6 +79,7 @@ enum ScriptCommandsModule {
             .init(declaration: .init(id: action.id, title: action.title, detail: "脚本命令", symbol: action.icon,
                                      keywords: [action.english],
                                      destination: action == .search ? .page(searchPageID) : action == .create ? .page(createPageID) : .action, settingsPage: settingsID),
+                  settingsEnabled: controller.commandEnabledBinding(action.rawValue),
                   available: { controller.enabled && !controller.disabled.contains(action.rawValue) },
                   execute: { _ in
                       switch action {
@@ -127,6 +128,10 @@ enum ScriptCommandsModule {
             }
         }, primaryTitle: { _ in "运行脚本" }, actions: { [weak model] row in
             guard let model, let script = controller.entries.first(where: { $0.id == row.id }) else { return nil }
+            if controller.runningScript?.id == script.id {
+                return [.init(id: "cancel-script", title: "取消运行", icon: "stop.circle", perform: controller.cancel),
+                        model.favoriteAction(for: row)]
+            }
             return [
                 .init(id: "script-run", title: "运行脚本", icon: "play", keys: ["↩"], perform: {
                     model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
@@ -164,6 +169,15 @@ enum ScriptCommandsModule {
             guard let line = controller.inlineOutput[row.id], !line.isEmpty else { return nil }
             return AnyView(ScriptTerminalText(source: line))
         })
+        let cancelID = CommandID(rawValue: "cancel-running-script")
+        let cancellation = LauncherModule.Provider(namespace: .exact(cancelID), entries: { input in
+            guard input.page == .root, let script = controller.runningScript else { return [] }
+            return [Entry(id: cancelID.rawValue, commandID: cancelID,
+                          name: "取消运行脚本", detail: "脚本命令", symbol: "stop.circle",
+                          aliases: ["Cancel Running Script", script.title], subtitle: script.title)]
+        }, resolve: { _, _ in
+            controller.running ? controller.cancel : nil
+        }, primaryTitle: { _ in "取消运行" })
         let fallbackID = CommandID(rawValue: "script-fallback")
         let fallback = LauncherModule.Provider(namespace: .exact(fallbackID), entries: { input in
             let query = input.query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -207,7 +221,7 @@ enum ScriptCommandsModule {
                 return [.init(id: "copy-script-output", title: "复制输出", icon: "doc.on.doc",
                               perform: { UtilityActions.copy(ScriptOutputText.plain(result.output)) })]
             },
-            updates: Publishers.Merge(ViewObservation.changes(controller.$running),
+            updates: Publishers.Merge(ViewObservation.changes(controller.$runningScript),
                                       ViewObservation.changes(controller.$result)).eraseToAnyPublisher(),
             enter: { _ in "" }
         )
@@ -227,10 +241,11 @@ enum ScriptCommandsModule {
                                     detail: "添加脚本文件夹和热键", symbol: symbol,
                                     keywords: ["Script Commands", "脚本", "Shell", "Python", "Node"],
                                     destination: .settings(settingsID), settingsPage: settingsID))
-        ] + actionCommands(controller), providers: [provider, fallback], pages: [searchPage(model), page, create], settings: [settings],
+        ] + actionCommands(controller), providers: [provider, cancellation, fallback], pages: [searchPage(model), page, create], settings: [settings],
         services: [.init(start: { controller.refresh(); controller.startInlineRefresh() }, stop: controller.stop)],
         searchUpdates: [
             ViewObservation.changes(controller.$entries),
+            ViewObservation.changes(controller.$runningScript),
             ViewObservation.changes(controller.$enabled),
             ViewObservation.changes(controller.$fallbackID),
             ViewObservation.changes(controller.$disabled)
@@ -332,7 +347,7 @@ private struct ScriptCommandsPreferences: View {
             CommandSettingsList(items: ScriptCommandsModule.Action.allCases, id: \.rawValue) { action in
                 CommandSettingsEntry(
                     title: action.title, model: model, commandID: action.id,
-                    isEnabled: enabledBinding(action.rawValue),
+                    isEnabled: controller.commandEnabledBinding(action.rawValue),
                     perform: { model.runCommand(action.id, origin: .menu) },
                     icon: { Image(systemName: action.icon).foregroundStyle(.secondary) }
                 )
@@ -363,7 +378,7 @@ private struct ScriptCommandsPreferences: View {
                     let id = CommandID(rawValue: script.id)
                     return CommandSettingsEntry(
                         title: script.title, model: model, commandID: id,
-                        isEnabled: enabledBinding(script.id),
+                        isEnabled: controller.commandEnabledBinding(script.id),
                         perform: { model.runCommand(id, origin: .menu) },
                         icon: { Image(systemName: "terminal").foregroundStyle(.secondary) }
                     )
@@ -372,13 +387,6 @@ private struct ScriptCommandsPreferences: View {
             }
         }
         .onAppear { controller.refresh(force: true) }
-    }
-
-    private func enabledBinding(_ id: String) -> Binding<Bool> {
-        Binding(get: { !controller.disabled.contains(id) }, set: { enabled in
-            if enabled { controller.disabled.remove(id) }
-            else { controller.disabled.insert(id) }
-        })
     }
 }
 

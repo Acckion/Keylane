@@ -42,8 +42,12 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     with (app/'Contents/Info.plist').open('wb') as file:
         plistlib.dump(metadata, file)
     signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--timestamp=none']
-    entitlements = pathlib.Path(directory) / 'Keylane.entitlements'
-    entitlements.write_bytes(plistlib.dumps({'com.apple.security.device.camera': True}))
+    entitlements = root / 'Resources/Keylane.entitlements'
+    if not distribution:
+        test_entitlements = plistlib.loads(entitlements.read_bytes())
+        del test_entitlements['com.apple.security.automation.apple-events']
+        entitlements = pathlib.Path(directory) / 'Keylane.entitlements'
+        entitlements.write_bytes(plistlib.dumps(test_entitlements))
     subprocess.run(['codesign', '--force', '--sign', identity, *signing_options,
                     '--entitlements', str(entitlements), str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)

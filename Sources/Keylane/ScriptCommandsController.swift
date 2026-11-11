@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import KeylaneCore
+import SwiftUI
 
 final class ScriptCommandsController: ObservableObject {
     @Published var enabled: Bool {
@@ -27,7 +28,8 @@ final class ScriptCommandsController: ObservableObject {
         didSet { preferences.set(Array(disabled), forKey: "scriptCommands.disabled") }
     }
     @Published private(set) var selected: ScriptCommand?
-    @Published private(set) var running = false
+    @Published private(set) var runningScript: ScriptCommand?
+    var running: Bool { runningScript != nil }
     @Published private(set) var result: ScriptRunner.Result?
     @Published private(set) var error = ""
     @Published var arguments = ""
@@ -189,6 +191,13 @@ final class ScriptCommandsController: ObservableObject {
         command.url.path.hasPrefix(folder == "/" ? "/" : folder + "/")
     }
 
+    func commandEnabledBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { !self.disabled.contains(id) }, set: { enabled in
+            if enabled { self.disabled.remove(id) }
+            else { self.disabled.insert(id) }
+        })
+    }
+
     func canRun(_ script: ScriptCommand) -> Bool {
         enabled && !disabled.contains(script.id) && folders.contains { Self.contains(script, in: $0) }
     }
@@ -295,7 +304,7 @@ final class ScriptCommandsController: ObservableObject {
                          timeout: TimeInterval, background: Bool) {
         let token = DispatchWorkItem {}
         cancellation = token
-        running = true
+        runningScript = script
         let mode = script.metadata?.effectiveMode ?? .fullOutput
         worker.async { [weak self] in
             let outcome = Result {
@@ -312,7 +321,7 @@ final class ScriptCommandsController: ObservableObject {
             }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.running = false
+                self.runningScript = nil
                 self.cancellation = nil
                 self.finish(script, mode: mode, outcome: outcome, background: background)
             }
