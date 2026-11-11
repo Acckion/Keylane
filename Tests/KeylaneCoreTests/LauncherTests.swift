@@ -50,14 +50,14 @@ final class LauncherTests: XCTestCase {
         tap.cancel(); XCTAssertFalse(tap.update(pressed:true,time:2)); XCTAssertFalse(tap.update(pressed:false,time:2.8))
     }
     func testRealCatalogSearchBaseline() throws {
-        let apps = ApplicationCatalog.scan(roots: ApplicationCatalog.defaultRoots, excluded: [])
+        let apps = ApplicationCatalog.scan(roots: ApplicationCatalog.defaultRoots, excluded: [], languages: ["zh-Hans-CN"])
         guard !apps.isEmpty else { throw XCTSkip("No installed applications available") }
         var samples: [Double] = []
         for query in ["系统", "System Settings", "xtsz", "Terminal", "vsc", "Safari", "计算器", "Calculator", "设置", "mail", "notes", "finder"] {
             let start = Date()
             let matches = apps.compactMap { $0.identity.score(query: query) }
             samples.append(Date().timeIntervalSince(start))
-            if query == "系统" || query == "System Settings" { XCTAssertFalse(matches.isEmpty) }
+            if query == "系统" || query == "System Settings" { XCTAssertFalse(matches.isEmpty, "No matches for \(query)") }
         }
         let sorted = samples.sorted()
         print("CORE_SEARCH_BASELINE apps=\(apps.count) p95_ms=\(sorted[min(sorted.count-1, Int(Double(sorted.count)*0.95))]*1000)")
