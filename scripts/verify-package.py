@@ -10,7 +10,7 @@ from pathlib import Path
 
 from versioning import ROOT, load_version
 
-DEVELOPER_ID = 'anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+DEVELOPER_ID_REQUIREMENT = '-R=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
 
 
 def verify_app(app, image, version, distribution):
@@ -43,7 +43,7 @@ def verify_app(app, image, version, distribution):
     architectures = subprocess.check_output(['lipo', '-archs', str(binary)], text=True).strip()
     if architectures not in ('arm64', 'x86_64') or image.name != f"Keylane-{version['version']}-macos-{architectures}.dmg":
         raise SystemExit(f'Filename/architecture mismatch: {architectures}')
-    requirement = ['-R', DEVELOPER_ID] if distribution else []
+    requirement = [DEVELOPER_ID_REQUIREMENT] if distribution else []
     subprocess.run(['codesign', '--verify', '--deep', '--strict', *requirement, str(app)], check=True)
     if distribution:
         subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose', str(app)], check=True)
@@ -58,7 +58,7 @@ def main():
     args = parser.parse_args()
     image = args.image.resolve()
     if args.distribution:
-        subprocess.run(['codesign', '--verify', '-R', DEVELOPER_ID, str(image)], check=True)
+        subprocess.run(['codesign', '--verify', DEVELOPER_ID_REQUIREMENT, str(image)], check=True)
         subprocess.run(['xcrun', 'stapler', 'validate', str(image)], check=True)
     with tempfile.TemporaryDirectory(prefix='keylane-package-') as temporary:
         mount = Path(temporary) / 'image'
