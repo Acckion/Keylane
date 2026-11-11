@@ -24,10 +24,12 @@
 
 文件搜索、剪贴板、日历和快捷指令也沿用这些组件与定位方式。文件索引和剪贴板历史的统计分组独立订阅各自的状态。快捷指令长列表使用惰性行布局，保留原有行高和快捷键编辑行为。通用、菜单栏、便笺、快捷链接、高级和关于页复用同一套搜索锚点。
 
+设置窗口和入口遵循 Apple 的 [Settings](https://developer.apple.com/design/human-interface-guidelines/settings) 指南。Keylane 使用 AppKit 管理独立设置窗口，SwiftUI 构建内容。标签对齐和分组参考 [SwiftUI Form](https://developer.apple.com/documentation/swiftui/form) 与 [WWDC22 的 macOS 表单演示](https://developer.apple.com/videos/play/wwdc2022/10052/?time=997)。布尔偏好使用开关，命令列表使用复选框，带预览的选项提供明确的选中边框。验收设置页时检查深浅外观、键盘焦点、长标题和设置搜索跳转。
+
 ## 启动器界面组件
 
 - 普通结果用 `ResultListRow`。主搜索使用 `.root` 布局，二级列表使用标准布局。带选中状态的列表用 `SelectableResultList` 管理滚动定位。文件类型随查询结果发布，筛选与结果行复用同一份元数据。
-- 左右分栏使用 `ResultDetailLayout`，预览和信息由 `ResultDetailPane` 独立滚动。页面提供内容、查询和预览生命周期。便笺使用独立的编辑分栏。
+- 左右分栏使用 `ResultDetailLayout`，预览和信息由 `ResultDetailPane` 独立滚动。Quick Look 保留自身滚动，固定尺寸的图片预览直接填入预览区。页面提供内容、查询和预览生命周期。便笺使用独立的编辑分栏。
 - 截图与 Emoji 通过 `ResultGrid` 显示内容，用 `ResultGridSelection` 处理方向键和结果变化。模块负责分组、图片和激活动作。
 - 搜索页浮动筛选使用 `ResultTypeFilter`。底部菜单与筛选共用 `LauncherMenuRow` 和 `LauncherMenuSurface`，宿主管理浮动菜单的打开、关闭和焦点归还。应用与文件动作由模块登记。
 
