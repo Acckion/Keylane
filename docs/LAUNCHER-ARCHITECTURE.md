@@ -23,3 +23,10 @@
 常规分组使用 `SettingsCard` 或 `SettingsGroup`，说明文字和目录添加分别使用 `SettingsCaption` 和 `SettingsAddFolderButton`。可搜索的分组将登记用的 `SettingsItem` 直接传给 `SettingsCard(anchor:)`。命令列表使用 `CommandSettingsList`，条目通过 `CommandSettingsEntry` 的 `CommandID` 接口接入别名和热键。行高、分隔线和列对齐均由列表管理。应用别名继续使用应用路径。长列表保留惰性布局、稳定的行 ID 和后台缩略图缓存。功能专属控件可以放进共用卡片，例如截图列数预览。
 
 文件搜索、剪贴板、日历和快捷指令也沿用这些组件与定位方式。文件索引和剪贴板历史的统计分组独立订阅各自的状态。快捷指令长列表使用惰性行布局，保留原有行高和快捷键编辑行为。通用、菜单栏、便笺、快捷链接、高级和关于页复用同一套搜索锚点。
+
+## 启动器界面组件
+
+- 普通结果用 `ResultListRow`。主搜索使用 `.root` 布局，二级列表使用标准布局。带选中状态的列表用 `SelectableResultList` 管理滚动定位。文件类型随查询结果发布，筛选与结果行复用同一份元数据。
+- 左右分栏使用 `ResultDetailLayout`，预览和信息由 `ResultDetailPane` 独立滚动。页面提供内容、查询和预览生命周期。便笺使用独立的编辑分栏。
+- 截图与 Emoji 通过 `ResultGrid` 显示内容，用 `ResultGridSelection` 处理方向键和结果变化。模块负责分组、图片和激活动作。
+- 搜索页浮动筛选使用 `ResultTypeFilter`。底部菜单与筛选共用 `LauncherMenuRow` 和 `LauncherMenuSurface`，宿主管理浮动菜单的打开、关闭和焦点归还。应用与文件动作由模块登记。

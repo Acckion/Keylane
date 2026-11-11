@@ -204,7 +204,7 @@ enum BuiltinLauncherModules {
             typeFilter: { [weak model] open in
                 guard let model else { return AnyView(EmptyView()) }
                 return AnyView(ResultTypeFilter(selection: Binding(get: { model.clipboard.kind }, set: { model.clipboard.kind = $0 }),
-                                         options: ResultFilterOption.clipboard, open: open))
+                                         options: ResultFilterOption.clipboard, open: open, navigation: model.navigation))
             }
         )
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [

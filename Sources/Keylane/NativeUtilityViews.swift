@@ -59,18 +59,16 @@ struct ContactsPage: View {
     @ObservedObject var controller: ContactsController
     var body: some View {
         ResultDetailLayout {
-            ScrollViewReader { proxy in
-                ResultListScrollView {
-                    ForEach(controller.visible) { contact in
-                        Button { controller.select(contact.id) } label: {
-                            ResultListRow(selected: contact.id == controller.selectedID) {
-                                Image(systemName: "person.crop.circle.fill").font(.system(size: 23)).foregroundStyle(.blue)
-                            } content: {
-                                HighlightedResultText(text: contact.name, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
-                            }
-                        }.buttonStyle(.plain).id(contact.id)
-                    }
-                }.onChange(of: controller.selectedID) { _, id in if let id { proxy.scrollTo(id) } }
+            SelectableResultList(selection: controller.selectedID) {
+                ForEach(controller.visible) { contact in
+                    Button { controller.select(contact.id) } label: {
+                        ResultListRow(selected: contact.id == controller.selectedID) {
+                            Image(systemName: "person.crop.circle.fill").font(.system(size: 23)).foregroundStyle(.blue)
+                        } content: {
+                            HighlightedResultText(text: contact.name, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
+                        }
+                    }.buttonStyle(.plain).id(contact.id)
+                }
             }
         } detail: {
             Group {

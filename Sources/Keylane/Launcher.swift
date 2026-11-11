@@ -27,14 +27,22 @@ struct Launcher: View {
     private var page: LauncherPage? { model.activeLauncherPage }
     private var showsFileResults: Bool { page?.usesSharedFileResults == true }
     @State private var fileType = "all"
-    @State private var filterOpen = false
+    private enum Menu { case application, actions, filter }
+    @State private var menu: Menu?
+    private var actions: Bool { menu == .actions }
+    private var appMenu: Bool { menu == .application }
+    private var filterOpen: Bool { menu == .filter }
+    private var filterBinding: Binding<Bool> {
+        Binding(get: { filterOpen }, set: { open in
+            closeMenus()
+            if open { menu = .filter }
+        })
+    }
     @State private var mainSearchQuery = ""
     @State private var mainSearchSelection = 0
     @State private var mainSearchExpanded = false
     @State private var pendingMainSelection: Int?
     @State private var selectedResultID: String?
-    @State private var actions = false
-    @State private var appMenu = false
     @State private var actionQuery = ""
     @State private var actionSelection = 0
     @State private var focusToken = 0
@@ -44,7 +52,6 @@ struct Launcher: View {
     @FocusState private var argumentsFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.colorSchemeContrast) private var contrast
     init(model: Model) {
         self.model = model
         _observation = StateObject(wrappedValue: ViewObservation([
@@ -195,7 +202,7 @@ struct Launcher: View {
     }
 
     private func pageChanged(from previous: PageID, to current: PageID) {
-        filterOpen = false
+        closeMenus()
         if previous == .root { model.fileSearch.cancel() }
         else if let previousPage = model.launcherModules?.page(previous) {
             previousPage.leave()
@@ -282,8 +289,8 @@ struct Launcher: View {
     }
     @ViewBuilder private var typeFilter: some View {
         if showsFileResults {
-            ResultTypeFilter(selection: $fileType, options: ResultFilterOption.files, open: $filterOpen)
-        } else if let filter = page?.typeFilter { filter($filterOpen) }
+            ResultTypeFilter(selection: $fileType, options: ResultFilterOption.files, open: filterBinding, navigation: model.navigation)
+        } else if let filter = page?.typeFilter { filter(filterBinding) }
     }
     private func commandList(_ results: [Entry]) -> some View {
         SelectableResultList(selection: results.indices.contains(selection) ? results[selection].id : nil,
@@ -496,9 +503,13 @@ struct Launcher: View {
         return VStack(alignment: .leading, spacing: 0) {
             Text(applicationMenu ? "Keylane " + (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版") : (page?.actionTitle ?? selectedEntry?.name ?? "操作") + (submenu.map { " › " + $0.title } ?? "")).font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary).lineLimit(1).padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                Button { activate(item) } label: {
-                    HStack(spacing: VisualStyle.actionSpacing) { Image(systemName: item.icon).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome).frame(width: VisualStyle.actionIconWidth, height: 20); Text(item.title).font(VisualStyle.rowText); Spacer(); HStack(spacing: 3) { ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) } } }.padding(.horizontal, 11).frame(height: 39).background(index == actionSelection ? Color.primary.opacity(contrast == .increased ? 0.24 : 0.12) : Color.clear, in: RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
-                }.buttonStyle(.plain).padding(.horizontal, 8).onHover { inside in if inside { actionSelection = index } }
+                LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
+                                activate: { activate(item) }, highlight: { actionSelection = index }) {
+                    HStack(spacing: 3) {
+                        ForEach(Array(item.keys.enumerated()), id: \.offset) { _, key in Keycap(text: key) }
+                    }
+                }
+                .padding(.horizontal, 8)
             }
             if items.isEmpty { Text("没有匹配的操作").font(.caption).foregroundStyle(.secondary).padding(16) }
             Divider().padding(.top, 9)
@@ -510,12 +521,20 @@ struct Launcher: View {
         }.frame(width: 345)
     }
     private func toggleMenu(application: Bool) {
-        filterOpen = false
         model.compactExpanded = true
-        let open = application ? !appMenu : !actions
-        submenu = nil; actions = !application && open; appMenu = application && open; actionQuery = ""; actionSelection = 0; focusToken += 1
+        let target: Menu = application ? .application : .actions
+        let open = menu != target
+        closeMenus()
+        if open { menu = target }
     }
-    private func closeMenus() { filterOpen = false; submenu = nil; actions = false; appMenu = false; actionQuery = ""; focusToken += 1 }
+
+    private func closeMenus() {
+        menu = nil
+        submenu = nil
+        actionQuery = ""
+        actionSelection = 0
+        focusToken += 1
+    }
     private var moduleTitle: String { page?.placeholder ?? "设置" }
     private var primaryTitle: String {
         if argumentTarget != nil { return "启动新实例" }

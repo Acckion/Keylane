@@ -21,11 +21,11 @@ struct ScreenshotLibraryPage: View {
                     Button("启用文字识别") {
                         library.recognizesText = true
                         library.search(query)
-                    }.buttonStyle(.glass)
+                    }.buttonStyle(ContentActionButtonStyle())
                 } else {
                     Image(systemName: "viewfinder").font(.system(size: 30))
                     Text(library.inaccessibleFolders > 0 ? "部分搜索文件夹不可访问" : "没有匹配的截图或录屏")
-                    Button("添加搜索文件夹…", action: chooseFolders).buttonStyle(.glass)
+                    Button("添加搜索文件夹…", action: chooseFolders).buttonStyle(ContentActionButtonStyle())
                 }
             }.foregroundStyle(.secondary).padding(.top, 68)
         }
@@ -45,27 +45,6 @@ struct ScreenshotLibraryPage: View {
         if calendar.isDateInToday(date) { return "今天 " + time }
         if calendar.isDateInYesterday(date) { return "昨天 " + time }
         return date.formatted(date: .abbreviated, time: .shortened)
-    }
-}
-
-struct ScreenshotFilterPicker: View {
-    @ObservedObject var library: ScreenshotLibrary
-
-    var body: some View {
-        Menu {
-            Picker("媒体类型", selection: $library.filter) {
-                ForEach(ScreenshotFilter.allCases) { filter in
-                    Label(filter.title, systemImage: filter.symbol).tag(filter)
-                }
-            }
-        } label: {
-            Label(library.filter.title, systemImage: library.filter.symbol)
-                .font(.system(size: 14, weight: .medium))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .padding(.trailing, 8)
-        .accessibilityLabel("筛选截图与录屏")
     }
 }
 

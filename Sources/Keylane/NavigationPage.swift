@@ -87,38 +87,30 @@ struct NavigationPage: View {
     let activate: (NavigationItem) -> Void
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ResultListScrollView {
-                if controller.results.isEmpty {
-                    emptyState.padding(.top, 65).frame(maxWidth: .infinity)
-                } else {
-                    Text(controller.targetName ?? NavigationText.label("最近使用的窗口", "Recent Windows"))
-                        .font(VisualStyle.sectionText).foregroundStyle(.secondary)
-                        .padding(.horizontal, 14).padding(.vertical, 6)
-                        .accessibilityAddTraits(.isHeader)
-                    if controller.incomplete {
-                        Text(NavigationText.label("部分结果暂不可用，可通过操作菜单刷新。", "Some results are unavailable. Refresh from Actions."))
-                            .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8)
-                    }
-                    ForEach(Array(controller.results.enumerated()), id: \.element.id) { index, item in
-                        Button {
-                            controller.selection = index
-                            activate(item)
-                        } label: {
-                            row(item, selected: controller.selection == index)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(controller.performing)
-                        .accessibilityAddTraits(controller.selection == index ? .isSelected : [])
-                        .id(item.id)
-                    }
+        SelectableResultList(selection: controller.selected?.id, query: controller.query,
+                             firstResult: controller.results.first?.id) {
+            if controller.results.isEmpty {
+                emptyState.padding(.top, 65).frame(maxWidth: .infinity)
+            } else {
+                Text(controller.targetName ?? NavigationText.label("最近使用的窗口", "Recent Windows"))
+                    .font(VisualStyle.sectionText).foregroundStyle(.secondary)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .accessibilityAddTraits(.isHeader)
+                if controller.incomplete {
+                    Text(NavigationText.label("部分结果暂不可用，可通过操作菜单刷新。", "Some results are unavailable. Refresh from Actions."))
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8)
                 }
-            }
-            .onChange(of: controller.selection) { _, _ in
-                if let id = controller.selected?.id { proxy.scrollTo(id) }
-            }
-            .onChange(of: controller.query) { _, _ in
-                if let id = controller.results.first?.id { proxy.scrollTo(id, anchor: .top) }
+                ForEach(Array(controller.results.enumerated()), id: \.element.id) { index, item in
+                    Button {
+                        controller.selection = index
+                        activate(item)
+                    } label: {
+                        row(item, selected: controller.selection == index)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(controller.performing)
+                    .id(item.id)
+                }
             }
         }
     }

@@ -6,33 +6,25 @@ struct CalendarPage: View {
     @ObservedObject var controller: CalendarController
     var body: some View {
         ResultDetailLayout {
-            ScrollViewReader { proxy in
-                ResultListScrollView {
-                    if controller.access == .allowed, controller.enabled {
-                        if controller.filteredEvents.isEmpty {
-                            Text(controller.loading ? "正在加载日程…" : "当天没有匹配的日程")
-                                .font(VisualStyle.sectionText).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
-                        }
-                        ForEach(controller.filteredEvents) { event in
-                            Button { controller.select(event.id) } label: {
-                                ResultListRow(selected: event.id == controller.selectedID, height: 48) {
-                                    Image(systemName: event.allDay ? "sun.max.fill" : "calendar").font(.system(size: 21)).foregroundStyle(.blue)
-                                } content: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
-                                        Text(event.allDay ? "全天 · \(event.calendarTitle)" : "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened)) · \(event.calendarTitle)")
-                                            .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                                    }
-                                }
-                            }.buttonStyle(.plain).id(event.id)
-                        }
+            SelectableResultList(selection: controller.selectedID, revealAfterLoading: !controller.loading) {
+                if controller.access == .allowed, controller.enabled {
+                    if controller.filteredEvents.isEmpty {
+                        Text(controller.loading ? "正在加载日程…" : "当天没有匹配的日程")
+                            .font(VisualStyle.sectionText).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
                     }
-                }
-                .onChange(of: controller.selectedID) { _, id in
-                    if let id { proxy.scrollTo(id) }
-                }
-                .onChange(of: controller.loading) { _, loading in
-                    if !loading, let id = controller.selectedID { proxy.scrollTo(id) }
+                    ForEach(controller.filteredEvents) { event in
+                        Button { controller.select(event.id) } label: {
+                            ResultListRow(selected: event.id == controller.selectedID, height: 48) {
+                                Image(systemName: event.allDay ? "sun.max.fill" : "calendar").font(.system(size: 21)).foregroundStyle(.blue)
+                            } content: {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
+                                    Text(event.allDay ? "全天 · \(event.calendarTitle)" : "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened)) · \(event.calendarTitle)")
+                                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
+                        }.buttonStyle(.plain).id(event.id)
+                    }
                 }
             }
         } detail: {

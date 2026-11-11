@@ -30,43 +30,19 @@ struct ResultTypeFilter: View {
     let options: [ResultFilterOption]
     @Environment(\.colorSchemeContrast) private var contrast
     @Binding var open: Bool
+    var navigation = "arrows"
     var width: CGFloat = 138
     var searchPlaceholder = "搜索类型…"
     @State private var query = ""
-    @State private var hovered: String?
-    @FocusState private var searchFocused: Bool
+    @State private var highlighted = 0
     private var current: ResultFilterOption { options.first { $0.id == selection } ?? ResultFilterOption(id: "all", title: "全部类型", symbol: "list.bullet") }
     private var matches: [ResultFilterOption] { options.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query) } }
     var body: some View {
         ZStack(alignment: .topTrailing) {
             if open {
-            VStack(spacing: 0) {
-                TextField(searchPlaceholder, text: $query).textFieldStyle(.plain)
-                    .font(.system(size: 14)).focused($searchFocused).padding(14)
-                    .onSubmit { if let first = matches.first { choose(first) } }
-                Divider()
-                ScrollView {
-                    VStack(spacing: 3) {
-                        ForEach(matches) { option in
-                            Button { choose(option) } label: {
-                                HStack(spacing: 11) {
-                                    Image(systemName: option.symbol).frame(width: 20)
-                                    Text(option.title)
-                                    Spacer()
-                                    if selection == option.id { Image(systemName: "checkmark").font(.caption) }
-                                }.font(.system(size: 14)).padding(10)
-                                    .background(.primary.opacity(hovered == option.id ? 0.1 : selection == option.id ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 8))
-                                    .contentShape(Rectangle())
-                            }.buttonStyle(.plain).onHover { hovered = $0 ? option.id : nil }
-                        }
-                        if matches.isEmpty { Text("没有匹配类型").foregroundStyle(.secondary).padding(14) }
-                    }.padding(8)
-                }.frame(height: CGFloat(min(8, max(1, matches.count))) * 43 + 16)
-            }.frame(width: 220, alignment: .top)
-                .onAppear { searchFocused = true }
-                .transition(.opacity)
+                panel.transition(.opacity)
             } else {
-                NativeHoverButton(title: "筛选：\(current.title)", action: { query = ""; hovered = nil; open = true }) {
+                NativeHoverButton(title: "筛选：\(current.title)", action: { query = ""; highlighted = 0; open = true }) {
                     HStack(spacing: 9) {
                         Image(systemName: current.symbol)
                         Text(current.title).lineLimit(1)
@@ -74,15 +50,47 @@ struct ResultTypeFilter: View {
                     }.font(.system(size: 15, weight: .medium))
                         .foregroundStyle(Color.primary.opacity(contrast == .increased ? 1 : 0.8))
                 }
-                .frame(width: width, height: 36)
+                .frame(width: width, height: VisualStyle.launcherControlDiameter)
                 .transition(.opacity)
             }
         }
         .frame(width: open ? 220 : width,
-               height: open ? 62 + CGFloat(min(8, max(1, matches.count))) * 43 : 36,
+               height: open ? 62 + CGFloat(min(8, max(1, matches.count))) * 43 : VisualStyle.launcherControlDiameter,
                alignment: .topTrailing)
         .modifier(LauncherMenuSurface(open: open))
     }
+    private var panel: some View {
+        let options = matches
+        return ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                SearchField(text: $query, placeholder: searchPlaceholder, focusToken: 0, fontSize: 14,
+                            navigation: navigation, submit: {
+                                if options.indices.contains(highlighted) { choose(options[highlighted]) }
+                            }, move: { delta in
+                                highlighted = NavigationBounds.move(highlighted, by: delta, count: options.count)
+                                if options.indices.contains(highlighted) { proxy.scrollTo(options[highlighted].id) }
+                            }, escape: { open = false })
+                    .padding(14)
+                    .onChange(of: query) { _, _ in
+                        highlighted = 0
+                        if let first = matches.first { proxy.scrollTo(first.id, anchor: .top) }
+                    }
+                Divider()
+                ScrollView {
+                    VStack(spacing: 3) {
+                        ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
+                            LauncherMenuRow(title: option.title, symbol: option.symbol, selected: highlighted == index,
+                                            style: .filter, activate: { choose(option) }, highlight: { highlighted = index }) {
+                                if selection == option.id { Image(systemName: "checkmark").font(.caption) }
+                            }.id(option.id)
+                        }
+                        if options.isEmpty { Text("没有匹配类型").foregroundStyle(.secondary).padding(14) }
+                    }.padding(8)
+                }.frame(height: CGFloat(min(8, max(1, options.count))) * 43 + 16)
+            }.frame(width: 220, alignment: .top)
+        }
+    }
+
     private func choose(_ option: ResultFilterOption) { open = false; selection = option.id }
 }
 
@@ -103,6 +111,40 @@ enum FileResultTypeFilter {
     }
 }
 
+
+/// Menu entries share pointer, keyboard and accessibility selection behavior.
+struct LauncherMenuRow<Trailing: View>: View {
+    enum Style { case action, filter }
+
+    let title: String
+    let symbol: String
+    let selected: Bool
+    var style: Style = .action
+    let activate: () -> Void
+    let highlight: () -> Void
+    @ViewBuilder let trailing: () -> Trailing
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        Button(action: activate) {
+            HStack(spacing: style == .action ? VisualStyle.actionSpacing : 11) {
+                Image(systemName: symbol).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome)
+                    .frame(width: style == .action ? VisualStyle.actionIconWidth : 20, height: 20)
+                Text(title).font(VisualStyle.rowText)
+                Spacer()
+                trailing()
+            }
+            .padding(.horizontal, style == .action ? 11 : 10)
+            .frame(height: style == .action ? 39 : 40)
+            .background(selected ? Color.primary.opacity(contrast == .increased ? 0.24 : 0.12) : .clear,
+                        in: RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in if inside { highlight() } }
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
 
 /// The same anchored surface and motion for every launcher corner menu.
 struct LauncherMenuSurface: ViewModifier {

@@ -22,6 +22,7 @@ struct SelectableResultList<ID: Hashable, Content: View>: View {
     let selection: ID?
     var query: String? = nil
     var firstResult: ID? = nil
+    var revealAfterLoading = false
     @ViewBuilder let content: () -> Content
 
     var body: some View {
@@ -29,6 +30,9 @@ struct SelectableResultList<ID: Hashable, Content: View>: View {
             ResultListScrollView(content: content)
                 .onChange(of: selection) { _, id in
                     if let id { proxy.scrollTo(id) }
+                }
+                .onChange(of: revealAfterLoading) { _, ready in
+                    if ready, let selection { proxy.scrollTo(selection) }
                 }
                 .onChange(of: query) { _, _ in
                     if let firstResult { proxy.scrollTo(firstResult, anchor: .top) }
@@ -77,5 +81,6 @@ struct ResultListRow<Icon: View, Content: View>: View {
         }.padding(.horizontal, layout.horizontalInset).frame(height: height)
             .background(selected ? Color.primary.opacity(contrast == .increased ? 0.22 : 0.10) : .clear, in: RoundedRectangle(cornerRadius: 9))
             .contentShape(Rectangle())
+            .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

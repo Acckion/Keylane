@@ -182,7 +182,16 @@ enum NavigationLauncherModules {
         page.content = { [weak model] in
             AnyView(ScreenshotLibraryPage(library: library, query: model?.query ?? "", chooseFolders: chooseFolders))
         }
-        page.searchAccessory = { AnyView(ScreenshotFilterPicker(library: library)) }
+        page.typeFilterWidth = 138
+        page.typeFilter = { [weak model] open in
+            AnyView(ResultTypeFilter(
+                selection: Binding(get: { library.filter.rawValue }, set: {
+                    if let filter = ScreenshotFilter(rawValue: $0) { library.filter = filter }
+                }),
+                options: ScreenshotFilter.allCases.map { .init(id: $0.id, title: $0.title, symbol: $0.symbol) },
+                open: open, navigation: model?.navigation ?? "arrows"
+            ))
+        }
         page.enter = { query in
             library.search(query)
             library.refresh()

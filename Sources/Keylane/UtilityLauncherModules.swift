@@ -159,10 +159,10 @@ enum UtilityLauncherModules {
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
         page.actionWidth = 258
         page.typeFilterWidth = 174
-        page.typeFilter = { open in
+        page.typeFilter = { [weak model] open in
             AnyView(ResultTypeFilter(
                 selection: Binding(get: { controller.category }, set: { controller.category = $0 }),
-                options: EmojiCatalog.categories, open: open, width: 174,
+                options: EmojiCatalog.categories, open: open, navigation: model?.navigation ?? "arrows", width: 174,
                 searchPlaceholder: EmojiCatalog.label("搜索分类…", "Search categories…")
             ))
         }
