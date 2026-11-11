@@ -88,7 +88,7 @@ struct ScreenshotPreferences: View {
                         if enabled { library.disabledCommands.remove(command.rawValue) }
                         else { library.disabledCommands.insert(command.rawValue) }
                     })) {
-                        SettingsIcon(symbol: command.symbol)
+                        SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.settings("screenshots"))
                     }
             }.disabled(!library.enabled)
         }
