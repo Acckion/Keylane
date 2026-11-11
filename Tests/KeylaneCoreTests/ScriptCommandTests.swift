@@ -32,6 +32,26 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("ran").path))
     }
 
+    func testDiscoverySkipsDependenciesAndUnannotatedPythonInternals() throws {
+        let packages = folder.appendingPathComponent("venv/lib/site-packages", isDirectory: true)
+        let node = folder.appendingPathComponent("node_modules", isDirectory: true)
+        for directory in [packages, node] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try "exit()".write(to: packages.appendingPathComponent("__about__.py"), atomically: true, encoding: .utf8)
+        try "console.log('a')".write(to: node.appendingPathComponent("abc.js"), atomically: true, encoding: .utf8)
+        _ = try write("_abc.py", "pass")
+        _ = try write("actual.py", "print('hello')")
+        _ = try write("_command.py", "# @raycast.title My Command\n# @raycast.schemaVersion 1\n# @raycast.mode silent\n")
+        let commands = ScriptCommand.discover(in: [folder.path]).commands
+        XCTAssertEqual(commands.map(\.title), ["actual", "My Command"])
+        let plain = try XCTUnwrap(commands.first)
+        XCTAssertFalse(plain.allowsRootQuery("a", alias: nil))
+        XCTAssertTrue(plain.allowsRootQuery(" A ", alias: "a"))
+        XCTAssertTrue(plain.allowsRootQuery("ac", alias: nil))
+        XCTAssertTrue(commands[1].allowsRootQuery("m", alias: nil))
+    }
+
     func testOverlappingRootsPreserveExplicitHiddenDirectoryAndCanCancel() throws {
         let nested = folder.appendingPathComponent("nested", isDirectory: true)
         let hidden = nested.appendingPathComponent(".hidden", isDirectory: true)

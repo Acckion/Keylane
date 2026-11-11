@@ -101,8 +101,11 @@ enum ScriptCommandsModule {
 
     static func make(model: Model) -> LauncherModule {
         let controller = model.scripts
-        let provider = LauncherModule.Provider(namespace: .prefix(ScriptCommand.namespace), entries: { _ in
-            controller.entries.filter(controller.canRun).map { script in
+        let provider = LauncherModule.Provider(namespace: .prefix(ScriptCommand.namespace), entries: { input in
+            controller.entries.filter {
+                controller.canRun($0) && (input.page != .root ||
+                    $0.allowsRootQuery(input.query, alias: input.aliases[$0.id]))
+            }.map { script in
                 Entry(id: script.id, commandID: .init(rawValue: script.id), name: script.title,
                       detail: "脚本命令", symbol: symbol,
                       aliases: [script.url.lastPathComponent, script.metadata?.packageName ?? "", script.metadata?.description ?? ""],

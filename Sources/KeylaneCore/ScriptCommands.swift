@@ -27,6 +27,19 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
         return Self(url: file.standardizedFileURL, metadata: metadata)
     }
 
+    private static let dependencyDirectories: Set<String> = [
+        "node_modules", "site-packages", "dist-packages", "__pycache__", "venv"
+    ]
+
+    /// Untitled source files are still searchable by name, but should not flood one-key root searches.
+    public func allowsRootQuery(_ query: String, alias: String?) -> Bool {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard metadata == nil, text.count == 1 else { return true }
+        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+        return title.compare(text, options: options) == .orderedSame ||
+            alias?.compare(text, options: options) == .orderedSame
+    }
+
     public static func discover(in folders: [String], isCancelled: () -> Bool = { false }) -> (commands: [Self], unavailable: [String]) {
         let manager = FileManager.default
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
@@ -55,6 +68,10 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
             var reached: Set<String> = []
             for case let file as URL in children {
                 if isCancelled() { return ([], []) }
+                if file.hasDirectoryPath, dependencyDirectories.contains(file.lastPathComponent.lowercased()) {
+                    children.skipDescendants()
+                    continue
+                }
                 if file.hasDirectoryPath, rootNames.contains(file.lastPathComponent) {
                     let path = file.resolvingSymlinksInPath().path
                     if roots.contains(path),
@@ -66,6 +83,8 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
                 guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true,
                       values.isSymbolicLink != true, supports(file),
                       let command = try? Self.read(file) else { continue }
+                if command.metadata == nil, file.pathExtension.lowercased() == "py",
+                   command.title.hasPrefix("_") { continue }
                 commands[command.id] = command
             }
             if complete { covered.formUnion(reached) }

@@ -39,10 +39,7 @@ final class ApplicationResultActions {
             .init(id: "extension-settings", title: "扩展设置", icon: "gearshape", group: 3) { [weak model] in
                 model?.openSettings(page: "applications")
             },
-            .init(id: "reset-ranking", title: "重置优先级", icon: "arrow.counterclockwise", group: 3) { [weak model] in
-                model?.resetUsage(for: entry.id)
-                self.feedback("已重置「\(entry.name)」的使用频率", style: .success)
-            },
+            model.resetRankingAction(for: entry),
             .init(id: "hide-app", title: "隐藏应用", icon: "eye.slash", group: 4, enabled: running) {
                 self.apply(to: path, failure: "无法隐藏应用。") { $0.hide() }
             },

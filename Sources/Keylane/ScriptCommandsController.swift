@@ -154,7 +154,7 @@ final class ScriptCommandsController: ObservableObject {
         panel.title = "创建脚本命令"
         let filename = String(name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-").prefix(80))
         panel.nameFieldStringValue = filename + "." + template.fileExtension
-        panel.message = "保存位置会加入脚本搜索范围。"
+        panel.message = "如需搜索此脚本，请在设置中手动添加它所在的文件夹。"
         panel.directoryURL = folders.first.map { URL(fileURLWithPath: $0, isDirectory: true) }
         panel.canCreateDirectories = true
         let selectedTemplate = template
@@ -171,8 +171,6 @@ final class ScriptCommandsController: ObservableObject {
             let folder = url.deletingLastPathComponent().resolvingSymlinksInPath().path
             if folders.contains(where: { folder == $0 || folder.hasPrefix($0 == "/" ? "/" : $0 + "/") }) {
                 refresh(force: true)
-            } else {
-                setFolders(folders + [folder])
             }
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {

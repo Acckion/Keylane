@@ -57,6 +57,8 @@ final class Model: ObservableObject {
     @Published var applicationHotkeyAction = UserDefaults.standard.string(forKey: "applicationHotkeyAction") ?? "activate" { didSet { UserDefaults.standard.set(applicationHotkeyAction, forKey: "applicationHotkeyAction") } }
     @Published var aliases = UserDefaults.standard.dictionary(forKey: "aliases") as? [String:String] ?? [:]
     @Published var usage = UserDefaults.standard.dictionary(forKey: "usage") as? [String:Int] ?? [:]
+    private var searchUsage = UserDefaults.standard.data(forKey: SearchUsageHistory.storageKey)
+        .flatMap { try? JSONDecoder().decode(SearchUsageHistory.self, from: $0) } ?? SearchUsageHistory()
     @Published var disabledCommands = Set(UserDefaults.standard.stringArray(forKey: "disabledLauncherCommands") ?? []) {
         didSet {
             UserDefaults.standard.set(Array(disabledCommands), forKey: "disabledLauncherCommands")
@@ -165,9 +167,32 @@ final class Model: ObservableObject {
         reloadCatalog()
     }
     func resetUsage(for key: String) {
+        searchUsage.reset(id: key)
         usage.removeValue(forKey: key)
-        UserDefaults.standard.set(usage, forKey: "usage")
+        persistUsage()
+        commandSearch.invalidate()
         rootSearchUpdates.send()
+    }
+
+    private func recordUsage(for key: String, queryKey: String? = nil) {
+        searchUsage.record(id: key, queryKey: queryKey)
+        let count = usage[key, default: 0]
+        usage[key] = count < Int.max ? count + 1 : count
+        persistUsage()
+    }
+
+    private func persistUsage() {
+        UserDefaults.standard.set(usage, forKey: "usage")
+        if let data = try? JSONEncoder().encode(searchUsage) {
+            UserDefaults.standard.set(data, forKey: SearchUsageHistory.storageKey)
+        }
+    }
+
+    func resetRankingAction(for entry: Entry) -> LauncherAction {
+        .init(id: "reset-ranking", title: "重置优先级", icon: "arrow.counterclockwise", group: 3) { [weak self] in
+            self?.resetUsage(for: entry.id)
+            (NSApp.delegate as? Delegate)?.toast.show("已重置「\(entry.name)」的搜索优先级。", style: .success)
+        }
     }
     func saveNote() { do { try store?.save(KeylaneCore.Record(id: noteID, kind: "note", title: String(notes.prefix(60)), body: notes)); savedNotes = try store?.records(kind: "note") ?? [] } catch { self.error = error.localizedDescription } }
     func newNote() { noteID = UUID().uuidString; notes = "" }
@@ -230,8 +255,8 @@ final class Model: ObservableObject {
             }
         }) else { return }
         if let usageKey {
-            usage[usageKey, default: 0] += 1
-            UserDefaults.standard.set(usage, forKey: "usage")
+            let queryKey = pageID == .root && origin != .shortcut ? SearchUsageHistory.queryKey(query) : nil
+            recordUsage(for: usageKey, queryKey: queryKey)
         }
         action()
     }
@@ -245,9 +270,10 @@ final class Model: ObservableObject {
         else { error = "无法打开应用，路径可能已经失效。"; discovery.refresh() }
     }
     func launch(_ url: URL, arguments: [String]) {
+        let queryKey = pageID == .root ? SearchUsageHistory.queryKey(query) : nil
         let configuration = NSWorkspace.OpenConfiguration(); configuration.arguments = arguments; configuration.createsNewApplicationInstance = true
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] _, error in
-            DispatchQueue.main.async { if let error { self?.error = error.localizedDescription } else { self?.usage[url.path, default: 0] += 1; UserDefaults.standard.set(self?.usage, forKey: "usage"); (NSApp.delegate as? Delegate)?.hideLauncher() } }
+            DispatchQueue.main.async { if let error { self?.error = error.localizedDescription } else { self?.recordUsage(for: url.path, queryKey: queryKey); (NSApp.delegate as? Delegate)?.hideLauncher() } }
         }
     }
     func setShortcut(_ action: String, value: Shortcut?) {
@@ -309,6 +335,7 @@ final class Model: ObservableObject {
         guard let launcherModules else { return [] }
         let input = LauncherCommandSearch.Input(query: query, page: pageID,
                                                 aliases: aliases, favorites: favorites, usage: usage,
+                                                history: pageID == .root ? searchUsage : .init(),
                                                 sensitivity: rootSearchSensitivity, namespace: namespace)
         return commandSearch.results(for: input, registry: launcherModules)
     }
