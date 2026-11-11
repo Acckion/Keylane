@@ -30,3 +30,5 @@
 - 左右分栏使用 `ResultDetailLayout`，预览和信息由 `ResultDetailPane` 独立滚动。页面提供内容、查询和预览生命周期。便笺使用独立的编辑分栏。
 - 截图与 Emoji 通过 `ResultGrid` 显示内容，用 `ResultGridSelection` 处理方向键和结果变化。模块负责分组、图片和激活动作。
 - 搜索页浮动筛选使用 `ResultTypeFilter`。底部菜单与筛选共用 `LauncherMenuRow` 和 `LauncherMenuSurface`，宿主管理浮动菜单的打开、关闭和焦点归还。应用与文件动作由模块登记。
+
+- 二级页面通过 `LauncherPage.ContentPlacement` 声明内容与浮动栏的位置。列表中的可激活结果用 `ResultListButton` 保持点击动作和滚动目标的 ID 一致。宿主只观察会改变页头、主按钮或操作菜单的状态，列表、详情和便笺编辑器各自观察自己的内容。

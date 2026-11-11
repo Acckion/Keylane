@@ -13,7 +13,7 @@ struct CalendarPage: View {
                             .font(VisualStyle.sectionText).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
                     }
                     ForEach(controller.filteredEvents) { event in
-                        Button { controller.select(event.id) } label: {
+                        ResultListButton(id: event.id, action: { controller.select(event.id) }) {
                             ResultListRow(selected: event.id == controller.selectedID, height: 48) {
                                 Image(systemName: event.allDay ? "sun.max.fill" : "calendar").font(.system(size: 21)).foregroundStyle(.blue)
                             } content: {
@@ -23,7 +23,7 @@ struct CalendarPage: View {
                                         .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                                 }
                             }
-                        }.buttonStyle(.plain).id(event.id)
+                        }
                     }
                 }
             }
@@ -70,11 +70,19 @@ struct CalendarConnectionView: View {
 }
 
 struct CalendarDateNavigation: View {
-    @ObservedObject var controller: CalendarController
+    let controller: CalendarController
+    @StateObject private var observation: ViewObservation
+
+    init(controller: CalendarController) {
+        self.controller = controller
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$selectedDate)
+        ]))
+    }
     var body: some View {
         HStack(spacing: 4) {
             Button { controller.shiftDay(-1) } label: { Image(systemName: "chevron.left") }.help("前一天")
-            DatePicker("日期", selection: $controller.selectedDate, displayedComponents: .date).labelsHidden().datePickerStyle(.field).fixedSize()
+            DatePicker("日期", selection: Binding(get: { controller.selectedDate }, set: { controller.selectedDate = $0 }), displayedComponents: .date).labelsHidden().datePickerStyle(.field).fixedSize()
             Button { controller.shiftDay(1) } label: { Image(systemName: "chevron.right") }.help("后一天")
             Button("今天") { controller.showToday() }
         }.buttonStyle(ContentActionButtonStyle()).controlSize(.small)

@@ -39,12 +39,17 @@ struct LauncherAction: Identifiable {
 }
 
 struct LauncherPage {
+    enum ContentPlacement {
+        case inset
+        case underChrome
+        case fileResults
+    }
+
     let id: PageID
     let placeholder: String
     var badge: (title: String, symbol: String)?
     var actionTitle: String?
-    var usesSharedFileResults = false
-    var extendsUnderChrome = false
+    var contentPlacement: ContentPlacement = .inset
     var content: (() -> AnyView)?
     var queryChanged: (String) -> Void = { _ in }
     var leave: () -> Void = {}

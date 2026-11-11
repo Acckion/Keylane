@@ -25,7 +25,7 @@ struct Launcher: View {
     @State private var launcherVisible = false
     @State private var presentedPage = PageID.root
     private var page: LauncherPage? { model.activeLauncherPage }
-    private var showsFileResults: Bool { page?.usesSharedFileResults == true }
+    private var showsFileResults: Bool { page?.contentPlacement == .fileResults }
     @State private var fileType = "all"
     private enum Menu { case application, actions, filter }
     @State private var menu: Menu?
@@ -94,7 +94,7 @@ struct Launcher: View {
                 } else if model.pageID == .root {
                     commandList(results).frame(height: 470, alignment: .top)
                 } else if let page, let content = page.content {
-                    if page.extendsUnderChrome { content() }
+                    if page.contentPlacement == .underChrome { content() }
                     else { content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset) }
                 }
             }

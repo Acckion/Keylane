@@ -64,7 +64,7 @@ enum NavigationLauncherModules {
         let placeholder = mode == .windows ? NavigationText.label("搜索窗口…", "Search Windows…")
                                           : NavigationText.label("搜索菜单项…", "Search Menu Items…")
         var page = LauncherPage(id: id, placeholder: placeholder, badge: (mode.title, mode.symbol))
-        page.extendsUnderChrome = true
+        page.contentPlacement = .underChrome
         page.actionWidth = 258
         page.content = { [weak model] in
             AnyView(NavigationPage(controller: controller, mode: mode, requestAccess: { [weak model] in
@@ -91,7 +91,10 @@ enum NavigationLauncherModules {
             return [LauncherAction(id: "run-navigation", title: mode.action, icon: mode.symbol, keys: ["↩"],
                                    perform: { activate(item) }), refresh]
         }
-        page.updates = controller.objectWillChange.eraseToAnyPublisher()
+        page.updates = Publishers.Merge(
+            ViewObservation.changes(controller.$selection),
+            controller.$results.dropFirst().map { _ in () }
+        ).eraseToAnyPublisher()
         return page
     }
 
@@ -176,7 +179,7 @@ enum NavigationLauncherModules {
             model?.runCommand(.init(rawValue: ScreenshotCommand.search.rawValue), origin: .menu)
         }
         var page = LauncherPage(id: id, placeholder: "按 name:、text: 或 date: 搜索截图…", badge: ("截图管理", "viewfinder"))
-        page.extendsUnderChrome = true
+        page.contentPlacement = .underChrome
         page.actionWidth = 258
         page.releasePreview = { FilePreview.shared.dismiss() }
         page.content = { [weak model] in

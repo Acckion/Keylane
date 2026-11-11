@@ -38,14 +38,14 @@ private struct ClipboardHistoryList: View {
                     .frame(maxWidth: .infinity).padding(.top, 80)
             }
             ForEach(controller.items) { item in
-                Button { controller.select(item.id) } label: {
+                ResultListButton(id: item.id, action: { controller.select(item.id) }) {
                     ResultListRow(selected: item.id == controller.selectedID) {
                         ClipboardListIcon(item: item, controller: controller)
                     } content: {
                         HighlightedResultText(text: item.preview.replacingOccurrences(of: "\n", with: " "), query: query)
                             .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
                     }
-                }.buttonStyle(.plain).id(item.id)
+                }
             }
         }
     }

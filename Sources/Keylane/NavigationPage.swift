@@ -49,7 +49,8 @@ final class NavigationController: ObservableObject {
     }
 
     func move(_ delta: Int) {
-        selection = NavigationBounds.move(selection, by: delta, count: results.count)
+        let next = NavigationBounds.move(selection, by: delta, count: results.count)
+        if next != selection { selection = next }
     }
 
     func perform(_ item: NavigationItem, mode: NavigationMode, completion: @escaping (String?) -> Void) {
@@ -101,15 +102,12 @@ struct NavigationPage: View {
                         .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8)
                 }
                 ForEach(Array(controller.results.enumerated()), id: \.element.id) { index, item in
-                    Button {
+                    ResultListButton(id: item.id, disabled: controller.performing, action: {
                         controller.selection = index
                         activate(item)
-                    } label: {
+                    }) {
                         row(item, selected: controller.selection == index)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(controller.performing)
-                    .id(item.id)
                 }
             }
         }
@@ -155,7 +153,7 @@ struct NavigationPage: View {
             } actions: {
                 Button(NavigationText.label("打开系统授权", "Request Access"), action: requestAccess)
                 Button(NavigationText.label("重新检查", "Check Again"), action: reload)
-            }
+            }.buttonStyle(ContentActionButtonStyle())
         case .noApplication:
             ContentUnavailableView(NavigationText.label("找不到之前的应用", "Previous App Unavailable"),
                                    systemImage: mode.symbol,

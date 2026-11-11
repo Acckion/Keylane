@@ -188,7 +188,7 @@ final class SystemShortcutsController: ObservableObject {
     }
 }
 
-struct ContactSummary: Identifiable, Sendable {
+struct ContactSummary: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     let organization: String
@@ -216,7 +216,7 @@ final class ContactsController: ObservableObject {
     @Published private(set) var loading = false
     @Published private(set) var requesting = false
     @Published private(set) var error = ""
-    @Published var query = "" { didSet { updateResults() } }
+    @Published var query = "" { didSet { if oldValue != query { updateResults() } } }
     private var fetch: Task<Void, Never>?
     private var contacts: [ContactSummary] = []
     private var observation: NSObjectProtocol?
@@ -310,11 +310,12 @@ final class ContactsController: ObservableObject {
 
     private func updateResults() {
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
-        visible = Array(contacts.lazy.filter { entry in terms.allSatisfy { entry.searchable.localizedCaseInsensitiveContains($0) } }.prefix(200))
-        if !visible.contains(where: { $0.id == selectedID }) { selectedID = visible.first?.id }
+        let matches = Array(contacts.lazy.filter { entry in terms.allSatisfy { entry.searchable.localizedCaseInsensitiveContains($0) } }.prefix(200))
+        if visible != matches { visible = matches }
+        if !matches.contains(where: { $0.id == selectedID }), selectedID != matches.first?.id { selectedID = matches.first?.id }
     }
 
-    func select(_ id: String) { selectedID = id }
+    func select(_ id: String) { if selectedID != id { selectedID = id } }
     func move(_ delta: Int) {
         let index = visible.firstIndex { $0.id == selectedID } ?? 0
         let next = NavigationBounds.move(index, by: delta, count: visible.count)

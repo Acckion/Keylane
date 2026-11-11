@@ -61,13 +61,13 @@ struct ContactsPage: View {
         ResultDetailLayout {
             SelectableResultList(selection: controller.selectedID) {
                 ForEach(controller.visible) { contact in
-                    Button { controller.select(contact.id) } label: {
+                    ResultListButton(id: contact.id, action: { controller.select(contact.id) }) {
                         ResultListRow(selected: contact.id == controller.selectedID) {
                             Image(systemName: "person.crop.circle.fill").font(.system(size: 23)).foregroundStyle(.blue)
                         } content: {
                             HighlightedResultText(text: contact.name, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
                         }
-                    }.buttonStyle(.plain).id(contact.id)
+                    }
                 }
             }
         } detail: {
@@ -136,6 +136,6 @@ struct DictionaryPage: View {
             } else {
                 ContentUnavailableView("没有找到释义", systemImage: "book.closed", description: Text("试试其他拼写，或检查系统词典中已启用的词库。"))
             }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity).padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

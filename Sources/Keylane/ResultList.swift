@@ -54,6 +54,21 @@ extension View {
     }
 }
 
+/// Keeps mouse activation and the scroll target on the same result identity.
+struct ResultListButton<ID: Hashable, Label: View>: View {
+    let id: ID
+    var disabled = false
+    let action: () -> Void
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        Button(action: action, label: label)
+            .buttonStyle(.plain)
+            .disabled(disabled)
+            .id(id)
+    }
+}
+
 enum ResultListRowLayout {
     case standard
     case root

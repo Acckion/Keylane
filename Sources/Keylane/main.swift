@@ -206,7 +206,7 @@ final class Model: ObservableObject {
     }
     func discoveredIdentity(for url: URL) -> ApplicationIdentity? { appIdentities[url.path] }
     func appName(_ url: URL) -> String { appIdentities[url.path]?.displayName ?? url.deletingPathExtension().lastPathComponent }
-    var searchesFilesHere: Bool { fileSearch.options.enabled && (activeLauncherPage?.usesSharedFileResults == true || (pageID == .root && fileSearch.options.searchFromLauncher)) }
+    var searchesFilesHere: Bool { fileSearch.options.enabled && (activeLauncherPage?.contentPlacement == .fileResults || (pageID == .root && fileSearch.options.searchFromLauncher)) }
     func searchFiles() { fileSearch.search(query) }
     func chooseFileSearchFolder(returnToLauncher: Bool = false) {
         fileSearch.addScope()

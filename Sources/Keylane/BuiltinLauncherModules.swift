@@ -110,7 +110,7 @@ enum BuiltinLauncherModules {
             })
         ], providers: [provider], pages: [
             LauncherPage(id: page, placeholder: "搜索文件…", badge: ("文件搜索", "doc.text.magnifyingglass"),
-                         usesSharedFileResults: true, queryChanged: { [weak model] in model?.fileSearch.search($0) },
+                         contentPlacement: .fileResults, queryChanged: { [weak model] in model?.fileSearch.search($0) },
                          leave: { [weak model] in model?.fileSearch.cancel() },
                          updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
                          releasePreview: { FilePreview.shared.dismiss() })
@@ -175,7 +175,7 @@ enum BuiltinLauncherModules {
         let id = PageID(rawValue: "Clipboard")
         let page = LauncherPage(
             id: id, placeholder: "搜索剪贴板历史…", badge: ("剪贴板历史", "list.clipboard"), actionTitle: "剪贴板操作",
-            extendsUnderChrome: true,
+            contentPlacement: .underChrome,
             content: { [weak model] in
                 guard let model else { return AnyView(EmptyView()) }
                 return AnyView(ClipboardHistoryView(controller: model.clipboard, query: model.query))
