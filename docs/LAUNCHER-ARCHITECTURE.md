@@ -36,3 +36,4 @@
 - 搜索页浮动筛选使用 `ResultTypeFilter`。底部菜单与筛选共用 `LauncherMenuRow` 和 `LauncherMenuSurface`，宿主管理浮动菜单的打开、关闭和焦点归还。应用与文件动作由模块登记。
 
 - 二级页面通过 `LauncherPage.ContentPlacement` 声明内容与浮动栏的位置。列表中的可激活结果用 `ResultListButton` 保持点击动作和滚动目标的 ID 一致。宿主只观察会改变页头、主按钮或操作菜单的状态，列表、详情和便笺编辑器各自观察自己的内容。
+- 创建类命令使用 `LauncherPage.ContentPlacement.form`，由 `LauncherCreationForm` 提供返回按钮、可选顶部操作区域和滚动表单。字段用 `LauncherCreationField` 对齐，输入控件可用 `LauncherCreationControl` 统一描边。命令负责绑定、校验和提交，底栏继续由启动器宿主管理。

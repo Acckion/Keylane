@@ -45,6 +45,7 @@ struct LauncherPage {
         case inset
         case underChrome
         case fileResults
+        case form
     }
 
     let id: PageID
