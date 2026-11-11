@@ -62,6 +62,7 @@ struct Launcher: View {
             ViewObservation.changes(model.$interfaceSize),
             ViewObservation.changes(model.$windowMode),
             ViewObservation.changes(model.$compactExpanded),
+            ViewObservation.changes(model.$presentedLauncherHeight),
             ViewObservation.changes(model.$compactFavorites),
             ViewObservation.changes(model.$favorites),
             ViewObservation.changes(model.$aliases),
@@ -81,9 +82,10 @@ struct Launcher: View {
     }
     private var launcherSurface: some View {
         let results = rows
+        let compactSurface = model.isCompact && model.presentedLauncherHeight <= model.launcherHeight + 0.5
         return ZStack(alignment: .top) {
             if let target = argumentTarget { argumentEditor(target).padding(.bottom, VisualStyle.launcherBottomInset) }
-            else if model.isCompact { Color.clear }
+            else if compactSurface { Color.clear }
             else {
                 if showsFileResults {
                     ResultDetailLayout {
@@ -98,7 +100,7 @@ struct Launcher: View {
                     else { content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset) }
                 }
             }
-            if !model.isCompact { VStack(spacing: 0) {
+            if !compactSurface { VStack(spacing: 0) {
                 if argumentTarget == nil {
                     ChromeBlur().frame(height: 88)
                         .mask(LinearGradient(stops: [.init(color: .black.opacity(0.85), location: 0), .init(color: .black.opacity(0.7), location: 0.48), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
@@ -111,19 +113,19 @@ struct Launcher: View {
             // Keep the search field interactive while the blur's full-window spacer is inert.
             if argumentTarget == nil { VStack(spacing: 0) {
                 searchBar
-                if model.isCompact && model.compactFavorites && !model.favorites.isEmpty { compactFavoritesBar }
+                if compactSurface && model.compactFavorites && !model.favorites.isEmpty { compactFavoritesBar }
                 Spacer(minLength: 0)
             } }
             if actions || appMenu || filterOpen { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
-            if !model.isCompact { footer.frame(maxHeight: .infinity, alignment: .bottom) }
+            if !compactSurface { footer.frame(maxHeight: .infinity, alignment: .bottom) }
             if argumentTarget == nil && showsTypeFilter {
                 typeFilter.frame(maxWidth: .infinity, alignment: .topTrailing)
                     .padding(VisualStyle.launcherEdgeInset)
             }
         }
-        .frame(width: 760, height: model.launcherHeight, alignment: .top)
+        .frame(width: 760, height: model.presentedLauncherHeight, alignment: .top)
         .scaleEffect(model.interfaceScale)
-        .frame(width: 760 * model.interfaceScale, height: model.launcherHeight * model.interfaceScale)
+        .frame(width: 760 * model.interfaceScale, height: model.presentedLauncherHeight * model.interfaceScale)
         .scrollIndicators(.visible, axes: .vertical)
 
         .background { if reduceTransparency { Color(nsColor: .windowBackgroundColor) } }
