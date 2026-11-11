@@ -91,14 +91,38 @@ struct LauncherSettingsPage: Identifiable {
     let content: () -> AnyView
 }
 
+enum LauncherModuleOrigin: CaseIterable {
+    case application
+    case builtInExtension
+    case installedExtension
+
+    var settingsSectionTitle: String? {
+        switch self {
+        case .application: nil
+        case .builtInExtension: "内置扩展"
+        case .installedExtension: "已安装扩展"
+        }
+    }
+}
+
+struct SettingsSidebarGroup: Identifiable {
+    let id: LauncherModuleOrigin
+    let pages: [LauncherSettingsPage]
+}
+
 struct SettingsWindowCatalog {
     let pages: [LauncherSettingsPage]
+    let sidebarGroups: [SettingsSidebarGroup]
     let items: [SettingsItem]
     private let pagesByID: [String: LauncherSettingsPage]
     private let itemsByID: [String: SettingsItem]
 
-    init(pages: [LauncherSettingsPage]) {
+    init(pages: [LauncherSettingsPage], origins: [String: LauncherModuleOrigin] = [:]) {
         self.pages = pages
+        sidebarGroups = LauncherModuleOrigin.allCases.compactMap { origin in
+            let matches = pages.filter { (origins[$0.id] ?? .builtInExtension) == origin }
+            return matches.isEmpty ? nil : SettingsSidebarGroup(id: origin, pages: matches)
+        }
         items = pages.flatMap(\.items)
         pagesByID = Dictionary(pages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         itemsByID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -133,6 +157,9 @@ struct LauncherModule {
     }
 
     let id: ModuleID
+    var origin: LauncherModuleOrigin = .builtInExtension
+    var title: String? = nil
+    var symbol: String? = nil
     var commands: [Command] = []
     var providers: [Provider] = []
     var pages: [LauncherPage] = []
@@ -142,6 +169,11 @@ struct LauncherModule {
     var launcherShown: (() -> Void)?
     var presentationUpdates: [AnyPublisher<Void, Never>] = []
     var applicationFocused: ((NSRunningApplication) -> Void)?
+}
+
+extension LauncherModule {
+    var displayTitle: String { title ?? settings.first?.title ?? commands.first?.declaration.title ?? id.rawValue }
+    var displaySymbol: String { symbol ?? settings.first?.symbol ?? commands.first?.declaration.symbol ?? "puzzlepiece.extension" }
 }
 
 struct ShortcutCommandGroup {
@@ -180,21 +212,10 @@ final class LauncherModuleRegistry {
                                       pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
                                       providers: $0.providers.map(\.namespace))
         })
-        let labels: [String: (String, String)] = [
-            "keylane.host": ("Keylane", "command"),
-            "keylane.system-tools": ("系统", "gearshape"),
-            "keylane.navigation": ("窗口与菜单", "macwindow"),
-            "keylane.calculator": ("计算器", "equal.circle"),
-            "keylane.contacts": ("联系人", "person.crop.circle"),
-            "keylane.dictionary": ("词典", "book"),
-            "keylane.emoji": ("Emoji 与符号", "face.smiling")
-        ]
         shortcutCommandGroups = modules.compactMap { module in
-            guard let first = module.commands.first else { return nil }
-            let page = module.settings.first
-            let label = labels[module.id.rawValue] ?? (page?.title ?? first.declaration.title,
-                                                       page?.symbol ?? first.declaration.symbol)
-            return ShortcutCommandGroup(id: module.id, title: label.0, symbol: label.1, commands: module.commands)
+            guard !module.commands.isEmpty else { return nil }
+            return ShortcutCommandGroup(id: module.id, title: module.displayTitle,
+                                        symbol: module.displaySymbol, commands: module.commands)
         }
         commands = modules.flatMap(\.commands)
         byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.declaration.id, $0) })
@@ -212,7 +233,10 @@ final class LauncherModuleRegistry {
                 }
             }
         }
-        settingsCatalog = SettingsWindowCatalog(pages: settingsPages)
+        let settingsOrigins = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
+            module.settings.map { ($0.id, module.origin) }
+        })
+        settingsCatalog = SettingsWindowCatalog(pages: settingsPages, origins: settingsOrigins)
         services = modules.flatMap(\.services)
         launcherShownHandlers = modules.compactMap(\.launcherShown)
         applicationFocusedHandlers = modules.compactMap(\.applicationFocused)

@@ -154,17 +154,7 @@ struct ShortcutSettingsPreferences: View {
         if !items.isEmpty || group.id.rawValue != "keylane.shortcuts" {
             CommandSettingsList(items: items, id: \.declaration.id, emptyMessage: "没有匹配的命令",
                                 showsColumns: true, showsBackground: false) { command in
-                let declaration = command.declaration
-                let enabled: Binding<Bool>? = declaration.id.rawValue == "settings" ? nil :
-                    command.settingsEnabled ?? Binding(
-                        get: { !model.disabledCommands.contains(declaration.id.rawValue) },
-                        set: { value in
-                            if value { model.disabledCommands.remove(declaration.id.rawValue) }
-                            else { model.disabledCommands.insert(declaration.id.rawValue) }
-                        }
-                    )
-                return CommandSettingsEntry(title: declaration.title, model: model, commandID: declaration.id,
-                                            isEnabled: enabled) { SettingsIcon(symbol: declaration.symbol) }
+                command.commandSettingsEntry(model: model)
             }
         }
     }
@@ -197,5 +187,45 @@ struct ShortcutSettingsPreferences: View {
                 if isExpanded { content() }
             }
         }
+    }
+}
+
+
+/// Generic settings for extensions that only need command configuration.
+struct ExtensionCommandPreferences: View {
+    let model: Model
+    let commands: [LauncherModule.Command]
+    @StateObject private var observation: ViewObservation
+
+    init(model: Model, commands: [LauncherModule.Command]) {
+        self.model = model
+        self.commands = commands
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$bindings),
+            ViewObservation.changes(model.$disabledCommands)
+        ]))
+    }
+
+    var body: some View {
+        CommandSettingsList(items: commands, id: \.declaration.id, showsColumns: true) {
+            $0.commandSettingsEntry(model: model)
+        }
+    }
+}
+
+private extension LauncherModule.Command {
+    func commandSettingsEntry(model: Model) -> CommandSettingsEntry<SettingsIcon> {
+        let id = declaration.id.rawValue
+        let enabled: Binding<Bool>? = id == "settings" ? nil :
+            settingsEnabled ?? Binding(
+                get: { !model.disabledCommands.contains(id) },
+                set: { value in
+                    if value { model.disabledCommands.remove(id) }
+                    else { model.disabledCommands.insert(id) }
+                }
+            )
+        return CommandSettingsEntry(title: declaration.title, model: model, commandID: declaration.id,
+                                    isEnabled: enabled) { SettingsIcon(symbol: declaration.symbol) }
     }
 }

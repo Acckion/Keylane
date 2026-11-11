@@ -5,6 +5,13 @@ public struct SettingsItem: Identifiable, Equatable {
     public let page: String
     public let title: String
     public let keywords: String
+    public init(id: String, page: String, title: String, keywords: String) {
+        self.id = id
+        self.page = page
+        self.title = title
+        self.keywords = keywords
+    }
+
     public static let applicationScopes = SettingsItem(id: "scopes", page: "applications", title: "应用搜索范围", keywords: "应用 文件夹 applications folders scope")
     public static let applicationFavorites = SettingsItem(id: "favorites", page: "applications", title: "收藏", keywords: "排序 favorite pin")
     public static let screenshotColumns = SettingsItem(id: "screenshot-columns", page: "screenshots", title: "截图列数", keywords: "screenshots grid columns 截屏 缩略图")

@@ -63,6 +63,18 @@ let settingsRegistry = try LauncherModuleRegistry(modules: [settingsModule, modu
 precondition(settingsRegistry.settingsCatalog.pages.map(\.id) == ["clipboard", "applications"])
 precondition(settingsRegistry.settingsCatalog.item("favorites") == .applicationFavorites)
 precondition(settingsRegistry.settingsCatalog.page("applications")?.items.count == 2)
+let hostPage = LauncherSettingsPage(id: "general", title: "通用", symbol: "gear", subtitle: "", order: 99,
+                                    items: [], content: { AnyView(EmptyView()) })
+let externalPage = LauncherSettingsPage(id: "external", title: "已安装扩展", symbol: "puzzlepiece", subtitle: "",
+                                        order: -1, items: [], content: { AnyView(EmptyView()) })
+let groupedRegistry = try LauncherModuleRegistry(modules: [
+    settingsModule, module,
+    .init(id: .init(rawValue: "host"), origin: .application, settings: [hostPage]),
+    .init(id: .init(rawValue: "external"), origin: .installedExtension, settings: [externalPage])
+])
+precondition(groupedRegistry.settingsCatalog.sidebarGroups.map(\.id) == [.application, .builtInExtension, .installedExtension])
+precondition(groupedRegistry.settingsCatalog.sidebarGroups.map { $0.pages.map(\.id) } ==
+             [["general"], ["clipboard", "applications"], ["external"]])
 let invalidPage = LauncherSettingsPage(id: "unrelated", title: "", symbol: "", subtitle: "", order: 0,
                                        items: [.applicationScopes], content: { AnyView(EmptyView()) })
 do {

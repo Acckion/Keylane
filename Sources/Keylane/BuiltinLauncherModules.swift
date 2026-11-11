@@ -7,9 +7,28 @@ import KeylaneCore
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        [host(model), applications(model), files(model), clipboard(model), notes(model),
-         links(model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model)]
-        + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
+        let modules = [host(model), applications(model), files(model), clipboard(model), notes(model),
+                       links(model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model)]
+            + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
+        return modules.enumerated().map { index, module in
+            guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
+                return module
+            }
+            let id = module.id.rawValue
+            let title = module.displayTitle
+            let symbol = module.displaySymbol
+            let commands = module.commands
+            let searchItem = SettingsItem(id: id, page: id, title: title,
+                                           keywords: commands.flatMap { $0.declaration.keywords }.joined(separator: " "))
+            var extensionModule = module
+            extensionModule.settings = [.init(id: id, title: title, symbol: symbol,
+                                               subtitle: "管理此扩展的命令、别名与快捷键。", order: 120 + index,
+                                               items: [searchItem], content: { [weak model] in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(ExtensionCommandPreferences(model: model, commands: commands).settingsAnchor(searchItem))
+            })]
+            return extensionModule
+        }
     }
 
     private static func command(_ id: String, _ title: String, _ detail: String, _ symbol: String,
@@ -27,7 +46,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func host(_ model: Model) -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.host"),
+        .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general")],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
@@ -309,7 +328,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func systemTools() -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.system-tools"), commands: [
+        .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
             command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", [], execute: { _ in
                 (NSApp.delegate as? Delegate)?.hideLauncher()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { SystemTools.shared.screenshot() }
