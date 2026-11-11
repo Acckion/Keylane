@@ -13,7 +13,7 @@ struct SettingsView: View {
     @State private var history = ["applications"]
     @State private var historyIndex = 0
     @Environment(\.colorScheme) private var scheme
-    private let pages: [(String,String,String)] = [("general","通用","slider.horizontal.3"),("applications","应用程序","square.grid.2x2.fill"),("files","文件搜索","doc.text.magnifyingglass"),("clipboard","剪贴板历史","clipboard.fill"),("calendar","日历","calendar"),("shortcuts","快捷指令","square.stack.3d.up"),("menu-bar","菜单栏","menubar.rectangle"),("notes","便笺","note.text"),("links","快捷链接","link"),("advanced","高级","wrench.and.screwdriver"),("about","关于 Keylane","info.circle")]
+    private let pages: [(String,String,String)] = [("general","通用","slider.horizontal.3"),("applications","应用程序","square.grid.2x2.fill"),("files","文件搜索","doc.text.magnifyingglass"),("screenshots","截图","viewfinder"),("clipboard","剪贴板历史","clipboard.fill"),("calendar","日历","calendar"),("shortcuts","快捷指令","square.stack.3d.up"),("menu-bar","菜单栏","menubar.rectangle"),("notes","便笺","note.text"),("links","快捷链接","link"),("advanced","高级","wrench.and.screwdriver"),("about","关于 Keylane","info.circle")]
     private var page: (String,String,String) { pages.first { $0.0 == selected } ?? pages[0] }
     var body: some View {
         NavigationSplitView {
@@ -78,7 +78,7 @@ struct SettingsView: View {
         selected = item.page; target = nil; searchSelection = nil; query = ""
         DispatchQueue.main.async { target = item.id }
     }
-    private var subtitle: String { switch selected { case "applications": return "快速查找并启动已安装的应用程序。"; case "files": return "搜索电脑上的文件与文件夹。"; case "general": return "管理外观、快捷键和启动方式。"; case "links": return "设置常用链接，快速打开。"; case "advanced": return "管理本地资料与隐私设置。"; case "clipboard": return "查找本地保存的文字、图片和文件引用。"; case "shortcuts": return "为系统快捷指令设置搜索别名与热键。"; case "calendar": return "查看日程和会议。"; case "menu-bar": return "选择各模块在菜单栏中显示的项目。"; case "notes": return "保存你的想法，随时继续。"; case "about": return "独立、原生、以键盘为中心。"; default: return "按照你的习惯使用 Keylane。" } }
+    private var subtitle: String { switch selected { case "applications": return "快速查找并启动已安装的应用程序。"; case "files": return "搜索电脑上的文件与文件夹。"; case "screenshots": return "搜索和管理截图与录屏。"; case "general": return "管理外观、快捷键和启动方式。"; case "links": return "设置常用链接，快速打开。"; case "advanced": return "管理本地资料与隐私设置。"; case "clipboard": return "查找本地保存的文字、图片和文件引用。"; case "shortcuts": return "为系统快捷指令设置搜索别名与热键。"; case "calendar": return "查看日程和会议。"; case "menu-bar": return "选择各模块在菜单栏中显示的项目。"; case "notes": return "保存你的想法，随时继续。"; case "about": return "独立、原生、以键盘为中心。"; default: return "按照你的习惯使用 Keylane。" } }
     private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { SettingsGroup(content: content) }
     @ViewBuilder private var settingsContent: some View {
         switch selected {
@@ -93,6 +93,8 @@ struct SettingsView: View {
             card { KeyboardPreferences(model: model) }.id("keyboard")
         case "applications":
             ApplicationPreferences(model: model)
+        case "screenshots":
+            ScreenshotPreferences(library: model.screenshots, model: model)
         case "files":
             FileSearchPreferences(controller: model.fileSearch, model: model)
         case "menu-bar":

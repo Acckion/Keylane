@@ -35,6 +35,7 @@ final class Model: ObservableObject {
     let fileAI = FileAIController()
     private var fileAIChanges: AnyCancellable?
     let clipboard = ClipboardController()
+    let screenshots = ScreenshotLibrary()
     let systemShortcuts = SystemShortcutsController()
     let contacts = ContactsController()
     let dictionary = DictionaryController()
@@ -173,6 +174,7 @@ final class Model: ObservableObject {
         } else { launch(url) }
     }
     private struct CommandSearchInput: Equatable {
+        let screenshotCommands: Set<String>
         let query: String
         let link: String
         let apps: [URL]
@@ -193,6 +195,7 @@ final class Model: ObservableObject {
         let includesFiles = tab == "Commands" && options.enabled && options.searchFromLauncher
             && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let input = CommandSearchInput(
+            screenshotCommands: Set(ScreenshotCommand.allCases.filter(screenshots.isEnabled).map(\.rawValue)),
             query: query, link: link, apps: applicationsEnabled ? apps : [],
             files: includesFiles ? fileResults : [], fileSearchEnabled: options.enabled,
             askFiles: fileAI.commandsEnabled["ask-files"] != false,
@@ -249,6 +252,14 @@ final class Model: ObservableObject {
                         : "Could not open \(page.title()). Look for it in System Settings."
                     self?.error = message
                 }
+            })
+        }
+        rows += ScreenshotCommand.allCases.filter { input.screenshotCommands.contains($0.rawValue) }.map { command in
+            Entry(id: command.rawValue, name: command.title, detail: "截图管理", symbol: command.symbol,
+                  aliases: command.aliases, action: {
+                guard let delegate = NSApp.delegate as? Delegate else { return }
+                if command == .search { delegate.showScreenshotLibrary() }
+                else { delegate.pasteLatestScreenshot() }
             })
         }
         if input.askFiles { rows.append(Entry(id:"ask-files",name:"询问文件搜索",detail:"AI",symbol:"sparkles",aliases:["Ask File Search"],action:{ [weak self] in if let self { self.fileAI.present(self.fileResults.map(\.url)) } })) }
@@ -414,6 +425,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else { return }
             if action == "launcher" { self.show() }
             else if action == "settings" { self.showSettings() }
+            else if action == ScreenshotCommand.search.rawValue, self.model.screenshots.isEnabled(.search) { self.showScreenshotLibrary() }
+            else if action == ScreenshotCommand.latest.rawValue, self.model.screenshots.isEnabled(.latest) { self.pasteLatestScreenshot() }
             else if action.hasPrefix("shortcut:") { self.model.systemShortcuts.run(String(action.dropFirst("shortcut:".count))) }
             else if action == "calendar" { self.showCalendar() }
             else if action == "clipboard" { self.model.tab = "Clipboard"; self.revealLauncher() }
@@ -438,6 +451,36 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if reset { model.calendar.showToday() }
         model.query = ""; model.tab = "Calendar"; revealLauncher()
     }
+    func showScreenshotLibrary() {
+        guard model.screenshots.isEnabled(.search) else { return }
+        if window.isVisible {
+            model.tab = "Screenshots"
+            revealLauncher()
+        } else {
+            revealLauncher()
+            model.tab = "Screenshots"
+        }
+    }
+
+    func pasteLatestScreenshot() {
+        rememberPreviousApplication()
+        let target = previousApplication?.processIdentifier
+        model.screenshots.latest { [weak self] item in
+            guard let self else { return }
+            guard let item else { self.model.error = "没有找到可粘贴的截图。"; return }
+            do {
+                try self.model.screenshots.copy(item)
+                let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                guard self.previousApplication?.processIdentifier == target,
+                      front == target || front == ProcessInfo.processInfo.processIdentifier else {
+                    self.model.error = "已复制截图。目标应用已变化，已取消粘贴。"
+                    return
+                }
+                self.pasteIntoPreviousApplication { [weak self] message in self?.model.error = message }
+            } catch { self.model.error = "无法复制截图：" + error.localizedDescription }
+        }
+    }
+
     @objc func revealLauncher() {
         rememberPreviousApplication()
         if !window.isVisible { presentLauncher() }

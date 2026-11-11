@@ -66,6 +66,9 @@ struct Launcher: View {
                 }
                 else if model.tab == "Emoji" { EmojiSearchPage(controller: model.emoji) { useEmoji($0, paste: true) } }
                 else if model.tab == "Clipboard" { ClipboardHistoryView(controller:model.clipboard,query:model.query) }
+                else if model.tab == "Screenshots" {
+                    ScreenshotLibraryPage(library: model.screenshots, query: model.query, chooseFolders: chooseScreenshotFolders)
+                }
                 else if model.tab == "Commands" { commandList(results).frame(height: 470, alignment: .top) }
                 else { moduleContent.padding(.top, 61).padding(.bottom, 52) }
             }
@@ -114,10 +117,11 @@ struct Launcher: View {
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
         .onDisappear { modifiers.stop() }
         .onExitCommand { if !SearchField.isComposing { escape() } }
-        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in modifiers.start(); closeMenus(); model.systemShortcuts.refresh(); if model.tab == "Contacts" { model.contacts.start() }; if model.navigationMode != nil { reloadNavigation() }; if model.searchesFilesHere { model.searchFiles() } }
-        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in modifiers.stop(); actions = false; appMenu = false; actionQuery = ""; model.fileSearch.cancel(); model.contacts.stop(); model.systemNavigation.stop() }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in modifiers.start(); closeMenus(); if model.tab == "Screenshots" { model.screenshots.refresh() }; model.systemShortcuts.refresh(); if model.tab == "Contacts" { model.contacts.start() }; if model.navigationMode != nil { reloadNavigation() }; if model.searchesFilesHere { model.searchFiles() } }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in modifiers.stop(); model.screenshots.stop(); actions = false; appMenu = false; actionQuery = ""; model.fileSearch.cancel(); model.contacts.stop(); model.systemNavigation.stop() }
         .onChange(of: fileType) { _, _ in selection = 0; selectedResultID = nil; focusToken += 1 }
         .onChange(of: model.query) { _, _ in
+            if model.tab == "Screenshots" { model.screenshots.search(model.query) }
             selection = pendingMainSelection ?? 0
             pendingMainSelection = nil
             selectedResultID = nil
@@ -163,6 +167,11 @@ struct Launcher: View {
             focusToken += 1
             if model.searchesFilesHere { model.searchFiles() }
             if current == "Clipboard" { model.clipboard.search(model.query) }
+            if previous == "Screenshots" { model.screenshots.stop() }
+            if current == "Screenshots" {
+                model.screenshots.search(model.query)
+                model.screenshots.refresh()
+            }
             if current == "Calendar" { model.calendar.query = model.query }
             if previous == "Contacts" { model.contacts.stop() }
             if current == "Contacts" { model.contacts.query = model.query; model.contacts.start() }
@@ -186,6 +195,7 @@ struct Launcher: View {
         else if model.tab == "Contacts" { model.contacts.move(delta) }
         else if model.tab == "Emoji" { model.emoji.move(delta, vertical: true) }
         else if model.navigationMode != nil { model.systemNavigation.move(delta) }
+        else if model.tab == "Screenshots" { model.screenshots.move(delta * model.screenshots.columns) }
         else if model.tab == "Clipboard" { model.clipboard.move(delta) }
         else if model.tab == "Commands" || model.tab == "Files" { selection = NavigationBounds.move(selection, by: delta, count: rows.count); selectedResultID = rows.indices.contains(selection) ? rows[selection].id : nil }
     }
@@ -218,10 +228,13 @@ struct Launcher: View {
             if model.tab != "Commands" { backButton { model.tab = "Commands" } }
             if model.tab == "Commands" { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
             SearchField(text: $model.query, placeholder: model.tab == "Commands" ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
-                        back: model.tab == "Emoji" ? { model.emoji.move(-1, vertical: false) } : nil,
-                        forward: model.tab == "Emoji" ? { model.emoji.move(1, vertical: false) } : nil,
-                        navigateWhileTyping: model.tab == "Emoji")
+                        back: model.tab == "Screenshots" ? { model.screenshots.move(-1) }
+                            : model.tab == "Emoji" ? { model.emoji.move(-1, vertical: false) } : nil,
+                        forward: model.tab == "Screenshots" ? { model.screenshots.move(1) }
+                            : model.tab == "Emoji" ? { model.emoji.move(1, vertical: false) } : nil,
+                        navigateWhileTyping: model.tab == "Emoji" || model.tab == "Screenshots")
                 .frame(height: 30)
+            if model.tab == "Screenshots" { ScreenshotFilterPicker(library: model.screenshots) }
             if model.tab == "Calendar" {
                 CalendarDateNavigation(controller: model.calendar)
             } else if showsTypeFilter {
@@ -355,7 +368,7 @@ struct Launcher: View {
         }.padding(.horizontal, VisualStyle.launcherEdgeInset).padding(.bottom, VisualStyle.launcherEdgeInset)
     }
     private func expandingControl(application: Bool) -> some View {
-        let badges = ["Files": ("文件搜索", "doc.text.magnifyingglass"), "Clipboard": ("剪贴板历史", "list.clipboard"),
+        let badges = ["Screenshots": ("截图管理", "viewfinder"), "Files": ("文件搜索", "doc.text.magnifyingglass"), "Clipboard": ("剪贴板历史", "list.clipboard"),
                       "Calendar": ("日历", "calendar"), "Contacts": ("联系人", "person.crop.circle"), "Dictionary": ("词典", "book.closed")]
         let badge = model.navigationMode.map { ($0.title, $0.symbol) } ??
             (model.tab == "Emoji" ? (emojiBadgeTitle, "face.smiling") : badges[model.tab])
@@ -363,7 +376,7 @@ struct Launcher: View {
         let badgeTitle = badge?.0 ?? ""
         let badgeSymbol = badge?.1 ?? ""
         let applicationWidth: CGFloat = secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36
-        let actionWidth: CGFloat = model.tab == "Emoji" || model.navigationMode != nil ? 258 : 196
+        let actionWidth: CGFloat = model.tab == "Screenshots" || model.tab == "Emoji" || model.navigationMode != nil ? 258 : 196
         let open = application ? appMenu : actions
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
         let count = filteredMenu(applicationMenu: application).count
@@ -456,6 +469,7 @@ struct Launcher: View {
                     MenuAction(id: "calendar-refresh", title: "刷新日程", icon: "arrow.clockwise", perform: { model.calendar.refresh() }),
                     MenuAction(id: "calendar-settings", title: "日历设置…", icon: "gearshape", perform: { model.openSettings(page: "calendar") })]
         }
+        if model.tab == "Screenshots" { return screenshotActions() }
         if model.tab == "Clipboard" {
             guard let item = model.clipboard.items.first(where: { $0.id == model.clipboard.selectedID }) else { return [] }
             var items = [MenuAction(id: "copy-clip", title: "复制", icon: "doc.on.doc", keys: ["↩"], perform: { model.clipboard.copySelected() }),
@@ -528,8 +542,8 @@ struct Launcher: View {
             return mode == .windows ? NavigationText.label("搜索窗口…", "Search Windows…")
                                     : NavigationText.label("搜索菜单项…", "Search Menu Items…")
         }
-        switch model.tab { case "Emoji": return EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"); case "Contacts": return "搜索联系人…"; case "Dictionary": return "输入要查询的词语…"; case "Calendar": return "搜索日程…"; case "Notes": return "便笺"; case "Clipboard": return "搜索剪贴板历史…"; case "Files": return "搜索文件…"; default: return "设置" } }
-    private var primaryTitle: String { if argumentTarget != nil { return "启动新实例" }; if let mode = model.navigationMode { return mode.action }; if selectedEntry?.id == "calculator" { return "复制结果" }; if model.tab == "Emoji" { return emojiPasteTitle }; if model.tab == "Contacts" { return model.contacts.selected?.firstValue == nil ? "打开联系人" : "复制" }; if model.tab == "Dictionary" { return model.dictionary.definition == nil ? "打开词典" : "复制释义" }; if selectedEntry?.detail == "Shortcut" { return model.systemShortcuts.runningID == nil ? "运行" : "运行中" }; if model.tab == "Calendar" { return "打开日历" }; if model.tab == "Clipboard" { return model.clipboard.primaryAction == "paste" ? "粘贴" : "复制" }; return model.tab == "Commands" || model.tab == "Files" ? "打开" : "返回" }
+        switch model.tab { case "Emoji": return EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"); case "Contacts": return "搜索联系人…"; case "Dictionary": return "输入要查询的词语…"; case "Calendar": return "搜索日程…"; case "Notes": return "便笺"; case "Clipboard": return "搜索剪贴板历史…"; case "Screenshots": return "按 name:、text: 或 date: 搜索截图…"; case "Files": return "搜索文件…"; default: return "设置" } }
+    private var primaryTitle: String { if model.tab == "Screenshots" { return "复制到剪贴板" }; if argumentTarget != nil { return "启动新实例" }; if let mode = model.navigationMode { return mode.action }; if selectedEntry?.id == "calculator" { return "复制结果" }; if model.tab == "Emoji" { return emojiPasteTitle }; if model.tab == "Contacts" { return model.contacts.selected?.firstValue == nil ? "打开联系人" : "复制" }; if model.tab == "Dictionary" { return model.dictionary.definition == nil ? "打开词典" : "复制释义" }; if selectedEntry?.detail == "Shortcut" { return model.systemShortcuts.runningID == nil ? "运行" : "运行中" }; if model.tab == "Calendar" { return "打开日历" }; if model.tab == "Clipboard" { return model.clipboard.primaryAction == "paste" ? "粘贴" : "复制" }; return model.tab == "Commands" || model.tab == "Files" ? "打开" : "返回" }
     private func argumentEditor(_ target: Entry) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack { backButton { argumentTarget = nil; focusToken += 1 }; Text(target.name).font(.title2.weight(.semibold)) }
@@ -597,6 +611,59 @@ struct Launcher: View {
         }
     }
 
+    private func chooseScreenshotFolders() {
+        model.screenshots.chooseFolders()
+        (NSApp.delegate as? Delegate)?.showScreenshotLibrary()
+        model.screenshots.refresh()
+    }
+
+    private func screenshotActions() -> [MenuAction] {
+        let controls = [
+            MenuAction(id: "screenshot-refresh", title: "刷新截图", icon: "arrow.clockwise", perform: { model.screenshots.refresh() }),
+            MenuAction(id: "screenshot-folders", title: "添加搜索文件夹…", icon: "folder.badge.plus", perform: chooseScreenshotFolders),
+            MenuAction(id: "screenshot-settings", title: "截图设置…", icon: "gearshape", perform: { model.openSettings(page: "screenshots") })
+        ]
+        guard let item = model.screenshots.selected else { return controls }
+        return [
+            MenuAction(id: "screenshot-copy", title: "复制到剪贴板", icon: "doc.on.doc", keys: ["↩"], perform: { copyScreenshot(item) }),
+            MenuAction(id: "screenshot-preview", title: "快速查看", icon: "eye", perform: { withScreenshot(item) { FilePreview.shared.show(item.url) } }),
+            MenuAction(id: "screenshot-open", title: "打开原文件", icon: "arrow.up.forward.app", perform: {
+                withScreenshot(item) {
+                    guard NSWorkspace.shared.open(item.url) else { throw CocoaError(.fileReadUnknown) }
+                    (NSApp.delegate as? Delegate)?.hideLauncher()
+                }
+            }),
+            MenuAction(id: "screenshot-share", title: "分享…", icon: "square.and.arrow.up", perform: { withScreenshot(item) { FileActionsWindow.shared.show(item.url, page: "share") } }),
+            MenuAction(id: "screenshot-reveal", title: "在 Finder 中显示", icon: "folder", perform: { withScreenshot(item) { NSWorkspace.shared.activateFileViewerSelecting([item.url]) } }),
+            MenuAction(id: "screenshot-trash", title: "移到废纸篓…", icon: "trash", perform: { trashScreenshot(item) })
+        ] + controls
+    }
+
+    private func withScreenshot(_ item: ScreenshotMedia, perform: () throws -> Void) {
+        do { try model.screenshots.validate(item); try perform() }
+        catch { model.error = "截图操作失败：" + error.localizedDescription; model.screenshots.refresh() }
+    }
+
+    private func copyScreenshot(_ item: ScreenshotMedia) {
+        withScreenshot(item) {
+            try model.screenshots.copy(item)
+            (NSApp.delegate as? Delegate)?.hideLauncher()
+        }
+    }
+
+    private func trashScreenshot(_ item: ScreenshotMedia) {
+        let alert = NSAlert()
+        alert.messageText = "将这张截图移到废纸篓？"
+        alert.informativeText = item.name
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true
+        if alert.runModal() == .alertSecondButtonReturn {
+            withScreenshot(item) { try model.screenshots.moveToTrash(item) }
+        }
+        (NSApp.delegate as? Delegate)?.showScreenshotLibrary()
+    }
+
     private func run() {
         if (model.tab == "Files" || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
         if let target = argumentTarget { do { let args = try ArgumentParser.parse(argumentText); model.launch(URL(fileURLWithPath: target.id), arguments: args) } catch { model.error = "参数引号或转义未完成。" }; return }
@@ -620,6 +687,10 @@ struct Launcher: View {
             return
         }
         if model.tab == "Calendar" { model.calendar.openSystemCalendar(); return }
+        if model.tab == "Screenshots" {
+            if let item = model.screenshots.selected { copyScreenshot(item) }
+            return
+        }
         if model.tab == "Clipboard" { if model.clipboard.primaryAction == "paste" { (NSApp.delegate as? Delegate)?.pasteClipboard() } else { model.clipboard.copySelected() }; return }
         if model.tab != "Commands" && model.tab != "Files" { model.tab = "Commands"; return }; let list = rows; if list.indices.contains(selection) { model.perform(list[selection]) } }
 }

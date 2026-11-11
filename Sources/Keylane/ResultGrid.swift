@@ -18,6 +18,8 @@ struct ResultGrid<Item: Identifiable, Tile: View, EmptyState: View>: View {
     @Binding var selection: ResultGridSelection<Item.ID>?
     var columnCount = 8
     var showsCounts = true
+    var contentInset: CGFloat = 8
+    var caption: ((Item) -> String)? = nil
     let itemTitle: (Item) -> String
     let activate: (Item) -> Void
     @ViewBuilder let tile: (Item) -> Tile
@@ -49,13 +51,20 @@ struct ResultGrid<Item: Identifiable, Tile: View, EmptyState: View>: View {
                                                   count: max(1, columnCount)), spacing: spacing) {
                             ForEach(section.items) { item in
                                 let id = ResultGridSelection(sectionID: section.id, itemID: item.id)
-                                ResultGridTile(selected: selection == id) {
-                                    selection = id
-                                    activate(item)
-                                } content: {
-                                    tile(item)
+                                VStack(alignment: .leading, spacing: 7) {
+                                    ResultGridTile(selected: selection == id, inset: contentInset) {
+                                        selection = id
+                                        activate(item)
+                                    } content: {
+                                        tile(item)
+                                    }
+                                    .accessibilityLabel(itemTitle(item))
+                                    if let caption {
+                                        Text(caption(item)).font(VisualStyle.rowText).lineLimit(1)
+                                            .accessibilityHidden(true)
+                                    }
                                 }
-                                .accessibilityLabel(itemTitle(item))
+                                .help(itemTitle(item))
                                 .id(id)
                             }
                         }
@@ -72,6 +81,7 @@ struct ResultGrid<Item: Identifiable, Tile: View, EmptyState: View>: View {
 
 private struct ResultGridTile<Content: View>: View {
     let selected: Bool
+    let inset: CGFloat
     let action: () -> Void
     @ViewBuilder let content: () -> Content
     @State private var hovered = false
@@ -81,7 +91,7 @@ private struct ResultGridTile<Content: View>: View {
         Button(action: action) {
             Color.clear
                 .aspectRatio(1, contentMode: .fit)
-                .overlay { content().padding(8) }
+                .overlay { content().padding(inset) }
                 .background(.primary.opacity(selected ? 0.14 : hovered ? 0.10 : 0.05), in: shape)
                 .clipShape(shape)
                 .overlay {
