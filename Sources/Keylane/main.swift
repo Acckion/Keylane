@@ -238,7 +238,7 @@ final class LauncherPanel: NSPanel {
 }
 final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private(set) var previousApplication: NSRunningApplication?
-    let navigationToast = ToastPresenter()
+    let toast = ToastPresenter()
 
     func rememberPreviousApplication() {
         guard let app = NSWorkspace.shared.frontmostApplication,
@@ -252,18 +252,22 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func pasteClipboard(plainText: Bool = false) {
         guard model.clipboard.copySelected(plainText:plainText) else { return }
-        pasteIntoPreviousApplication(feedback: model.clipboard.feedback)
+        pasteIntoPreviousApplication()
     }
-    func pasteIntoPreviousApplication(feedback: @escaping (String) -> Void) {
-        guard AXIsProcessTrusted() else { feedback("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
-        guard let target = previousApplication, !target.isTerminated else { feedback("已复制，但上一个应用已退出或不可用。"); return }
+    func pasteIntoPreviousApplication() {
+        guard AXIsProcessTrusted() else { showPasteFailure("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
+        guard let target = previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
         hideLauncher(); target.activate()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier, !target.isTerminated else { feedback("已复制。目标应用未获得焦点，已停止自动粘贴。"); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier, !target.isTerminated else { self?.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。"); return }
             let source = CGEventSource(stateID: .combinedSessionState)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { feedback("已复制，无法发送粘贴按键。"); return }
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { self?.showPasteFailure("已复制，无法发送粘贴按键。"); return }
             down.flags = .maskCommand; up.flags = .maskCommand; down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
         }
+    }
+    private func showPasteFailure(_ message: String) {
+        guard settingsWindow?.isKeyWindow != true else { return }
+        toast.show(message, style: .failure)
     }
     let model = Model()
     var settingsWindow: NSWindow?
@@ -359,6 +363,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         else { window.makeKeyAndOrderFront(nil); windowDiagnostics.record("reopen", launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus) }
         return false
     }
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard let settingsWindow, notification.object as? NSWindow === settingsWindow else { return }
+        toast.hide()
+    }
     func windowDidResignKey(_ notification: Notification) {
         guard let resigned = notification.object as? NSWindow, resigned === window else { return }
         hideLauncher(reason: "resignKey")
@@ -394,6 +402,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             var settingsFrame = settings.frame
             settingsFrame.size.width = 740
             settings.setFrame(settingsFrame, display: false)
+            settings.delegate = self
             settingsWindow = settings
         }
         hideLauncher(); settingsWindow?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)

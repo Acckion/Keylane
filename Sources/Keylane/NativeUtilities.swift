@@ -247,10 +247,11 @@ final class ContactsController: ObservableObject {
     }
 
     func requestAccess() {
-        guard active, access == .notDetermined, !requesting else { return }
+        guard CNContactStore.authorizationStatus(for: .contacts) == .notDetermined, !requesting else { return }
         requesting = true
         CNContactStore().requestAccess(for: .contacts) { [weak self] _, failure in
             DispatchQueue.main.async {
+                self?.access = CNContactStore.authorizationStatus(for: .contacts)
                 self?.requesting = false
                 self?.refresh()
                 if failure != nil { self?.error = "无法完成联系人授权。" }

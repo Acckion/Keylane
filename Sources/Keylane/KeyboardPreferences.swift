@@ -35,7 +35,7 @@ struct KeyboardPreferences: View {
             Divider()
             SettingsRow("辅助功能") {
                 HStack(spacing: 8) {
-                    Button("请求权限") { model.requestKeyboardAccess() }
+                    Button("管理权限…") { model.openSettings(page: "permissions") }
                     Button("重新启用") { model.configureModifiers() }
                 }.buttonStyle(ContentActionButtonStyle())
             }

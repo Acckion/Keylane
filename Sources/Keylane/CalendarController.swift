@@ -122,14 +122,14 @@ final class CalendarController: ObservableObject {
         if interruptedRefresh { refresh() }
     }
     func requestAccess() {
-        guard enabled, !requesting else { return }
+        guard !requesting else { return }
         requesting = true; error = ""
         worker.async { [weak self] in
             guard let self else { return }
             self.eventStore.requestFullAccessToEvents { [weak self] _, failure in
                 guard let self else { return }
                 self.worker.async { self.eventStore.reset() }
-                DispatchQueue.main.async { self.requesting = false; self.error = failure?.localizedDescription ?? ""; self.refresh() }
+                DispatchQueue.main.async { self.access = .current; self.requesting = false; self.error = failure?.localizedDescription ?? ""; self.refresh() }
             }
         }
     }
