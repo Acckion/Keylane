@@ -11,6 +11,7 @@ struct Launcher: View {
     @State private var selectionQuery = ""
     @State private var pageRevision = 0
     @State private var presentation = LauncherPagePresentation()
+    @State private var surfaceMounted = false
     @State private var dispatchedQuery: String?
     private var launcherVisible: Bool { presentation.visible }
     private var page: LauncherPage? { model.activeLauncherPage }
@@ -171,7 +172,22 @@ struct Launcher: View {
 
     var body: some View {
         let _ = pageRevision
-        launcherSurface
+        Group {
+            if surfaceMounted {
+                launcherSurface
+            } else {
+                Color.clear
+            }
+        }
+        .task(id: launcherVisible) {
+            guard !launcherVisible, surfaceMounted else { return }
+            // Keep fast hotkey toggles warm. The outer view retains query,
+            // selection and page state independently of the rendered surface.
+            do { try await Task.sleep(for: .seconds(2)) }
+            catch { return }
+            guard !launcherVisible else { return }
+            surfaceMounted = false
+        }
         .onAppear {
             updatePresentation(visible: (NSApp.delegate as? Delegate)?.window?.isVisible == true)
             focusToken += 1
@@ -231,6 +247,7 @@ struct Launcher: View {
         let change = presentation.update(page: current, visible: visible)
         if wasVisible != visible {
             if visible {
+                surfaceMounted = true
                 modifiers.start()
                 model.launcherModules?.launcherShown()
             } else {
@@ -354,7 +371,8 @@ struct Launcher: View {
     }
     private func commandList(_ results: [Entry], selectedIndex: Int?) -> some View {
         SelectableResultList(selection: selectedIndex.map { results[$0].commandID },
-                             query: model.query, firstResult: results.first?.commandID) {
+                             query: model.query, firstResult: results.first?.commandID,
+                             revealInitialSelection: true) {
             if results.isEmpty {
                 VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(ContentActionButtonStyle()).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
             }
