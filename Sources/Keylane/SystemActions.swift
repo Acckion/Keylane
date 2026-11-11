@@ -48,8 +48,8 @@ enum SystemActions {
         down.flags = [.maskControl, .maskCommand]
         up.flags = down.flags
         delegate?.hideLauncher()
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        ModifierShortcuts.postWithoutHyperRemapping(down)
+        ModifierShortcuts.postWithoutHyperRemapping(up)
     }
 
     static func hideOtherApplications() {
