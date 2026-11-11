@@ -88,7 +88,7 @@ struct SettingsView: View {
 
     private func settingsSidebarRow(_ item: LauncherSettingsPage) -> some View {
         Label { Text(item.title).font(VisualStyle.rowText) } icon: {
-            SettingsIcon(symbol: item.symbol)
+            SettingsIcon(symbol: item.symbol, artwork: ModuleArtwork.settings(item.id))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 5)

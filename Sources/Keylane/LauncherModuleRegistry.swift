@@ -292,7 +292,12 @@ final class LauncherModuleRegistry {
 
     func detailView(for entry: Entry) -> AnyView? { provider(for: entry)?.detailView?(entry) }
 
-    func artwork(for entry: Entry) -> AnyView? { provider(for: entry)?.artwork?(entry) }
+    func artwork(for entry: Entry) -> AnyView? {
+        if let artwork = provider(for: entry)?.artwork?(entry) { return artwork }
+        let item = declaration(entry.commandID)
+        return ModuleArtwork.command(entry.commandID, settingsPage: item?.settingsPage)
+            .map { AnyView(ModuleArtworkImage(image: $0)) }
+    }
 
     func candidates(for input: LauncherCommandSearch.Input) -> [Entry] {
         commands.compactMap { command in
