@@ -174,6 +174,7 @@ struct LauncherModule {
     var services: [Service] = []
     var searchUpdates: [AnyPublisher<Void, Never>] = []
     var launcherShown: (() -> Void)?
+    var launcherHidden: (() -> Void)?
     var presentationUpdates: [AnyPublisher<Void, Never>] = []
     var applicationFocused: ((NSRunningApplication) -> Void)?
     var dynamicCommandSettings: DynamicCommandSettings?
@@ -226,6 +227,7 @@ final class LauncherModuleRegistry {
     var settings: [LauncherSettingsPage] { settingsCatalog.pages }
     private let services: [LauncherModule.Service]
     private let launcherShownHandlers: [() -> Void]
+    private let launcherHiddenHandlers: [() -> Void]
     private let applicationFocusedHandlers: [(NSRunningApplication) -> Void]
     private var servicesRunning = false
     let searchUpdates: AnyPublisher<Void, Never>
@@ -268,6 +270,7 @@ final class LauncherModuleRegistry {
         settingsCatalog = SettingsWindowCatalog(pages: settingsPages, origins: settingsOrigins)
         services = modules.flatMap(\.services)
         launcherShownHandlers = modules.compactMap(\.launcherShown)
+        launcherHiddenHandlers = modules.compactMap(\.launcherHidden)
         applicationFocusedHandlers = modules.compactMap(\.applicationFocused)
         presentationUpdates = Publishers.MergeMany(modules.flatMap(\.presentationUpdates))
             .receive(on: DispatchQueue.main).eraseToAnyPublisher()
@@ -279,6 +282,7 @@ final class LauncherModuleRegistry {
     }
 
     func launcherShown() { launcherShownHandlers.forEach { $0() } }
+    func launcherHidden() { launcherHiddenHandlers.forEach { $0() } }
     func applicationFocused(_ app: NSRunningApplication) {
         guard servicesRunning else { return }
         applicationFocusedHandlers.forEach { $0(app) }

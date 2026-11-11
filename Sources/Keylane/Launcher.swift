@@ -248,6 +248,7 @@ struct Launcher: View {
                 model.launcherModules?.launcherShown()
             } else {
                 modifiers.stop()
+                model.launcherModules?.launcherHidden()
             }
         }
         if wasVisible != visible || change.previousPage != nil { closeMenus() }

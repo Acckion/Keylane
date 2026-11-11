@@ -213,6 +213,18 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("escaped").path))
     }
 
+    func testQuietScriptWithClosedOutputDoesNotBusyPoll() throws {
+        let url = try write("quiet.sh", "exec 1>&- 2>&-\n/bin/sleep 0.45\n")
+        let script = try ScriptCommand.read(url)
+        var checks = 0
+        let result = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: {
+            checks += 1
+            return false
+        })
+        XCTAssertEqual(result.status, .exited(0))
+        XCTAssertLessThanOrEqual(checks, 9)
+    }
+
     func testLargeOutputIsBoundedWithoutBlocking() throws {
         _ = try write("large.sh", "/usr/bin/head -c 300000 /dev/zero | /usr/bin/tr '\\000' x")
         let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)

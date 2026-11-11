@@ -31,6 +31,10 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
         "node_modules", "site-packages", "dist-packages", "__pycache__", "venv"
     ]
 
+    public static func ignoresDiscoveryDirectory(named name: String) -> Bool {
+        name.hasPrefix(".") || dependencyDirectories.contains(name.lowercased())
+    }
+
     /// Untitled source files are still searchable by name, but should not flood one-key root searches.
     public func allowsRootQuery(_ query: String, alias: String?) -> Bool {
         let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -68,7 +72,7 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
             var reached: Set<String> = []
             for case let file as URL in children {
                 if isCancelled() { return ([], []) }
-                if file.hasDirectoryPath, dependencyDirectories.contains(file.lastPathComponent.lowercased()) {
+                if file.hasDirectoryPath, ignoresDiscoveryDirectory(named: file.lastPathComponent) {
                     children.skipDescendants()
                     continue
                 }
@@ -178,6 +182,7 @@ public enum ScriptRunner {
         let stderr = inline ? Pipe() : stdout
         let descriptors = (inline ? [stdout, stderr] : [stdout]).map { $0.fileHandleForReading.fileDescriptor }
         guard descriptors.allSatisfy({ fcntl($0, F_SETFL, O_NONBLOCK) != -1 }) else { throw POSIXError(.EIO) }
+        var readers = descriptors.map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
         process.executableURL = executable
         process.arguments = argv
         process.currentDirectoryURL = directory
@@ -199,6 +204,8 @@ public enum ScriptRunner {
         }
         if environment["TERM"]?.isEmpty != false { environment["TERM"] = "linux" }
         process.environment = environment
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
         try? stdout.fileHandleForWriting.close()
         if inline { try? stderr.fileHandleForWriting.close() }
@@ -217,9 +224,12 @@ public enum ScriptRunner {
         var lastOutput = ProcessInfo.processInfo.systemUptime
         var buffer = [UInt8](repeating: 0, count: 8192)
         func drain() {
-            for (index, descriptor) in descriptors.enumerated() {
+            for index in readers.indices where readers[index].fd >= 0 {
+                let descriptor = readers[index].fd
                 for _ in 0..<16 {
                     let count = buffer.withUnsafeMutableBytes { read(descriptor, $0.baseAddress, $0.count) }
+                    // Stop polling closed streams. POLLHUP would otherwise wake immediately.
+                    if count == 0 { readers[index].fd = -1 }
                     guard count > 0 else { break }
                     if index == 0 {
                         let accepted = min(count, limit - output.count)
@@ -252,7 +262,14 @@ public enum ScriptRunner {
                 signal(SIGKILL)
                 break
             }
-            Thread.sleep(forTimeInterval: 0.02)
+            // Output wakes the worker immediately. A quiet script only wakes to
+            // check cancellation, publish buffered output or enforce its deadline.
+            let remaining = min(0.1, max(0, deadline - now))
+            if readers.allSatisfy({ $0.fd < 0 }) {
+                if exited.wait(timeout: .now() + remaining) == .success { break }
+            } else {
+                _ = poll(&readers, nfds_t(readers.count), Int32((remaining * 1_000).rounded(.up)))
+            }
         }
         process.waitUntilExit()
         drain()
