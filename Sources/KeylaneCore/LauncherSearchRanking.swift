@@ -16,6 +16,8 @@ public struct LauncherSearchRanking {
         }
     }
 
+    private static let explicitMatchPriority = 4
+
     private let query: SearchRanker.Query
     private let trimmedQuery: String
     private let settingsQuery: SearchRanker.Query
@@ -53,7 +55,7 @@ public struct LauncherSearchRanking {
         switch kind {
         case .calculator:
             score = 2000
-            priority = 4
+            priority = Self.explicitMatchPriority
         case .file:
             score = rankFile(title)
             priority = 0
@@ -94,8 +96,8 @@ public struct LauncherSearchRanking {
         return result(id: id, title: title, score: score, priority: priority, groupCloseMatches: kind == .command)
     }
 
-    public func result(id: String, title: String, score: Int) -> SearchResultRank {
-        result(id: id, title: title, score: score, priority: 0, groupCloseMatches: false)
+    public func explicitResult(id: String, title: String, score: Int) -> SearchResultRank {
+        result(id: id, title: title, score: score, priority: Self.explicitMatchPriority, groupCloseMatches: false)
     }
 
     private func result(id: String, title: String, score: Int, priority: Int, groupCloseMatches: Bool) -> SearchResultRank {

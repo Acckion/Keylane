@@ -37,7 +37,7 @@ final class LauncherCommandSearch {
         let results = candidates.compactMap { entry -> (Entry, SearchResultRank)? in
             guard !entry.isFallback else { return nil }
             if let score = entry.matchScore {
-                return (entry, rank.result(id: entry.id, title: entry.name, score: score))
+                return (entry, rank.explicitResult(id: entry.id, title: entry.name, score: score))
             }
             return rank.match(id: entry.id, title: entry.name, names: entry.aliases, kind: entry.rankingKind, prepareName: prepare)
                 .map { (entry, $0) }
