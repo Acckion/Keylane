@@ -320,7 +320,35 @@ struct SettingsCaption: View {
     }
 }
 
-/// Shared card for the application and file search scopes. Pages supply only their folder actions.
+/// Compact settings collections share the same heading, surface, and content inset.
+struct SettingsListCard<Control: View, Content: View>: View {
+    let title: String
+    let detail: String
+    var anchor: SettingsItem? = nil
+    @ViewBuilder let control: () -> Control
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        SettingsCard(layout: .flush, anchor: anchor) {
+            VStack(alignment: .leading, spacing: 0) {
+                SettingsRow(title, detail: detail, control: control)
+                content()
+            }.padding(.horizontal, 18)
+        }
+    }
+}
+
+struct SettingsListEmptyState: View {
+    let title: String
+
+    var body: some View {
+        SettingsDescription(title)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 14)
+    }
+}
+
+/// Shared search scope geometry. Pages supply the folder actions and any permission feedback.
 struct SettingsSearchScopeCard<Footer: View>: View {
     let paths: [String]
     let detail: String
@@ -331,48 +359,53 @@ struct SettingsSearchScopeCard<Footer: View>: View {
     @ViewBuilder let footer: () -> Footer
 
     var body: some View {
-        SettingsCard(layout: .flush, anchor: anchor) {
-            VStack(alignment: .leading, spacing: 0) {
-                SettingsRow("搜索范围", detail: detail) {
-                    SettingsAddFolderButton(symbolFont: .system(size: 12, weight: .medium), action: add)
-                }
-                if paths.isEmpty {
-                    SettingsDescription("尚未添加搜索范围")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 14)
-                } else {
-                    SettingsCompactList(items: paths, id: \.self) { path in
-                        SettingsFolderRow(path: path, selectable: true, showsActionsOnHover: true) {
-                            if let reauthorize {
-                                Button { reauthorize(path) } label: { Image(systemName: "key") }
-                                    .buttonStyle(.plain)
-                                    .help("重新选择文件夹以授权")
-                                    .accessibilityLabel("重新授权 \(path)")
-                            }
-                            Button { remove(path) } label: {
-                                Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("移除搜索范围")
-                            .accessibilityLabel("移除 \(path)")
+        SettingsListCard(title: "搜索范围", detail: detail, anchor: anchor) {
+            SettingsAddItemButton(title: "添加搜索文件夹", action: add)
+        } content: {
+            if paths.isEmpty {
+                SettingsListEmptyState(title: "尚未添加搜索范围")
+            } else {
+                SettingsCompactList(items: paths, id: \.self) { path in
+                    SettingsFolderRow(path: path, selectable: true, showsActionsOnHover: true) {
+                        if let reauthorize {
+                            Button { reauthorize(path) } label: { Image(systemName: "key") }
+                                .buttonStyle(.plain)
+                                .help("重新选择文件夹以授权")
+                                .accessibilityLabel("重新授权 \(path)")
                         }
+                        SettingsRemoveItemButton(label: "移除 \(path)", help: "移除搜索范围") { remove(path) }
                     }
-                    .padding(.bottom, 5)
                 }
-                footer()
-            }.padding(.horizontal, 18)
+                .padding(.bottom, 5)
+            }
+            footer()
         }
     }
 }
 
-struct SettingsAddFolderButton: View {
-    var symbolFont: Font?
+struct SettingsAddItemButton: View {
+    let title: String
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) { Image(systemName: "plus").font(symbolFont) }
-            .buttonStyle(ContentActionButtonStyle()).buttonBorderShape(.circle).controlSize(.small)
-            .help("添加搜索文件夹")
+        Button(action: action) {
+            Image(systemName: "plus").font(.system(size: 12, weight: .medium))
+        }
+        .buttonStyle(ContentActionButtonStyle()).buttonBorderShape(.circle).controlSize(.small)
+        .accessibilityLabel(title).help(title)
+    }
+}
+
+struct SettingsRemoveItemButton: View {
+    let label: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
+        }
+        .buttonStyle(.plain).accessibilityLabel(label).help(help)
     }
 }
 
@@ -400,6 +433,24 @@ struct SettingsCompactList<Item, ID: Hashable, Row: View>: View {
 
 struct SettingsFolderRow<Actions: View>: View {
     let path: String
+    var detail: String? = nil
+    var selectable = false
+    var showsActionsOnHover = false
+    @ViewBuilder let actions: () -> Actions
+
+    var body: some View {
+        SettingsCompactItemRow(
+            title: (path as NSString).abbreviatingWithTildeInPath,
+            symbol: "folder", detail: detail, selectable: selectable,
+            showsActionsOnHover: showsActionsOnHover, actions: actions
+        ).help(path)
+    }
+}
+
+struct SettingsCompactItemRow<Actions: View>: View {
+    let title: String
+    let symbol: String
+    var detail: String? = nil
     var selectable = false
     var showsActionsOnHover = false
     @ViewBuilder let actions: () -> Actions
@@ -407,25 +458,25 @@ struct SettingsFolderRow<Actions: View>: View {
 
     var body: some View {
         HStack(spacing: 9) {
-            Image(systemName: "folder").font(VisualStyle.actionSymbol).frame(width: 18)
-            Group {
-                if selectable { pathLabel.textSelection(.enabled) }
-                else { pathLabel }
+            Image(systemName: symbol).font(VisualStyle.actionSymbol).frame(width: 18)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                if selectable { titleLabel.textSelection(.enabled) }
+                else { titleLabel }
+                if let detail { SettingsDescription(detail) }
             }
             Spacer(minLength: 4)
             actions().opacity(!showsActionsOnHover || hovering ? 1 : 0)
         }
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }.help(path)
+        .onHover { hovering = $0 }
     }
 
-    private var pathLabel: some View {
-        Text((path as NSString).abbreviatingWithTildeInPath)
-            .font(.system(size: 12)).foregroundStyle(.secondary)
+    private var titleLabel: some View {
+        Text(title).font(.system(size: 12)).foregroundStyle(.secondary)
             .lineLimit(1).truncationMode(.middle)
     }
 }
-
 
 /// Shortcut-only settings share the same label and recorder alignment.
 struct SettingsShortcutBindingRow: View {
