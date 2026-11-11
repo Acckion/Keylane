@@ -25,41 +25,28 @@ struct FileSearchPreferences: View {
     private func option(_ title: String, _ detail: String, _ path: WritableKeyPath<FileSearchOptions,Bool>) -> some View { Toggle(isOn: Binding(get: { controller.options[keyPath:path] }, set: { controller.options[keyPath:path] = $0 })) { SettingsRowLabel(title: title, detail: detail) }.toggleStyle(SettingsSwitchStyle()).controlSize(.small) }
     var body: some View {
         SettingsPageSections {
-            SettingsCard() {
-                HStack(alignment:.top) { SettingsCaption(title: "搜索范围", detail: "添加要搜索的文件夹；通过选择面板授予访问权限。"); Spacer(); SettingsAddFolderButton { controller.addScope() } }
-                SettingsCompactList(items: controller.options.roots, id: \.self) { path in
-                    SettingsFolderRow(path: path, selectable: true) {
-                        Button { controller.addScope(suggested: URL(fileURLWithPath: path)) } label: {
-                            Image(systemName: "key")
-                        }.buttonStyle(.plain).help("重新选择文件夹以授权")
-                        Button { controller.removeScope(path) } label: {
-                            Image(systemName: "minus.circle.fill").foregroundStyle(.tertiary)
-                        }.buttonStyle(.plain).help("移除搜索范围")
-                    }
-                }
+            SettingsSearchScopeCard(
+                paths: controller.options.roots,
+                detail: "添加要搜索的文件夹；通过选择面板授予访问权限。",
+                anchor: .fileSearchScope,
+                add: { controller.addScope() },
+                remove: controller.removeScope,
+                reauthorize: { controller.addScope(suggested: URL(fileURLWithPath: $0)) }
+            ) {
                 if !controller.inaccessible.isEmpty {
                     if !controller.options.roots.isEmpty { Divider().opacity(0.4) }
-                    Label("部分目录无法访问。若下载或文稿中的文件缺失，请选择并授权对应文件夹。",systemImage:"exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                    Button("授权下载文件夹…") { controller.addScope(suggested:FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")) }.buttonStyle(ContentActionButtonStyle())
-                }
-            }.settingsAnchor(.fileSearchScope)
-            SettingsCard {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:4) { SettingsTitle("忽略规则", role: .section); SettingsDescription("默认跳过忽略文件指定的项目。"); Button("了解更多…") { showsIgnoreInfo.toggle() }.buttonStyle(.plain).foregroundStyle(.blue) }
-                    Spacer(); TextField("添加规则…",text:$pattern).textFieldStyle(.roundedBorder).frame(maxWidth:240).onSubmit { addPattern() }
-                    Button { addPattern() } label: { Image(systemName:"plus") }.buttonStyle(.borderless).disabled(pattern.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
-                }
-                if showsIgnoreInfo { SettingsDescription("支持 *、?、** 和简单字符组。无斜线规则匹配任意层级的名称；带斜线规则匹配路径。启用忽略文件后读取目录中的 .gitignore、.ignore 和 .rayignore，按目录继承并支持 ! 取消忽略；已忽略的父目录不会继续遍历。不运行 Git 或 Shell 命令。") }
-                SettingsCompactList(items: controller.options.ignorePatterns, id: \.self) { value in
-                    HStack { Text(value).font(.system(size:12)).foregroundStyle(.secondary).textSelection(.enabled); Spacer(); Button { controller.options.ignorePatterns.removeAll { $0 == value } } label: { Image(systemName:"minus.circle.fill").foregroundStyle(.tertiary) }.buttonStyle(.plain).help("移除规则") }
-                }
-                if !controller.options.ignorePatterns.isEmpty { Divider().opacity(0.4) }
-                SettingsCaption(title: "自动排除", detail: "跳过构建输出或依赖缓存。恢复后重新索引该目录。")
-                if controller.automaticExclusions.isEmpty { Text("暂无自动排除的目录").font(.caption).foregroundStyle(.tertiary) }
-                SettingsCompactList(items: controller.automaticExclusions, id: \.id) { entry in
-                    HStack { Image(systemName:"folder"); VStack(alignment:.leading,spacing:4) { Text(entry.path).font(.caption).lineLimit(2); Text(entry.reason + (entry.events > 0 ? " · 已跳过\(entry.events)次文件事件" : "")).font(.caption2).foregroundStyle(.secondary) }; Spacer(); Button("恢复") { controller.restore(entry.path) }.buttonStyle(.glass).controlSize(.small) }
+                    VStack(alignment: .leading, spacing: 7) {
+                        Label("部分目录无法访问。若下载或文稿中的文件缺失，请选择并授权对应文件夹。",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                        Button("授权下载文件夹…") {
+                            let downloads = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")
+                            controller.addScope(suggested: downloads)
+                        }.buttonStyle(ContentActionButtonStyle())
+                    }.padding(.vertical, 10)
                 }
             }
+            ignoreRules
             SettingsGroup {
                 option("在主界面搜索文件","在启动器中直接输入文件名，同时搜索应用、命令和文件；文件搜索页面仍然可用。",\.searchFromLauncher).settingsAnchor(.fileSearchInline)
                 Divider()
@@ -85,6 +72,70 @@ struct FileSearchPreferences: View {
             FileIndexStatistics(controller: controller)
         }.confirmationDialog("恢复文件搜索默认设置？",isPresented:$resets,titleVisibility:.visible) { Button("恢复默认",role:.destructive) { controller.reset() }; Button("取消",role:.cancel) {} }.onAppear { if controller.stats.entries == 0 && !controller.indexing { controller.startIndex() } }
     }
+    private var pendingRule: String { pattern.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private var canAddRule: Bool {
+        !pendingRule.isEmpty && pendingRule.utf8.count <= 1024
+            && !controller.options.ignorePatterns.contains(pendingRule)
+    }
+
+    private var ignoreRules: some View {
+        SettingsListCard(title: "忽略规则", detail: "默认跳过忽略文件指定的项目。") {
+            HStack(spacing: 6) {
+                Button {
+                    showsIgnoreInfo.toggle()
+                } label: {
+                    Image(systemName: "info.circle")
+                }
+                .buttonStyle(ContentActionButtonStyle()).controlSize(.small)
+                .accessibilityLabel("了解更多").accessibilityValue(showsIgnoreInfo ? "已展开" : "已折叠")
+                .help("了解更多")
+                TextField("添加规则…", text: $pattern)
+                    .textFieldStyle(.roundedBorder).controlSize(.small).frame(width: 150)
+                    .onSubmit(addPattern)
+                SettingsAddItemButton(title: "添加忽略规则", action: addPattern)
+                    .disabled(!canAddRule)
+            }
+        } content: {
+            if showsIgnoreInfo {
+                SettingsDescription("支持 *、?、** 和简单字符组。无斜线规则匹配任意层级的名称；带斜线规则匹配路径。启用忽略文件后读取目录中的 .gitignore、.ignore 和 .rayignore，按目录继承并支持 ! 取消忽略；已忽略的父目录不会继续遍历。不运行 Git 或 Shell 命令。")
+                    .padding(.vertical, 8)
+            }
+            if controller.options.ignorePatterns.isEmpty {
+                SettingsListEmptyState(title: "暂无忽略规则")
+            } else {
+                SettingsCompactList(items: controller.options.ignorePatterns, id: \.self) { rule in
+                    SettingsCompactItemRow(title: rule, symbol: "line.3.horizontal.decrease",
+                                           selectable: true, showsActionsOnHover: true) {
+                        SettingsRemoveItemButton(label: "移除规则 \(rule)", help: "移除规则") {
+                            controller.options.ignorePatterns.removeAll { $0 == rule }
+                        }
+                    }.help(rule)
+                }.padding(.bottom, 5)
+            }
+            Divider()
+            SettingsListHeader(title: "自动排除", detail: "跳过构建输出或依赖缓存。恢复后重新索引该目录。") {
+                EmptyView()
+            }
+            if controller.automaticExclusions.isEmpty {
+                SettingsListEmptyState(title: "暂无自动排除的目录")
+            } else {
+                SettingsCompactList(items: controller.automaticExclusions, id: \.id) { entry in
+                    SettingsFolderRow(path: entry.path, detail: exclusionDetail(entry),
+                                      selectable: true, showsActionsOnHover: true) {
+                        Button("恢复") { controller.restore(entry.path) }
+                            .buttonStyle(ContentActionButtonStyle()).controlSize(.small)
+                    }
+                }.padding(.bottom, 5)
+            }
+        }
+    }
+
+    private func exclusionDetail(_ entry: AutomaticFileExclusion) -> String {
+        guard entry.events > 0 else { return entry.reason }
+        return entry.reason + " · 已跳过\(entry.events)次文件事件"
+    }
+
     private func aiCommand(_ id: String) -> CommandSettingsEntry<some View> {
         let commandID = CommandID(rawValue: id)
         let declaration = model.launcherModules?.declaration(commandID)
@@ -95,7 +146,11 @@ struct FileSearchPreferences: View {
             icon: { Image(systemName: declaration?.symbol ?? "sparkles").font(VisualStyle.actionSymbol) })
     }
 
-    private func addPattern() { let value = pattern.trimmingCharacters(in:.whitespacesAndNewlines); guard !value.isEmpty, value.utf8.count <= 1024, !controller.options.ignorePatterns.contains(value) else { return }; controller.options.ignorePatterns.append(value); pattern = "" }
+    private func addPattern() {
+        guard canAddRule else { return }
+        controller.options.ignorePatterns.append(pendingRule)
+        pattern = ""
+    }
 }
 
 
