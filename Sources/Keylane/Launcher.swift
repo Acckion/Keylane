@@ -539,13 +539,17 @@ struct Launcher: View {
         }
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
-        if let actions = model.launcherModules?.actions(for: row) { return actions }
-        return [
+        var actions = model.launcherModules?.actions(for: row) ?? [
             MenuAction(id: "open", title: "执行命令", icon: "return", keys: ["↩"]) {
                 model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
             },
             model.favoriteAction(for: row)
         ]
+        if model.pageID == .root, model.usage[row.id, default: 0] > 0,
+           !actions.contains(where: { $0.id == "reset-ranking" }) {
+            actions.append(model.resetRankingAction(for: row))
+        }
+        return actions
     }
     private func dismissSubmenu() {
         submenu = nil
