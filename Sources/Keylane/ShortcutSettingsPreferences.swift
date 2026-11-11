@@ -229,6 +229,9 @@ private extension LauncherModule.Command {
                 }
             )
         return CommandSettingsEntry(title: declaration.title, model: model, commandID: declaration.id,
-                                    isEnabled: enabled) { SettingsIcon(symbol: declaration.symbol) }
+                                    isEnabled: enabled) {
+            SettingsIcon(symbol: declaration.symbol,
+                         artwork: ModuleArtwork.command(declaration.id, settingsPage: declaration.settingsPage))
+        }
     }
 }

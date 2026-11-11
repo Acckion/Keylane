@@ -13,30 +13,35 @@ struct SettingsSurface: ViewModifier {
 struct SettingsIcon: View {
     let symbol: String
     var size: CGFloat = 24
+    var artwork: NSImage? = nil
 
     var body: some View {
-        Image(systemName: symbol)
-            .symbolRenderingMode(.monochrome)
-            .font(.system(size: 14 * size / 24, weight: .medium))
-            .foregroundStyle(.white)
-            .frame(width: size, height: size)
-            .background(.gray.gradient, in: RoundedRectangle(cornerRadius: size / 4))
-            .accessibilityHidden(true)
+        Group {
+            if let artwork {
+                ModuleArtworkImage(image: artwork)
+                    .frame(width: size, height: size)
+            } else {
+                Image(systemName: symbol)
+                    .symbolRenderingMode(.monochrome)
+                    .font(.system(size: 14 * size / 24, weight: .medium))
+                    .foregroundStyle(.white)
+                    .frame(width: size, height: size)
+                    .background(.gray.gradient, in: RoundedRectangle(cornerRadius: size / 4))
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 
 struct SettingsPageHeader: View {
+    let pageID: String
     let title: String
     let symbol: String
     let subtitle: String
 
     var body: some View {
         HStack(spacing: 12) {
-            if symbol == "calendar" {
-                CalendarSettingsIcon(size: 36)
-            } else {
-                SettingsIcon(symbol: symbol, size: 36)
-            }
+            SettingsIcon(symbol: symbol, size: 36, artwork: ModuleArtwork.settings(pageID))
             VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(.system(size: 21, weight: .semibold))
                     .accessibilityAddTraits(.isHeader)
