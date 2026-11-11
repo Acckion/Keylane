@@ -28,6 +28,14 @@ final class ScriptCommandsController: ObservableObject {
     @Published var arguments = ""
     @Published var directory = ""
     @Published var timeout = "30"
+    @Published var draftName = ""
+    @Published var draftExtension = "sh"
+
+    var draftFilename: String? {
+        let name = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains(":"), !name.contains("\0") else { return nil }
+        return "\(name).\(draftExtension)"
+    }
 
     private let preferences: UserDefaults
     private let scanner = DispatchQueue(label: "org.keylane.scripts.scan", qos: .utility)
@@ -62,16 +70,21 @@ final class ScriptCommandsController: ObservableObject {
         }
     }
 
-    func createScript() {
-        guard enabled else { return }
+    func createScript(in window: NSWindow) {
+        guard enabled, let filename = draftFilename, window.attachedSheet == nil else { return }
         let panel = NSSavePanel()
         panel.title = "创建脚本命令"
-        panel.nameFieldStringValue = "新建脚本.sh"
-        panel.message = "使用 .sh、.bash、.zsh、.py、.js、.mjs 或 .cjs 扩展名。保存位置会加入脚本搜索范围。"
+        panel.nameFieldStringValue = filename
+        panel.message = "保存位置会加入脚本搜索范围。"
         panel.directoryURL = folders.first.map { URL(fileURLWithPath: $0, isDirectory: true) }
         panel.canCreateDirectories = true
-        NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.writeScript(at: url)
+        }
+    }
+
+    private func writeScript(at url: URL) {
         let toast = (NSApp.delegate as? Delegate)?.toast
         do {
             try ScriptCommand.createTemplate(at: url)

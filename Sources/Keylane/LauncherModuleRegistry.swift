@@ -60,6 +60,7 @@ struct LauncherPage {
     var submit: (() -> Void)?
     var shortcutSubmit: (() -> Void)?
     var primaryTitle: (() -> String)?
+    var primaryEnabled: (() -> Bool)?
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
     var searchAccessory: (() -> AnyView)?

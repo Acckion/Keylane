@@ -6,6 +6,7 @@ import SwiftUI
 enum ScriptCommandsModule {
     private static let settingsID = "script-commands"
     private static let pageID = PageID(rawValue: "RunScript")
+    private static let createPageID = PageID(rawValue: "CreateScript")
     private static let searchPageID = PageID(rawValue: "SearchScripts")
     private static let symbol = "terminal"
 
@@ -73,15 +74,39 @@ enum ScriptCommandsModule {
                      })
     }
 
+    private static func creationPage(_ model: Model) -> LauncherPage {
+        let controller = model.scripts
+        let submit = {
+            guard let window = (NSApp.delegate as? Delegate)?.window else { return }
+            controller.createScript(in: window)
+        }
+        return .init(id: createPageID, placeholder: Action.create.title, badge: (Action.create.title, Action.create.icon),
+                     contentPlacement: .form,
+                     content: { [weak model] in
+                         guard let model else { return AnyView(EmptyView()) }
+                         return AnyView(ScriptCreationView(controller: controller) { [weak model] in
+                             model?.pageID = .root
+                         })
+                     },
+                     submit: submit, shortcutSubmit: submit, primaryTitle: { "保存脚本" },
+                     primaryEnabled: { controller.draftFilename != nil },
+                     updates: ViewObservation.changes(controller.$draftName),
+                     enter: { _ in
+                         controller.draftName = ""
+                         controller.draftExtension = "sh"
+                         return ""
+                     })
+    }
+
     private static func actionCommands(_ controller: ScriptCommandsController) -> [LauncherModule.Command] {
         Action.allCases.map { action in
             .init(declaration: .init(id: action.id, title: action.title, detail: "脚本命令", symbol: action.icon,
                                      keywords: [action.english],
-                                     destination: action == .search ? .page(searchPageID) : .action, settingsPage: settingsID),
+                                     destination: action == .search ? .page(searchPageID) : action == .create ? .page(createPageID) : .action, settingsPage: settingsID),
                   available: { controller.enabled && !controller.disabled.contains(action.rawValue) },
                   execute: { _ in
                       switch action {
-                      case .create: controller.createScript()
+                      case .create, .search: break
                       case .reload:
                           controller.refresh(force: true) { count in
                               let toast = (NSApp.delegate as? Delegate)?.toast
@@ -91,7 +116,6 @@ enum ScriptCommandsModule {
                                   toast?.show("已加载 \(count) 个脚本，部分文件夹无法读取。", style: .failure)
                               }
                           }
-                      case .search: break
                       }
                   })
         }
@@ -149,13 +173,69 @@ enum ScriptCommandsModule {
                                     detail: "添加脚本文件夹和热键", symbol: symbol,
                                     keywords: ["Script Commands", "脚本", "Shell", "Python", "Node"],
                                     destination: .settings(settingsID), settingsPage: settingsID))
-        ] + actionCommands(controller), providers: [provider], pages: [searchPage(model), page], settings: [settings],
+        ] + actionCommands(controller), providers: [provider], pages: [searchPage(model), creationPage(model), page], settings: [settings],
         services: [.init(start: { controller.refresh() }, stop: controller.cancel)],
         searchUpdates: [
             ViewObservation.changes(controller.$entries),
             ViewObservation.changes(controller.$enabled),
             ViewObservation.changes(controller.$disabled)
         ], launcherShown: { controller.refresh() })
+    }
+}
+
+private struct ScriptCreationView: View {
+    @ObservedObject var controller: ScriptCommandsController
+    let back: () -> Void
+    @FocusState private var nameFocused: Bool
+
+    private let templates = [
+        ("sh", "Shell (sh)"), ("bash", "Bash"), ("zsh", "Zsh"), ("py", "Python"),
+        ("js", "JavaScript"), ("mjs", "JavaScript (ES Module)"), ("cjs", "JavaScript (CommonJS)")
+    ]
+
+    var body: some View {
+        LauncherCreationForm(back: back) {
+            EmptyView()
+        } fields: {
+            LauncherCreationField("模板") {
+                LauncherCreationControl {
+                    Menu {
+                        Picker("模板", selection: $controller.draftExtension) {
+                            ForEach(templates, id: \.0) { template in
+                                Text(template.1).tag(template.0)
+                            }
+                        }.pickerStyle(.inline)
+                    } label: {
+                        HStack {
+                            Text(templates.first { $0.0 == controller.draftExtension }?.1 ?? controller.draftExtension)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .accessibilityLabel("模板")
+                }
+            }
+            LauncherCreationField("名称") {
+                LauncherCreationControl(focused: nameFocused) {
+                    HStack {
+                        TextField("脚本名称", text: $controller.draftName)
+                            .textFieldStyle(.plain)
+                            .focused($nameFocused)
+                        Text(".\(controller.draftExtension)").foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .task {
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            nameFocused = true
+        }
     }
 }
 
