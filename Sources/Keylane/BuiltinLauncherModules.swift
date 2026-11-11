@@ -295,6 +295,13 @@ enum BuiltinLauncherModules {
         publisher.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
     }
 
+    static func commandOnlySettingsPage(_ model: Model, _ id: String, _ title: String, _ symbol: String,
+                                        _ subtitle: String, _ order: Int) -> LauncherSettingsPage {
+        settingsPage(model, id, title, symbol, subtitle, order) { model in
+            ExtensionCommandPreferences(model: model, commands: model.launcherModules?.commands(inSettingsPage: id) ?? [])
+        }
+    }
+
     private static func settingsPage<Content: View>(_ model: Model, _ id: String, _ title: String, _ symbol: String,
                                      _ subtitle: String, _ order: Int, titlebar: SettingsTitlebarContribution? = nil, content: @escaping (Model) -> Content) -> LauncherSettingsPage {
         .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar) { [weak model] in

@@ -11,6 +11,7 @@ final class Model: ObservableObject {
     @Published var error = ""
     @Published var settingsPage = "applications"
     @Published private(set) var applicationSettingsPath: String?
+    @Published private(set) var settingsCommandID: CommandID?
     @Published var appearance = UserDefaults.standard.string(forKey: "appearance") ?? "system" { didSet { UserDefaults.standard.set(appearance, forKey: "appearance") } }
     @Published var placement = UserDefaults.standard.string(forKey: "placement") ?? "activeScreen" { didSet { UserDefaults.standard.set(placement, forKey: "placement") } }
     @Published var interfaceSize = UserDefaults.standard.string(forKey: "interfaceSize") ?? "medium" { didSet { UserDefaults.standard.set(interfaceSize, forKey: "interfaceSize") } }
@@ -103,11 +104,22 @@ final class Model: ObservableObject {
     }
     func toggleFavorite(_ id: String) { if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }; UserDefaults.standard.set(Array(favorites), forKey: "favorites") }
     func openSettings(page: String? = nil) {
+        clearCommandSettings()
         applicationSettingsPath = nil
         if let page { settingsPage = page }
         (NSApp.delegate as? Delegate)?.showSettings()
     }
+    func openCommandSettings(_ command: LauncherCommandDeclaration) {
+        guard let settings = command.settingsPage else { return }
+        applicationSettingsPath = nil
+        settingsCommandID = command.id
+        settingsPage = settings
+        (NSApp.delegate as? Delegate)?.showSettings()
+    }
+    func clearCommandSettings() { settingsCommandID = nil }
+
     func openApplicationCommandSettings(path: String) {
+        clearCommandSettings()
         applicationSettingsPath = path
         settingsPage = "applications"
         (NSApp.delegate as? Delegate)?.showSettings()

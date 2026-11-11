@@ -72,6 +72,13 @@ struct LauncherPage {
     var badgeTitle: (() -> String)?
     var actionWidth: CGFloat?
     var releasePreview: (() -> Void)?
+    /// Child pages can keep the command settings of their owning entry point.
+    var settingsCommandID: CommandID?
+}
+
+struct ExtensionPageSettings {
+    let command: LauncherCommandDeclaration
+    let extensionPageID: String
 }
 
 struct SettingsTitlebarContribution {
@@ -152,11 +159,13 @@ final class LauncherModuleRegistry {
     enum SettingsRegistrationError: Error, Equatable {
         case wrongPage(item: String, expected: String)
         case duplicateItem(String)
+        case invalidPageCommand(PageID)
+        case unownedExtensionSettings(page: PageID, command: CommandID)
     }
     private let commands: [LauncherModule.Command]
     private let byID: [CommandID: LauncherModule.Command]
     private let providers: [LauncherModule.Provider]
-    private let pages: [PageID: LauncherPage]
+    private let pages: [PageID: (page: LauncherPage, settings: ExtensionPageSettings)]
     let settingsCatalog: SettingsWindowCatalog
     var settings: [LauncherSettingsPage] { settingsCatalog.pages }
     private let services: [LauncherModule.Service]
@@ -175,7 +184,7 @@ final class LauncherModuleRegistry {
         commands = modules.flatMap(\.commands)
         byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.declaration.id, $0) })
         providers = modules.flatMap(\.providers)
-        pages = Dictionary(uniqueKeysWithValues: modules.flatMap(\.pages).map { ($0.id, $0) })
+        pages = try Self.registerExtensionPages(modules)
         let settingsPages = modules.flatMap(\.settings).sorted { $0.order < $1.order }
         var itemIDs: Set<String> = []
         for page in settingsPages {
@@ -197,6 +206,29 @@ final class LauncherModuleRegistry {
         searchUpdates = Publishers.MergeMany(modules.flatMap(\.searchUpdates)).eraseToAnyPublisher()
     }
 
+    private static func registerExtensionPages(_ modules: [LauncherModule]) throws
+        -> [PageID: (page: LauncherPage, settings: ExtensionPageSettings)] {
+        var registered: [PageID: (LauncherPage, ExtensionPageSettings)] = [:]
+        for module in modules {
+            let commands = module.commands.map(\.declaration)
+            let settingsIDs = Set(module.settings.map(\.id))
+            for page in module.pages {
+                let candidates = commands.filter {
+                    if let id = page.settingsCommandID { return $0.id == id }
+                    return $0.destination == .page(page.id)
+                }
+                guard candidates.count == 1, let command = candidates.first else {
+                    throw SettingsRegistrationError.invalidPageCommand(page.id)
+                }
+                guard let settings = command.settingsPage, settingsIDs.contains(settings) else {
+                    throw SettingsRegistrationError.unownedExtensionSettings(page: page.id, command: command.id)
+                }
+                registered[page.id] = (page, ExtensionPageSettings(command: command, extensionPageID: settings))
+            }
+        }
+        return registered
+    }
+
     func launcherShown() { launcherShownHandlers.forEach { $0() } }
     func applicationFocused(_ app: NSRunningApplication) {
         guard servicesRunning else { return }
@@ -215,7 +247,12 @@ final class LauncherModuleRegistry {
     }
     func declaration(_ id: CommandID) -> LauncherCommandDeclaration? { byID[id]?.declaration }
 
-    func page(_ id: PageID) -> LauncherPage? { pages[id] }
+    func page(_ id: PageID) -> LauncherPage? { pages[id]?.page }
+    func extensionSettings(for page: PageID) -> ExtensionPageSettings? { pages[page]?.settings }
+
+    func commands(inSettingsPage page: String) -> [LauncherCommandDeclaration] {
+        commands.map(\.declaration).filter { $0.settingsPage == page }
+    }
 
     private func provider(for entry: Entry) -> LauncherModule.Provider? {
         providers.first { $0.namespace.contains(entry.commandID) }

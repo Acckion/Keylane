@@ -434,9 +434,10 @@ struct Launcher: View {
         }.padding(.horizontal, VisualStyle.launcherEdgeInset).padding(.bottom, VisualStyle.launcherEdgeInset)
     }
     private func expandingControl(application: Bool) -> some View {
-        let secondary = page?.badge != nil
-        let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
-        let badgeSymbol = page?.badge?.symbol ?? ""
+        let extensionSettings = currentExtensionSettings
+        let secondary = extensionSettings != nil
+        let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? extensionSettings?.command.title ?? ""
+        let badgeSymbol = page?.badge?.symbol ?? extensionSettings?.command.symbol ?? "gearshape"
         let applicationWidth: CGFloat = secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36
         let actionWidth: CGFloat = page?.actionWidth ?? 196
         let open = application ? appMenu : actions
@@ -449,7 +450,7 @@ struct Launcher: View {
                     .frame(width: 345, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
             } else if application && secondary {
-                NativeHoverButton(title: "打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
+                NativeHoverButton(title: "打开扩展菜单", action: { toggleMenu(application: true) }) {
                     SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol)
                 }.frame(width: applicationWidth, height: 36).transition(.opacity)
             } else if application {
@@ -470,7 +471,21 @@ struct Launcher: View {
     }
     private typealias MenuAction = LauncherAction
     private var selectedEntry: Entry? { let results = rows; return results.indices.contains(selection) ? results[selection] : nil }
+    private var currentExtensionSettings: ExtensionPageSettings? {
+        model.launcherModules?.extensionSettings(for: model.pageID)
+    }
+
     private func menuItems(applicationMenu: Bool) -> [MenuAction] {
+        if applicationMenu, let settings = currentExtensionSettings {
+            return [
+                MenuAction(id: "page-command-settings", title: "命令设置", icon: "keyboard") {
+                    model.openCommandSettings(settings.command)
+                },
+                MenuAction(id: "page-extension-settings", title: "扩展设置", icon: "gearshape") {
+                    model.openSettings(page: settings.extensionPageID)
+                }
+            ]
+        }
         if applicationMenu {
             return [
                 MenuAction(id: "about", title: "关于 Keylane", icon: "app.badge", perform: { model.openSettings(page: "about") }),
@@ -523,7 +538,9 @@ struct Launcher: View {
 
     private func menuPanel(applicationMenu: Bool, items: [MenuAction]) -> some View {
         let title: String
-        if applicationMenu {
+        if applicationMenu, let settings = currentExtensionSettings {
+            title = model.launcherModules?.settingsCatalog.page(settings.extensionPageID)?.title ?? settings.command.title
+        } else if applicationMenu {
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版"
             title = "Keylane " + version
         } else {

@@ -133,3 +133,31 @@ extension CommandSettingsEntry {
                   icon: icon, perform: perform, help: help, menu: menu, renderRevision: renderRevision)
     }
 }
+
+
+/// Used for focused command settings and modules with command-level preferences.
+struct ExtensionCommandPreferences: View {
+    let model: Model
+    let commands: [LauncherCommandDeclaration]
+    @StateObject private var observation: ViewObservation
+
+    init(model: Model, commands: [LauncherCommandDeclaration]) {
+        self.model = model
+        self.commands = commands
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$bindings)
+        ]))
+    }
+
+    var body: some View {
+        SettingsPageSections {
+            SettingsSectionTitle(title: "命令")
+            CommandSettingsList(items: commands, id: \.id) { command in
+                CommandSettingsEntry(title: command.title, model: model, commandID: command.id) {
+                    Image(systemName: command.symbol).font(VisualStyle.actionSymbol)
+                }
+            }
+        }
+    }
+}

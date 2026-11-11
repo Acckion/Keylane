@@ -5,10 +5,11 @@ import SwiftUI
 
 enum UtilityLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        [contacts(model.contacts), dictionary(model), emoji(model), shortcuts(model)]
+        [contacts(model), dictionary(model), emoji(model), shortcuts(model)]
     }
 
-    private static func contacts(_ controller: ContactsController) -> LauncherModule {
+    private static func contacts(_ model: Model) -> LauncherModule {
+        let controller = model.contacts
         let pageID = PageID(rawValue: "Contacts")
         let selectedContact = controller.$visible.combineLatest(controller.$selectedID)
             .map { results, id in results.first { $0.id == id } }
@@ -34,8 +35,11 @@ enum UtilityLauncherModules {
         page.resume = controller.start
         return .init(id: .init(rawValue: "keylane.contacts"), commands: [
             command("contacts", "搜索联系人", "系统通讯录", "person.crop.circle",
-                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID))
-        ], pages: [page])
+                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID), settings: "contacts")
+        ], pages: [page], settings: [
+            BuiltinLauncherModules.commandOnlySettingsPage(model, "contacts", "联系人", "person.crop.circle",
+                                                          "查找系统通讯录中的联系人。", 61)
+        ])
     }
 
     private static func contactActions(_ controller: ContactsController) -> [LauncherAction] {
@@ -95,8 +99,11 @@ enum UtilityLauncherModules {
         }
         return .init(id: .init(rawValue: "keylane.dictionary"), commands: [
             command("dictionary", "查询词典", "查找词语释义", "book.closed",
-                    ["Dictionary", "Define Word", "字典", "查词"], destination: .page(pageID))
-        ], providers: [provider], pages: [page])
+                    ["Dictionary", "Define Word", "字典", "查词"], destination: .page(pageID), settings: "dictionary")
+        ], providers: [provider], pages: [page], settings: [
+            BuiltinLauncherModules.commandOnlySettingsPage(model, "dictionary", "词典", "book.closed",
+                                                          "查找系统词典中的释义。", 62)
+        ])
     }
 
     private static func dictionaryTerm(_ query: String) -> String? {
@@ -171,8 +178,11 @@ enum UtilityLauncherModules {
         return .init(id: .init(rawValue: "keylane.emoji"), commands: [
             command("emoji-symbols", EmojiCatalog.label("Emoji 与符号", "Search Emoji & Symbols"),
                     EmojiCatalog.label("搜索并插入表情与符号", "Search and insert emoji and symbols"),
-                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID))
-        ], pages: [page])
+                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID), settings: "emoji")
+        ], pages: [page], settings: [
+            BuiltinLauncherModules.commandOnlySettingsPage(model, "emoji", title, "face.smiling",
+                                                          EmojiCatalog.label("搜索并插入表情与符号。", "Search and insert emoji and symbols."), 64)
+        ])
     }
 
     private static func emojiPasteTitle() -> String {
