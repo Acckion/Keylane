@@ -395,10 +395,15 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func updateLauncherGeometry() {
         guard window != nil else { return }
-        let size = NSSize(width: 760 * model.interfaceScale, height: model.launcherHeight * model.interfaceScale)
+        let backingScale = max(1, window.backingScaleFactor)
+        // Align the requested size before comparing it with AppKit's frame.
+        // A value like 760 * 1.1 can otherwise round up by an entire point.
+        let size = NSSize(
+            width: (760 * model.interfaceScale * backingScale).rounded() / backingScale,
+            height: (model.launcherHeight * model.interfaceScale * backingScale).rounded() / backingScale
+        )
         let current = window.frame.size
-        // AppKit can round a requested frame to the backing pixel grid.
-        let tolerance = 1 / max(1, window.backingScaleFactor)
+        let tolerance = 1 / backingScale
         guard abs(current.width - size.width) >= tolerance || abs(current.height - size.height) >= tolerance else { return }
         var frame = window.frame
         frame.origin.x += (frame.width - size.width) / 2
