@@ -2,7 +2,7 @@ import AppKit
 import Contacts
 import KeylaneCore
 
-let shortcutController = SystemShortcutsController()
+let shortcutController = SystemShortcutsController(loadsIcons: false)
 func wait(_ condition: () -> Bool) {
     let deadline = Date().addingTimeInterval(20)
     while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.04)) }

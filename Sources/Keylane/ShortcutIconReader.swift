@@ -6,9 +6,13 @@ import ImageIO
 enum ShortcutIconReader {
     static let bundleIdentifier = "com.apple.shortcuts"
 
-    static func permission(prompt: Bool) -> OSStatus {
+    static func requestPermissionIfNeeded() -> OSStatus {
         let target = NSAppleEventDescriptor(bundleIdentifier: bundleIdentifier)
-        return AEDeterminePermissionToAutomateTarget(target.aeDesc, code("core"), code("getd"), prompt)
+        let eventClass = code("core")
+        let eventID = code("getd")
+        let permission = AEDeterminePermissionToAutomateTarget(target.aeDesc, eventClass, eventID, false)
+        guard permission == errAEEventWouldRequireUserConsent else { return permission }
+        return AEDeterminePermissionToAutomateTarget(target.aeDesc, eventClass, eventID, true)
     }
 
     static func image(id: String) throws -> CGImage? {

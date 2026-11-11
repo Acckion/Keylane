@@ -36,19 +36,20 @@ final class SystemShortcutsController: ObservableObject {
     @Published private(set) var runningID: String?
     @Published private(set) var message = ""
     @Published private(set) var icons: [String: NSImage] = [:]
-    @Published private(set) var iconAccess: IconAccess = .inactive
-    enum IconAccess { case inactive, loading, allowed, denied, unavailable }
+    private var iconAccess: IconAccess = .inactive
+    private enum IconAccess { case inactive, loading, allowed, denied, unavailable }
     @Published var disabledIDs: Set<String> {
         didSet { UserDefaults.standard.set(Array(disabledIDs), forKey: "systemShortcuts.disabled") }
     }
     private let catalogQueue = DispatchQueue(label: "org.keylane.shortcuts.catalog", qos: .utility)
     private let runQueue = DispatchQueue(label: "org.keylane.shortcuts.run", qos: .userInitiated)
     private let iconQueue = DispatchQueue(label: "org.keylane.shortcuts.icons", qos: .utility)
-    private let iconAccessKey = "systemShortcuts.useNativeIcons"
+    private let loadsIcons: Bool
     private var lastRefresh = Date.distantPast
     var onRunFailure: ((String) -> Void)?
 
-    init() {
+    init(loadsIcons: Bool = true) {
+        self.loadsIcons = loadsIcons
         disabledIDs = Set(UserDefaults.standard.stringArray(forKey: "systemShortcuts.disabled") ?? [])
     }
 
@@ -79,17 +80,16 @@ final class SystemShortcutsController: ObservableObject {
         return icons[String(commandID.dropFirst("shortcut:".count))]
     }
 
-    func refreshIcons(force: Bool = false, requestAccess: Bool = false) {
-        guard iconAccess != .loading, !entries.isEmpty,
-              requestAccess || UserDefaults.standard.bool(forKey: iconAccessKey) else { return }
+    private func refreshIcons(force: Bool) {
+        guard loadsIcons, iconAccess != .loading, !entries.isEmpty else { return }
         let ids = entries.map(\.id)
-        guard force || requestAccess || (iconAccess == .allowed && ids.contains(where: { icons[$0] == nil })) || iconAccess == .inactive else { return }
+        guard force || iconAccess == .inactive || (iconAccess == .allowed && Set(ids) != Set(icons.keys)) else { return }
         iconAccess = .loading
 
         let load: () -> Void = { [weak self] in
             guard let self else { return }
             self.iconQueue.async { [weak self] in
-                let permission = ShortcutIconReader.permission(prompt: requestAccess)
+                let permission = ShortcutIconReader.requestPermissionIfNeeded()
                 guard permission == noErr else {
                     DispatchQueue.main.async {
                         self?.icons = [:]
@@ -115,12 +115,12 @@ final class SystemShortcutsController: ObservableObject {
                         self.iconAccess = .denied
                         return
                     }
-                    UserDefaults.standard.set(true, forKey: self.iconAccessKey)
                     let currentIDs = Set(self.entries.map(\.id))
                     self.icons = result.filter { currentIDs.contains($0.key) }.mapValues {
                         NSImage(cgImage: $0, size: .zero)
                     }
                     self.iconAccess = self.icons.isEmpty ? .unavailable : .allowed
+                    UtilityVerification.record("shortcut-icons", count: self.icons.count)
                 }
             }
         }
