@@ -31,8 +31,13 @@ struct SettingsPageHeader: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            SettingsIcon(symbol: symbol, large: true)
-                .padding(.bottom, 4)
+            Group {
+                if symbol == "calendar" {
+                    CalendarSettingsIcon()
+                } else {
+                    SettingsIcon(symbol: symbol, large: true)
+                }
+            }.padding(.bottom, 4)
             Text(title).font(.system(size: 24, weight: .semibold))
             Text(subtitle)
                 .font(.system(size: 13))
@@ -85,4 +90,38 @@ struct SettingsPicker<Selection: Hashable, Options: View>: View {
         }
         .frame(maxWidth: .infinity)
     }
+}
+
+/// Ordinary rows have a 46pt minimum. Taller content gets room to fit.
+/// Dividers occupy only their one-pixel line; groups add no vertical padding.
+struct SettingsRowsLayout: Layout {
+    static let rowHeight: CGFloat = 46
+    private func height(_ view: LayoutSubview, width: CGFloat?) -> CGFloat {
+        let contentHeight = view.sizeThatFits(ProposedViewSize(width: width, height: nil)).height
+        if contentHeight <= 1 { return contentHeight }
+        return max(Self.rowHeight, contentHeight + 16)
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 400, height: subviews.reduce(0) { $0 + height($1, width: proposal.width) })
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for view in subviews {
+            let h = height(view, width: bounds.width)
+            view.place(at: CGPoint(x: bounds.minX, y: y + h / 2), anchor: .leading, proposal: ProposedViewSize(width: bounds.width, height: h))
+            y += h
+        }
+    }
+}
+struct SettingsRows<Content: View>: View {
+    let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var body: some View {
+        SettingsRowsLayout { content }.padding(.horizontal, 18)
+    }
+}
+struct SettingsGroup<Content: View>: View {
+    let content: Content
+    init(@ViewBuilder content: () -> Content) { self.content = content() }
+    var body: some View { SettingsRows { content }.modifier(SettingsSurface()) }
 }

@@ -16,7 +16,11 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     resources = app / 'Contents/Resources'
     resources.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(root / 'LICENSE', resources / 'LICENSE')
-    metadata = dict(CFBundleExecutable='Keylane', CFBundleIdentifier='org.keylane.launcher', CFBundleName='Keylane', CFBundlePackageType='APPL', CFBundleShortVersionString=version['version'], CFBundleVersion=str(version['build']), LSMinimumSystemVersion='26.0', LSUIElement=True, NSAppleEventsUsageDescription='读取你在 Finder 中选择的文件，用于你主动打开的询问文件功能。')
+    for name in ('EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
+        shutil.copyfile(root / 'Resources' / name, resources / name)
+    metadata = dict(CFBundleExecutable='Keylane', CFBundleIdentifier='org.keylane.launcher', CFBundleName='Keylane', CFBundlePackageType='APPL', CFBundleShortVersionString=version['version'], CFBundleVersion=str(version['build']), LSMinimumSystemVersion='26.0', LSUIElement=True,
+                    NSContactsUsageDescription='在 Keylane 中查找联系人并复制电话号码和邮箱。',
+                    NSCalendarsFullAccessUsageDescription='读取系统日历并展示日程摘要。', NSAppleEventsUsageDescription='读取你在 Finder 中选择的文件，用于你主动打开的询问文件功能。')
     icon_metadata = pathlib.Path(directory) / 'IconInfo.plist'
     subprocess.run([
         'xcrun', 'actool', '--compile', str(resources), '--platform', 'macosx',

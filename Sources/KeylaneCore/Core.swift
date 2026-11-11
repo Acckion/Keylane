@@ -54,20 +54,116 @@ public enum SearchRanker {
 
 public enum Calculator {
     public static func evaluate(_ input: String) -> Double? {
-        var parser = Parser(chars: Array(input.filter { !$0.isWhitespace })); guard !parser.chars.isEmpty, parser.chars.count < 512 else { return nil }
-        guard let value = parser.expression(), parser.i == parser.chars.count, value.isFinite else { return nil }; return value
+        guard input.utf16.count <= 512 else { return nil }
+        let normalized = input.folding(options: .widthInsensitive, locale: .current)
+            .replacingOccurrences(of: "×", with: "*")
+            .replacingOccurrences(of: "÷", with: "/")
+            .replacingOccurrences(of: "−", with: "-")
+        var parser = Parser(chars: Array(normalized.lowercased()))
+        parser.skipSpaces()
+        _ = parser.consume("=")
+        guard let value = parser.expression(), value.isFinite else { return nil }
+        parser.skipSpaces()
+        return parser.index == parser.chars.count ? value : nil
     }
+
+    public static func isExpression(_ input: String) -> Bool {
+        let text = input.folding(options: .widthInsensitive, locale: .current)
+        return text.first == "=" || text.contains(where: { "+-−*/×÷^%()".contains($0) })
+    }
+
     private struct Parser {
-        let chars: [Character]; var i = 0; var depth = 0
-        mutating func consume(_ c: Character) -> Bool { if i < chars.count, chars[i] == c { i += 1; return true }; return false }
-        mutating func expression() -> Double? { guard var x = term() else { return nil }; while i < chars.count { if consume("+") { guard let y = term() else { return nil }; x += y } else if consume("-") { guard let y = term() else { return nil }; x -= y } else { break } }; return x }
-        mutating func term() -> Double? { guard var x = factor() else { return nil }; while i < chars.count { if consume("*") { guard let y = factor() else { return nil }; x *= y } else if consume("/") { guard let y = factor(), y != 0 else { return nil }; x /= y } else { break } }; return x }
-        mutating func factor() -> Double? {
-            depth += 1; defer { depth -= 1 }; guard depth < 64 else { return nil }
-            if consume("+") { return factor() }; if consume("-") { return factor().map { -$0 } }
-            if consume("(") { guard let v = expression(), consume(")") else { return nil }; return v }
-            let start = i; while i < chars.count && (chars[i].isNumber || chars[i] == ".") { i += 1 }
-            guard i > start else { return nil }; return Double(String(chars[start..<i]))
+        let chars: [Character]
+        var index = 0
+        var depth = 0
+
+        mutating func skipSpaces() {
+            while index < chars.count && chars[index].isWhitespace { index += 1 }
+        }
+
+        mutating func consume(_ character: Character) -> Bool {
+            skipSpaces()
+            guard index < chars.count, chars[index] == character else { return false }
+            index += 1
+            return true
+        }
+
+        mutating func expression() -> Double? {
+            guard var value = product() else { return nil }
+            while true {
+                if consume("+") {
+                    guard let rhs = product() else { return nil }
+                    value += rhs
+                } else if consume("-") {
+                    guard let rhs = product() else { return nil }
+                    value -= rhs
+                } else { return value }
+            }
+        }
+
+        mutating func product() -> Double? {
+            guard var value = unary() else { return nil }
+            while true {
+                if consume("*") {
+                    guard let rhs = unary() else { return nil }
+                    value *= rhs
+                } else if consume("/") {
+                    guard let rhs = unary(), rhs != 0 else { return nil }
+                    value /= rhs
+                } else { return value }
+            }
+        }
+
+        mutating func unary() -> Double? {
+            depth += 1
+            defer { depth -= 1 }
+            guard depth < 64 else { return nil }
+            if consume("+") { return unary() }
+            if consume("-") { return unary().map { -$0 } }
+            guard var value = atom() else { return nil }
+            if consume("%") { value /= 100 }
+            if consume("^") {
+                guard let rhs = unary() else { return nil }
+                value = pow(value, rhs)
+            }
+            return value.isFinite ? value : nil
+        }
+
+        mutating func atom() -> Double? {
+            if consume("(") {
+                guard let value = expression(), consume(")") else { return nil }
+                return value
+            }
+            skipSpaces()
+            let start = index
+            while index < chars.count && chars[index].isLetter { index += 1 }
+            if index > start {
+                let name = String(chars[start..<index])
+                switch name {
+                case "pi", "π": return .pi
+                case "e": return exp(1)
+                default:
+                    guard consume("("), let x = expression(), consume(")") else { return nil }
+                    switch name {
+                    case "sqrt": return sqrt(x)
+                    case "abs": return abs(x)
+                    case "ln": return log(x)
+                    case "log": return log10(x)
+                    case "sin": return sin(x)
+                    case "cos": return cos(x)
+                    case "tan": return tan(x)
+                    default: return nil
+                    }
+                }
+            }
+            while index < chars.count && (chars[index].isASCII && chars[index].isNumber || chars[index] == ".") { index += 1 }
+            guard index > start else { return nil }
+            if index < chars.count, chars[index] == "e" {
+                index += 1
+                if index < chars.count, chars[index] == "+" || chars[index] == "-" { index += 1 }
+                while index < chars.count && chars[index].isASCII && chars[index].isNumber { index += 1 }
+            }
+            return Double(String(chars[start..<index]))
         }
     }
 }
