@@ -22,10 +22,17 @@ let module = LauncherModule(
     services: [.init(start: { starts += 1 }, stop: { stops += 1 })],
     searchUpdates: [updates.eraseToAnyPublisher()]
 )
-let registry = try LauncherModuleRegistry(modules: [module])
+var shortcutEnabled = true
+let registry = try LauncherModuleRegistry(modules: [module], commandEnabled: { _ in shortcutEnabled })
+precondition(registry.shortcutCommandGroups.map(\.id) == [moduleID])
+precondition(registry.shortcutCommandGroups.first?.commands.map(\.declaration.id) == [commandID])
 precondition(starts == 0 && views == 0)
 let input = LauncherCommandSearch.Input(query: "clipboard", page: PageID(rawValue: "Commands"),
                                        aliases: ["clipboard": "clipboard"], favorites: ["clipboard"], usage: ["clipboard": 3])
+shortcutEnabled = false
+precondition(registry.candidates(for: input).isEmpty)
+precondition(registry.resolve(commandID, origin: .shortcut, navigate: { _ in }) == nil)
+shortcutEnabled = true
 let search = LauncherCommandSearch()
 let change = registry.searchUpdates.sink { search.invalidate() }
 precondition(search.results(for: input, registry: registry).map(\.id) == ["clipboard"])

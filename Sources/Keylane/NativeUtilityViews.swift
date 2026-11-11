@@ -40,18 +40,24 @@ struct SystemShortcutsPreferences: View {
                 CommandSettingsList(items: controller.entries.filter {
                     filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter)
                 }, id: \.id, emptyMessage: "没有匹配的快捷指令") { entry in
-                    CommandSettingsEntry(
-                        title: entry.name, model: model, commandID: .init(rawValue: entry.commandID),
-                        isEnabled: Binding(get: { !controller.disabledIDs.contains(entry.id) }, set: { enabled in
-                            if enabled { controller.disabledIDs.remove(entry.id) }
-                            else { controller.disabledIDs.insert(entry.id) }
-                        }),
-                        perform: { model.runCommand(.init(rawValue: entry.commandID), origin: .menu) },
-                        icon: { ShortcutArtwork(image: controller.icons[entry.id]) }
-                    )
+                    entry.commandSettingsEntry(model: model, controller: controller)
                 }
             }
         }.onAppear { controller.refresh(force: true) }
+    }
+}
+
+extension SystemShortcut {
+    func commandSettingsEntry(model: Model, controller: SystemShortcutsController) -> CommandSettingsEntry<ShortcutArtwork> {
+        CommandSettingsEntry(
+            title: name, model: model, commandID: .init(rawValue: commandID),
+            isEnabled: Binding(get: { !controller.disabledIDs.contains(id) }, set: { enabled in
+                if enabled { controller.disabledIDs.remove(id) }
+                else { controller.disabledIDs.insert(id) }
+            }),
+            perform: { model.runCommand(.init(rawValue: commandID), origin: .menu) },
+            icon: { ShortcutArtwork(image: controller.icons[id]) }
+        )
     }
 }
 

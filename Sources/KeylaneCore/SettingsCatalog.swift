@@ -15,6 +15,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let windowMode = SettingsItem(id: "window-mode", page: "general", title: "窗口模式与紧凑收藏", keywords: "紧凑 展开 收藏 compact expanded favorites")
     public static let windowPosition = SettingsItem(id: "position", page: "general", title: "窗口位置", keywords: "屏幕 显示器 居中 记住 position screen")
     public static let keyboard = SettingsItem(id: "keyboard", page: "general", title: "Keylane 热键与键盘", keywords: "唤起 导航 修饰键 hyperkey hotkey keyboard")
+    public static let hotkeys = SettingsItem(id: "grouped-hotkeys", page: "hotkeys", title: "快捷键", keywords: "扩展 分组 别名 hotkeys shortcuts aliases")
     public static let login = SettingsItem(id: "login", page: "general", title: "登录时启动", keywords: "开机 自启动 startup login")
     public static let glass = SettingsItem(id: "glass", page: "general", title: "液态玻璃与辅助功能", keywords: "透明度 动画 对比度 glass transparency motion accessibility")
     public static let fileSearchScope = SettingsItem(id: "file-search-scope", page: "files", title: "文件搜索范围", keywords: "文件 Spotlight 索引 file search index scope")
@@ -45,6 +46,7 @@ public struct SettingsItem: Identifiable, Equatable {
         windowMode,
         windowPosition,
         keyboard,
+        hotkeys,
         login,
         glass,
         applicationScopes,

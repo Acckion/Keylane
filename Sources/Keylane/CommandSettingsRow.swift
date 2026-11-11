@@ -22,13 +22,19 @@ struct CommandSettingsAction: Identifiable {
     let perform: () -> Void
 }
 
+private enum CommandSettingsColumns {
+    static let spacing: CGFloat = 10
+    static let aliasWidth: CGFloat = 78
+    static let shortcutWidth: CGFloat = 112
+}
+
 private struct CommandSettingsRow<Icon: View>: View {
     let entry: CommandSettingsEntry<Icon>
     @FocusState private var aliasFocused: Bool
     @State private var aliasHovered = false
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: CommandSettingsColumns.spacing) {
             entry.icon().frame(width: 24, height: 24).accessibilityHidden(true)
             Group {
                 if let perform = entry.perform {
@@ -47,14 +53,14 @@ private struct CommandSettingsRow<Icon: View>: View {
                 .textFieldStyle(.plain)
                 .focused($aliasFocused)
                 .padding(.horizontal, 9).padding(.vertical, 5)
-                .frame(width: 78)
+                .frame(width: CommandSettingsColumns.aliasWidth)
                 .background(.primary.opacity(aliasFocused || aliasHovered ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 8))
                 .contentShape(RoundedRectangle(cornerRadius: 8))
                 .onHover { aliasHovered = $0 }
                 .onTapGesture { aliasFocused = true }
                 .accessibilityLabel("\(entry.title) 搜索别名")
             ShortcutRecorder(shortcut: entry.shortcut, title: entry.title, icon: AnyView(entry.icon()), changed: entry.setShortcut)
-                .frame(width: 112, alignment: .leading)
+                .frame(width: CommandSettingsColumns.shortcutWidth, alignment: .leading)
             if let isEnabled = entry.isEnabled {
                 checkbox(isEnabled)
             } else {
@@ -76,11 +82,28 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
     let items: [Item]
     let id: KeyPath<Item, ID>
     var emptyMessage = "暂无命令"
+    var showsColumns = false
+    var showsBackground = true
     let entry: (Item) -> CommandSettingsEntry<Icon>
 
     var body: some View {
+        if showsBackground { rows.modifier(SettingsSurface()) }
+        else { rows }
+    }
+
+    private var rows: some View {
         let lastID = items.last.map { $0[keyPath: id] }
-        LazyVStack(spacing: 0) {
+        return LazyVStack(spacing: 0) {
+            if showsColumns, !items.isEmpty {
+                HStack(spacing: CommandSettingsColumns.spacing) {
+                    Text("名称").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("别名").frame(width: CommandSettingsColumns.aliasWidth, alignment: .leading)
+                    Text("快捷键").frame(width: CommandSettingsColumns.shortcutWidth, alignment: .leading)
+                    Color.clear.frame(width: 14, height: 1)
+                }.font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                Divider().opacity(0.4).padding(.horizontal, 14)
+            }
             if items.isEmpty {
                 Text(emptyMessage)
                     .foregroundStyle(.secondary)
@@ -93,7 +116,6 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
                 else { row }
             }
         }
-        .modifier(SettingsSurface())
     }
 }
 

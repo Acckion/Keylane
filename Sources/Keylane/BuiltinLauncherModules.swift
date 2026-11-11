@@ -17,11 +17,12 @@ enum BuiltinLauncherModules {
                                 settings: String? = nil,
                                 available: @escaping () -> Bool = { true },
                                 dynamicDetail: (() -> String)? = nil,
+                                settingsEnabled: Binding<Bool>? = nil,
                                 execute: @escaping (LauncherCommandOrigin) -> Void = { _ in }) -> LauncherModule.Command {
         LauncherModule.Command(
             declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
                                keywords: keywords, destination: destination, settingsPage: settings),
-            detail: dynamicDetail, available: available, execute: execute
+            detail: dynamicDetail, settingsEnabled: settingsEnabled, available: available, execute: execute
         )
     }
 
@@ -30,6 +31,9 @@ enum BuiltinLauncherModules {
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general")],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
+                         settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 5) {
+                             ShortcutSettingsPreferences(model: $0)
+                         },
                          settingsPage(model, "menu-bar", "菜单栏", "menubar.rectangle", "选择各模块在菜单栏中显示的项目。", 70) {
                              MenuBarPreferences(registry: $0.menuBar)
                          },
@@ -214,7 +218,8 @@ enum BuiltinLauncherModules {
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
                     ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard",
-                    available: { controller.historyCommandEnabled })
+                    available: { controller.historyCommandEnabled },
+                    settingsEnabled: Binding(get: { controller.historyCommandEnabled }, set: { controller.historyCommandEnabled = $0 }))
         ], pages: [page], settings: [
             settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: .init(
                 title: SettingsItem.clipboardCapture.title,

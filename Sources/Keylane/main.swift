@@ -45,6 +45,13 @@ final class Model: ObservableObject {
     @Published var applicationHotkeyAction = UserDefaults.standard.string(forKey: "applicationHotkeyAction") ?? "activate" { didSet { UserDefaults.standard.set(applicationHotkeyAction, forKey: "applicationHotkeyAction") } }
     @Published var aliases = UserDefaults.standard.dictionary(forKey: "aliases") as? [String:String] ?? [:]
     @Published var usage = UserDefaults.standard.dictionary(forKey: "usage") as? [String:Int] ?? [:]
+    @Published var disabledCommands = Set(UserDefaults.standard.stringArray(forKey: "disabledLauncherCommands") ?? []) {
+        didSet {
+            UserDefaults.standard.set(Array(disabledCommands), forKey: "disabledLauncherCommands")
+            commandSearch.invalidate()
+            rootSearchUpdates.send()
+        }
+    }
     @Published var bindings: [String:Shortcut] = (UserDefaults.standard.data(forKey: "shortcuts").flatMap { try? JSONDecoder().decode([String:Shortcut].self, from: $0) }) ?? ["launcher": .launcher]
     @Published var navigation = UserDefaults.standard.string(forKey: "navigation") ?? "arrows" { didSet { UserDefaults.standard.set(navigation, forKey: "navigation") } }
     @Published var doubleTap = UserDefaults.standard.string(forKey: "doubleTap") ?? "off"
@@ -76,7 +83,11 @@ final class Model: ObservableObject {
     @Published var apps: [URL] = []
     private let commandSearch = LauncherCommandSearch()
     private(set) lazy var launcherModules: LauncherModuleRegistry? = {
-        do { return try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) }
+        do {
+            return try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) { [weak self] id in
+                self?.disabledCommands.contains(id.rawValue) == false
+            }
+        }
         catch {
             NSLog("Keylane: invalid built-in module catalog: %@", String(describing: error))
             return nil
