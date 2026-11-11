@@ -233,8 +233,11 @@ enum ScriptCommandsModule {
             },
             submit: controller.saveDraft, shortcutSubmit: controller.saveDraft,
             primaryTitle: { "创建脚本" },
-            actions: { [.init(id: "save-script", title: "创建脚本", icon: "plus.square",
-                              keys: ["⌘", "↩"], perform: controller.saveDraft)] }
+            primaryEnabled: { controller.canSaveDraft },
+            updates: Publishers.Merge(
+                ViewObservation.changes(controller.$draft.map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.removeDuplicates()),
+                ViewObservation.changes(controller.$enabled)
+            ).eraseToAnyPublisher()
         )
         return .init(id: .init(rawValue: "keylane.script-commands"), commands: [
             .init(declaration: .init(id: .init(rawValue: "manage-script-commands"), title: "管理脚本命令",

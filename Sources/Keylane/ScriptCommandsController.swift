@@ -107,8 +107,12 @@ final class ScriptCommandsController: ObservableObject {
         draftChoiceText.remove(at: index)
     }
 
+    var canSaveDraft: Bool {
+        enabled && !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     func saveDraft() {
-        guard enabled else { return }
+        guard enabled, let window = (NSApp.delegate as? Delegate)?.window, window.attachedSheet == nil else { return }
         creationError = ""
         let name = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { creationError = "请填写命令标题。"; return }
@@ -144,8 +148,15 @@ final class ScriptCommandsController: ObservableObject {
         panel.message = "保存位置会加入脚本搜索范围。"
         panel.directoryURL = folders.first.map { URL(fileURLWithPath: $0, isDirectory: true) }
         panel.canCreateDirectories = true
-        NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let selectedTemplate = template
+        let validatedMetadata = metadata
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.writeDraft(at: url, template: selectedTemplate, metadata: validatedMetadata)
+        }
+    }
+
+    private func writeDraft(at url: URL, template: ScriptTemplate, metadata: ScriptMetadata) {
         do {
             try template.create(at: url, metadata: metadata)
             let folder = url.deletingLastPathComponent().resolvingSymlinksInPath().path
