@@ -69,6 +69,27 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(try store.count(),0)
         XCTAssertThrowsError(try store.capture(.text(String(repeating:"x",count:1_048_577))))
     }
+    func testClearRecentUsesCopyTimeAndPreservesPinsAndLaterCaptures() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let end = Date()
+        let start = end.addingTimeInterval(-3_600)
+        let older = try store.capture(.text("older"), at: start.addingTimeInterval(-1))
+        let recopied = try store.capture(.text("recopied"), at: start.addingTimeInterval(-1))
+        XCTAssertEqual(try store.capture(.text("recopied"), at: start), recopied)
+        let pinned = try store.capture(.text("pinned"), at: end)
+        try store.setPinned(id: pinned, pinned: true)
+        let recentImage = try store.capture(.image(Data([137, 80, 78, 71])), at: end)
+        let asset = try XCTUnwrap(store.detail(id: recentImage)?.assetURL)
+        let later = try store.capture(.text("captured while confirming"), at: end.addingTimeInterval(1))
+
+        try store.clearRecent(since: start, through: end)
+
+        XCTAssertEqual(Set(try store.list().map(\.id)), Set([older, pinned, later]))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: asset.path))
+    }
+
     func testCountAndByteBudgetActuallyEvictOnlyUnpinnedRecords() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = try ClipboardStore(directory: directory, limits: .init(maxItems: 2, maxBytes: 20))

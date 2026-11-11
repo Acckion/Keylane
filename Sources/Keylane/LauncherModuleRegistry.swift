@@ -34,6 +34,7 @@ struct LauncherAction: Identifiable {
     let icon: String
     var keys: [String] = []
     var submenu: Submenu?
+    var image: NSImage?
     var group = 0
     var enabled = true
     var destructive = false

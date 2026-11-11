@@ -5,6 +5,23 @@ import Vision
 import UniformTypeIdentifiers
 import KeylaneCore
 
+enum ClipboardPasteFormat: String, CaseIterable {
+    case original, plainText
+    case html = "public.html"
+    case richText = "public.rtf"
+    case richTextWithAttachments = "com.apple.flat-rtfd"
+
+    var title: String {
+        switch self {
+        case .original: "原始格式"
+        case .plainText: "纯文本"
+        case .html: "HTML"
+        case .richText: "RTF"
+        case .richTextWithAttachments: "RTFD"
+        }
+    }
+}
+
 private final class ClipboardPreviewRequest: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
@@ -368,18 +385,62 @@ final class ClipboardController: ObservableObject {
     }
     private func updateLimits() { let limits = ClipboardLimits(maxItems: maxItems, retentionDays: retentionDays); mutate { $0.limits = limits; try $0.prune() } }
     func pinSelected() { guard let item = items.first(where: { $0.id == selectedID }) else { return }; mutate { try $0.setPinned(id: item.id, pinned: !item.pinned) } }
-    func removeSelected() { guard let id = selectedID else { return }; mutate { try $0.remove(id: id) } }
+    func removeSelected() { if let id = selectedID { remove(id: id) } }
+    func remove(id: String) { mutate { try $0.remove(id: id) } }
     func clear(includePinned: Bool) { mutate { try $0.clear(includePinned: includePinned); if includePinned { try $0.removeMigrationBackups() } } }
+    func clearRecent(through date: Date) {
+        mutate { try $0.clearRecent(since: date.addingTimeInterval(-3_600), through: date) }
+    }
+
+    var readyDetail: ClipDetail? {
+        guard !searching, !loadingDetail, let detail, detail.item.id == selectedID else { return nil }
+        return detail
+    }
+
+    var availablePasteFormats: [ClipboardPasteFormat] {
+        guard let detail = readyDetail else { return [] }
+        let types = Set(detail.snapshot?.formats ?? [])
+        return ClipboardPasteFormat.allCases.filter { format in
+            switch format {
+            case .original: true
+            case .plainText: !plainText(for: detail).isEmpty
+            default: types.contains(format.rawValue)
+            }
+        }
+    }
+
+    private func plainText(for detail: ClipDetail) -> String {
+        if let snapshot = detail.snapshot, !snapshot.plainText.isEmpty { return snapshot.plainText }
+        if !detail.text.isEmpty { return detail.text }
+        if !detail.ocrText.isEmpty { return detail.ocrText }
+        return detail.files.map(\.path).joined(separator: "\n")
+    }
+
     @discardableResult func copySelected(plainText: Bool = false) -> Bool {
+        copySelected(format: plainText ? .plainText : .original)
+    }
+
+    @discardableResult func copySelected(format: ClipboardPasteFormat) -> Bool {
         guard !searching, !loadingDetail else { status = "内容正在加载，请稍后重试。"; return false }
-        guard let detail, detail.item.id == selectedID else { status = "请先选择记录并等待内容加载。"; return false }
+        guard let detail = readyDetail else { status = "请先选择记录并等待内容加载。"; return false }
         var accessed: [URL] = []
         defer { accessed.forEach { $0.stopAccessingSecurityScopedResource() } }
         let objects: [NSPasteboardWriting]
-        if plainText {
-            let text = detail.snapshot.map { !$0.plainText.isEmpty ? $0.plainText : (!detail.ocrText.isEmpty ? detail.ocrText : detail.files.map(\.path).joined(separator:"\n")) } ?? (!detail.text.isEmpty ? detail.text : (!detail.ocrText.isEmpty ? detail.ocrText : detail.files.map(\.path).joined(separator:"\n")))
+        if format == .plainText {
+            let text = plainText(for: detail)
             guard !text.isEmpty else { status = "这条记录没有可复制的文字；可先识别图片文字。"; return false }
             let item = NSPasteboardItem(); item.setString(text,forType:.string); item.setString("1",forType:.init("org.keylane.clipboard.replay")); objects = [item]
+        } else if format != .original {
+            let representations = (detail.snapshot?.items ?? []).compactMap { item in
+                item.representations.first { $0.type == format.rawValue }
+            }
+            guard !representations.isEmpty else { status = "这条记录没有保存\(format.title)格式。"; return false }
+            objects = representations.enumerated().map { index, representation in
+                let item = NSPasteboardItem()
+                item.setData(representation.data, forType: .init(representation.type))
+                if index == 0 { item.setString("1", forType: .init("org.keylane.clipboard.replay")) }
+                return item
+            }
         } else if let snapshot = detail.snapshot {
             var resolved: [String:URL] = [:]
             for reference in detail.files {
@@ -416,7 +477,7 @@ final class ClipboardController: ObservableObject {
         }
         board.clearContents()
         guard board.writeObjects(objects) else { status = "无法写入剪贴板，请重试。"; return false }
-        if detail.snapshot == nil && !plainText { board.setString("1",forType:.init("org.keylane.clipboard.replay")) }; lastChange = board.changeCount
+        if detail.snapshot == nil && format == .original { board.setString("1",forType:.init("org.keylane.clipboard.replay")) }; lastChange = board.changeCount
         status = ""
         return true
     }
