@@ -1,18 +1,15 @@
 import SwiftUI
 import AppKit
+import Combine
+import KeylaneCore
 
 struct ApplicationPreferences: View {
     @ObservedObject var model: Model
     @State private var filter = ""
-    @Environment(\.colorScheme) private var scheme
-    private var applications: [URL] {
-        let paths = Set(model.apps.map(\.path)).union(model.excluded.filter { FileManager.default.fileExists(atPath: $0) })
-        return paths.map { URL(fileURLWithPath: $0) }.filter {
-            filter.isEmpty || model.appName($0).localizedCaseInsensitiveContains(filter) || $0.lastPathComponent.localizedCaseInsensitiveContains(filter)
-        }.sorted { model.appName($0).localizedStandardCompare(model.appName($1)) == .orderedAscending }
-    }
+    @State private var catalog: [ApplicationPreferenceItem] = []
+    @State private var visibleApplications: [ApplicationPreferenceItem] = []
+
     var body: some View {
-        let visibleApplications = applications
         VStack(alignment: .leading, spacing: 18) {
             surface {
                 HStack {
@@ -66,9 +63,15 @@ struct ApplicationPreferences: View {
             }.padding(.horizontal, 14).padding(.top, 10)
             surface {
                 LazyVStack(spacing: 0) {
-                    ForEach(visibleApplications, id: \.path) { url in
-                        ApplicationPreferenceRow(model: model, url: url)
-                        if url != visibleApplications.last { Divider().opacity(0.4).padding(.horizontal, 14) }
+                    ForEach(visibleApplications) { item in
+                        ApplicationPreferenceRow(
+                            model: model, item: item,
+                            alias: model.aliases[item.id] ?? "",
+                            shortcut: model.bindings["app:" + item.id],
+                            enabled: !model.excluded.contains(item.id),
+                            favorite: model.favorites.contains(item.id),
+                            showsDivider: item.id != visibleApplications.last?.id
+                        ).equatable()
                     }
                     if visibleApplications.isEmpty { Text("没有匹配的应用").foregroundStyle(.secondary).padding(24) }
                 }
@@ -79,7 +82,35 @@ struct ApplicationPreferences: View {
                 Button("刷新", systemImage: "arrow.clockwise") { model.discovery.refresh() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
             }.padding(.horizontal, 14)
         }.font(.system(size: 15))
+            .onReceive(model.$apps.combineLatest(model.$excluded)) { apps, excluded in
+                rebuildCatalog(apps: apps, excluded: excluded)
+            }
+            .onChange(of: filter) { _, value in updateFilter(value) }
     }
+
+    private func rebuildCatalog(apps: [URL], excluded: Set<String>) {
+        var paths = Set(apps.map(\.path))
+        for path in excluded where !paths.contains(path) && FileManager.default.fileExists(atPath: path) {
+            paths.insert(path)
+        }
+        let updated = paths.map { path in
+            let url = URL(fileURLWithPath: path)
+            return ApplicationPreferenceItem(id: path, url: url, title: model.appName(url), filename: url.lastPathComponent)
+        }.sorted {
+            let comparison = $0.title.localizedStandardCompare($1.title)
+            return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
+        }
+        guard updated != catalog else { return }
+        catalog = updated
+        updateFilter(filter)
+    }
+
+    private func updateFilter(_ query: String) {
+        visibleApplications = query.isEmpty ? catalog : catalog.filter {
+            $0.title.localizedCaseInsensitiveContains(query) || $0.filename.localizedCaseInsensitiveContains(query)
+        }
+    }
+
     private func caption(_ title: String, _ subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).fontWeight(.medium)
@@ -113,26 +144,48 @@ private struct ScopeRow: View {
         }.frame(height: 35).contentShape(Rectangle()).onHover { hovering = $0 }.help(path)
     }
 }
-private struct ApplicationPreferenceRow: View {
-    @ObservedObject var model: Model
+private struct ApplicationPreferenceItem: Identifiable, Equatable {
+    let id: String
     let url: URL
+    let title: String
+    let filename: String
+}
+
+private struct ApplicationPreferenceRow: View, Equatable {
+    let model: Model
+    let item: ApplicationPreferenceItem
+    let alias: String
+    let shortcut: Shortcut?
+    let enabled: Bool
+    let favorite: Bool
+    let showsDivider: Bool
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.model === rhs.model && lhs.item == rhs.item && lhs.alias == rhs.alias
+            && lhs.shortcut == rhs.shortcut && lhs.enabled == rhs.enabled
+            && lhs.favorite == rhs.favorite && lhs.showsDivider == rhs.showsDivider
+    }
+
     var body: some View {
-        CommandSettingsRow(
-            title: model.appName(url),
-            alias: Binding(get: { model.aliases[url.path] ?? "" }, set: { model.setAlias(url.path, value: $0) }),
-            shortcut: model.bindings["app:" + url.path],
-            isEnabled: Binding(get: { !model.excluded.contains(url.path) }, set: { enabled in
-                if enabled { model.excluded.remove(url.path) } else { model.excluded.insert(url.path) }
-                model.reloadCatalog()
-            }),
-            setShortcut: { model.setShortcut("app:" + url.path, value: $0) },
-            icon: { Image(nsImage: NSWorkspace.shared.icon(forFile: url.path)).resizable() }
-        )
-        .padding(.horizontal, 14)
-        .help(url.path)
-        .contextMenu {
-            Button(model.favorites.contains(url.path) ? "取消收藏" : "加入收藏") { model.toggleFavorite(url.path) }
-            Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        VStack(spacing: 0) {
+            CommandSettingsRow(
+                title: item.title,
+                alias: Binding(get: { model.aliases[item.id] ?? "" }, set: { model.setAlias(item.id, value: $0) }),
+                shortcut: shortcut,
+                isEnabled: Binding(get: { !model.excluded.contains(item.id) }, set: { value in
+                    if value { model.excluded.remove(item.id) } else { model.excluded.insert(item.id) }
+                    model.reloadCatalog()
+                }),
+                setShortcut: { model.setShortcut("app:" + item.id, value: $0) },
+                icon: { SettingsApplicationIcon(path: item.id) }
+            )
+            .padding(.horizontal, 14)
+            .help(item.id)
+            .contextMenu {
+                Button(favorite ? "取消收藏" : "加入收藏") { model.toggleFavorite(item.id) }
+                Button("在 Finder 中显示") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
+            }
+            if showsDivider { Divider().opacity(0.4).padding(.horizontal, 14) }
         }
     }
 }
