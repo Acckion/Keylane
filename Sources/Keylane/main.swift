@@ -27,8 +27,9 @@ final class Model: ObservableObject {
     @Published var windowMode = UserDefaults.standard.string(forKey: "windowMode") ?? "expanded" { didSet { UserDefaults.standard.set(windowMode, forKey: "windowMode") } }
     @Published var compactFavorites = (UserDefaults.standard.object(forKey: "compactFavorites") as? Bool) ?? true { didSet { UserDefaults.standard.set(compactFavorites, forKey: "compactFavorites") } }
     @Published var compactExpanded = false
+    let footerFeedback = LauncherFooterFeedbackPresenter()
     var interfaceScale: CGFloat { interfaceSize == "small" ? 0.9 : interfaceSize == "large" ? 1.1 : 1 }
-    var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded }
+    var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded && footerFeedback.current == nil }
     @Published var presentedLauncherHeight: CGFloat = 470
     var launcherHeight: CGFloat { isCompact ? (compactFavorites && !favorites.isEmpty ? 109 : 61) : 470 }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
@@ -145,10 +146,17 @@ final class Model: ObservableObject {
     func favoriteAction(for entry: Entry) -> LauncherAction {
         let favorite = favorites.contains(entry.id)
         return .init(id: "favorite", title: favorite ? "取消收藏" : "加入收藏", icon: favorite ? "star.fill" : "star") { [weak self] in
-            self?.toggleFavorite(entry.id)
+            self?.toggleFavorite(entry.id, showsFeedback: true)
         }
     }
-    func toggleFavorite(_ id: String) { if favorites.contains(id) { favorites.remove(id) } else { favorites.insert(id) }; UserDefaults.standard.set(Array(favorites), forKey: "favorites") }
+    func toggleFavorite(_ id: String, showsFeedback: Bool = false) {
+        let added = favorites.remove(id) == nil
+        if added { favorites.insert(id) }
+        UserDefaults.standard.set(Array(favorites), forKey: "favorites")
+        if showsFeedback {
+            (NSApp.delegate as? Delegate)?.showLauncherFeedback(added ? "已加入收藏" : "已取消收藏", style: .success)
+        }
+    }
     func openSettings(page: String? = nil) {
         applicationSettingsPath = nil
         if let page { settingsPage = page }
@@ -190,8 +198,9 @@ final class Model: ObservableObject {
 
     func resetRankingAction(for entry: Entry) -> LauncherAction {
         .init(id: "reset-ranking", title: "重置优先级", icon: "arrow.counterclockwise", group: 3) { [weak self] in
-            self?.resetUsage(for: entry.id)
-            (NSApp.delegate as? Delegate)?.toast.show("已重置「\(entry.name)」的搜索优先级。", style: .success)
+            guard let self else { return }
+            self.resetUsage(for: entry.id)
+            (NSApp.delegate as? Delegate)?.showLauncherFeedback("已重置「\(entry.name)」的搜索优先级。", style: .success)
         }
     }
     func saveNote() { do { try store?.save(KeylaneCore.Record(id: noteID, kind: "note", title: String(notes.prefix(60)), body: notes)); savedNotes = try store?.records(kind: "note") ?? [] } catch { self.error = error.localizedDescription } }
@@ -392,7 +401,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     private func showPasteFailure(_ message: String) {
         guard settingsWindow?.isKeyWindow != true else { return }
-        toast.show(message, style: .failure)
+        showLauncherFeedback(message, style: .failure)
     }
     let model = Model()
     var settingsWindow: NSWindow?
@@ -418,7 +427,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self?.model.windowActivationBehavior.apply(to: window)
         }
         installApplicationMenu(settingsTarget: self, settingsAction: #selector(openLauncherSettings))
-        window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: VisualStyle.launcherWidth, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.title = "Keylane · Developer Preview"; window.titlebarAppearsTransparent = true; window.titleVisibility = .hidden
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
         window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -453,6 +462,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.$windowMode.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$pageID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$query.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.footerFeedback.$current.map { $0 != nil }.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$compactFavorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$favorites.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
@@ -591,6 +601,14 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
     }
+    func showLauncherFeedback(_ message: String, style: ToastStyle) {
+        if let window, window.isVisible {
+            model.footerFeedback.show(message, style: style, in: window)
+        } else {
+            toast.show(message, style: style)
+        }
+    }
+
     func hideLauncher(reason: String = "command") {
         dragGuides?.cancel()
         guard window.isVisible else { return }
@@ -600,6 +618,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if model.placement == "remember" { window.saveFrame(usingName: "KeylaneLauncher") }
         launcherHiddenAt = ProcessInfo.processInfo.systemUptime
         window.orderOut(nil)
+        model.footerFeedback.clear()
         NotificationCenter.default.post(name: .launcherHidden, object: nil)
         windowDiagnostics.record("hidden:" + reason, launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
         scheduleIdleMemoryTrim()
@@ -627,7 +646,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Align the requested size before comparing it with AppKit's frame.
         // A value like 760 * 1.1 can otherwise round up by an entire point.
         let size = NSSize(
-            width: (760 * model.interfaceScale * backingScale).rounded() / backingScale,
+            width: (VisualStyle.launcherWidth * model.interfaceScale * backingScale).rounded() / backingScale,
             height: (model.launcherHeight * model.interfaceScale * backingScale).rounded() / backingScale
         )
         let start = window.frame

@@ -86,11 +86,13 @@ enum ScriptCommandsModule {
                       case .create: controller.prepareCreation()
                       case .reload:
                           controller.refresh(force: true) { count in
-                              let toast = (NSApp.delegate as? Delegate)?.toast
-                              if controller.unavailable.isEmpty {
-                                  toast?.show("已重新加载 \(count) 个脚本", style: .success)
+                              let delegate = NSApp.delegate as? Delegate
+                              if !controller.unavailable.isEmpty {
+                                  delegate?.showLauncherFeedback("已加载 \(count) 个脚本，部分文件夹无法读取", style: .failure)
+                              } else if count == 0 {
+                                  delegate?.showLauncherFeedback("未找到脚本命令", style: .success)
                               } else {
-                                  toast?.show("已加载 \(count) 个脚本，部分文件夹无法读取。", style: .failure)
+                                  delegate?.showLauncherFeedback("已重新加载 \(count) 个脚本命令", style: .success)
                               }
                           }
                       case .search: break

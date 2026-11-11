@@ -154,13 +154,14 @@ struct LauncherMenuRow<Trailing: View>: View {
 /// The same anchored surface and motion for every launcher corner menu.
 struct LauncherMenuSurface: ViewModifier {
     let open: Bool
+    var tint: Color? = nil
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: open ? 21 : 18)
         content
             .clipShape(shape)
-            .glassEffect(.regular, in: shape)
+            .glassEffect(tint.map { Glass.regular.tint($0) } ?? .regular, in: shape)
             .glassEffectTransition(.identity)
             .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: open)
     }
