@@ -7,9 +7,11 @@ import subprocess
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PIN = ROOT / '.signing-identity'
 
-def signing_identity():
+def signing_identity(*, require_developer_id=False):
     explicit = os.environ.get('KEYLANE_SIGNING_IDENTITY', '').strip()
     allow_adhoc = os.environ.get('KEYLANE_ALLOW_ADHOC') == '1'
+    if require_developer_id and explicit in ('', '-'):
+        raise SystemExit('发行构建必须指定 Developer ID Application 签名身份。')
     if explicit == '-' or (not explicit and allow_adhoc):
         if not allow_adhoc:
             raise SystemExit('临时签名会丢失升级授权；仅在明确设置 KEYLANE_ALLOW_ADHOC=1 时允许。')
@@ -24,7 +26,9 @@ def signing_identity():
         matches = [(fingerprint, name) for fingerprint, name in identities if name.startswith('Apple Development:')]
     if len(matches) != 1:
         raise SystemExit('未找到唯一且有效的固定签名身份。请设置 KEYLANE_SIGNING_IDENTITY 为证书指纹；不会自动退回临时签名。')
-    fingerprint, _ = matches[0]
+    fingerprint, name = matches[0]
+    if require_developer_id and not name.startswith('Developer ID Application:'):
+        raise SystemExit('发行构建必须使用 Developer ID Application 证书。')
     if not requested:
         temporary = PIN.with_suffix('.tmp')
         temporary.write_text(fingerprint + '\n')

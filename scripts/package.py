@@ -1,14 +1,22 @@
-import pathlib, plistlib, shutil, subprocess, sys, tempfile, zipfile
+import os
+import pathlib
+import plistlib
+import shutil
+import subprocess
+import sys
+import tempfile
 from signing import signing_identity
 from versioning import load_version
 root = pathlib.Path(__file__).resolve().parent.parent
 version = load_version()
-identity = signing_identity()
+distribution = os.environ.get('KEYLANE_DISTRIBUTION') == '1'
+identity = signing_identity(require_developer_id=distribution)
 binary = pathlib.Path(sys.argv[1])
 output = pathlib.Path(sys.argv[2]).resolve()
 output.parent.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as directory:
-    app = pathlib.Path(directory) / 'Keylane.app'
+    image_contents = pathlib.Path(directory) / 'image'
+    app = image_contents / 'Keylane.app'
     executable = app / 'Contents/MacOS/Keylane'
     executable.parent.mkdir(parents=True)
     shutil.copyfile(binary, executable)
@@ -32,9 +40,19 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
         metadata.update(plistlib.load(file))
     with (app/'Contents/Info.plist').open('wb') as file:
         plistlib.dump(metadata, file)
-    subprocess.run(['codesign','--force','--sign',identity,'--timestamp=none',str(app)],check=True)
-    subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
-    with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
-        for path in app.rglob('*'):
-            if path.is_file(): archive.write(path,path.relative_to(app.parent))
+    signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--timestamp=none']
+    subprocess.run(['codesign', '--force', '--sign', identity, *signing_options, str(app)], check=True)
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+    (image_contents / 'Applications').symlink_to('/Applications', target_is_directory=True)
+    image = pathlib.Path(directory) / 'Keylane.dmg'
+    subprocess.run([
+        'hdiutil', 'create', '-srcfolder', str(image_contents), '-volname', 'Keylane',
+        '-fs', 'HFS+', '-format', 'UDZO', str(image),
+    ], check=True)
+    if distribution:
+        subprocess.run([
+            'codesign', '--sign', identity, '--timestamp',
+            '--identifier', 'org.keylane.launcher.dmg', str(image),
+        ], check=True)
+    shutil.move(image, output)
 print(output)

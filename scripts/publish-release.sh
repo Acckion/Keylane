@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 python3 scripts/check-version.py --base-ref HEAD^ --require-bump --release-policy
 task_version="$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from versioning import load_version; print(load_version()["version"])')"
 task_tag="v$task_version"
-task_archive="Keylane-$task_version-macos-arm64.zip"
+task_archive="Keylane-$task_version-macos-arm64.dmg"
 (cd dist && sha256sum --check "$task_archive.sha256")
 task_release_state="$(mktemp)"
 trap 'rm -f "$task_release_state"' EXIT
@@ -39,13 +39,13 @@ else
 ## Build information
 
 - Apple Silicon (arm64); macOS 26 or newer.
-- Ad hoc signed, **not Apple-notarized**. This is not a Developer ID signed build.
+- Signed with Developer ID and notarized by Apple.
 - Updating may require granting system permissions again.
 - Automated tests and package checks passed; this does not certify every real-world interaction.
 - See the release pull request for validated changes and known limitations.
 - Source available under PolyForm Noncommercial 1.0.0; commercial use requires separate authorization.
 
-The ZIP includes the license. A SHA-256 checksum is provided alongside it.
+Open the DMG and drag Keylane into Applications. The app includes its license, and the release includes a SHA-256 checksum.
 NOTES
   gh release create "$task_tag" "dist/$task_archive" "dist/$task_archive.sha256" \
     --target "$GITHUB_SHA" --title "Keylane $task_tag" --draft --generate-notes --notes-file "$task_notes"
