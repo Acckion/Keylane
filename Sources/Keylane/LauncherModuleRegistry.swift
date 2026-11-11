@@ -16,6 +16,8 @@ struct Entry: Identifiable {
     var rankingKind: LauncherSearchRanking.Kind = .command
     var matchScore: Int?
     var isDirectory = false
+    var isFallback = false
+    var subtitle: String?
 }
 
 struct LauncherAction: Identifiable {
@@ -152,6 +154,7 @@ struct LauncherModule {
         var actions: ((Entry) -> [LauncherAction]?)?
         var displayDetail: ((Entry) -> String?)?
         var artwork: ((Entry) -> AnyView)?
+        var detailView: ((Entry) -> AnyView?)?
     }
 
     struct Service {
@@ -275,6 +278,8 @@ final class LauncherModuleRegistry {
     func actions(for entry: Entry) -> [LauncherAction]? { provider(for: entry)?.actions?(entry) }
     func primaryTitle(for entry: Entry) -> String? { provider(for: entry)?.primaryTitle?(entry) }
     func displayDetail(for entry: Entry) -> String? { provider(for: entry)?.displayDetail?(entry) }
+
+    func detailView(for entry: Entry) -> AnyView? { provider(for: entry)?.detailView?(entry) }
 
     func artwork(for entry: Entry) -> AnyView? { provider(for: entry)?.artwork?(entry) }
 

@@ -48,6 +48,54 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertEqual(result.output, "Hello from Keylane\n")
     }
 
+    func testRaycastMetadataRoundTripAndTypedArguments() throws {
+        let metadata = try XCTUnwrap(ScriptMetadata.parse("""
+            # @raycast.schemaVersion 1
+            # @raycast.title 搜索资料
+            # @raycast.mode fullOutput
+            # @raycast.packageName 工具
+            # @raycast.needsConfirmation true
+            # @raycast.currentDirectoryPath work
+            # @raycast.argument1 {"placeholder":"关键词","percentEncoded":true}
+            # @raycast.argument2 {"type":"password","placeholder":"密码","optional":true}
+            # @raycast.argument3 {"type":"dropdown","placeholder":"范围","data":[{"title":"全部","value":"all"}]}
+            """))
+        XCTAssertEqual(metadata.arguments.map(\.kind), [.text, .password, .dropdown])
+        XCTAssertEqual(try metadata.arguments[0].value("a +"), "a%20%2B")
+        XCTAssertThrowsError(try metadata.arguments[0].value(""))
+        XCTAssertEqual(try metadata.arguments[1].value(""), "")
+        XCTAssertThrowsError(try metadata.arguments[2].value("invalid"))
+        XCTAssertEqual(try metadata.arguments[2].value("all"), "all")
+
+        let url = folder.appendingPathComponent("generated.bash")
+        try ScriptTemplate.bash.create(at: url, metadata: metadata)
+        XCTAssertThrowsError(try ScriptTemplate.bash.create(at: url, metadata: metadata))
+        let command = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
+        XCTAssertEqual(command.metadata, metadata)
+        XCTAssertEqual(command.workingDirectory.lastPathComponent, "work")
+        let result = try ScriptRunner.run(command, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertEqual(result.status, .exited(0))
+        XCTAssertEqual(result.standardOutput, "Hello from Keylane\n")
+    }
+
+    func testInlineIntervalsAndUnsupportedPlatform() throws {
+        var metadata = ScriptMetadata()
+        metadata.mode = .inline
+        XCTAssertEqual(metadata.effectiveMode, .compact)
+        metadata.refreshTime = "1s"
+        XCTAssertEqual(metadata.refreshInterval, 10)
+        XCTAssertEqual(metadata.effectiveMode, .inline)
+        metadata.refreshTime = "2h"
+        XCTAssertEqual(metadata.refreshInterval, 7200)
+        _ = try write("windows.sh", """
+            # @raycast.schemaVersion 1
+            # @raycast.title Windows only
+            # @raycast.mode silent
+            # @raycast.platform windows
+            """)
+        XCTAssertTrue(ScriptCommand.discover(in: [folder.path]).commands.isEmpty)
+    }
+
     func testArgumentsWorkingDirectoryAndFailureOutput() throws {
         _ = try write("test.sh", """
             printf '%s\\n' "$PWD" "$#" "$1" "$2"

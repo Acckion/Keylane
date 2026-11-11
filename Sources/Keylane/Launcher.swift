@@ -409,6 +409,9 @@ struct Launcher: View {
         } content: {
             HStack(spacing: ResultListRowLayout.root.horizontalInset) {
                 HighlightedResultText(text: row.name, query: model.query).font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
+                if let subtitle = row.subtitle, !subtitle.isEmpty {
+                    Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if row.detail == "File" {
                     Text(URL(fileURLWithPath: row.id).deletingLastPathComponent().path).font(.system(size: 11))
                         .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
@@ -425,9 +428,13 @@ struct Launcher: View {
     }
     private func resultAttributeBadge(_ row: Entry, index: Int) -> some View {
         let showingShortcut = modifiers.commandHeld && index < 10
-        return Text(resultAttribute(row))
+        let custom = model.launcherModules?.detailView(for: row)
+        return Group {
+            if let custom { custom }
+            else { Text(resultAttribute(row)) }
+        }
             .font(.system(size:14,weight:.regular)).foregroundStyle(.secondary).lineLimit(1)
-            .frame(width: row.detail == SystemSettingsCatalog.resultKind ? 112 : 84, alignment: .trailing)
+            .frame(width: custom != nil ? 180 : row.detail == SystemSettingsCatalog.resultKind ? 112 : 84, alignment: .trailing)
             // Keep the original attribute in the hierarchy underneath the hint.
             .blur(radius:showingShortcut && !reduceTransparency ? 1.2 : 0)
             .overlay(alignment:.trailing) {
@@ -485,7 +492,9 @@ struct Launcher: View {
                 }.frame(width: 36, height: 36).clipShape(Circle()).transition(.opacity)
             } else {
                 HStack(spacing: 0) {
-                    NativeHoverButton(title: primaryTitle, action: { run() }) { HStack(spacing: 7) { Text(primaryTitle).lineLimit(1).truncationMode(.tail); Keycap(text: "↩") }.padding(.horizontal, 6) }.frame(maxWidth: .infinity).frame(height: 28)
+                    NativeHoverButton(title: primaryTitle, action: { run() }) { HStack(spacing: 7) { Text(primaryTitle).lineLimit(1).truncationMode(.tail)
+                        if page?.contentPlacement == .form, page?.shortcutSubmit != nil { Keycap(text: "⌘") }
+                        Keycap(text: "↩") }.padding(.horizontal, 6) }.frame(maxWidth: .infinity).frame(height: 28)
                     NativeHoverButton(title: "操作", action: { toggleMenu(application: false) }) { HStack(spacing: 7) { Text("操作"); HStack(spacing: 3) { Keycap(text: "⌘"); Keycap(text: "K") } } }.frame(maxWidth: .infinity).frame(height: 28)
                 }.font(.system(size: 13, weight: .medium)).padding(4).frame(width: actionWidth, height: 36).transition(.opacity)
             }

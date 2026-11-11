@@ -21,6 +21,7 @@ final class LauncherCommandSearch {
         let rank = LauncherSearchRanking(query: input.query, aliases: input.aliases,
                                          favorites: input.favorites, usage: input.usage, sensitivity: input.sensitivity)
         let results = candidates.compactMap { entry -> (Entry, SearchResultRank)? in
+            guard !entry.isFallback else { return nil }
             if let score = entry.matchScore {
                 return (entry, SearchResultRank(score: score, favorite: input.favorites.contains(entry.id),
                                                 uses: input.usage[entry.id, default: 0], title: entry.name, id: entry.id))
@@ -30,7 +31,8 @@ final class LauncherCommandSearch {
         }.sorted { $0.1.precedes($1.1) }.map(\.0)
 
         // File rows form one section, retaining their rank within the section.
-        let grouped = results.filter { $0.rankingKind != .file } + results.filter { $0.rankingKind == .file }
+        let grouped = results.isEmpty ? candidates.filter(\.isFallback)
+            : results.filter { $0.rankingKind != .file } + results.filter { $0.rankingKind == .file }
         cached = (input, grouped)
         return grouped
     }
