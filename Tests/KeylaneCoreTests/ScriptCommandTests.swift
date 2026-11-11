@@ -41,6 +41,15 @@ final class ScriptCommandTests: XCTestCase {
 
         let roots = [hidden.path, nested.path, folder.path]
         XCTAssertEqual(ScriptCommand.discover(in: roots).commands.map(\.title), ["explicit", "visible"])
+
+        func traversalChecks(_ paths: [String]) -> Int {
+            var count = 0
+            let catalog = ScriptCommand.discover(in: paths) { count += 1; return false }
+            XCTAssertEqual(catalog.commands.map(\.title), ["visible"])
+            return count
+        }
+        XCTAssertEqual(traversalChecks([folder.path, nested.path]), traversalChecks([folder.path]))
+
         var checks = 0
         let cancelled = ScriptCommand.discover(in: roots) {
             checks += 1
