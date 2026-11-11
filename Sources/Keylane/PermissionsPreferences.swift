@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Contacts
 import SwiftUI
 import KeylaneCore
@@ -11,6 +12,7 @@ struct PermissionsPreferences: View {
     @State private var accessibilityAllowed = false
     @State private var inputMonitoringAllowed = false
     @State private var calendarAccess = CalendarAccess.notRequested
+    @State private var cameraAccess = AVAuthorizationStatus.notDetermined
     @State private var contactsAccess = CNAuthorizationStatus.notDetermined
 
     init(model: Model, showsAdditionalPermissions: Bool = true) {
@@ -70,6 +72,10 @@ struct PermissionsPreferences: View {
                 if !model.contacts.error.isEmpty { Text(model.contacts.error).font(.caption).foregroundStyle(.secondary) }
                 if showsAdditionalPermissions {
                     Divider()
+                    permissionRow("相机", detail: "显示实时相机画面。", status: cameraStatus,
+                                  actionTitle: "管理…") { openPrivacy("Camera") }
+                        .settingsAnchor(.cameraPermission)
+                    Divider()
                     SettingsActionRow(title: "自动化", detail: "管理 Finder 和快捷指令的访问权限。",
                                       actionTitle: "打开系统设置…") { openPrivacy("Automation") }
                         .settingsAnchor(.automationPermission)
@@ -118,6 +124,16 @@ struct PermissionsPreferences: View {
             : "部分目录无法访问，请重新授权相应的文件夹。"
     }
 
+    private var cameraStatus: String {
+        switch cameraAccess {
+        case .authorized: "已允许"
+        case .denied: "已拒绝"
+        case .restricted: "系统限制"
+        case .notDetermined: "尚未申请"
+        @unknown default: "请在系统设置中查看"
+        }
+    }
+
     private var contactsStatus: String {
         switch contactsAccess {
         case .authorized: "已允许"
@@ -148,6 +164,7 @@ struct PermissionsPreferences: View {
         accessibilityAllowed = AXIsProcessTrusted()
         inputMonitoringAllowed = CGPreflightListenEventAccess()
         calendarAccess = .current
+        cameraAccess = AVCaptureDevice.authorizationStatus(for: .video)
         contactsAccess = CNContactStore.authorizationStatus(for: .contacts)
         if hasRefreshed, (accessibilityAllowed && !wasAllowed) || (inputMonitoringAllowed && !couldMonitor) {
             model.configureModifiers()

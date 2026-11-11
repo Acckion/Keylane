@@ -46,6 +46,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let accessibilityPermission = SettingsItem(id: "permission-accessibility", page: "permissions", title: "辅助功能权限", keywords: "权限 授权 粘贴 窗口 菜单 accessibility permission")
     public static let inputMonitoringPermission = SettingsItem(id: "permission-input-monitoring", page: "permissions", title: "输入监控", keywords: "权限 授权 键盘 Hyperkey input monitoring permission")
     public static let contactsPermission = SettingsItem(id: "permission-contacts", page: "permissions", title: "联系人权限", keywords: "授权 通讯录 contacts permission")
+    public static let cameraPermission = SettingsItem(id: "camera-permission", page: "permissions", title: "相机权限", keywords: "camera 摄像头 预览")
     public static let automationPermission = SettingsItem(id: "permission-automation", page: "permissions", title: "自动化权限", keywords: "授权 Finder 快捷指令 automation permission")
     public static let pasteboardPermission = SettingsItem(id: "permission-pasteboard", page: "permissions", title: "剪贴板访问", keywords: "权限 授权 读取 clipboard pasteboard permission")
     public static let fileSearchPermissions = SettingsItem(id: "permission-file-search", page: "permissions", title: "文件搜索授权", keywords: "权限 文件夹 下载 重新授权 search folders permission")
@@ -63,6 +64,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let faviconProvider = SettingsItem(id: "advanced-favicon", page: "advanced", title: "网站图标提供方", keywords: "网页 图标 favicon provider")
     public static let exportPassphrase = SettingsItem(id: "advanced-export-passphrase", page: "advanced", title: "导出口令", keywords: "加密 备份 export passphrase encryption")
     public static let scheduledExport = SettingsItem(id: "advanced-scheduled-export", page: "advanced", title: "定时导出", keywords: "自动备份 scheduled export backup")
+    public static let exportPreferences = SettingsItem(id: "advanced-preferences-export", page: "advanced", title: "导出设置", keywords: "备份 偏好 JSON export preferences settings")
     public static let exportLocalRecords = SettingsItem(id: "advanced-local-export", page: "advanced", title: "导出本地资料", keywords: "备份 JSON export local records")
     public static let systemProxy = SettingsItem(id: "advanced-system-proxy", page: "advanced", title: "使用系统代理设置", keywords: "网络 连接 system proxy settings")
     public static let additionalCertificateAuthority = SettingsItem(id: "advanced-certificate-authority", page: "advanced", title: "额外的证书颁发机构", keywords: "信任 连接 CA certificate authority crt cer pem")
@@ -106,6 +108,7 @@ public struct SettingsItem: Identifiable, Equatable {
         inputMonitoringPermission,
         calendarAccess,
         contactsPermission,
+        cameraPermission,
         automationPermission,
         folderPermissions,
         pasteboardPermission,
@@ -122,6 +125,7 @@ public struct SettingsItem: Identifiable, Equatable {
         faviconProvider,
         exportPassphrase,
         scheduledExport,
+        exportPreferences,
         exportLocalRecords,
         systemProxy,
         additionalCertificateAuthority,

@@ -14,12 +14,6 @@ APPLE_EVENTS_ENTITLEMENT = "com.apple.security.automation.apple-events"
 DEVELOPER_ID_REQUIREMENT = '-R=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
 
 
-def verify_automation_entitlement(app):
-    data = subprocess.check_output(['codesign', '-d', '--entitlements', '-', '--xml', str(app)])
-    if not data or plistlib.loads(data).get(APPLE_EVENTS_ENTITLEMENT) is not True:
-        raise SystemExit('Distribution app is missing the Apple Events entitlement')
-
-
 def verify_app(app, image, version, distribution):
     expected = {
         'Contents/MacOS/Keylane',
@@ -52,8 +46,14 @@ def verify_app(app, image, version, distribution):
         raise SystemExit(f'Filename/architecture mismatch: {architectures}')
     requirement = [DEVELOPER_ID_REQUIREMENT] if distribution else []
     subprocess.run(['codesign', '--verify', '--deep', '--strict', *requirement, str(app)], check=True)
+    entitlement_data = subprocess.check_output(
+        ['codesign', '-d', '--entitlements', '-', '--xml', str(app)], stderr=subprocess.DEVNULL)
+    entitlements = plistlib.loads(entitlement_data) if entitlement_data else {}
+    if not info.get('NSCameraUsageDescription') or entitlements.get('com.apple.security.device.camera') is not True:
+        raise SystemExit('Missing camera usage description or entitlement')
     if distribution:
-        verify_automation_entitlement(app)
+        if entitlements.get(APPLE_EVENTS_ENTITLEMENT) is not True:
+            raise SystemExit('Distribution app is missing the Apple Events entitlement')
         subprocess.run(['spctl', '--assess', '--type', 'execute', '--verbose', str(app)], check=True)
 
 
