@@ -20,6 +20,10 @@ try Data("kept".utf8).write(to:scope.appendingPathComponent("keep.log"))
 try Data("hidden".utf8).write(to:scope.appendingPathComponent(".隐藏文件.txt"))
 let suite = "org.keylane.file-integration." + UUID().uuidString
 let prefs = UserDefaults(suiteName:suite)!
+let excluded = scope.appendingPathComponent("already-excluded", isDirectory: true)
+try FileManager.default.createDirectory(at: excluded, withIntermediateDirectories: false)
+let exclusion = AutomaticFileExclusion(path: excluded.path, reason: "fixture", events: 0)
+prefs.set(try JSONEncoder().encode([exclusion]), forKey: "fileSearchAutomaticExclusions")
 defer { prefs.removePersistentDomain(forName:suite) }
 var config = FileSearchOptions(roots:[scope.path]); config.ignorePatterns = ["*.tmp"]
 let controller = FileSearchController(directory:root.appendingPathComponent("index"),preferences:prefs,defaultOptions:config,watchChanges:true)
@@ -89,6 +93,14 @@ try FileManager.default.moveItem(at: added, to: renamed)
 wait("FSEvents rename reconciles both paths") { results.map(\.url) == [renamed] }
 try FileManager.default.removeItem(at: renamed)
 wait("FSEvents deletion removes stale row") { results.isEmpty }
+let events = controller.automaticExclusions.first { $0.path == excluded.path }?.events ?? 0
+try Data("ignored event".utf8).write(to: excluded.appendingPathComponent("ignored.txt"))
+wait("FSEvents reports excluded change") {
+    (controller.automaticExclusions.first { $0.path == excluded.path }?.events ?? 0) > events
+}
+RunLoop.current.run(until: Date().addingTimeInterval(2.5))
+let untouched = try index.search("sentinel", options: controller.options)
+precondition(untouched.first?.id == sentinel, "An already excluded path must not trigger a full sweep")
 let stats = controller.stats
 precondition(stats.entries > 0 && stats.files > 0 && stats.bytes > 0)
 try FileManager.default.moveItem(at:scope,to:root.appendingPathComponent("disconnected"))

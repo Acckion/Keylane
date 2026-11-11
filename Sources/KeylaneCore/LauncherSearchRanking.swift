@@ -16,9 +16,10 @@ public struct LauncherSearchRanking {
         }
     }
 
-    private let query: String
+    private let query: SearchRanker.Query
     private let trimmedQuery: String
-    private let settingsQuery: String
+    private let settingsQuery: SearchRanker.Query
+    private let hasSettingsQuery: Bool
     private let aliases: [String: String]
     private let favorites: Set<String>
     private let usage: [String: Int]
@@ -26,9 +27,11 @@ public struct LauncherSearchRanking {
     private let rankFile: (String) -> Int
 
     public init(query: String, aliases: [String: String], favorites: Set<String>, usage: [String: Int], sensitivity: Sensitivity = .low) {
-        self.query = query
+        self.query = SearchRanker.Query(query)
         trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        settingsQuery = SystemSettingsCatalog.pageQuery(query)
+        let settingsText = SystemSettingsCatalog.pageQuery(query)
+        settingsQuery = SearchRanker.Query(settingsText)
+        hasSettingsQuery = !settingsText.isEmpty
         self.aliases = aliases
         self.favorites = favorites
         self.usage = usage
@@ -36,7 +39,8 @@ public struct LauncherSearchRanking {
         rankFile = FileSearchRules.ranker(for: query)
     }
 
-    public func match(id: String, title: String, names: [String] = [], kind: Kind = .command) -> SearchResultRank? {
+    public func match(id: String, title: String, names: [String] = [], kind: Kind = .command,
+                      prepareName: (String) -> SearchRanker.Name = SearchRanker.prepareName) -> SearchResultRank? {
         let score: Int
         switch kind {
         case .calculator:
@@ -46,13 +50,16 @@ public struct LauncherSearchRanking {
         case .command, .systemSetting:
             let alias = aliases[id] ?? ""
             let exactAlias = !alias.isEmpty && alias.localizedCaseInsensitiveCompare(trimmedQuery) == .orderedSame
-            let aliasScore = exactAlias ? 1500 : (SearchRanker.score(alias, query: query) ?? -1)
+            func match(_ name: String, _ query: SearchRanker.Query) -> Int {
+                query.isEmpty ? 0 : (SearchRanker.score(prepareName(name), query: query) ?? -1)
+            }
             let namesQuery = kind == .systemSetting ? settingsQuery : query
-            let nameScore = ([title] + names).compactMap { SearchRanker.score($0, query: namesQuery) }.max()
-            guard let match = nameScore ?? (aliasScore >= 0 ? aliasScore : nil) else { return nil }
-            score = max(match, aliasScore)
+            var best = max(exactAlias ? 1500 : match(alias, query), match(title, namesQuery))
+            for name in names { best = max(best, match(name, namesQuery)) }
+            guard best >= 0 else { return nil }
+            score = best
             if kind == .command && !trimmedQuery.isEmpty && score < sensitivity.minimumScore { return nil }
-            if kind == .systemSetting && !namesQuery.isEmpty && score < 600 { return nil }
+            if kind == .systemSetting && hasSettingsQuery && score < 600 { return nil }
         }
         return SearchResultRank(score: score, favorite: favorites.contains(id), uses: usage[id, default: 0],
                                 title: title, id: id)

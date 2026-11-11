@@ -68,6 +68,11 @@ final class LauncherTests: XCTestCase {
         XCTAssertNotNil(ranking("", .high).match(id: "default", title: "Utility"))
     }
 
+    func testInvisibleOnlyQueryDoesNotPromoteSystemSettings() {
+        let rank = LauncherSearchRanking(query: "\u{200B}", aliases: [:], favorites: [], usage: [:])
+        XCTAssertNil(rank.match(id: "settings", title: "系统设置", kind: .systemSetting))
+    }
+
     func testRankingKeepsMatchQualityAheadOfFavoritesAndFrequency() {
         let exact = SearchResultRank(score:1000,favorite:false,uses:0,title:"A",id:"1")
         let fuzzy = SearchResultRank(score:300,favorite:true,uses:999,title:"B",id:"2")

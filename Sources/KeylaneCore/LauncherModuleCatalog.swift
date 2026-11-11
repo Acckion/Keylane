@@ -54,7 +54,7 @@ public enum LauncherCommandNamespace: Equatable, Sendable {
         }
     }
 
-    func overlaps(_ other: Self) -> Bool {
+    public func overlaps(_ other: Self) -> Bool {
         switch (self, other) {
         case (.exact(let id), _): return other.contains(id)
         case (_, .exact(let id)): return contains(id)

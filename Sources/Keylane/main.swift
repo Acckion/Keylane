@@ -302,11 +302,13 @@ final class Model: ObservableObject {
             running.hide()
         } else { launch(url) }
     }
-    var commands: [Entry] {
+    var commands: [Entry] { commands(in: nil) }
+
+    func commands(in namespace: LauncherCommandNamespace?) -> [Entry] {
         guard let launcherModules else { return [] }
         let input = LauncherCommandSearch.Input(query: query, page: pageID,
                                                 aliases: aliases, favorites: favorites, usage: usage,
-                                                sensitivity: rootSearchSensitivity)
+                                                sensitivity: rootSearchSensitivity, namespace: namespace)
         return commandSearch.results(for: input, registry: launcherModules)
     }
 }
