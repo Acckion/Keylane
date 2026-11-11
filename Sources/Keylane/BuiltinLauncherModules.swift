@@ -8,9 +8,8 @@ import KeylaneCore
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
         let modules = [applications(model), host(model), files(model), clipboard(model), notes(model),
-                       links(model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model),
-                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model),
-                       SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
+                       QuicklinksModule.make(model: model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model),
+                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
             guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
@@ -290,18 +289,6 @@ enum BuiltinLauncherModules {
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(LauncherNotesPage(model: model))
         })], settings: [settingsPage(model, "notes", "便笺", "note.text", "保存你的想法，随时继续。", 80, content: LauncherSettingsContent.notes)])
-    }
-
-    private static func links(_ model: Model) -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.links"), commands: [
-            command("quicklink", "快捷链接", "", "link", ["Quick Link", "快捷链接", "网址"], settings: "links",
-                    dynamicDetail: { [weak model] in model?.link ?? "" }) { [weak model] _ in
-                if let link = model?.link, let url = URL(string: link), ["https", "http"].contains(url.scheme ?? "") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-        ], settings: [settingsPage(model, "links", "快捷链接", "link", "设置常用链接，快速打开。", 90, content: LauncherSettingsContent.links)],
-           searchUpdates: [updates(model.$link)])
     }
 
     private static func calculator(_ model: Model) -> LauncherModule {
