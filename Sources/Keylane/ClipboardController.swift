@@ -265,24 +265,25 @@ final class ClipboardController: ObservableObject {
         worker.async { [weak self] in
             guard let self, !request.cancelled else { return }
             do {
-                let record = try self.store?.detail(id: id)
+                guard let record = try self.store?.detail(id: id) else { finish(nil, nil); return }
                 guard !request.cancelled else { return }
-                let asset = record?.assetURL
-                let data = record?.snapshot?.items.lazy.flatMap(\.representations)
-                    .first(where: { representation in ClipboardCapture.imageFormats.contains { $0.0 == representation.type } })?.data
-                guard asset != nil || data != nil else { finish(record, nil); return }
+                let file = record.files.count == 1 ? record.files.first : nil
+                guard record.item.kind == .image || file.map(Self.isImageFile) == true else {
+                    finish(record, nil)
+                    return
+                }
                 self.previewWorker.async {
                     guard !request.cancelled else { return }
-                    let source = asset.flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }
-                        ?? data.flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }
-                    let image = source.flatMap {
-                        CGImageSourceCreateThumbnailAtIndex($0, 0, [
-                            kCGImageSourceCreateThumbnailFromImageAlways: true,
-                            kCGImageSourceThumbnailMaxPixelSize: 640,
-                            kCGImageSourceCreateThumbnailWithTransform: true
-                        ] as CFDictionary)
-                    }.map { NSImage(cgImage: $0, size: .zero) }
-                    if !request.cancelled { finish(record, image) }
+                    let maximumPixelSize = 1536
+                    let image: CGImage?
+                    if let file {
+                        image = Self.makeFileThumbnail(file, maximumPixelSize: maximumPixelSize, singleFrameOnly: true)
+                    } else {
+                        let source = record.assetURL.flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) }
+                            ?? Self.imageRepresentation(record).flatMap { CGImageSourceCreateWithData($0.data as CFData, nil) }
+                        image = source.flatMap { Self.makeThumbnail($0, maximumPixelSize: maximumPixelSize) }
+                    }
+                    if !request.cancelled { finish(record, image.map { NSImage(cgImage: $0, size: .zero) }) }
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -341,7 +342,8 @@ final class ClipboardController: ObservableObject {
             self.listPreviewWorker.async {
                 guard !request.cancelled else { finish(nil); return }
                 if let cached = self.listThumbnailCache.object(forKey: key) { finish(cached); return }
-                let cg = file.flatMap(Self.makeFileListThumbnail) ?? imageSource.flatMap(Self.makeListThumbnail)
+                let cg = file.flatMap { Self.makeFileThumbnail($0, maximumPixelSize: 64) }
+                    ?? imageSource.flatMap { Self.makeThumbnail($0, maximumPixelSize: 64) }
                 guard let cg, !request.cancelled else { finish(nil); return }
                 let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
                 self.listThumbnailCache.setObject(image, forKey: key, cost: cg.bytesPerRow * cg.height)
@@ -350,23 +352,20 @@ final class ClipboardController: ObservableObject {
         }
     }
 
-    private static func makeFileListThumbnail(_ file: ClipFile) -> CGImage? {
-        var url = URL(fileURLWithPath: file.path)
-        if let bookmark = file.bookmark {
-            var stale = false
-            if let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI],
-                                       relativeTo: nil, bookmarkDataIsStale: &stale) { url = resolved }
+    private static func makeFileThumbnail(_ file: ClipFile, maximumPixelSize: Int, singleFrameOnly: Bool = false) -> CGImage? {
+        let access = ClipboardFiles([file])
+        return withExtendedLifetime(access) {
+            guard let url = access.urls.first, isImagePath(url.path),
+                  let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  !singleFrameOnly || CGImageSourceGetCount(source) == 1 else { return nil }
+            return makeThumbnail(source, maximumPixelSize: maximumPixelSize)
         }
-        guard UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true else { return nil }
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        return CGImageSourceCreateWithURL(url as CFURL, nil).flatMap(makeListThumbnail)
     }
 
-    private static func makeListThumbnail(_ source: CGImageSource) -> CGImage? {
+    private static func makeThumbnail(_ source: CGImageSource, maximumPixelSize: Int) -> CGImage? {
         CGImageSourceCreateThumbnailAtIndex(source, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: 64,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
             kCGImageSourceCreateThumbnailWithTransform: true
         ] as CFDictionary)
     }

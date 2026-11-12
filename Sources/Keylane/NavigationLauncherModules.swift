@@ -78,7 +78,7 @@ enum NavigationLauncherModules {
                                           : NavigationText.label("搜索菜单项…", "Search Menu Items…")
         var page = LauncherPage(id: id, placeholder: placeholder, badge: (mode.title, mode.symbol))
         page.contentPlacement = .underChrome
-        page.actionWidth = 258
+        page.maximumActionWidth = 258
         page.content = { [weak model] in
             AnyView(NavigationPage(controller: controller, mode: mode, requestAccess: { [weak model] in
                 model?.openSettings(page: "keylane.navigation")
@@ -217,7 +217,7 @@ enum NavigationLauncherModules {
         }
         var page = LauncherPage(id: id, placeholder: "按 name:、text: 或 date: 搜索截图…", badge: ("截图管理", "viewfinder"))
         page.contentPlacement = .underChrome
-        page.actionWidth = 258
+        page.maximumActionWidth = 258
         page.releasePreview = { FilePreview.shared.dismiss() }
         page.content = { [weak model] in
             AnyView(ScreenshotLibraryPage(library: library, query: model?.query ?? "", chooseFolders: chooseFolders))

@@ -312,7 +312,7 @@ enum BuiltinLauncherModules {
                     }
                 ]
             },
-            actionWidth: 280,
+            maximumActionWidth: 280,
             releasePreview: { FilePreview.shared.dismiss() }
         )
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [

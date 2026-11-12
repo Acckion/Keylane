@@ -181,6 +181,12 @@ let fileImageItem = automatic.items.first { $0.kind == .files && $0.preview.cont
 var fileThumbnail: NSImage?
 automatic.loadListThumbnail(for:fileImageItem) { fileThumbnail = $0 }
 wait("copied image file list thumbnail") { fileThumbnail != nil }
+automatic.select(fileImageItem.id)
+wait("copied image file detail preview") {
+    automatic.detail?.item.id == fileImageItem.id && automatic.thumbnail != nil
+}
+let filePreview = automatic.thumbnail!.cgImage(forProposedRect: nil, context: nil, hints: nil)!
+precondition(filePreview.width == bitmap.pixelsWide && filePreview.height == bitmap.pixelsHigh)
 precondition(FileManager.default.fileExists(atPath:copiedImageFile.path))
 
 let originalColor = " #0c4cdd "

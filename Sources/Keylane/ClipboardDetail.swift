@@ -13,10 +13,15 @@ struct ClipboardDetail: View {
     @State private var metrics: ClipboardDetailMetrics?
     @State private var linkMetadata: ClipboardLinkMetadata?
     private var urls: [URL] { fileAccess?.urls ?? [] }
+    private var previewAspectRatio: CGFloat? {
+        if detail.item.webURL != nil { return linkMetadata?.aspectRatio ?? 2 }
+        guard let size = thumbnail?.size, size.width > 0, size.height > 0 else { return nil }
+        return size.width / size.height
+    }
 
     var body: some View {
         ResultDetailPane(scrollsPreview: detail.item.kind == .text && detail.item.color == nil && detail.item.webURL == nil,
-                         previewAspectRatio: detail.item.webURL == nil ? nil : linkMetadata?.aspectRatio ?? 2) { height in
+                         previewAspectRatio: previewAspectRatio) { height in
             preview(height: height)
         } information: {
             if let url = detail.item.webURL {
@@ -64,8 +69,12 @@ struct ClipboardDetail: View {
     }
 
     @ViewBuilder private func preview(height: CGFloat) -> some View {
-        switch detail.item.kind {
-        case .text:
+        if let thumbnail {
+            Image(nsImage: thumbnail).resizable().scaledToFit()
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity)
+                .frame(height: height)
+        } else if detail.item.kind == .text {
             if let color = detail.item.color {
                 ClipboardColorPreview(color: color)
             } else if let url = detail.item.webURL {
@@ -75,20 +84,12 @@ struct ClipboardDetail: View {
                     .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
                     .padding(.horizontal, 9).padding(.top, 4)
             }
-        case .image:
-            if let thumbnail {
-                GeometryReader { geometry in
-                    let ratio = max(0.01, thumbnail.size.width / max(1, thumbnail.size.height))
-                    let width = min(max(1, geometry.size.width - 18), geometry.size.height * ratio)
-                    Image(nsImage: thumbnail).resizable().scaledToFit()
-                        .frame(width: width, height: width / ratio)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                }.frame(height: height)
-            } else { ContentUnavailableView("图片无法预览", systemImage: "photo", description: Text("历史图片可能已丢失。")) }
-        case .files:
-            if urls.isEmpty { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
-            else { ResultFilePreview(urls: urls).frame(height: height) }
+        } else if detail.item.kind == .image {
+            ContentUnavailableView("图片无法预览", systemImage: "photo", description: Text("历史图片可能已丢失。"))
+        } else if urls.isEmpty {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ResultFilePreview(urls: urls).frame(height: height)
         }
     }
 
