@@ -6,7 +6,8 @@ extension PermissionFeature {
         .init(title: title, help: guidance,
               enabled: Binding(get: { self.enabled }, set: setEnabled),
               updates: $enabled.removeDuplicates().eraseToAnyPublisher(),
-              permissionStatus: settingsStatus)
+              permissionStatus: settingsStatus,
+              openPrivacySettings: canOpenPrivacySettings ? openPrivacySettings : nil)
     }
 }
 
@@ -74,7 +75,12 @@ struct PermissionSettingsContent: View {
             if permission.requesting {
                 ProgressView("正在检查系统权限…").controlSize(.small)
             } else if let message = permission.message {
-                Text(message).font(.caption).foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: 12) {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                    if let open = contribution.openPrivacySettings {
+                        Button("打开系统设置", action: open).buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
             }
             content()
                 .disabled(!enabled)
@@ -94,6 +100,9 @@ struct SettingsPermissionToggle: View {
 
     var body: some View {
         SettingsRow(contribution.title, detail: permission.message ?? detail) {
+            if permission.message != nil, let open = contribution.openPrivacySettings {
+                Button("打开系统设置", action: open).buttonStyle(.bordered).controlSize(.small)
+            }
             Toggle(contribution.title, isOn: Binding(get: { enabled }, set: { contribution.enabled.wrappedValue = $0 }))
                 .labelsHidden().toggleStyle(.switch).disabled(permission.requesting)
         }

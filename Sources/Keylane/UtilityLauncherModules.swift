@@ -5,10 +5,11 @@ import SwiftUI
 
 enum UtilityLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        [contacts(model.contacts), dictionary(model), emoji(model), shortcuts(model)]
+        [contacts(model), dictionary(model), emoji(model), shortcuts(model)]
     }
 
-    private static func contacts(_ controller: ContactsController) -> LauncherModule {
+    private static func contacts(_ model: Model) -> LauncherModule {
+        let controller = model.contacts
         let permission = PermissionFeature("contacts.enabled", authorization: .contacts)
         var permissionChanges: AnyCancellable?
         let pageID = PageID(rawValue: "Contacts")
@@ -17,7 +18,10 @@ enum UtilityLauncherModules {
         var page = LauncherPage(id: pageID, placeholder: "搜索联系人…",
                                 badge: ("联系人", "person.crop.circle"),
                                 contentPlacement: .underChrome,
-                                content: { AnyView(ContactsPage(controller: controller)) },
+                                content: { [weak model] in
+                                    AnyView(ContactsPage(controller: controller, permission: permission,
+                                                         showSettings: { model?.openSettings(page: "keylane.contacts") }))
+                                },
                                 queryChanged: { controller.query = $0 },
                                 leave: controller.stop,
                                 move: controller.move,
@@ -36,8 +40,8 @@ enum UtilityLauncherModules {
         page.resume = { if permission.available { controller.start() } }
         return .init(id: .init(rawValue: "keylane.contacts"), title: "联系人", symbol: "person.crop.circle", commands: [
             command("contacts", "搜索联系人", "系统通讯录", "person.crop.circle",
-                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID),
-                    available: { permission.available })
+                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID), settings: "keylane.contacts",
+                    permission: permission)
         ], pages: [page], services: [.init(start: {
             permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
                 if !permission.available { controller.stop() }
@@ -275,8 +279,8 @@ enum UtilityLauncherModules {
 
     private static func command(_ id: String, _ title: String, _ detail: String, _ symbol: String,
                                 _ keywords: [String], destination: LauncherCommandDeclaration.Destination,
-                                settings: String? = nil, available: @escaping () -> Bool = { true }) -> LauncherModule.Command {
+                                settings: String? = nil, permission: PermissionFeature? = nil) -> LauncherModule.Command {
         .init(declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
-                                keywords: keywords, destination: destination, settingsPage: settings), available: available)
+                                keywords: keywords, destination: destination, settingsPage: settings), permission: permission)
     }
 }

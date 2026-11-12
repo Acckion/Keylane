@@ -19,8 +19,8 @@ enum WindowManagementModule {
             .init(declaration: .init(id: .init(rawValue: command.1),
                                      title: NavigationText.label(command.2, command.3),
                                      detail: NavigationText.label("窗口管理", "Window Management"), symbol: command.4,
-                                     keywords: [command.2, command.3, "窗口管理", "Window Management"], destination: .action),
-                  available: { permission.available }, execute: { [weak model] origin in
+                                     keywords: [command.2, command.3, "窗口管理", "Window Management"], destination: .action, settingsPage: "keylane.window-management"),
+                  permission: permission, execute: { [weak model] origin in
                 guard let model, let delegate = NSApp.delegate as? Delegate else { return }
                 if origin == .shortcut { delegate.rememberPreviousApplication() }
                 SystemNavigation.shared.placeWindow(command.0, in: delegate.previousApplication) { [weak model, weak delegate] message in

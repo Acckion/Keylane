@@ -46,12 +46,12 @@ enum AppleNotesModule {
         return .init(id: .init(rawValue: "keylane.apple-notes"), title: "Apple 备忘录", symbol: symbol, commands: [
             .init(declaration: .init(id: .init(rawValue: "search-apple-notes"), title: "搜索 Apple 备忘录",
                                      detail: "按标题或正文搜索，使用原生编辑器打开", symbol: symbol,
-                                     keywords: ["Notes", "Search Notes", "笔记", "便签"], destination: .page(searchPage)),
-                  available: { permission.available }),
+                                     keywords: ["Notes", "Search Notes", "笔记", "便签"], destination: .page(searchPage), settingsPage: "keylane.apple-notes"),
+                  permission: permission),
             .init(declaration: .init(id: .init(rawValue: "create-apple-note"), title: "新建 Apple 备忘录",
                                      detail: "快速记录到 Apple 备忘录的默认文件夹", symbol: "square.and.pencil",
-                                     keywords: ["Create Note", "新建笔记", "记笔记"], destination: .action),
-                  available: { permission.available }, execute: create)
+                                     keywords: ["Create Note", "新建笔记", "记笔记"], destination: .action, settingsPage: "keylane.apple-notes"),
+                  permission: permission, execute: create)
         ], pages: [search, editor], searchUpdates: [permission.updates],
            permissionTitlebar: permission.titlebar("启用 Apple 备忘录"))
     }

@@ -69,6 +69,10 @@ extension SystemShortcut {
 
 struct ContactsPage: View {
     @ObservedObject var controller: ContactsController
+    let permission: PermissionFeature
+    let showSettings: () -> Void
+    @State private var permissionEnabled = false
+
     var body: some View {
         ResultDetailLayout {
             SelectableResultList(selection: controller.selectedID) {
@@ -84,7 +88,13 @@ struct ContactsPage: View {
             }
         } detail: {
             Group {
-                if !controller.canRead { connection }
+                if !permissionEnabled {
+                    ContentUnavailableView {
+                        Label("联系人已关闭", systemImage: "person.crop.circle")
+                    } actions: {
+                        Button("联系人设置…", action: showSettings).buttonStyle(ContentActionButtonStyle())
+                    }
+                } else if !controller.canRead { connection }
                 else if !controller.error.isEmpty {
                     ContentUnavailableView {
                         Label("联系人读取失败", systemImage: "exclamationmark.triangle")
@@ -111,6 +121,7 @@ struct ContactsPage: View {
                 } else { ContentUnavailableView("没有匹配联系人", systemImage: "person.crop.circle") }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .onReceive(permission.$enabled) { permissionEnabled = $0 }
     }
 
     private var connection: some View {

@@ -36,13 +36,14 @@ enum BuiltinLauncherModules {
                                 _ keywords: [String], destination: LauncherCommandDeclaration.Destination = .action,
                                 settings: String? = nil,
                                 available: @escaping () -> Bool = { true },
+                                permission: PermissionFeature? = nil,
                                 dynamicDetail: (() -> String)? = nil,
                                 settingsEnabled: Binding<Bool>? = nil,
                                 execute: @escaping (LauncherCommandOrigin) -> Void = { _ in }) -> LauncherModule.Command {
         LauncherModule.Command(
             declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
                                keywords: keywords, destination: destination, settingsPage: settings),
-            detail: dynamicDetail, settingsEnabled: settingsEnabled, available: available, execute: execute
+            detail: dynamicDetail, settingsEnabled: settingsEnabled, available: available, permission: permission, execute: execute
         )
     }
 
@@ -172,7 +173,7 @@ enum BuiltinLauncherModules {
         return .init(id: .init(rawValue: "keylane.files"), commands: [
             command("file-search", "搜索文件", "Spotlight", "doc.text.magnifyingglass",
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
-                    available: { [weak model] in model?.fileSearch.options.enabled == true }),
+                    permission: permission),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
                     available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"), execute: { [weak model] origin in
@@ -376,7 +377,7 @@ enum BuiltinLauncherModules {
         let permission = PermissionFeature("screenCapture.enabled", authorization: .screenCapture)
         return .init(id: .init(rawValue: "keylane.screen-capture"), title: "屏幕截取", symbol: "camera.viewfinder", commands: [
             command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", [],
-                    settings: "keylane.screen-capture", available: { permission.available }, execute: { _ in
+                    settings: "keylane.screen-capture", permission: permission, execute: { _ in
                 (NSApp.delegate as? Delegate)?.hideLauncher()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                     if permission.available { SystemTools.shared.screenshot() }
@@ -388,12 +389,12 @@ enum BuiltinLauncherModules {
     private static func systemTools(_ model: Model) -> LauncherModule {
         .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
             command("color", "Pick Color / 取色", "Copy hex color", "eyedropper", [], execute: { _ in SystemTools.shared.colorPicker() }),
-            command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", [], available: { [weak model] in model?.clipboardSpeech.available == true },
+            command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", [], settings: "permissions", permission: model.clipboardSpeech,
                     execute: { _ in SystemTools.shared.readClipboard() }),
             command("stop-speaking", "Stop Reading / 停止朗读", "Stop speech playback", "stop.circle", [], execute: { _ in SystemTools.shared.stopReading() }),
             command("finder", "Open Home / 个人文件夹", "Finder", "folder", [], execute: { _ in NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) }),
             command("lock-screen", "锁定屏幕", "锁定当前 macOS 会话", "lock.fill",
-                    ["Lock Screen", "锁屏"], available: { [weak model] in model?.lockScreenPermission.available == true },
+                    ["Lock Screen", "锁屏"], settings: "permissions", permission: model.lockScreenPermission,
                     execute: { _ in SystemActions.lockScreen() }),
             command("sleep-mac", "让 Mac 睡眠", "让电脑进入睡眠", "moon.zzz",
                     ["Sleep Mac", "系统睡眠", "休眠"], execute: { _ in SystemActions.requestPowerAction(.sleep) }),

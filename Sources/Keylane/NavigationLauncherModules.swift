@@ -21,7 +21,7 @@ enum NavigationLauncherModules {
             permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink { [weak model] in
                 if !permission.available {
                     SystemNavigation.shared.stopObservingFocus()
-                    model?.systemNavigation.stop()
+                    model?.systemNavigation.permissionRequired()
                 }
             }
             focusObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -45,14 +45,14 @@ enum NavigationLauncherModules {
                 id: .init(rawValue: "switch-windows"), title: NavigationMode.windows.title,
                 detail: NavigationText.label("查找并切换已打开的窗口", "Find and switch open windows"),
                 symbol: NavigationMode.windows.symbol, keywords: ["Switch Windows", "窗口切换", "窗口", "Navigation"],
-                destination: .page(windows)
-            ), available: { permission.available }),
+                destination: .page(windows), settingsPage: "keylane.navigation"
+            ), permission: permission),
             .init(declaration: .init(
                 id: .init(rawValue: "search-menu-items"), title: NavigationMode.menus.title,
                 detail: NavigationText.label("搜索并执行前一个应用的菜单命令", "Find and run a menu command in the previous app"),
                 symbol: NavigationMode.menus.symbol, keywords: ["Search Menu Items", "菜单", "菜单栏", "Navigation"],
-                destination: .page(menus)
-            ), available: { permission.available })
+                destination: .page(menus), settingsPage: "keylane.navigation"
+            ), permission: permission)
         ], pages: [
             navigationPage(windows, mode: .windows, model: model, permission: permission),
             navigationPage(menus, mode: .menus, model: model, permission: permission)
@@ -81,7 +81,7 @@ enum NavigationLauncherModules {
         page.actionWidth = 258
         page.content = { [weak model] in
             AnyView(NavigationPage(controller: controller, mode: mode, requestAccess: { [weak model] in
-                model?.requestKeyboardAccess()
+                model?.openSettings(page: "keylane.navigation")
             }, reload: reload, activate: activate))
         }
         page.enter = { query in
@@ -154,7 +154,7 @@ enum NavigationLauncherModules {
                                    detail: "截图管理", symbol: command.symbol, keywords: command.aliases,
                                    destination: command == .search ? .page(id) : .action, settingsPage: "screenshots"),
                 settingsEnabled: library.commandEnabledBinding(command),
-                available: { library.isEnabled(command) },
+                available: { !library.disabledCommands.contains(command.rawValue) }, permission: permission,
                 execute: { [weak model] _ in
                     if command == .latest, let model { pasteLatestScreenshot(model) }
                 }

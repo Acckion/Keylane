@@ -33,7 +33,7 @@ enum AppUtilitiesModule {
             .init(declaration: .init(id: .init(rawValue: "show-camera"), title: "显示相机", detail: "实时相机预览",
                                      symbol: "camera", keywords: ["Show Camera", "Camera Preview", "摄像头", "相机预览"],
                                      destination: .action, settingsPage: "keylane.camera-preview"),
-                  available: { permission.available }, execute: { [weak model] _ in
+                  permission: permission, execute: { [weak model] _ in
                       camera.show(activation: model?.windowActivationBehavior ?? .systemDefault)
                   })
         ], services: [.init(start: {

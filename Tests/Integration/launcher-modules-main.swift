@@ -197,3 +197,48 @@ let dictionaryInput = LauncherCommandSearch.Input(query: "define a", page: .root
 precondition(LauncherCommandSearch().results(for: dictionaryInput, registry: explicitRankingRegistry)
     .map(\.commandID) == [dictionaryID, scriptID])
 print("PASS explicit dictionary result outranks matching commands")
+
+let permissionSuite = "org.keylane.permission-activation-test." + UUID().uuidString
+let permissionDefaults = UserDefaults(suiteName: permissionSuite)!
+defer { permissionDefaults.removePersistentDomain(forName: permissionSuite) }
+var systemGrant = false
+var requests = 0
+var permissionResponse: ((Bool) -> Void)?
+let permission = PermissionFeature("enabled", authorization: .init(check: { systemGrant }, request: {
+    requests += 1
+    permissionResponse = $0
+}, guidance: "Fixture permission"), defaults: permissionDefaults)
+let gatedID = CommandID(rawValue: "permission-test-calendar")
+var opened = 0
+let gated = try LauncherModuleRegistry(modules: [
+    .init(id: .init(rawValue: "fixture.permission"), commands: [
+        .init(declaration: .init(id: gatedID, title: "Calendar Fixture", detail: "Calendar",
+                                 symbol: "calendar", keywords: []), permission: permission,
+              execute: { _ in opened += 1 })
+    ])
+])
+let emptyPermissionInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
+let permissionInput = LauncherCommandSearch.Input(query: "Calendar Fixture", page: .root, aliases: [:], favorites: [], usage: [:])
+precondition(gated.candidates(for: emptyPermissionInput).isEmpty)
+precondition(gated.candidates(for: permissionInput).first?.needsPermissionActivation == true)
+precondition(gated.resolve(gatedID, origin: .search, navigate: { _ in }) == nil)
+precondition(requests == 0 && opened == 0)
+func activateFixtureCommand() {
+    gated.permissionNeeded(for: gatedID)?.activate { allowed in
+        if allowed { gated.resolve(gatedID, origin: .search, navigate: { _ in })?() }
+    }
+}
+activateFixtureCommand()
+permissionResponse?(false)
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(!permission.enabled && requests == 1 && opened == 0)
+activateFixtureCommand()
+systemGrant = true
+permissionResponse?(true)
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(permission.enabled && requests == 2 && opened == 1)
+precondition(gated.candidates(for: permissionInput).first?.needsPermissionActivation == false)
+systemGrant = false
+permission.recheck()
+precondition(gated.resolve(gatedID, origin: .shortcut, navigate: { _ in }) == nil && !permission.enabled)
+print("PASS permission command discovery, explicit activation, denial, continuation and revocation")

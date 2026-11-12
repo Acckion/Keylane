@@ -29,7 +29,15 @@ struct CalendarPage: View {
             }
         } detail: {
             Group {
-                if !controller.enabled { ContentUnavailableView("日历已关闭", systemImage: "calendar", description: Text("可在日历设置中重新开启。")) }
+                if !controller.enabled {
+                    ContentUnavailableView {
+                        Label("日历已关闭", systemImage: "calendar")
+                    } description: {
+                        Text("在日历设置中重新开启后可继续查看日程。")
+                    } actions: {
+                        Button("日历设置…") { controller.showSettings?() }.buttonStyle(ContentActionButtonStyle())
+                    }
+                }
                 else if controller.access != .allowed { CalendarConnectionView(controller: controller) }
                 else if let event = controller.selectedEvent {
                     ResultDetailPane { height in
