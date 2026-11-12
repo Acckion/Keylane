@@ -330,14 +330,15 @@ final class ScreenshotLibrary: ObservableObject {
         let id = UUID()
         copyWork[id] = work
         defer { copyWork.removeValue(forKey: id) }
-        let text = try await withTaskCancellationHandler {
-            try await Task.detached(priority: .userInitiated) {
-                try mode.recognize(in: VNImageRequestHandler(url: item.url), accurate: accurate, work: work)
+        let outcome = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                Result { try mode.recognize(in: VNImageRequestHandler(url: item.url), accurate: accurate, work: work) }
             }.value
         } onCancel: {
             work.cancel()
         }
         guard !work.cancelled else { throw CancellationError() }
+        let text = try outcome.get()
         guard !text.isEmpty else { return false }
         try validate(item)
         guard board.changeCount == changeCount else { throw ImageTextError.pasteboardChanged }
