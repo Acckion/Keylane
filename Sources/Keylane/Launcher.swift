@@ -268,7 +268,7 @@ struct Launcher: View {
             if previous == .root {
                 model.fileSearch.cancel()
                 FilePreview.shared.dismiss()
-            } else if let previousPage = model.launcherModules?.page(previous) {
+            } else if let previousPage = model.launcherModules?.page(previous, includingInactive: true) {
                 previousPage.leave()
                 previousPage.releasePreview?()
             }

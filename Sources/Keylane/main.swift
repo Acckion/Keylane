@@ -39,6 +39,7 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let fileAI = FileAIController()
     private var moduleSearchChanges: AnyCancellable?
+    private var moduleRegistrationChanges: AnyCancellable?
     let rootSearchUpdates = PassthroughSubject<Void, Never>()
     let clipboard = ClipboardController(startTimer: false, presentationActive: false, startStorage: false)
     let screenshots = ScreenshotLibrary()
@@ -245,6 +246,10 @@ final class Model: ObservableObject {
             guard let self else { return }; if self.fileResults != files { self.fileResults = files }; if self.fileSearchStatus != status { self.fileSearchStatus = status }
         }
         refreshLogin()
+        moduleRegistrationChanges = launcherModules?.registrationUpdates.sink { [weak self] in
+            guard let self, self.pageID != .root, self.activeLauncherPage == nil else { return }
+            self.pageID = .root
+        }
         moduleSearchChanges = launcherModules?.searchUpdates
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in
@@ -283,21 +288,16 @@ final class Model: ObservableObject {
     func perform(_ entry: Entry) {
         runCommand(entry.commandID, origin: .search, usageKey: entry.id)
     }
-    func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil) {
-        guard launcherModules?.permissionNeeded(for: id) == nil else { return }
-        guard let action = launcherModules?.resolve(id, origin: origin, navigate: { [weak self] destination in
-            guard let self else { return }
+    func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil, arguments: [String] = []) {
+        let queryKey = usageKey != nil && pageID == .root && origin != .shortcut ? SearchUsageHistory.queryKey(query) : nil
+        let admitted = launcherModules?.invoke(id, origin: origin, arguments: arguments) { destination in
             switch destination {
             case .action: break
-            case let .page(page): self.openPage(page, origin: origin)
-            case let .settings(page): self.openSettings(page: page)
+            case let .page(page): openPage(page, origin: origin)
+            case let .settings(page): openSettings(page: page)
             }
-        }) else { return }
-        if let usageKey {
-            let queryKey = pageID == .root && origin != .shortcut ? SearchUsageHistory.queryKey(query) : nil
-            recordUsage(for: usageKey, queryKey: queryKey)
         }
-        action()
+        if admitted == true, let usageKey { recordUsage(for: usageKey, queryKey: queryKey) }
     }
     func openPage(_ page: PageID, origin: LauncherCommandOrigin) {
         guard launcherModules?.page(page) != nil else { return }
