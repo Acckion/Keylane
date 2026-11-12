@@ -240,7 +240,17 @@ public final class ClipboardStore {
     }
     public func setOCR(id: String, text: String) throws {
         let value = String(text.prefix(100_000))
-        try write("UPDATE clips SET ocr=?,searchable=? || ' ' || coalesce((SELECT search_text FROM clip_snapshots WHERE clip_id=clips.id),'') || ' ' || source WHERE id=? AND kind='image'",[.text(value),.text(Self.normalize("图片 " + value)),.text(id)])
+        let record = try statement("SELECT preview, source FROM clips WHERE id=? AND kind='image'", [.text(id)])
+        defer { sqlite3_finalize(record) }
+        let status = sqlite3_step(record)
+        if status == SQLITE_DONE { return }
+        guard status == SQLITE_ROW else { throw ClipboardError.database }
+        let searchable = Self.normalize(["图片", string(record, 0), value, string(record, 1)].joined(separator: " "))
+        try write("""
+            UPDATE clips SET ocr=?, searchable=? || ' ' ||
+                coalesce((SELECT search_text FROM clip_snapshots WHERE clip_id=clips.id),'')
+            WHERE id=? AND kind='image'
+            """, [.text(value), .text(searchable), .text(id)])
     }
     public func rename(id: String, to name: String) throws {
         guard let record = try detail(id: id) else { return }

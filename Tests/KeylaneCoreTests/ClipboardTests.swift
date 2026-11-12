@@ -53,6 +53,21 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(try store.list(query:"OR NOT").map(\.id),[id])
         XCTAssertTrue(try store.list(query:"\" OR *").isEmpty)
     }
+    func testOCRPreservesRenamedImageInSearch() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let id = try store.capture(.image(Data([137, 80, 78, 71])), source: "Image Source")
+        try store.rename(id: id, to: "Résumé Reference")
+
+        try store.setOCR(id: id, text: "Recognized invoice")
+
+        XCTAssertEqual(try store.list(query: "resume").map(\.id), [id])
+        XCTAssertEqual(try store.list(query: "invoice").map(\.id), [id])
+        XCTAssertEqual(try store.list(query: "source").map(\.id), [id])
+        XCTAssertEqual(try store.detail(id: id)?.item.preview, "Résumé Reference")
+    }
+
     func testAttachmentsReferencesOCRAndDeletionRace() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at:directory) }
         let store = try ClipboardStore(directory:directory)
