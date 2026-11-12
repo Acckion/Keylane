@@ -91,6 +91,7 @@ final class ClipboardController: ObservableObject {
     @Published private(set) var searching = false
     @Published private(set) var accessMessage = ""
     @Published var textDraft: ClipboardTextDraft?
+    @Published var showsHistorySettings = false
     @Published var kind: String = "all" { didSet { reload() } }
     @Published var pinnedOnly = false { didSet { reload() } }
     private let board: NSPasteboard

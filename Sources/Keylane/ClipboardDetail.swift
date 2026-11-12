@@ -11,13 +11,19 @@ struct ClipboardDetail: View {
     let accessMessage: String
     @State private var fileAccess: ClipboardFiles?
     @State private var metrics: ClipboardDetailMetrics?
+    @State private var linkMetadata: ClipboardLinkMetadata?
     private var urls: [URL] { fileAccess?.urls ?? [] }
 
     var body: some View {
-        ResultDetailPane(scrollsPreview: detail.item.kind == .text && detail.item.color == nil && detail.item.category != .link) { height in
+        ResultDetailPane(scrollsPreview: detail.item.kind == .text && detail.item.color == nil && detail.item.webURL == nil,
+                         previewAspectRatio: detail.item.webURL == nil ? nil : linkMetadata?.aspectRatio ?? 2) { height in
             preview(height: height)
         } information: {
-            DetailInformationSection(rows: information)
+            if let url = detail.item.webURL {
+                DetailInformationRows(rows: linkInformation(url), verticalPadding: 6)
+            } else {
+                DetailInformationSection(rows: information)
+            }
             if !accessMessage.isEmpty {
                 Text(accessMessage).font(.caption).foregroundStyle(.orange)
             }
@@ -33,7 +39,17 @@ struct ClipboardDetail: View {
                     .font(.system(size: 12))
             }
         }
+        .task(id: detail.item.webURL) {
+            linkMetadata = nil
+            guard let url = detail.item.webURL else { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let metadata = await ClipboardLinkPreviews.shared.preview(for: url)
+            guard !Task.isCancelled else { return }
+            linkMetadata = metadata
+        }
         .task(id: detail.files) {
+            guard detail.item.webURL == nil else { return }
             metrics = nil
             let access = ClipboardFiles(detail.files)
             fileAccess = access
@@ -52,8 +68,8 @@ struct ClipboardDetail: View {
         case .text:
             if let color = detail.item.color {
                 ClipboardColorPreview(color: color)
-            } else if detail.item.category == .link, let url = ClipboardCategory.webURL(in: detail.text) {
-                ClipboardWebPreview(url: url).frame(height: height)
+            } else if let url = detail.item.webURL {
+                ClipboardLinkPreview(url: url, metadata: linkMetadata).frame(height: height)
             } else {
                 Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
@@ -74,6 +90,18 @@ struct ClipboardDetail: View {
             if urls.isEmpty { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
             else { ResultFilePreview(urls: urls).frame(height: height) }
         }
+    }
+
+    private func linkInformation(_ url: URL) -> [DetailInformationValue] {
+        var rows: [DetailInformationValue] = [.init(title: "网址", value: url.absoluteString)]
+        if let title = linkMetadata?.title, !title.isEmpty {
+            rows.append(.init(title: "标题", value: title))
+        }
+        return rows + [
+            .init(title: "复制次数", value: String(detail.item.copyCount)),
+            .init(title: "最近复制", value: detail.item.copiedAt.formatted(date: .abbreviated, time: .standard)),
+            .init(title: "首次复制", value: detail.item.firstCopiedAt.formatted(date: .abbreviated, time: .standard))
+        ]
     }
 
     private var information: [DetailInformationValue] {

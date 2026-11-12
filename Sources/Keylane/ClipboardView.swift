@@ -161,7 +161,6 @@ struct ClipboardPreferences: View {
     let controller: ClipboardController
     let model: Model
     @StateObject private var observation: ViewObservation
-    @State private var showsHistorySettings = false
     @State private var showsUniversalDetails = true
     @State private var excludedApplications: [String: URL] = [:]
 
@@ -172,6 +171,7 @@ struct ClipboardPreferences: View {
             ViewObservation.changes(controller.$automaticOCR),
             ViewObservation.changes(controller.$accurateOCR),
             ViewObservation.changes(controller.$historyCommandEnabled),
+            ViewObservation.changes(controller.$showsHistorySettings),
             ViewObservation.changes(controller.$retentionDays),
             ViewObservation.changes(controller.$excludedApps),
             ViewObservation.changes(model.$aliases.map { $0["clipboard"] }),
@@ -244,10 +244,7 @@ struct ClipboardPreferences: View {
             CommandSettingsList(items: ["clipboard", "paste-sequentially", "reset-paste-sequence"], id: \.self) { id in
                 switch id {
                 case "clipboard":
-                    CommandSettingsEntry(title: "剪贴板历史", model: model, commandID: .init(rawValue: id),
-                                         isEnabled: binding(\.historyCommandEnabled), perform: { showsHistorySettings = true }) {
-                        SettingsIcon(symbol: "clipboard", artwork: ModuleArtwork.settings("clipboard"))
-                    }
+                    historyCommandEntry { controller.showsHistorySettings = true }
                 case "paste-sequentially":
                     unavailableCommand("顺序粘贴", symbol: "list.clipboard")
                 default:
@@ -261,17 +258,27 @@ struct ClipboardPreferences: View {
         }
         .onAppear { updateExcludedApplications() }
         .onChange(of: controller.excludedApps) { _, _ in updateExcludedApplications() }
-        .sheet(isPresented: $showsHistorySettings) { historySettings }
+        .sheet(isPresented: binding(\.showsHistorySettings)) { historySettings }
     }
 
     private var historySettings: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsTitle("剪贴板历史")
+            CommandSettingsList(items: ["clipboard"], id: \.self) { _ in historyCommandEntry() }
             ClipboardHistoryStatistics(controller: controller)
-            Button("完成") { showsHistorySettings = false }
+            Button("完成") { controller.showsHistorySettings = false }
                 .keyboardShortcut(.defaultAction)
                 .frame(maxWidth: .infinity, alignment: .trailing)
-        }.padding(20).frame(width: 480)
+        }
+        .padding(20).frame(width: 480)
+        .environment(\.isEnabled, true)
+    }
+
+    private func historyCommandEntry(perform: (() -> Void)? = nil) -> CommandSettingsEntry<SettingsIcon> {
+        CommandSettingsEntry(title: "剪贴板历史", model: model, commandID: .init(rawValue: "clipboard"),
+                             isEnabled: binding(\.historyCommandEnabled), perform: perform) {
+            SettingsIcon(symbol: "clipboard", artwork: ModuleArtwork.settings("clipboard"))
+        }
     }
 
     private func unavailableCommand(_ title: String, symbol: String) -> CommandSettingsEntry<SettingsIcon> {

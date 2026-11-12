@@ -5,6 +5,28 @@ import SQLite3
 final class ClipboardTests: XCTestCase {
     private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneClipboardTest-" + UUID().uuidString) }
 
+    func testLinkMetadataKeepsOriginalURLAndCopyDatesAfterRename() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = "https://example.com/folder/page?tag=clipboard#section"
+        let first = Date()
+        let last = first.addingTimeInterval(30)
+        let store = try ClipboardStore(directory: directory)
+        let id = try store.capture(.text(original), at: first)
+        XCTAssertEqual(try store.capture(.text(original), at: last), id)
+        try store.rename(id: id, to: "示例网页")
+
+        let reopened = try ClipboardStore(directory: directory)
+        let item = try XCTUnwrap(reopened.list(category: .link).first)
+        XCTAssertEqual(item.preview, "示例网页")
+        XCTAssertEqual(item.webURL?.absoluteString, original)
+        XCTAssertEqual(item.firstCopiedAt.timeIntervalSince(first), 0, accuracy: 0.000001)
+        XCTAssertEqual(item.copiedAt.timeIntervalSince(last), 0, accuracy: 0.000001)
+        XCTAssertEqual(item.copyCount, 2)
+        XCTAssertEqual(try reopened.detail(id: id)?.item, item)
+        XCTAssertEqual(try reopened.detail(id: id)?.text, original)
+    }
+
     func testEditingPreservesMetadataAndReplacesSearchAndReplayContent() throws {
         let directory = directory()
         defer { try? FileManager.default.removeItem(at: directory) }

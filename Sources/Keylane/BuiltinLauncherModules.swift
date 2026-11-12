@@ -297,6 +297,21 @@ enum BuiltinLauncherModules {
                 return AnyView(ResultTypeFilter(selection: Binding(get: { model.clipboard.kind }, set: { model.clipboard.kind = $0 }),
                                          options: ResultFilterOption.clipboard, open: open, navigation: model.navigation))
             },
+            badgeActions: { [weak model] in
+                guard let model else { return [] }
+                return [
+                    .init(id: "configure-clipboard-command", title: "配置命令…", icon: "gearshape",
+                          keys: ["⇧", "⌘", ","]) { [weak model] in
+                        model?.clipboard.showsHistorySettings = true
+                        model?.openSettings(page: "clipboard")
+                    },
+                    .init(id: "configure-clipboard-extension", title: "配置扩展", icon: "gearshape",
+                          keys: ["⌥", "⌘", ","]) { [weak model] in
+                        model?.clipboard.showsHistorySettings = false
+                        model?.openSettings(page: "clipboard")
+                    }
+                ]
+            },
             actionWidth: 280,
             releasePreview: { FilePreview.shared.dismiss() }
         )

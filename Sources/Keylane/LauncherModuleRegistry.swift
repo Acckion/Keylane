@@ -78,6 +78,7 @@ struct LauncherPage {
     var typeFilterWidth: CGFloat?
     var typeFilter: ((Binding<Bool>) -> AnyView)?
     var badgeTitle: (() -> String)?
+    var badgeActions: (() -> [LauncherAction])?
     var actionWidth: CGFloat?
     var releasePreview: (() -> Void)?
 }

@@ -17,7 +17,7 @@ enum ClipboardActions {
         let delegate = NSApp.delegate as? Delegate
         let targetName = delegate?.pasteTargetName
         let targetIcon = delegate?.pasteTargetIcon
-        let link = item.category == .link ? ClipboardCategory.webURL(in: text) : nil
+        let link = item.webURL
         let quicklink = link ?? (item.category == .email ? ClipboardCategory.emailURL(in: text) : nil)
         let hasImage = item.category == .image || (detail?.files.count == 1 &&
             detail?.files.first.map(ClipboardController.isImageFile) == true)

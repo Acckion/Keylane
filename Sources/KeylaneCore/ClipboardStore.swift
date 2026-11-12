@@ -57,10 +57,12 @@ public struct ClipItem: Identifiable, Equatable {
     public let kind: ClipKind
     public let category: ClipboardCategory
     public let color: ClipboardColor?
+    public let webURL: URL?
     public let preview: String
     public let source: String
     public let sourceBundle: String
     public let copiedAt: Date
+    public let firstCopiedAt: Date
     public let pinned: Bool
     public let copyCount: Int
     public let byteCount: Int
@@ -224,7 +226,7 @@ public final class ClipboardStore {
     }
     private static func normalize(_ text: String) -> String { text.folding(options: [.caseInsensitive,.diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")) }
     private static let shortText = "CASE WHEN kind='text' AND length(payload)<=4096 THEN payload END"
-    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0),\(shortText)"
+    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0),\(shortText),created"
     private func item(_ s: OpaquePointer) throws -> ClipItem {
         guard let kind = ClipKind(rawValue: string(s,1)) else { throw ClipboardError.database }
         let text = String(decoding: blob(s,11), as: UTF8.self)
@@ -236,7 +238,13 @@ public final class ClipboardStore {
         case .files: category = .files
         }
         return ClipItem(id: string(s,0), kind: kind, category: category, color: color,
-                        preview: string(s,2), source: string(s,3), sourceBundle: string(s,4), copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)), pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)), byteCount: Int(sqlite3_column_int64(s,8)), assetName: sqlite3_column_type(s,9) == SQLITE_NULL ? nil : string(s,9), hasOCR: sqlite3_column_int(s,10) != 0)
+                        webURL: category == .link ? ClipboardCategory.webURL(in: text) : nil,
+                        preview: string(s,2), source: string(s,3), sourceBundle: string(s,4),
+                        copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)),
+                        firstCopiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,12)),
+                        pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)),
+                        byteCount: Int(sqlite3_column_int64(s,8)),
+                        assetName: sqlite3_column_type(s,9) == SQLITE_NULL ? nil : string(s,9), hasOCR: sqlite3_column_int(s,10) != 0)
     }
     private func retainedSearchTerms(id: String) throws -> String {
         let record = try statement("SELECT preview, ocr FROM clips WHERE id=?", [.text(id)])
@@ -311,11 +319,11 @@ public final class ClipboardStore {
     public func detail(id: String) throws -> ClipDetail? {
         let s = try statement("SELECT " + Self.columns + ",payload,ocr FROM clips WHERE id=?",[.text(id)]); defer { sqlite3_finalize(s) }
         let status = sqlite3_step(s); if status == SQLITE_DONE { return nil }; guard status == SQLITE_ROW else { throw ClipboardError.database }
-        let record = try item(s); let data = blob(s,12)
+        let record = try item(s); let data = blob(s,13)
         let files = record.kind == .files ? try JSONDecoder().decode([ClipFile].self, from:data) : []
         let q = try statement("SELECT payload FROM clip_snapshots WHERE clip_id=?",[.text(id)]); defer { sqlite3_finalize(q) }
         let snapshot = sqlite3_step(q) == SQLITE_ROW ? try PropertyListDecoder().decode(ClipSnapshot.self,from:blob(q,0)) : nil
-        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,13),snapshot:snapshot)
+        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,14),snapshot:snapshot)
     }
     public func assetURL(_ name: String) -> URL? {
         let parts = name.split(separator: ".", omittingEmptySubsequences: false)

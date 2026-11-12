@@ -5,6 +5,7 @@ import QuickLookUI
 /// Results stay on the left; the preview and information on the right scroll independently.
 struct ResultDetailPane<Preview: View, Information: View>: View {
     var scrollsPreview = true
+    var previewAspectRatio: CGFloat? = nil
     @ViewBuilder let preview: (CGFloat) -> Preview
     @ViewBuilder let information: () -> Information
 
@@ -12,13 +13,23 @@ struct ResultDetailPane<Preview: View, Information: View>: View {
         GeometryReader { geometry in
             let previewHeight = max(0, (geometry.size.height - VisualStyle.launcherTopInset - VisualStyle.launcherBottomInset - 1) / 2)
             VStack(spacing: 0) {
-                previewRegion(height: previewHeight)
-                    .frame(height: previewHeight + VisualStyle.launcherTopInset)
-                Divider()
+                if let aspectRatio = previewAspectRatio {
+                    let width = max(0, geometry.size.width - 2 * VisualStyle.launcherEdgeInset)
+                    let height = min(width / aspectRatio, previewHeight * 1.34)
+                    preview(height)
+                        .frame(width: width, height: height)
+                        .padding(.top, VisualStyle.launcherTopInset + 5)
+                        .padding(.bottom, 8)
+                } else {
+                    previewRegion(height: previewHeight)
+                        .frame(height: previewHeight + VisualStyle.launcherTopInset)
+                    Divider()
+                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18, content: information)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(18)
+                        .padding(.horizontal, previewAspectRatio == nil ? 18 : VisualStyle.launcherEdgeInset)
+                        .padding(.vertical, previewAspectRatio == nil ? 18 : 0)
                 }
                 .launcherScrollInsets(top: false)
             }

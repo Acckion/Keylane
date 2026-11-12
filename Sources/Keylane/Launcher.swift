@@ -161,9 +161,7 @@ struct Launcher: View {
             if let optionSubmit = page?.optionSubmit {
                 Button("") { closeMenus(); optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
             }
-            if model.pageID == PageID(rawValue: "Clipboard") {
-                clipboardMenuShortcuts
-            }
+            pageMenuShortcuts
             ForEach(0..<min(10, results.count), id: \.self) { index in
                 Button("") { activateResult(results[index].commandID) }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
             }
@@ -521,6 +519,7 @@ struct Launcher: View {
         let secondary = page?.badge != nil
         let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
         let badgeSymbol = page?.badge?.symbol ?? ""
+        let menuTitle = page?.badgeActions == nil ? "Keylane 菜单" : "\(badgeTitle)菜单"
         let feedback = application ? model.footerFeedback.current : nil
         let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
             ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
@@ -541,7 +540,7 @@ struct Launcher: View {
                     .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
             } else if let feedback {
-                NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开 Keylane 菜单" : feedback.label, action: {
+                NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开\(menuTitle)" : feedback.label, action: {
                     if feedback.actionTitle != nil { model.footerFeedback.performAction() }
                     else { toggleMenu(application: true) }
                 }) {
@@ -550,7 +549,7 @@ struct Launcher: View {
                 .frame(width: applicationWidth, height: 36)
                 .transition(.opacity)
             } else if application && secondary {
-                NativeHoverButton(title: "打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
+                NativeHoverButton(title: "打开\(menuTitle)", action: { toggleMenu(application: true) }) {
                     SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol)
                 }.frame(width: applicationWidth, height: 36).transition(.opacity)
             } else if application {
@@ -588,19 +587,19 @@ struct Launcher: View {
         .modifier(LauncherMenuSurface(open: open, tint: open ? nil : feedback?.style.color.opacity(0.16)))
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
-    private var clipboardMenuShortcuts: some View {
-        let actions = page?.actions?() ?? []
-        return ForEach(actions) { action in
+    private var pageMenuShortcuts: some View {
+        let entryActions = model.pageID == PageID(rawValue: "Clipboard") ? page?.actions?() ?? [] : []
+        return ForEach((page?.badgeActions?() ?? []) + entryActions) { action in
             let modifiers = action.keys.dropLast()
             if action.enabled, !modifiers.isEmpty, let key = action.keys.last,
                key != "↩" || modifiers.count > 1,
                let character = key.lowercased().first {
-                clipboardMenuShortcut(action, key: character, modifiers: modifiers)
+                pageMenuShortcut(action, key: character, modifiers: modifiers)
             }
         }
     }
 
-    private func clipboardMenuShortcut(_ action: MenuAction, key: Character, modifiers: ArraySlice<String>) -> some View {
+    private func pageMenuShortcut(_ action: MenuAction, key: Character, modifiers: ArraySlice<String>) -> some View {
         var flags: EventModifiers = []
         if modifiers.contains("⌘") { flags.insert(.command) }
         if modifiers.contains("⌥") { flags.insert(.option) }
@@ -622,6 +621,7 @@ struct Launcher: View {
     }
     private func menuItems(applicationMenu: Bool) -> [MenuAction] {
         if applicationMenu {
+            if let badgeActions = page?.badgeActions { return badgeActions() }
             return [
                 MenuAction(id: "about", title: "关于 Keylane", icon: "app.badge", perform: { model.openSettings(page: "about") }),
                 MenuAction(id: "settings", title: "设置…", icon: "gearshape", keys: ["⌘", ","], perform: { model.runCommand(.init(rawValue: "settings"), origin: .menu) }),
@@ -681,7 +681,9 @@ struct Launcher: View {
 
     private func menuPanel(applicationMenu: Bool, items: [MenuAction]) -> some View {
         let title: String
-        if applicationMenu {
+        if applicationMenu, page?.badgeActions != nil {
+            title = page?.badgeTitle?() ?? page?.badge?.title ?? ""
+        } else if applicationMenu {
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版"
             title = "Keylane " + version
         } else {
