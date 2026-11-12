@@ -81,6 +81,7 @@ struct LauncherPage {
     var maximumActionWidth: CGFloat?
     var releasePreview: (() -> Void)?
     var actionShortcutsEnabled = false
+    var loading: AnyPublisher<Bool, Never>?
 }
 
 struct SettingsTitlebarContribution {
@@ -102,6 +103,7 @@ struct LauncherSettingsPage: Identifiable {
     let items: [SettingsItem]
     var titlebar: SettingsTitlebarContribution?
     var trailingToolbar: (() -> AnyView)?
+    var loading: AnyPublisher<Bool, Never>?
     let content: () -> AnyView
 }
 

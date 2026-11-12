@@ -38,12 +38,14 @@ enum CalendarLauncherModule {
                         .init(id: "calendar-settings", title: "日历设置…", icon: "gearshape", perform: { [weak model] in model?.openSettings(page: settingsID) })
                     ]
                 },
-                searchAccessory: { AnyView(CalendarDateNavigation(controller: calendar)) }
+                searchAccessory: { AnyView(CalendarDateNavigation(controller: calendar)) },
+                loading: calendar.$loading.eraseToAnyPublisher()
             )],
             settings: [.init(
                 id: settingsID, title: "日历", symbol: "calendar", subtitle: "查看日程和会议。", order: 50,
                 items: SettingsItem.all.filter { $0.page == settingsID },
                 titlebar: calendar.permission.titlebar("启用日历"),
+                loading: calendar.$loading.eraseToAnyPublisher(),
                 content: { [weak model] in
                     guard let model else { return AnyView(EmptyView()) }
                     return AnyView(CalendarPreferences(model: model))
