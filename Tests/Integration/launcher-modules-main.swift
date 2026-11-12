@@ -247,3 +247,95 @@ systemGrant = false
 permission.recheck()
 precondition(gated.resolve(gatedID, origin: .shortcut, navigate: { _ in }) == nil && !permission.enabled)
 print("PASS disabled permission commands hidden; authorization and revocation update availability")
+
+let registeredModuleID = ModuleID(rawValue: "fixture.registered")
+let registeredCommandID = CommandID(rawValue: "fixture.registered.static")
+let dynamicCommandID = CommandID(rawValue: "fixture.registered:dynamic")
+let registeredPage = LauncherSettingsPage(id: "fixture-registered", title: "Registered", symbol: "gear",
+                                         subtitle: "", order: 0, items: [], content: { AnyView(EmptyView()) })
+var isPresent = false
+var moduleEnabled = true
+var disabledIDs: Set<CommandID> = []
+var providerReads = 0
+var resolvedVersion = 0
+var installationGeneration: UInt64 = 1
+var dynamicPermission: PermissionFeature?
+var executions: [String] = []
+let registrationChanged = PassthroughSubject<Void, Never>()
+let registered = try LauncherModuleRegistry(modules: [
+    .init(id: registeredModuleID, origin: .installedExtension, commands: [
+        .init(declaration: .init(id: registeredCommandID, title: "Static", detail: "", symbol: "gear", keywords: []),
+              arguments: .init(count: 0...1) { _, arguments in executions += arguments.isEmpty ? ["static"] : arguments })
+    ], providers: [
+        .init(namespace: .prefix("fixture.registered:"), entries: { _ in
+            providerReads += 1
+            return [.init(id: dynamicCommandID.rawValue, commandID: dynamicCommandID, name: "Dynamic", detail: "", symbol: "gear")]
+        }, resolve: { id, _ in
+            guard id == dynamicCommandID else { return nil }
+            let version = resolvedVersion
+            return { executions.append("dynamic:\(version)") }
+        }, permission: { _ in dynamicPermission })
+    ], settings: [registeredPage], registration: .init(isPresent: { isPresent },
+                                                        updates: registrationChanged.eraseToAnyPublisher(),
+                                                        isEnabled: { moduleEnabled }, generation: { installationGeneration }))
+], commandEnabled: { !disabledIDs.contains($0) })
+let registeredSearchInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
+let origins: [LauncherCommandOrigin] = [.search, .shortcut, .menu]
+var registrationUpdates = 0
+let registrationObservation = registered.searchUpdates.sink { registrationUpdates += 1 }
+
+precondition(registered.moduleOwningCommand(registeredCommandID) == registeredModuleID)
+precondition(registered.moduleOwningCommand(dynamicCommandID) == registeredModuleID)
+precondition(registered.settingsCatalog.pages.isEmpty && registered.shortcutCommandGroups.isEmpty)
+precondition(registered.candidates(for: registeredSearchInput).isEmpty && providerReads == 0)
+for origin in origins {
+    precondition(!registered.invoke(dynamicCommandID, origin: origin, navigate: { _ in }))
+}
+isPresent = true
+registrationChanged.send()
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(registrationUpdates == 1)
+precondition(registered.settingsCatalog.pages.map(\.id) == [registeredPage.id])
+precondition(registered.shortcutCommandGroups.map(\.id) == [registeredModuleID] && providerReads == 0)
+precondition(registered.candidates(for: registeredSearchInput).map(\.commandID) == [registeredCommandID, dynamicCommandID])
+let queuedStatic = registered.resolve(registeredCommandID, origin: .menu, navigate: { _ in })!
+let queuedDynamic = registered.resolve(dynamicCommandID, origin: .shortcut, navigate: { _ in })!
+moduleEnabled = false
+queuedStatic()
+queuedDynamic()
+precondition(executions.isEmpty && registered.candidates(for: registeredSearchInput).isEmpty)
+precondition(registered.shortcutCommandGroups.map(\.id) == [registeredModuleID])
+moduleEnabled = true
+disabledIDs = [registeredCommandID, dynamicCommandID]
+queuedStatic()
+queuedDynamic()
+for origin in origins {
+    precondition(!registered.invoke(dynamicCommandID, origin: origin, navigate: { _ in }))
+}
+precondition(executions.isEmpty && registered.candidates(for: registeredSearchInput).isEmpty)
+disabledIDs = []
+resolvedVersion = 1
+queuedDynamic()
+precondition(executions == ["dynamic:1"])
+installationGeneration += 1
+queuedDynamic()
+queuedStatic()
+precondition(executions == ["dynamic:1"])
+dynamicPermission = permission
+precondition(registered.permissionNeeded(for: dynamicCommandID) === permission)
+for origin in origins {
+    precondition(!registered.invoke(dynamicCommandID, origin: origin, navigate: { _ in }))
+}
+precondition(registered.candidates(for: registeredSearchInput).map(\.commandID) == [registeredCommandID])
+precondition(requests == 2)
+dynamicPermission = nil
+precondition(registered.invoke(registeredCommandID, origin: .menu, arguments: ["preserve original text"], navigate: { _ in }))
+precondition(!registered.invoke(registeredCommandID, origin: .menu, arguments: ["too", "many"], navigate: { _ in }))
+isPresent = false
+registrationChanged.send()
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+queuedDynamic()
+precondition(registrationUpdates == 2 && registered.settingsCatalog.pages.isEmpty)
+precondition(registered.shortcutCommandGroups.isEmpty && executions == ["dynamic:1", "preserve original text"])
+withExtendedLifetime(registrationObservation) {}
+print("PASS shared command admission, installed catalog visibility, and stale dispatch")

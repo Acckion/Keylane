@@ -31,7 +31,29 @@ struct SettingsView: View {
         .toolbarBackground(.visible, for: .windowToolbar)
         .preferredColorScheme(state.colorScheme)
         .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
-        .onAppear { selected = state.page; history = [selected]; historyIndex = 0 }
+        .onAppear {
+            selected = state.catalog.page(state.page)?.id ?? state.catalog.pages.first?.id ?? "applications"
+            history = [selected]
+            historyIndex = 0
+            if state.page != selected { state.select(selected) }
+        }
+        .onChange(of: state.catalog.pages.map(\.id)) { _, pages in
+            guard pages.contains(selected) else {
+                selected = pages.first ?? "applications"
+                history = [selected]
+                historyIndex = 0
+                target = nil
+                return
+            }
+            let visited = history.prefix(historyIndex + 1).filter(pages.contains)
+            history = history.filter(pages.contains)
+            if visited.isEmpty || history.isEmpty {
+                history = [selected]
+                historyIndex = 0
+            } else {
+                historyIndex = visited.count - 1
+            }
+        }
         .onChange(of: selected) { _, page in
             if history[historyIndex] != page { history = Array(history.prefix(historyIndex + 1)); history.append(page); historyIndex = history.count - 1 }
             if state.page != page { state.select(page) }
