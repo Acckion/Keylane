@@ -31,14 +31,27 @@ final class PermissionFeature {
     private var awaitingPermission = false
     private var activation: AnyCancellable?
 
-    init(_ key: String, authorization: Authorization, defaults: UserDefaults = .standard) {
+    init(_ key: String, authorization: Authorization, defaults: UserDefaults = .standard, observeImmediately: Bool = true) {
         self.key = key
         self.authorization = authorization
         self.defaults = defaults
-        enabled = defaults.bool(forKey: key) && authorization.check() != false
-        if !enabled && defaults.bool(forKey: key) { defaults.set(false, forKey: key) }
+        enabled = defaults.bool(forKey: key)
+        if observeImmediately { startObserving() }
+    }
+
+    func startObserving() {
+        guard activation == nil else { return }
+        recheck()
         activation = NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.recheck() }
+    }
+
+    func stopObserving() {
+        activation?.cancel()
+        activation = nil
+        revision += 1
+        awaitingPermission = false
+        status = .init()
     }
 
     var available: Bool { enabled && authorization.check() != false }

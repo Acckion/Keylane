@@ -41,6 +41,15 @@ func wait(_ seconds: TimeInterval, _ condition: () -> Bool) -> Bool {
 func write(_ name: String, _ script: String) throws {
     try script.write(to: root.appendingPathComponent(name), atomically: true, encoding: .utf8)
 }
+func writeSilent(_ name: String) throws {
+    try write("\(name).sh", """
+    #!/bin/sh
+    # @raycast.schemaVersion 1
+    # @raycast.title \(name)
+    # @raycast.mode silent
+    exit 0
+    """)
+}
 func starts() -> Int {
     ((try? String(contentsOf: marker, encoding: .utf8)) ?? "").split(separator: "\n").count
 }
@@ -74,7 +83,7 @@ precondition(wait(5) { controller.entries.count == 2 && !controller.scanning })
 precondition(scans == 2, "neighboring writes did not coalesce")
 let dependencies = root.appendingPathComponent("node_modules", isDirectory: true)
 try FileManager.default.createDirectory(at: dependencies, withIntermediateDirectories: false)
-try "exit 0".write(to: dependencies.appendingPathComponent("ignored.sh"), atomically: true, encoding: .utf8)
+try "#!/bin/sh\nexit 0".write(to: dependencies.appendingPathComponent("ignored.sh"), atomically: true, encoding: .utf8)
 advance(1.6)
 precondition(scans == 2, "ignored dependency changes caused a scan")
 print("PASS recursive FSEvents discovery, event coalescing, ignored directories, and no scan on reveal")
@@ -106,7 +115,7 @@ precondition(starts() == 4 && !FileManager.default.fileExists(atPath: finished.p
 print("PASS inline scheduling, identical output suppression, foreground priority, and background cancellation on hide")
 controller.enabled = false
 let scansBeforeDisable = scans
-try write("another.sh", "exit 0")
+try writeSilent("another")
 advance(1.8)
 precondition(scans == scansBeforeDisable)
 controller.enabled = true
@@ -115,8 +124,32 @@ let original = base.appendingPathComponent("previous")
 try FileManager.default.moveItem(at: root, to: original)
 precondition(wait(5) { controller.entries.isEmpty && !controller.scanning })
 try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
-try write("replacement.sh", "exit 0")
+try writeSilent("replacement")
 precondition(wait(5) { controller.entries.map(\.title) == ["replacement"] && !controller.scanning })
+try write("long.sh", """
+#!/bin/sh
+# @raycast.schemaVersion 1
+# @raycast.title Long Foreground
+# @raycast.mode fullOutput
+printf '%s\\n' "$$" > '\(processID.path)'
+/bin/sleep 30
+""")
+try FileManager.default.removeItem(at: processID)
+precondition(wait(5) { controller.entries.contains { $0.title == "Long Foreground" } })
+let long = controller.entries.first { $0.title == "Long Foreground" }!
+controller.select(long)
+controller.run()
+precondition(wait(4) { controller.running && runningPID() != nil })
+let stoppedProcess = runningPID()!
+controller.stop()
+precondition(!controller.running && controller.entries.isEmpty && !controller.canRun(long))
+precondition(wait(3) { kill(stoppedProcess, 0) == -1 })
+let scansWhileStopped = scans
+try writeSilent("after-stop")
+advance(1.8)
+precondition(scans == scansWhileStopped && controller.result == nil)
+controller.start()
+precondition(wait(5) { controller.entries.contains { $0.title == "after-stop" } && controller.canRun(long) })
 controller.stop()
 withExtendedLifetime((scanning, output)) {}
 print("PASS stopping discovery while disabled, re-enabling, and replacing a watched root")

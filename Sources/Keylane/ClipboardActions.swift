@@ -83,7 +83,7 @@ enum ClipboardActions {
                     controller.share(link.map { $0 as Any } ?? text)
                 } else {
                     withFiles(detail, controller: controller, failure: feedback) { files in
-                        FileActionsWindow.shared.show(files.urls, page: "share", retaining: files)
+                        FileActionsWindow.shared.show(files.urls, page: "share", retaining: files, owner: .clipboard)
                     }
                 }
             })
@@ -103,13 +103,13 @@ enum ClipboardActions {
         }
         actions.append(.init(id: "pin-clip", title: item.pinned ? "取消置顶" : "置顶记录", icon: "pin",
                              keys: ["⌘", "."], group: 1, perform: controller.pinSelected))
-        if !text.isEmpty {
+        if !text.isEmpty, model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.snippets")) == true {
             actions.append(.init(id: "snippet-clip", title: "存为文字片段", icon: "text.badge.plus",
                                  keys: ["⌘", "S"], group: 2) { [weak model] in
                 if let model { SnippetsModule.create(from: text, model: model) }
             })
         }
-        if let quicklink {
+        if let quicklink, model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.links")) == true {
             let title = link?.host() ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
             actions.append(.init(id: "quicklink-clip", title: "存为快捷链接", icon: "link",
                                  keys: ["⇧", "⌘", "S"], group: 2) { [weak model] in
@@ -152,7 +152,7 @@ enum ClipboardActions {
         var actions: [LauncherAction] = [
             .init(id: "open-clip-file", title: "打开方式…", icon: "app", keys: ["⌘", "O"], group: 1) {
                 withFiles(detail, controller: controller, failure: feedback) { files in
-                    FileActionsWindow.shared.show(files.urls, page: "open", retaining: files)
+                    FileActionsWindow.shared.show(files.urls, page: "open", retaining: files, owner: .clipboard)
                 }
             },
             .init(id: "reveal-clip-file", title: "在访达中显示", icon: "folder", keys: ["⇧", "⌘", "O"], group: 1) {
@@ -183,7 +183,7 @@ enum ClipboardActions {
         }
         actions.append(.init(id: "preview-clip-file", title: "快速查看", icon: "eye", keys: ["⌘", "Y"], group: 1) {
             withFiles(detail, controller: controller, failure: feedback) { files in
-                FilePreview.shared.show(files.urls, retaining: files)
+                FilePreview.shared.show(files.urls, retaining: files, owner: .clipboard)
             }
         })
         return actions

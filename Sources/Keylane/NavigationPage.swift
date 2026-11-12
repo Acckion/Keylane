@@ -11,6 +11,7 @@ final class NavigationController: ObservableObject {
     @Published var selection = 0
     private var items: [NavigationItem] = []
     private var scanRequest: NavigationScanRequest?
+    private var actionRequest: NavigationScanRequest?
 
     enum Status { case loading, permission, noApplication, ready }
 
@@ -53,6 +54,15 @@ final class NavigationController: ObservableObject {
         if !results.isEmpty { results = [] }
     }
 
+    func stopModule() {
+        stop()
+        actionRequest?.cancel()
+        actionRequest = nil
+        performing = false
+        targetName = nil
+        query = ""
+    }
+
     func move(_ delta: Int) {
         let next = NavigationBounds.move(selection, by: delta, count: results.count)
         if next != selection { selection = next }
@@ -61,8 +71,12 @@ final class NavigationController: ObservableObject {
     func perform(_ item: NavigationItem, mode: NavigationMode, completion: @escaping (String?) -> Void) {
         guard !performing else { return }
         performing = true
-        SystemNavigation.shared.perform(item, mode: mode) { [weak self] message in
-            self?.performing = false
+        let request = NavigationScanRequest()
+        actionRequest = request
+        SystemNavigation.shared.perform(item, mode: mode, request: request) { [weak self] message in
+            guard let self, self.actionRequest === request else { return }
+            self.actionRequest = nil
+            self.performing = false
             completion(message)
         }
     }

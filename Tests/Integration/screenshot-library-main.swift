@@ -128,6 +128,18 @@ struct ScreenshotLibraryCheck {
         library.filter = .images
         try require(library.sections.first?.items.isEmpty == true, "Pins must respect the media filter")
 
+        library.enabled = false
+        try require(library.results.isEmpty && library.selected == nil && !library.scanning && !library.searchingText,
+                    "Disabling screenshots must release the catalog and cancel queries")
+        try require(library.pinnedIDs == [movieItem.id], "Disabling must preserve pinned recordings")
+        library.refresh()
+        try require(!library.scanning, "Disabled screenshots must not begin a scan")
+        library.enabled = true
+        library.filter = .movies
+        library.refresh()
+        try await wait { !library.scanning && library.selected?.id == movieItem.id }
+        try require(library.sections.first?.items.map(\.id) == [movieItem.id], "Re-enabled screenshots must restore pins")
+
         print("Screenshot scope, query, Quick Look thumbnail, OCR and QR, file copy, pinning, grid zoom, and trash passed")
     }
 

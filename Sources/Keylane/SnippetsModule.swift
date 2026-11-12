@@ -10,13 +10,14 @@ enum SnippetsModule {
     private static let symbol = "text.badge.plus"
 
     static func create(from text: String, model: Model) {
+        guard model.launcherModules?.page(editID) != nil else { return }
         model.snippets.edit(Snippet(text: text))
         model.openPage(editID, origin: .menu)
     }
 
     static func make(model: Model) -> LauncherModule {
         let snippets = model.snippets
-        let expansionPermission = PermissionFeature("snippets.expandsKeywords", authorization: .accessibility)
+        let expansionPermission = PermissionFeature("snippets.expandsKeywords", authorization: .accessibility, observeImmediately: false)
         var expansionChanges: AnyCancellable?
         let create: (LauncherCommandOrigin) -> Void = { [weak model] origin in
             snippets.edit()
@@ -89,6 +90,7 @@ enum SnippetsModule {
                       })
             ],
             services: [.init(start: {
+                expansionPermission.startObserving()
                 snippets.expandsKeywords = expansionPermission.available
                 snippets.start()
                 expansionChanges = expansionPermission.updates.receive(on: DispatchQueue.main).sink {
@@ -97,6 +99,7 @@ enum SnippetsModule {
             }, stop: {
                 expansionChanges?.cancel()
                 expansionChanges = nil
+                expansionPermission.stopObserving()
                 snippets.stop()
             })],
             applicationFocused: { _ in snippets.applicationFocused() }

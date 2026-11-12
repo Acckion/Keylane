@@ -46,26 +46,54 @@ final class SystemShortcutsController: ObservableObject {
     private let runQueue = DispatchQueue(label: "org.keylane.shortcuts.run", qos: .userInitiated)
     private let iconQueue = DispatchQueue(label: "org.keylane.shortcuts.icons", qos: .utility)
     private let loadsIcons: Bool
+    private let executable: URL
     var iconReadingAllowed: () -> Bool = { false }
     private var iconGeneration = 0
+    private var iconRequest: DispatchWorkItem?
+    private var catalogRequest: ExtensionProcessRequest?
+    private var runRequest: ExtensionProcessRequest?
+    private var active: Bool
     private var lastRefresh = Date.distantPast
     @Published private(set) var executionMessage = ""
 
-    init(loadsIcons: Bool = true) {
+    init(loadsIcons: Bool = true, active: Bool = true,
+         executable: URL = URL(fileURLWithPath: "/usr/bin/shortcuts")) {
+        self.executable = executable
+        self.active = active
         self.loadsIcons = loadsIcons
         disabledIDs = Set(UserDefaults.standard.stringArray(forKey: "systemShortcuts.disabled") ?? [])
     }
 
+    func start() { active = true; refresh() }
+
+    func stop() {
+        active = false
+        catalogRequest?.cancel()
+        catalogRequest = nil
+        runRequest?.cancel()
+        runRequest = nil
+        updateIconPermission()
+        entries = []
+        loading = false
+        runningID = nil
+        message = ""
+        executionMessage = ""
+        lastRefresh = .distantPast
+    }
+
     func refresh(force: Bool = false) {
-        guard !loading, force || Date().timeIntervalSince(lastRefresh) > 15 else { return }
+        guard active, !loading, force || Date().timeIntervalSince(lastRefresh) > 15 else { return }
         lastRefresh = Date()
         loading = true
         message = ""
-        catalogQueue.async { [weak self] in
-            let result = Self.listShortcuts()
+        let request = ExtensionProcessRequest()
+        catalogRequest = request
+        catalogQueue.async { [weak self, executable] in
+            let result = Self.listShortcuts(executable: executable, request: request)
             let records = result.map(SystemShortcut.parse)
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.catalogRequest === request else { return }
+                self.catalogRequest = nil
                 self.loading = false
                 if let records {
                     self.entries = records
@@ -85,21 +113,26 @@ final class SystemShortcutsController: ObservableObject {
 
     func updateIconPermission() {
         iconGeneration += 1
+        iconRequest?.cancel()
+        iconRequest = nil
         icons = [:]
         iconAccess = .inactive
         if iconReadingAllowed() { refreshIcons(force: true) }
     }
 
     private func refreshIcons(force: Bool) {
-        guard loadsIcons, iconReadingAllowed(), iconAccess != .loading, !entries.isEmpty else { return }
+        guard active, loadsIcons, iconReadingAllowed(), iconAccess != .loading, !entries.isEmpty else { return }
         let ids = entries.map(\.id)
         guard force || iconAccess == .inactive || (iconAccess == .allowed && Set(ids) != Set(icons.keys)) else { return }
         iconAccess = .loading
         let ticket = iconGeneration
+        let request = DispatchWorkItem {}
+        iconRequest = request
 
         let load: () -> Void = { [weak self] in
             guard let self, self.iconGeneration == ticket, self.iconReadingAllowed() else { return }
             self.iconQueue.async { [weak self] in
+                guard !request.isCancelled else { return }
                 let permission = ShortcutIconReader.permissionStatus()
                 guard permission == noErr else {
                     DispatchQueue.main.async {
@@ -111,7 +144,7 @@ final class SystemShortcutsController: ObservableObject {
                 }
                 var rendered: [String: CGImage] = [:]
                 var denied = false
-                for id in ids {
+                for id in ids where !request.isCancelled {
                     do { rendered[id] = try ShortcutIconReader.image(id: id) }
                     catch let error as NSError {
                         if error.code == -1743 || error.code == -1744 { denied = true; break }
@@ -157,19 +190,22 @@ final class SystemShortcutsController: ObservableObject {
     }
 
     func run(_ id: String) {
-        guard UUID(uuidString: id) != nil, !disabledIDs.contains(id), runningID == nil else { return }
+        guard active, UUID(uuidString: id) != nil, !disabledIDs.contains(id), runningID == nil else { return }
         runningID = id
         executionMessage = "正在运行…"
-        runQueue.async { [weak self] in
+        let request = ExtensionProcessRequest()
+        runRequest = request
+        runQueue.async { [weak self, executable] in
             let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+            process.executableURL = executable
             process.arguments = ["run", id]
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             let status: String
             do {
-                try process.run()
+                try request.launch(process)
+                defer { request.finished() }
                 // Interactive shortcuts can wait for user input or a permission dialog.
                 process.waitUntilExit()
                 if process.terminationReason != .exit {
@@ -183,22 +219,25 @@ final class SystemShortcutsController: ObservableObject {
                 status = "无法启动系统快捷指令。"
             }
             DispatchQueue.main.async {
-                self?.executionMessage = status
-                self?.runningID = nil
+                guard let self, self.runRequest === request else { return }
+                self.runRequest = nil
+                self.executionMessage = status
+                self.runningID = nil
             }
         }
     }
 
-    private static func listShortcuts() -> String? {
+    private static func listShortcuts(executable: URL, request: ExtensionProcessRequest) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+        process.executableURL = executable
         process.arguments = ["list", "--show-identifiers"]
         process.standardInput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let pipe = Pipe()
         process.standardOutput = pipe
-        do { try process.run() } catch { return nil }
-        let stop = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        do { try request.launch(process) } catch { return nil }
+        defer { request.finished() }
+        let stop = DispatchWorkItem { request.cancel() }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 12, execute: stop)
         defer { stop.cancel() }
         var bytes = Data()
@@ -369,6 +408,7 @@ final class DictionaryController: ObservableObject {
         generation += 1
         let ticket = generation
         pending?.cancel()
+        pending = nil
         term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         definition = nil
         loading = !term.isEmpty && term.utf16.count <= 256
@@ -378,6 +418,7 @@ final class DictionaryController: ObservableObject {
             let result = Self.definition(for: text)
             DispatchQueue.main.async {
                 guard let self, self.generation == ticket else { return }
+                self.pending = nil
                 self.definition = result
                 self.loading = false
             }

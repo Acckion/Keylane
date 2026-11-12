@@ -6,6 +6,7 @@ import KeylaneCore
 final class ApplicationDiscovery {
     private var stream: FSEventStreamRef?
     private var pending: DispatchWorkItem?
+    private var scanRequest: DispatchWorkItem?
     private var generation = 0
     private var roots: [String] = []
     private var excluded: Set<String> = []
@@ -35,16 +36,22 @@ final class ApplicationDiscovery {
         refresh()
     }
     func refresh() {
+        guard !roots.isEmpty else { return }
         generation += 1; let version = generation; pending?.cancel()
+        scanRequest?.cancel()
+        let request = DispatchWorkItem {}
+        scanRequest = request
         let paths = roots; let excluded = excluded; let started = Date()
         let task = DispatchWorkItem { [weak self] in
-            let apps = ApplicationCatalog.scan(roots: paths, excluded: excluded)
+            let apps = ApplicationCatalog.scan(roots: paths, excluded: excluded, isCancelled: { request.isCancelled })
             DispatchQueue.main.async { guard let self, self.generation == version else { return }; self.updated?(apps, Date().timeIntervalSince(started)) }
         }
         pending = task; DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now()+0.25, execute: task)
     }
     func stop() {
         generation += 1; pending?.cancel(); pending = nil
+        scanRequest?.cancel(); scanRequest = nil
+        roots = []; excluded = []
         if let stream { FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream) }
         stream = nil
     }

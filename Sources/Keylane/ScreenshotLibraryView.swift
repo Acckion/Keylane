@@ -48,7 +48,8 @@ struct ScreenshotLibraryPage: View {
     }
 }
 
-private struct ScreenshotThumbnail: View {
+struct ScreenshotThumbnail: View {
+    static func releaseCache() { cache.removeAllObjects() }
     private static let cache: NSCache<NSString, NSImage> = {
         let value = NSCache<NSString, NSImage>()
         value.countLimit = 100

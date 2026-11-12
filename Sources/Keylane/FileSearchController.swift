@@ -25,6 +25,9 @@ final class FileSearchController: ObservableObject {
     private let watchEnabled: Bool
     private let writer = DispatchQueue(label: "org.keylane.files.index", qos: .utility)
     private let reader = DispatchQueue(label: "org.keylane.files.search", qos: .userInitiated)
+    private let databaseURL: URL
+    private var runtime: FileScanCancellation?
+    var isRunning: Bool { runtime != nil }
     private var writeDB: FileSearchIndex?
     private var readDB: FileSearchIndex?
     private var cancellation = FileScanCancellation()
@@ -58,8 +61,9 @@ final class FileSearchController: ObservableObject {
         options.enabled = false
         return options
     }
-    init(directory: URL? = nil, preferences: UserDefaults = .standard, defaultOptions: FileSearchOptions? = nil, watchChanges: Bool = true, availableCapacity: ((URL) -> Int64)? = nil) {
+    init(directory: URL? = nil, preferences: UserDefaults = .standard, defaultOptions: FileSearchOptions? = nil, watchChanges: Bool = true, availableCapacity: ((URL) -> Int64)? = nil, startImmediately: Bool = true) {
         self.preferences = preferences; self.watchEnabled = watchChanges
+        databaseURL = directory?.appendingPathComponent("index.sqlite") ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane/FileSearch/index.sqlite")
         self.availableCapacity = availableCapacity ?? { url in (try? FileManager.default.attributesOfFileSystem(forPath:url.path)[.systemFreeSize] as? Int64) ?? 0 }
         options = preferences.data(forKey: "fileSearchOptions").flatMap { try? JSONDecoder().decode(FileSearchOptions.self, from: $0) } ?? defaultOptions ?? Self.defaults
         grants = preferences.dictionary(forKey: "fileSearchGrants") as? [String: Data] ?? [:]
@@ -74,36 +78,75 @@ final class FileSearchController: ObservableObject {
         }
         automaticExclusions = preferences.data(forKey: "fileSearchAutomaticExclusions").flatMap { try? JSONDecoder().decode([AutomaticFileExclusion].self, from: $0) } ?? []
         if let data = preferences.data(forKey: "fileSearchLastStats"), let value = try? JSONDecoder().decode(FileIndexStats.self, from:data) { stats = value }
-        resolveGrants()
-        let url = directory?.appendingPathComponent("index.sqlite") ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane/FileSearch/index.sqlite")
-        writer.async { [weak self] in
-            guard let self else { return }
-            do {
-                self.writeDB = try FileSearchIndex(url: url)
-                try self.reader.sync { self.readDB = try FileSearchIndex(url: url); self.refreshStats() }
-                DispatchQueue.main.async { if !self.currentQuery.isEmpty { self.refreshQuery() } }
-            }
-            catch { self.fail(error) }
-        }
         spotlight.updated = { [weak self] results, _ in
-            guard let self else { return }
+            guard let self, self.isRunning else { return }
             self.spotlightResults = results
             if self.isSearching && !self.localQueryResolved && results.isEmpty { return }
             self.publish()
         }
+        if startImmediately { startRuntime() }
     }
+
+    func startRuntime() {
+        guard runtime == nil else { return }
+        let token = FileScanCancellation()
+        runtime = token
+        resolveGrants()
+        writer.async { [weak self] in
+            guard let self, !token.cancelled else { return }
+            do {
+                self.writeDB = try FileSearchIndex(url: self.databaseURL)
+                try self.reader.sync {
+                    guard !token.cancelled else { return }
+                    self.readDB = try FileSearchIndex(url: self.databaseURL)
+                    self.refreshStats(runtime: token)
+                }
+                DispatchQueue.main.async {
+                    guard !token.cancelled, !self.currentQuery.isEmpty else { return }
+                    self.refreshQuery()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    if !token.cancelled { self.indexStatus = error.localizedDescription; self.indexing = false }
+                }
+            }
+        }
+    }
+
+    func stopRuntime() {
+        guard let runtime else { return }
+        runtime.cancel()
+        self.runtime = nil
+        cancellation.cancel()
+        cancellation = FileScanCancellation()
+        cancel()
+        stopWatch()
+        didStart = false
+        indexing = false
+        inaccessible = []
+        lastPublished = []
+        lastPublishedQuery = ""
+        lastPublishedStatus = ""
+        indexStatus = "文件搜索扩展已关闭"
+        updated?([], indexStatus)
+        resolveGrants()
+        writer.async { [weak self] in self?.writeDB = nil }
+        reader.async { [weak self] in self?.readDB = nil }
+    }
+
     deinit { stopWatch(); cancelMerge(); cancellation.cancel(); activeURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
-    private func fail(_ error: Error) { DispatchQueue.main.async { self.indexStatus = error.localizedDescription } }
     private func configure(old: FileSearchOptions) {
         preferences.set(try? JSONEncoder().encode(options), forKey: "fileSearchOptions")
         var previous = old; previous.searchFromLauncher = options.searchFromLauncher
-        if previous == options { return }
+        guard previous != options, let runtime else { return }
         cancelMerge(); cancellation.cancel(); spotlight.cancel(); spotlightResults = []; localResults = []; stopWatch()
         let contentEnabled = options.contentSearch
         let removed = old.roots.filter { !options.roots.contains($0) }
         writer.async { [weak self] in
             guard let self else { return }
-            do { for root in removed { try self.writeDB?.removeScope(root) }; if !contentEnabled { try self.writeDB?.clearBodies() } } catch { self.fail(error) }
+            do { for root in removed { try self.writeDB?.removeScope(root) }; if !contentEnabled { try self.writeDB?.clearBodies() } } catch {
+                DispatchQueue.main.async { if !runtime.cancelled { self.indexStatus = error.localizedDescription } }
+            }
         }
         if options.enabled {
             let query = currentQuery
@@ -115,6 +158,7 @@ final class FileSearchController: ObservableObject {
     }
     private func resolveGrants() {
         activeURLs.forEach { $0.stopAccessingSecurityScopedResource() }; activeURLs = []
+        guard isRunning else { return }
         for (_,data) in grants {
             var stale = false
             if let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope,.withoutUI], bookmarkDataIsStale: &stale), url.startAccessingSecurityScopedResource() { activeURLs.append(url) }
@@ -182,7 +226,7 @@ final class FileSearchController: ObservableObject {
     func cancel() {
         cancelMerge()
         let wasSearching = !currentQuery.isEmpty
-        queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
+        queryVersion += 1; pendingQuery?.cancel(); pendingQuery = nil; queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
         if wasSearching {
             reader.async { [weak self] in self?.readDB?.releaseCachedPages() }
         }
@@ -192,7 +236,7 @@ final class FileSearchController: ObservableObject {
         let changed = currentQuery != text || scopeChanged
         currentQuery = text
         includesQueryContents = includeContents
-        guard options.enabled else { emit([], "文件搜索已关闭，请在设置中开启。"); return }
+        guard isRunning, options.enabled else { emit([], "文件搜索已关闭，请在设置中开启。"); return }
         guard !FileSearchRules.tokens(text).isEmpty, text.count <= 256 else {
             cancelMerge()
             queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); isSearching = false
@@ -212,7 +256,7 @@ final class FileSearchController: ObservableObject {
         refreshQuery(delay: changed ? 0.06 : 0)
     }
     private func refreshQuery(delay: Double = 0) {
-        guard options.enabled, !currentQuery.isEmpty else { return }
+        guard isRunning, options.enabled, !currentQuery.isEmpty else { return }
         pendingQuery?.cancel(); queryCancellation.cancel(); queryCancellation = FileScanCancellation()
         let cancellation = queryCancellation
         queryVersion += 1; let ticket = queryVersion
@@ -260,7 +304,7 @@ final class FileSearchController: ObservableObject {
     }
 
     private func publish() {
-        guard options.enabled, !currentQuery.isEmpty else { return }
+        guard isRunning, options.enabled, !currentQuery.isEmpty else { return }
         cancelMerge()
         let ticket = mergeVersion
         let query = currentQuery
@@ -300,8 +344,20 @@ final class FileSearchController: ObservableObject {
         pendingMerge = task
         mergeQueue.async(execute: task)
     }
-    private func refreshStats() {
-        do { if let stats = try readDB?.stats() { DispatchQueue.main.async { var current = stats; current.invalid = self.stats.invalid; current.seconds = self.stats.seconds; self.stats = current } } } catch { fail(error) }
+    private func refreshStats(runtime: FileScanCancellation) {
+        do {
+            if let stats = try readDB?.stats() {
+                DispatchQueue.main.async {
+                    guard !runtime.cancelled else { return }
+                    var current = stats
+                    current.invalid = self.stats.invalid
+                    current.seconds = self.stats.seconds
+                    self.stats = current
+                }
+            }
+        } catch {
+            DispatchQueue.main.async { if !runtime.cancelled { self.indexStatus = error.localizedDescription } }
+        }
     }
     func startIndex() {
         dirtyPaths.removeAll()
@@ -309,7 +365,7 @@ final class FileSearchController: ObservableObject {
         scanIndex()
     }
     private func scanIndex(paths: [String]? = nil) {
-        guard options.enabled else { return }
+        guard isRunning, options.enabled else { return }
         didStart = true; cancellation.cancel(); let token = FileScanCancellation(); cancellation = token
         let config = options; let exclusions = automaticExclusions.map(\.path); let restored = restored
         indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []; startWatch()
