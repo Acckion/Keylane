@@ -103,11 +103,8 @@ enum ScriptCommandsModule {
 
     static func make(model: Model) -> LauncherModule {
         let controller = model.scripts
-        let provider = LauncherModule.Provider(namespace: .prefix(ScriptCommand.namespace), entries: { input in
-            controller.entries.filter {
-                controller.canRun($0) && (input.page != .root ||
-                    $0.allowsRootQuery(input.query, alias: input.aliases[$0.id]))
-            }.map { script in
+        let provider = LauncherModule.Provider(namespace: .prefix(ScriptCommand.namespace), entries: { _ in
+            controller.entries.filter(controller.canRun).map { script in
                 Entry(id: script.id, commandID: .init(rawValue: script.id), name: script.title,
                       detail: "脚本命令", symbol: symbol,
                       aliases: [script.url.lastPathComponent, script.metadata?.packageName ?? "", script.metadata?.description ?? ""],
@@ -147,8 +144,7 @@ enum ScriptCommandsModule {
                     model.openPage(pageID, origin: .menu)
                 }),
                 .init(id: "script-edit", title: "编辑脚本", icon: "pencil", group: 1, perform: {
-                    let editor = script.url.pathExtension.lowercased() == "scpt" ? "com.apple.ScriptEditor2" : "com.apple.TextEdit"
-                    if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: editor) {
+                    if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.TextEdit") {
                         NSWorkspace.shared.open([script.url], withApplicationAt: app, configuration: NSWorkspace.OpenConfiguration()) { _, error in
                             guard let error else { return }
                             DispatchQueue.main.async {
@@ -288,7 +284,7 @@ private struct ScriptSearchView: View {
                              query: model.query, firstResult: entries.first?.id) {
             if entries.isEmpty {
                 ContentUnavailableView("没有匹配的脚本", systemImage: "terminal",
-                                       description: Text("可以在脚本命令设置中添加文件夹。"))
+                                       description: Text("请在脚本命令设置中添加文件夹，并在脚本中声明 @raycast.schemaVersion、@raycast.title 和 @raycast.mode。"))
                     .frame(maxWidth: .infinity)
             }
             ForEach(entries) { entry in
@@ -336,7 +332,7 @@ private struct ScriptCommandsPreferences: View {
         SettingsPageSections {
             SettingsSearchScopeCard(
                 title: "脚本文件夹", paths: controller.folders,
-                detail: "扫描这些文件夹及子文件夹，支持 Shell、Python 和 JavaScript。",
+                detail: "扫描这些文件夹及子文件夹，只收录声明了 Raycast 命令元数据的脚本。",
                 anchor: .scriptFolders, add: controller.addFolder, remove: controller.removeFolder
             ) {
                 if !controller.unavailable.isEmpty {

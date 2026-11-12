@@ -21,43 +21,47 @@ final class ScriptCommandTests: XCTestCase {
         return url
     }
 
+    private func annotated(_ title: String, _ body: String) -> String {
+        "# @raycast.schemaVersion 1\n# @raycast.title \(title)\n# @raycast.mode silent\n" + body
+    }
+
     func testDiscoveryDoesNotExecuteAndSkipsSymlinks() throws {
-        let original = try write("测试.sh", #"touch "${0%/*}/ran""#)
+        let original = try write("测试.sh", annotated("测试", #"touch "${0%/*}/ran""#))
         try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("copy.sh"), withDestinationURL: original)
-        _ = try write(".hidden.sh", "exit 0")
-        _ = try write("readme.txt", "exit 0")
+        _ = try write(".hidden.sh", annotated("Hidden", "exit 0"))
+        _ = try write("readme.txt", annotated("Readme", "exit 0"))
         let catalog = ScriptCommand.discover(in: [folder.path, folder.path])
         XCTAssertEqual(catalog.commands.map(\.url), [original])
         XCTAssertTrue(catalog.unavailable.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("ran").path))
     }
 
-    func testDiscoverySkipsDependenciesAndUnannotatedPythonInternals() throws {
+    func testDiscoveryRequiresValidMetadataAndSkipsDependencies() throws {
         let packages = folder.appendingPathComponent("venv/lib/site-packages", isDirectory: true)
         let node = folder.appendingPathComponent("node_modules", isDirectory: true)
         for directory in [packages, node] {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         }
-        try "exit()".write(to: packages.appendingPathComponent("__about__.py"), atomically: true, encoding: .utf8)
-        try "console.log('a')".write(to: node.appendingPathComponent("abc.js"), atomically: true, encoding: .utf8)
+        try annotated("Dependency", "exit()").write(to: packages.appendingPathComponent("__about__.py"), atomically: true, encoding: .utf8)
+        try annotated("Dependency", "console.log('a')").write(to: node.appendingPathComponent("abc.js"), atomically: true, encoding: .utf8)
         _ = try write("_abc.py", "pass")
         _ = try write("actual.py", "print('hello')")
         _ = try write("_command.py", "# @raycast.title My Command\n# @raycast.schemaVersion 1\n# @raycast.mode silent\n")
+        _ = try write("plain.sh", "exit 0")
+        _ = try write("missing-mode.sh", "# @raycast.schemaVersion 1\n# @raycast.title Incomplete")
+        _ = try write("unknown-mode.sh", annotated("Bad mode", "").replacingOccurrences(of: "silent", with: "unknown"))
+        _ = try write("future.sh", annotated("Future", "").replacingOccurrences(of: "schemaVersion 1", with: "schemaVersion 2"))
+        _ = try write("example.template.sh", annotated("Template", "exit 0"))
         let commands = ScriptCommand.discover(in: [folder.path]).commands
-        XCTAssertEqual(commands.map(\.title), ["actual", "My Command"])
-        let plain = try XCTUnwrap(commands.first)
-        XCTAssertFalse(plain.allowsRootQuery("a", alias: nil))
-        XCTAssertTrue(plain.allowsRootQuery(" A ", alias: "a"))
-        XCTAssertTrue(plain.allowsRootQuery("ac", alias: nil))
-        XCTAssertTrue(commands[1].allowsRootQuery("m", alias: nil))
+        XCTAssertEqual(commands.map(\.title), ["My Command"])
     }
 
     func testOverlappingRootsPreserveExplicitHiddenDirectoryAndCanCancel() throws {
         let nested = folder.appendingPathComponent("nested", isDirectory: true)
         let hidden = nested.appendingPathComponent(".hidden", isDirectory: true)
         try FileManager.default.createDirectory(at: hidden, withIntermediateDirectories: true)
-        try "exit 0".write(to: nested.appendingPathComponent("visible.sh"), atomically: true, encoding: .utf8)
-        try "exit 0".write(to: hidden.appendingPathComponent("explicit.sh"), atomically: true, encoding: .utf8)
+        try annotated("visible", "exit 0").write(to: nested.appendingPathComponent("visible.sh"), atomically: true, encoding: .utf8)
+        try annotated("explicit", "exit 0").write(to: hidden.appendingPathComponent("explicit.sh"), atomically: true, encoding: .utf8)
 
         let roots = [hidden.path, nested.path, folder.path]
         XCTAssertEqual(ScriptCommand.discover(in: roots).commands.map(\.title), ["explicit", "visible"])
@@ -125,6 +129,22 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertEqual(result.standardOutput, "Hello from Keylane\n")
     }
 
+    func testAllFormTemplatesAreDiscoverable() throws {
+        for template in ScriptTemplate.allCases {
+            let url = folder.appendingPathComponent(template.rawValue).appendingPathExtension(template.fileExtension)
+            var metadata = ScriptMetadata()
+            metadata.title = template.title
+            try template.create(at: url, metadata: metadata)
+        }
+        let commands = ScriptCommand.discover(in: [folder.path]).commands
+        XCTAssertEqual(Set(commands.map(\.title)), Set(ScriptTemplate.allCases.map(\.title)))
+
+        let appleScript = try XCTUnwrap(commands.first { $0.title == ScriptTemplate.appleScript.title })
+        let result = try ScriptRunner.run(appleScript, arguments: [], directory: folder, timeout: 10, isCancelled: { false })
+        XCTAssertEqual(result.status, .exited(0))
+        XCTAssertEqual(result.standardOutput, "Hello from Keylane\n")
+    }
+
     func testInlineIntervalsAndUnsupportedPlatform() throws {
         var metadata = ScriptMetadata()
         metadata.mode = .inline
@@ -144,11 +164,11 @@ final class ScriptCommandTests: XCTestCase {
     }
 
     func testArgumentsWorkingDirectoryAndFailureOutput() throws {
-        _ = try write("test.sh", """
+        _ = try write("test.sh", annotated("Fixture", """
             printf '%s\\n' "$PWD" "$#" "$1" "$2"
             printf '%s\\n' 'stderr output' >&2
             exit 7
-            """)
+            """))
         let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
         let args = try ArgumentParser.parse(#""中文 路径" '$(touch unintended)'"#)
         let result = try ScriptRunner.run(script, arguments: args, directory: folder, timeout: 5, isCancelled: { false })
@@ -161,13 +181,13 @@ final class ScriptCommandTests: XCTestCase {
     }
 
     func testCombinedOutputKeepsWriteOrder() throws {
-        _ = try write("ordered.sh", """
+        _ = try write("ordered.sh", annotated("Fixture", """
             printf 'first\\n' >&2
             printf 'second\\n'
             printf 'third\\n' >&2
             printf 'final diagnostic\\n'
             exit 7
-            """)
+            """))
         let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
         let result = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
         XCTAssertEqual(result.status, .exited(7))
@@ -196,10 +216,10 @@ final class ScriptCommandTests: XCTestCase {
     }
 
     func testTimeoutStopsChildAndCancellationReturnsDistinctStatus() throws {
-        _ = try write("slow.sh", """
+        _ = try write("slow.sh", annotated("Fixture", """
             (/bin/sleep 1; /usr/bin/touch escaped) &
             wait
-            """)
+            """))
         let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
         let start = ProcessInfo.processInfo.systemUptime
         let timedOut = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 0.1, isCancelled: { false })
@@ -214,7 +234,7 @@ final class ScriptCommandTests: XCTestCase {
     }
 
     func testQuietScriptWithClosedOutputDoesNotBusyPoll() throws {
-        let url = try write("quiet.sh", "exec 1>&- 2>&-\n/bin/sleep 0.45\n")
+        let url = try write("quiet.sh", annotated("Fixture", "exec 1>&- 2>&-\n/bin/sleep 0.45\n"))
         let script = try ScriptCommand.read(url)
         var checks = 0
         let result = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: {
@@ -226,7 +246,7 @@ final class ScriptCommandTests: XCTestCase {
     }
 
     func testLargeOutputIsBoundedWithoutBlocking() throws {
-        _ = try write("large.sh", "/usr/bin/head -c 300000 /dev/zero | /usr/bin/tr '\\000' x")
+        _ = try write("large.sh", annotated("Fixture", "/usr/bin/head -c 300000 /dev/zero | /usr/bin/tr '\\000' x"))
         let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
         let result = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
         XCTAssertEqual(result.status, .exited(0))

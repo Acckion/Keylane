@@ -159,7 +159,7 @@ public struct ScriptMetadata: Equatable, Sendable {
 }
 
 public enum ScriptTemplate: String, CaseIterable, Sendable {
-    case bash, zsh, sh, python, node, ruby, php, swift, appleScript, csharp, powerShell
+    case bash, zsh, sh, appleScript, swift, python, node, typescript, go, ruby, csharp, php, powerShell
 
     public var title: String {
         switch self {
@@ -167,7 +167,9 @@ public enum ScriptTemplate: String, CaseIterable, Sendable {
         case .zsh: "Shell (Zsh)"
         case .sh: "Shell (sh)"
         case .python: "Python 3"
-        case .node: "Node.js"
+        case .node: "JavaScript (Node.js)"
+        case .typescript: "TypeScript (Node.js)"
+        case .go: "Go"
         case .ruby: "Ruby"
         case .php: "PHP"
         case .swift: "Swift"
@@ -181,6 +183,7 @@ public enum ScriptTemplate: String, CaseIterable, Sendable {
         switch self {
         case .python: "py"
         case .node: "js"
+        case .typescript: "ts"
         case .ruby: "rb"
         case .appleScript: "applescript"
         case .csharp: "cs"
@@ -198,17 +201,23 @@ public enum ScriptTemplate: String, CaseIterable, Sendable {
             (prefix, comment, body) = ("#!/bin/\(rawValue)", "#", "printf '%s\\n' 'Hello from Keylane'")
         case .python: (prefix, comment, body) = ("#!/usr/bin/env python3", "#", "print('Hello from Keylane')")
         case .node: (prefix, comment, body) = ("#!/usr/bin/env node", "//", "console.log('Hello from Keylane');")
+        case .typescript:
+            (prefix, comment, body) = ("#!/usr/bin/env node", "//", "const message: string = \"Hello from Keylane\";\nconsole.log(message);")
+        case .go:
+            (prefix, comment, body) = ("", "//", "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"Hello from Keylane\")\n}")
         case .ruby: (prefix, comment, body) = ("#!/usr/bin/env ruby", "#", "puts 'Hello from Keylane'")
         case .php: (prefix, comment, body) = ("<?php", "//", "echo \"Hello from Keylane\\n\";")
         case .swift: (prefix, comment, body) = ("#!/usr/bin/swift", "//", "print(\"Hello from Keylane\")")
         case .appleScript: (prefix, comment, body) = ("#!/usr/bin/osascript", "--", "return \"Hello from Keylane\"")
-        case .csharp: (prefix, comment, body) = ("#!/usr/bin/env dotnet", "//", "Console.WriteLine(\"Hello from Keylane\");")
+        case .csharp: (prefix, comment, body) = ("#!/usr/bin/env -S dotnet --", "//", "System.Console.WriteLine(\"Hello from Keylane\");")
         case .powerShell: (prefix, comment, body) = ("#!/usr/bin/env pwsh", "#", "Write-Output 'Hello from Keylane'")
         }
-        guard url.pathExtension.lowercased() == fileExtension else {
+        let destinationExtension = url.pathExtension.lowercased()
+        guard destinationExtension == fileExtension || (self == .node && ["mjs", "cjs"].contains(destinationExtension)) else {
             throw CocoaError(.fileWriteInvalidFileName, userInfo: [NSFilePathErrorKey: url.path])
         }
-        let source = prefix + "\n\n" + (try metadata.header(comment: comment)) + "\n\n" + body + "\n"
+        let header = try metadata.header(comment: comment)
+        let source = [prefix, header, body].filter { !$0.isEmpty }.joined(separator: "\n\n") + "\n"
         _ = try ScriptMetadata.parse(source)
         try Data(source.utf8).write(to: url, options: .withoutOverwriting)
     }

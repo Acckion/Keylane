@@ -15,14 +15,11 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
     }
 
     public static func read(_ file: URL) throws -> Self {
-        let metadata: ScriptMetadata?
-        if file.pathExtension.lowercased() == "scpt" {
-            metadata = nil
-        } else {
-            let handle = try FileHandle(forReadingFrom: file)
-            defer { try? handle.close() }
-            let prefix = try handle.read(upToCount: 64 * 1024) ?? Data()
-            metadata = try ScriptMetadata.parse(String(decoding: prefix, as: UTF8.self))
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let prefix = try handle.read(upToCount: 64 * 1024) ?? Data()
+        guard let metadata = try ScriptMetadata.parse(String(decoding: prefix, as: UTF8.self)) else {
+            throw ScriptMetadata.ValidationError.invalidHeader
         }
         return Self(url: file.standardizedFileURL, metadata: metadata)
     }
@@ -33,15 +30,6 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
 
     public static func ignoresDiscoveryDirectory(named name: String) -> Bool {
         name.hasPrefix(".") || dependencyDirectories.contains(name.lowercased())
-    }
-
-    /// Untitled source files are still searchable by name, but should not flood one-key root searches.
-    public func allowsRootQuery(_ query: String, alias: String?) -> Bool {
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard metadata == nil, text.count == 1 else { return true }
-        let options: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
-        return title.compare(text, options: options) == .orderedSame ||
-            alias?.compare(text, options: options) == .orderedSame
     }
 
     public static func discover(in folders: [String], isCancelled: () -> Bool = { false }) -> (commands: [Self], unavailable: [String]) {
@@ -87,8 +75,6 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
                 guard let values = try? file.resourceValues(forKeys: keys), values.isRegularFile == true,
                       values.isSymbolicLink != true, supports(file),
                       let command = try? Self.read(file) else { continue }
-                if command.metadata == nil, file.pathExtension.lowercased() == "py",
-                   command.title.hasPrefix("_") { continue }
                 commands[command.id] = command
             }
             if complete { covered.formUnion(reached) }
@@ -101,7 +87,10 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
     }
 
     private static func supports(_ file: URL) -> Bool {
-        if interpreters[file.pathExtension.lowercased()] != nil { return true }
+        let fileExtension = file.pathExtension.lowercased()
+        let stem = file.deletingPathExtension().lastPathComponent.lowercased()
+        guard fileExtension != "scpt", fileExtension != "template", !stem.hasSuffix(".template") else { return false }
+        if interpreters[fileExtension] != nil { return true }
         return (file.pathExtension.isEmpty || FileManager.default.isExecutableFile(atPath: file.path))
             && shebang(file) != nil
     }
@@ -109,22 +98,22 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
     private static let interpreters = [
         "sh": "/bin/sh", "bash": "/bin/bash", "zsh": "/bin/zsh",
         "py": "python3", "js": "node", "mjs": "node", "cjs": "node",
+        "ts": "node", "mts": "node", "cts": "node", "go": "go",
         "rb": "ruby", "php": "php", "swift": "/usr/bin/swift",
-        "applescript": "/usr/bin/osascript", "scpt": "/usr/bin/osascript",
+        "applescript": "/usr/bin/osascript",
         "ps1": "pwsh", "cs": "dotnet"
     ]
 
     public static func createTemplate(at url: URL) throws {
-        let content: String
-        switch url.pathExtension.lowercased() {
-        case "sh": content = "#!/bin/sh\nprintf '%s\\n' 'Hello from Keylane'\n"
-        case "bash": content = "#!/bin/bash\nprintf '%s\\n' 'Hello from Keylane'\n"
-        case "zsh": content = "#!/bin/zsh\nprintf '%s\\n' 'Hello from Keylane'\n"
-        case "py": content = "print('Hello from Keylane')\n"
-        case "js", "mjs", "cjs": content = "console.log('Hello from Keylane');\n"
-        default: throw CocoaError(.fileWriteInvalidFileName, userInfo: [NSFilePathErrorKey: url.path])
+        let fileExtension = url.pathExtension.lowercased()
+        let template = ScriptTemplate.allCases.first { $0.fileExtension == fileExtension }
+            ?? (["mjs", "cjs"].contains(fileExtension) ? .node : nil)
+        guard let template else {
+            throw CocoaError(.fileWriteInvalidFileName, userInfo: [NSFilePathErrorKey: url.path])
         }
-        try Data(content.utf8).write(to: url, options: .withoutOverwriting)
+        var metadata = ScriptMetadata()
+        metadata.title = url.deletingPathExtension().lastPathComponent
+        try template.create(at: url, metadata: metadata)
     }
 
     private static func shebang(_ file: URL) -> (String, [String])? {
@@ -151,7 +140,13 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
         guard let interpreter = Self.interpreters[url.pathExtension.lowercased()] else {
             throw CocoaError(.fileReadUnsupportedScheme, userInfo: [NSFilePathErrorKey: url.path])
         }
-        let args = [url.path] + arguments
+        let options: [String]
+        switch interpreter {
+        case "go": options = ["run"]
+        case "dotnet": options = ["--"]
+        default: options = []
+        }
+        let args = options + [url.path] + arguments
         if interpreter.hasPrefix("/") { return (URL(fileURLWithPath: interpreter), args) }
         return (URL(fileURLWithPath: "/usr/bin/env"), [interpreter] + args)
     }
