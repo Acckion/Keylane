@@ -31,7 +31,7 @@ public struct ECBReferenceRates: Codable {
 
     private static var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: "Europe/Frankfurt") ?? .gmt
+        calendar.timeZone = TimeZone(identifier: "Europe/Berlin") ?? .gmt
         return calendar
     }
 

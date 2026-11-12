@@ -27,4 +27,20 @@ final class CalculatorConversionTests: XCTestCase {
         XCTAssertTrue(rates.isStale(at: Date(timeIntervalSince1970: 1794916800)))
         XCTAssertNil(ECBReferenceRates(xml: Data("<Cube/>".utf8)))
     }
+
+    func testRatesExpireAtGermanMidnightInSummerAndWinter() throws {
+        let dates = [
+            ("2026-07-01", "2026-07-04T21:59:59Z", "2026-07-04T22:00:00Z"),
+            ("2026-01-01", "2026-01-04T22:59:59Z", "2026-01-04T23:00:00Z")
+        ]
+        let formatter = ISO8601DateFormatter()
+        for (published, before, cutoff) in dates {
+            let xml = Data("""
+                <Cube><Cube time="\(published)"><Cube currency="USD" rate="2"/></Cube></Cube>
+                """.utf8)
+            let rates = try XCTUnwrap(ECBReferenceRates(xml: xml))
+            XCTAssertFalse(rates.isStale(at: try XCTUnwrap(formatter.date(from: before))), published)
+            XCTAssertTrue(rates.isStale(at: try XCTUnwrap(formatter.date(from: cutoff))), published)
+        }
+    }
 }
