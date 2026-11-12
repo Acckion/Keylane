@@ -9,12 +9,38 @@ struct ResultListScrollView<Content: View>: View {
                 .padding(.horizontal, VisualStyle.launcherEdgeInset)
                 .padding(.bottom, VisualStyle.launcherEdgeInset)
         }
-            .launcherScrollInsets()
-            .mask(LinearGradient(stops: [
-                .init(color: .clear, location: 0), .init(color: .black.opacity(0.2), location: 0.08),
-                .init(color: .black, location: 0.19), .init(color: .black, location: 0.80),
-                .init(color: .black.opacity(0.2), location: 0.96), .init(color: .clear, location: 1)
-            ], startPoint: .top, endPoint: .bottom))
+        .launcherScrollInsets()
+        .scrollEdgeEffectHidden(for: .top)
+        .mask {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: VisualStyle.launcherTopInset)
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: VisualStyle.launcherBottomInset + 22)
+            }
+        }
+    }
+}
+
+/// Shared section chrome. Results keep their own identities for selection and scrolling.
+struct ResultListSection<Content: View>: View {
+    let title: String
+    var isFirst = false
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        Section {
+            content()
+        } header: {
+            Text(title)
+                .font(VisualStyle.sectionText)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, ResultListRowLayout.standard.horizontalInset)
+                .padding(.top, isFirst ? 3 : 12)
+                .padding(.bottom, 6)
+                .accessibilityAddTraits(.isHeader)
+        }
     }
 }
 

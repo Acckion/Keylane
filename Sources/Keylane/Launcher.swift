@@ -126,8 +126,11 @@ struct Launcher: View {
             }
             if !compactSurface { VStack(spacing: 0) {
                 if showsSearchBar {
-                    ChromeBlur().frame(height: 88)
-                        .mask(LinearGradient(stops: [.init(color: .black.opacity(0.85), location: 0), .init(color: .black.opacity(0.7), location: 0.48), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
+                    ChromeBlur().frame(height: VisualStyle.launcherTopInset)
+                        .mask(LinearGradient(stops: [.init(color: .black, location: 0),
+                                                     .init(color: .black, location: 0.72),
+                                                     .init(color: .clear, location: 1)],
+                                             startPoint: .top, endPoint: .bottom))
                 }
                 Spacer(minLength: 0)
                 ChromeBlur().frame(height: 78)

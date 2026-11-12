@@ -13,6 +13,14 @@ struct ResultDetailLayout<Results: View, Detail: View>: View {
             HStack(spacing: 0) {
                 results().frame(width: geometry.size.width * resultsFraction)
                 Divider()
+                    .mask {
+                        VStack(spacing: 0) {
+                            Color.clear.frame(height: VisualStyle.launcherTopInset - 10)
+                            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                                .frame(height: 10)
+                            Color.black
+                        }
+                    }
                 detail().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
