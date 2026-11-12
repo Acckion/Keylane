@@ -455,14 +455,17 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private var retainedPasteID: UUID?
+    private var pendingFilePasteID: UUID?
 
     func pasteClipboard(plainText: Bool = false, keepOpen: Bool = false) {
-        guard retainedPasteID == nil, model.clipboard.copySelected(plainText: plainText) else { return }
-        pasteIntoPreviousApplication(keepOpen: keepOpen)
+        guard retainedPasteID == nil, pendingFilePasteID == nil else { return }
+        let isFile = !plainText && model.clipboard.selectedDetail?.item.kind == .files
+        guard model.clipboard.copySelected(plainText: plainText) else { return }
+        pasteIntoPreviousApplication(keepOpen: keepOpen, isFile: isFile)
     }
 
-    func pasteIntoPreviousApplication(keepOpen: Bool = false) {
-        guard retainedPasteID == nil else { return }
+    func pasteIntoPreviousApplication(keepOpen: Bool = false, isFile: Bool = false) {
+        guard retainedPasteID == nil, pendingFilePasteID == nil else { return }
         guard model.crossAppPaste.available else {
             showLauncherFeedback("已复制，跨应用粘贴未启用", style: .failure, actionTitle: "粘贴设置…") { [weak self] in
                 self?.model.openSettings(page: "permissions")
@@ -476,6 +479,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         else { hideLauncher() }
         target.activate()
 
+        if isFile {
+            pasteFileIntoApplication(target, retainedID: pasteID)
+            return
+        }
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             guard let self, pasteID == nil || self.retainedPasteID == pasteID else { return }
             guard self.pasteTargetIsFrontmost(target) else {
@@ -483,23 +491,60 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。")
                 return
             }
-            let source = CGEventSource(stateID: .combinedSessionState)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+            guard self.postPasteShortcut() else {
                 self.finishRetainedPaste(pasteID, target: target)
                 self.showPasteFailure("已复制，无法发送粘贴按键。")
                 return
             }
-            down.flags = .maskCommand
-            up.flags = .maskCommand
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
             if let pasteID {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
                     self?.finishRetainedPaste(pasteID, target: target)
                 }
             }
         }
+    }
+
+    private func pasteFileIntoApplication(_ target: NSRunningApplication, retainedID: UUID?) {
+        let id = UUID()
+        pendingFilePasteID = id
+        let generation = NSPasteboard.general.changeCount
+        let isCurrent = { [weak self] in
+            guard let self, self.pendingFilePasteID == id,
+                  retainedID == nil || self.retainedPasteID == retainedID else { return false }
+            return self.pasteTargetIsFrontmost(target) && NSPasteboard.general.changeCount == generation
+        }
+        SystemNavigation.shared.pasteFile(in: target, isCurrent: isCurrent) { [weak self] result in
+            guard let self, self.pendingFilePasteID == id else { return }
+            let sent: Bool
+            switch result {
+            case .performed:
+                sent = true
+            case .useKeyboard:
+                sent = isCurrent() && self.postPasteShortcut()
+            case .cancelled, .failed:
+                sent = false
+            }
+            self.pendingFilePasteID = nil
+            if sent, let retainedID {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    self?.finishRetainedPaste(retainedID, target: target)
+                }
+            } else if !sent {
+                self.finishRetainedPaste(retainedID, target: target)
+                self.showPasteFailure("未能在目标应用中自动粘贴文件。")
+            }
+        }
+    }
+
+    private func postPasteShortcut() -> Bool {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(kVK_ANSI_V), keyDown: false) else { return false }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        ModifierShortcuts.postWithoutHyperRemapping(down)
+        ModifierShortcuts.postWithoutHyperRemapping(up)
+        return true
     }
 
     private func pasteTargetIsFrontmost(_ target: NSRunningApplication) -> Bool {

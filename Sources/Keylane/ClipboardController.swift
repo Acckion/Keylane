@@ -36,9 +36,18 @@ final class ClipboardFiles {
 final class ClipboardController: ObservableObject {
     @Published var captureEnabled: Bool {
         didSet {
+            guard captureEnabled != oldValue else { return }
             preferences.set(captureEnabled, forKey: "clipboardPersistentCapture")
-            if runtime != nil { lastChange = board.changeCount }
+            if runtime != nil { finishCapture(of: board.changeCount) }
             updateCaptureTimer()
+        }
+    }
+    @Published var savesUniversalClipboardImmediately: Bool {
+        didSet {
+            guard savesUniversalClipboardImmediately != oldValue else { return }
+            preferences.set(savesUniversalClipboardImmediately, forKey: "clipboardSaveUniversalImmediately")
+            if let pending = pendingClipboardRead { finishCapture(of: pending.generation) }
+            updateUniversalClipboardMonitor()
         }
     }
     @Published var automaticOCR: Bool {
@@ -95,6 +104,18 @@ final class ClipboardController: ObservableObject {
     private var captureOutcome = "starting"
     private let diagnosticsEnabled = ProcessInfo.processInfo.environment["KEYLANE_CLIPBOARD_DIAGNOSTICS"] == "1"
     private var lastChange: Int
+    private var lastIncompleteChange: Int?
+    private var pendingClipboardRead: PendingClipboardRead?
+    private var currentUniversalFiles: (generation: Int, paths: [String])?
+    private let universalClipboardMonitor = UniversalClipboardMonitor()
+
+    private struct PendingClipboardRead {
+        let generation: Int
+        let deadline: TimeInterval
+        var retryAfter: TimeInterval
+        var expectsRemote: Bool
+    }
+
     private var query = ""
     private var generation = 0
     private var pendingSearch: DispatchWorkItem?
@@ -111,6 +132,7 @@ final class ClipboardController: ObservableObject {
         self.board = board; self.preferences = preferences; lastChange = 0
         // The old memory-only opt-in does not silently become permission to persist.
         captureEnabled = preferences.bool(forKey: "clipboardPersistentCapture")
+        savesUniversalClipboardImmediately = preferences.bool(forKey: "clipboardSaveUniversalImmediately")
         automaticOCR = preferences.bool(forKey: "clipboardAutomaticOCR")
         accurateOCR = preferences.object(forKey: "clipboardAccurateOCR") as? Bool ?? true
         historyCommandEnabled = preferences.object(forKey: "clipboardHistoryCommandEnabled") as? Bool ?? true
@@ -126,7 +148,7 @@ final class ClipboardController: ObservableObject {
         guard runtime == nil else { return }
         let token = ImageTextRecognitionWork()
         runtime = token
-        lastChange = board.changeCount
+        finishCapture(of: board.changeCount)
         let limits = ClipboardLimits(maxItems: maxItems, retentionDays: retentionDays)
         worker.async { [weak self] in
             guard let self, !token.cancelled else { return }
@@ -164,16 +186,19 @@ final class ClipboardController: ObservableObject {
 
     func startMonitoring() {
         monitoringRequested = true
-        lastChange = board.changeCount
+        finishCapture(of: board.changeCount)
         updateCaptureTimer()
     }
 
     func stopMonitoring() {
         monitoringRequested = false
+        pendingClipboardRead = nil
+        lastIncompleteChange = nil
         updateCaptureTimer()
     }
 
     private func updateCaptureTimer() {
+        updateUniversalClipboardMonitor()
         guard runtime != nil, monitoringRequested && captureEnabled else {
             timer?.invalidate()
             timer = nil
@@ -186,6 +211,15 @@ final class ClipboardController: ObservableObject {
         RunLoop.main.add(timer, forMode: .common)
         recordMonitorHealth()
     }
+    private func updateUniversalClipboardMonitor() {
+        guard runtime != nil, monitoringRequested, captureEnabled, savesUniversalClipboardImmediately,
+              board.name == .general, board.accessBehavior == .alwaysAllow else {
+            universalClipboardMonitor.stop()
+            return
+        }
+        universalClipboardMonitor.start { [weak self] generation in self?.universalClipboardArrived(generation) }
+    }
+
     deinit { timer?.invalidate(); detailRequest?.cancel(); pendingReload?.cancel() }
     func feedback(_ text: String) { status = text }
     func search(_ value: String) {
@@ -395,46 +429,126 @@ final class ClipboardController: ObservableObject {
         pollTicks += 1
         defer { if pollTicks % 4 == 0 { recordMonitorHealth() } }
         if Date().timeIntervalSince(lastMaintenance) > 3600 { lastMaintenance = Date(); mutate { try $0.prune() } }
-        guard captureEnabled, board.changeCount != lastChange else { return }
+        guard captureEnabled else { return }
         let observation = board.changeCount
-        if board.name == NSPasteboard.general.name, board.accessBehavior != .alwaysAllow {
-            captureOutcome = "access-denied"; accessMessage = "后台采集需要持续访问剪贴板。请在系统设置中选择始终允许。"; lastChange = observation; return
+        if pendingClipboardRead?.generation != observation { pendingClipboardRead = nil }
+        guard observation != lastChange || pendingClipboardRead != nil else { return }
+        if let pending = pendingClipboardRead {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now >= pending.deadline {
+                finishCapture(of: observation)
+                captureOutcome = "read-timed-out"
+                return
+            }
+            if now < pending.retryAfter { return }
         }
-        guard let pasteboardItems = board.pasteboardItems else { captureOutcome = "read-unavailable"; accessMessage = "无法读取剪贴板，请检查系统授权。"; lastChange = observation; return }
-        let types = pasteboardItems.flatMap { $0.types.map(\.rawValue) }
+        if board.name == .general, board.accessBehavior != .alwaysAllow {
+            captureOutcome = "access-denied"
+            accessMessage = "后台采集需要持续访问剪贴板。请在系统设置中选择始终允许。"
+            finishCapture(of: observation)
+            return
+        }
+        guard let pasteboardItems = board.pasteboardItems else {
+            if savesUniversalClipboardImmediately {
+                deferCapture(of: observation, expectsRemote: false)
+            } else {
+                captureOutcome = "read-unavailable"
+                accessMessage = "无法读取剪贴板，请检查系统授权。"
+                finishCapture(of: observation, incomplete: true)
+            }
+            return
+        }
+        var types = pasteboardItems.flatMap { $0.types.map(\.rawValue) }
+        if savesUniversalClipboardImmediately { types += board.types?.map(\.rawValue) ?? [] }
+        let remote = types.contains(ClipboardCapture.remoteType)
+        if pendingClipboardRead?.expectsRemote == true, !remote {
+            deferCapture(of: observation, expectsRemote: true)
+            return
+        }
+        let immediateRemote = remote && savesUniversalClipboardImmediately
         let front = NSWorkspace.shared.frontmostApplication
-        let source = board.string(forType:.init("org.nspasteboard.source"))
-        guard !ClipboardPolicy.shouldSkip(types:types,source:source,frontmost:front?.bundleIdentifier,excluded:excludedApps) else { captureOutcome = "excluded"; lastChange = observation; return }
-        guard pasteboardItems.count <= 128 else { lastChange = observation; status = ClipboardError.oversized.localizedDescription; return }
-        var items: [ClipSnapshotItem] = []; var size = 0
-        for item in pasteboardItems {
-            var representations: [ClipRepresentation] = []
-            for type in item.types where ClipSnapshot.allowedTypes.contains(type.rawValue) {
-                if let data = item.data(forType:type), !data.isEmpty {
-                    size += data.count
-                    guard data.count <= 16 * 1024 * 1024, size <= 32 * 1024 * 1024 else { lastChange = observation; status = ClipboardError.oversized.localizedDescription; return }
-                    representations.append(ClipRepresentation(type:type.rawValue,data:data))
+        let sourceType = NSPasteboard.PasteboardType("org.nspasteboard.source")
+        let source = types.contains(sourceType.rawValue) ? board.string(forType: sourceType) : nil
+        guard !ClipboardPolicy.shouldSkip(types: types, source: source, frontmost: front?.bundleIdentifier, excluded: excludedApps) else {
+            captureOutcome = "excluded"
+            finishCapture(of: observation)
+            return
+        }
+        guard pasteboardItems.count <= 128 else {
+            finishCapture(of: observation)
+            status = ClipboardError.oversized.localizedDescription
+            return
+        }
+        let fileType = NSPasteboard.PasteboardType.fileURL.rawValue
+        let hasFiles = types.contains(fileType)
+        var transferredFiles: [URL] = []
+        var items: [ClipSnapshotItem] = []
+        if immediateRemote && hasFiles {
+            guard let urls = ClipboardCapture.readUniversalFileURLs(from: board, items: pasteboardItems) else {
+                deferCapture(of: observation, expectsRemote: true)
+                return
+            }
+            transferredFiles = urls
+        }
+        var size = 0
+        for item in transferredFiles.isEmpty ? pasteboardItems : [] {
+            let candidates: AnySequence<ClipRepresentation>
+            if immediateRemote {
+                guard let available = ClipboardCapture.readUniversalItem(item) else {
+                    deferCapture(of: observation, expectsRemote: true)
+                    return
                 }
+                candidates = AnySequence(available)
+            } else {
+                candidates = AnySequence(item.types.lazy.compactMap { type in
+                    guard ClipSnapshot.allowedTypes.contains(type.rawValue),
+                          let data = item.data(forType: type), !data.isEmpty else { return nil }
+                    return ClipRepresentation(type: type.rawValue, data: data)
+                })
+            }
+            var representations: [ClipRepresentation] = []
+            for representation in candidates {
+                size += representation.data.count
+                guard representation.data.count <= 16 * 1024 * 1024, size <= 32 * 1024 * 1024 else {
+                    finishCapture(of: observation)
+                    status = ClipboardError.oversized.localizedDescription
+                    return
+                }
+                representations.append(representation)
             }
             if !representations.isEmpty { items.append(ClipSnapshotItem(representations)) }
         }
-        var references: [ClipFile]?
-        if types.contains("public.file-url"), let urls = board.readObjects(forClasses:[NSURL.self],options:[.urlReadingFileURLsOnly:true]) as? [URL] {
-            references = urls.map { ClipFile(path:$0.path,bookmark:try? $0.bookmarkData(options:[.withSecurityScope,.securityScopeAllowOnlyReadAccess],includingResourceValuesForKeys:nil,relativeTo:nil)) }
+        let fileURLs = hasFiles && !immediateRemote ? ClipboardCapture.readFileURLs(from: board) : []
+        let references: [ClipFile]? = fileURLs.isEmpty ? nil : fileURLs.map { url in
+            ClipFile(path: url.path, bookmark: try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil))
         }
         guard board.changeCount == observation else { return }
-        lastChange = observation; accessMessage = ""
-        guard !items.isEmpty else { captureOutcome = "unsupported"; status = "此内容没有可保存的文字、图片或文件格式。"; return }
+        if !transferredFiles.isEmpty {
+            currentUniversalFiles = (observation, transferredFiles.map(\.path))
+        }
+        if items.isEmpty && transferredFiles.isEmpty && immediateRemote {
+            deferCapture(of: observation, expectsRemote: true)
+            return
+        }
+        finishCapture(of: observation, incomplete: items.isEmpty && transferredFiles.isEmpty)
+        accessMessage = ""
+        guard !items.isEmpty || !transferredFiles.isEmpty else { captureOutcome = "unsupported"; status = "此内容没有可保存的文字、图片或文件格式。"; return }
         captureOutcome = "saving"
-        let name = source.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier:$0) }.map { FileManager.default.displayName(atPath:$0.path) } ?? front?.localizedName ?? "未知来源"
-        let bundle = source ?? front?.bundleIdentifier ?? ""
-        let snapshotItems = items; let files = references
+        let name = immediateRemote ? ClipboardCapture.universalSource : source.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }.map { FileManager.default.displayName(atPath: $0.path) } ?? front?.localizedName ?? "未知来源"
+        let bundle = immediateRemote ? "" : source ?? front?.bundleIdentifier ?? ""
+        let snapshotItems = items; let files = references; let remoteFiles = transferredFiles
         worker.async { [weak self] in
             guard let self, !runtime.cancelled, let store = self.store else { return }
             do {
-                let (content,snapshot) = try ClipboardCapture.decode(snapshotItems,fileReferences:files)
-                guard !runtime.cancelled else { return }
-                _ = try store.capture(content,snapshot:snapshot,source:name,bundle:bundle)
+                let content: ClipContent
+                if remoteFiles.isEmpty {
+                    let (decoded, snapshot) = try ClipboardCapture.decode(snapshotItems, fileReferences: files)
+                    guard !runtime.cancelled else { return }
+                    _ = try store.capture(decoded, snapshot: snapshot, source: name, bundle: bundle)
+                    content = decoded
+                } else {
+                    content = .files(try store.captureTransferredFiles(remoteFiles, source: name))
+                }
                 let mayContainImage: Bool
                 switch content {
                 case .image: mayContainImage = true
@@ -458,6 +572,30 @@ final class ClipboardController: ObservableObject {
             }
         }
     }
+    func universalClipboardArrived(_ generation: Int) {
+        guard captureEnabled, savesUniversalClipboardImmediately, runtime != nil,
+              board.changeCount == generation, pendingClipboardRead?.generation != generation,
+              lastChange != generation || lastIncompleteChange == generation else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        pendingClipboardRead = PendingClipboardRead(generation: generation, deadline: now + 15,
+                                                     retryAfter: now, expectsRemote: true)
+        poll()
+    }
+
+    private func deferCapture(of generation: Int, expectsRemote: Bool) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let previous = pendingClipboardRead
+        pendingClipboardRead = PendingClipboardRead(generation: generation, deadline: previous?.deadline ?? now + 15,
+                                                     retryAfter: now + 0.5, expectsRemote: expectsRemote || previous?.expectsRemote == true)
+        captureOutcome = "waiting-for-clipboard"
+    }
+
+    private func finishCapture(of generation: Int, incomplete: Bool = false) {
+        lastChange = generation
+        lastIncompleteChange = incomplete ? generation : nil
+        pendingClipboardRead = nil
+    }
+
     private func mutate(_ action: @escaping (ClipboardStore) throws -> Void) {
         guard let runtime else { return }
         worker.async { [weak self] in
@@ -652,6 +790,13 @@ final class ClipboardController: ObservableObject {
     @discardableResult func copySelected(plainText: Bool = false) -> Bool {
         guard !searching, !loadingDetail else { status = "内容正在加载，请稍后重试。"; return false }
         guard let detail, detail.item.id == selectedID else { status = "请先选择记录并等待内容加载。"; return false }
+        if !plainText, detail.files.contains(where: { $0.isSystemTransferReference == true }),
+           let transfer = currentUniversalFiles, transfer.generation == board.changeCount,
+           transfer.paths == detail.files.map(\.path) {
+            // Rewriting the URL would drop the system's original file access grant.
+            status = ""
+            return true
+        }
         var accessed: [URL] = []
         defer { accessed.forEach { $0.stopAccessingSecurityScopedResource() } }
         let objects: [NSPasteboardWriting]
@@ -665,7 +810,18 @@ final class ClipboardController: ObservableObject {
                 var url = URL(fileURLWithPath:reference.path)
                 if let bookmark = reference.bookmark { var stale = false; if let fresh = try? URL(resolvingBookmarkData:bookmark,options:[.withSecurityScope,.withoutUI],bookmarkDataIsStale:&stale) { url = fresh } }
                 if url.startAccessingSecurityScopedResource() { accessed.append(url) }
-                guard FileManager.default.fileExists(atPath:url.path) else { status = "原文件已移走或删除，未修改当前剪贴板。"; return false }
+                if reference.isSystemTransferReference == true {
+                    do {
+                        let input = try FileHandle(forReadingFrom: url)
+                        try input.close()
+                    } catch {
+                        status = "请在原设备重新复制此文件，再粘贴。"
+                        return false
+                    }
+                } else if !FileManager.default.fileExists(atPath: url.path) {
+                    status = "原文件已移走或删除，未修改当前剪贴板。"
+                    return false
+                }
                 resolved[reference.path] = url
             }
             objects = snapshot.items.enumerated().map { index, captured -> NSPasteboardItem in
@@ -712,7 +868,7 @@ final class ClipboardController: ObservableObject {
         board.clearContents()
         guard board.writeObjects(objects) else { status = "无法写入剪贴板，请重试。"; return false }
         if markLegacyReplay { board.setString("1", forType: .init("org.keylane.clipboard.replay")) }
-        lastChange = board.changeCount
+        finishCapture(of: board.changeCount)
         status = ""
         return true
     }

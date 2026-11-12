@@ -7,8 +7,6 @@ import KeylaneCore
 struct ClipboardDetail: View {
     let detail: ClipDetail
     let thumbnail: NSImage?
-    let status: String
-    let accessMessage: String
     @State private var fileAccess: ClipboardFiles?
     @State private var metrics: ClipboardDetailMetrics?
     @State private var linkMetadata: ClipboardLinkMetadata?
@@ -29,12 +27,6 @@ struct ClipboardDetail: View {
                 DetailInformationRows(rows: linkInformation(url), verticalPadding: 6)
             } else {
                 DetailInformationSection(rows: information)
-            }
-            if !accessMessage.isEmpty {
-                Text(accessMessage).font(.caption).foregroundStyle(.orange)
-            }
-            if !status.isEmpty {
-                Text(status).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
             if !detail.ocrText.isEmpty {
                 DisclosureGroup("识别出的文字") { Text(detail.ocrText).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
@@ -107,8 +99,13 @@ struct ClipboardDetail: View {
     }
 
     private var information: [DetailInformationValue] {
-        let sourceURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: detail.item.sourceBundle)
-        let sourceIcon = sourceURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
+        let sourceIcon: NSImage?
+        if detail.item.sourceBundle.isEmpty, detail.item.source == ClipboardCapture.universalSource {
+            sourceIcon = NSImage(systemSymbolName: "laptopcomputer.and.iphone", accessibilityDescription: nil)
+        } else {
+            let sourceURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: detail.item.sourceBundle)
+            sourceIcon = sourceURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
+        }
         let type: String
         switch detail.item.category {
         case .text: type = "文字"
