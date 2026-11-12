@@ -2,6 +2,8 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+enum FilePresentationOwner { case fileSearch, clipboard }
+
 final class FileActionsModel: ObservableObject {
     @Published private(set) var files: [URL] = []
     var file: URL? { files.first }
@@ -61,7 +63,15 @@ final class FileActionsModel: ObservableObject {
             }
         }
     }
-    func releaseFiles() { generation += 1; fileAccess = nil; files = [] }
+    func releaseFiles() {
+        generation += 1
+        fileAccess = nil
+        files = []
+        applications = []
+        defaultApplication = nil
+        selectedApplication = ""
+        opening = false
+    }
     func feedback(_ message: String) { status = message }
 }
 
@@ -71,9 +81,11 @@ final class FileActionsWindow: NSObject, NSWindowDelegate {
     var onEscape: (() -> Void)?
     var onActivate: ((NSWindow) -> Void)?
     private var window: NSWindow?
-    func show(_ file: URL, page: String) { show([file], page: page) }
+    private var owner: FilePresentationOwner?
+    func show(_ file: URL, page: String, owner: FilePresentationOwner? = nil) { show([file], page: page, owner: owner) }
 
-    func show(_ files: [URL], page: String, retaining access: AnyObject? = nil) {
+    func show(_ files: [URL], page: String, retaining access: AnyObject? = nil, owner: FilePresentationOwner? = nil) {
+        self.owner = owner
         model.configure(files, page: page, retaining: access)
         if window == nil {
             let window = NSWindow(contentRect:NSRect(x:0,y:0,width:520,height:350),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false)
@@ -91,7 +103,13 @@ final class FileActionsWindow: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if page == "share", model.isAvailable { model.shareRequest += 1 }
     }
-    func windowWillClose(_ notification: Notification) { model.releaseFiles() }
+    func dismiss(owner: FilePresentationOwner) {
+        guard self.owner == owner else { return }
+        window?.close()
+        window = nil
+    }
+
+    func windowWillClose(_ notification: Notification) { owner = nil; model.releaseFiles() }
 }
 private struct FileActionsView: View {
     @ObservedObject var model: FileActionsModel

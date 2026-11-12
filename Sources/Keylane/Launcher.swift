@@ -633,7 +633,7 @@ struct Launcher: View {
                 MenuAction(id: "clipboard", title: "剪贴板历史", icon: "list.clipboard", perform: { model.runCommand(.init(rawValue: "clipboard"), origin: .menu) }),
                 MenuAction(id: "hide", title: "隐藏 Keylane", icon: "rectangle.compress.vertical", keys: ["esc"], perform: { (NSApp.delegate as? Delegate)?.hideLauncher() }),
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
-            ]
+            ].filter { model.launcherModules?.isCommandModuleEnabled(CommandID(rawValue: $0.id)) != false }
         }
         if let submenu {
             return [MenuAction(id: "back", title: "返回", icon: "chevron.left", perform: dismissSubmenu)] + submenu.items

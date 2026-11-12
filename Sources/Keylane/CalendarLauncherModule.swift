@@ -69,7 +69,8 @@ enum CalendarLauncherModule {
                     calendar.showSettings = nil
                 }
             )],
-            searchUpdates: [calendar.permission.updates]
+            searchUpdates: [calendar.permission.updates],
+            canDisable: true
         )
     }
 }

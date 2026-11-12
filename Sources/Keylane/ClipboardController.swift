@@ -34,7 +34,7 @@ final class ClipboardFiles {
 enum ClipboardImageText {
     case ocr, qr
 
-    func recognize(in handler: VNImageRequestHandler, accurate: Bool) throws -> String {
+    func recognize(accurate: Bool, perform: (VNRequest) throws -> Void) throws -> String {
         switch self {
         case .ocr:
             let request = VNRecognizeTextRequest()
@@ -42,12 +42,12 @@ enum ClipboardImageText {
             request.automaticallyDetectsLanguage = true
             let supported = try request.supportedRecognitionLanguages()
             request.recognitionLanguages = ["zh-Hans", "en-US"].filter { supported.contains($0) }
-            try handler.perform([request])
+            try perform(request)
             return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
         case .qr:
             let request = VNDetectBarcodesRequest()
             request.symbologies = [.qr]
-            try handler.perform([request])
+            try perform(request)
             var seen = Set<String>()
             return (request.results ?? []).compactMap(\.payloadStringValue)
                 .filter { !$0.isEmpty && seen.insert($0).inserted }.joined(separator: "\n")
@@ -60,8 +60,26 @@ enum ClipboardImageText {
 private final class ClipboardPreviewRequest: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
+    private var visionRequest: VNRequest?
     var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
-    func cancel() { lock.lock(); stopped = true; lock.unlock() }
+
+    func cancel() {
+        lock.lock()
+        stopped = true
+        let request = visionRequest
+        lock.unlock()
+        request?.cancel()
+    }
+
+    func perform(_ request: VNRequest, in handler: VNImageRequestHandler) throws {
+        lock.lock()
+        guard !stopped else { lock.unlock(); throw CancellationError() }
+        visionRequest = request
+        lock.unlock()
+        defer { lock.lock(); visionRequest = nil; lock.unlock() }
+        guard !cancelled else { throw CancellationError() }
+        try handler.perform([request])
+    }
 }
 
 /// Pasteboard reads and published state belong to the main thread. SQLite belongs
@@ -70,7 +88,7 @@ final class ClipboardController: ObservableObject {
     @Published var captureEnabled: Bool {
         didSet {
             preferences.set(captureEnabled, forKey: "clipboardPersistentCapture")
-            lastChange = board.changeCount
+            if runtime != nil { lastChange = board.changeCount }
             updateCaptureTimer()
         }
     }
@@ -112,6 +130,8 @@ final class ClipboardController: ObservableObject {
     private let previewWorker = DispatchQueue(label: "org.keylane.clipboard.preview", qos: .userInitiated)
     private let listPreviewWorker = DispatchQueue(label: "org.keylane.clipboard.list-preview", qos: .utility)
     private let ocrWorker = DispatchQueue(label: "org.keylane.clipboard.ocr", qos: .utility)
+    private let storageDirectory: URL
+    private var runtime: ClipboardPreviewRequest?
     private var store: ClipboardStore?
     private let listThumbnailCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
@@ -137,9 +157,9 @@ final class ClipboardController: ObservableObject {
     private var ocrRunning = false
     private var ocrPending: ArraySlice<ClipboardOCRCandidate> = []
     private var ocrAttempts: [String: Date] = [:]
-    init(directory: URL? = nil, board: NSPasteboard = .general, preferences: UserDefaults = .standard, startTimer: Bool = true, presentationActive: Bool = true) {
+    init(directory: URL? = nil, board: NSPasteboard = .general, preferences: UserDefaults = .standard, startTimer: Bool = true, presentationActive: Bool = true, startStorage: Bool = true) {
         self.presentationActive = presentationActive
-        self.board = board; self.preferences = preferences; lastChange = board.changeCount
+        self.board = board; self.preferences = preferences; lastChange = 0
         // The old memory-only opt-in does not silently become permission to persist.
         captureEnabled = preferences.bool(forKey: "clipboardPersistentCapture")
         automaticOCR = preferences.bool(forKey: "clipboardAutomaticOCR")
@@ -148,19 +168,54 @@ final class ClipboardController: ObservableObject {
         retentionDays = preferences.object(forKey: "clipboardRetentionDays") as? Int ?? 30
         maxItems = preferences.object(forKey: "clipboardMaxItems") as? Int ?? 500
         excludedApps = Set(preferences.stringArray(forKey: "clipboardExcludedApps") ?? []).union(ClipboardPolicy.defaultExcluded)
-        let root = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane/Clipboard", isDirectory: true)
+        storageDirectory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane/Clipboard", isDirectory: true)
+        if startStorage { startRuntime() }
+        if startTimer { startMonitoring() }
+    }
+
+    func startRuntime() {
+        guard runtime == nil else { return }
+        let token = ClipboardPreviewRequest()
+        runtime = token
+        lastChange = board.changeCount
         let limits = ClipboardLimits(maxItems: maxItems, retentionDays: retentionDays)
         worker.async { [weak self] in
-            guard let self else { return }
-            do { self.store = try ClipboardStore(directory: root, limits: limits); try self.store?.prune(); DispatchQueue.main.async { self.reload() } }
-            catch { self.report(error) }
+            guard let self, !token.cancelled else { return }
+            do {
+                self.store = try ClipboardStore(directory: self.storageDirectory, limits: limits)
+                guard !token.cancelled else { return }
+                try self.store?.prune()
+                DispatchQueue.main.async {
+                    if !token.cancelled { self.reload() }
+                }
+            } catch {
+                DispatchQueue.main.async { if !token.cancelled { self.status = error.localizedDescription } }
+            }
         }
-        if startTimer { startMonitoring() }
-        recordMonitorHealth()
+    }
+
+    func stopRuntime() {
+        guard let runtime else { return }
+        runtime.cancel()
+        self.runtime = nil
+        stopMonitoring()
+        generation += 1
+        pendingSearch?.cancel(); pendingSearch = nil
+        pendingReload?.cancel(); pendingReload = nil
+        detailRequest?.cancel(); detailRequest = nil
+        presentationActive = false
+        query = ""
+        items = []; selectedID = nil; detail = nil; thumbnail = nil; textDraft = nil
+        searching = false; loadingDetail = false; indexingImageText = false
+        listThumbnailCache.removeAllObjects()
+        sharingPicker = nil
+        ocrPending = []; ocrAttempts = [:]; ocrRunning = false; ocrNeedsScan = true
+        worker.async { [weak self] in self?.store = nil }
     }
 
     func startMonitoring() {
         monitoringRequested = true
+        lastChange = board.changeCount
         updateCaptureTimer()
     }
 
@@ -170,7 +225,7 @@ final class ClipboardController: ObservableObject {
     }
 
     private func updateCaptureTimer() {
-        guard monitoringRequested && captureEnabled else {
+        guard runtime != nil, monitoringRequested && captureEnabled else {
             timer?.invalidate()
             timer = nil
             recordMonitorHealth()
@@ -183,9 +238,9 @@ final class ClipboardController: ObservableObject {
         recordMonitorHealth()
     }
     deinit { timer?.invalidate(); detailRequest?.cancel(); pendingReload?.cancel() }
-    private func report(_ error: Error) { DispatchQueue.main.async { self.status = error.localizedDescription } }
     func feedback(_ text: String) { status = text }
     func search(_ value: String) {
+        guard runtime != nil else { return }
         presentationActive = true
         query = value; searching = true; pendingSearch?.cancel(); pendingReload?.cancel(); generation += 1
         let work = DispatchWorkItem { [weak self] in self?.reload() }; pendingSearch = work
@@ -208,11 +263,12 @@ final class ClipboardController: ObservableObject {
         reload()
     }
     func reload() {
+        guard let runtime else { return }
         generation += 1; let ticket = generation; let value = query; let filter = ClipboardCategory(rawValue: kind); let pins = pinnedOnly
         let includeRecords = presentationActive
         pendingReload?.cancel()
         let task = DispatchWorkItem { [weak self] in
-            guard let self, let store = self.store else { return }
+            guard let self, !runtime.cancelled, let store = self.store else { return }
             do {
                 let records = includeRecords ? try store.list(query: value, category: filter, pinnedOnly: pins) : []; let count = try store.count(); let backups = (try? store.migrationBackups().count) ?? self.migrationBackupCount
                 DispatchQueue.main.async {
@@ -312,14 +368,14 @@ final class ClipboardController: ObservableObject {
     /// SQLite supplies the image reference; thumbnail decoding never occupies the storage queue.
     private func loadListThumbnail(for item: ClipItem, request: ClipboardPreviewRequest,
                                    completion: @escaping (NSImage?) -> Void) {
-        guard item.kind != .text, !request.cancelled else { completion(nil); return }
+        guard let runtime, item.kind != .text, !runtime.cancelled, !request.cancelled else { completion(nil); return }
         let finish: (NSImage?) -> Void = { image in
-            DispatchQueue.main.async { completion(request.cancelled ? nil : image) }
+            DispatchQueue.main.async { completion(request.cancelled || runtime.cancelled ? nil : image) }
         }
         let key = (item.id + (item.kind == .files ? ":" + String(item.copiedAt.timeIntervalSince1970) : "")) as NSString
         if let image = listThumbnailCache.object(forKey: key) { finish(image); return }
         worker.async { [weak self] in
-            guard let self, let store = self.store, !request.cancelled else { finish(nil); return }
+            guard let self, let store = self.store, !runtime.cancelled, !request.cancelled else { finish(nil); return }
             let file: ClipFile?
             let imageSource: CGImageSource?
             if item.kind == .files {
@@ -340,11 +396,11 @@ final class ClipboardController: ObservableObject {
                 }
             }
             self.listPreviewWorker.async {
-                guard !request.cancelled else { finish(nil); return }
+                guard !runtime.cancelled, !request.cancelled else { finish(nil); return }
                 if let cached = self.listThumbnailCache.object(forKey: key) { finish(cached); return }
                 let cg = file.flatMap { Self.makeFileThumbnail($0, maximumPixelSize: 64) }
                     ?? imageSource.flatMap { Self.makeThumbnail($0, maximumPixelSize: 64) }
-                guard let cg, !request.cancelled else { finish(nil); return }
+                guard let cg, !runtime.cancelled, !request.cancelled else { finish(nil); return }
                 let image = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
                 self.listThumbnailCache.setObject(image, forKey: key, cost: cg.bytesPerRow * cg.height)
                 finish(image)
@@ -386,6 +442,7 @@ final class ClipboardController: ObservableObject {
         }
     }
     func poll() {
+        guard let runtime else { return }
         pollTicks += 1
         defer { if pollTicks % 4 == 0 { recordMonitorHealth() } }
         if Date().timeIntervalSince(lastMaintenance) > 3600 { lastMaintenance = Date(); mutate { try $0.prune() } }
@@ -424,9 +481,10 @@ final class ClipboardController: ObservableObject {
         let bundle = source ?? front?.bundleIdentifier ?? ""
         let snapshotItems = items; let files = references
         worker.async { [weak self] in
-            guard let self, let store = self.store else { return }
+            guard let self, !runtime.cancelled, let store = self.store else { return }
             do {
                 let (content,snapshot) = try ClipboardCapture.decode(snapshotItems,fileReferences:files)
+                guard !runtime.cancelled else { return }
                 _ = try store.capture(content,snapshot:snapshot,source:name,bundle:bundle)
                 let mayContainImage: Bool
                 switch content {
@@ -435,19 +493,32 @@ final class ClipboardController: ObservableObject {
                 case .text: mayContainImage = false
                 }
                 DispatchQueue.main.async {
+                    guard !runtime.cancelled else { return }
                     self.capturedChanges += 1
                     self.captureOutcome = "captured"
                     self.status = ""
                     if mayContainImage { self.ocrNeedsScan = true }
                     self.reload()
                 }
-            } catch { DispatchQueue.main.async { self.captureOutcome = "save-failed" }; self.report(error) }
+            } catch {
+                DispatchQueue.main.async {
+                    guard !runtime.cancelled else { return }
+                    self.captureOutcome = "save-failed"
+                    self.status = error.localizedDescription
+                }
+            }
         }
     }
     private func mutate(_ action: @escaping (ClipboardStore) throws -> Void) {
+        guard let runtime else { return }
         worker.async { [weak self] in
-            guard let self, let store = self.store else { return }
-            do { try action(store); DispatchQueue.main.async { self.reload() } } catch { self.report(error) }
+            guard let self, !runtime.cancelled, let store = self.store else { return }
+            do {
+                try action(store)
+                DispatchQueue.main.async { if !runtime.cancelled { self.reload() } }
+            } catch {
+                DispatchQueue.main.async { if !runtime.cancelled { self.status = error.localizedDescription } }
+            }
         }
     }
     private func updateLimits() { let limits = ClipboardLimits(maxItems: maxItems, retentionDays: retentionDays); mutate { $0.limits = limits; try $0.prune() } }
@@ -484,13 +555,15 @@ final class ClipboardController: ObservableObject {
     }
 
     func saveEditedText(id: String, text: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let runtime else { return }
         worker.async { [weak self] in
-            guard let self else { return }
+            guard let self, !runtime.cancelled else { return }
             let result = Result {
                 guard let store = self.store else { throw ClipboardError.database }
                 return try store.replaceText(id: id, with: text)
             }
             DispatchQueue.main.async {
+                guard !runtime.cancelled else { return }
                 if case .success(let newID) = result {
                     if self.selectedID == id, newID != id { self.select(newID) }
                     self.reload()
@@ -679,6 +752,7 @@ final class ClipboardController: ObservableObject {
     }
 
     private func copyText(_ text: String) -> Bool {
+        guard runtime != nil else { return false }
         let item = NSPasteboardItem()
         item.setString(text, forType: .string)
         item.setString("1", forType: .init("org.keylane.clipboard.replay"))
@@ -701,14 +775,16 @@ final class ClipboardController: ObservableObject {
             completion(copied, copied ? "已复制图片文字" : status)
             return
         }
+        guard let runtime else { return }
         let changeCount = board.changeCount
         let accurate = accurateOCR
         ocrWorker.async { [weak self] in
-            guard let self else { return }
+            guard let self, !runtime.cancelled else { return }
             let result = Result {
-                try self.recognizedText(from: detail, mode: mode, accurate: accurate)
+                try self.recognizedText(from: detail, mode: mode, accurate: accurate, runtime: runtime)
             }
             DispatchQueue.main.async {
+                guard !runtime.cancelled else { return }
                 switch result {
                 case .success(let text) where !text.isEmpty:
                     if mode == .ocr {
@@ -736,10 +812,11 @@ final class ClipboardController: ObservableObject {
         throw ClipboardError.missingAttachment
     }
 
-    private func recognizedText(from detail: ClipDetail, mode: ClipboardImageText, accurate: Bool) throws -> String {
+    private func recognizedText(from detail: ClipDetail, mode: ClipboardImageText, accurate: Bool, runtime: ClipboardPreviewRequest) throws -> String {
         let files = files(for: detail)
         return try withExtendedLifetime(files) {
-            try mode.recognize(in: Self.imageRequest(for: detail, file: files.urls.first), accurate: accurate)
+            let handler = try Self.imageRequest(for: detail, file: files.urls.first)
+            return try mode.recognize(accurate: accurate) { try runtime.perform($0, in: handler) }
         }
     }
 
@@ -749,6 +826,7 @@ final class ClipboardController: ObservableObject {
     }
 
     private func continueOCR() {
+        guard let runtime else { return }
         let searchingImages = presentationActive && ["all", "image", "files"].contains(kind)
             && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasWork = ocrRunning || ocrNeedsScan || !ocrPending.isEmpty
@@ -759,11 +837,12 @@ final class ClipboardController: ObservableObject {
         if ocrNeedsScan {
             ocrNeedsScan = false
             worker.async { [weak self] in
-                guard let self else { return }
+                guard let self, !runtime.cancelled else { return }
                 let result = Result {
                     try (self.store?.pendingOCR() ?? []).filter { $0.filePath.map(Self.isImagePath) ?? true }
                 }
                 DispatchQueue.main.async {
+                    guard !runtime.cancelled else { return }
                     self.ocrRunning = false
                     switch result {
                     case .success(let candidates):
@@ -784,14 +863,15 @@ final class ClipboardController: ObservableObject {
             ocrPending = ocrPending.dropFirst(batch.count)
             let accurate = accurateOCR
             ocrWorker.async { [weak self] in
-                guard let self else { return }
+                guard let self, !runtime.cancelled else { return }
                 var updated = false
-                for candidate in batch {
-                    let indexed = autoreleasepool { self.indexImageText(candidate, accurate: accurate) }
+                for candidate in batch where !runtime.cancelled {
+                    let indexed = autoreleasepool { self.indexImageText(candidate, accurate: accurate, runtime: runtime) }
                     updated = updated || indexed
                 }
                 let needsReload = updated
                 DispatchQueue.main.async {
+                    guard !runtime.cancelled else { return }
                     for candidate in batch { self.ocrAttempts[candidate.id] = candidate.copiedAt }
                     self.ocrRunning = false
                     if needsReload && self.presentationActive { self.reload() }
@@ -802,14 +882,15 @@ final class ClipboardController: ObservableObject {
     }
 
     /// Vision stays off the storage queue. Only the bounded read and write run on that queue.
-    private func indexImageText(_ candidate: ClipboardOCRCandidate, accurate: Bool) -> Bool {
+    private func indexImageText(_ candidate: ClipboardOCRCandidate, accurate: Bool, runtime: ClipboardPreviewRequest) -> Bool {
         do {
             guard let detail = try worker.sync(execute: { try store?.detail(id: candidate.id) }),
                   !detail.item.hasOCR, detail.item.copiedAt == candidate.copiedAt else { return false }
-            let text = try recognizedText(from: detail, mode: .ocr, accurate: accurate)
+            let text = try recognizedText(from: detail, mode: .ocr, accurate: accurate, runtime: runtime)
             guard !text.isEmpty else { return false }
             return try worker.sync {
-                try store?.setOCR(id: candidate.id, text: text, fileCopiedAt: candidate.copiedAt) ?? false
+                guard !runtime.cancelled else { return false }
+                return try store?.setOCR(id: candidate.id, text: text, fileCopiedAt: candidate.copiedAt) ?? false
             }
         } catch { return false }
     }

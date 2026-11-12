@@ -39,7 +39,7 @@ final class Model: ObservableObject {
     let fileAI = FileAIController()
     private var moduleSearchChanges: AnyCancellable?
     let rootSearchUpdates = PassthroughSubject<Void, Never>()
-    let clipboard = ClipboardController(startTimer: false, presentationActive: false)
+    let clipboard = ClipboardController(startTimer: false, presentationActive: false, startStorage: false)
     let screenshots = ScreenshotLibrary()
     let systemShortcuts = SystemShortcutsController()
     let scripts = ScriptCommandsController()
@@ -92,7 +92,7 @@ final class Model: ObservableObject {
     @Published var hyperkey = UserDefaults.standard.bool(forKey: "hyperkey")
     @Published var modifierStatus = ""
     @Published var scanStatus = "正在扫描…"
-    let fileSearch = FileSearchController()
+    let fileSearch = FileSearchController(startImmediately: false)
     @Published var fileResults: [SpotlightFile] = [] {
         didSet { filteredFileEntries.removeAll() }
     }
@@ -136,6 +136,12 @@ final class Model: ObservableObject {
             return nil
         }
     }()
+    func setModuleEnabled(_ id: ModuleID, _ enabled: Bool) {
+        guard let registry = launcherModules, registry.setModuleEnabled(id, enabled) else { return }
+        commandSearch.invalidate()
+        if !enabled, registry.module(forPage: pageID) == id { pageID = .root }
+    }
+
     var activeLauncherPage: LauncherPage? { launcherModules?.page(pageID) }
     lazy var activePageUpdates: AnyPublisher<Void, Never> = {
         $pageID.removeDuplicates().map { [weak self] pageID in
@@ -364,7 +370,7 @@ final class Model: ObservableObject {
     }
     func discoveredIdentity(for url: URL) -> ApplicationIdentity? { appIdentities[url.path] }
     func appName(_ url: URL) -> String { appIdentities[url.path]?.displayName ?? url.deletingPathExtension().lastPathComponent }
-    var searchesFilesHere: Bool { fileSearch.options.enabled && (activeLauncherPage?.contentPlacement == .fileResults || (pageID == .root && fileSearch.options.searchFromLauncher)) }
+    var searchesFilesHere: Bool { fileSearch.isRunning && fileSearch.options.enabled && (activeLauncherPage?.contentPlacement == .fileResults || (pageID == .root && fileSearch.options.searchFromLauncher)) }
     func searchFiles() {
         fileSearch.search(query, includeContents: pageID != .root || rootFileContentSearch)
     }
@@ -588,10 +594,14 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         model.menuBar.register(id: "keylane.launcher", owner: "launcher", title: "Keylane", defaultVisible: true,
                                presentation: .init(symbol: "command", toolTip: "打开 Keylane")) { [weak self] in
-            [.init(title: "打开 Keylane", symbol: "command", action: { self?.revealLauncher() }),
-             .init(title: "我的日程", symbol: "calendar", action: { self?.model.runCommand(.init(rawValue: "calendar"), origin: .menu) }),
-             .init(title: "设置…", symbol: "gearshape", action: { self?.openLauncherSettings() }),
-             .separator, .init(title: "退出 Keylane", action: { NSApplication.shared.terminate(nil) })]
+            var commands: [MenuBarCommand] = [.init(title: "打开 Keylane", symbol: "command", action: { self?.revealLauncher() })]
+            let calendar = CommandID(rawValue: "calendar")
+            if self?.model.launcherModules?.isCommandModuleEnabled(calendar) == true {
+                commands.append(.init(title: "我的日程", symbol: "calendar", action: { self?.model.runCommand(calendar, origin: .menu) }))
+            }
+            commands += [.init(title: "设置…", symbol: "gearshape", action: { self?.openLauncherSettings() }),
+                         .separator, .init(title: "退出 Keylane", action: { NSApplication.shared.terminate(nil) })]
+            return commands
         }
         shortcuts.fired = { [weak self] action in
             guard let self else { return }
@@ -697,7 +707,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             settings.addTitlebarAccessoryViewController(trailingActions)
             settingsToolbarSizing = state.$page.removeDuplicates().sink { [weak trailingActions, weak state] page in
                 guard let trailingActions else { return }
-                let width = SettingsWindowActions.width(for: state?.catalog.page(page))
+                let width = SettingsWindowActions.width(for: state?.catalog.page(page),
+                                                        hasExtensionSwitch: state?.extensionEnabled(for: page) != nil)
                 trailingActions.view.frame.size.width = width
                 trailingActions.isHidden = width == 0
             }

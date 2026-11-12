@@ -260,7 +260,7 @@ enum ScriptCommandsModule {
             model: model, items: { controller.entries }, title: \.title, commandID: \.id,
             updates: { [ViewObservation.changes(controller.$entries), ViewObservation.changes(controller.$disabled)] },
             entry: { $0.commandSettingsEntry(model: $1, controller: controller) }
-        ))
+        ), canDisable: true)
     }
 }
 

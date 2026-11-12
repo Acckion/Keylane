@@ -7,6 +7,7 @@ final class FilePreview: NSObject, QLPreviewPanelDataSource {
     private var fileAccess: AnyObject?
     private weak var panel: QLPreviewPanel?
     private var presenting = false
+    private var owner: FilePresentationOwner?
 
     var takesLauncherFocus: Bool { presenting || (owns(panel) && panel?.isKeyWindow == true) }
 
@@ -15,13 +16,14 @@ final class FilePreview: NSObject, QLPreviewPanelDataSource {
         return window === panel
     }
 
-    func show(_ url: URL) { show([url]) }
+    func show(_ url: URL, owner: FilePresentationOwner? = nil) { show([url], owner: owner) }
 
-    func show(_ urls: [URL], retaining access: AnyObject? = nil) {
+    func show(_ urls: [URL], retaining access: AnyObject? = nil, owner: FilePresentationOwner? = nil) {
         guard !urls.isEmpty else { return }
         guard let panel = QLPreviewPanel.shared() else { return }
         self.urls = urls
         fileAccess = access
+        self.owner = owner
         self.panel = panel
         panel.dataSource = self
         panel.reloadData()
@@ -30,11 +32,16 @@ final class FilePreview: NSObject, QLPreviewPanelDataSource {
         panel.makeKeyAndOrderFront(nil)
     }
 
+    func dismiss(owner: FilePresentationOwner) {
+        if self.owner == owner { dismiss() }
+    }
+
     func dismiss() {
         defer {
             urls = []
             fileAccess = nil
             panel = nil
+            owner = nil
         }
         guard let panel, panel.dataSource === self else { return }
         panel.orderOut(nil)
