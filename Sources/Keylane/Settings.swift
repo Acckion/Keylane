@@ -79,16 +79,39 @@ struct SettingsView: View {
             target = nil
         }
         .toolbar {
-
-            ToolbarItemGroup(placement: .navigation) {
-                ControlGroup {
-                    Button { historyIndex -= 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.backward") }.keyboardShortcut(state.navigationKeys.back, modifiers: .command).disabled(historyIndex == 0).help("后退")
-                    Button { historyIndex += 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.forward") }.keyboardShortcut(state.navigationKeys.forward, modifiers: .command).disabled(historyIndex == history.count - 1).help("前进")
-                }.controlGroupStyle(.navigation)
+            if #available(macOS 26.1, *) {
+                historyToolbar.visibilityPriority(.high)
+            } else {
+                historyToolbar
             }
-
         }
     }
+
+    private var historyToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            ControlGroup {
+                Button {
+                    historyIndex -= 1
+                    selected = history[historyIndex]
+                } label: {
+                    Image(systemName: "chevron.backward")
+                }
+                .keyboardShortcut(state.navigationKeys.back, modifiers: .command)
+                .disabled(historyIndex == 0)
+                .help("后退")
+                Button {
+                    historyIndex += 1
+                    selected = history[historyIndex]
+                } label: {
+                    Image(systemName: "chevron.forward")
+                }
+                .keyboardShortcut(state.navigationKeys.forward, modifiers: .command)
+                .disabled(historyIndex == history.count - 1)
+                .help("前进")
+            }.controlGroupStyle(.navigation)
+        }
+    }
+
     private func sidebar(matches: [SettingsItem]) -> some View {
         ZStack(alignment: .top) {
             Group {
