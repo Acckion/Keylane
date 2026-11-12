@@ -5,25 +5,8 @@ struct SettingsWindowActions: View {
     @ObservedObject var state: SettingsWindowState
     @State private var showingInfo = false
 
-    static func width(for page: LauncherSettingsPage?) -> CGFloat {
-        page?.toolbar == nil ? 106 : 284
-    }
-
     var body: some View {
-        let page = state.catalog.page(state.page)
-        Group {
-            if let toolbar = page?.toolbar {
-                toolbar()
-            } else {
-                pageActions(page?.titlebar)
-            }
-        }
-        .padding(.trailing, 12)
-        .frame(width: Self.width(for: page), height: 44, alignment: .trailing)
-        .preferredColorScheme(state.colorScheme)
-    }
-
-    private func pageActions(_ contribution: SettingsTitlebarContribution?) -> some View {
+        let contribution = state.catalog.page(state.page)?.titlebar
         HStack(spacing: 10) {
             Button { showingInfo.toggle() } label: {
                 Image(systemName: "info.circle").font(.system(size: 16)).frame(width: 18, height: 20)
@@ -39,7 +22,8 @@ struct SettingsWindowActions: View {
             if let contribution {
                 SettingsTitlebarSwitch(contribution: contribution).id(state.page)
             }
-        }
+        }.padding(.trailing, 12).frame(width: 106, height: 44, alignment: .trailing)
+            .preferredColorScheme(state.colorScheme)
     }
 }
 

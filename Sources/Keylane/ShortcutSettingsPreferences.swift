@@ -30,77 +30,17 @@ extension DynamicCommandSettings {
     }
 }
 
-final class ShortcutSettingsFilters: ObservableObject {
-    @Published var query = ""
-    @Published var category: String?
-    @Published private(set) var hiddenGroups = Set(
-        (UserDefaults.standard.string(forKey: "hiddenShortcutSettingsGroups") ?? "")
-            .split(separator: "\n").map(String.init)
-    )
-
-    func setHidden(_ id: String, _ hidden: Bool) {
-        var ids = hiddenGroups
-        if hidden {
-            ids.insert(id)
-            if category == id { category = nil }
-        } else {
-            ids.remove(id)
-        }
-        saveHiddenGroups(ids)
-    }
-
-    func restoreAll() { saveHiddenGroups([]) }
-
-    private func saveHiddenGroups(_ ids: Set<String>) {
-        hiddenGroups = ids
-        UserDefaults.standard.set(ids.sorted().joined(separator: "\n"), forKey: "hiddenShortcutSettingsGroups")
-    }
-}
-
-struct ShortcutSettingsToolbar: View {
-    let groups: [ShortcutCommandGroup]
-    @ObservedObject var filters: ShortcutSettingsFilters
-
-    var body: some View {
-        HStack(spacing: 8) {
-            SettingsSearchField(text: $filters.query, placeholder: "搜索快捷键…")
-                .frame(width: 128, height: 28)
-                .help("搜索命令、别名或快捷键")
-            Menu {
-                Picker("分类", selection: $filters.category) {
-                    Text("全部分类").tag(nil as String?)
-                    ForEach(groups.filter { !filters.hiddenGroups.contains($0.id.rawValue) }, id: \.id) { item in
-                        Text(item.title).tag(Optional(item.id.rawValue))
-                    }
-                }
-                if !filters.hiddenGroups.isEmpty {
-                    Divider()
-                    Menu("恢复隐藏分组") {
-                        ForEach(groups.filter { filters.hiddenGroups.contains($0.id.rawValue) }, id: \.id) { item in
-                            Button(item.title) { filters.setHidden(item.id.rawValue, false) }
-                        }
-                        Button("恢复全部", action: filters.restoreAll)
-                    }
-                }
-            } label: {
-                Label(groups.first { $0.id.rawValue == filters.category }?.title ?? "全部分类", systemImage: "list.bullet")
-                    .lineLimit(1)
-            }
-            .help("筛选快捷键分类")
-        }
-    }
-}
-
 struct ShortcutSettingsPreferences: View {
     let model: Model
     @StateObject private var observation: ViewObservation
-    @ObservedObject var filters: ShortcutSettingsFilters
+    @AppStorage("hiddenShortcutSettingsGroups") private var hiddenGroupIDs = ""
     @State private var expanded: Set<String> = ["keylane.system-tools"]
+    @State private var category: String?
+    @State private var query = ""
     @State private var collapsedWhileSearching: Set<String> = []
 
-    init(model: Model, filters: ShortcutSettingsFilters) {
+    init(model: Model) {
         self.model = model
-        self.filters = filters
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
@@ -109,14 +49,15 @@ struct ShortcutSettingsPreferences: View {
     }
 
     private var groups: [ShortcutCommandGroup] { model.launcherModules?.shortcutCommandGroups ?? [] }
-    private var search: String { filters.query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var hiddenGroups: Set<String> { Set(hiddenGroupIDs.split(separator: "\n").map(String.init)) }
+    private var search: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
         let searchTerm = search
-        let hidden = filters.hiddenGroups
+        let hidden = hiddenGroups
         let visibleGroups = groups.compactMap { group -> VisibleGroup? in
             let id = group.id.rawValue
-            guard !hidden.contains(id), filters.category == nil || filters.category == id else { return nil }
+            guard !hidden.contains(id), category == nil || category == id else { return nil }
             let isExpanded = searchTerm.isEmpty ? expanded.contains(id) : !collapsedWhileSearching.contains(id)
             let content = isExpanded || !searchTerm.isEmpty ? matchingContent(for: group, query: searchTerm) : nil
             guard searchTerm.isEmpty || content != nil else { return nil }
@@ -132,10 +73,47 @@ struct ShortcutSettingsPreferences: View {
                 ContentUnavailableView.search(text: searchTerm)
             }
         }
+        .searchable(text: $query, placement: .toolbar, prompt: "搜索快捷键…")
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                categoryMenu(hidden: hidden)
+            }
+        }
         .settingsAnchor(.hotkeys)
-        .onAppear { if let id = filters.category { expanded.insert(id) } }
-        .onChange(of: filters.category) { _, id in if let id { expanded.insert(id) } }
+        .onChange(of: category) { _, id in if let id { expanded.insert(id) } }
         .onChange(of: search) { _, _ in collapsedWhileSearching.removeAll() }
+    }
+
+    private func categoryMenu(hidden: Set<String>) -> some View {
+        Menu {
+            Picker("分类", selection: $category) {
+                Text("全部分类").tag(nil as String?)
+                ForEach(groups.filter { !hidden.contains($0.id.rawValue) }, id: \.id) { item in
+                    Text(item.title).tag(Optional(item.id.rawValue))
+                }
+            }
+            if !hidden.isEmpty {
+                Divider()
+                Menu("恢复隐藏分组") {
+                    ForEach(groups.filter { hidden.contains($0.id.rawValue) }, id: \.id) { item in
+                        Button(item.title) { setHidden(item.id.rawValue, false) }
+                    }
+                    Button("恢复全部") { hiddenGroupIDs = "" }
+                }
+            }
+        } label: {
+            Label(groups.first { $0.id.rawValue == category }?.title ?? "全部分类", systemImage: "list.bullet")
+        }
+        .help("筛选快捷键分类")
+    }
+
+    private func setHidden(_ id: String, _ hidden: Bool) {
+        var ids = hiddenGroups
+        if hidden {
+            ids.insert(id)
+            if category == id { category = nil }
+        } else { ids.remove(id) }
+        hiddenGroupIDs = ids.sorted().joined(separator: "\n")
     }
 
     private struct VisibleGroup {
@@ -208,7 +186,7 @@ struct ShortcutSettingsPreferences: View {
                         }.contentShape(Rectangle())
                     }.buttonStyle(.plain)
                         .accessibilityValue(isExpanded ? "已展开" : "已折叠")
-                    SettingsIconButton("隐藏\(group.title)分组", symbol: "minus", compact: true) { filters.setHidden(id, true) }
+                    SettingsIconButton("隐藏\(group.title)分组", symbol: "minus", compact: true) { setHidden(id, true) }
                 }.padding(.horizontal, 14).frame(minHeight: SettingsRowsLayout.rowHeight)
                 if isExpanded {
                     if let content = visible.content { commandList(content) }

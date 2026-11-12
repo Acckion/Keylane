@@ -94,7 +94,6 @@ struct LauncherSettingsPage: Identifiable {
     let order: Int
     let items: [SettingsItem]
     var titlebar: SettingsTitlebarContribution?
-    var toolbar: (() -> AnyView)?
     let content: () -> AnyView
 }
 
