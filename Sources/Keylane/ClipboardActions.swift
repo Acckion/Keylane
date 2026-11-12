@@ -106,7 +106,7 @@ enum ClipboardActions {
         if !text.isEmpty {
             actions.append(.init(id: "snippet-clip", title: "存为文字片段", icon: "text.badge.plus",
                                  keys: ["⌘", "S"], group: 2) { [weak model] in
-                if let model { SnippetsModule.create(from: text, model: model) }
+                model?.runCommand(SnippetsModule.createCommandID, origin: .menu, arguments: [text])
             })
         }
         if let quicklink {

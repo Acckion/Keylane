@@ -9,19 +9,12 @@ enum SnippetsModule {
     private static let settingsID = "snippets"
     private static let symbol = "text.badge.plus"
 
-    static func create(from text: String, model: Model) {
-        model.snippets.edit(Snippet(text: text))
-        model.openPage(editID, origin: .menu)
-    }
+    static let createCommandID = CommandID(rawValue: "create-snippet")
 
     static func make(model: Model) -> LauncherModule {
         let snippets = model.snippets
         let expansionPermission = PermissionFeature("snippets.expandsKeywords", authorization: .accessibility)
         var expansionChanges: AnyCancellable?
-        let create: (LauncherCommandOrigin) -> Void = { [weak model] origin in
-            snippets.edit()
-            model?.openPage(editID, origin: origin)
-        }
         let save: () -> Void = { [weak model] in
             if snippets.save() { model?.pageID = listID }
         }
@@ -39,7 +32,7 @@ enum SnippetsModule {
             },
             actions: { [weak model] in
                 var actions = [LauncherAction(id: "snippet-create", title: "创建片段", icon: "plus",
-                                              perform: { create(.menu) })]
+                                              perform: { model?.runCommand(createCommandID, origin: .menu) })]
                 if let selected = snippets.selected {
                     actions += [
                         .init(id: "snippet-paste", title: "粘贴片段", icon: "clipboard", keys: ["↩"], perform: useSelected),
@@ -75,10 +68,12 @@ enum SnippetsModule {
                                          detail: "查找并粘贴常用文字", symbol: symbol,
                                          keywords: ["Search Snippets", "Snippet", "片段", "常用短语"],
                                          destination: .page(listID), settingsPage: settingsID)),
-                .init(declaration: .init(id: .init(rawValue: "create-snippet"), title: "创建文字片段",
+                .init(declaration: .init(id: createCommandID, title: "创建文字片段",
                                          detail: "保存可重复使用的文字", symbol: "plus.square",
-                                         keywords: ["Create Snippet", "新建片段"], destination: .action, settingsPage: settingsID),
-                      execute: create)
+                                         keywords: ["Create Snippet", "新建片段"], destination: .page(editID), settingsPage: settingsID),
+                      arguments: .init(count: 0...1) { _, arguments in
+                          snippets.edit(arguments.first.map { Snippet(text: $0) })
+                      })
             ],
             pages: [list, editor],
             settings: [
@@ -210,7 +205,7 @@ private struct SnippetPreferences: View {
             SettingsGroup {
                 SettingsActionRow(title: "文字片段", detail: "\(controller.entries.count) 条",
                                   actionTitle: "搜索片段…") { model.runCommand(.init(rawValue: "search-snippets"), origin: .menu) }
-                SettingsActionRow(title: "创建片段", actionTitle: "创建…") { model.runCommand(.init(rawValue: "create-snippet"), origin: .menu) }
+                SettingsActionRow(title: "创建片段", actionTitle: "创建…") { model.runCommand(SnippetsModule.createCommandID, origin: .menu) }
             }
         }
     }
