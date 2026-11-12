@@ -247,6 +247,11 @@ final class ClipboardTests: XCTestCase {
         let files = [ClipFile(path:"/missing/资料.txt",bookmark:Data([1,2]))]
         let file = try store.capture(.files(files))
         XCTAssertEqual(try store.detail(id:file)?.files,files)
+        let multiFile = try store.capture(.files(files + [ClipFile(path: "/missing/second.txt")]))
+        let counts = Dictionary(uniqueKeysWithValues: try store.list().map { ($0.id, $0.fileCount) })
+        XCTAssertEqual(counts[file], 1)
+        XCTAssertEqual(counts[multiFile], 2)
+        XCTAssertEqual(counts[image], 0)
         XCTAssertNil(store.assetURL("../../notes.sqlite"))
         try store.remove(id:image)
         XCTAssertFalse(FileManager.default.fileExists(atPath:asset.path))

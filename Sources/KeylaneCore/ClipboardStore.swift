@@ -65,6 +65,7 @@ public struct ClipItem: Identifiable, Equatable {
     public let firstCopiedAt: Date
     public let pinned: Bool
     public let copyCount: Int
+    public let fileCount: Int
     public let byteCount: Int
     public let assetName: String?
     public let hasOCR: Bool
@@ -243,7 +244,11 @@ public final class ClipboardStore {
         files.map { URL(fileURLWithPath: $0.path).lastPathComponent + " " + $0.path }.joined(separator: "\n")
     }
     private static let shortText = "CASE WHEN kind='text' AND length(payload)<=4096 THEN payload END"
-    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0),\(shortText),created"
+    private static let fileCount = """
+        CASE WHEN kind='files' AND json_valid(CAST(payload AS TEXT))
+             THEN json_array_length(CAST(payload AS TEXT)) ELSE 0 END
+        """
+    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0),\(shortText),created,\(fileCount)"
     private func item(_ s: OpaquePointer) throws -> ClipItem {
         guard let kind = ClipKind(rawValue: string(s,1)) else { throw ClipboardError.database }
         let text = String(decoding: blob(s,11), as: UTF8.self)
@@ -260,6 +265,7 @@ public final class ClipboardStore {
                         copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)),
                         firstCopiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,12)),
                         pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)),
+                        fileCount: Int(sqlite3_column_int(s,13)),
                         byteCount: Int(sqlite3_column_int64(s,8)),
                         assetName: sqlite3_column_type(s,9) == SQLITE_NULL ? nil : string(s,9), hasOCR: sqlite3_column_int(s,10) != 0)
     }
@@ -338,11 +344,11 @@ public final class ClipboardStore {
     public func detail(id: String) throws -> ClipDetail? {
         let s = try statement("SELECT " + Self.columns + ",payload,ocr FROM clips WHERE id=?",[.text(id)]); defer { sqlite3_finalize(s) }
         let status = sqlite3_step(s); if status == SQLITE_DONE { return nil }; guard status == SQLITE_ROW else { throw ClipboardError.database }
-        let record = try item(s); let data = blob(s,13)
+        let record = try item(s); let data = blob(s,14)
         let files = record.kind == .files ? try JSONDecoder().decode([ClipFile].self, from:data) : []
         let q = try statement("SELECT payload FROM clip_snapshots WHERE clip_id=?",[.text(id)]); defer { sqlite3_finalize(q) }
         let snapshot = sqlite3_step(q) == SQLITE_ROW ? try PropertyListDecoder().decode(ClipSnapshot.self,from:blob(q,0)) : nil
-        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,14),snapshot:snapshot)
+        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,15),snapshot:snapshot)
     }
     public func assetURL(_ name: String) -> URL? {
         let parts = name.split(separator: ".", omittingEmptySubsequences: false)

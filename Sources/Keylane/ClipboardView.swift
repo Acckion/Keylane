@@ -11,14 +11,46 @@ struct ClipboardHistoryView: View {
     init(controller: ClipboardController, query: String) {
         self.controller = controller
         self.query = query
-        _observation = StateObject(wrappedValue: ViewObservation([ViewObservation.changes(controller.$textDraft)]))
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$textDraft),
+            ViewObservation.changes(controller.$items.map(\.isEmpty)),
+            ViewObservation.changes(controller.$searching),
+            ViewObservation.changes(controller.$indexingImageText),
+            ViewObservation.changes(controller.$captureEnabled),
+            ViewObservation.changes(controller.$accessMessage),
+            ViewObservation.changes(controller.$status)
+        ]))
+    }
+
+    private var clipboardEmptyMessage: String {
+        controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"
     }
 
     var body: some View {
-        ResultDetailLayout {
+        ResultDetailLayout(hasResults: !controller.items.isEmpty) {
             ClipboardHistoryList(controller: controller, query: query)
         } detail: {
             ClipboardHistoryDetail(controller: controller)
+        } emptyState: {
+            VStack(spacing: 12) {
+                if controller.searching || controller.indexingImageText {
+                    Text(controller.indexingImageText ? "正在搜索图片文字…" : "正在搜索剪贴板…")
+                        .font(VisualStyle.rowText).foregroundStyle(.secondary)
+                } else {
+                    ResultDetailEmptyState(title: query.isEmpty ? "没有剪贴板记录" : "没有匹配结果",
+                                           message: query.isEmpty ? clipboardEmptyMessage : nil)
+                    if query.isEmpty || !controller.captureEnabled {
+                        Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
+                            .buttonStyle(ContentActionButtonStyle())
+                    }
+                }
+                if !controller.accessMessage.isEmpty {
+                    Text(controller.accessMessage).font(.caption).foregroundStyle(.orange)
+                }
+                if !controller.status.isEmpty {
+                    Text(controller.status).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+            }
         }
         .onAppear { controller.reload() }
         .sheet(item: Binding(get: { controller.textDraft }, set: { controller.textDraft = $0 })) { draft in
@@ -98,23 +130,53 @@ private struct ClipboardHistoryList: View {
     }
 
     var body: some View {
-        SelectableResultList(selection: controller.selectedID, query: query, firstResult: controller.items.first?.id) {
-            if controller.items.isEmpty {
-                Text(controller.indexingImageText ? "正在搜索图片文字…" : "没有匹配记录")
-                    .font(VisualStyle.sectionText).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.top, 80)
-            }
-            ForEach(controller.items) { item in
-                ResultListButton(id: item.id, action: { controller.select(item.id) }) {
-                    ResultListRow(selected: item.id == controller.selectedID) {
-                        ClipboardListIcon(item: item, controller: controller)
-                    } content: {
-                        HighlightedResultText(text: item.preview.replacingOccurrences(of: "\n", with: " "), query: query)
-                            .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
+        let calendar = Calendar.current
+        let now = Date()
+        let groups = Dictionary(grouping: controller.items) {
+            ClipboardHistoryPeriod(item: $0, now: now, calendar: calendar)
+        }
+        let periods = ClipboardHistoryPeriod.allCases.filter { groups[$0] != nil }
+        SelectableResultList(selection: controller.selectedID, query: query, firstResult: periods.first?.scrollID) {
+            ForEach(periods, id: \.self) { period in
+                ResultListSection(title: period.rawValue, isFirst: period == periods.first) {
+                    ForEach(groups[period, default: []]) { item in
+                        ResultListButton(id: item.id, action: { controller.select(item.id) }) {
+                            ResultListRow(selected: item.id == controller.selectedID) {
+                                ClipboardListIcon(item: item, controller: controller)
+                            } content: {
+                                HighlightedResultText(text: item.preview.replacingOccurrences(of: "\n", with: " "), query: query)
+                                    .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
+                                    .accessibilityValue(item.fileCount > 1 ? "\(item.fileCount) 个文件" : "")
+                            }
+                        }
                     }
                 }
+                .id(period.scrollID)
             }
         }
+    }
+}
+
+private enum ClipboardHistoryPeriod: String, CaseIterable {
+    case pinned = "已置顶"
+    case today = "今天"
+    case yesterday = "昨天"
+    case week = "这周"
+    case month = "这个月"
+    case year = "今年"
+    case earlier = "更早"
+
+    var scrollID: String { "clipboard-period-" + rawValue }
+
+    init(item: ClipItem, now: Date, calendar: Calendar) {
+        if item.pinned { self = .pinned }
+        else if calendar.isDate(item.copiedAt, inSameDayAs: now) { self = .today }
+        else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+                calendar.isDate(item.copiedAt, inSameDayAs: yesterday) { self = .yesterday }
+        else if calendar.isDate(item.copiedAt, equalTo: now, toGranularity: .weekOfYear) { self = .week }
+        else if calendar.isDate(item.copiedAt, equalTo: now, toGranularity: .month) { self = .month }
+        else if calendar.isDate(item.copiedAt, equalTo: now, toGranularity: .year) { self = .year }
+        else { self = .earlier }
     }
 }
 
@@ -127,9 +189,7 @@ private struct ClipboardHistoryDetail: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             controller.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             ViewObservation.changes(controller.$thumbnail),
-            ViewObservation.changes(controller.$items.map(\.isEmpty)),
-            ViewObservation.changes(controller.$indexingImageText),
-            ViewObservation.changes(controller.$captureEnabled),
+            ViewObservation.changes(controller.$loadingDetail),
             ViewObservation.changes(controller.$status),
             ViewObservation.changes(controller.$accessMessage)
         ]))
@@ -140,26 +200,13 @@ private struct ClipboardHistoryDetail: View {
             ClipboardDetail(detail: detail, thumbnail: controller.thumbnail,
                             status: controller.status, accessMessage: controller.accessMessage)
                 .id(detail.item.id)
-        } else {
-            VStack(spacing: 10) {
-                Spacer()
-                if controller.indexingImageText {
-                    Text("正在识别历史图片中的文字…").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
-                    Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
-                        .buttonStyle(ContentActionButtonStyle())
-                }
-                Spacer()
-                if !controller.accessMessage.isEmpty {
-                    Text(controller.accessMessage).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
-                }
-                if !controller.status.isEmpty {
-                    Text(controller.status).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).textSelection(.enabled)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
+        } else if controller.loadingDetail {
+            Text("正在加载预览…").font(VisualStyle.rowText).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if !controller.status.isEmpty {
+            Text(controller.status).font(.caption).foregroundStyle(.secondary)
+                .textSelection(.enabled).padding(20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 }

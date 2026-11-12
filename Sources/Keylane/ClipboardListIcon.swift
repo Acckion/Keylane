@@ -21,9 +21,21 @@ struct ClipboardListIcon: View {
                 }
             }
         }.frame(width: 26, height: 26).clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay(alignment: .bottomTrailing) {
+                if item.fileCount > 1 {
+                    Text(item.fileCount, format: .number)
+                        .font(.system(size: 10, weight: .bold).monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 3)
+                        .frame(minWidth: 14, minHeight: 14)
+                        .background(Color(white: 0.13), in: Capsule())
+                        .overlay { Capsule().strokeBorder(.white.opacity(0.75), lineWidth: 1) }
+                }
+            }
             .accessibilityHidden(true)
             .task(id: item.id + (item.kind == .files ? String(item.copiedAt.timeIntervalSince1970) : "")) {
                 thumbnail = nil
+                guard item.fileCount <= 1 else { return }
                 let image: NSImage?
                 if let url = item.webURL {
                     try? await Task.sleep(for: .milliseconds(120))

@@ -5,57 +5,56 @@ import KeylaneCore
 struct CalendarPage: View {
     @ObservedObject var controller: CalendarController
     var body: some View {
-        ResultDetailLayout {
+        ResultDetailLayout(hasResults: controller.enabled && controller.access == .allowed
+                           && !controller.filteredEvents.isEmpty) {
             SelectableResultList(selection: controller.selectedID, revealAfterLoading: !controller.loading) {
-                if controller.access == .allowed, controller.enabled {
-                    if controller.filteredEvents.isEmpty {
-                        Text(controller.loading ? "正在加载日程…" : "当天没有匹配的日程")
-                            .font(VisualStyle.sectionText).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
-                    }
-                    ForEach(controller.filteredEvents) { event in
-                        ResultListButton(id: event.id, action: { controller.select(event.id) }) {
-                            ResultListRow(selected: event.id == controller.selectedID, height: 48) {
-                                Image(systemName: event.allDay ? "sun.max.fill" : "calendar").font(.system(size: 21)).foregroundStyle(.blue)
-                            } content: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
-                                    Text(event.allDay ? "全天 · \(event.calendarTitle)" : "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened)) · \(event.calendarTitle)")
-                                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                                }
+                ForEach(controller.filteredEvents) { event in
+                    ResultListButton(id: event.id, action: { controller.select(event.id) }) {
+                        ResultListRow(selected: event.id == controller.selectedID, height: 48) {
+                            Image(systemName: event.allDay ? "sun.max.fill" : "calendar").font(.system(size: 21)).foregroundStyle(.blue)
+                        } content: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
+                                Text(event.allDay ? "全天 · \(event.calendarTitle)" : "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened)) · \(event.calendarTitle)")
+                                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
                             }
                         }
                     }
                 }
             }
         } detail: {
-            Group {
-                if !controller.enabled {
-                    ContentUnavailableView {
-                        Label("日历已关闭", systemImage: "calendar")
-                    } description: {
-                        Text("在日历设置中重新开启后可继续查看日程。")
-                    } actions: {
-                        Button("日历设置…") { controller.showSettings?() }.buttonStyle(ContentActionButtonStyle())
-                    }
+            if let event = controller.selectedEvent {
+                ResultDetailPane { _ in
+                    VStack(alignment: .leading, spacing: 14) {
+                        Label(event.calendarTitle, systemImage: "calendar").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text(event.title).font(.system(size: 21, weight: .semibold)).textSelection(.enabled)
+                        Text(event.start.formatted(date: .complete, time: .omitted)).font(.system(size: 13))
+                        Text(event.allDay ? "全天" : "\(event.start.formatted(date: .omitted, time: .shortened)) – \(event.end.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
+                    }.frame(maxWidth: .infinity, alignment: .topLeading).padding(9)
+                } information: {
+                    DetailInformationSection(rows: [
+                        .init(title: "日历", value: event.calendarTitle),
+                        .init(title: "开始", value: event.start.formatted(date: .abbreviated, time: event.allDay ? .omitted : .shortened)),
+                        .init(title: "结束", value: (event.allDay ? max(event.start, event.end.addingTimeInterval(-1)) : event.end).formatted(date: .abbreviated, time: event.allDay ? .omitted : .shortened))
+                    ] + (event.location.isEmpty ? [] : [.init(title: "地点", value: event.location)]))
+                    if !event.notes.isEmpty { DisclosureGroup("备注") { Text(event.notes).font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) } }
                 }
-                else if controller.access != .allowed { CalendarConnectionView(controller: controller) }
-                else if let event = controller.selectedEvent {
-                    ResultDetailPane { _ in
-                        VStack(alignment: .leading, spacing: 14) {
-                            Label(event.calendarTitle, systemImage: "calendar").font(.system(size: 12)).foregroundStyle(.secondary)
-                            Text(event.title).font(.system(size: 21, weight: .semibold)).textSelection(.enabled)
-                            Text(event.start.formatted(date: .complete, time: .omitted)).font(.system(size: 13))
-                            Text(event.allDay ? "全天" : "\(event.start.formatted(date: .omitted, time: .shortened)) – \(event.end.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
-                        }.frame(maxWidth: .infinity, alignment: .topLeading).padding(9)
-                    } information: {
-                        DetailInformationSection(rows: [
-                            .init(title: "日历", value: event.calendarTitle),
-                            .init(title: "开始", value: event.start.formatted(date: .abbreviated, time: event.allDay ? .omitted : .shortened)),
-                            .init(title: "结束", value: (event.allDay ? max(event.start, event.end.addingTimeInterval(-1)) : event.end).formatted(date: .abbreviated, time: event.allDay ? .omitted : .shortened))
-                        ] + (event.location.isEmpty ? [] : [.init(title: "地点", value: event.location)]))
-                        if !event.notes.isEmpty { DisclosureGroup("备注") { Text(event.notes).font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) } }
-                    }
-                } else { ContentUnavailableView(controller.loading ? "正在加载" : "没有日程", systemImage: "calendar", description: Text("选择其他日期，或在日历设置中选择要显示的日历。")) }
+            }
+        } emptyState: {
+            if !controller.enabled {
+                ContentUnavailableView {
+                    Label("日历已关闭", systemImage: "calendar")
+                } description: {
+                    Text("在日历设置中重新开启后可继续查看日程。")
+                } actions: {
+                    Button("日历设置…") { controller.showSettings?() }.buttonStyle(ContentActionButtonStyle())
+                }
+            } else if controller.access != .allowed {
+                CalendarConnectionView(controller: controller)
+            } else if controller.loading {
+                Text("正在加载日程…").font(VisualStyle.rowText).foregroundStyle(.secondary)
+            } else {
+                ResultDetailEmptyState(title: "没有匹配的日程", message: "可选择其他日期查看日程。")
             }
         }
         .overlay(alignment: .bottom) { if !controller.error.isEmpty { Text(controller.error).font(.caption).foregroundStyle(.orange).padding(10).padding(.bottom, VisualStyle.launcherBottomInset) } }
