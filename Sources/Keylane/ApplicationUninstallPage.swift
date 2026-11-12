@@ -4,6 +4,7 @@ import SwiftUI
 
 final class ApplicationUninstallSelection: ObservableObject {
     @Published private(set) var items: [ApplicationPreferenceItem] = []
+    @Published var isLoading = false
     @Published private(set) var selectedID: String?
     private var candidates: [ApplicationPreferenceItem] = []
     private var query = ""
@@ -12,13 +13,26 @@ final class ApplicationUninstallSelection: ObservableObject {
 
     func load(_ candidates: [ApplicationPreferenceItem]) {
         self.candidates = candidates
-        filter(query)
+        applyFilter()
+    }
+
+    func clear() {
+        isLoading = false
+        query = ""
+        candidates = []
+        items = []
+        selectedID = nil
     }
 
     func filter(_ query: String) {
-        let tokens = query.split(whereSeparator: \.isWhitespace)
-        if self.query != query { selectedID = nil }
+        guard query != self.query else { return }
+        selectedID = nil
         self.query = query
+        applyFilter()
+    }
+
+    private func applyFilter() {
+        let tokens = query.split(whereSeparator: \.isWhitespace)
         items = candidates.filter { item in
             tokens.allSatisfy { token in
                 item.title.localizedCaseInsensitiveContains(token) || item.id.localizedCaseInsensitiveContains(token)
@@ -29,7 +43,7 @@ final class ApplicationUninstallSelection: ObservableObject {
 
     func remove(_ path: String) {
         candidates.removeAll { $0.id == path }
-        filter(query)
+        applyFilter()
     }
 
     func select(_ id: String) { selectedID = id }
@@ -46,7 +60,10 @@ struct ApplicationUninstallPage: View {
 
     var body: some View {
         SelectableResultList(selection: selection.selectedID, firstResult: selection.items.first?.id) {
-            if selection.items.isEmpty {
+            if selection.isLoading && selection.items.isEmpty {
+                ProgressView("正在读取应用…").controlSize(.small)
+                    .padding(20).frame(maxWidth: .infinity)
+            } else if selection.items.isEmpty {
                 Text("没有可卸载的应用").foregroundStyle(.secondary)
                     .padding(20).frame(maxWidth: .infinity)
             }

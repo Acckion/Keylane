@@ -54,7 +54,9 @@ final class Model: ObservableObject {
     let menuBar = MenuBarRegistry()
     lazy var calendar = CalendarController(registry: menuBar)
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots
-    @Published var excluded = Set(UserDefaults.standard.stringArray(forKey: "excludedApps") ?? [])
+    @Published var excluded = Set(UserDefaults.standard.stringArray(forKey: "excludedApps") ?? []) {
+        didSet { applicationEntries = nil; commandSearch.invalidate() }
+    }
     @Published var applicationsEnabled = (UserDefaults.standard.object(forKey: "applicationsEnabled") as? Bool) ?? true { didSet { UserDefaults.standard.set(applicationsEnabled, forKey: "applicationsEnabled") } }
     @Published var applicationCustomDepth = UserDefaults.standard.integer(forKey: "applicationCustomDepth") {
         didSet {
@@ -131,7 +133,8 @@ final class Model: ObservableObject {
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
     private var workspaceObservers: [NSObjectProtocol] = []
-    @Published var apps: [URL] = []
+    @Published var apps: [URL] = [] { didSet { applicationEntries = nil } }
+    private var applicationEntries: (locale: Locale, rows: [Entry])?
     private let commandSearch = LauncherCommandSearch()
     private(set) lazy var launcherModules: LauncherModuleRegistry? = {
         do {
@@ -161,7 +164,7 @@ final class Model: ObservableObject {
     }()
 
     private var appIdentities: [String: ApplicationIdentity] = [:] {
-        didSet { commandSearch.invalidate() }
+        didSet { applicationEntries = nil; commandSearch.invalidate() }
     }
     @Published var favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
     @Published private(set) var favoriteOrder = UserDefaults.standard.stringArray(forKey: "favoriteOrder") ?? []
@@ -313,11 +316,11 @@ final class Model: ObservableObject {
     }
     func startApplicationDiscovery() {
         guard workspaceObservers.isEmpty else { return }
-        _ = applicationSettingsCatalog
+        applicationSettingsCatalog.start()
         reloadCatalog()
         refreshRunningApps()
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refreshRunningApps(); self?.discovery.refresh() })
+            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refreshRunningApps() })
         }
     }
     func stopApplicationDiscovery() {
@@ -326,6 +329,8 @@ final class Model: ObservableObject {
         discovery.stop()
     }
     func releaseApplicationCatalog() {
+        applicationSettingsCatalog.stop()
+        commandSearch.releasePreparedNames()
         apps = []
         appIdentities = [:]
         runningPaths = []
@@ -435,6 +440,29 @@ final class Model: ObservableObject {
     func setLogin(_ enabled: Bool) {
         do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } } catch { self.error = error.localizedDescription }; refreshLogin()
     }
+    func applicationSearchEntries() -> [Entry] {
+        let locale = Locale.current
+        if let applicationEntries, applicationEntries.locale == locale { return applicationEntries.rows }
+        var counts: [String: Int] = [:]
+        let visible = apps.compactMap { url -> (path: String, name: String, key: String, aliases: [String])? in
+            let path = url.path
+            guard !excluded.contains(path) else { return nil }
+            let identity = appIdentities[path]
+            let name = identity?.displayName ?? url.deletingPathExtension().lastPathComponent
+            let key = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: locale)
+            counts[key, default: 0] += 1
+            return (path, name, key, identity?.aliases ?? [])
+        }
+        let rows = visible.map { app in
+            let duplicate = counts[app.key, default: 0] > 1
+            return Entry(id: app.path, commandID: .init(rawValue: "app:" + app.path), name: app.name,
+                         detail: "Application", symbol: "app", aliases: duplicate ? app.aliases + [app.path] : app.aliases,
+                         subtitle: duplicate ? (app.path as NSString).abbreviatingWithTildeInPath : nil)
+        }
+        applicationEntries = (locale, rows)
+        return rows
+    }
+
     func discoveredIdentity(for url: URL) -> ApplicationIdentity? { appIdentities[url.path] }
     func appName(_ url: URL) -> String { appIdentities[url.path]?.displayName ?? url.deletingPathExtension().lastPathComponent }
     var searchesFilesHere: Bool {

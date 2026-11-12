@@ -97,19 +97,7 @@ enum BuiltinLauncherModules {
     private static func applications(_ model: Model) -> LauncherModule {
         let provider = LauncherModule.Provider(namespace: .prefix("app:"), entries: { [weak model] _ in
             guard let model, model.applicationsEnabled else { return [] }
-            let apps = model.apps.filter { !model.excluded.contains($0.path) }
-            let names = Dictionary(grouping: apps) { model.appName($0).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) }
-            return apps.map { url in
-                let identity = model.discoveredIdentity(for: url)
-                let path = url.path
-                let name = identity?.displayName ?? url.deletingPathExtension().lastPathComponent
-                let nameKey = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                let duplicate = names[nameKey, default: []].count > 1
-                return Entry(id: path, commandID: .init(rawValue: "app:" + path),
-                             name: name, detail: "Application", symbol: "app",
-                             aliases: (identity?.aliases ?? []) + (duplicate ? [path] : []),
-                             subtitle: duplicate ? (path as NSString).abbreviatingWithTildeInPath : nil)
-            }
+            return model.applicationSearchEntries()
         }, resolve: { [weak model] id, origin in
             guard id.rawValue.hasPrefix("app:"), let model, model.applicationsEnabled else { return nil }
             let path = String(id.rawValue.dropFirst("app:".count))
@@ -122,7 +110,12 @@ enum BuiltinLauncherModules {
             }
         }, actions: { [weak model] entry in model.map { $0.applicationResultActions.actions(for: entry, model: $0) } })
         let uninstallPage = PageID(rawValue: "ApplicationUninstall")
-        let uninstallSelection = model.applicationResultActions.uninstallSelection
+        let applicationActions = model.applicationResultActions
+        let uninstallSelection = applicationActions.uninstallSelection
+        let startUninstall: (String) -> Void = { [weak model] query in
+            guard let model else { return }
+            applicationActions.startUninstallSelection(catalog: model.applicationSettingsCatalog, query: query)
+        }
         let submitUninstall: () -> Void = { [weak model] in
             guard let model, let item = uninstallSelection.selected else { return }
             model.applicationResultActions.uninstall(item.url, model: model, keepLauncher: true)
@@ -138,18 +131,20 @@ enum BuiltinLauncherModules {
                      ], providers: [provider], pages: [.init(
                         id: uninstallPage, placeholder: "查找要卸载的应用…", badge: ("卸载应用程序", "trash"),
                         contentPlacement: .underChrome,
-                        content: { [weak model] in
-                            guard let model else { return AnyView(EmptyView()) }
-                            return AnyView(ApplicationUninstallPage(selection: uninstallSelection, submit: submitUninstall)
-                                .onReceive(model.applicationSettingsCatalog.$items) {
-                                    model.applicationResultActions.loadUninstallCandidates($0)
-                                })
+                        content: {
+                            AnyView(ApplicationUninstallPage(selection: uninstallSelection, submit: submitUninstall))
                         },
-                        queryChanged: uninstallSelection.filter, move: uninstallSelection.move, submit: submitUninstall,
+                        queryChanged: uninstallSelection.filter, leave: applicationActions.stopUninstallSelection,
+                        move: uninstallSelection.move, submit: submitUninstall,
                         actionContextTitle: { uninstallSelection.selected?.title }, primaryTitle: { "卸载应用…" },
                         primaryEnabled: { uninstallSelection.selected != nil },
                         updates: Publishers.Merge(ViewObservation.changes(uninstallSelection.$selectedID),
-                                                    ViewObservation.changes(uninstallSelection.$items)).eraseToAnyPublisher()
+                                                    ViewObservation.changes(uninstallSelection.$items)).eraseToAnyPublisher(),
+                        enter: { query in startUninstall(query); return nil },
+                        resume: { [weak model] in
+                            guard let model else { return }
+                            startUninstall(model.query)
+                        }
                      ), .init(
                         id: ApplicationCommandEdit.pageID, placeholder: "", badge: ("编辑应用命令", "keyboard"),
                         contentPlacement: .form,
@@ -173,6 +168,7 @@ enum BuiltinLauncherModules {
                          model?.startApplicationDiscovery()
                          model?.applicationAutoQuit.start { [weak model] in model?.applicationsEnabled ?? false }
                      }, stop: { [weak model] in
+                         model?.applicationResultActions.stopUninstallSelection()
                          model?.stopApplicationDiscovery()
                          model?.applicationAutoQuit.stop()
                          model?.releaseApplicationCatalog()
