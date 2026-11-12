@@ -45,9 +45,9 @@ struct LauncherLoadingIndicator: View {
     private func streak(width: CGFloat) -> some View {
         let light = LinearGradient(stops: [
             .init(color: .clear, location: 0),
-            .init(color: .blue.opacity(0.75), location: 0.46),
-            .init(color: .cyan, location: 0.72),
-            .init(color: .white, location: 0.88),
+            .init(color: .primary.opacity(0.28), location: 0.46),
+            .init(color: .primary.opacity(0.62), location: 0.72),
+            .init(color: .primary.opacity(0.95), location: 0.88),
             .init(color: .clear, location: 1)
         ], startPoint: .leading, endPoint: .trailing)
 
