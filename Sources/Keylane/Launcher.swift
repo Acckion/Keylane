@@ -592,7 +592,7 @@ struct Launcher: View {
         let actions = page?.actions?() ?? []
         return ForEach(actions) { action in
             let modifiers = action.keys.dropLast()
-            if !modifiers.isEmpty, let key = action.keys.last,
+            if action.enabled, !modifiers.isEmpty, let key = action.keys.last,
                key != "↩" || modifiers.count > 1,
                let character = key.lowercased().first {
                 clipboardMenuShortcut(action, key: character, modifiers: modifiers)

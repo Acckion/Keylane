@@ -9,12 +9,12 @@ struct ClipboardDetail: View {
     let thumbnail: NSImage?
     let status: String
     let accessMessage: String
-    @State private var urls: [URL] = []
-    @State private var scopes: [URL] = []
+    @State private var fileAccess: ClipboardFiles?
     @State private var metrics: ClipboardDetailMetrics?
+    private var urls: [URL] { fileAccess?.urls ?? [] }
 
     var body: some View {
-        ResultDetailPane(scrollsPreview: detail.item.kind == .text && detail.item.color == nil) { height in
+        ResultDetailPane(scrollsPreview: detail.item.kind == .text && detail.item.color == nil && detail.item.category != .link) { height in
             preview(height: height)
         } information: {
             DetailInformationSection(rows: information)
@@ -34,25 +34,17 @@ struct ClipboardDetail: View {
             }
         }
         .task(id: detail.files) {
-            releaseScopes()
             metrics = nil
-            urls = detail.files.map { file in
-                if let bookmark = file.bookmark {
-                    var stale = false
-                    if let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale) {
-                        if url.startAccessingSecurityScopedResource() { scopes.append(url) }
-                        return url
-                    }
-                }
-                return URL(fileURLWithPath: file.path)
-            }
-            let files = urls
+            let access = ClipboardFiles(detail.files)
+            fileAccess = access
             let snapshot = detail
-            let result = await Task.detached(priority: .utility) { ClipboardDetailMetrics.read(snapshot, urls: files) }.value
+            let result = await Task.detached(priority: .utility) {
+                withExtendedLifetime(access) { ClipboardDetailMetrics.read(snapshot, urls: access.urls) }
+            }.value
             guard !Task.isCancelled else { return }
             metrics = result
         }
-        .onDisappear { releaseScopes() }
+        .onDisappear { fileAccess = nil }
     }
 
     @ViewBuilder private func preview(height: CGFloat) -> some View {
@@ -60,6 +52,8 @@ struct ClipboardDetail: View {
         case .text:
             if let color = detail.item.color {
                 ClipboardColorPreview(color: color)
+            } else if detail.item.category == .link, let url = ClipboardCategory.webURL(in: detail.text) {
+                ClipboardWebPreview(url: url).frame(height: height)
             } else {
                 Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
                     .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
@@ -118,7 +112,6 @@ struct ClipboardDetail: View {
         return rows
     }
     private func size(_ bytes: Int?) -> String { bytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "—" }
-    private func releaseScopes() { scopes.forEach { $0.stopAccessingSecurityScopedResource() }; scopes = [] }
 }
 
 struct ClipboardColorPreview: View {

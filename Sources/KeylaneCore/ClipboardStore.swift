@@ -7,6 +7,8 @@ public enum ClipKind: String, Codable, CaseIterable { case text, image, files }
 public enum ClipboardCategory: String, CaseIterable, Sendable {
     case text, image, files, link, email, color
 
+    public var canEditText: Bool { self != .image && self != .files }
+
     private static let emailPattern = try! NSRegularExpression(
         pattern: #"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}"#
     )
@@ -14,15 +16,30 @@ public enum ClipboardCategory: String, CaseIterable, Sendable {
     static func classify(_ text: String, color: ClipboardColor?) -> Self {
         if color != nil { return .color }
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.contains("@"), value.utf8.count <= 254 {
-            let range = NSRange(value.startIndex..., in: value)
-            if emailPattern.firstMatch(in: value, range: range)?.range == range { return .email }
-        }
-        let lower = value.lowercased()
-        if lower.hasPrefix("https://") || lower.hasPrefix("http://"),
-           !value.contains(where: { $0.isWhitespace || $0.isNewline }),
-           let url = URLComponents(string: value), let host = url.host, !host.isEmpty { return .link }
+        if emailURL(in: value) != nil { return .email }
+        if webURL(in: value) != nil { return .link }
         return .text
+    }
+
+    public static func webURL(in text: String) -> URL? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = value.lowercased()
+        guard lower.hasPrefix("https://") || lower.hasPrefix("http://"),
+              !value.contains(where: \.isWhitespace),
+              let components = URLComponents(string: value), let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil else { return nil }
+        return components.url
+    }
+
+    public static func emailURL(in text: String) -> URL? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.contains("@"), value.utf8.count <= 254 else { return nil }
+        let range = NSRange(value.startIndex..., in: value)
+        guard emailPattern.firstMatch(in: value, range: range)?.range == range else { return nil }
+        var components = URLComponents()
+        components.scheme = "mailto"
+        components.path = value
+        return components.url
     }
 }
 public struct ClipFile: Codable, Equatable {
@@ -67,7 +84,7 @@ public struct ClipboardLimits {
     }
 }
 public enum ClipboardError: LocalizedError {
-    case database, newerSchema, oversized, pinnedLimit, storageFull, missingAttachment
+    case database, newerSchema, oversized, pinnedLimit, storageFull, missingAttachment, unavailableText, duplicateText
     public var errorDescription: String? {
         switch self {
         case .database: return "剪贴板资料库操作失败，请检查储存空间。"
@@ -76,6 +93,8 @@ public enum ClipboardError: LocalizedError {
         case .pinnedLimit: return "最多可置顶100条记录。"
         case .storageFull: return "剪贴板空间已满，请清理部分记录或取消置顶。"
         case .missingAttachment: return "历史图片已丢失，无法复制或预览。"
+        case .unavailableText: return "这条文字记录已不可用。"
+        case .duplicateText: return "相同文字已在剪贴板历史中。"
         }
     }
 }
@@ -243,7 +262,7 @@ public final class ClipboardStore {
             payload = try JSONEncoder().encode(files); identity = try JSONEncoder().encode(files.map(\.path)); body = files.map { URL(fileURLWithPath:$0.path).lastPathComponent + " " + $0.path }.joined(separator:"\n")
             guard payload.count <= 2_097_152 else { throw ClipboardError.oversized }
         }
-        let id = SHA256.hash(data: Data((content.kind.rawValue + ":").utf8) + identity + (snapshot?.identitySupplement(kind:content.kind) ?? Data())).map { String(format:"%02x",$0) }.joined()
+        let id = Self.contentID(kind: content.kind, data: identity, snapshot: snapshot)
         var newAsset: URL?
         if case .image(let data, let format) = content {
             asset = id + "." + format.rawValue
@@ -330,6 +349,44 @@ public final class ClipboardStore {
             .joined(separator: " ")
         try write("UPDATE clips SET preview=?, searchable=? WHERE id=?",
                   [.text(title), .text(Self.normalize(searchable)), .text(id)])
+    }
+    public func replaceText(id: String, with text: String) throws -> String {
+        let payload = Data(text.utf8)
+        guard !payload.isEmpty, payload.count <= 1_048_576 else { throw ClipboardError.oversized }
+        try exec("BEGIN IMMEDIATE")
+        do {
+            guard let record = try detail(id: id), record.item.category.canEditText else {
+                throw ClipboardError.unavailableText
+            }
+            if Data(record.text.utf8) == payload {
+                try exec("COMMIT")
+                return id
+            }
+            let newID = Self.contentID(kind: .text, data: payload, snapshot: nil)
+            guard try scalar("SELECT count(*) FROM clips WHERE id=?", [.text(newID)]) == 0 else {
+                throw ClipboardError.duplicateText
+            }
+            let bytes = try scalar("SELECT coalesce(sum(bytes),0) FROM clips")
+            guard bytes - record.item.byteCount + payload.count <= limits.maxBytes else {
+                throw ClipboardError.storageFull
+            }
+            let preview = record.item.preview == String(record.text.prefix(512)) ? String(text.prefix(512)) : record.item.preview
+            let searchable = Self.normalize([text, preview, record.item.source].joined(separator: " "))
+            // Saved text is plain text. A snapshot of the old value would replay stale data.
+            try write("DELETE FROM clip_snapshots WHERE clip_id=?", [.text(id)])
+            try write("UPDATE clips SET id=?, preview=?, payload=?, searchable=?, bytes=? WHERE id=?",
+                      [.text(newID), .text(preview), .blob(payload), .text(searchable), .number(Double(payload.count)), .text(id)])
+            try exec("COMMIT")
+            return newID
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
+    private static func contentID(kind: ClipKind, data: Data, snapshot: ClipSnapshot?) -> String {
+        let input = Data((kind.rawValue + ":").utf8) + data + (snapshot?.identitySupplement(kind: kind) ?? Data())
+        return SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()
     }
     public func remove(id: String) throws {
         let query = try statement("SELECT asset FROM clips WHERE id=?",[.text(id)])

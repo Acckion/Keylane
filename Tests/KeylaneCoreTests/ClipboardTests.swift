@@ -5,6 +5,44 @@ import SQLite3
 final class ClipboardTests: XCTestCase {
     private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneClipboardTest-" + UUID().uuidString) }
 
+    func testEditingPreservesMetadataAndReplacesSearchAndReplayContent() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let snapshot = ClipSnapshot(items: [.init([
+            .init(type: "public.utf8-plain-text", data: Data("old text".utf8)),
+            .init(type: "public.html", data: Data("<b>old text</b>".utf8))
+        ])], plainText: "old text")
+        let original = try store.capture(.text("old text"), snapshot: snapshot, source: "Fixture")
+        try store.rename(id: original, to: "Custom title")
+        try store.setPinned(id: original, pinned: true)
+        let edited = try store.replaceText(id: original, with: "#0c4cdd")
+        XCTAssertNil(try store.detail(id: original))
+        XCTAssertTrue(try store.list(query: "old text").isEmpty)
+        XCTAssertEqual(try store.list(query: "0c4cdd", category: .color).map(\.id), [edited])
+        let detail = try XCTUnwrap(store.detail(id: edited))
+        XCTAssertEqual(detail.text, "#0c4cdd")
+        XCTAssertNil(detail.snapshot)
+        XCTAssertTrue(detail.item.pinned)
+        XCTAssertEqual(detail.item.source, "Fixture")
+        XCTAssertEqual(detail.item.preview, "Custom title")
+        XCTAssertEqual(try store.capture(.text("#0c4cdd")), edited)
+        XCTAssertEqual(try store.count(), 1)
+    }
+
+    func testEditingCannotOverwriteAnotherEntry() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let original = try store.capture(.text("a@example.com"))
+        let existing = try store.capture(.text("https://example.com"))
+        XCTAssertThrowsError(try store.replaceText(id: original, with: "https://example.com")) {
+            XCTAssertEqual($0 as? ClipboardError, .duplicateText)
+        }
+        XCTAssertEqual(try store.list(category: .email).map(\.id), [original])
+        XCTAssertEqual(try store.list(category: .link).map(\.id), [existing])
+    }
+
     func testColorFormatsAndAlpha() throws {
         let color = try XCTUnwrap(ClipboardColor(" #0c4cdd\n"))
         XCTAssertEqual(color.hexLabel, "#0C4CDD")

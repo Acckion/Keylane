@@ -3,12 +3,15 @@ let app = NSApplication.shared
 let root = URL(fileURLWithPath:ProcessInfo.processInfo.environment["KEYLANE_FILE_ACTION_TEST_ROOT"]!)
 let file = root.appendingPathComponent("中文文件操作验收.txt")
 try Data("Only a synthetic file-action fixture.\n".utf8).write(to:file)
-let model = FileActionsModel(); model.configure(file,page:"open")
+let second = root.appendingPathComponent("第二个文件.txt")
+try Data("Another fixture".utf8).write(to: second)
+let model = FileActionsModel(); model.configure([file],page:"open",retaining:nil)
 precondition(model.isAvailable)
 let compatibleCount = model.applications.count
-model.configure(root.appendingPathComponent("missing.txt"),page:"open")
+model.configure([root.appendingPathComponent("missing.txt")],page:"open",retaining:nil)
 precondition(!model.validate() && model.status.contains("移走"))
-model.configure(file,page:"open"); model.selectedApplication = root.appendingPathComponent("Missing.app").path
+model.configure([file, second],page:"open",retaining:nil)
+model.selectedApplication = root.appendingPathComponent("Missing.app").path
 model.openSelected(); precondition(!model.opening && model.status.contains("不可用"))
 model.selectedApplication = root.appendingPathComponent("KeylaneOpenHelper.app").path
 var opened = false; model.opened = { opened = true }
@@ -20,11 +23,12 @@ let receiptURL = root.appendingPathComponent("receipt.json")
 while !FileManager.default.fileExists(atPath:receiptURL.path) && Date()<deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.03)) }
 let receipt = try Data(contentsOf:receiptURL)
 let paths = try JSONSerialization.jsonObject(with:receipt) as! [String]
-precondition(paths.count == 1 && URL(fileURLWithPath:paths[0]).resolvingSymlinksInPath() == file.resolvingSymlinksInPath())
+precondition(Set(paths.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath() }) ==
+             Set([file, second].map { $0.resolvingSymlinksInPath() }))
 let original = try String(contentsOf:file,encoding:.utf8)
 precondition(original == "Only a synthetic file-action fixture.\n")
 let picker = NSSharingServicePicker(items:[file])
 precondition(!picker.standardShareMenuItem.title.isEmpty)
 try FileManager.default.removeItem(at:file)
-model.configure(file,page:"share"); precondition(!model.isAvailable)
+model.configure([file, second],page:"share",retaining:nil); precondition(!model.isAvailable)
 print("PASS file actions: real NSWorkspace open delivered file to own helper, original unchanged, compatible applications=\(compatibleCount), native share menu creation passed, missing file/app feedback; nothing shared")

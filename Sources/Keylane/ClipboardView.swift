@@ -6,6 +6,13 @@ import KeylaneCore
 struct ClipboardHistoryView: View {
     let controller: ClipboardController
     let query: String
+    @StateObject private var observation: ViewObservation
+
+    init(controller: ClipboardController, query: String) {
+        self.controller = controller
+        self.query = query
+        _observation = StateObject(wrappedValue: ViewObservation([ViewObservation.changes(controller.$textDraft)]))
+    }
 
     var body: some View {
         ResultDetailLayout {
@@ -14,6 +21,64 @@ struct ClipboardHistoryView: View {
             ClipboardHistoryDetail(controller: controller)
         }
         .onAppear { controller.reload() }
+        .sheet(item: Binding(get: { controller.textDraft }, set: { controller.textDraft = $0 })) { draft in
+            ClipboardTextEditor(draft: draft, controller: controller)
+        }
+    }
+}
+
+private struct ClipboardTextEditor: View {
+    let draft: ClipboardTextDraft
+    let controller: ClipboardController
+    @State private var text: String
+    @State private var error = ""
+    @State private var saving = false
+    @FocusState private var focused: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    init(draft: ClipboardTextDraft, controller: ClipboardController) {
+        self.draft = draft
+        self.controller = controller
+        _text = State(initialValue: draft.text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("编辑文本").font(.headline)
+            LauncherCreationControl(focused: focused) {
+                TextEditor(text: $text).scrollContentBackground(.hidden)
+                    .frame(minHeight: 185).focused($focused).accessibilityLabel("剪贴板文本")
+                    .disabled(saving)
+            }
+            if draft.hasOtherFormats {
+                Text("保存后，这条记录将使用编辑后的纯文本。").font(.caption).foregroundStyle(.secondary)
+            }
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
+                Button("保存", action: save).keyboardShortcut(.return, modifiers: .command)
+                    .disabled(saving || text.isEmpty)
+            }
+        }
+        .padding(20).frame(width: 500)
+        .task {
+            await Task.yield()
+            focused = true
+        }
+        .interactiveDismissDisabled(saving)
+    }
+
+    private func save() {
+        saving = true
+        error = ""
+        controller.saveEditedText(id: draft.id, text: text) { result in
+            saving = false
+            switch result {
+            case .success: dismiss()
+            case .failure(let failure): error = failure.localizedDescription
+            }
+        }
     }
 }
 

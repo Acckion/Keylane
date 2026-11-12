@@ -5,6 +5,58 @@ import Vision
 import UniformTypeIdentifiers
 import KeylaneCore
 
+struct ClipboardTextDraft: Identifiable, Equatable {
+    let id: String
+    let text: String
+    let hasOtherFormats: Bool
+}
+
+final class ClipboardFiles {
+    let urls: [URL]
+    private let scopedURLs: [URL]
+
+    init(_ references: [ClipFile]) {
+        urls = references.map { reference in
+            var stale = false
+            if let bookmark = reference.bookmark,
+               let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI],
+                                       bookmarkDataIsStale: &stale) { return resolved }
+            return URL(fileURLWithPath: reference.path)
+        }
+        scopedURLs = urls.filter { $0.startAccessingSecurityScopedResource() }
+    }
+
+    deinit { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+
+    var isAvailable: Bool { !urls.isEmpty && urls.allSatisfy { FileManager.default.fileExists(atPath: $0.path) } }
+}
+
+enum ClipboardImageText {
+    case ocr, qr
+
+    func recognize(in handler: VNImageRequestHandler, accurate: Bool) throws -> String {
+        switch self {
+        case .ocr:
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = accurate ? .accurate : .fast
+            request.automaticallyDetectsLanguage = true
+            let supported = try request.supportedRecognitionLanguages()
+            request.recognitionLanguages = ["zh-Hans", "en-US"].filter { supported.contains($0) }
+            try handler.perform([request])
+            return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+        case .qr:
+            let request = VNDetectBarcodesRequest()
+            request.symbologies = [.qr]
+            try handler.perform([request])
+            var seen = Set<String>()
+            return (request.results ?? []).compactMap(\.payloadStringValue)
+                .filter { !$0.isEmpty && seen.insert($0).inserted }.joined(separator: "\n")
+        }
+    }
+
+    var emptyMessage: String { self == .qr ? "未识别到二维码文本。" : "未识别到图片文字。" }
+}
+
 private final class ClipboardPreviewRequest: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
@@ -38,6 +90,7 @@ final class ClipboardController: ObservableObject {
     @Published private(set) var loadingDetail = false
     @Published private(set) var searching = false
     @Published private(set) var accessMessage = ""
+    @Published var textDraft: ClipboardTextDraft?
     @Published var kind: String = "all" { didSet { reload() } }
     @Published var pinnedOnly = false { didSet { reload() } }
     private let board: NSPasteboard
@@ -124,6 +177,7 @@ final class ClipboardController: ObservableObject {
     }
     /// Closing the page ends preview work; capture and storage remain independent.
     func endPresentation() {
+        textDraft = nil
         guard presentationActive else { return }
         presentationActive = false
         generation += 1
@@ -372,13 +426,47 @@ final class ClipboardController: ObservableObject {
     func pinSelected() { guard let item = items.first(where: { $0.id == selectedID }) else { return }; mutate { try $0.setPinned(id: item.id, pinned: !item.pinned) } }
     func removeSelected() { guard let id = selectedID else { return }; mutate { try $0.remove(id: id) } }
     func clear(includePinned: Bool) { mutate { try $0.clear(includePinned: includePinned); if includePinned { try $0.removeMigrationBackups() } } }
-    var sharingItem: Any? {
-        guard let detail, detail.item.id == selectedID else { return nil }
-        if let url = detail.assetURL { return url }
-        if !detail.text.isEmpty { return detail.text }
-        return nil
+    var selectedDetail: ClipDetail? { detail.flatMap { $0.item.id == selectedID ? $0 : nil } }
+
+    func files(for detail: ClipDetail) -> ClipboardFiles {
+        ClipboardFiles(detail.assetURL.map { [ClipFile(path: $0.path)] } ?? detail.files)
     }
 
+    static func isImageFile(_ file: ClipFile) -> Bool {
+        UTType(filenameExtension: URL(fileURLWithPath: file.path).pathExtension)?.conforms(to: .image) == true
+    }
+
+    private static func imageRepresentation(_ detail: ClipDetail) -> ClipRepresentation? {
+        detail.snapshot?.items.lazy.flatMap(\.representations).first { representation in
+            ClipboardCapture.imageFormats.contains { $0.0 == representation.type }
+        }
+    }
+
+    func editSelectedText() {
+        guard let detail = selectedDetail, detail.item.category.canEditText, !detail.text.isEmpty else { return }
+        let textFormats: Set<String> = ["public.utf8-plain-text", "public.utf16-plain-text"]
+        let hasOtherFormats = detail.snapshot.map {
+            $0.items.count > 1 || !$0.formats.allSatisfy(textFormats.contains)
+        } ?? false
+        textDraft = .init(id: detail.item.id, text: detail.text, hasOtherFormats: hasOtherFormats)
+    }
+
+    func saveEditedText(id: String, text: String, completion: @escaping (Result<Void, Error>) -> Void) {
+        worker.async { [weak self] in
+            guard let self else { return }
+            let result = Result {
+                guard let store = self.store else { throw ClipboardError.database }
+                return try store.replaceText(id: id, with: text)
+            }
+            DispatchQueue.main.async {
+                if case .success(let newID) = result {
+                    if self.selectedID == id, newID != id { self.select(newID) }
+                    self.reload()
+                }
+                completion(result.map { _ in () })
+            }
+        }
+    }
     private var sharingPicker: NSSharingServicePicker?
 
     func share(_ item: Any) {
@@ -389,17 +477,87 @@ final class ClipboardController: ObservableObject {
         picker.show(relativeTo: anchor, of: view, preferredEdge: .maxY)
     }
 
-    func saveSelectedAsFile(completion: @escaping (Result<Void, Error>) -> Void) {
-        guard let detail, detail.item.id == selectedID else { return }
-        let panel = NSSavePanel()
-        let asset = detail.assetURL
-        panel.nameFieldStringValue = asset.map { "剪贴板.\($0.pathExtension)" } ?? "剪贴板.txt"
+    func export(_ detail: ClipDetail, forAnnotation: Bool = false,
+                completion: @escaping (Result<[URL], Error>) -> Void) {
+        let files = files(for: detail)
+        if detail.item.kind == .files, !files.isAvailable {
+            completion(.failure(CocoaError(.fileReadNoSuchFile)))
+            return
+        }
+        let panel: NSSavePanel
+        if files.urls.count > 1 {
+            let chooser = NSOpenPanel()
+            chooser.canChooseDirectories = true
+            chooser.canChooseFiles = false
+            chooser.canCreateDirectories = true
+            chooser.prompt = "保存到此处"
+            panel = chooser
+        } else {
+            panel = NSSavePanel()
+            panel.nameFieldStringValue = switch detail.item.kind {
+            case .text: "剪贴板.txt"
+            case .image: "剪贴板." + (detail.assetURL?.pathExtension ?? "png")
+            case .files: files.urls.first?.lastPathComponent ?? "剪贴板文件"
+            }
+        }
+        if forAnnotation {
+            panel.title = "保存标注副本"
+            panel.message = "选择副本的保存位置，随后会在「预览」中打开。"
+        }
         panel.begin { response in
             guard response == .OK, let destination = panel.url else { return }
-            completion(Result {
-                let data = try asset.map { try Data(contentsOf: $0) } ?? Data(detail.text.utf8)
-                try data.write(to: destination, options: .atomic)
-            })
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Result {
+                    try Self.export(detail, files: files.urls, destination: destination)
+                }
+                DispatchQueue.main.async {
+                    withExtendedLifetime(files) { completion(result) }
+                }
+            }
+        }
+    }
+
+    private static func export(_ detail: ClipDetail, files: [URL], destination: URL) throws -> [URL] {
+        let manager = FileManager.default
+        switch detail.item.kind {
+        case .text:
+            try Data(detail.text.utf8).write(to: destination, options: .atomic)
+            return [destination]
+        case .image:
+            guard let data = files.first.flatMap({ try? Data(contentsOf: $0) }) ?? imageRepresentation(detail)?.data else {
+                throw ClipboardError.missingAttachment
+            }
+            if files.first?.resolvingSymlinksInPath() == destination.resolvingSymlinksInPath() {
+                throw CocoaError(.fileWriteFileExists)
+            }
+            try data.write(to: destination, options: .atomic)
+            return [destination]
+        case .files:
+            let targets = files.count == 1 ? [destination] : files.map { destination.appendingPathComponent($0.lastPathComponent) }
+            guard Set(targets).count == targets.count else { throw CocoaError(.fileWriteFileExists) }
+            var completed: [URL] = []
+            do {
+                for (source, target) in zip(files, targets) {
+                    if files.count == 1, manager.fileExists(atPath: target.path) {
+                        guard source.resolvingSymlinksInPath() != target.resolvingSymlinksInPath() else {
+                            throw CocoaError(.fileWriteFileExists)
+                        }
+                        let scratch = try manager.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                                                      appropriateFor: target, create: true)
+                        defer { try? manager.removeItem(at: scratch) }
+                        let copy = scratch.appendingPathComponent(target.lastPathComponent)
+                        try manager.copyItem(at: source, to: copy)
+                        _ = try manager.replaceItemAt(target, withItemAt: copy)
+                    } else {
+                        try manager.copyItem(at: source, to: target)
+                    }
+                    completed.append(target)
+                }
+            } catch {
+                if files.count > 1 { completed.forEach { try? manager.removeItem(at: $0) } }
+                throw error
+            }
+            return targets
         }
     }
 
@@ -503,23 +661,64 @@ final class ClipboardController: ObservableObject {
         status = ""
         return true
     }
+
+    func copyImageText(_ mode: ClipboardImageText, from detail: ClipDetail,
+                       completion: @escaping (Bool, String) -> Void) {
+        if mode == .ocr, !detail.ocrText.isEmpty {
+            let copied = copyText(detail.ocrText)
+            completion(copied, copied ? "已复制图片文字" : status)
+            return
+        }
+        let changeCount = board.changeCount
+        let accurate = accurateOCR
+        ocrWorker.async { [weak self] in
+            guard let self else { return }
+            let result = Result {
+                let files = self.files(for: detail)
+                return try withExtendedLifetime(files) {
+                    try mode.recognize(in: Self.imageRequest(for: detail, file: files.urls.first), accurate: accurate)
+                }
+            }
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let text) where !text.isEmpty:
+                    if mode == .ocr, detail.item.kind == .image {
+                        self.mutate { try $0.setOCR(id: detail.item.id, text: text) }
+                    }
+                    guard self.board.changeCount == changeCount else {
+                        completion(false, "剪贴板内容已变化，请重新执行复制。")
+                        return
+                    }
+                    let copied = self.copyText(text)
+                    let message = mode == .qr ? "已复制二维码文本" : "已复制图片文字"
+                    completion(copied, copied ? message : self.status)
+                case .success: completion(false, mode.emptyMessage)
+                case .failure(let error): completion(false, error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private static func imageRequest(for detail: ClipDetail, file: URL?) throws -> VNImageRequestHandler {
+        if let file, FileManager.default.fileExists(atPath: file.path) { return VNImageRequestHandler(url: file) }
+        if let representation = imageRepresentation(detail) { return VNImageRequestHandler(data: representation.data) }
+        throw ClipboardError.missingAttachment
+    }
+
     func recognizeSelected() { if let id = selectedID { recognize(id) } }
     private func recognize(_ id: String) {
         guard recognizing.count < 5, recognizing.insert(id).inserted else { return }
-        let level: VNRequestTextRecognitionLevel = accurateOCR ? .accurate : .fast
+        let accurate = accurateOCR
         status = "正在识别图片文字…"
         worker.async { [weak self] in
             guard let self else { return }
             do {
-                guard let detail = try self.store?.detail(id: id), let url = detail.assetURL else { DispatchQueue.main.async { self.recognizing.remove(id); self.status = "图片记录已删除。" }; return }
+                guard let detail = try self.store?.detail(id: id), detail.item.kind == .image else { DispatchQueue.main.async { self.recognizing.remove(id); self.status = "图片记录已删除。" }; return }
                 self.ocrWorker.async {
                     defer { DispatchQueue.main.async { self.recognizing.remove(id) } }
                     do {
-                        let request = VNRecognizeTextRequest(); request.recognitionLevel = level; request.automaticallyDetectsLanguage = true
-                        let supported = try request.supportedRecognitionLanguages()
-                        request.recognitionLanguages = ["zh-Hans", "en-US"].filter { supported.contains($0) }
-                        try VNImageRequestHandler(url: url).perform([request])
-                        let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+                        let text = try ClipboardImageText.ocr.recognize(
+                            in: Self.imageRequest(for: detail, file: detail.assetURL), accurate: accurate)
                         self.mutate { try $0.setOCR(id: id, text: text) }
                         DispatchQueue.main.async { self.status = text.isEmpty ? "未识别到文字" : "图片文字已加入搜索"; if self.selectedID == id { self.select(id,force:true) } }
                     } catch { self.report(error) }

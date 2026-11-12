@@ -3,6 +3,14 @@ import XCTest
 import KeylaneCore
 
 final class QuicklinkTests: XCTestCase {
+    func testAcceptsClipboardEmailAsQuicklink() throws {
+        let address = try XCTUnwrap(ClipboardCategory.emailURL(in: "  design?test+work@example.com  "))
+        XCTAssertEqual(try QuicklinkTemplate(address.absoluteString).url(), address)
+        XCTAssertNil(URLComponents(url: address, resolvingAgainstBaseURL: false)?.query)
+        XCTAssertThrowsError(try QuicklinkTemplate("mailto:design@example.com?body=Test"))
+        XCTAssertThrowsError(try QuicklinkTemplate("mailto:invalid"))
+    }
+
     func testEncodesParametersAndAppliesDefaults() throws {
         let template = try QuicklinkTemplate("https://example.com/{名称}?q={搜索=默认}&again={名称}")
         XCTAssertEqual(template.parameters.map(\.id), ["名称", "搜索"])
