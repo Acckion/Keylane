@@ -3,9 +3,33 @@ import KeylaneCore
 import UniformTypeIdentifiers
 
 final class ApplicationResultActions {
+    let commandEditor = ApplicationCommandEdit()
+    let uninstallSelection = ApplicationUninstallSelection()
     private let workspace = NSWorkspace.shared
     private var restarting = Set<String>()
     private var uninstalling = Set<String>()
+
+    private static let directShortcuts: [(String, [String])] = [
+        ("finder-reveal", ["⌘", "⇧", "F"]),
+        ("finder-info", ["⌘", "⇧", "I"]),
+        ("copy-path", ["⌘", "⌥", "C"]),
+        ("edit-app-command", ["⌘", "⇧", "E"]),
+        ("restart-app", ["⌘", "⇧", "R"])
+    ]
+
+    func shortcutActions(for entry: Entry, model: Model) -> [LauncherAction] {
+        Self.directShortcuts.map { id, keys in
+            LauncherAction(id: id, title: "", icon: "", keys: keys) { [weak model] in
+                guard let model, let action = self.actions(for: entry, model: model).first(where: { $0.id == id }),
+                      action.enabled else { return }
+                action.perform()
+            }
+        }
+    }
+
+    private func keys(_ id: String) -> [String] {
+        Self.directShortcuts.first(where: { $0.0 == id })?.1 ?? []
+    }
 
     func actions(for entry: Entry, model: Model) -> [LauncherAction] {
         let url = URL(fileURLWithPath: entry.id)
@@ -13,15 +37,20 @@ final class ApplicationResultActions {
         let running = !instances(at: path).isEmpty && !restarting.contains(path)
         let bundleID = Bundle(url: url)?.bundleIdentifier
         let favorite = model.favorites.contains(entry.id)
+        let autoQuitEnabled = model.applicationAutoQuit.minutes(for: url) != 0
         return [
             .init(id: "open", title: "打开应用", icon: "arrow.up.forward.app", keys: ["↩"]) { [weak model] in
                 model?.runCommand(entry.commandID, origin: .menu, usageKey: entry.id)
             },
-            .init(id: "finder-reveal", title: "在 Finder 中显示", icon: "folder") {
+            .init(id: "finder-reveal", title: "在 Finder 中显示", icon: "folder", keys: keys("finder-reveal")) {
                 self.reveal(url)
             },
-            .init(id: "finder-info", title: "在 Finder 中显示信息", icon: "info.circle", enabled: model.finderAutomation.available) { [weak model] in
-                if model?.finderAutomation.available == true { self.showFinderInfo(url) }
+            .init(id: "finder-info", title: "在 Finder 中显示信息", icon: "info.circle", keys: keys("finder-info")) { [weak model] in
+                guard let permission = model?.finderAutomation else { return }
+                permission.activate { allowed in
+                    if allowed { self.showFinderInfo(url) }
+                    else { self.feedback(permission.guidance) }
+                }
             },
             .init(id: "package-contents", title: "显示包内容", icon: "shippingbox") {
                 self.reveal(url.appendingPathComponent("Contents", isDirectory: true))
@@ -30,12 +59,17 @@ final class ApplicationResultActions {
                   icon: favorite ? "star.fill" : "star", group: 1) { [weak model] in
                 model?.toggleFavorite(entry.id, showsFeedback: true)
             },
-            .init(id: "copy-path", title: "复制路径", icon: "doc.on.doc", group: 2) { UtilityActions.copy(url.path, feedback: "已复制路径") },
+            .init(id: "copy-path", title: "复制路径", icon: "doc.on.doc", keys: keys("copy-path"), group: 2) { UtilityActions.copy(url.path, feedback: "已复制路径") },
             .init(id: "copy-name", title: "复制名称", icon: "textformat", group: 2) { UtilityActions.copy(entry.name, feedback: "已复制名称") },
             .init(id: "copy-bundle-id", title: "复制 Bundle Identifier", icon: "number", group: 2, enabled: bundleID != nil) {
                 if let bundleID { UtilityActions.copy(bundleID, feedback: "已复制 Bundle Identifier") }
             },
-            .init(id: "command-settings", title: "命令设置", icon: "keyboard", group: 3) { [weak model] in
+            .init(id: "edit-app-command", title: "编辑别名与快捷键…", icon: "keyboard", keys: keys("edit-app-command"), group: 3) { [weak model] in
+                guard let model else { return }
+                self.commandEditor.prepare(entry, model: model)
+                model.openPage(ApplicationCommandEdit.pageID, origin: .search)
+            },
+            .init(id: "command-settings", title: "命令设置", icon: "gearshape", group: 3) { [weak model] in
                 model?.openApplicationCommandSettings(path: entry.id)
             },
             .init(id: "extension-settings", title: "扩展设置", icon: "gearshape", group: 3) { [weak model] in
@@ -51,11 +85,14 @@ final class ApplicationResultActions {
             .init(id: "force-quit-app", title: "强制退出应用", icon: "xmark.octagon", group: 4, enabled: running) {
                 self.forceQuit(at: path, name: entry.name)
             },
-            .init(id: "auto-quit-app", title: "配置自动退出…", icon: "app.badge.clock", group: 4,
+            .init(id: "auto-quit-app", title: autoQuitEnabled ? "关闭自动退出" : "启用自动退出", icon: "app.badge.clock", group: 4,
                   enabled: model.applicationAutoQuit.canConfigure(url)) { [weak model] in
-                model?.openApplicationCommandSettings(path: entry.id)
+                guard let autoQuit = model?.applicationAutoQuit else { return }
+                let enabling = autoQuit.minutes(for: url) == 0
+                autoQuit.setMinutes(enabling ? ApplicationAutoQuit.useDefault : 0, for: url)
+                self.feedback(enabling ? "已启用自动退出（\(autoQuit.defaultMinutes) 分钟）" : "已关闭自动退出", style: .success)
             },
-            .init(id: "restart-app", title: "重启应用", icon: "arrow.clockwise", group: 4, enabled: running) { [weak model] in
+            .init(id: "restart-app", title: "重启应用", icon: "arrow.clockwise", keys: keys("restart-app"), group: 4, enabled: running) { [weak model] in
                 guard let model else { return }
                 self.restart(url, path: path, model: model)
             },
@@ -68,51 +105,71 @@ final class ApplicationResultActions {
                 guard let model else { return }
                 self.uninstall(url, model: model)
             }
-        ]
+        ] + model.favoriteOrderActions(for: entry.id)
     }
 
-    func chooseApplicationToUninstall(model: Model) {
+    func restartFrontmost(model: Model) {
+        let frontmost = workspace.frontmostApplication
+        let target = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            ? (NSApp.delegate as? Delegate)?.previousApplication : frontmost
+        guard let target, target.activationPolicy == .regular, !target.isTerminated,
+              target.bundleIdentifier != "com.apple.finder", let url = target.bundleURL else {
+            feedback("找不到可重启的前台应用。")
+            return
+        }
         (NSApp.delegate as? Delegate)?.hideLauncher()
-        NSApp.activate(ignoringOtherApps: true)
-        let panel = NSOpenPanel()
-        panel.title = "选择要卸载的应用"
-        panel.prompt = "继续"
-        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
-        panel.allowedContentTypes = [.applicationBundle]
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.resolvesAliases = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        uninstall(url, model: model)
+        restart(url, path: url.resolvingSymlinksInPath().path, model: model)
     }
 
-    func uninstall(_ url: URL, model: Model) {
+    func loadUninstallCandidates(_ items: [ApplicationPreferenceItem]) {
+        uninstallSelection.load(items.filter { uninstallCandidate($0.url) != nil })
+    }
+
+    func uninstall(_ url: URL, model: Model, keepLauncher: Bool = false) {
         guard let candidate = uninstallCandidate(url) else {
             feedback("无法卸载所选项目。请选择仍存在且可移除的应用。")
             return
         }
+        let name = model.appName(candidate.url)
+        guard instances(at: candidate.url.path).isEmpty else {
+            feedback("请先退出「\(name)」，然后重新卸载。")
+            return
+        }
         guard uninstalling.insert(candidate.url.path).inserted else { return }
 
-        (NSApp.delegate as? Delegate)?.hideLauncher()
-        NSApp.activate(ignoringOtherApps: true)
-        let name = model.appName(candidate.url)
         let alert = NSAlert()
         alert.messageText = "卸载「\(name)」？"
         alert.informativeText = "将应用程序移到废纸篓。应用的文档、设置和其他支持文件会保留。\n\n\(candidate.url.path)"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "取消")
         alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true
-        guard alert.runModal() == .alertSecondButtonReturn else {
-            uninstalling.remove(candidate.url.path)
-            return
+        let confirm: (NSApplication.ModalResponse) -> Void = { [weak model] response in
+            guard response == .alertSecondButtonReturn else {
+                self.uninstalling.remove(candidate.url.path)
+                return
+            }
+            guard self.instances(at: candidate.url.path).isEmpty else {
+                self.uninstalling.remove(candidate.url.path)
+                self.feedback("请先退出「\(name)」，然后重新卸载。")
+                return
+            }
+            self.trashApplication(url, candidate: candidate, name: name, model: model)
         }
-        guard instances(at: candidate.url.path).isEmpty else {
-            uninstalling.remove(candidate.url.path)
-            feedback("请先退出「\(name)」，然后重新卸载。")
-            return
+        if keepLauncher, let window = (NSApp.delegate as? Delegate)?.window, window.isVisible {
+            guard window.attachedSheet == nil else {
+                uninstalling.remove(candidate.url.path)
+                return
+            }
+            alert.beginSheetModal(for: window, completionHandler: confirm)
+        } else {
+            (NSApp.delegate as? Delegate)?.hideLauncher()
+            NSApp.activate()
+            confirm(alert.runModal())
         }
+    }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+    private func trashApplication(_ url: URL, candidate: (url: URL, identity: NSObject), name: String, model: Model?) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak model] in
             let outcome = Result {
                 guard let current = self.uninstallCandidate(url),
                       current.url == candidate.url, current.identity == candidate.identity else {
@@ -124,6 +181,7 @@ final class ApplicationResultActions {
                 self.uninstalling.remove(candidate.url.path)
                 switch outcome {
                 case .success:
+                    self.uninstallSelection.remove(candidate.url.path)
                     model?.applicationAutoQuit.removeRule(at: candidate.url.path)
                     model?.discovery.refresh()
                     self.feedback("已将「\(name)」移到废纸篓。", style: .success)

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import CoreServices
 import KeylaneCore
@@ -9,13 +10,25 @@ final class ApplicationDiscovery {
     private var scanRequest: DispatchWorkItem?
     private var generation = 0
     private var roots: [String] = []
+    private var mountObservers: [NSObjectProtocol] = []
+    private var customDepth: Int?
     private var excluded: Set<String> = []
     var updated: (([CatalogApplication], Double) -> Void)?
     var failed: ((String) -> Void)?
     deinit { stop() }
-    func configure(roots: [String], excluded: Set<String>) {
-        stop(); self.roots = roots; self.excluded = excluded
+    func configure(roots: [String], excluded: Set<String>, customDepth: Int? = nil) {
+        stop()
+        self.roots = roots
+        self.excluded = excluded
+        self.customDepth = customDepth
         guard !roots.isEmpty else { updated?([], 0); return }
+        let notifications = NSWorkspace.shared.notificationCenter
+        mountObservers = [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification].map { name in
+            notifications.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                self.configure(roots: self.roots, excluded: self.excluded, customDepth: self.customDepth)
+            }
+        }
         // Watch the nearest existing ancestor so a newly created user Applications folder is discovered.
         let watchPaths = Set(roots.map { path -> String in
             var url = URL(fileURLWithPath: path)
@@ -41,9 +54,9 @@ final class ApplicationDiscovery {
         scanRequest?.cancel()
         let request = DispatchWorkItem {}
         scanRequest = request
-        let paths = roots; let excluded = excluded; let started = Date()
+        let paths = roots; let excluded = excluded; let customDepth = customDepth; let started = Date()
         let task = DispatchWorkItem { [weak self] in
-            let apps = ApplicationCatalog.scan(roots: paths, excluded: excluded, isCancelled: { request.isCancelled })
+            let apps = ApplicationCatalog.scan(roots: paths, excluded: excluded, customDepth: customDepth, isCancelled: { request.isCancelled })
             DispatchQueue.main.async { guard let self, self.generation == version else { return }; self.updated?(apps, Date().timeIntervalSince(started)) }
         }
         pending = task; DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now()+0.25, execute: task)
@@ -52,6 +65,8 @@ final class ApplicationDiscovery {
         generation += 1; pending?.cancel(); pending = nil
         scanRequest?.cancel(); scanRequest = nil
         roots = []; excluded = []
+        for observer in mountObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        mountObservers.removeAll()
         if let stream { FSEventStreamStop(stream); FSEventStreamInvalidate(stream); FSEventStreamRelease(stream) }
         stream = nil
     }

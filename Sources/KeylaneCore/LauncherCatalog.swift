@@ -8,22 +8,36 @@ public struct CatalogApplication: Identifiable {
 public enum ApplicationCatalog {
     public static var defaultRoots: [String] { ["/Applications", "/System/Applications", "/System/Library/CoreServices/Applications", "/System/Cryptexes/App/System/Applications", NSHomeDirectory() + "/Applications"] }
     public static func scan(roots: [String], excluded: Set<String>, languages: [String] = Locale.preferredLanguages,
+                            customDepth: Int? = nil,
                             isCancelled: () -> Bool = { false }) -> [CatalogApplication] {
         var found: [String:CatalogApplication] = [:]
         for root in roots {
             guard !isCancelled() else { return [] }
             let rootURL = URL(fileURLWithPath: root).standardizedFileURL
-            guard let iterator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            let depth = defaultRoots.contains(root) ? nil : customDepth
+            guard let iterator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isAliasFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
             while let url = iterator.nextObject() as? URL {
                 guard !isCancelled() else { return [] }
-                guard url.pathExtension.lowercased() == "app" else { continue }
+                if let depth, iterator.level >= depth { iterator.skipDescendants() }
+                let target: URL
+                if (try? url.resourceValues(forKeys: [.isAliasFileKey]).isAliasFile) == true {
+                    guard let resolved = try? URL(resolvingAliasFileAt: url, options: [.withoutUI, .withoutMounting]) else { continue }
+                    target = resolved
+                } else {
+                    target = url
+                }
+                guard target.pathExtension.lowercased() == "app" else { continue }
                 iterator.skipDescendants()
-                let canonical = url.resolvingSymlinksInPath().standardizedFileURL
-                guard !excluded.contains(url.path), !excluded.contains(canonical.path), found[canonical.path] == nil else { continue }
+                let canonical = target.resolvingSymlinksInPath().standardizedFileURL
+                guard !excluded.contains(url.path), !excluded.contains(canonical.path), found[canonical.path] == nil,
+                      Bundle(url: canonical)?.bundleIdentifier != nil else { continue }
                 found[canonical.path] = CatalogApplication(url: canonical, identity: ApplicationIdentity(url: canonical, preferredLanguages: languages))
             }
         }
-        return found.values.sorted { $0.identity.displayName.localizedStandardCompare($1.identity.displayName) == .orderedAscending }
+        return found.values.sorted {
+            let comparison = $0.identity.displayName.localizedStandardCompare($1.identity.displayName)
+            return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
+        }
     }
 }
 public struct Shortcut: Codable, Equatable, Hashable {

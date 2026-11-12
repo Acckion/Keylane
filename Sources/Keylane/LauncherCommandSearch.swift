@@ -9,6 +9,7 @@ final class LauncherCommandSearch {
         let aliases: [String: String]
         let favorites: Set<String>
         let usage: [String: Int]
+        var favoriteOrder: [String] = []
         var history = SearchUsageHistory()
         var sensitivity: LauncherSearchRanking.Sensitivity = .low
         var namespace: LauncherCommandNamespace?
@@ -43,9 +44,21 @@ final class LauncherCommandSearch {
                 .map { (entry, $0) }
         }.sorted { $0.1.precedes($1.1) }.map(\.0)
 
+        // On the home screen, the user's order applies to the favorite slots.
+        var ordered = results
+        if input.query.isEmpty {
+            let positions = results.indices.filter { input.favorites.contains(results[$0].id) }
+            let byID = Dictionary(results.filter { input.favorites.contains($0.id) }.map { ($0.id, $0) },
+                                  uniquingKeysWith: { first, _ in first })
+            let favorites = input.favoriteOrder.compactMap { byID[$0] }
+            if positions.count == favorites.count {
+                for (position, favorite) in zip(positions, favorites) { ordered[position] = favorite }
+            }
+        }
+
         // File rows form one section, retaining their rank within the section.
-        let grouped = results.isEmpty ? candidates.filter(\.isFallback)
-            : results.filter { $0.rankingKind != .file } + results.filter { $0.rankingKind == .file }
+        let grouped = ordered.isEmpty ? candidates.filter(\.isFallback)
+            : ordered.filter { $0.rankingKind != .file } + ordered.filter { $0.rankingKind == .file }
         if !currentNames.isEmpty { preparedNames = currentNames }
         cached = (input, now, grouped)
         return grouped

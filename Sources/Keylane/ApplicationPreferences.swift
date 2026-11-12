@@ -17,6 +17,7 @@ struct ApplicationPreferences: View {
         autoQuit = model.applicationAutoQuit
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$applicationHotkeyAction),
+            ViewObservation.changes(model.$applicationCustomDepth),
             ViewObservation.changes(model.$applicationSettingsPath),
             ViewObservation.changes(model.$roots),
             ViewObservation.changes(model.$aliases),
@@ -62,9 +63,15 @@ struct ApplicationPreferences: View {
                     Text(autoQuit.rules.isEmpty ? "未开启" : "已配置 \(autoQuit.rules.count) 个应用")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                SettingsPicker("默认退出时长", detail: "只应用于已开启自动退出且使用默认时长的应用。",
+                               selection: Binding(get: { autoQuit.defaultMinutes }, set: autoQuit.setDefaultMinutes)) {
+                    ForEach(ApplicationAutoQuit.intervals, id: \.self) { minutes in
+                        Text("\(minutes) 分钟").tag(minutes)
+                    }
+                }
                 ForEach(autoQuit.rules.keys.sorted(), id: \.self) { path in
                     let url = URL(fileURLWithPath: path)
-                    if autoQuit.minutes(for: url) > 0 {
+                    if autoQuit.minutes(for: url) != 0 {
                         autoQuitPicker(model.appName(url), detail: path, url: url)
                     } else {
                         SettingsRow(model.appName(url), detail: "原应用已移动、删除或替换。") {
@@ -89,7 +96,14 @@ struct ApplicationPreferences: View {
                     model.roots.removeAll { $0 == path }
                     model.reloadCatalog()
                 }
-            ) { EmptyView() }
+            ) {
+                SettingsPicker("自定义目录扫描深度", selection: Binding(
+                    get: { model.applicationCustomDepth }, set: { model.applicationCustomDepth = $0 }
+                )) {
+                    Text("全部子目录").tag(0)
+                    Text("最多三层").tag(3)
+                }
+            }
 
             SettingsSectionTitle(title: "命令")
             CommandSettingsList(items: ["manage-auto-quit", "uninstall-application"], id: \.self) { id in
@@ -136,6 +150,7 @@ struct ApplicationPreferences: View {
                        selection: Binding(get: { autoQuit.minutes(for: url) },
                                           set: { autoQuit.setMinutes($0, for: url) })) {
             Text("关闭").tag(0)
+            Text("使用默认时长（\(autoQuit.defaultMinutes) 分钟）").tag(ApplicationAutoQuit.useDefault)
             ForEach(ApplicationAutoQuit.intervals, id: \.self) { minutes in
                 Text("\(minutes) 分钟").tag(minutes)
             }

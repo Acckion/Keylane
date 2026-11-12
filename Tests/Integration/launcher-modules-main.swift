@@ -358,6 +358,14 @@ precondition(registrationUpdates == 1)
 precondition(registered.settingsCatalog.pages.map(\.id) == [registeredPage.id])
 precondition(registered.shortcutCommandGroups.map(\.id) == [registeredModuleID] && providerReads == 0)
 precondition(registered.candidates(for: registeredSearchInput).map(\.commandID) == [registeredCommandID, dynamicCommandID])
+let favoriteSearch = LauncherCommandSearch()
+let favoriteIDs = Set(registered.candidates(for: registeredSearchInput).map(\.id))
+let requestedFavoriteOrder = registered.candidates(for: registeredSearchInput).map(\.id).reversed()
+let orderedFavorites = favoriteSearch.results(for: .init(query: "", page: .root, aliases: [:], favorites: favoriteIDs,
+                                                         usage: [:], favoriteOrder: Array(requestedFavoriteOrder)),
+                                              registry: registered)
+precondition(orderedFavorites.map(\.id) == Array(requestedFavoriteOrder))
+
 let queuedStatic = registered.resolve(registeredCommandID, origin: .menu, navigate: { _ in })!
 let queuedDynamic = registered.resolve(dynamicCommandID, origin: .shortcut, navigate: { _ in })!
 precondition(registered.page(registeredLauncherPageID) != nil)

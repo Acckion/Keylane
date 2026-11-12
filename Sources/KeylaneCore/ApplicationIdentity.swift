@@ -25,9 +25,11 @@ public struct ApplicationIdentity {
             ?? localized("CFBundleName", languages: preferredLanguages)
             ?? (fallback.isEmpty ? nil : fallback) ?? rawDisplay ?? rawName ?? filename
         let alternatives = info["CFBundleAlternateNames"] as? [String] ?? []
+        let keywords = (info["MDItemKeywords"] as? [String] ?? [])
+            + (bundle?.localizedInfoDictionary?["MDItemKeywords"] as? [String] ?? [])
         let candidates = [filename, rawDisplay, rawName,
                           localized("CFBundleDisplayName", languages: ["en"]),
-                          localized("CFBundleName", languages: ["en"])].compactMap { $0 } + alternatives
+                          localized("CFBundleName", languages: ["en"])].compactMap { $0 } + alternatives + keywords
         let shownName = displayName
         var seen = Set<String>()
         aliases = candidates.filter { !$0.isEmpty && $0 != shownName && seen.insert($0.lowercased()).inserted }
