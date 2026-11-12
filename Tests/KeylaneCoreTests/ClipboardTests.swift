@@ -4,6 +4,154 @@ import SQLite3
 
 final class ClipboardTests: XCTestCase {
     private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneClipboardTest-" + UUID().uuidString) }
+
+    func testImageFileOCRSearchPreservesPathsAndInvalidatesStaleResults() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let file = ClipFile(path: "/fixtures/clipboard-photo.png")
+        let first = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+        let next = first.addingTimeInterval(1)
+        let id = try store.capture(.files([file]), at: first)
+        let multiple = try store.capture(.files([file, .init(path: "/fixtures/other.png")]), at: first)
+        XCTAssertEqual(try store.pendingOCR().map(\.id), [id])
+        XCTAssertEqual(try store.pendingOCR().first?.filePath, file.path)
+        XCTAssertFalse(try store.setOCR(id: multiple, text: "不应加入索引", fileCopiedAt: first))
+        XCTAssertTrue(try store.setOCR(id: id, text: "图 片\n文字", fileCopiedAt: first))
+        XCTAssertEqual(try store.list(query: "图片文字", category: .files).map(\.id), [id])
+        XCTAssertTrue(try store.list(query: "图片文字", category: .image).isEmpty)
+        XCTAssertTrue(try store.pendingOCR().isEmpty)
+        try store.rename(id: id, to: "自定义名称")
+        XCTAssertEqual(try store.list(query: "clipboard-photo 图片文字").map(\.id), [id])
+
+        XCTAssertEqual(try store.capture(.files([file]), at: next), id)
+        XCTAssertFalse(try store.setOCR(id: id, text: "旧图片正文", fileCopiedAt: first))
+        XCTAssertTrue(try store.list(query: "图片文字").isEmpty)
+        XCTAssertEqual(try store.pendingOCR().map(\.id), [id])
+        XCTAssertTrue(try store.setOCR(id: id, text: "新版图片正文", fileCopiedAt: next))
+        XCTAssertEqual(try store.list(query: "新版图片正文").map(\.id), [id])
+    }
+
+    func testLinkMetadataKeepsOriginalURLAndCopyDatesAfterRename() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = "https://example.com/folder/page?tag=clipboard#section"
+        let first = Date()
+        let last = first.addingTimeInterval(30)
+        let store = try ClipboardStore(directory: directory)
+        let id = try store.capture(.text(original), at: first)
+        XCTAssertEqual(try store.capture(.text(original), at: last), id)
+        try store.rename(id: id, to: "示例网页")
+
+        let reopened = try ClipboardStore(directory: directory)
+        let item = try XCTUnwrap(reopened.list(category: .link).first)
+        XCTAssertEqual(item.preview, "示例网页")
+        XCTAssertEqual(item.webURL?.absoluteString, original)
+        XCTAssertEqual(item.firstCopiedAt.timeIntervalSince(first), 0, accuracy: 0.000001)
+        XCTAssertEqual(item.copiedAt.timeIntervalSince(last), 0, accuracy: 0.000001)
+        XCTAssertEqual(item.copyCount, 2)
+        XCTAssertEqual(try reopened.detail(id: id)?.item, item)
+        XCTAssertEqual(try reopened.detail(id: id)?.text, original)
+    }
+
+    func testEditingPreservesMetadataAndReplacesSearchAndReplayContent() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let snapshot = ClipSnapshot(items: [.init([
+            .init(type: "public.utf8-plain-text", data: Data("old text".utf8)),
+            .init(type: "public.html", data: Data("<b>old text</b>".utf8))
+        ])], plainText: "old text")
+        let original = try store.capture(.text("old text"), snapshot: snapshot, source: "Fixture")
+        try store.rename(id: original, to: "Custom title")
+        try store.setPinned(id: original, pinned: true)
+        let edited = try store.replaceText(id: original, with: "#0c4cdd")
+        XCTAssertNil(try store.detail(id: original))
+        XCTAssertTrue(try store.list(query: "old text").isEmpty)
+        XCTAssertEqual(try store.list(query: "0c4cdd", category: .color).map(\.id), [edited])
+        let detail = try XCTUnwrap(store.detail(id: edited))
+        XCTAssertEqual(detail.text, "#0c4cdd")
+        XCTAssertNil(detail.snapshot)
+        XCTAssertTrue(detail.item.pinned)
+        XCTAssertEqual(detail.item.source, "Fixture")
+        XCTAssertEqual(detail.item.preview, "Custom title")
+        XCTAssertEqual(try store.capture(.text("#0c4cdd")), edited)
+        XCTAssertEqual(try store.count(), 1)
+    }
+
+    func testEditingCannotOverwriteAnotherEntry() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let original = try store.capture(.text("a@example.com"))
+        let existing = try store.capture(.text("https://example.com"))
+        XCTAssertThrowsError(try store.replaceText(id: original, with: "https://example.com")) {
+            XCTAssertEqual($0 as? ClipboardError, .duplicateText)
+        }
+        XCTAssertEqual(try store.list(category: .email).map(\.id), [original])
+        XCTAssertEqual(try store.list(category: .link).map(\.id), [existing])
+    }
+
+    func testColorFormatsAndAlpha() throws {
+        let color = try XCTUnwrap(ClipboardColor(" #0c4cdd\n"))
+        XCTAssertEqual(color.hexLabel, "#0C4CDD")
+        XCTAssertEqual(color.formatted(as: .hexAlpha), "#0C4CDDFF")
+        XCTAssertEqual(color.formatted(as: .rgba), "rgba(12, 76, 221, 1)")
+        XCTAssertEqual(color.formatted(as: .rgbaPercent), "rgba(4.71%, 29.8%, 86.67%, 1)")
+        XCTAssertEqual(color.formatted(as: .cssRGB), "rgb(12 76 221)")
+        XCTAssertEqual(color.formatted(as: .hsl), "hsl(221.63deg 89.7% 45.69%)")
+
+        let translucent = try XCTUnwrap(ClipboardColor("hsl(-.5turn 100% 50% / 50%)"))
+        XCTAssertEqual(translucent.hexLabel, "#00FFFF80")
+        XCTAssertEqual(translucent.formatted(as: .cssRGB), "rgb(0 255 255 / 0.5)")
+        XCTAssertEqual(translucent.formatted(as: .hsl), "hsl(180deg 100% 50% / 0.5)")
+        XCTAssertEqual(ClipboardColor("#0f88")?.hexLabel, "#00FF8888")
+        XCTAssertEqual(ClipboardColor("rgba(100%, 0%, 100%, 0.25)")?.hexLabel, "#FF00FF40")
+        for format in ClipboardColor.Format.allCases {
+            let roundTrip = try XCTUnwrap(ClipboardColor(color.formatted(as: format)))
+            XCTAssertEqual(roundTrip.hexLabel, color.hexLabel, format.rawValue)
+        }
+        for invalid in ["#0C4CDD title", "#-11", "# 11", "#12345", "rgb(1 2 3 /)", "rgb(300,0,0)",
+                        "hsl(nan 50% 50%)", "rgba(1,2,3,1.5)", "rgb(1,,3)", "#fff\0text", "#fff\n#aaa"] {
+            XCTAssertNil(ClipboardColor(invalid), invalid)
+        }
+    }
+
+    func testSemanticFiltersUseOriginalContentBeforeLimit() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = " #0c4cdd "
+        let snapshot = ClipSnapshot(items: [.init([
+            .init(type: "public.utf8-plain-text", data: Data(original.utf8))
+        ])], plainText: original)
+        let store = try ClipboardStore(directory: directory)
+        let now = Date()
+        let color = try store.capture(.text(original), snapshot: snapshot, at: now.addingTimeInterval(-60))
+        try store.rename(id: color, to: "品牌蓝")
+        let link = try store.capture(.text("https://example.com/colors?q=%23fff"))
+        let email = try store.capture(.text("design+test@example.com"))
+        let plain = try store.capture(.text("颜色 #0c4cdd"))
+        let long = try store.capture(.text("#fff" + String(repeating: "a", count: 5000)))
+        let image = try store.capture(.image(Data([137, 80, 78, 71])))
+        let files = try store.capture(.files([.init(path: "/tmp/#0C4CDD")]))
+
+        let reopened = try ClipboardStore(directory: directory)
+        XCTAssertEqual(try reopened.list(category: .color, limit: 1).map(\.id), [color])
+        XCTAssertEqual(try reopened.list(query: "0c4cdd", category: .color).first?.preview, "品牌蓝")
+        XCTAssertEqual(try reopened.list(category: .link).map(\.id), [link])
+        XCTAssertEqual(try reopened.list(category: .email).map(\.id), [email])
+        XCTAssertEqual(Set(try reopened.list(category: .text).map(\.id)), Set([plain, long]))
+        XCTAssertEqual(try reopened.list(category: .image).map(\.id), [image])
+        XCTAssertEqual(try reopened.list(category: .files).map(\.id), [files])
+        XCTAssertEqual(try reopened.count(), 7)
+        let detail = try XCTUnwrap(reopened.detail(id: color))
+        XCTAssertEqual(detail.item.category, .color)
+        XCTAssertEqual(detail.item.color?.hexLabel, "#0C4CDD")
+        XCTAssertEqual(detail.text, original)
+        XCTAssertEqual(detail.snapshot, snapshot)
+        XCTAssertNil(reopened.lastMigrationBackupURL)
+    }
+
     func testPersistenceExactDeduplicationAndStablePins() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let now = Date()

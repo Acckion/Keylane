@@ -2,6 +2,7 @@ import SwiftUI
 import KeylaneCore
 
 struct Keycap: View {
+    static let side: CGFloat = 18
     let text: String
     @Environment(\.colorSchemeContrast) private var contrast
     private var symbol: String? {
@@ -29,7 +30,7 @@ struct Keycap: View {
             if let symbol { Image(systemName: symbol).symbolRenderingMode(.monochrome).font(.system(size: 9.5, weight: .medium)) }
             else { Text(text).fontDesign(.monospaced) }
         }.font(.system(size: 10, weight: .medium)).foregroundStyle(Color.primary.opacity(contrast == .increased ? 1 : 0.78))
-            .frame(width: 18, height: 18)
+            .frame(width: Self.side, height: Self.side)
             .overlay(RoundedRectangle(cornerRadius: 4.5).strokeBorder(.primary.opacity(contrast == .increased ? 0.65 : 0.34), lineWidth: 1))
             .accessibilityLabel(text)
     }

@@ -44,6 +44,7 @@ final class Model: ObservableObject {
     let systemShortcuts = SystemShortcutsController()
     let scripts = ScriptCommandsController()
     lazy var snippets = SnippetsController(store: store)
+    let quicklinks = QuicklinksController()
     let contacts = ContactsController()
     let dictionary = DictionaryController()
     let emoji = EmojiSearchController()

@@ -36,6 +36,7 @@ struct LauncherAction: Identifiable {
     let icon: String
     var keys: [String] = []
     var artwork: NSImage? = nil
+    var value: String? = nil
     var submenu: Submenu?
     var group = 0
     var enabled = true
@@ -76,7 +77,8 @@ struct LauncherPage {
     var typeFilterWidth: CGFloat?
     var typeFilter: ((Binding<Bool>) -> AnyView)?
     var badgeTitle: (() -> String)?
-    var actionWidth: CGFloat?
+    var badgeActions: (() -> [LauncherAction])?
+    var maximumActionWidth: CGFloat?
     var releasePreview: (() -> Void)?
 }
 

@@ -9,15 +9,27 @@ struct ClipboardDetail: View {
     let thumbnail: NSImage?
     let status: String
     let accessMessage: String
-    @State private var urls: [URL] = []
-    @State private var scopes: [URL] = []
+    @State private var fileAccess: ClipboardFiles?
     @State private var metrics: ClipboardDetailMetrics?
+    @State private var linkMetadata: ClipboardLinkMetadata?
+    private var urls: [URL] { fileAccess?.urls ?? [] }
+    private var previewAspectRatio: CGFloat? {
+        if detail.item.webURL != nil { return linkMetadata?.aspectRatio ?? 2 }
+        guard let size = thumbnail?.size, size.width > 0, size.height > 0 else { return nil }
+        return size.width / size.height
+    }
 
     var body: some View {
-        ResultDetailPane(scrollsPreview: detail.item.kind == .text) { height in
+        ResultDetailPane(scrollsPreview: detail.item.kind == .text && detail.item.color == nil && detail.item.webURL == nil,
+                         previewAspectRatio: previewAspectRatio,
+                         showsPreviewDivider: detail.item.webURL == nil) { height in
             preview(height: height)
         } information: {
-            DetailInformationSection(rows: information)
+            if let url = detail.item.webURL {
+                DetailInformationRows(rows: linkInformation(url), verticalPadding: 6)
+            } else {
+                DetailInformationSection(rows: information)
+            }
             if !accessMessage.isEmpty {
                 Text(accessMessage).font(.caption).foregroundStyle(.orange)
             }
@@ -33,63 +45,88 @@ struct ClipboardDetail: View {
                     .font(.system(size: 12))
             }
         }
+        .task(id: detail.item.webURL) {
+            linkMetadata = nil
+            guard let url = detail.item.webURL else { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            let metadata = await ClipboardLinkPreviews.shared.preview(for: url)
+            guard !Task.isCancelled else { return }
+            linkMetadata = metadata
+        }
         .task(id: detail.files) {
-            releaseScopes()
+            guard detail.item.webURL == nil else { return }
             metrics = nil
-            urls = detail.files.map { file in
-                if let bookmark = file.bookmark {
-                    var stale = false
-                    if let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale) {
-                        if url.startAccessingSecurityScopedResource() { scopes.append(url) }
-                        return url
-                    }
-                }
-                return URL(fileURLWithPath: file.path)
-            }
-            let files = urls
+            let access = ClipboardFiles(detail.files)
+            fileAccess = access
             let snapshot = detail
-            let result = await Task.detached(priority: .utility) { ClipboardDetailMetrics.read(snapshot, urls: files) }.value
+            let result = await Task.detached(priority: .utility) {
+                withExtendedLifetime(access) { ClipboardDetailMetrics.read(snapshot, urls: access.urls) }
+            }.value
             guard !Task.isCancelled else { return }
             metrics = result
         }
-        .onDisappear { releaseScopes() }
+        .onDisappear { fileAccess = nil }
     }
 
     @ViewBuilder private func preview(height: CGFloat) -> some View {
-        switch detail.item.kind {
-        case .text:
-            Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
-                .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
-                .padding(.horizontal, 9).padding(.top, 4)
-        case .image:
-            if let thumbnail {
-                GeometryReader { geometry in
-                    let ratio = max(0.01, thumbnail.size.width / max(1, thumbnail.size.height))
-                    let width = min(max(1, geometry.size.width - 18), geometry.size.height * ratio)
-                    Image(nsImage: thumbnail).resizable().scaledToFit()
-                        .frame(width: width, height: width / ratio)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                }.frame(height: height)
-            } else { ContentUnavailableView("图片无法预览", systemImage: "photo", description: Text("历史图片可能已丢失。")) }
-        case .files:
-            if urls.isEmpty { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
-            else { ResultFilePreview(urls: urls).frame(height: height) }
+        if let thumbnail {
+            Image(nsImage: thumbnail).resizable().scaledToFit()
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .frame(maxWidth: .infinity)
+                .frame(height: height)
+        } else if detail.item.kind == .text {
+            if let color = detail.item.color {
+                ClipboardColorPreview(color: color)
+            } else if let url = detail.item.webURL {
+                ClipboardLinkPreview(url: url, metadata: linkMetadata).frame(height: height)
+            } else {
+                Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(.horizontal, 9).padding(.top, 4)
+            }
+        } else if detail.item.kind == .image {
+            ContentUnavailableView("图片无法预览", systemImage: "photo", description: Text("历史图片可能已丢失。"))
+        } else if urls.isEmpty {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ResultFilePreview(urls: urls).frame(height: height)
         }
+    }
+
+    private func linkInformation(_ url: URL) -> [DetailInformationValue] {
+        var rows: [DetailInformationValue] = [.init(title: "网址", value: url.absoluteString)]
+        if let title = linkMetadata?.title, !title.isEmpty {
+            rows.append(.init(title: "标题", value: title))
+        }
+        return rows + [
+            .init(title: "复制次数", value: String(detail.item.copyCount)),
+            .init(title: "最近复制", value: detail.item.copiedAt.formatted(date: .abbreviated, time: .standard)),
+            .init(title: "首次复制", value: detail.item.firstCopiedAt.formatted(date: .abbreviated, time: .standard))
+        ]
     }
 
     private var information: [DetailInformationValue] {
         let sourceURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: detail.item.sourceBundle)
         let sourceIcon = sourceURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
-        let type = detail.item.kind == .text ? "文字" : detail.item.kind == .image ? "图片" : detail.files.count == 1 ? "文件" : "多个文件"
+        let type: String
+        switch detail.item.category {
+        case .text: type = "文字"
+        case .image: type = "图片"
+        case .files: type = detail.files.count == 1 ? "文件" : "多个文件"
+        case .link: type = "链接"
+        case .email: type = "邮箱"
+        case .color: type = "颜色"
+        }
         var rows: [DetailInformationValue] = [
             .init(title: "来源", value: detail.item.source.isEmpty ? "未知来源" : detail.item.source, icon: sourceIcon),
             .init(title: "类型", value: type)
         ]
         switch detail.item.kind {
-        case .text:
+        case .text where detail.item.color == nil:
             rows.append(.init(title: "字符数", value: metrics.map { String($0.characters) } ?? "…"))
             rows.append(.init(title: "词数", value: metrics.map { String($0.words) } ?? "…"))
+        case .text: break
         case .image:
             if let dimensions = metrics?.dimensions { rows.append(.init(title: "尺寸", value: dimensions)) }
             rows.append(.init(title: "大小", value: size(metrics?.imageBytes)))
@@ -105,7 +142,54 @@ struct ClipboardDetail: View {
         return rows
     }
     private func size(_ bytes: Int?) -> String { bytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "—" }
-    private func releaseScopes() { scopes.forEach { $0.stopAccessingSecurityScopedResource() }; scopes = [] }
+}
+
+struct ClipboardColorPreview: View {
+    let color: ClipboardColor
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ClipboardColorSwatch(color: color, cornerRadius: 8)
+                .frame(maxHeight: .infinity)
+            Text(color.hexLabel)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.black)
+                .textSelection(.enabled)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 8)
+        }
+        .padding(4)
+        .frame(maxWidth: 210, maxHeight: 186)
+        .background(.white, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct ClipboardColorSwatch: View {
+    let color: ClipboardColor
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius)
+        ZStack {
+            if color.alpha < 1 {
+                Canvas { context, size in
+                    let side = cornerRadius
+                    context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
+                    for row in 0..<Int(ceil(size.height / side)) {
+                        for column in stride(from: row % 2, to: Int(ceil(size.width / side)), by: 2) {
+                            let square = CGRect(x: CGFloat(column) * side, y: CGFloat(row) * side,
+                                                width: side, height: side)
+                            context.fill(Path(square), with: .color(Color(white: 0.75)))
+                        }
+                    }
+                }
+            }
+            Color(.sRGB, red: color.red, green: color.green, blue: color.blue, opacity: color.alpha)
+        }
+        .clipShape(shape)
+        .overlay { shape.strokeBorder(.primary.opacity(0.20), lineWidth: 0.5) }
+        .accessibilityHidden(true)
+    }
 }
 
 private struct ClipboardDetailMetrics: Sendable {

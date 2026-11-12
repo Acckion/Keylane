@@ -5,43 +5,76 @@ import QuickLookUI
 /// Results stay on the left; the preview and information on the right scroll independently.
 struct ResultDetailPane<Preview: View, Information: View>: View {
     var scrollsPreview = true
+    var previewAspectRatio: CGFloat? = nil
+    var showsPreviewDivider = true
     @ViewBuilder let preview: (CGFloat) -> Preview
     @ViewBuilder let information: () -> Information
 
     var body: some View {
         GeometryReader { geometry in
-            let previewHeight = max(0, (geometry.size.height - VisualStyle.launcherTopInset - VisualStyle.launcherBottomInset - 1) / 2)
+            let contentHeight = max(0, geometry.size.height - VisualStyle.launcherTopInset
+                                    - VisualStyle.launcherBottomInset - (showsPreviewDivider ? 1 : 0))
             VStack(spacing: 0) {
-                previewRegion(height: previewHeight)
-                    .frame(height: previewHeight + VisualStyle.launcherTopInset)
-                Divider()
+                previewRegion(width: geometry.size.width, maximumHeight: contentHeight * 0.6)
+                    .layoutPriority(1)
+                if showsPreviewDivider { Divider() }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18, content: information)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(18)
+                        .padding(.horizontal, previewAspectRatio == nil ? 18 : VisualStyle.launcherEdgeInset)
+                        .padding(.vertical, previewAspectRatio == nil ? 18 : 0)
                 }
                 .launcherScrollInsets(top: false)
             }
         }
     }
 
-    @ViewBuilder private func previewRegion(height: CGFloat) -> some View {
-        let contentHeight = max(0, height - 36)
-        if scrollsPreview {
-            ScrollView {
-                preview(contentHeight)
-                    .frame(maxWidth: .infinity, minHeight: contentHeight)
-                    .padding(18)
-            }
-            .launcherScrollInsets(bottom: false)
+    @ViewBuilder private func previewRegion(width: CGFloat, maximumHeight: CGFloat) -> some View {
+        if let aspectRatio = previewAspectRatio {
+            let topPadding: CGFloat = 5
+            let bottomPadding: CGFloat = 8
+            let width = max(0, width - 2 * VisualStyle.launcherEdgeInset)
+            let height = min(width / aspectRatio, max(0, maximumHeight - topPadding - bottomPadding))
+            preview(height)
+                .frame(width: min(width, height * aspectRatio), height: height)
+                .frame(maxWidth: .infinity)
+                .padding(.top, VisualStyle.launcherTopInset + topPadding)
+                .padding(.bottom, bottomPadding)
         } else {
-            // Quick Look handles its own scrolling. Images fit the same viewport.
-            preview(contentHeight)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(18)
-                .padding(.top, VisualStyle.launcherTopInset)
-                .clipped()
+            let padding: CGFloat = 18
+            let content = preview(max(0, maximumHeight - 2 * padding))
+                .frame(maxWidth: .infinity)
+                .padding(padding)
+            if scrollsPreview {
+                PreviewHeightLimit(maximumHeight: VisualStyle.launcherTopInset + maximumHeight) {
+                    ViewThatFits(in: .vertical) {
+                        content.fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, VisualStyle.launcherTopInset)
+                        ScrollView { content }
+                            .launcherScrollInsets(bottom: false)
+                    }
+                }
+            } else {
+                // Quick Look owns scrolling within the supplied preview height.
+                content
+                    .frame(maxHeight: maximumHeight, alignment: .top)
+                    .padding(.top, VisualStyle.launcherTopInset)
+                    .clipped()
+            }
         }
+    }
+}
+
+private struct PreviewHeightLimit: Layout {
+    let maximumHeight: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let content = subviews[0].sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: content.width, height: min(content.height, maximumHeight))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
     }
 }
 

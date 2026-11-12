@@ -174,7 +174,7 @@ enum UtilityLauncherModules {
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
-        page.actionWidth = 258
+        page.maximumActionWidth = 258
         page.typeFilterWidth = 174
         page.typeFilter = { [weak model] open in
             AnyView(ResultTypeFilter(

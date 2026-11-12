@@ -3,6 +3,45 @@ import SQLite3
 import CryptoKit
 
 public enum ClipKind: String, Codable, CaseIterable { case text, image, files }
+
+public enum ClipboardCategory: String, CaseIterable, Sendable {
+    case text, image, files, link, email, color
+
+    public var canEditText: Bool { self != .image && self != .files }
+
+    private static let emailPattern = try! NSRegularExpression(
+        pattern: #"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}"#
+    )
+
+    static func classify(_ text: String, color: ClipboardColor?) -> Self {
+        if color != nil { return .color }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if emailURL(in: value) != nil { return .email }
+        if webURL(in: value) != nil { return .link }
+        return .text
+    }
+
+    public static func webURL(in text: String) -> URL? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = value.lowercased()
+        guard lower.hasPrefix("https://") || lower.hasPrefix("http://"),
+              !value.contains(where: \.isWhitespace),
+              let components = URLComponents(string: value), let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil else { return nil }
+        return components.url
+    }
+
+    public static func emailURL(in text: String) -> URL? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.contains("@"), value.utf8.count <= 254 else { return nil }
+        let range = NSRange(value.startIndex..., in: value)
+        guard emailPattern.firstMatch(in: value, range: range)?.range == range else { return nil }
+        var components = URLComponents()
+        components.scheme = "mailto"
+        components.path = value
+        return components.url
+    }
+}
 public struct ClipFile: Codable, Equatable {
     public let path: String
     public let bookmark: Data?
@@ -16,10 +55,14 @@ public enum ClipContent {
 public struct ClipItem: Identifiable, Equatable {
     public let id: String
     public let kind: ClipKind
+    public let category: ClipboardCategory
+    public let color: ClipboardColor?
+    public let webURL: URL?
     public let preview: String
     public let source: String
     public let sourceBundle: String
     public let copiedAt: Date
+    public let firstCopiedAt: Date
     public let pinned: Bool
     public let copyCount: Int
     public let byteCount: Int
@@ -34,6 +77,13 @@ public struct ClipDetail {
     public let ocrText: String
     public let snapshot: ClipSnapshot?
 }
+
+public struct ClipboardOCRCandidate: Sendable {
+    public let id: String
+    public let copiedAt: Date
+    /// Nil for a saved image. A single copied file still needs a type check.
+    public let filePath: String?
+}
 public struct ClipboardLimits {
     public var maxItems: Int
     public var retentionDays: Int
@@ -43,7 +93,7 @@ public struct ClipboardLimits {
     }
 }
 public enum ClipboardError: LocalizedError {
-    case database, newerSchema, oversized, pinnedLimit, storageFull, missingAttachment
+    case database, newerSchema, oversized, pinnedLimit, storageFull, missingAttachment, unavailableText, duplicateText
     public var errorDescription: String? {
         switch self {
         case .database: return "剪贴板资料库操作失败，请检查储存空间。"
@@ -52,6 +102,8 @@ public enum ClipboardError: LocalizedError {
         case .pinnedLimit: return "最多可置顶100条记录。"
         case .storageFull: return "剪贴板空间已满，请清理部分记录或取消置顶。"
         case .missingAttachment: return "历史图片已丢失，无法复制或预览。"
+        case .unavailableText: return "这条文字记录已不可用。"
+        case .duplicateText: return "相同文字已在剪贴板历史中。"
         }
     }
 }
@@ -79,6 +131,7 @@ public final class ClipboardStore {
         let path = directory.appendingPathComponent("clipboard.sqlite").path
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { sqlite3_close(db); throw ClipboardError.database }
         do {
+            try registerCategoryFunction()
             let version = try scalar("PRAGMA user_version")
             guard version <= 3 else { throw ClipboardError.newerSchema }
             try exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=2000; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;")
@@ -131,6 +184,21 @@ public final class ClipboardStore {
         return folder
     }
     deinit { sqlite3_close(db) }
+    private func registerCategoryFunction() throws {
+        // Classify the original, bounded text before LIMIT without rewriting history.
+        let status = sqlite3_create_function_v2(db, "clip_text_category", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+                                                nil, { context, _, values in
+            guard let input = values?[0], let bytes = sqlite3_value_text(input) else {
+                sqlite3_result_null(context)
+                return
+            }
+            let value = String(decoding: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_value_bytes(input))), as: UTF8.self)
+            let category = ClipboardCategory.classify(value, color: ClipboardColor(value))
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            category.rawValue.withCString { sqlite3_result_text(context, $0, -1, transient) }
+        }, nil, nil, nil)
+        guard status == SQLITE_OK else { throw ClipboardError.database }
+    }
     private enum Value { case text(String), blob(Data), number(Double), null }
     private func exec(_ sql: String) throws { guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw ClipboardError.database } }
     private func statement(_ sql: String, _ values: [Value] = []) throws -> OpaquePointer {
@@ -164,18 +232,45 @@ public final class ClipboardStore {
         return Data(bytes: bytes, count: count)
     }
     private static func normalize(_ text: String) -> String { text.folding(options: [.caseInsensitive,.diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")) }
-    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0)"
+    private static let separatedHan = try! NSRegularExpression(pattern: #"(?<=\p{Han})\s+(?=\p{Han})"#)
+    private static func searchableOCR(_ text: String) -> String {
+        let range = NSRange(text.startIndex..., in: text)
+        let compact = separatedHan.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        return compact == text ? text : text + " " + compact
+    }
+
+    private static func fileSearchTerms(_ files: [ClipFile]) -> String {
+        files.map { URL(fileURLWithPath: $0.path).lastPathComponent + " " + $0.path }.joined(separator: "\n")
+    }
+    private static let shortText = "CASE WHEN kind='text' AND length(payload)<=4096 THEN payload END"
+    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0),\(shortText),created"
     private func item(_ s: OpaquePointer) throws -> ClipItem {
         guard let kind = ClipKind(rawValue: string(s,1)) else { throw ClipboardError.database }
-        return ClipItem(id: string(s,0), kind: kind, preview: string(s,2), source: string(s,3), sourceBundle: string(s,4), copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)), pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)), byteCount: Int(sqlite3_column_int64(s,8)), assetName: sqlite3_column_type(s,9) == SQLITE_NULL ? nil : string(s,9), hasOCR: sqlite3_column_int(s,10) != 0)
+        let text = String(decoding: blob(s,11), as: UTF8.self)
+        let color = ClipboardColor(text)
+        let category: ClipboardCategory
+        switch kind {
+        case .text: category = .classify(text, color: color)
+        case .image: category = .image
+        case .files: category = .files
+        }
+        return ClipItem(id: string(s,0), kind: kind, category: category, color: color,
+                        webURL: category == .link ? ClipboardCategory.webURL(in: text) : nil,
+                        preview: string(s,2), source: string(s,3), sourceBundle: string(s,4),
+                        copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)),
+                        firstCopiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,12)),
+                        pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)),
+                        byteCount: Int(sqlite3_column_int64(s,8)),
+                        assetName: sqlite3_column_type(s,9) == SQLITE_NULL ? nil : string(s,9), hasOCR: sqlite3_column_int(s,10) != 0)
     }
-    private func retainedSearchTerms(id: String) throws -> String {
+    private func retainedSearchTerms(id: String, keepOCR: Bool) throws -> String {
         let record = try statement("SELECT preview, ocr FROM clips WHERE id=?", [.text(id)])
         defer { sqlite3_finalize(record) }
         let status = sqlite3_step(record)
         if status == SQLITE_DONE { return "" }
         guard status == SQLITE_ROW else { throw ClipboardError.database }
-        return string(record, 0) + " " + string(record, 1)
+        let preview = string(record, 0)
+        return keepOCR ? preview + " " + Self.searchableOCR(string(record, 1)) : preview
     }
 
     public func capture(_ content: ClipContent, snapshot: ClipSnapshot? = nil, source: String = "", bundle: String = "", at date: Date = Date()) throws -> String {
@@ -190,10 +285,10 @@ public final class ClipboardStore {
             payload = Data([0]); identity = data; body = "图片"
         case .files(let files):
             guard !files.isEmpty, files.count <= 128 else { throw ClipboardError.oversized }
-            payload = try JSONEncoder().encode(files); identity = try JSONEncoder().encode(files.map(\.path)); body = files.map { URL(fileURLWithPath:$0.path).lastPathComponent + " " + $0.path }.joined(separator:"\n")
+            payload = try JSONEncoder().encode(files); identity = try JSONEncoder().encode(files.map(\.path)); body = Self.fileSearchTerms(files)
             guard payload.count <= 2_097_152 else { throw ClipboardError.oversized }
         }
-        let id = SHA256.hash(data: Data((content.kind.rawValue + ":").utf8) + identity + (snapshot?.identitySupplement(kind:content.kind) ?? Data())).map { String(format:"%02x",$0) }.joined()
+        let id = Self.contentID(kind: content.kind, data: identity, snapshot: snapshot)
         var newAsset: URL?
         if case .image(let data, let format) = content {
             asset = id + "." + format.rawValue
@@ -202,11 +297,12 @@ public final class ClipboardStore {
         }
         do {
             try exec("BEGIN IMMEDIATE")
-            let searchable = Self.normalize([body, snapshot?.plainText ?? "", source, try retainedSearchTerms(id: id)]
+            let searchable = Self.normalize([body, snapshot?.plainText ?? "", source, try retainedSearchTerms(id: id, keepOCR: content.kind == .image)]
                 .joined(separator: " "))
             try write("""
                 INSERT INTO clips(id,kind,preview,payload,searchable,asset,source,bundle,created,copied,bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET copied=excluded.copied,source=excluded.source,bundle=excluded.bundle,payload=excluded.payload,copies=clips.copies+1,bytes=excluded.bytes,searchable=excluded.searchable
+                ON CONFLICT(id) DO UPDATE SET copied=excluded.copied,source=excluded.source,bundle=excluded.bundle,payload=excluded.payload,copies=clips.copies+1,bytes=excluded.bytes,searchable=excluded.searchable,
+                  ocr=CASE WHEN clips.kind='files' THEN '' ELSE clips.ocr END
                 """, [.text(id),.text(content.kind.rawValue),.text(String(body.prefix(512))),.blob(payload),.text(searchable),asset.map(Value.text) ?? .null,.text(String(source.prefix(256))),.text(String(bundle.prefix(256))),.number(date.timeIntervalSince1970),.number(date.timeIntervalSince1970),.number(Double(max(identity.count,payload.count) + (snapshotData?.count ?? 0)))])
             if let snapshotData { try write("INSERT INTO clip_snapshots(clip_id,payload,search_text) VALUES(?,?,?) ON CONFLICT(clip_id) DO UPDATE SET payload=excluded.payload,search_text=excluded.search_text",[.text(id),.blob(snapshotData),.text(Self.normalize(snapshot?.plainText ?? ""))]) }
             try exec("COMMIT")
@@ -215,7 +311,7 @@ public final class ClipboardStore {
         guard try scalar("SELECT count(*) FROM clips WHERE id=?",[.text(id)]) > 0 else { throw ClipboardError.storageFull }
         return id
     }
-    public func list(query: String = "", kind: ClipKind? = nil, pinnedOnly: Bool = false, limit: Int = 200) throws -> [ClipItem] {
+    public func list(query: String = "", kind: ClipKind? = nil, category: ClipboardCategory? = nil, pinnedOnly: Bool = false, limit: Int = 200) throws -> [ClipItem] {
         var conditions: [String] = []; var values: [Value] = []
         let search = Self.normalize(String(query.prefix(256))).trimmingCharacters(in:.whitespacesAndNewlines)
         for token in search.split(whereSeparator: \.isWhitespace).prefix(16).map(String.init) {
@@ -223,6 +319,15 @@ public final class ClipboardStore {
             else { conditions.append("searchable LIKE ? ESCAPE '\\'"); values.append(.text("%" + token.replacingOccurrences(of:"\\",with:"\\\\").replacingOccurrences(of:"%",with:"\\%").replacingOccurrences(of:"_",with:"\\_") + "%")) }
         }
         if let kind { conditions.append("kind=?"); values.append(.text(kind.rawValue)) }
+        if let category {
+            switch category {
+            case .image, .files:
+                conditions.append("kind=?")
+            case .text, .link, .email, .color:
+                conditions.append("kind='text' AND coalesce(clip_text_category(\(Self.shortText)), 'text')=?")
+            }
+            values.append(.text(category.rawValue))
+        }
         if pinnedOnly { conditions.append("pinned=1") }
         let filter = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator:" AND ")
         let s = try statement("SELECT " + Self.columns + " FROM clips" + filter + " ORDER BY pinned DESC,pin_order,copied DESC,id LIMIT ?",values + [.number(Double(max(1,min(500,limit))))]); defer { sqlite3_finalize(s) }
@@ -233,11 +338,11 @@ public final class ClipboardStore {
     public func detail(id: String) throws -> ClipDetail? {
         let s = try statement("SELECT " + Self.columns + ",payload,ocr FROM clips WHERE id=?",[.text(id)]); defer { sqlite3_finalize(s) }
         let status = sqlite3_step(s); if status == SQLITE_DONE { return nil }; guard status == SQLITE_ROW else { throw ClipboardError.database }
-        let record = try item(s); let data = blob(s,11)
+        let record = try item(s); let data = blob(s,13)
         let files = record.kind == .files ? try JSONDecoder().decode([ClipFile].self, from:data) : []
         let q = try statement("SELECT payload FROM clip_snapshots WHERE clip_id=?",[.text(id)]); defer { sqlite3_finalize(q) }
         let snapshot = sqlite3_step(q) == SQLITE_ROW ? try PropertyListDecoder().decode(ClipSnapshot.self,from:blob(q,0)) : nil
-        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,12),snapshot:snapshot)
+        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,14),snapshot:snapshot)
     }
     public func assetURL(_ name: String) -> URL? {
         let parts = name.split(separator: ".", omittingEmptySubsequences: false)
@@ -249,28 +354,101 @@ public final class ClipboardStore {
         let order = pinned ? (try scalar("SELECT coalesce(max(pin_order),0)+1 FROM clips WHERE pinned=1")) : 0
         try write("UPDATE clips SET pinned=?,pin_order=? WHERE id=?",[.number(pinned ? 1:0),.number(Double(order)),.text(id)])
     }
-    public func setOCR(id: String, text: String) throws {
+    public func pendingOCR() throws -> [ClipboardOCRCandidate] {
+        let query = try statement("""
+            SELECT id, copied, CASE kind WHEN 'files' THEN json_extract(CAST(payload AS TEXT), '$[0].path') END
+            FROM clips
+            WHERE ocr='' AND CASE kind
+                WHEN 'image' THEN 1
+                WHEN 'files' THEN CASE WHEN json_valid(CAST(payload AS TEXT)) THEN json_array_length(CAST(payload AS TEXT))=1 ELSE 0 END
+                ELSE 0 END
+            ORDER BY pinned DESC, pin_order, copied DESC, id
+            """)
+        defer { sqlite3_finalize(query) }
+        var result: [ClipboardOCRCandidate] = []
+        while true {
+            let status = sqlite3_step(query)
+            if status == SQLITE_DONE { return result }
+            guard status == SQLITE_ROW else { throw ClipboardError.database }
+            result.append(.init(id: string(query, 0), copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(query, 1)),
+                                filePath: sqlite3_column_type(query, 2) == SQLITE_NULL ? nil : string(query, 2)))
+        }
+    }
+
+    @discardableResult
+    public func setOCR(id: String, text: String, fileCopiedAt: Date? = nil) throws -> Bool {
         let value = String(text.prefix(100_000))
-        let record = try statement("SELECT preview, source FROM clips WHERE id=? AND kind='image'", [.text(id)])
+        let record = try statement("SELECT kind, preview, source, payload FROM clips WHERE id=? AND kind IN ('image','files')", [.text(id)])
         defer { sqlite3_finalize(record) }
         let status = sqlite3_step(record)
-        if status == SQLITE_DONE { return }
+        if status == SQLITE_DONE { return false }
         guard status == SQLITE_ROW else { throw ClipboardError.database }
-        let searchable = Self.normalize(["图片", string(record, 0), value, string(record, 1)].joined(separator: " "))
+        let body: String
+        var filter = "id=?"
+        var arguments: [Value] = [.text(id)]
+        if string(record, 0) == ClipKind.files.rawValue {
+            let files = try JSONDecoder().decode([ClipFile].self, from: blob(record, 3))
+            guard files.count == 1, let fileCopiedAt else { return false }
+            body = Self.fileSearchTerms(files)
+            filter += " AND copied=?"
+            arguments.append(.number(fileCopiedAt.timeIntervalSince1970))
+        } else {
+            body = "图片"
+        }
+        let searchable = Self.normalize([body, string(record, 1), Self.searchableOCR(value), string(record, 2)].joined(separator: " "))
         try write("""
             UPDATE clips SET ocr=?, searchable=? || ' ' ||
                 coalesce((SELECT search_text FROM clip_snapshots WHERE clip_id=clips.id),'')
-            WHERE id=? AND kind='image'
-            """, [.text(value), .text(searchable), .text(id)])
+            WHERE \(filter)
+            """, [.text(value), .text(searchable)] + arguments)
+        return sqlite3_changes(db) > 0
     }
     public func rename(id: String, to name: String) throws {
         guard let record = try detail(id: id) else { return }
         let title = String(name.prefix(512))
-        let searchable = [title, record.text, record.files.map(\.path).joined(separator: " "),
-                          record.snapshot?.plainText ?? "", record.item.source, record.ocrText]
+        let searchable = [title, record.text, Self.fileSearchTerms(record.files),
+                          record.snapshot?.plainText ?? "", record.item.source, Self.searchableOCR(record.ocrText)]
             .joined(separator: " ")
         try write("UPDATE clips SET preview=?, searchable=? WHERE id=?",
                   [.text(title), .text(Self.normalize(searchable)), .text(id)])
+    }
+    public func replaceText(id: String, with text: String) throws -> String {
+        let payload = Data(text.utf8)
+        guard !payload.isEmpty, payload.count <= 1_048_576 else { throw ClipboardError.oversized }
+        try exec("BEGIN IMMEDIATE")
+        do {
+            guard let record = try detail(id: id), record.item.category.canEditText else {
+                throw ClipboardError.unavailableText
+            }
+            if Data(record.text.utf8) == payload {
+                try exec("COMMIT")
+                return id
+            }
+            let newID = Self.contentID(kind: .text, data: payload, snapshot: nil)
+            guard try scalar("SELECT count(*) FROM clips WHERE id=?", [.text(newID)]) == 0 else {
+                throw ClipboardError.duplicateText
+            }
+            let bytes = try scalar("SELECT coalesce(sum(bytes),0) FROM clips")
+            guard bytes - record.item.byteCount + payload.count <= limits.maxBytes else {
+                throw ClipboardError.storageFull
+            }
+            let preview = record.item.preview == String(record.text.prefix(512)) ? String(text.prefix(512)) : record.item.preview
+            let searchable = Self.normalize([text, preview, record.item.source].joined(separator: " "))
+            // Saved text is plain text. A snapshot of the old value would replay stale data.
+            try write("DELETE FROM clip_snapshots WHERE clip_id=?", [.text(id)])
+            try write("UPDATE clips SET id=?, preview=?, payload=?, searchable=?, bytes=? WHERE id=?",
+                      [.text(newID), .text(preview), .blob(payload), .text(searchable), .number(Double(payload.count)), .text(id)])
+            try exec("COMMIT")
+            return newID
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
+    private static func contentID(kind: ClipKind, data: Data, snapshot: ClipSnapshot?) -> String {
+        let input = Data((kind.rawValue + ":").utf8) + data + (snapshot?.identitySupplement(kind: kind) ?? Data())
+        return SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()
     }
     public func remove(id: String) throws {
         let query = try statement("SELECT asset FROM clips WHERE id=?",[.text(id)])

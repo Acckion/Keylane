@@ -1,6 +1,8 @@
 import Foundation
 import AppKit
 import Combine
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import KeylaneCore
 
 let app = NSApplication.shared
@@ -72,9 +74,8 @@ fallbackController.loadListThumbnail(for:image) { fallbackImage = $0 }
 wait("list thumbnail snapshot fallback") { fallbackImage != nil }
 try FileManager.default.moveItem(at:movedAsset,to:imageAsset)
 
-controller.recognizeSelected()
-wait("Vision OCR") { controller.detail?.ocrText.contains("KEYLANE") == true }
-controller.search("OCR 123"); wait("OCR search") { controller.items.count == 1 && controller.items.first?.id == image.id }
+controller.search("OCR 123")
+wait("Vision OCR") { controller.items.map(\.id) == [image.id] && controller.detail?.ocrText.contains("KEYLANE") == true }
 precondition(controller.copySelected()); precondition(board.data(forType: .png) == png)
 controller.search(""); wait("reset") { controller.items.count == 3 }
 let textItem = controller.items.first { $0.kind == .text }!
@@ -153,7 +154,8 @@ let automaticSuite = suite + ".automatic"
 let automaticPrefs = UserDefaults(suiteName:automaticSuite)!
 automaticPrefs.set(true,forKey:"clipboardPersistentCapture")
 let automaticBoard = NSPasteboard(name:.init(automaticSuite))
-let automatic = ClipboardController(directory:root.appendingPathComponent("automatic"),board:automaticBoard,preferences:automaticPrefs)
+let automaticRoot = root.appendingPathComponent("automatic")
+let automatic = ClipboardController(directory: automaticRoot, board: automaticBoard, preferences: automaticPrefs)
 defer { automaticBoard.releaseGlobally(); automaticPrefs.removePersistentDomain(forName:automaticSuite) }
 automaticBoard.clearContents(); automaticBoard.setString("Automatic monitor 中文",forType:.string)
 wait("automatic timer capture") { automatic.total == 1 && automatic.detail?.text == "Automatic monitor 中文" }
@@ -179,8 +181,125 @@ let fileImageItem = automatic.items.first { $0.kind == .files && $0.preview.cont
 var fileThumbnail: NSImage?
 automatic.loadListThumbnail(for:fileImageItem) { fileThumbnail = $0 }
 wait("copied image file list thumbnail") { fileThumbnail != nil }
+automatic.select(fileImageItem.id)
+wait("copied image file detail preview") {
+    automatic.detail?.item.id == fileImageItem.id && automatic.thumbnail != nil
+}
+let filePreview = automatic.thumbnail!.cgImage(forProposedRect: nil, context: nil, hints: nil)!
+precondition(filePreview.width == bitmap.pixelsWide && filePreview.height == bitmap.pixelsHigh)
 precondition(FileManager.default.fileExists(atPath:copiedImageFile.path))
 
+let originalColor = " #0c4cdd "
+automaticBoard.clearContents()
+automaticBoard.setString(originalColor, forType: .string)
+wait("automatic color capture") { automatic.total == 6 }
+automaticBoard.clearContents()
+automaticBoard.setString("https://example.com/", forType: .URL)
+wait("automatic link capture") { automatic.total == 7 }
+automaticBoard.clearContents()
+automaticBoard.setString("design@example.com", forType: .string)
+wait("automatic email capture") { automatic.total == 8 }
+for category: ClipboardCategory in [.link, .email, .color] {
+    automatic.kind = category.rawValue
+    wait("header \(category) filter") {
+        automatic.items.count == 1 && automatic.detail?.item.category == category
+    }
+}
+precondition(automatic.copySelected())
+precondition(automaticBoard.string(forType: .string) == originalColor)
+let color = automatic.detail!.item.color!
+for format in ClipboardColor.Format.allCases {
+    precondition(automatic.copyColor(color, as: format))
+    precondition(automaticBoard.string(forType: .string) == color.formatted(as: format))
+    automatic.poll()
+}
+automatic.kind = "all"
+wait("converted colors were not recaptured") { automatic.items.count == 8 && automatic.total == 8 }
 
+let originalText = automatic.items.first { $0.preview == "Second automatic copy" }!
+automatic.select(originalText.id)
+wait("selected text before edit") { automatic.selectedDetail?.item.id == originalText.id }
+automatic.editSelectedText()
+precondition(automatic.textDraft?.text == "Second automatic copy")
+var edited = false
+automatic.saveEditedText(id: originalText.id, text: "Edited 中文\nSecond line") { result in
+    try! result.get()
+    edited = true
+}
+wait("saved text remains selected") { edited && automatic.selectedDetail?.text == "Edited 中文\nSecond line" }
+precondition(automatic.copySelected())
+precondition(automaticBoard.string(forType: .string) == "Edited 中文\nSecond line")
 
-print("PASS named pasteboard: automatic timer text/image capture, rich RTF/HTML exact roundtrip, plain copy, mixed items, inert HTML, stable detail, default-off, text, dedupe, stable pin, replay exclusion, sensitive exclusion, native PNG roundtrip, Vision OCR/search, file roundtrip, original retained, reopen, clear policies")
+let fileImageDetail = try ClipboardStore(directory: automaticRoot).detail(id: fileImageItem.id)!
+var copiedOCR = false
+automatic.copyImageText(.ocr, from: fileImageDetail) { copied, message in
+    precondition(copied, message)
+    copiedOCR = true
+}
+wait("Vision OCR") { copiedOCR }
+precondition(automaticBoard.string(forType: .string)?.contains("KEYLANE") == true)
+
+let qr = CIFilter.qrCodeGenerator()
+qr.message = Data("https://example.com/clipboard-fixture".utf8)
+let qrImage = qr.outputImage!.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+let qrCG = CIContext().createCGImage(qrImage, from: qrImage.extent)!
+let qrData = NSBitmapImageRep(cgImage: qrCG).representation(using: .png, properties: [:])!
+automaticBoard.clearContents()
+automaticBoard.setData(qrData, forType: .png)
+wait("capture QR image") { automatic.total == 9 && automatic.items.first?.kind == .image }
+let qrID = automatic.items.first!.id
+automatic.select(qrID)
+wait("select QR image") { automatic.selectedDetail?.item.id == qrID }
+let qrDetail = automatic.selectedDetail!
+var copiedQR = false
+automatic.copyImageText(.qr, from: qrDetail) { copied, message in
+    precondition(copied, message)
+    copiedQR = true
+}
+wait("copy QR payload") { copiedQR }
+precondition(automaticBoard.string(forType: .string) == "https://example.com/clipboard-fixture")
+
+// Historical raw images and Finder image copies must be searchable without a manual OCR action.
+let searchRoot = root.appendingPathComponent("ocr-search")
+let searchStore = try ClipboardStore(directory: searchRoot)
+let searchBitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 900, pixelsHigh: 175,
+                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: searchBitmap)
+NSColor.white.setFill()
+NSRect(x: 0, y: 0, width: 900, height: 175).fill()
+("剪贴板文字测试" as NSString).draw(at: NSPoint(x: 40, y: 50), withAttributes: [
+    .font: NSFont(name: "PingFangSC-Semibold", size: 52) ?? NSFont.systemFont(ofSize: 52),
+    .foregroundColor: NSColor.black
+])
+NSGraphicsContext.restoreGraphicsState()
+let searchPNG = searchBitmap.representation(using: .png, properties: [:])!
+let searchImageFile = root.appendingPathComponent("legacy-image.png")
+try searchPNG.write(to: searchImageFile)
+let rawID = try searchStore.capture(.image(searchPNG))
+let imageFileID = try searchStore.capture(.files([.init(path: searchImageFile.path)]))
+precondition(try! searchStore.list(query: "剪贴板文字测试").isEmpty)
+let searchSuite = suite + ".ocr-search"
+let searchPrefs = UserDefaults(suiteName: searchSuite)!
+let searchBoard = NSPasteboard(name: .init(searchSuite))
+let imageSearch = ClipboardController(directory: searchRoot, board: searchBoard, preferences: searchPrefs, startTimer: false)
+defer { searchBoard.releaseGlobally(); searchPrefs.removePersistentDomain(forName: searchSuite) }
+precondition(!imageSearch.automaticOCR)
+imageSearch.search("剪贴板文字测试")
+wait("Vision OCR") { Set(imageSearch.items.map(\.id)) == Set([rawID, imageFileID]) && !imageSearch.indexingImageText }
+imageSearch.kind = "files"
+wait("OCR file filter") { imageSearch.items.map(\.id) == [imageFileID] }
+imageSearch.endPresentation()
+precondition(try! searchStore.list(query: "剪贴板文字测试", category: .image).map(\.id) == [rawID])
+
+let newImageFile = root.appendingPathComponent("background-image.png")
+try searchPNG.write(to: newImageFile)
+imageSearch.automaticOCR = true
+imageSearch.captureEnabled = true
+searchBoard.clearContents()
+precondition(searchBoard.writeObjects([newImageFile as NSURL]))
+imageSearch.poll()
+wait("Vision OCR") { (try? searchStore.list(query: "剪贴板文字测试", category: .files).count) == 2 }
+
+print("PASS named pasteboard: direct Chinese OCR search over historical images and Finder image files, background OCR of a new Finder image with the page closed, six categories, saved text edit and exact replay, QR decoding, color conversion, rich text/image/file replay, sensitive filtering, persistence and cleanup")
