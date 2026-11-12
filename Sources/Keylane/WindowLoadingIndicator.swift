@@ -6,9 +6,11 @@ struct WindowLoadingIndicator: View {
     let loading: AnyPublisher<Bool, Never>
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var loadingID: UUID?
     @State private var startedAt: Date?
 
     var body: some View {
+        let request = loadingID
         ZStack {
             if let startedAt {
                 GeometryReader { geometry in
@@ -35,10 +37,18 @@ struct WindowLoadingIndicator: View {
         .allowsHitTesting(false)
         .onReceive(loading) { active in
             if active {
-                if startedAt == nil { startedAt = .now }
+                if loadingID == nil { loadingID = UUID() }
             } else {
+                loadingID = nil
                 startedAt = nil
             }
+        }
+        .task(id: request) {
+            guard let request else { return }
+            do { try await Task.sleep(for: .milliseconds(200)) }
+            catch { return }
+            guard !Task.isCancelled, loadingID == request else { return }
+            startedAt = .now
         }
     }
 
