@@ -150,12 +150,18 @@ struct SettingsWindowCatalog {
 
 struct LauncherModule {
     struct Command {
+        struct Arguments {
+            let count: ClosedRange<Int>
+            let execute: (LauncherCommandOrigin, [String]) -> Void
+        }
+
         let declaration: LauncherCommandDeclaration
         var detail: (() -> String)?
         var settingsEnabled: Binding<Bool>?
         var available: () -> Bool = { true }
         var permission: PermissionFeature?
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
+        var arguments: Arguments?
     }
     struct Provider {
         /// Each provider owns a disjoint ID namespace or a single exact ID.
@@ -167,11 +173,23 @@ struct LauncherModule {
         var displayDetail: ((Entry) -> String?)?
         var artwork: ((Entry) -> AnyView)?
         var detailView: ((Entry) -> AnyView?)?
+        var available: (CommandID) -> Bool = { _ in true }
+        var permission: (CommandID) -> PermissionFeature? = { _ in nil }
+    }
+
+    /// Runtime-discovered modules expose their current presence from validated in-memory metadata.
+    /// Built-in modules are always present; command and permission state are evaluated separately.
+    struct Registration {
+        let isPresent: () -> Bool
+        let updates: AnyPublisher<Void, Never>
+        var isEnabled: () -> Bool = { true }
+        var generation: () -> UInt64 = { 0 }
     }
 
     struct Service {
         let start: () -> Void
         let stop: () -> Void
+        var resume: (() -> Void)?
     }
 
     let id: ModuleID
@@ -192,6 +210,8 @@ struct LauncherModule {
     var shortcutSettingsBinding: ShortcutSettingsBinding?
     var shortcutSettingsUpdates: [AnyPublisher<Void, Never>] = []
     var permissionTitlebar: SettingsTitlebarContribution?
+    var registration: Registration?
+    var canDisable: Bool { origin != .application }
 }
 
 extension LauncherModule {
@@ -228,31 +248,63 @@ final class LauncherModuleRegistry {
         case wrongPage(item: String, expected: String)
         case duplicateItem(String)
     }
-    let shortcutCommandGroups: [ShortcutCommandGroup]
-    private let commandSettingsUpdates: [AnyPublisher<Void, Never>]
-    private let commands: [LauncherModule.Command]
-    private let commandEnabled: (CommandID) -> Bool
-    private let byID: [CommandID: LauncherModule.Command]
-    private let providers: [LauncherModule.Provider]
-    private let pages: [PageID: LauncherPage]
-    let settingsCatalog: SettingsWindowCatalog
-    var settings: [LauncherSettingsPage] { settingsCatalog.pages }
-    private let services: [LauncherModule.Service]
-    private let launcherShownHandlers: [() -> Void]
-    private let launcherHiddenHandlers: [() -> Void]
-    private let applicationFocusedHandlers: [(NSRunningApplication) -> Void]
-    private var servicesRunning = false
-    let searchUpdates: AnyPublisher<Void, Never>
-    let presentationUpdates: AnyPublisher<Void, Never>
+    private struct Owned<Value> {
+        let module: ModuleID
+        let value: Value
+    }
 
-    init(modules: [LauncherModule], commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
+    private let registeredShortcutGroups: [ShortcutCommandGroup]
+    var shortcutCommandGroups: [ShortcutCommandGroup] {
+        registeredShortcutGroups.filter { isModulePresent($0.id) }
+    }
+
+    private let commandSettingsUpdates: [AnyPublisher<Void, Never>]
+    private let commands: [Owned<LauncherModule.Command>]
+    private let commandEnabled: (CommandID) -> Bool
+    private let byID: [CommandID: Owned<LauncherModule.Command>]
+    private let providers: [Owned<LauncherModule.Provider>]
+    private let moduleRegistrations: [ModuleID: LauncherModule.Registration]
+    private let pages: [PageID: Owned<LauncherPage>]
+    private let registeredSettings: [Owned<LauncherSettingsPage>]
+    private let settingsOrigins: [String: LauncherModuleOrigin]
+    let registrationUpdates: AnyPublisher<Void, Never>
+    var settingsCatalog: SettingsWindowCatalog {
+        SettingsWindowCatalog(pages: registeredSettings.compactMap { isModulePresent($0.module) ? $0.value : nil },
+                              origins: settingsOrigins)
+    }
+    var settings: [LauncherSettingsPage] { settingsCatalog.pages }
+    private let modules: [LauncherModule]
+    private let disableableModules: Set<ModuleID>
+    private let preferences: UserDefaults
+    private static let disabledKey = "disabledLauncherModules"
+    private var disabledModules: Set<ModuleID>
+    let availabilityChanges = PassthroughSubject<Void, Never>()
+    private var launcherVisible = false
+    private var servicesRunning = false
+    private(set) lazy var searchUpdates: AnyPublisher<Void, Never> =
+        Publishers.MergeMany([updates(\.searchUpdates), availabilityChanges.eraseToAnyPublisher(), registrationUpdates])
+            .eraseToAnyPublisher()
+    private(set) lazy var presentationUpdates: AnyPublisher<Void, Never> =
+        updates(\.presentationUpdates).receive(on: DispatchQueue.main).eraseToAnyPublisher()
+
+    init(modules: [LauncherModule], preferences: UserDefaults = .standard,
+         commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
         self.commandEnabled = commandEnabled
+        self.modules = modules
+        self.preferences = preferences
+        disableableModules = Set(modules.filter(\.canDisable).map(\.id))
+        disabledModules = Set((preferences.stringArray(forKey: Self.disabledKey) ?? []).map(ModuleID.init(rawValue:)))
         _ = try LauncherModuleCatalog(modules: modules.map {
             LauncherModuleDeclaration(id: $0.id, commands: $0.commands.map(\.declaration),
                                       pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
                                       providers: $0.providers.map(\.namespace))
         })
-        shortcutCommandGroups = modules.compactMap { module in
+        moduleRegistrations = Dictionary(uniqueKeysWithValues: modules.compactMap { module in
+            module.registration.map { (module.id, $0) }
+        })
+        registrationUpdates = Publishers.MergeMany(modules.compactMap { $0.registration?.updates })
+            .receive(on: DispatchQueue.main).eraseToAnyPublisher()
+        registeredShortcutGroups = modules.compactMap { module in
             guard !module.commands.isEmpty || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
             else { return nil }
             return ShortcutCommandGroup(id: module.id, title: module.displayTitle,
@@ -260,10 +312,12 @@ final class LauncherModuleRegistry {
                                         dynamicCommands: module.dynamicCommandSettings, binding: module.shortcutSettingsBinding)
         }
         commandSettingsUpdates = modules.flatMap(\.shortcutSettingsUpdates)
-        commands = modules.flatMap(\.commands)
-        byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.declaration.id, $0) })
-        providers = modules.flatMap(\.providers)
-        pages = Dictionary(uniqueKeysWithValues: modules.flatMap(\.pages).map { ($0.id, $0) })
+        commands = modules.flatMap { module in module.commands.map { Owned(module: module.id, value: $0) } }
+        byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.value.declaration.id, $0) })
+        providers = modules.flatMap { module in module.providers.map { Owned(module: module.id, value: $0) } }
+        pages = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
+            module.pages.map { ($0.id, Owned(module: module.id, value: $0)) }
+        })
         let settingsPages = modules.flatMap(\.settings).sorted { $0.order < $1.order }
         var itemIDs: Set<String> = []
         for page in settingsPages {
@@ -276,64 +330,150 @@ final class LauncherModuleRegistry {
                 }
             }
         }
-        let settingsOrigins = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
+        settingsOrigins = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
             module.settings.map { ($0.id, module.origin) }
         })
-        settingsCatalog = SettingsWindowCatalog(pages: settingsPages, origins: settingsOrigins)
-        services = modules.flatMap(\.services)
-        launcherShownHandlers = modules.compactMap(\.launcherShown)
-        launcherHiddenHandlers = modules.compactMap(\.launcherHidden)
-        applicationFocusedHandlers = modules.compactMap(\.applicationFocused)
-        presentationUpdates = Publishers.MergeMany(modules.flatMap(\.presentationUpdates))
-            .receive(on: DispatchQueue.main).eraseToAnyPublisher()
-        searchUpdates = Publishers.MergeMany(modules.flatMap(\.searchUpdates)).eraseToAnyPublisher()
+        registeredSettings = modules.flatMap { module in module.settings.map { Owned(module: module.id, value: $0) } }
+            .sorted { $0.value.order < $1.value.order }
+    }
+
+    private func updates(_ key: KeyPath<LauncherModule, [AnyPublisher<Void, Never>]>) -> AnyPublisher<Void, Never> {
+        let streams = modules.flatMap { module in
+            let id = module.id
+            return module[keyPath: key].map { stream in
+                stream.filter { [weak self] in self?.isModuleEnabled(id) == true }.eraseToAnyPublisher()
+            }
+        }
+        return Publishers.MergeMany(streams).eraseToAnyPublisher()
+    }
+
+    func module(forSettingsPage id: String) -> ModuleID? {
+        registeredSettings.first { $0.value.id == id && disableableModules.contains($0.module) }?.module
+    }
+
+    func module(forPage id: PageID) -> ModuleID? { pages[id]?.module }
+
+    func isCommandModuleEnabled(_ id: CommandID) -> Bool {
+        moduleOwningCommand(id).map { isModuleEnabled($0) } ?? true
+    }
+
+    @discardableResult
+    func setModuleEnabled(_ id: ModuleID, _ enabled: Bool) -> Bool {
+        guard let module = modules.first(where: { $0.id == id && $0.canDisable }),
+              enabled == disabledModules.contains(id) else { return false }
+        if enabled { disabledModules.remove(id) } else { disabledModules.insert(id) }
+        preferences.set(disabledModules.map(\.rawValue).sorted(), forKey: Self.disabledKey)
+        if servicesRunning {
+            if enabled {
+                module.services.forEach { ($0.resume ?? $0.start)() }
+                if launcherVisible { module.launcherShown?() }
+            } else {
+                module.services.reversed().forEach { $0.stop() }
+            }
+        }
+        availabilityChanges.send()
+        return true
     }
 
     func shortcutSettingsUpdates() -> [AnyPublisher<Void, Never>] {
-        commandSettingsUpdates + shortcutCommandGroups.flatMap { $0.dynamicCommands?.updates() ?? [] }
+        commandSettingsUpdates + [registrationUpdates] +
+            registeredShortcutGroups.flatMap { $0.dynamicCommands?.updates() ?? [] }
     }
 
-    func launcherShown() { launcherShownHandlers.forEach { $0() } }
-    func launcherHidden() { launcherHiddenHandlers.forEach { $0() } }
+    func launcherShown() {
+        launcherVisible = true
+        for module in modules where isModuleEnabled(module.id) { module.launcherShown?() }
+    }
+    func launcherHidden() {
+        launcherVisible = false
+        for module in modules where isModuleEnabled(module.id) { module.launcherHidden?() }
+    }
     func applicationFocused(_ app: NSRunningApplication) {
         guard servicesRunning else { return }
-        applicationFocusedHandlers.forEach { $0(app) }
+        for module in modules where isModuleEnabled(module.id) { module.applicationFocused?(app) }
     }
 
     func startServices() {
         guard !servicesRunning else { return }
         servicesRunning = true
-        for service in services { service.start() }
+        for module in modules where isModuleEnabled(module.id) { module.services.forEach { $0.start() } }
     }
     func stopServices() {
         guard servicesRunning else { return }
         servicesRunning = false
-        for service in services.reversed() { service.stop() }
+        for module in modules.reversed() where isModuleEnabled(module.id) { module.services.reversed().forEach { $0.stop() } }
     }
     /// Preserve a prior disable from the host when a module supplies its own command preference.
     func migrateDisabledCommands(_ disabled: Set<String>) -> Set<String> {
         var remaining = disabled
         for id in disabled {
-            guard let preference = byID[CommandID(rawValue: id)]?.settingsEnabled else { continue }
+            guard let preference = byID[CommandID(rawValue: id)]?.value.settingsEnabled else { continue }
             if preference.wrappedValue { preference.wrappedValue = false }
             remaining.remove(id)
         }
         return remaining
     }
 
-    func declaration(_ id: CommandID) -> LauncherCommandDeclaration? { byID[id]?.declaration }
+    func declaration(_ id: CommandID) -> LauncherCommandDeclaration? {
+        guard let command = byID[id], isModulePresent(command.module) else { return nil }
+        return command.value.declaration
+    }
 
-    func page(_ id: PageID) -> LauncherPage? { pages[id] }
+    func page(_ id: PageID, includingInactive: Bool = false) -> LauncherPage? {
+        guard let page = pages[id], includingInactive || isModuleEnabled(page.module) else { return nil }
+        return page.value
+    }
+
+    func moduleOwningCommand(_ id: CommandID) -> ModuleID? {
+        byID[id]?.module ?? provider(owning: id)?.module
+    }
+
+    private func isModulePresent(_ id: ModuleID) -> Bool {
+        moduleRegistrations[id]?.isPresent() ?? true
+    }
+
+    func isModuleEnabled(_ id: ModuleID) -> Bool {
+        isModulePresent(id) && (moduleRegistrations[id]?.isEnabled() ?? true) &&
+            (!disableableModules.contains(id) || !disabledModules.contains(id))
+    }
+
+    private func isCommandEnabled(_ id: CommandID, in module: ModuleID) -> Bool {
+        isModuleEnabled(module) && commandEnabled(id)
+    }
 
     func permissionNeeded(for id: CommandID) -> PermissionFeature? {
-        guard let command = byID[id], commandEnabled(id), command.available(),
-              let permission = command.permission else { return nil }
-        permission.recheck()
-        return permission.available ? nil : permission
+        let permission: PermissionFeature?
+        if let owned = byID[id] {
+            guard isCommandEnabled(owned) else { return nil }
+            permission = owned.value.permission
+        } else if let owned = provider(owning: id) {
+            guard isCommandEnabled(id, in: owned.module), owned.value.available(id) else { return nil }
+            permission = owned.value.permission(id)
+        } else {
+            return nil
+        }
+        return permissionAllowsExecution(permission) ? nil : permission
+    }
+
+    private func isCommandEnabled(_ command: Owned<LauncherModule.Command>) -> Bool {
+        let value = command.value
+        return isCommandEnabled(value.declaration.id, in: command.module) &&
+            value.settingsEnabled?.wrappedValue != false && value.available()
+    }
+
+    private func provider(owning id: CommandID) -> Owned<LauncherModule.Provider>? {
+        providers.first { $0.value.namespace.contains(id) }
     }
 
     private func provider(for entry: Entry) -> LauncherModule.Provider? {
-        providers.first { $0.namespace.contains(entry.commandID) }
+        guard let provider = provider(owning: entry.commandID), isModuleEnabled(provider.module) else { return nil }
+        return provider.value
+    }
+
+    private func permissionAllowsExecution(_ permission: PermissionFeature?) -> Bool {
+        guard let permission else { return true }
+        permission.recheck()
+        return permission.available
     }
 
     func actions(for entry: Entry) -> [LauncherAction]? { provider(for: entry)?.actions?(entry) }
@@ -350,37 +490,65 @@ final class LauncherModuleRegistry {
     }
 
     func candidates(for input: LauncherCommandSearch.Input) -> [Entry] {
-        commands.compactMap { command in
-            guard input.namespace?.contains(command.declaration.id) != false,
-                  commandEnabled(command.declaration.id), command.available(),
-                  command.permission?.available != false else { return nil }
+        commands.compactMap { owned in
+            let command = owned.value
             let item = command.declaration
+            guard input.namespace?.contains(item.id) != false,
+                  isCommandEnabled(owned),
+                  command.permission?.available != false else { return nil }
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
                          detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords)
-        } + providers.flatMap { provider in
-            guard input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
-            return provider.entries(input).filter {
-                provider.namespace.contains($0.commandID) && input.namespace?.contains($0.commandID) != false
+        } + providers.flatMap { owned in
+            let provider = owned.value
+            guard isModuleEnabled(owned.module), input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
+            return provider.entries(input).filter { entry in
+                let id = entry.commandID
+                return provider.namespace.contains(id) && input.namespace?.contains(id) != false &&
+                    isCommandEnabled(id, in: owned.module) && provider.available(id) && provider.permission(id)?.available != false
             }
         }
     }
 
+    /// Resolve and run at the point of invocation. Providers consult their current records here,
+    /// so a menu or queued callback cannot retain a handler for a removed command.
+    @discardableResult
+    func invoke(_ id: CommandID, origin: LauncherCommandOrigin, arguments: [String] = [],
+                navigate: (LauncherCommandDeclaration.Destination) -> Void) -> Bool {
+        guard let action = currentAction(for: id, origin: origin, arguments: arguments) else { return false }
+        action.perform()
+        if let destination = action.destination { navigate(destination) }
+        return true
+    }
+
+    /// Legacy callback API. Production callers invoke directly to avoid a separate resolution pass.
     func resolve(_ id: CommandID, origin: LauncherCommandOrigin,
                  navigate: @escaping (LauncherCommandDeclaration.Destination) -> Void) -> (() -> Void)? {
-        if let command = byID[id] {
-            guard commandEnabled(command.declaration.id), command.available(),
-                  command.permission?.available != false else { return nil }
-            return {
-                command.execute(origin)
-                switch command.declaration.destination {
-                case .action: break
-                case .page, .settings: navigate(command.declaration.destination)
-                }
+        guard let module = moduleOwningCommand(id),
+              currentAction(for: id, origin: origin, arguments: []) != nil else { return nil }
+        let generation = moduleRegistrations[module]?.generation()
+        return { [weak self] in
+            guard let self, self.moduleRegistrations[module]?.generation() == generation else { return }
+            self.invoke(id, origin: origin, navigate: navigate)
+        }
+    }
+
+    private func currentAction(for id: CommandID, origin: LauncherCommandOrigin, arguments: [String])
+        -> (perform: () -> Void, destination: LauncherCommandDeclaration.Destination?)? {
+        if let owned = byID[id] {
+            let command = owned.value
+            guard isCommandEnabled(owned),
+                  command.arguments?.count.contains(arguments.count) ?? arguments.isEmpty,
+                  permissionAllowsExecution(command.permission) else { return nil }
+            let perform = {
+                if let handler = command.arguments { handler.execute(origin, arguments) }
+                else { command.execute(origin) }
             }
+            let destination = command.declaration.destination
+            return (perform, destination == .action ? nil : destination)
         }
-        for provider in providers where provider.namespace.contains(id) {
-            if let action = provider.resolve(id, origin) { return action }
-        }
-        return nil
+        guard arguments.isEmpty, let owned = provider(owning: id), isCommandEnabled(id, in: owned.module),
+              owned.value.available(id), permissionAllowsExecution(owned.value.permission(id)),
+              let action = owned.value.resolve(id, origin) else { return nil }
+        return (action, nil)
     }
 }

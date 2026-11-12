@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import SwiftUI
@@ -9,6 +10,8 @@ let moduleID = ModuleID(rawValue: "keylane.clipboard")
 let command = LauncherCommandDeclaration(id: commandID, title: "剪贴板历史", detail: "", symbol: "clipboard",
                                          keywords: ["clipboard"], destination: .page(pageID), settingsPage: "clipboard")
 var enabled = true
+let dynamicCommand = CommandID(rawValue: "fixture:dynamic")
+var dynamicRuns = 0
 var starts = 0
 var stops = 0
 var views = 0
@@ -16,6 +19,13 @@ var destinations: [LauncherCommandDeclaration.Destination] = []
 let updates = PassthroughSubject<Void, Never>()
 let module = LauncherModule(
     id: moduleID, commands: [.init(declaration: command, available: { enabled })],
+    providers: [.init(namespace: .prefix("fixture:"), entries: { input in
+        guard input.query == "dynamic" else { return [] }
+        return [.init(id: dynamicCommand.rawValue, commandID: dynamicCommand, name: "Dynamic", detail: "", symbol: "gear")]
+    }, resolve: { id, _ in
+        guard id == dynamicCommand else { return nil }
+        return { dynamicRuns += 1 }
+    })],
     pages: [.init(id: pageID, placeholder: "搜索", content: { views += 1; return AnyView(EmptyView()) })],
     settings: [.init(id: "clipboard", title: "剪贴板", symbol: "clipboard", subtitle: "", order: 0, items: [],
                      content: { views += 1; return AnyView(EmptyView()) })],
@@ -23,7 +33,10 @@ let module = LauncherModule(
     searchUpdates: [updates.eraseToAnyPublisher()]
 )
 var shortcutEnabled = true
-let registry = try LauncherModuleRegistry(modules: [module], commandEnabled: { _ in shortcutEnabled })
+let extensionSuite = "org.keylane.extension.fixture.\(UUID())"
+let extensionPreferences = UserDefaults(suiteName: extensionSuite)!
+defer { extensionPreferences.removePersistentDomain(forName: extensionSuite) }
+let registry = try LauncherModuleRegistry(modules: [module], preferences: extensionPreferences, commandEnabled: { _ in shortcutEnabled })
 precondition(registry.shortcutCommandGroups.map(\.id) == [moduleID])
 precondition(registry.shortcutCommandGroups.first?.commands.map(\.declaration.id) == [commandID])
 precondition(starts == 0 && views == 0)
@@ -52,6 +65,34 @@ registry.startServices()
 registry.stopServices()
 registry.stopServices()
 precondition(starts == 1 && stops == 1)
+enabled = true
+registry.startServices()
+let previouslyResolved = registry.resolve(commandID, origin: .shortcut) { destinations.append($0) }!
+let dynamicInput = LauncherCommandSearch.Input(query: "dynamic", page: .root, aliases: [:], favorites: [], usage: [:])
+let dynamicAction = registry.resolve(dynamicCommand, origin: .shortcut) { _ in }!
+precondition(registry.candidates(for: dynamicInput).contains { $0.commandID == dynamicCommand })
+precondition(registry.setModuleEnabled(moduleID, false) && !registry.setModuleEnabled(moduleID, false))
+precondition(stops == 2 && registry.page(pageID) == nil)
+precondition(registry.candidates(for: input).isEmpty)
+precondition(registry.module(forSettingsPage: "clipboard") == moduleID)
+precondition(registry.shortcutCommandGroups.first?.commands.first?.declaration.id == commandID)
+for origin in [LauncherCommandOrigin.search, .shortcut, .menu] {
+    precondition(registry.resolve(commandID, origin: origin, navigate: { _ in }) == nil)
+}
+previouslyResolved()
+dynamicAction()
+precondition(destinations.count == 3 && dynamicRuns == 0)
+precondition(registry.resolve(dynamicCommand, origin: .shortcut) { _ in } == nil)
+precondition(!registry.candidates(for: dynamicInput).contains { $0.commandID == dynamicCommand })
+let restored = try LauncherModuleRegistry(modules: [module], preferences: extensionPreferences)
+restored.startServices()
+precondition(!restored.isModuleEnabled(moduleID) && starts == 2)
+restored.stopServices()
+precondition(stops == 2)
+precondition(registry.setModuleEnabled(moduleID, true) && registry.page(pageID) != nil)
+precondition(starts == 3 && registry.candidates(for: input).map(\.commandID) == [commandID])
+registry.stopServices()
+precondition(stops == 3)
 withExtendedLifetime(change) {}
 print("PASS native module registry: lazy registration, unified dispatch, availability, cache invalidation and service lifecycle")
 
@@ -130,10 +171,17 @@ let groupedRegistry = try LauncherModuleRegistry(modules: [
     settingsModule, module,
     .init(id: .init(rawValue: "host"), origin: .application, settings: [hostPage]),
     .init(id: .init(rawValue: "external"), origin: .installedExtension, settings: [externalPage])
-])
+], preferences: extensionPreferences)
 precondition(groupedRegistry.settingsCatalog.sidebarGroups.map(\.id) == [.application, .builtInExtension, .installedExtension])
 precondition(groupedRegistry.settingsCatalog.sidebarGroups.map { $0.pages.map(\.id) } ==
              [["general"], ["clipboard", "applications"], ["external"]])
+let installedID = ModuleID(rawValue: "external")
+let hostID = ModuleID(rawValue: "host")
+precondition(groupedRegistry.module(forSettingsPage: "external") == installedID)
+precondition(groupedRegistry.module(forSettingsPage: "general") == nil)
+precondition(!groupedRegistry.setModuleEnabled(hostID, false) && groupedRegistry.isModuleEnabled(hostID))
+precondition(groupedRegistry.setModuleEnabled(installedID, false) && !groupedRegistry.isModuleEnabled(installedID))
+precondition(groupedRegistry.setModuleEnabled(installedID, true))
 let invalidPage = LauncherSettingsPage(id: "unrelated", title: "", symbol: "", subtitle: "", order: 0,
                                        items: [.applicationScopes], content: { AnyView(EmptyView()) })
 do {
@@ -247,3 +295,122 @@ systemGrant = false
 permission.recheck()
 precondition(gated.resolve(gatedID, origin: .shortcut, navigate: { _ in }) == nil && !permission.enabled)
 print("PASS disabled permission commands hidden; authorization and revocation update availability")
+
+let registeredModuleID = ModuleID(rawValue: "fixture.registered")
+let registeredCommandID = CommandID(rawValue: "fixture.registered.static")
+let dynamicCommandID = CommandID(rawValue: "fixture.registered:dynamic")
+let registeredLauncherPageID = PageID(rawValue: "fixture-installed-page")
+var pageLeaves = 0
+let registeredPage = LauncherSettingsPage(id: "fixture-registered", title: "Registered", symbol: "gear",
+                                         subtitle: "", order: 0, items: [], content: { AnyView(EmptyView()) })
+var isPresent = false
+var moduleEnabled = true
+var disabledIDs: Set<CommandID> = []
+var providerReads = 0
+var resolvedVersion = 0
+var installationGeneration: UInt64 = 1
+var dynamicPermission: PermissionFeature?
+var executions: [String] = []
+let registrationChanged = PassthroughSubject<Void, Never>()
+let registered = try LauncherModuleRegistry(modules: [
+    .init(id: registeredModuleID, origin: .installedExtension, commands: [
+        .init(declaration: .init(id: registeredCommandID, title: "Static", detail: "", symbol: "gear", keywords: []),
+              arguments: .init(count: 0...1) { _, arguments in executions += arguments.isEmpty ? ["static"] : arguments })
+    ], providers: [
+        .init(namespace: .prefix("fixture.registered:"), entries: { _ in
+            providerReads += 1
+            return [.init(id: dynamicCommandID.rawValue, commandID: dynamicCommandID, name: "Dynamic", detail: "", symbol: "gear")]
+        }, resolve: { id, _ in
+            guard id == dynamicCommandID else { return nil }
+            let version = resolvedVersion
+            return { executions.append("dynamic:\(version)") }
+        }, permission: { _ in dynamicPermission })
+    ], pages: [.init(id: registeredLauncherPageID, placeholder: "", leave: { pageLeaves += 1 })],
+       settings: [registeredPage], registration: .init(isPresent: { isPresent },
+                                                        updates: registrationChanged.eraseToAnyPublisher(),
+                                                        isEnabled: { moduleEnabled }, generation: { installationGeneration }))
+], commandEnabled: { !disabledIDs.contains($0) })
+let registeredSearchInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
+let origins: [LauncherCommandOrigin] = [.search, .shortcut, .menu]
+var registrationUpdates = 0
+let registrationObservation = registered.searchUpdates.sink { registrationUpdates += 1 }
+
+precondition(registered.moduleOwningCommand(registeredCommandID) == registeredModuleID)
+precondition(registered.moduleOwningCommand(dynamicCommandID) == registeredModuleID)
+precondition(registered.settingsCatalog.pages.isEmpty && registered.shortcutCommandGroups.isEmpty)
+precondition(registered.candidates(for: registeredSearchInput).isEmpty && providerReads == 0)
+precondition(registered.page(registeredLauncherPageID) == nil)
+for origin in origins {
+    precondition(!registered.invoke(dynamicCommandID, origin: origin, navigate: { _ in }))
+}
+isPresent = true
+registrationChanged.send()
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(registrationUpdates == 1)
+precondition(registered.settingsCatalog.pages.map(\.id) == [registeredPage.id])
+precondition(registered.shortcutCommandGroups.map(\.id) == [registeredModuleID] && providerReads == 0)
+precondition(registered.candidates(for: registeredSearchInput).map(\.commandID) == [registeredCommandID, dynamicCommandID])
+let queuedStatic = registered.resolve(registeredCommandID, origin: .menu, navigate: { _ in })!
+let queuedDynamic = registered.resolve(dynamicCommandID, origin: .shortcut, navigate: { _ in })!
+precondition(registered.page(registeredLauncherPageID) != nil)
+moduleEnabled = false
+precondition(registered.page(registeredLauncherPageID) == nil)
+registered.page(registeredLauncherPageID, includingInactive: true)?.leave()
+precondition(pageLeaves == 1)
+queuedStatic()
+queuedDynamic()
+precondition(executions.isEmpty && registered.candidates(for: registeredSearchInput).isEmpty)
+precondition(registered.shortcutCommandGroups.map(\.id) == [registeredModuleID])
+moduleEnabled = true
+disabledIDs = [registeredCommandID, dynamicCommandID]
+queuedStatic()
+queuedDynamic()
+for origin in origins {
+    precondition(!registered.invoke(dynamicCommandID, origin: origin, navigate: { _ in }))
+}
+precondition(executions.isEmpty && registered.candidates(for: registeredSearchInput).isEmpty)
+disabledIDs = []
+resolvedVersion = 1
+queuedDynamic()
+precondition(executions == ["dynamic:1"])
+installationGeneration += 1
+queuedDynamic()
+queuedStatic()
+precondition(executions == ["dynamic:1"])
+dynamicPermission = permission
+precondition(registered.permissionNeeded(for: dynamicCommandID) === permission)
+for origin in origins {
+    precondition(!registered.invoke(dynamicCommandID, origin: origin, navigate: { _ in }))
+}
+precondition(registered.candidates(for: registeredSearchInput).map(\.commandID) == [registeredCommandID])
+precondition(requests == 2)
+dynamicPermission = nil
+precondition(registered.invoke(registeredCommandID, origin: .menu, arguments: ["preserve original text"], navigate: { _ in }))
+precondition(!registered.invoke(registeredCommandID, origin: .menu, arguments: ["too", "many"], navigate: { _ in }))
+isPresent = false
+registrationChanged.send()
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+queuedDynamic()
+precondition(registrationUpdates == 2 && registered.settingsCatalog.pages.isEmpty)
+precondition(registered.shortcutCommandGroups.isEmpty && executions == ["dynamic:1", "preserve original text"])
+withExtendedLifetime(registrationObservation) {}
+print("PASS shared command admission, installed catalog visibility, and stale dispatch")
+
+var pastePermissionGranted = false
+let pastePermission = PermissionFeature("crossAppPaste.enabled", authorization: .init(
+    check: { pastePermissionGranted },
+    request: { $0(false) },
+    guidance: "Return after granting Accessibility access",
+    enableOnReturn: true
+), defaults: permissionDefaults)
+var activationResults: [Bool] = []
+pastePermission.activate { activationResults.append($0) }
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(activationResults == [false] && !pastePermission.available)
+
+pastePermissionGranted = true
+NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(pastePermission.available && permissionDefaults.bool(forKey: "crossAppPaste.enabled"))
+precondition(pastePermission.status == .init() && activationResults == [false])
+print("PASS cross-app paste activates on return after granting Accessibility access")

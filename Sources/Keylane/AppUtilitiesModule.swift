@@ -6,10 +6,11 @@ import KeylaneCore
 
 enum AppUtilitiesModule {
     static func make(model: Model) -> LauncherModule {
-        let capture = PermissionFeature("screenCapture.enabled", authorization: .screenCapture)
+        let capture = PermissionFeature("screenCapture.enabled", authorization: .screenCapture, observeImmediately: false)
         let camera = CameraPreviewWindow()
-        let cameraPermission = PermissionFeature("cameraPreview.enabled", authorization: .camera)
+        let cameraPermission = PermissionFeature("cameraPreview.enabled", authorization: .camera, observeImmediately: false)
         var cameraChanges: AnyCancellable?
+        var pendingCapture: DispatchWorkItem?
         return LauncherModule(id: .init(rawValue: "keylane.app-utilities"), title: "Keylane 工具",
                               symbol: "wrench.and.screwdriver", commands: [
             command("export-settings", "导出 Keylane 设置", "square.and.arrow.up",
@@ -33,9 +34,13 @@ enum AppUtilitiesModule {
                   settingsEnabled: Binding(get: { capture.enabled }, set: capture.setEnabled),
                   permission: capture, execute: { _ in
                       (NSApp.delegate as? Delegate)?.hideLauncher()
-                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                      pendingCapture?.cancel()
+                      let task = DispatchWorkItem {
+                          pendingCapture = nil
                           if capture.available { SystemTools.shared.screenshot() }
                       }
+                      pendingCapture = task
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: task)
                   }),
             .init(declaration: .init(id: .init(rawValue: "show-camera"), title: "显示相机", detail: "实时相机预览",
                                      symbol: "camera", keywords: ["Show Camera", "Camera Preview", "摄像头", "相机预览"],
@@ -45,12 +50,19 @@ enum AppUtilitiesModule {
                       camera.show(activation: model?.windowActivationBehavior ?? .systemDefault)
                   })
         ], services: [.init(start: {
+            capture.startObserving()
+            cameraPermission.startObserving()
             cameraChanges = cameraPermission.updates.receive(on: DispatchQueue.main).sink {
                 if !cameraPermission.available { camera.close() }
             }
         }, stop: {
             cameraChanges?.cancel()
             cameraChanges = nil
+            capture.stopObserving()
+            cameraPermission.stopObserving()
+            pendingCapture?.cancel()
+            pendingCapture = nil
+            SystemTools.shared.stopScreenshot()
             camera.close()
         })], searchUpdates: [capture.updates, cameraPermission.updates],
            shortcutSettingsUpdates: [capture.settingsUpdates, cameraPermission.settingsUpdates])

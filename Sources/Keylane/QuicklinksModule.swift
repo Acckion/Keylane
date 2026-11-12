@@ -13,7 +13,7 @@ final class QuicklinksController: ObservableObject {
     @Published var draft: Quicklink?
 
     func load() {
-        do { links = try QuicklinkLibrary.load(from: .standard).links }
+        do { links = try QuicklinkLibrary.load(from: .standard).links; storageError = nil }
         catch { storageError = "无法读取快捷链接资料。" }
     }
 
@@ -70,6 +70,8 @@ final class QuicklinksController: ObservableObject {
         inputError = nil
     }
 
+    func stop() { clearInput(); links = []; draft = nil; storageError = nil }
+
     private func open(_ url: URL) throws {
         guard NSWorkspace.shared.open(url) else {
             throw NSError(domain: "Keylane.Quicklinks", code: 1,
@@ -81,6 +83,7 @@ final class QuicklinksController: ObservableObject {
 
 enum QuicklinksModule {
     static func create(from url: URL, title: String, model: Model) {
+        guard model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.links")) == true else { return }
         model.quicklinks.draft = Quicklink(title: title, template: url.absoluteString)
         model.openSettings(page: "links")
     }
@@ -90,17 +93,15 @@ enum QuicklinksModule {
         let pageID = PageID(rawValue: "QuicklinkParameters")
         let legacyID = CommandID(rawValue: QuicklinkLibrary.legacyID)
         func provider(_ namespace: LauncherCommandNamespace) -> LauncherModule.Provider {
-            .init(namespace: namespace, entries: { [weak model] _ in
-                guard let model else { return [] }
-                return controller.links.compactMap { link in
+            .init(namespace: namespace, entries: { _ in
+                controller.links.compactMap { link in
                     let id = CommandID(rawValue: link.id)
-                    guard namespace.contains(id), !model.disabledCommands.contains(link.id) else { return nil }
+                    guard namespace.contains(id) else { return nil }
                     return Entry(id: link.id, commandID: id, name: link.title, detail: "快捷链接", symbol: "link",
                                  aliases: ["Quicklink", "快捷链接", link.template])
                 }
             }, resolve: { [weak model] id, origin in
-                guard let model, !model.disabledCommands.contains(id.rawValue),
-                      let link = controller.links.first(where: { $0.id == id.rawValue }) else { return nil }
+                guard let model, let link = controller.links.first(where: { $0.id == id.rawValue }) else { return nil }
                 return {
                     controller.launch(link) { model.openPage(pageID, origin: origin) }
                 }
@@ -133,7 +134,7 @@ enum QuicklinksModule {
                                      keywords: ["Manage Quicklinks", "Quick Links", "网址"],
                                      destination: .settings("links"), settingsPage: "links"))
         ], providers: [provider(.exact(legacyID)), provider(.prefix("quicklink:"))],
-           pages: [page], settings: [settings], services: [.init(start: controller.load, stop: controller.clearInput)],
+           pages: [page], settings: [settings], services: [.init(start: controller.load, stop: controller.stop)],
            searchUpdates: [ViewObservation.changes(controller.$links)],
            dynamicCommandSettings: .init(
                model: model, items: { controller.links }, title: \.title, commandID: \.id,

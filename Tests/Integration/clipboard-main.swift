@@ -302,4 +302,22 @@ precondition(searchBoard.writeObjects([newImageFile as NSURL]))
 imageSearch.poll()
 wait("Vision OCR") { (try? searchStore.list(query: "剪贴板文字测试", category: .files).count) == 2 }
 
+let savedCount = try searchStore.count()
+imageSearch.stopRuntime()
+precondition(imageSearch.captureEnabled && imageSearch.items.isEmpty && !imageSearch.indexingImageText)
+searchBoard.clearContents()
+searchBoard.setString("ignored while disabled", forType: .string)
+imageSearch.poll()
+RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+precondition(try! searchStore.count() == savedCount)
+imageSearch.startRuntime()
+imageSearch.startMonitoring()
+imageSearch.kind = "all"
+imageSearch.search("剪贴板文字测试")
+wait("old clipboard data after restart") { imageSearch.items.contains { $0.id == rawID } }
+searchBoard.clearContents()
+searchBoard.setString("new entry after restart", forType: .string)
+wait("automatic capture after restart") { (try? searchStore.count()) == savedCount + 1 }
+imageSearch.stopRuntime()
+
 print("PASS named pasteboard: direct Chinese OCR search over historical images and Finder image files, background OCR of a new Finder image with the page closed, six categories, saved text edit and exact replay, QR decoding, color conversion, rich text/image/file replay, sensitive filtering, persistence and cleanup")

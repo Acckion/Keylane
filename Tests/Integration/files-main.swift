@@ -143,5 +143,20 @@ try Data("capacity check".utf8).write(to:scope.appendingPathComponent("capacity.
 blocked.startIndex(); wait("Low capacity blocks writes") { !blocked.indexing && blocked.indexStatus.contains("空间不足") }
 precondition(blocked.stats.entries == 0)
 UserDefaults(suiteName:suite+".blocked")!.removePersistentDomain(forName:suite+".blocked")
-controller.options.enabled = false; blocked.options.enabled = false
+controller.options.keepRemovedVolumes = true
+wait("Reopened file scope") { !controller.indexing }
+controller.search("capacity")
+wait("Existing file before runtime stop") { results.first?.name == "capacity.txt" }
+controller.stopRuntime()
+precondition(!controller.isRunning && !controller.indexing && results.isEmpty && controller.options.enabled)
+let resumed = scope.appendingPathComponent("runtime-restored.txt")
+try Data("file created while disabled".utf8).write(to: resumed)
+RunLoop.current.run(until: Date().addingTimeInterval(1))
+precondition(results.isEmpty && !controller.indexing && controller.options.roots.contains(scope.path))
+controller.startRuntime()
+controller.startIndex()
+controller.search("runtime-restored")
+wait("File changed while disabled appears after restart") { !controller.indexing && results.first?.id == resumed.path }
+controller.stopRuntime()
+blocked.stopRuntime()
 print("PASS file controller: stable refresh/no empty frames, stale-query cancellation, launcher preference, Chinese filename, multiple keywords, ignore/negation, opt-in text/PDF content, low-space pause, hidden files, ignore toggle, FSEvents refresh, real stats, offline retention/removal")

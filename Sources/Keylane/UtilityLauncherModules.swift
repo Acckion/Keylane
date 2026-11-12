@@ -10,7 +10,7 @@ enum UtilityLauncherModules {
 
     private static func contacts(_ model: Model) -> LauncherModule {
         let controller = model.contacts
-        let permission = PermissionFeature("contacts.enabled", authorization: .contacts)
+        let permission = PermissionFeature("contacts.enabled", authorization: .contacts, observeImmediately: false)
         var permissionChanges: AnyCancellable?
         let pageID = PageID(rawValue: "Contacts")
         let selectedContact = controller.$visible.combineLatest(controller.$selectedID)
@@ -44,12 +44,14 @@ enum UtilityLauncherModules {
                     ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID), settings: "keylane.contacts",
                     permission: permission)
         ], pages: [page], services: [.init(start: {
+            permission.startObserving()
             permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
                 if !permission.available { controller.stop() }
             }
         }, stop: {
             permissionChanges?.cancel()
             permissionChanges = nil
+            permission.stopObserving()
             controller.stop()
         })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用联系人"))
     }
@@ -113,7 +115,10 @@ enum UtilityLauncherModules {
         return .init(id: .init(rawValue: "keylane.dictionary"), title: "词典", symbol: "book", commands: [
             command("dictionary", "查询词典", "查找词语释义", "book.closed",
                     ["Dictionary", "Define Word", "字典", "查词"], destination: .page(pageID))
-        ], providers: [provider], pages: [page])
+        ], providers: [provider], pages: [page], services: [.init(start: {}, stop: {
+            controller.initialTerm = ""
+            controller.search("")
+        })])
     }
 
     private static func dictionaryTerm(_ query: String) -> String? {
@@ -191,7 +196,7 @@ enum UtilityLauncherModules {
             command("emoji-symbols", EmojiCatalog.label("Emoji 与符号", "Search Emoji & Symbols"),
                     EmojiCatalog.label("搜索并插入表情与符号", "Search and insert emoji and symbols"),
                     "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID))
-        ], pages: [page])
+        ], pages: [page], services: [.init(start: {}, stop: controller.releaseCatalog)])
     }
 
     private static func emojiPasteTitle() -> String {
@@ -203,7 +208,7 @@ enum UtilityLauncherModules {
 
     private static func shortcuts(_ model: Model) -> LauncherModule {
         let controller = model.systemShortcuts
-        let iconPermission = PermissionFeature("shortcuts.iconsEnabled", authorization: .automation(ShortcutIconReader.bundleIdentifier, appName: "快捷指令"))
+        let iconPermission = PermissionFeature("shortcuts.iconsEnabled", authorization: .automation(ShortcutIconReader.bundleIdentifier, appName: "快捷指令"), observeImmediately: false)
         var iconChanges: AnyCancellable?
         let pageID = "shortcuts"
         let provider = LauncherModule.Provider(namespace: .prefix("shortcut:"), entries: { _ in
@@ -243,16 +248,18 @@ enum UtilityLauncherModules {
                     ["Shortcuts", "Apple Shortcuts", "快捷指令"], destination: .settings(pageID), settings: pageID)
         ], providers: [provider], settings: [settings], services: [
             .init(start: {
+                iconPermission.startObserving()
                 controller.iconReadingAllowed = { iconPermission.available }
                 iconChanges = iconPermission.updates.receive(on: DispatchQueue.main).sink {
                     controller.updateIconPermission()
                 }
-                controller.refresh()
+                controller.start()
             }, stop: {
                 iconChanges?.cancel()
                 iconChanges = nil
+                iconPermission.stopObserving()
                 controller.iconReadingAllowed = { false }
-                controller.updateIconPermission()
+                controller.stop()
             })
         ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,

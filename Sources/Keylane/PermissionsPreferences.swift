@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Contacts
+import Combine
 import SwiftUI
 import KeylaneCore
 
@@ -19,6 +20,7 @@ struct PermissionsPreferences: View {
         self.model = model
         self.showsAdditionalPermissions = showsAdditionalPermissions
         _observation = StateObject(wrappedValue: ViewObservation([
+            model.launcherModules?.availabilityChanges.eraseToAnyPublisher() ?? Empty().eraseToAnyPublisher(),
             ViewObservation.changes(model.calendar.$requesting),
             ViewObservation.changes(model.calendar.$error),
             ViewObservation.changes(model.contacts.$requesting),
@@ -59,7 +61,8 @@ struct PermissionsPreferences: View {
                               requesting: model.calendar.requesting) {
                     if calendarAccess == .notRequested || calendarAccess == .writeOnly { model.calendar.requestAccess() }
                     else { model.calendar.openPrivacySettings() }
-                }.settingsAnchor(.calendarAccess)
+                }.disabled(model.launcherModules?.isCommandModuleEnabled(.init(rawValue: "calendar")) == false)
+                    .settingsAnchor(.calendarAccess)
                 if !model.calendar.error.isEmpty { Text(model.calendar.error).font(.caption).foregroundStyle(.secondary) }
                 Divider()
                 permissionRow("联系人", detail: "按姓名、公司、电话或邮箱搜索联系人。",
@@ -68,7 +71,8 @@ struct PermissionsPreferences: View {
                               requesting: model.contacts.requesting) {
                     if contactsAccess == .notDetermined { model.contacts.requestAccess() }
                     else { openPrivacy("Contacts") }
-                }.settingsAnchor(.contactsPermission)
+                }.disabled(model.launcherModules?.isCommandModuleEnabled(.init(rawValue: "contacts")) == false)
+                    .settingsAnchor(.contactsPermission)
                 if !model.contacts.error.isEmpty { Text(model.contacts.error).font(.caption).foregroundStyle(.secondary) }
                 if showsAdditionalPermissions {
                     Divider()

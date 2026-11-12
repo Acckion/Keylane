@@ -16,12 +16,14 @@ final class SnippetsController: ObservableObject {
     }
     @Published private(set) var expansionActive = false
 
-    private let store: Store?
+    private let storageURL: URL
+    private var store: Store?
     private let preferences: UserDefaults
     private let expansion = SnippetExpansion()
+    private var active = false
 
-    init(store: Store?, preferences: UserDefaults = .standard) {
-        self.store = store
+    init(storageURL: URL, preferences: UserDefaults = .standard) {
+        self.storageURL = storageURL
         self.preferences = preferences
         expandsKeywords = preferences.bool(forKey: "snippets.expandsKeywords")
     }
@@ -40,8 +42,10 @@ final class SnippetsController: ObservableObject {
     }
 
     func start() {
+        active = true
         do {
-            guard let store else { error = "无法打开片段资料库。"; return }
+            let store = try Store(url: storageURL)
+            self.store = store
             let records = try store.records(kind: "snippet")
             entries = records.compactMap { try? Snippet.fromRecord($0) }
             error = entries.count == records.count ? "" : "部分片段无法读取，原始记录仍保留。"
@@ -49,7 +53,17 @@ final class SnippetsController: ObservableObject {
         } catch { self.error = "无法读取片段：\(error.localizedDescription)" }
     }
 
-    func stop() { expansion.stop(); expansionActive = false }
+    func stop() {
+        active = false
+        expansion.stop()
+        expansionActive = false
+        store = nil
+        entries = []
+        query = ""
+        selectedID = nil
+        draft = Snippet()
+        error = ""
+    }
 
     func applicationFocused() {
         expansion.resetInput()
@@ -57,8 +71,8 @@ final class SnippetsController: ObservableObject {
     }
 
     func configureExpansion() {
-        if expandsKeywords { expansionActive = expansion.configure(entries) }
-        else { stop() }
+        if active && expandsKeywords { expansionActive = expansion.configure(entries) }
+        else { expansion.stop(); expansionActive = false }
     }
 
     func move(_ delta: Int) {
@@ -120,6 +134,7 @@ final class SnippetsController: ObservableObject {
     }
 
     func use(_ snippet: Snippet, paste: Bool) {
+        guard active else { return }
         UtilityActions.copy(snippet.render().text)
         guard let delegate = NSApp?.delegate as? Delegate else { return }
         if paste, delegate.pasteTargetName != nil { delegate.pasteIntoPreviousApplication() }

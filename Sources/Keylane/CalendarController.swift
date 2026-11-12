@@ -50,7 +50,8 @@ final class CalendarController: ObservableObject {
     private let registry: MenuBarRegistry
     private let preferences: UserDefaults
     private let worker = DispatchQueue(label: "org.keylane.calendar", qos: .userInitiated)
-    private lazy var eventStore = EKEventStore()
+    private var eventStore: EKEventStore?
+    private var runtime: DispatchWorkItem?
     private var generation = 0
     private var pending: DispatchWorkItem?
     private var timer: Timer?
@@ -62,7 +63,7 @@ final class CalendarController: ObservableObject {
     init(registry: MenuBarRegistry, preferences: UserDefaults = .standard,
          authorization: PermissionFeature.Authorization = .calendar) {
         self.registry = registry; self.preferences = preferences
-        permission = PermissionFeature("calendar.enabled", authorization: authorization, defaults: preferences)
+        permission = PermissionFeature("calendar.enabled", authorization: authorization, defaults: preferences, observeImmediately: false)
         menuDisplay = preferences.string(forKey: "calendar.menuDisplay") ?? "next"
         selectedCalendarIDs = preferences.stringArray(forKey: "calendar.selectedIDs").map(Set.init)
     }
@@ -71,6 +72,8 @@ final class CalendarController: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        runtime = DispatchWorkItem {}
+        permission.startObserving()
         permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink { [weak self] in
             guard let self, self.started else { return }
             self.configure()
@@ -89,11 +92,16 @@ final class CalendarController: ObservableObject {
     }
     func stop() {
         permissionChanges = nil
-        generation += 1; started = false; pending?.cancel(); timer?.invalidate(); timer = nil
-        loading = false
+        permission.stopObserving()
+        runtime?.cancel(); runtime = nil
+        generation += 1; started = false; pending?.cancel(); pending = nil
+        timer?.invalidate(); timer = nil
+        loading = false; requesting = false
         endPresentation()
+        events = []; upcoming = []; calendars = []; selectedID = nil; lastUpdated = nil
         stopObserving()
         registry.unregister(owner: "calendar")
+        worker.async { [weak self] in self?.eventStore = nil }
     }
     private func stopObserving() {
         observers.forEach(NotificationCenter.default.removeObserver); observers = []
@@ -114,6 +122,7 @@ final class CalendarController: ObservableObject {
         refresh()
     }
     func updatePresentation(query: String) {
+        guard started else { return }
         if !presenting {
             presenting = true
             refresh()
@@ -130,20 +139,28 @@ final class CalendarController: ObservableObject {
         if interruptedRefresh { refresh() }
     }
     func requestAccess() {
-        guard !requesting else { return }
+        guard let runtime, !requesting else { return }
         requesting = true; error = ""
         worker.async { [weak self] in
-            guard let self else { return }
-            self.eventStore.requestFullAccessToEvents { [weak self] _, failure in
-                guard let self else { return }
-                self.worker.async { self.eventStore.reset() }
-                DispatchQueue.main.async { self.access = .current; self.requesting = false; self.error = failure?.localizedDescription ?? ""; self.refresh() }
+            guard let self, !runtime.isCancelled else { return }
+            let store = self.eventStore ?? EKEventStore()
+            self.eventStore = store
+            store.requestFullAccessToEvents { [weak self] _, failure in
+                guard let self, !runtime.isCancelled else { return }
+                self.worker.async {
+                    if !runtime.isCancelled { self.eventStore?.reset() }
+                }
+                DispatchQueue.main.async {
+                    guard !runtime.isCancelled else { return }
+                    self.access = .current; self.requesting = false; self.error = failure?.localizedDescription ?? ""
+                    self.refresh()
+                }
             }
         }
     }
     func refresh() {
         precondition(Thread.isMainThread)
-        guard started || presenting else { return }
+        guard let runtime else { return }
         generation += 1; let ticket = generation; pending?.cancel()
         access = .current
         permission.recheck()
@@ -154,8 +171,9 @@ final class CalendarController: ObservableObject {
         loading = includesDay
         let date = selectedDate; let selected = selectedCalendarIDs; let now = Date(); let calendar = Calendar.current
         let job = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            let store = self.eventStore
+            guard let self, !runtime.isCancelled else { return }
+            let store = self.eventStore ?? EKEventStore()
+            self.eventStore = store
             let all = store.calendars(for: .event)
             let choices = all.map { CalendarChoice(id: $0.calendarIdentifier, title: $0.title, source: $0.source.title) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
             let targets = selected.map { ids in all.filter { ids.contains($0.calendarIdentifier) } } ?? all
@@ -171,7 +189,7 @@ final class CalendarController: ObservableObject {
                 return
             }
             func fetch(_ start: Date, _ end: Date) -> [AgendaEvent] {
-                guard !targets.isEmpty else { return [] }
+                guard !runtime.isCancelled, !targets.isEmpty else { return [] }
                 let predicate = store.predicateForEvents(withStart: start, end: end, calendars: targets)
                 return store.events(matching: predicate).filter { $0.status != .canceled }.map { event in
                     AgendaEvent(id: (event.eventIdentifier ?? event.calendarItemIdentifier) + ":" + String(event.startDate.timeIntervalSince1970),

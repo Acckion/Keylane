@@ -6,7 +6,7 @@ struct AppleNoteResult: Identifiable, Equatable {
 }
 
 enum AppleNotesAutomation {
-    static func search(_ query: String) throws -> [AppleNoteResult] {
+    static func search(_ query: String, request: ExtensionProcessRequest) throws -> [AppleNoteResult] {
         let source = """
         set query to \(literal(query))
         tell application id "com.apple.Notes"
@@ -33,14 +33,14 @@ enum AppleNotesAutomation {
             return output
         end tell
         """
-        return try execute(source).split(separator: "\n").compactMap { line in
+        return try execute(source, request: request).split(separator: "\n").compactMap { line in
             guard let tab = line.firstIndex(of: "\t") else { return nil }
             let title = String(line[line.index(after: tab)...])
             return AppleNoteResult(id: String(line[..<tab]), title: title.isEmpty ? "未命名" : title)
         }
     }
 
-    static func show(_ id: String) throws {
+    static func show(_ id: String, request: ExtensionProcessRequest) throws {
         _ = try execute("""
         tell application id "com.apple.Notes"
             set selectedID to \(literal(id))
@@ -48,10 +48,10 @@ enum AppleNotesAutomation {
             show note id selectedID with separately
             activate
         end tell
-        """)
+        """, request: request)
     }
 
-    static func create(title: String, body: String) throws -> String {
+    static func create(title: String, body: String, request: ExtensionProcessRequest) throws -> String {
         let heading = title.isEmpty ? "" : "<div><b>\(html(title))</b></div>"
         let content = heading + "<div>\(html(body))</div>"
         let id = try execute("""
@@ -60,7 +60,7 @@ enum AppleNotesAutomation {
             set createdNote to make new note at targetFolder with properties {body:\(literal(content))}
             return id of createdNote
         end tell
-        """)
+        """, request: request)
         guard !id.isEmpty else { throw Failure(code: 0) }
         return id
     }
@@ -92,7 +92,7 @@ enum AppleNotesAutomation {
         return names.union([key]).sorted()
     }()
 
-    private static func execute(_ source: String) throws -> String {
+    private static func execute(_ source: String, request: ExtensionProcessRequest) throws -> String {
         // Pass the script over stdin so queries and drafts never appear in process arguments.
         let folderNames = recentlyDeletedFolderNames.map(literal).joined(separator: ", ")
         let script = """
@@ -136,7 +136,8 @@ enum AppleNotesAutomation {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        try process.run()
+        try request.launch(process)
+        defer { request.finished() }
         do {
             try input.fileHandleForWriting.write(contentsOf: Data(script.utf8))
             try input.fileHandleForWriting.close()

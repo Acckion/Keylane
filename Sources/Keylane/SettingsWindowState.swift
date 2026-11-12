@@ -6,7 +6,7 @@ final class SettingsWindowState: ObservableObject {
     @Published private(set) var page: String
     @Published private(set) var navigationKeys: PageNavigationKeys
     @Published private(set) var colorScheme: ColorScheme?
-    let catalog: SettingsWindowCatalog
+    @Published private(set) var catalog: SettingsWindowCatalog
 
     private weak var model: Model?
     private var changes: Set<AnyCancellable> = []
@@ -16,13 +16,23 @@ final class SettingsWindowState: ObservableObject {
         page = model.settingsPage
         navigationKeys = model.pageNavigationKeys
         colorScheme = model.colorScheme
-        catalog = model.launcherModules?.settingsCatalog ?? SettingsWindowCatalog(pages: [])
+        let registry = model.launcherModules
+        catalog = registry?.settingsCatalog ?? SettingsWindowCatalog(pages: [])
 
+        registry?.availabilityChanges.sink { [weak self] in self?.objectWillChange.send() }.store(in: &changes)
+        registry?.registrationUpdates.sink { [weak self, weak registry] in
+            if let registry { self?.catalog = registry.settingsCatalog }
+        }.store(in: &changes)
         model.$settingsPage.removeDuplicates().dropFirst().sink { [weak self] in self?.page = $0 }.store(in: &changes)
         model.$pageNavigationKeys.removeDuplicates().dropFirst().sink { [weak self] in self?.navigationKeys = $0 }.store(in: &changes)
         model.$appearance.removeDuplicates().dropFirst().sink { [weak self] in
             self?.colorScheme = $0 == "dark" ? .dark : $0 == "light" ? .light : nil
         }.store(in: &changes)
+    }
+
+    func extensionEnabled(for page: String) -> Binding<Bool>? {
+        guard let registry = model?.launcherModules, let id = registry.module(forSettingsPage: page) else { return nil }
+        return Binding(get: { registry.isModuleEnabled(id) }, set: { [weak model] in model?.setModuleEnabled(id, $0) })
     }
 
     func select(_ page: String) { model?.settingsPage = page }

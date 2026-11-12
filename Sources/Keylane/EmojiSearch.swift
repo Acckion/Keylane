@@ -73,6 +73,7 @@ final class EmojiSearchController: ObservableObject {
     @Published var category = "all" { didSet { if oldValue != category { refresh(resetSelection: true) } } }
     var query = "" { didSet { if oldValue != query { refresh(resetSelection: true) } } }
 
+    private var loadTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
     private var searchRevision = 0
     private var active = false
@@ -89,14 +90,18 @@ final class EmojiSearchController: ObservableObject {
         guard !isLoading else { return }
         isLoading = true
         loadFailed = false
-        Task { @MainActor in
-            let loaded = await Task.detached(priority: .userInitiated) { try? EmojiCatalog.load() }.value
-            isLoading = false
-            guard let loaded else { loadFailed = true; return }
-            items = loaded
-            grouped = Dictionary(grouping: loaded, by: \.category)
-            itemsByID = Dictionary(loaded.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            refresh(resetSelection: true)
+        loadTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let loaded = try? EmojiCatalog.load()
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                self.loadTask = nil
+                self.isLoading = false
+                guard let loaded else { self.loadFailed = true; return }
+                self.items = loaded
+                self.grouped = Dictionary(grouping: loaded, by: \.category)
+                self.itemsByID = Dictionary(loaded.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                self.refresh(resetSelection: true)
+            }
         }
     }
 
@@ -114,6 +119,20 @@ final class EmojiSearchController: ObservableObject {
     func stop() {
         active = false
         cancelSearch()
+    }
+
+    func releaseCatalog() {
+        stop()
+        loadTask?.cancel()
+        loadTask = nil
+        isLoading = false
+        loadFailed = false
+        sections = []
+        selection = nil
+        items = []
+        grouped = [:]
+        itemsByID = [:]
+        query = ""
     }
 
     private func cancelSearch() {

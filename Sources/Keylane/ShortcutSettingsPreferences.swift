@@ -183,6 +183,11 @@ struct ShortcutSettingsPreferences: View {
         .settingsAnchor(.hotkeys)
         .onAppear { if let id = selection.category { expanded.insert(id) } }
         .onChange(of: selection.category) { _, id in if let id { expanded.insert(id) } }
+        .onChange(of: groups.map(\.id)) { _, ids in
+            if let category = selection.category, !ids.contains(ModuleID(rawValue: category)) {
+                selection.category = nil
+            }
+        }
         .onChange(of: search) { _, _ in collapsedWhileSearching.removeAll() }
     }
 
