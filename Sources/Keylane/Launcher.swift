@@ -443,13 +443,20 @@ struct Launcher: View {
         ResultListRow(selected: selected, layout: .root) {
             Group {
                 if let artwork = model.launcherModules?.artwork(for: row) { artwork }
-                else if row.id.hasSuffix(".app") || row.detail == "File" { WorkspaceItemIcon(path: row.id, fallbackSymbol: row.detail == "File" ? (row.isDirectory ? "folder" : "doc") : "app") }
+                else if row.id.hasSuffix(".app") || row.detail == "File" {
+                    WorkspaceItemIcon(path: row.id, fallbackSymbol: row.detail == "File" ? (row.isDirectory ? "folder" : "doc") : "app")
+                        // AppKit application icons include transparent margins.
+                        .scaleEffect(row.id.hasSuffix(".app") ? 1.2 : 1)
+                }
                 else { Image(systemName: row.symbol).font(.system(size: 21, weight: .regular)).foregroundStyle(iconColor(row.id)) }
             }
             .frame(width: 26, height: 26)
-            .overlay(alignment: .bottomLeading) {
+            .overlay(alignment: .bottom) {
                 if model.runningPaths.contains(row.id) {
-                    Circle().fill(.green).frame(width: 5, height: 5).offset(x: -1, y: 3)
+                    Circle()
+                        .fill(Color.primary.opacity(0.78))
+                        .frame(width: 4, height: 4)
+                        .offset(y: 6)
                         .accessibilityLabel("正在运行")
                 }
             }
