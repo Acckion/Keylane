@@ -199,8 +199,12 @@ let byModified = try location.children(of: capped, sortedBy: .modified)
 precondition(byName.map(\.id) == allowed.prefix(200).map(\.path))
 precondition(byModified.map(\.id) == allowed.reversed().prefix(200).map(\.path))
 precondition((byName + byModified).allSatisfy { $0.contentType?.conforms(to: .plainText) == true })
-let cancelledBrowse = try location.children(of: capped, sortedBy: .name, isCancelled: { true })
-precondition(cancelledBrowse.isEmpty)
+var cancellationChecks = 0
+let cancelledBrowse = try location.children(of: capped, sortedBy: .name) {
+    cancellationChecks += 1
+    return cancellationChecks > 12
+}
+precondition(cancelledBrowse.isEmpty && cancellationChecks == 13)
 controller.search(special.path, standalone: false)
 wait("Exact special-character path") { !controller.isSearching && results.map(\.id) == [special.path] }
 controller.search(browse.path, showPathItself: true)
