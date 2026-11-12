@@ -113,6 +113,7 @@ final class Model: ObservableObject {
     @Published var loginEnabled = false
     let discovery = ApplicationDiscovery()
     let applicationResultActions = ApplicationResultActions()
+    let applicationAutoQuit = ApplicationAutoQuit()
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
     private var workspaceObservers: [NSObjectProtocol] = []

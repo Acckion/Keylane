@@ -395,7 +395,7 @@ struct Launcher: View {
                     activateResult(row.commandID, selectOnly: showsFileResults)
                 }) {
                     if row.id == "calculator" {
-                        CalculatorResultCard(expression: model.query, result: row.name, selected: index == selectedIndex)
+                        CalculatorResultCard(expression: model.query, result: row.name, selected: index == selectedIndex, conversionDetail: row.detail == "回车复制结果" ? nil : row.detail)
                     } else if showsFileResults {
                         fileResultRow(row, selected: index == selectedIndex)
                     } else {
