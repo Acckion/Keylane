@@ -16,22 +16,23 @@ struct SettingsWindowActions: View {
     @ObservedObject var state: SettingsWindowState
 
     static func width(for page: LauncherSettingsPage?, hasExtensionSwitch: Bool) -> CGFloat {
+        if page?.trailingToolbar != nil { return hasExtensionSwitch ? 266 : 214 }
         if hasExtensionSwitch { return 64 }
-        if page?.trailingToolbar != nil { return 214 }
         return page?.titlebar == nil ? 0 : 64
     }
 
     var body: some View {
         let page = state.catalog.page(state.page)
         let extensionSwitch = state.extensionEnabled(for: state.page)
-        Group {
+        HStack(spacing: 8) {
+            if let toolbar = page?.trailingToolbar {
+                toolbar().id(state.page)
+            }
             if let extensionSwitch {
                 Toggle("启用扩展", isOn: extensionSwitch)
                     .toggleStyle(.switch).labelsHidden().controlSize(.small)
                     .help("关闭后停止此扩展的后台活动，保留数据与快捷键。")
-            } else if let toolbar = page?.trailingToolbar {
-                toolbar()
-            } else if let contribution = page?.titlebar {
+            } else if page?.trailingToolbar == nil, let contribution = page?.titlebar {
                 SettingsTitlebarSwitch(contribution: contribution).id(state.page)
             }
         }

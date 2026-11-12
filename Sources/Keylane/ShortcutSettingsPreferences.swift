@@ -46,14 +46,15 @@ final class ShortcutSettingsControls: SettingsSearchControls {
 
 struct SettingsToolbarSearch: View {
     let title: String
+    var alwaysExpanded = false
     @ObservedObject var selection: SettingsSearchControls
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
-            if selection.searchPresented {
+            if alwaysExpanded || selection.searchPresented {
                 SettingsSearchField(text: $selection.query, placeholder: title + "…", floating: true,
-                                    autofocus: true, endEditing: {
+                                    autofocus: !alwaysExpanded, endEditing: {
                                         if selection.query.isEmpty { selection.searchPresented = false }
                                     }, cancel: selection.dismissSearch)
                     .padding(.horizontal, 9)
