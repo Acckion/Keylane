@@ -36,6 +36,7 @@ struct LauncherAction: Identifiable {
     let title: String
     let icon: String
     var keys: [String] = []
+    var artwork: NSImage? = nil
     var submenu: Submenu?
     var group = 0
     var enabled = true
@@ -62,6 +63,8 @@ struct LauncherPage {
     var move: ((Int) -> Void)?
     var submit: (() -> Void)?
     var shortcutSubmit: (() -> Void)?
+    var optionSubmit: (() -> Void)?
+    var actionContextTitle: (() -> String?)?
     var primaryTitle: (() -> String)?
     var primaryEnabled: (() -> Bool)?
     var actions: (() -> [LauncherAction])?

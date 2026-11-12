@@ -25,6 +25,24 @@ final class ClipboardTests: XCTestCase {
         let nul = try reopened.capture(.text("before\0after"))
         XCTAssertEqual(try reopened.detail(id:nul)?.text,"before\0after")
     }
+    func testRenamePreservesContentAndRecentDeletionKeepsPinnedHistory() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let now = Date()
+        let old = try store.capture(.text("older original"), at: now.addingTimeInterval(-7200))
+        let recent = try store.capture(.text("recent original"), at: now)
+        let pinned = try store.capture(.text("pinned original"), at: now)
+        try store.setPinned(id: pinned, pinned: true)
+        try store.rename(id: recent, to: "Meeting Summary")
+        XCTAssertEqual(try store.list(query: "meeting").map(\.id), [recent])
+        XCTAssertEqual(try store.detail(id: recent)?.text, "recent original")
+
+        try store.removeRecent(since: now.addingTimeInterval(-3600))
+
+        XCTAssertEqual(Set(try store.list().map(\.id)), Set([old, pinned]))
+    }
+
     func testUnicodeSubstringSearchAndLiteralSyntax() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at:directory) }
         let store = try ClipboardStore(directory:directory)
@@ -35,6 +53,41 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(try store.list(query:"OR NOT").map(\.id),[id])
         XCTAssertTrue(try store.list(query:"\" OR *").isEmpty)
     }
+    func testRecapturePreservesNormalizedTitleAndOCRSearch() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let content = ClipContent.image(Data([137, 80, 78, 71]))
+        let id = try store.capture(content, source: "Original Source")
+        try store.rename(id: id, to: "Résumé Reference")
+        try store.setOCR(id: id, text: "Café Invoice")
+
+        XCTAssertEqual(try store.capture(content, source: "Updated Source"), id)
+
+        XCTAssertEqual(try store.list(query: "resume").map(\.id), [id])
+        XCTAssertEqual(try store.list(query: "cafe").map(\.id), [id])
+        XCTAssertEqual(try store.list(query: "updated").map(\.id), [id])
+        XCTAssertTrue(try store.list(query: "original").isEmpty)
+        let record = try XCTUnwrap(store.detail(id: id))
+        XCTAssertEqual(record.item.preview, "Résumé Reference")
+        XCTAssertEqual(record.item.copyCount, 2)
+    }
+
+    func testOCRPreservesRenamedImageInSearch() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let id = try store.capture(.image(Data([137, 80, 78, 71])), source: "Image Source")
+        try store.rename(id: id, to: "Résumé Reference")
+
+        try store.setOCR(id: id, text: "Recognized invoice")
+
+        XCTAssertEqual(try store.list(query: "resume").map(\.id), [id])
+        XCTAssertEqual(try store.list(query: "invoice").map(\.id), [id])
+        XCTAssertEqual(try store.list(query: "source").map(\.id), [id])
+        XCTAssertEqual(try store.detail(id: id)?.item.preview, "Résumé Reference")
+    }
+
     func testAttachmentsReferencesOCRAndDeletionRace() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at:directory) }
         let store = try ClipboardStore(directory:directory)

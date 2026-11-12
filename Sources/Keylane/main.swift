@@ -475,11 +475,20 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard let previousApplication, !previousApplication.isTerminated else { return nil }
         return previousApplication.localizedName
     }
-    func pasteClipboard(plainText: Bool = false) {
-        guard model.clipboard.copySelected(plainText:plainText) else { return }
-        pasteIntoPreviousApplication()
+    var pasteTargetIcon: NSImage? {
+        guard let previousApplication, !previousApplication.isTerminated else { return nil }
+        return previousApplication.icon
     }
-    func pasteIntoPreviousApplication() {
+
+    private var retainedPasteID: UUID?
+
+    func pasteClipboard(plainText: Bool = false, keepOpen: Bool = false) {
+        guard retainedPasteID == nil, model.clipboard.copySelected(plainText: plainText) else { return }
+        pasteIntoPreviousApplication(keepOpen: keepOpen)
+    }
+
+    func pasteIntoPreviousApplication(keepOpen: Bool = false) {
+        guard retainedPasteID == nil else { return }
         guard model.crossAppPaste.available else {
             showLauncherFeedback("已复制，跨应用粘贴未启用", style: .failure, actionTitle: "粘贴设置…") { [weak self] in
                 self?.model.openSettings(page: "permissions")
@@ -487,14 +496,53 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         guard let target = previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
-        hideLauncher(); target.activate()
+
+        let pasteID = keepOpen && window.isVisible ? UUID() : nil
+        if let pasteID { retainedPasteID = pasteID }
+        else { hideLauncher() }
+        target.activate()
+
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier, !target.isTerminated else { self?.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。"); return }
+            guard let self, pasteID == nil || self.retainedPasteID == pasteID else { return }
+            guard self.pasteTargetIsFrontmost(target) else {
+                self.finishRetainedPaste(pasteID, target: target)
+                self.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。")
+                return
+            }
             let source = CGEventSource(stateID: .combinedSessionState)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { self?.showPasteFailure("已复制，无法发送粘贴按键。"); return }
-            down.flags = .maskCommand; up.flags = .maskCommand; down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+                self.finishRetainedPaste(pasteID, target: target)
+                self.showPasteFailure("已复制，无法发送粘贴按键。")
+                return
+            }
+            down.flags = .maskCommand
+            up.flags = .maskCommand
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+            if let pasteID {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                    self?.finishRetainedPaste(pasteID, target: target)
+                }
+            }
         }
     }
+
+    private func pasteTargetIsFrontmost(_ target: NSRunningApplication) -> Bool {
+        !target.isTerminated && NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier
+    }
+
+    private func finishRetainedPaste(_ pasteID: UUID?, target: NSRunningApplication) {
+        guard let pasteID, retainedPasteID == pasteID else { return }
+        if pasteTargetIsFrontmost(target), window.isVisible {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else if !window.isKeyWindow {
+            hideLauncher()
+        }
+        retainedPasteID = nil
+    }
+
     private func showPasteFailure(_ message: String) {
         guard settingsWindow?.isKeyWindow != true else { return }
         showLauncherFeedback(message, style: .failure)
@@ -660,7 +708,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func windowDidResignKey(_ notification: Notification) {
         guard let resigned = notification.object as? NSWindow, resigned === window, window.attachedSheet == nil,
-              !FilePreview.shared.takesLauncherFocus else { return }
+              !FilePreview.shared.takesLauncherFocus, retainedPasteID == nil else { return }
         hideLauncher(reason: "resignKey")
     }
     func applicationWillTerminate(_ notification: Notification) {
@@ -726,6 +774,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func hideLauncher(reason: String = "command") {
+        retainedPasteID = nil
         dragGuides?.cancel()
         guard window.isVisible else { return }
         // System authorization can temporarily take focus from the launcher.
