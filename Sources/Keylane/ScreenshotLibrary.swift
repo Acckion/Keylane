@@ -57,7 +57,16 @@ struct ScreenshotScope: Codable, Identifiable, Equatable {
 final class ScreenshotLibrary: ObservableObject {
     private static let section = "captures"
     private let defaults: UserDefaults
-    @Published var enabled: Bool { didSet { defaults.set(enabled, forKey: "screenshotsEnabled") } }
+    @Published var enabled: Bool {
+        didSet {
+            if !enabled {
+                stop()
+                latestTask?.cancel()
+                items = []
+                publish([])
+            }
+        }
+    }
     @Published var disabledCommands: Set<String> { didSet { defaults.set(Array(disabledCommands), forKey: "disabledScreenshotCommands") } }
     @Published var columns: Int { didSet { defaults.set(columns, forKey: "screenshotColumns") } }
     @Published var includeAll: Bool { didSet { defaults.set(includeAll, forKey: "screenshotIncludeAll") } }
@@ -82,7 +91,7 @@ final class ScreenshotLibrary: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        enabled = defaults.object(forKey: "screenshotsEnabled") as? Bool ?? true
+        enabled = false
         disabledCommands = Set(defaults.stringArray(forKey: "disabledScreenshotCommands") ?? [])
         columns = min(6, max(3, defaults.object(forKey: "screenshotColumns") as? Int ?? 3))
         includeAll = defaults.bool(forKey: "screenshotIncludeAll")
@@ -102,6 +111,17 @@ final class ScreenshotLibrary: ObservableObject {
             if path.hasPrefix("/") { return [URL(fileURLWithPath: path, isDirectory: true)] }
         }
         return FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)
+    }
+
+    var hasAuthorizedScope: Bool {
+        scopes.contains { scope in
+            let url = scope.url
+            let started = url.startAccessingSecurityScopedResource()
+            defer { if started { url.stopAccessingSecurityScopedResource() } }
+            var directory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
+                && FileManager.default.isReadableFile(atPath: url.path)
+        }
     }
 
     var selected: ScreenshotMedia? {
@@ -145,6 +165,7 @@ final class ScreenshotLibrary: ObservableObject {
     }
 
     func refresh() {
+        guard enabled, !scopes.isEmpty else { return }
         stop()
         scanning = true
         let folders = folders
@@ -219,6 +240,7 @@ final class ScreenshotLibrary: ObservableObject {
     }
 
     func latest(_ completion: @escaping (ScreenshotMedia?) -> Void) {
+        guard enabled, !scopes.isEmpty else { completion(nil); return }
         latestTask?.cancel()
         let folders = folders
         let includeAll = includeAll

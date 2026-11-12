@@ -23,6 +23,11 @@ struct ScreenshotLibraryCheck {
 
         let library = ScreenshotLibrary(defaults: defaults)
         library.refresh()
+        try require(!library.enabled && !library.scanning && library.results.isEmpty,
+                    "Screenshot management must stay inactive until enabled")
+        try require(library.hasAuthorizedScope, "Fixture folder must be readable")
+        library.enabled = true
+        library.refresh()
         try await wait { !library.scanning }
         guard let item = library.selected else {
             throw CheckError.failure("Fixture not indexed (\(library.inaccessibleFolders) unreadable folders)")

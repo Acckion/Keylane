@@ -13,10 +13,9 @@ wait { !shortcutController.loading }
 precondition(shortcutController.message.isEmpty && !shortcutController.entries.isEmpty)
 let identifier = UUID().uuidString
 precondition(!shortcutController.entries.contains { $0.id == identifier })
-var runFailure = false
-shortcutController.onRunFailure = { _ in runFailure = true }
 shortcutController.run(identifier)
-wait { runFailure && shortcutController.runningID == nil }
+wait { shortcutController.runningID == nil }
+precondition(shortcutController.executionMessage.contains("退出码"))
 precondition(DictionaryController.definition(for: "apple")?.isEmpty == false)
 precondition(DictionaryController.definition(for: "zzzzkeylanenotawordqzx") == nil)
 let record = CNMutableContact()

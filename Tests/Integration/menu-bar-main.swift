@@ -36,11 +36,49 @@ for _ in 0..<50 { registry.setEnabled("fixture.one", false); precondition(regist
 registry.unregister(owner: "unrelated"); precondition(registry.nativeItem(id: "fixture.one") != nil)
 registry.unregister(owner: "fixture"); precondition(registry.descriptors.isEmpty)
 register(); precondition(registry.nativeItem(id: "fixture.one") != nil) // persisted user choice
-let calendar = CalendarController(registry: registry, preferences: preferences)
-calendar.start(); registry.setEnabled("calendar.agenda", true)
+var authorized = false
+var requests = 0
+var resolvePermission: ((Bool) -> Void)?
+let calendar = CalendarController(registry: registry, preferences: preferences, authorization: .init(
+    check: { authorized }, request: { requests += 1; resolvePermission = $0 }, guidance: "Fixture permission"
+))
+func settlePermission() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+
+calendar.start()
+precondition(!calendar.enabled && requests == 0)
+precondition(registry.nativeItem(id: "calendar.agenda") == nil)
+calendar.permission.setEnabled(true)
+calendar.permission.setEnabled(true)
+precondition(requests == 1 && !calendar.enabled)
+resolvePermission?(false)
+settlePermission()
+precondition(!calendar.enabled && !preferences.bool(forKey: "calendar.enabled"))
+precondition(registry.nativeItem(id: "calendar.agenda") == nil)
+
+calendar.permission.setEnabled(true)
+authorized = true
+resolvePermission?(true)
+settlePermission()
+registry.setEnabled("calendar.agenda", true)
+precondition(calendar.enabled && preferences.bool(forKey: "calendar.enabled"))
 precondition(registry.nativeItem(id: "calendar.agenda") != nil)
-calendar.enabled = false; precondition(registry.nativeItem(id: "calendar.agenda") == nil)
-calendar.enabled = true; precondition(registry.nativeItem(id: "calendar.agenda") != nil)
+
+authorized = false
+calendar.permission.recheck()
+settlePermission()
+precondition(!calendar.enabled && !preferences.bool(forKey: "calendar.enabled"))
+precondition(registry.nativeItem(id: "calendar.agenda") == nil)
+
+calendar.permission.setEnabled(true)
+calendar.permission.setEnabled(false)
+authorized = true
+resolvePermission?(true)
+settlePermission()
+precondition(!calendar.enabled && registry.nativeItem(id: "calendar.agenda") == nil)
+
+calendar.permission.setEnabled(true)
+settlePermission()
+precondition(registry.nativeItem(id: "calendar.agenda") != nil)
 calendar.stop(); precondition(registry.nativeItem(id: "calendar.agenda") == nil)
 registry.shutdown(); precondition(registry.descriptors.isEmpty)
-print("PASS native menu bar: stable registration, update, actions/submenus, disabled action, 50 toggles, owner isolation, persisted visibility, calendar enable/disable, shutdown")
+print("PASS native menu bar: registration, update, actions, persistence, permission opt-in, denial, revocation and stale response cancellation")

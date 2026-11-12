@@ -19,14 +19,11 @@ struct SettingsView: View {
             sidebar(matches: matches)
         } detail: {
             SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
-                if !state.error.isEmpty {
-                    HStack {
-                        Text(state.error).foregroundStyle(.red)
-                        Spacer()
-                        SettingsIconButton("关闭错误提示", symbol: "xmark", compact: true) { state.clearError() }
-                    }.padding(12).background(.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                if let page, let contribution = page.titlebar, contribution.permissionStatus != nil {
+                    PermissionSettingsContent(contribution: contribution, content: page.content).id(page.id)
+                } else {
+                    page?.content()
                 }
-                page?.content()
             }
         }.toggleStyle(SettingsSwitchStyle())
         .navigationTitle(headerScrolledAway ? (page?.title ?? "设置") : "")

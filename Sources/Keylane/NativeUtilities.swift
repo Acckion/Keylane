@@ -46,8 +46,10 @@ final class SystemShortcutsController: ObservableObject {
     private let runQueue = DispatchQueue(label: "org.keylane.shortcuts.run", qos: .userInitiated)
     private let iconQueue = DispatchQueue(label: "org.keylane.shortcuts.icons", qos: .utility)
     private let loadsIcons: Bool
+    var iconReadingAllowed: () -> Bool = { false }
+    private var iconGeneration = 0
     private var lastRefresh = Date.distantPast
-    var onRunFailure: ((String) -> Void)?
+    @Published private(set) var executionMessage = ""
 
     init(loadsIcons: Bool = true) {
         self.loadsIcons = loadsIcons
@@ -60,7 +62,7 @@ final class SystemShortcutsController: ObservableObject {
         loading = true
         message = ""
         catalogQueue.async { [weak self] in
-            let result = Self.invoke(["list", "--show-identifiers"], timeout: 12, capture: true)
+            let result = Self.listShortcuts()
             let records = result.map(SystemShortcut.parse)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -81,20 +83,29 @@ final class SystemShortcutsController: ObservableObject {
         return icons[String(commandID.dropFirst("shortcut:".count))]
     }
 
+    func updateIconPermission() {
+        iconGeneration += 1
+        icons = [:]
+        iconAccess = .inactive
+        if iconReadingAllowed() { refreshIcons(force: true) }
+    }
+
     private func refreshIcons(force: Bool) {
-        guard loadsIcons, iconAccess != .loading, !entries.isEmpty else { return }
+        guard loadsIcons, iconReadingAllowed(), iconAccess != .loading, !entries.isEmpty else { return }
         let ids = entries.map(\.id)
         guard force || iconAccess == .inactive || (iconAccess == .allowed && Set(ids) != Set(icons.keys)) else { return }
         iconAccess = .loading
+        let ticket = iconGeneration
 
         let load: () -> Void = { [weak self] in
-            guard let self else { return }
+            guard let self, self.iconGeneration == ticket, self.iconReadingAllowed() else { return }
             self.iconQueue.async { [weak self] in
-                let permission = ShortcutIconReader.requestPermissionIfNeeded()
+                let permission = ShortcutIconReader.permissionStatus()
                 guard permission == noErr else {
                     DispatchQueue.main.async {
-                        self?.icons = [:]
-                        self?.iconAccess = permission == -1743 || permission == -1744 ? .denied : .unavailable
+                        guard let self, self.iconGeneration == ticket else { return }
+                        self.icons = [:]
+                        self.iconAccess = permission == -1743 || permission == -1744 ? .denied : .unavailable
                     }
                     return
                 }
@@ -110,7 +121,7 @@ final class SystemShortcutsController: ObservableObject {
                 let result = rendered
                 let authorizationLost = denied
                 DispatchQueue.main.async {
-                    guard let self else { return }
+                    guard let self, self.iconGeneration == ticket, self.iconReadingAllowed() else { return }
                     if authorizationLost {
                         self.icons = [:]
                         self.iconAccess = .denied
@@ -135,7 +146,8 @@ final class SystemShortcutsController: ObservableObject {
             configuration.addsToRecentItems = false
             NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, error in
                 DispatchQueue.main.async {
-                    if app == nil || error != nil { self?.iconAccess = .unavailable }
+                    guard let self, self.iconGeneration == ticket else { return }
+                    if app == nil || error != nil { self.iconAccess = .unavailable }
                     else { load() }
                 }
             }
@@ -147,41 +159,53 @@ final class SystemShortcutsController: ObservableObject {
     func run(_ id: String) {
         guard UUID(uuidString: id) != nil, !disabledIDs.contains(id), runningID == nil else { return }
         runningID = id
-        message = "正在运行…"
+        executionMessage = "正在运行…"
         runQueue.async { [weak self] in
-            let result = Self.invoke(["run", id], timeout: 180, capture: false)
-            DispatchQueue.main.async {
-                self?.runningID = nil
-                if result == nil {
-                    let message = "快捷指令未完成。请检查指令是否仍存在、所需权限和输入。"
-                    self?.message = message
-                    self?.onRunFailure?(message)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+            process.arguments = ["run", id]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            let status: String
+            do {
+                try process.run()
+                // Interactive shortcuts can wait for user input or a permission dialog.
+                process.waitUntilExit()
+                if process.terminationReason != .exit {
+                    status = "快捷指令进程已中断，无法确认结果。"
+                } else if process.terminationStatus == 0 {
+                    status = "快捷指令已完成。"
                 } else {
-                    self?.message = "快捷指令已完成。"
+                    status = "系统快捷指令返回错误（退出码 \(process.terminationStatus)）。"
                 }
+            } catch {
+                status = "无法启动系统快捷指令。"
+            }
+            DispatchQueue.main.async {
+                self?.executionMessage = status
+                self?.runningID = nil
             }
         }
     }
 
-    private static func invoke(_ arguments: [String], timeout: TimeInterval, capture: Bool) -> String? {
+    private static func listShortcuts() -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
-        process.arguments = arguments
+        process.arguments = ["list", "--show-identifiers"]
         process.standardInput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let pipe = Pipe()
-        process.standardOutput = capture ? pipe : FileHandle.nullDevice
+        process.standardOutput = pipe
         do { try process.run() } catch { return nil }
         let stop = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: stop)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 12, execute: stop)
         defer { stop.cancel() }
         var bytes = Data()
         var overflow = false
-        if capture {
-            while let chunk = try? pipe.fileHandleForReading.read(upToCount: 16384), !chunk.isEmpty {
-                if bytes.count + chunk.count <= 2 * 1024 * 1024 { bytes.append(chunk) }
-                else { overflow = true }
-            }
+        while let chunk = try? pipe.fileHandleForReading.read(upToCount: 16384), !chunk.isEmpty {
+            if bytes.count + chunk.count <= 2 * 1024 * 1024 { bytes.append(chunk) }
+            else { overflow = true }
         }
         process.waitUntilExit()
         guard process.terminationStatus == 0, !overflow else { return nil }

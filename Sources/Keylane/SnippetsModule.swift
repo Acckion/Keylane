@@ -16,6 +16,8 @@ enum SnippetsModule {
 
     static func make(model: Model) -> LauncherModule {
         let snippets = model.snippets
+        let expansionPermission = PermissionFeature("snippets.expandsKeywords", authorization: .accessibility)
+        var expansionChanges: AnyCancellable?
         let create: (LauncherCommandOrigin) -> Void = { [weak model] origin in
             snippets.edit()
             model?.openPage(editID, origin: origin)
@@ -83,10 +85,20 @@ enum SnippetsModule {
                 .init(id: settingsID, title: "文字片段", symbol: symbol, subtitle: "管理常用文字与缩写展开。",
                       order: 85, items: [.snippetExpansion], content: { [weak model] in
                           guard let model else { return AnyView(EmptyView()) }
-                          return AnyView(SnippetPreferences(model: model))
+                          return AnyView(SnippetPreferences(model: model, expansionPermission: expansionPermission))
                       })
             ],
-            services: [.init(start: snippets.start, stop: snippets.stop)],
+            services: [.init(start: {
+                snippets.expandsKeywords = expansionPermission.available
+                snippets.start()
+                expansionChanges = expansionPermission.updates.receive(on: DispatchQueue.main).sink {
+                    snippets.expandsKeywords = expansionPermission.available
+                }
+            }, stop: {
+                expansionChanges?.cancel()
+                expansionChanges = nil
+                snippets.stop()
+            })],
             applicationFocused: { _ in snippets.applicationFocused() }
         )
     }
@@ -176,18 +188,20 @@ private struct SnippetEditor: View {
 private struct SnippetPreferences: View {
     let model: Model
     @ObservedObject private var controller: SnippetsController
+    let expansionPermission: PermissionFeature
 
-    init(model: Model) {
+    init(model: Model, expansionPermission: PermissionFeature) {
         self.model = model
+        self.expansionPermission = expansionPermission
         controller = model.snippets
     }
 
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                SettingsRow("展开缩写", detail: "输入片段的缩写后按空格。需要辅助功能权限，安全输入和非 ASCII 输入源下暂停。") {
-                    Toggle("展开缩写", isOn: $controller.expandsKeywords).labelsHidden().toggleStyle(.switch)
-                }.settingsAnchor(.snippetExpansion)
+                SettingsPermissionToggle(contribution: expansionPermission.titlebar("展开缩写"),
+                                         detail: "输入片段的缩写后按空格。安全输入和非 ASCII 输入源下暂停。")
+                    .settingsAnchor(.snippetExpansion)
                 if controller.expandsKeywords && !controller.expansionActive {
                     SettingsActionRow(title: "展开尚未启用", detail: "请确认至少有一个缩写，并检查辅助功能权限。",
                                       actionTitle: "权限设置…") { model.openSettings(page: "permissions") }

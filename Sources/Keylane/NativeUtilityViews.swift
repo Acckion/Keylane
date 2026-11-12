@@ -7,17 +7,20 @@ struct SystemShortcutsPreferences: View {
     let model: Model
     @StateObject private var observation: ViewObservation
     let controller: SystemShortcutsController
+    let iconPermission: PermissionFeature
     @State private var filter = ""
 
-    init(model: Model, controller: SystemShortcutsController) {
+    init(model: Model, controller: SystemShortcutsController, iconPermission: PermissionFeature) {
         self.model = model
         self.controller = controller
+        self.iconPermission = iconPermission
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(controller.$entries),
             ViewObservation.changes(controller.$loading),
             ViewObservation.changes(controller.$message),
+            ViewObservation.changes(controller.$executionMessage),
             ViewObservation.changes(controller.$icons),
             ViewObservation.changes(controller.$disabledIDs)
         ]))
@@ -26,6 +29,10 @@ struct SystemShortcutsPreferences: View {
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
+                SettingsPermissionToggle(contribution: iconPermission.titlebar("显示快捷指令原始图标"),
+                                         detail: "读取图标需要快捷指令的自动化权限。")
+            }
+            SettingsGroup {
                 HStack {
                     SettingsSearchField(text: $filter, placeholder: "查找快捷指令…")
                         .frame(height: 24)
@@ -33,6 +40,7 @@ struct SystemShortcutsPreferences: View {
                     Button("打开快捷指令") { UtilityActions.openApplication("com.apple.shortcuts") }
                 }.buttonStyle(.bordered).controlSize(.small)
                 if controller.loading { ProgressView().controlSize(.small) }
+                if !controller.executionMessage.isEmpty { SettingsDescription(controller.executionMessage) }
                 if !controller.message.isEmpty { Text(controller.message).foregroundStyle(.secondary) }
                 if !controller.loading, controller.entries.isEmpty, controller.message.isEmpty { Text("系统中没有快捷指令").foregroundStyle(.secondary) }
             }.settingsAnchor(.systemShortcuts)
@@ -63,6 +71,10 @@ extension SystemShortcut {
 
 struct ContactsPage: View {
     @ObservedObject var controller: ContactsController
+    let permission: PermissionFeature
+    let showSettings: () -> Void
+    @State private var permissionEnabled = false
+
     var body: some View {
         ResultDetailLayout {
             SelectableResultList(selection: controller.selectedID) {
@@ -78,7 +90,13 @@ struct ContactsPage: View {
             }
         } detail: {
             Group {
-                if !controller.canRead { connection }
+                if !permissionEnabled {
+                    ContentUnavailableView {
+                        Label("联系人已关闭", systemImage: "person.crop.circle")
+                    } actions: {
+                        Button("联系人设置…", action: showSettings).buttonStyle(ContentActionButtonStyle())
+                    }
+                } else if !controller.canRead { connection }
                 else if !controller.error.isEmpty {
                     ContentUnavailableView {
                         Label("联系人读取失败", systemImage: "exclamationmark.triangle")
@@ -105,6 +123,7 @@ struct ContactsPage: View {
                 } else { ContentUnavailableView("没有匹配联系人", systemImage: "person.crop.circle") }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .onReceive(permission.$enabled) { permissionEnabled = $0 }
     }
 
     private var connection: some View {

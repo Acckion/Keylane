@@ -45,7 +45,6 @@ struct Launcher: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$pageID),
             ViewObservation.changes(model.$query),
-            ViewObservation.changes(model.$error),
             ViewObservation.changes(model.$appearance),
             ViewObservation.changes(model.$interfaceSize),
             ViewObservation.changes(model.$windowMode),
@@ -131,7 +130,6 @@ struct Launcher: View {
                         .mask(LinearGradient(stops: [.init(color: .black.opacity(0.85), location: 0), .init(color: .black.opacity(0.7), location: 0.48), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
                 }
                 Spacer(minLength: 0)
-                if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(.red).padding(8).background(.regularMaterial) }
                 ChromeBlur().frame(height: 78)
                     .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black.opacity(0.55), location: 0.5), .init(color: .black.opacity(0.8), location: 1)], startPoint: .top, endPoint: .bottom))
             }.allowsHitTesting(false) }
@@ -524,7 +522,7 @@ struct Launcher: View {
         let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
         let badgeSymbol = page?.badge?.symbol ?? ""
         let feedback = application ? model.footerFeedback.current : nil
-        let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.message) }
+        let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
             ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty
         let actionWidth: CGFloat = page?.actionWidth ?? (showsActions ? 196 : 126)
@@ -543,7 +541,10 @@ struct Launcher: View {
                     .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
             } else if let feedback {
-                NativeHoverButton(title: "\(feedback.message) · 打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
+                NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开 Keylane 菜单" : feedback.label, action: {
+                    if feedback.actionTitle != nil { model.footerFeedback.performAction() }
+                    else { toggleMenu(application: true) }
+                }) {
                     LauncherFooterFeedbackLabel(feedback: feedback)
                 }
                 .frame(width: applicationWidth, height: 36)
@@ -635,7 +636,7 @@ struct Launcher: View {
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
         var actions = model.launcherModules?.actions(for: row) ?? [
-            MenuAction(id: "open", title: "执行命令", icon: "return", keys: ["↩"]) {
+            MenuAction(id: "open", title: row.needsPermissionActivation ? "启用并继续" : "执行命令", icon: "return", keys: ["↩"]) {
                 model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
             },
             model.favoriteAction(for: row)
@@ -758,6 +759,7 @@ struct Launcher: View {
         if argumentTarget != nil { return "启动新实例" }
         if let title = page?.primaryTitle?() { return title }
         if let row = selectedEntry {
+            if row.needsPermissionActivation { return "启用并继续" }
             if let title = model.launcherModules?.primaryTitle(for: row) { return title }
             if row.id == "calculator" { return "复制结果" }
         }
