@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import KeylaneCore
 import UniformTypeIdentifiers
 
@@ -9,6 +10,7 @@ final class ApplicationResultActions {
     private var restarting = Set<String>()
     private var uninstalling = Set<String>()
     private let uninstallQueue = DispatchQueue(label: "org.keylane.applications.uninstall", qos: .userInitiated)
+    private var uninstallCatalogChanges: AnyCancellable?
     private var uninstallLoad: DispatchWorkItem?
 
     private static let directShortcuts: [(String, [String])] = [
@@ -123,7 +125,15 @@ final class ApplicationResultActions {
         restart(url, path: url.resolvingSymlinksInPath().path, model: model)
     }
 
-    func loadUninstallCandidates(_ items: [ApplicationPreferenceItem]) {
+    func startUninstallSelection(catalog: ApplicationSettingsCatalog, query: String) {
+        uninstallSelection.filter(query)
+        guard uninstallCatalogChanges == nil else { return }
+        uninstallCatalogChanges = catalog.$items.sink { [weak self] items in
+            self?.loadUninstallCandidates(items)
+        }
+    }
+
+    private func loadUninstallCandidates(_ items: [ApplicationPreferenceItem]) {
         uninstallLoad?.cancel()
         let request = DispatchWorkItem {}
         uninstallLoad = request
@@ -145,6 +155,8 @@ final class ApplicationResultActions {
     }
 
     func stopUninstallSelection() {
+        uninstallCatalogChanges?.cancel()
+        uninstallCatalogChanges = nil
         uninstallLoad?.cancel()
         uninstallLoad = nil
         uninstallSelection.clear()
