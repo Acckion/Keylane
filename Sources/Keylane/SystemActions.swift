@@ -73,6 +73,48 @@ enum SystemActions {
         changeVisibility(of: apps, hidden: false)
     }
 
+    static func quitApplications(keepingFrontmost: Bool) {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let target = frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            ? delegate?.previousApplication : frontmost
+        if keepingFrontmost, target == nil || target?.isTerminated == true || target?.activationPolicy != .regular {
+            feedback("找不到要保留的前台应用。", style: .failure)
+            return
+        }
+        let applications = regularApplications.filter {
+            $0.bundleIdentifier != "com.apple.finder"
+                && (!keepingFrontmost || $0.processIdentifier != target?.processIdentifier)
+        }
+        guard !applications.isEmpty else {
+            feedback("没有需要退出的应用。", style: .neutral)
+            return
+        }
+        delegate?.hideLauncher()
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = keepingFrontmost ? "退出其他应用？" : "退出所有应用？"
+        let names = applications.compactMap(\.localizedName).prefix(8).joined(separator: "、")
+        alert.informativeText = "将请求 \(applications.count) 个应用正常退出。应用可能提示保存。\n\n" + names
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "退出应用")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        for application in applications where !application.isTerminated { application.terminate() }
+        awaitApplicationExit(applications, deadline: ProcessInfo.processInfo.systemUptime + 15)
+    }
+
+    private static func awaitApplicationExit(_ applications: [NSRunningApplication], deadline: TimeInterval) {
+        let remaining = applications.filter { !$0.isTerminated }
+        if remaining.isEmpty {
+            feedback("已退出 \(applications.count) 个应用。", style: .success)
+        } else if ProcessInfo.processInfo.systemUptime >= deadline {
+            feedback("已退出 \(applications.count - remaining.count) 个应用，\(remaining.count) 个仍在运行。请检查保存提示。", style: .failure)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                awaitApplicationExit(applications, deadline: deadline)
+            }
+        }
+    }
+
     private static var regularApplications: [NSRunningApplication] {
         NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && !$0.isTerminated &&

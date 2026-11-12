@@ -97,12 +97,18 @@ enum BuiltinLauncherModules {
     private static func applications(_ model: Model) -> LauncherModule {
         let provider = LauncherModule.Provider(namespace: .prefix("app:"), entries: { [weak model] _ in
             guard let model, model.applicationsEnabled else { return [] }
-            return model.apps.filter { !model.excluded.contains($0.path) }.map { url in
+            let apps = model.apps.filter { !model.excluded.contains($0.path) }
+            let names = Dictionary(grouping: apps) { model.appName($0).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) }
+            return apps.map { url in
                 let identity = model.discoveredIdentity(for: url)
                 let path = url.path
+                let name = identity?.displayName ?? url.deletingPathExtension().lastPathComponent
+                let nameKey = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                let duplicate = names[nameKey, default: []].count > 1
                 return Entry(id: path, commandID: .init(rawValue: "app:" + path),
-                             name: identity?.displayName ?? url.deletingPathExtension().lastPathComponent,
-                             detail: "Application", symbol: "app", aliases: identity?.aliases ?? [])
+                             name: name, detail: "Application", symbol: "app",
+                             aliases: (identity?.aliases ?? []) + (duplicate ? [path] : []),
+                             subtitle: duplicate ? (path as NSString).abbreviatingWithTildeInPath : nil)
             }
         }, resolve: { [weak model] id, origin in
             guard id.rawValue.hasPrefix("app:"), let model, model.applicationsEnabled else { return nil }
@@ -115,19 +121,48 @@ enum BuiltinLauncherModules {
                 else { model?.launch(url) }
             }
         }, actions: { [weak model] entry in model.map { $0.applicationResultActions.actions(for: entry, model: $0) } })
+        let uninstallPage = PageID(rawValue: "ApplicationUninstall")
+        let uninstallSelection = model.applicationResultActions.uninstallSelection
+        let submitUninstall: () -> Void = { [weak model] in
+            guard let model, let item = uninstallSelection.selected else { return }
+            model.applicationResultActions.uninstall(item.url, model: model, keepLauncher: true)
+        }
         return .init(id: .init(rawValue: "keylane.applications"), commands: [
                          command("manage-auto-quit", "管理自动退出", "为应用配置离开前台后的退出时间", "app.badge.clock",
                                  ["Manage Auto Quit", "闲置退出"], settings: "applications",
                                  available: { [weak model] in model?.applicationsEnabled ?? false },
                                  execute: { [weak model] _ in model?.openSettings(page: "applications") }),
                          command("uninstall-application", "卸载应用程序", "选择应用并移到废纸篓", "trash",
-                                 ["Uninstall Application", "移除应用"], settings: "applications",
-                                 available: { [weak model] in model?.applicationsEnabled ?? false },
-                                 execute: { [weak model] _ in
-                                     guard let model else { return }
-                                     model.applicationResultActions.chooseApplicationToUninstall(model: model)
-                                 })
-                     ], providers: [provider],
+                                 ["Uninstall Application", "移除应用"], destination: .page(uninstallPage), settings: "applications",
+                                 available: { [weak model] in model?.applicationsEnabled ?? false })
+                     ], providers: [provider], pages: [.init(
+                        id: uninstallPage, placeholder: "查找要卸载的应用…", badge: ("卸载应用程序", "trash"),
+                        contentPlacement: .underChrome,
+                        content: { [weak model] in
+                            guard let model else { return AnyView(EmptyView()) }
+                            return AnyView(ApplicationUninstallPage(selection: uninstallSelection, submit: submitUninstall)
+                                .onReceive(model.applicationSettingsCatalog.$items) {
+                                    model.applicationResultActions.loadUninstallCandidates($0)
+                                })
+                        },
+                        queryChanged: uninstallSelection.filter, move: uninstallSelection.move, submit: submitUninstall,
+                        actionContextTitle: { uninstallSelection.selected?.title }, primaryTitle: { "卸载应用…" },
+                        primaryEnabled: { uninstallSelection.selected != nil },
+                        updates: Publishers.Merge(ViewObservation.changes(uninstallSelection.$selectedID),
+                                                    ViewObservation.changes(uninstallSelection.$items)).eraseToAnyPublisher()
+                     ), .init(
+                        id: ApplicationCommandEdit.pageID, placeholder: "", badge: ("编辑应用命令", "keyboard"),
+                        contentPlacement: .form,
+                        content: { [weak model] in
+                            guard let model else { return AnyView(EmptyView()) }
+                            return AnyView(ApplicationCommandEditPage(editor: model.applicationResultActions.commandEditor, model: model))
+                        },
+                        submit: { [weak model] in
+                            guard let model else { return }
+                            model.applicationResultActions.commandEditor.save(model: model)
+                        },
+                        primaryTitle: { "保存别名" }
+                     )],
                      settings: [settingsPage(model, "applications", "应用程序", "square.grid.2x2.fill", "快速查找并启动已安装的应用程序。", 10, titlebar: SettingsTitlebarContribution(
                          title: "启用应用程序", help: "启用应用搜索和应用快捷键",
                          enabled: Binding(get: { [weak model] in model?.applicationsEnabled ?? false },
@@ -446,6 +481,15 @@ enum BuiltinLauncherModules {
                     ["Toggle Mute", "Mute", "Unmute", "取消静音"], execute: { _ in SystemActions.toggleOutputMute() }),
             command("hide-other-applications", "隐藏其他应用", "保留前台应用", "eye.slash",
                     ["Hide Other Apps", "Hide All Apps Except Frontmost"], execute: { _ in SystemActions.hideOtherApplications() }),
+            command("restart-frontmost-application", "重启前台应用", "正常退出并重新打开前台应用", "arrow.clockwise",
+                    ["Restart Frontmost App"], execute: { [weak model] _ in
+                        guard let model else { return }
+                        model.applicationResultActions.restartFrontmost(model: model)
+                    }),
+            command("quit-all-applications", "退出所有应用", "向打开的应用发出正常退出请求", "rectangle.portrait.and.arrow.right",
+                    ["Quit All Apps"], execute: { _ in SystemActions.quitApplications(keepingFrontmost: false) }),
+            command("quit-other-applications", "退出其他应用", "保留前台应用并退出其余应用", "rectangle.portrait.and.arrow.right",
+                    ["Quit All Apps Except Frontmost", "Quit Other Apps"], execute: { _ in SystemActions.quitApplications(keepingFrontmost: true) }),
             command("unhide-applications", "显示所有隐藏应用", "恢复已隐藏的应用窗口", "eye",
                     ["Unhide All Hidden Apps", "Show Hidden Apps"], execute: { _ in SystemActions.unhideApplications() })
         ], services: [.init(start: { [weak model] in

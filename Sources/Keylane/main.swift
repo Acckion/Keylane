@@ -56,7 +56,13 @@ final class Model: ObservableObject {
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots
     @Published var excluded = Set(UserDefaults.standard.stringArray(forKey: "excludedApps") ?? [])
     @Published var applicationsEnabled = (UserDefaults.standard.object(forKey: "applicationsEnabled") as? Bool) ?? true { didSet { UserDefaults.standard.set(applicationsEnabled, forKey: "applicationsEnabled") } }
-    @Published var applicationHotkeyAction = UserDefaults.standard.string(forKey: "applicationHotkeyAction") ?? "activate" { didSet { UserDefaults.standard.set(applicationHotkeyAction, forKey: "applicationHotkeyAction") } }
+    @Published var applicationCustomDepth = UserDefaults.standard.integer(forKey: "applicationCustomDepth") {
+        didSet {
+            UserDefaults.standard.set(applicationCustomDepth, forKey: "applicationCustomDepth")
+            reloadCatalog()
+        }
+    }
+    @Published var applicationHotkeyAction = UserDefaults.standard.string(forKey: "applicationHotkeyAction") ?? "toggle" { didSet { UserDefaults.standard.set(applicationHotkeyAction, forKey: "applicationHotkeyAction") } }
     @Published var aliases = UserDefaults.standard.dictionary(forKey: "aliases") as? [String:String] ?? [:]
     @Published var usage = UserDefaults.standard.dictionary(forKey: "usage") as? [String:Int] ?? [:]
     private var searchUsage = UserDefaults.standard.data(forKey: SearchUsageHistory.storageKey)
@@ -155,6 +161,38 @@ final class Model: ObservableObject {
         didSet { commandSearch.invalidate() }
     }
     @Published var favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
+    @Published private(set) var favoriteOrder = UserDefaults.standard.stringArray(forKey: "favoriteOrder") ?? []
+
+    func favoriteOrderActions(for id: String) -> [LauncherAction] {
+        let order = orderedFavoriteIDs
+        guard let index = order.firstIndex(of: id) else { return [] }
+        return [
+            .init(id: "move-favorite-earlier", title: "向前移动收藏", icon: "arrow.up", group: 1, enabled: index > 0) { [weak self] in
+                self?.moveFavorite(id, by: -1)
+            },
+            .init(id: "move-favorite-later", title: "向后移动收藏", icon: "arrow.down", group: 1, enabled: index + 1 < order.count) { [weak self] in
+                self?.moveFavorite(id, by: 1)
+            }
+        ]
+    }
+
+    private var orderedFavoriteIDs: [String] {
+        var remaining = favorites
+        return favoriteOrder.filter { remaining.remove($0) != nil } + remaining.sorted()
+    }
+
+    private func moveFavorite(_ id: String, by delta: Int) {
+        var order = orderedFavoriteIDs
+        guard let source = order.firstIndex(of: id), order.indices.contains(source + delta) else { return }
+        order.swapAt(source, source + delta)
+        saveFavoriteOrder(order)
+    }
+
+    private func saveFavoriteOrder(_ order: [String]) {
+        favoriteOrder = order
+        UserDefaults.standard.set(order, forKey: "favoriteOrder")
+    }
+
     func favoriteAction(for entry: Entry) -> LauncherAction {
         let favorite = favorites.contains(entry.id)
         return .init(id: "favorite", title: favorite ? "取消收藏" : "加入收藏", icon: favorite ? "star.fill" : "star") { [weak self] in
@@ -162,8 +200,15 @@ final class Model: ObservableObject {
         }
     }
     func toggleFavorite(_ id: String, showsFeedback: Bool = false) {
+        var order = orderedFavoriteIDs
         let added = favorites.remove(id) == nil
-        if added { favorites.insert(id) }
+        if added {
+            favorites.insert(id)
+            order.append(id)
+        } else {
+            order.removeAll { $0 == id }
+        }
+        saveFavoriteOrder(order)
         UserDefaults.standard.set(Array(favorites), forKey: "favorites")
         if showsFeedback {
             (NSApp.delegate as? Delegate)?.showLauncherFeedback(added ? "已加入收藏" : "已取消收藏", style: .success)
@@ -281,7 +326,7 @@ final class Model: ObservableObject {
     func refreshRunningApps() { runningPaths = Set(NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.resolvingSymlinksInPath().path }) }
     func reloadCatalog() {
         UserDefaults.standard.set(roots, forKey: "applicationRoots"); UserDefaults.standard.set(Array(excluded), forKey: "excludedApps")
-        scanStatus = "正在扫描…"; discovery.configure(roots: roots, excluded: excluded)
+        scanStatus = "正在扫描…"; discovery.configure(roots: roots, excluded: excluded, customDepth: applicationCustomDepth == 3 ? 3 : nil)
     }
     func addRoot() { let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; if panel.runModal() == .OK, let url = panel.url, !roots.contains(url.path) { roots.append(url.path); reloadCatalog() } }
     func setAlias(_ id: String, value: String) { aliases[id] = value.trimmingCharacters(in: .whitespacesAndNewlines); UserDefaults.standard.set(aliases, forKey: "aliases") }
@@ -409,7 +454,7 @@ final class Model: ObservableObject {
         guard let launcherModules else { return [] }
         let input = LauncherCommandSearch.Input(query: query, page: pageID,
                                                 aliases: aliases, favorites: favorites, usage: usage,
-                                                history: pageID == .root ? searchUsage : .init(),
+                                                favoriteOrder: orderedFavoriteIDs, history: pageID == .root ? searchUsage : .init(),
                                                 sensitivity: rootSearchSensitivity, namespace: namespace)
         return commandSearch.results(for: input, registry: launcherModules)
     }

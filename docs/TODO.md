@@ -21,7 +21,7 @@
 |---|---|---|
 | 1 | AI | P3；聊天、服务商及代理等先延期 |
 | 2 | Apple Shortcuts | P1；发现本机快捷指令，进入搜索结果，支持执行、别名和热键 |
-| 3 | Applications | 已有实现；继续基础稳定性、统一外观与剩余验收，不重做 |
+| 3 | Applications | 见[应用程序待办进度与验收记录](APPLICATION-LIFECYCLE.md) |
 | 4 | Browser | 按用户所指的AI上下文功能处理，归P3；本轮不扩展浏览器AI上下文 |
 | 5 | Calculator | P1；主界面直接输入计算、显示与复制结果；完善已有受限解析器 |
 | 6 | Calendar | P1；集成macOS日历，展示真实日程；菜单栏显示复用P0设施 |

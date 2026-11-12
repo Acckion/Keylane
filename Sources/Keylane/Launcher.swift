@@ -60,6 +60,7 @@ struct Launcher: View {
             ViewObservation.changes(model.$presentedLauncherHeight),
             ViewObservation.changes(model.$compactFavorites),
             ViewObservation.changes(model.$favorites),
+            ViewObservation.changes(model.$favoriteOrder),
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$usage),
             ViewObservation.changes(model.$excluded),
@@ -625,7 +626,15 @@ struct Launcher: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
     private var pageMenuShortcuts: some View {
-        let entryActions = page?.actionShortcutsEnabled == true ? page?.actions?() ?? [] : []
+        let entryActions: [LauncherAction]
+        if page?.actionShortcutsEnabled == true {
+            entryActions = page?.actions?() ?? []
+        } else if page == nil, !appMenu, submenu == nil, argumentTarget == nil,
+                  let entry = selectedEntry, entry.commandID.rawValue.hasPrefix("app:") {
+            entryActions = model.applicationResultActions.shortcutActions(for: entry, model: model)
+        } else {
+            entryActions = []
+        }
         return ForEach((page?.badgeActions?() ?? []) + entryActions) { action in
             let modifiers = action.keys.dropLast()
             if action.enabled, !modifiers.isEmpty, let key = action.keys.last,
@@ -684,6 +693,9 @@ struct Launcher: View {
             },
             model.favoriteAction(for: row)
         ]
+        if model.pageID == .root, !row.commandID.rawValue.hasPrefix("app:") {
+            actions.append(contentsOf: model.favoriteOrderActions(for: row.id))
+        }
         if model.pageID == .root, model.usage[row.id, default: 0] > 0,
            !actions.contains(where: { $0.id == "reset-ranking" }) {
             actions.append(model.resetRankingAction(for: row))
