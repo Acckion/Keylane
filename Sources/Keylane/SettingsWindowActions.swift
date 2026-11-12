@@ -5,7 +5,7 @@ struct SettingsWindowActions: View {
     @ObservedObject var state: SettingsWindowState
 
     static func width(for page: LauncherSettingsPage?) -> CGFloat {
-        if page?.trailingToolbar != nil { return 140 }
+        if page?.trailingToolbar != nil { return 48 }
         return page?.titlebar == nil ? 0 : 64
     }
 

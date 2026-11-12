@@ -53,11 +53,14 @@ struct ShortcutSettingsCategoryFilter: View {
             categoryQuery = ""
             categoryFilterOpen.toggle()
         } label: {
-            Label(current.title, systemImage: current.symbol)
+            Image(systemName: current.symbol)
+                .font(.system(size: 16, weight: .medium))
+                .frame(width: 36, height: 36)
+                .contentShape(Circle())
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.capsule)
-        .help("筛选快捷键分类")
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: Circle())
+        .help("筛选：\(current.title)")
         .accessibilityLabel("筛选：\(current.title)")
         .popover(isPresented: $categoryFilterOpen, arrowEdge: .top) {
             VStack(spacing: 0) {
