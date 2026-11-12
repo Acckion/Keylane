@@ -733,7 +733,7 @@ struct Launcher: View {
                 }
             }
             Divider().padding(.top, 9)
-            SearchField(text: $actionQuery, placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, fontSize: 14, navigation: model.navigation, submit: {
+            SearchField(text: $actionQuery, placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, compact: true, navigation: model.navigation, submit: {
                 if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
             }, move: moveSelection, escape: escape, back: { escape() }, forward: {
                 if items.indices.contains(actionSelection), items[actionSelection].submenu != nil { activate(items[actionSelection]) }

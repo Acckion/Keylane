@@ -8,7 +8,7 @@ struct SearchField: View {
     let placeholder: String
     var focusToken: Int
     var wantsFocus: Bool = true
-    var fontSize: CGFloat = 19
+    var compact = false
     var navigation: String = "arrows"
     let submit: () -> Void
     let move: (Int) -> Void
@@ -20,7 +20,10 @@ struct SearchField: View {
     var body: some View {
         TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
-            .font(.system(size: fontSize))
+            .font(.system(size: compact ? 14 : 19))
+            // The native editor draws the standard-size line one point higher while focused.
+            .offset(y: focused && !compact ? 1 : 0)
+            .animation(nil, value: focused)
             .focused($focused)
             .accessibilityLabel(placeholder)
             .onSubmit { if !Self.isComposing { submit() } }

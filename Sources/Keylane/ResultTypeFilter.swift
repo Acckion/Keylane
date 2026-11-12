@@ -86,7 +86,7 @@ struct ResultFilterPanel: View {
     var body: some View {
         ScrollViewReader { proxy in
             VStack(spacing: 0) {
-                SearchField(text: $query, placeholder: searchPlaceholder, focusToken: 0, fontSize: 14,
+                SearchField(text: $query, placeholder: searchPlaceholder, focusToken: 0, compact: true,
                             navigation: navigation, submit: {
                                 if options.indices.contains(highlighted) { choose(options[highlighted]) }
                             }, move: { delta in
