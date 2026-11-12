@@ -7,6 +7,8 @@ final class CalculatorExchangeRates: ObservableObject {
     @Published private var state = RefreshState.idle
     private var rates: ECBReferenceRates?
     private var lastAttempt: TimeInterval?
+    private var refreshTask: URLSessionDataTask?
+    private var revision = 0
     private let defaults: UserDefaults
     private let session: URLSession
     private let cacheKey = "calculatorECBReferenceRates"
@@ -15,7 +17,7 @@ final class CalculatorExchangeRates: ObservableObject {
     init(defaults: UserDefaults = .standard, session: URLSession = .shared) {
         self.defaults = defaults
         self.session = session
-        rates = defaults.data(forKey: cacheKey).flatMap { try? JSONDecoder().decode(ECBReferenceRates.self, from: $0) }
+
     }
 
     var updates: AnyPublisher<Void, Never> {
@@ -24,6 +26,9 @@ final class CalculatorExchangeRates: ObservableObject {
 
     func result(_ conversion: CalculatorConversion) -> (value: String?, detail: String)? {
         guard let pair = conversion.currencies else { return nil }
+        if rates == nil && lastAttempt == nil {
+            rates = defaults.data(forKey: cacheKey).flatMap { try? JSONDecoder().decode(ECBReferenceRates.self, from: $0) }
+        }
         refreshIfNeeded()
         let status: String
         switch state {
@@ -43,6 +48,15 @@ final class CalculatorExchangeRates: ObservableObject {
         return (String(format: "%.12g", converted) + " " + pair.target, detail)
     }
 
+    func stop() {
+        revision += 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        rates = nil
+        lastAttempt = nil
+        state = .idle
+    }
+
     private func refreshIfNeeded() {
         let now = ProcessInfo.processInfo.systemUptime
         let interval: TimeInterval = state == .offline || state == .failed ? 30 : 900
@@ -51,12 +65,14 @@ final class CalculatorExchangeRates: ObservableObject {
         state = .loading
         let url = URL(string: "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml")!
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 8)
-        session.dataTask(with: request) { [weak self] data, response, error in
+        let ticket = revision
+        refreshTask = session.dataTask(with: request) { [weak self] data, response, error in
             let statusCode = (response as? HTTPURLResponse)?.statusCode
             let snapshot = statusCode == 200 ? data.flatMap(ECBReferenceRates.init(xml:)) : nil
             let offline = (error as? URLError).map { [.notConnectedToInternet, .networkConnectionLost, .dataNotAllowed].contains($0.code) } ?? false
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.revision == ticket else { return }
+                self.refreshTask = nil
                 if let snapshot {
                     if self.rates.map({ $0.date <= snapshot.date }) ?? true {
                         self.rates = snapshot
@@ -67,6 +83,7 @@ final class CalculatorExchangeRates: ObservableObject {
                     self.state = offline ? .offline : .failed
                 }
             }
-        }.resume()
+        }
+        refreshTask?.resume()
     }
 }

@@ -61,10 +61,27 @@ struct ClipboardLinkPreview: View {
 final class ClipboardLinkPreviews {
     static let shared = ClipboardLinkPreviews()
     let iconUpdates = PassthroughSubject<(URL, NSImage), Never>()
+    private var active = false
+    private var generation = 0
+    private var webSession: URLSession?
     private let pages = RequestCache<ClipboardLinkMetadata>(count: 48, bytes: 24 * 1024 * 1024, lifetime: 900)
     private let icons = RequestCache<NSImage>(count: 128, bytes: 4 * 1024 * 1024, lifetime: 3600)
 
+    func start() { active = true }
+
+    func stop() {
+        active = false
+        generation += 1
+        pages.clear()
+        icons.clear()
+        webSession?.invalidateAndCancel()
+        webSession = nil
+    }
+
     func preview(for url: URL) async -> ClipboardLinkMetadata? {
+        guard active else { return nil }
+        let ticket = generation
+        let session = sessionForPreviews()
         let result = await pages.value(for: url, cost: { Self.imageCost($0.image) + Self.imageCost($0.icon) }) {
             let metadata = await Self.fetch(url)
             async let previewImage = Self.loadImage(metadata?.imageProvider, maximum: 1200)
@@ -74,13 +91,14 @@ final class ClipboardLinkPreviews {
             if let image, let title, !title.isEmpty, let icon {
                 return ClipboardLinkMetadata(title: title, image: image, icon: icon)
             }
-            let head = await Self.webPageHead(at: url)
-            async let fallbackImage = Self.downloadImage(image == nil ? head?.image : nil, maximum: 1200)
-            async let fallbackIcon = Self.downloadImage(icon == nil ? head?.icon : nil, maximum: 64)
+            let head = await Self.webPageHead(at: url, session: session)
+            async let fallbackImage = Self.downloadImage(image == nil ? head?.image : nil, maximum: 1200, session: session)
+            async let fallbackIcon = Self.downloadImage(icon == nil ? head?.icon : nil, maximum: 64, session: session)
             let (downloadedImage, downloadedIcon) = await (fallbackImage, fallbackIcon)
             guard metadata != nil || head != nil else { return nil }
             return ClipboardLinkMetadata(title: head?.title ?? title, image: image ?? downloadedImage, icon: icon ?? downloadedIcon)
         }
+        guard active, generation == ticket else { return nil }
         if let icon = result?.icon, let origin = Self.origin(for: url), icons.cachedValue(for: origin) == nil {
             icons.store(icon, for: origin, cost: Self.imageCost(icon))
             iconUpdates.send((origin, icon))
@@ -89,14 +107,15 @@ final class ClipboardLinkPreviews {
     }
 
     func icon(for url: URL) async -> NSImage? {
-        guard let origin = Self.origin(for: url) else { return nil }
+        guard active, let origin = Self.origin(for: url) else { return nil }
+        let session = sessionForPreviews()
         // Rows request only an origin's icon. Fetch the full URL only for the selected entry.
         return await icons.value(for: origin, cost: { Self.imageCost($0) }) {
-            if let icon = await Self.downloadImage(origin.appendingPathComponent("favicon.ico"), maximum: 64) { return icon }
+            if let icon = await Self.downloadImage(origin.appendingPathComponent("favicon.ico"), maximum: 64, session: session) { return icon }
             let metadata = await Self.fetch(origin)
             if let icon = await Self.loadImage(metadata?.iconProvider, maximum: 64) { return icon }
-            let head = await Self.webPageHead(at: origin)
-            return await Self.downloadImage(head?.icon, maximum: 64)
+            let head = await Self.webPageHead(at: origin, session: session)
+            return await Self.downloadImage(head?.icon, maximum: 64, session: session)
         }
     }
 
@@ -109,18 +128,27 @@ final class ClipboardLinkPreviews {
     }
 
     private static func fetch(_ url: URL) async -> LPLinkMetadata? {
+        guard !Task.isCancelled else { return nil }
         let provider = LPMetadataProvider()
         provider.timeout = 8
-        return try? await provider.startFetchingMetadata(for: request(for: url, accepts: "text/html"))
+        return await withTaskCancellationHandler {
+            guard !Task.isCancelled else { return nil }
+            return try? await provider.startFetchingMetadata(for: request(for: url, accepts: "text/html"))
+        } onCancel: {
+            provider.cancel()
+        }
     }
 
-    private static let session: URLSession = {
+    private func sessionForPreviews() -> URLSession {
+        if let webSession { return webSession }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.timeoutIntervalForRequest = 5
         configuration.timeoutIntervalForResource = 8
-        return URLSession(configuration: configuration)
-    }()
+        let session = URLSession(configuration: configuration)
+        webSession = session
+        return session
+    }
 
     private nonisolated static func request(for url: URL, accepts: String) -> URLRequest {
         var request = URLRequest(url: url)
@@ -130,8 +158,8 @@ final class ClipboardLinkPreviews {
         return request
     }
 
-    private nonisolated static func download(_ url: URL, accepts: String, limit: Int) async -> (Data, URL)? {
-        guard let (bytes, response) = try? await session.bytes(for: request(for: url, accepts: accepts)),
+    private nonisolated static func download(_ url: URL, accepts: String, limit: Int, session: URLSession) async -> (Data, URL)? {
+        guard !Task.isCancelled, let (bytes, response) = try? await session.bytes(for: request(for: url, accepts: accepts)),
               let response = response as? HTTPURLResponse, let finalURL = response.url else { return nil }
         guard (200..<300).contains(response.statusCode), response.expectedContentLength <= limit else {
             bytes.task.cancel()
@@ -150,14 +178,14 @@ final class ClipboardLinkPreviews {
         return (data, finalURL)
     }
 
-    private nonisolated static func downloadImage(_ url: URL?, maximum: Int) async -> NSImage? {
+    private nonisolated static func downloadImage(_ url: URL?, maximum: Int, session: URLSession) async -> NSImage? {
         guard let url, let (data, _) = await download(url, accepts: "image/*",
-                                                      limit: maximum <= 64 ? 256 * 1024 : 5 * 1024 * 1024) else { return nil }
+                                                      limit: maximum <= 64 ? 256 * 1024 : 5 * 1024 * 1024, session: session) else { return nil }
         return decode(data, maximum: maximum)
     }
 
-    private nonisolated static func webPageHead(at url: URL) async -> (title: String?, image: URL?, icon: URL?)? {
-        guard let (data, finalURL) = await download(url, accepts: "text/html", limit: 512 * 1024),
+    private nonisolated static func webPageHead(at url: URL, session: URLSession) async -> (title: String?, image: URL?, icon: URL?)? {
+        guard let (data, finalURL) = await download(url, accepts: "text/html", limit: 512 * 1024, session: session),
               let html = String(data: data, encoding: .utf8),
               let end = html.range(of: "</head>", options: .caseInsensitive),
               let document = try? XMLDocument(data: Data(html[..<end.upperBound].utf8),
@@ -263,6 +291,7 @@ private final class RequestCache<Value> {
 
     private let cache = NSCache<NSURL, Entry>()
     private var pending: [URL: Task<Value?, Never>] = [:]
+    private var generation = 0
     private let lifetime: TimeInterval
 
     init(count: Int, bytes: Int, lifetime: TimeInterval) {
@@ -273,17 +302,27 @@ private final class RequestCache<Value> {
 
     func value(for url: URL, cost: (Value) -> Int, fetch: @escaping @MainActor () async -> Value?) async -> Value? {
         if let entry = cache.object(forKey: url as NSURL), entry.expires > Date() { return entry.value }
+        let ticket = generation
         if let task = pending[url] {
             let result = await task.value
+            guard ticket == generation else { return nil }
             return cachedValue(for: url) ?? result
         }
         let task = Task { await fetch() }
         pending[url] = task
         let result = await task.value
+        guard ticket == generation else { return nil }
         pending[url] = nil
         if let seeded = cachedValue(for: url) { return seeded }
         store(result, for: url, cost: result.map(cost) ?? 0)
         return result
+    }
+
+    func clear() {
+        generation += 1
+        for task in pending.values { task.cancel() }
+        pending.removeAll()
+        cache.removeAllObjects()
     }
 
     func cachedValue(for url: URL) -> Value? {

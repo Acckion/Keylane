@@ -19,10 +19,24 @@ struct SettingsView: View {
             sidebar(matches: matches)
         } detail: {
             SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
-                if let page, let contribution = page.titlebar, contribution.permissionStatus != nil {
-                    PermissionSettingsContent(contribution: contribution, content: page.content).id(page.id)
-                } else {
-                    page?.content()
+                let enabled = state.extensionEnabled(for: selected)
+                if enabled?.wrappedValue == false {
+                    SettingsGroup {
+                        SettingsRow("扩展已关闭", detail: "后台活动已停止，数据与快捷键已保留。") { EmptyView() }
+                    }
+                } else if let page {
+                    if let contribution = page.titlebar, enabled != nil {
+                        SettingsGroup {
+                            SettingsPermissionToggle(contribution: contribution, detail: nil)
+                                .id(contribution.searchItem?.id ?? page.id)
+                        }
+                    }
+                    if let contribution = page.titlebar, contribution.permissionStatus != nil {
+                        PermissionSettingsContent(contribution: contribution, content: page.content,
+                                                  showsFeedback: enabled == nil).id(page.id)
+                    } else {
+                        page.content()
+                    }
                 }
             }
         }.toggleStyle(SettingsSwitchStyle())
@@ -141,7 +155,7 @@ struct SettingsView: View {
     }
     private func reveal(_ item: SettingsItem) {
         selected = item.page; target = nil; searchSelection = nil; query = ""
-        if state.catalog.page(item.page)?.titlebar?.searchItem?.id != item.id {
+        if state.extensionEnabled(for: item.page) != nil || state.catalog.page(item.page)?.titlebar?.searchItem?.id != item.id {
             DispatchQueue.main.async { target = item.id }
         }
     }

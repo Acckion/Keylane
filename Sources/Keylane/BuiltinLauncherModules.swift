@@ -12,13 +12,14 @@ enum BuiltinLauncherModules {
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
-            guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
+            guard module.canDisable, module.settings.isEmpty else {
                 return module
             }
             let id = module.id.rawValue
             let title = module.displayTitle
             let symbol = module.displaySymbol
             let commands = module.commands
+            let dynamic = module.dynamicCommandSettings
             let searchItem = SettingsItem(id: id, page: id, title: title,
                                            keywords: commands.flatMap { $0.declaration.keywords }.joined(separator: " "))
             var extensionModule = module
@@ -26,7 +27,17 @@ enum BuiltinLauncherModules {
                                                subtitle: "管理此扩展的命令、别名与快捷键。", order: 120 + index,
                                                items: [searchItem], titlebar: module.permissionTitlebar, content: { [weak model] in
                 guard let model else { return AnyView(EmptyView()) }
-                return AnyView(ExtensionCommandPreferences(model: model, commands: commands).settingsAnchor(searchItem))
+                if !commands.isEmpty {
+                    return AnyView(ExtensionCommandPreferences(model: model, commands: commands).settingsAnchor(searchItem))
+                }
+                return AnyView(SettingsPageSections {
+                    if let list = dynamic?.matchingList(nil) { list(false) }
+                    else {
+                        SettingsGroup {
+                            SettingsRow("搜索结果", detail: "在启动器中输入关键词，查找此扩展提供的项目。") { EmptyView() }
+                        }
+                    }
+                }.settingsAnchor(searchItem))
             })]
             return extensionModule
         }
@@ -126,6 +137,7 @@ enum BuiltinLauncherModules {
                      }, stop: { [weak model] in
                          model?.stopApplicationDiscovery()
                          model?.applicationAutoQuit.stop()
+                         model?.releaseApplicationCatalog()
                      })],
                      searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)],
                      dynamicCommandSettings: .init(
@@ -155,16 +167,29 @@ enum BuiltinLauncherModules {
                 complete(controller.hasAuthorizedScope)
             },
             guidance: "请通过启用开关选择可访问的文件夹。文件搜索只会扫描你授权的范围。"
-        ))
+        ), observeImmediately: false)
         var permissionChanges: AnyCancellable?
+        func start(reconcile: Bool) {
+            controller.startRuntime()
+            permission.startObserving()
+            controller.applyPermissionEnabled(permission.available)
+            if reconcile && !controller.indexing { controller.startIndex() }
+            let scopeChanges = controller.$options.map { [$0.enabled ? "enabled" : "disabled"] + $0.roots }
+            permissionChanges = Publishers.Merge(permission.updates, ViewObservation.changes(scopeChanges))
+                .receive(on: DispatchQueue.main).sink {
+                    permission.recheck()
+                    controller.applyPermissionEnabled(permission.available)
+                }
+        }
         let page = PageID(rawValue: "Files")
         let provider = LauncherModule.Provider(namespace: .prefix("file:"), entries: { [weak model] input in
             guard let model, input.page == .root, model.fileSearch.options.enabled,
                   model.fileSearch.options.searchFromLauncher,
                   !input.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+            let reserveScripts = model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.script-commands")) != false
             return model.fileResults.lazy.filter {
                 $0.url.pathExtension.lowercased() != "app" &&
-                    ($0.isDirectory || !ScriptCommand.reservesLauncherResult($0.url, in: model.scripts.folders))
+                    ($0.isDirectory || !reserveScripts || !ScriptCommand.reservesLauncherResult($0.url, in: model.scripts.folders))
             }.prefix(10).map(fileEntry)
         }, resolve: { [weak model] id, _ in
             guard id.rawValue.hasPrefix("file:"), let model, model.fileSearch.options.enabled,
@@ -197,18 +222,19 @@ enum BuiltinLauncherModules {
                          updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
                          releasePreview: { FilePreview.shared.dismiss() })
         ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"), content: LauncherSettingsContent.files)],
-           services: [.init(start: {
-               controller.applyPermissionEnabled(permission.available)
-               let scopeChanges = controller.$options.map { [$0.enabled ? "enabled" : "disabled"] + $0.roots }
-               permissionChanges = Publishers.Merge(permission.updates, ViewObservation.changes(scopeChanges))
-                   .receive(on: DispatchQueue.main).sink {
-                       permission.recheck()
-                       controller.applyPermissionEnabled(permission.available)
-                   }
-           }, stop: {
+           services: [.init(start: { start(reconcile: false) }, stop: { [weak model] in
                permissionChanges?.cancel()
                permissionChanges = nil
-               controller.cancel()
+               permission.stopObserving()
+               controller.stopRuntime()
+               FilePreview.shared.dismiss(owner: .fileSearch)
+               model?.fileAI.stopPresentation()
+               FileActionsWindow.shared.dismiss(owner: .fileSearch)
+           }, resume: { [weak model] in
+               start(reconcile: true)
+               if let model, model.searchesFilesHere, (NSApp.delegate as? Delegate)?.window?.isVisible == true {
+                   model.searchFiles()
+               }
            })],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
@@ -221,11 +247,11 @@ enum BuiltinLauncherModules {
         return [
             openAction("打开文件", entry: entry, model: model),
             .init(id: "preview", title: "快速查看", icon: "eye") { [weak model] in
-                if FileManager.default.fileExists(atPath: url.path) { FilePreview.shared.show(url) }
+                if FileManager.default.fileExists(atPath: url.path) { FilePreview.shared.show(url, owner: .fileSearch) }
                 else { model?.error = "文件已移走或删除。"; model?.searchFiles() }
             },
-            .init(id: "open-with-file", title: "打开方式…", icon: "app") { FileActionsWindow.shared.show(url, page: "open") },
-            .init(id: "share-file", title: "分享…", icon: "square.and.arrow.up") { FileActionsWindow.shared.show(url, page: "share") },
+            .init(id: "open-with-file", title: "打开方式…", icon: "app") { FileActionsWindow.shared.show(url, page: "open", owner: .fileSearch) },
+            .init(id: "share-file", title: "分享…", icon: "square.and.arrow.up") { FileActionsWindow.shared.show(url, page: "share", owner: .fileSearch) },
             .init(id: "ask-file", title: "询问此文件…", icon: "sparkles") { [weak model] in model?.fileAI.present([url]) },
             .init(id: "reveal-file", title: "在 Finder 中显示", icon: "folder") { NSWorkspace.shared.activateFileViewerSelecting([url]) },
             copyPathAction(id: "copy-file-path", url: url),
@@ -248,7 +274,7 @@ enum BuiltinLauncherModules {
     private static func clipboard(_ model: Model) -> LauncherModule {
         let id = PageID(rawValue: "Clipboard")
         let controller = model.clipboard
-        let permission = PermissionFeature("clipboardPersistentCapture", authorization: .persistentClipboard)
+        let permission = PermissionFeature("clipboardPersistentCapture", authorization: .persistentClipboard, observeImmediately: false)
         var titlebar = permission.titlebar(SettingsItem.clipboardCapture.title)
         titlebar.searchItem = .clipboardCapture
         var permissionChanges: AnyCancellable?
@@ -328,6 +354,9 @@ enum BuiltinLauncherModules {
             settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: titlebar, content: LauncherSettingsContent.clipboard)
         ], services: [
             .init(start: {
+                controller.startRuntime()
+                MainActor.assumeIsolated { ClipboardLinkPreviews.shared.start() }
+                permission.startObserving()
                 controller.captureEnabled = permission.available
                 controller.startMonitoring()
                 permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
@@ -336,7 +365,11 @@ enum BuiltinLauncherModules {
             }, stop: {
                 permissionChanges?.cancel()
                 permissionChanges = nil
-                controller.stopMonitoring()
+                permission.stopObserving()
+                controller.stopRuntime()
+                MainActor.assumeIsolated { ClipboardLinkPreviews.shared.stop() }
+                FilePreview.shared.dismiss(owner: .clipboard)
+                FileActionsWindow.shared.dismiss(owner: .clipboard)
             })
         ], searchUpdates: [updates(controller.$historyCommandEnabled)],
         shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
@@ -378,7 +411,7 @@ enum BuiltinLauncherModules {
             command("calculator-help", "计算器", "在搜索框输入表达式", "equal.circle", ["Calculator", "计算"], execute: { [weak model] _ in
                 model?.query = "="
             })
-        ], providers: [provider, hint], searchUpdates: [exchange.updates])
+        ], providers: [provider, hint], services: [.init(start: {}, stop: exchange.stop)], searchUpdates: [exchange.updates])
     }
 
     private static func calculatorResult(_ query: String) -> String? {
@@ -388,7 +421,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func systemTools(_ model: Model) -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
+        return .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
             command("color", "Pick Color / 取色", "Copy hex color", "eyedropper", [], execute: { _ in SystemTools.shared.colorPicker() }),
             command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", [], settings: "permissions", permission: model.clipboardSpeech,
                     execute: { _ in SystemTools.shared.readClipboard() }),
@@ -407,7 +440,14 @@ enum BuiltinLauncherModules {
                     ["Hide Other Apps", "Hide All Apps Except Frontmost"], execute: { _ in SystemActions.hideOtherApplications() }),
             command("unhide-applications", "显示所有隐藏应用", "恢复已隐藏的应用窗口", "eye",
                     ["Unhide All Hidden Apps", "Show Hidden Apps"], execute: { _ in SystemActions.unhideApplications() })
-        ], searchUpdates: [model.lockScreenPermission.updates, model.clipboardSpeech.updates])
+        ], services: [.init(start: { [weak model] in
+            model?.lockScreenPermission.startObserving()
+            model?.clipboardSpeech.startObserving()
+        }, stop: { [weak model] in
+            model?.lockScreenPermission.stopObserving()
+            model?.clipboardSpeech.stopObserving()
+            SystemTools.shared.stopSystemTools()
+        })], searchUpdates: [model.lockScreenPermission.updates, model.clipboardSpeech.updates])
     }
 
     private static func updates<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never>

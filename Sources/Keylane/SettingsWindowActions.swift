@@ -15,22 +15,28 @@ extension PermissionFeature {
 struct SettingsWindowActions: View {
     @ObservedObject var state: SettingsWindowState
 
-    static func width(for page: LauncherSettingsPage?) -> CGFloat {
+    static func width(for page: LauncherSettingsPage?, hasExtensionSwitch: Bool) -> CGFloat {
+        if hasExtensionSwitch { return 64 }
         if page?.trailingToolbar != nil { return 214 }
         return page?.titlebar == nil ? 0 : 64
     }
 
     var body: some View {
         let page = state.catalog.page(state.page)
+        let extensionSwitch = state.extensionEnabled(for: state.page)
         Group {
-            if let toolbar = page?.trailingToolbar {
+            if let extensionSwitch {
+                Toggle("启用扩展", isOn: extensionSwitch)
+                    .toggleStyle(.switch).labelsHidden().controlSize(.small)
+                    .help("关闭后停止此扩展的后台活动，保留数据与快捷键。")
+            } else if let toolbar = page?.trailingToolbar {
                 toolbar()
             } else if let contribution = page?.titlebar {
                 SettingsTitlebarSwitch(contribution: contribution).id(state.page)
             }
         }
         .padding(.trailing, 12)
-        .frame(width: Self.width(for: page), height: 44, alignment: .trailing)
+        .frame(width: Self.width(for: page, hasExtensionSwitch: extensionSwitch != nil), height: 44, alignment: .trailing)
         .preferredColorScheme(state.colorScheme)
     }
 }
@@ -58,18 +64,22 @@ private struct SettingsTitlebarSwitch: View {
 struct PermissionSettingsContent: View {
     let contribution: SettingsTitlebarContribution
     let content: () -> AnyView
+    let showsFeedback: Bool
     @State private var enabled: Bool
     @State private var permission = SettingsPermissionStatus()
 
-    init(contribution: SettingsTitlebarContribution, content: @escaping () -> AnyView) {
+    init(contribution: SettingsTitlebarContribution, content: @escaping () -> AnyView, showsFeedback: Bool = true) {
         self.contribution = contribution
         self.content = content
+        self.showsFeedback = showsFeedback
         _enabled = State(initialValue: contribution.enabled.wrappedValue)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SettingsPermissionFeedback(status: permission, openPrivacySettings: contribution.openPrivacySettings)
+            if showsFeedback {
+                SettingsPermissionFeedback(status: permission, openPrivacySettings: contribution.openPrivacySettings)
+            }
             content()
                 .disabled(!enabled)
                 .saturation(enabled ? 1 : 0)
@@ -100,7 +110,7 @@ struct SettingsPermissionFeedback: View {
 
 struct SettingsPermissionToggle: View {
     let contribution: SettingsTitlebarContribution
-    let detail: String
+    let detail: String?
     @State private var enabled = false
     @State private var permission = SettingsPermissionStatus()
 

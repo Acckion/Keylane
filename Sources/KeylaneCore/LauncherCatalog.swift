@@ -7,12 +7,15 @@ public struct CatalogApplication: Identifiable {
 }
 public enum ApplicationCatalog {
     public static var defaultRoots: [String] { ["/Applications", "/System/Applications", "/System/Library/CoreServices/Applications", "/System/Cryptexes/App/System/Applications", NSHomeDirectory() + "/Applications"] }
-    public static func scan(roots: [String], excluded: Set<String>, languages: [String] = Locale.preferredLanguages) -> [CatalogApplication] {
+    public static func scan(roots: [String], excluded: Set<String>, languages: [String] = Locale.preferredLanguages,
+                            isCancelled: () -> Bool = { false }) -> [CatalogApplication] {
         var found: [String:CatalogApplication] = [:]
         for root in roots {
+            guard !isCancelled() else { return [] }
             let rootURL = URL(fileURLWithPath: root).standardizedFileURL
             guard let iterator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
             while let url = iterator.nextObject() as? URL {
+                guard !isCancelled() else { return [] }
                 guard url.pathExtension.lowercased() == "app" else { continue }
                 iterator.skipDescendants()
                 let canonical = url.resolvingSymlinksInPath().standardizedFileURL

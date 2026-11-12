@@ -40,10 +40,10 @@ enum ScreenshotActions {
             },
             .init(id: "screenshot-open-with", title: "打开方式…", icon: "square.and.arrow.up",
                   keys: ["⇧", "⌘", "O"], group: 1) {
-                withFile(item, model: model) { FileActionsWindow.shared.show(item.url, page: "open") }
+                withFile(item, model: model) { FileActionsWindow.shared.show(item.url, page: "open", owner: .screenshots) }
             },
             .init(id: "screenshot-preview", title: "快速查看", icon: "eye", keys: ["⌘", "Y"], group: 1) {
-                withFile(item, model: model) { FilePreview.shared.show(item.url) }
+                withFile(item, model: model) { FilePreview.shared.show(item.url, owner: .screenshots) }
             },
             .init(id: "screenshot-reveal", title: "在访达中显示", icon: "folder", keys: ["⌥", "⌘", "O"], group: 1) {
                 withFile(item, model: model) { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
@@ -97,7 +97,7 @@ enum ScreenshotActions {
         ]
         if let item = library.selected {
             actions.append(.init(id: "screenshot-share", title: "分享…", icon: "square.and.arrow.up", group: 1) {
-                withFile(item, model: model) { FileActionsWindow.shared.show(item.url, page: "share") }
+                withFile(item, model: model) { FileActionsWindow.shared.show(item.url, page: "share", owner: .screenshots) }
             })
         }
         return actions
@@ -129,6 +129,8 @@ enum ScreenshotActions {
                 let message = mode == .qr ? "已复制二维码文本" : "已复制图片文字"
                 (NSApp.delegate as? Delegate)?.showLauncherFeedback(copied ? message : mode.emptyMessage,
                                                                     style: copied ? .success : .failure)
+            } catch is CancellationError {
+                return
             } catch {
                 model.error = "识别截图失败：" + error.localizedDescription
             }

@@ -4,7 +4,8 @@ import Combine
 
 enum WindowManagementModule {
     static func make(model: Model) -> LauncherModule {
-        let permission = PermissionFeature("windowManagement.enabled", authorization: .accessibility)
+        let permission = PermissionFeature("windowManagement.enabled", authorization: .accessibility, observeImmediately: false)
+        var actions: [UUID: NavigationScanRequest] = [:]
         let commands: [(WindowPlacement, String, String, String, String)] = [
             (.left, "window-left-half", "左半屏", "Left Half", "rectangle.lefthalf.filled"),
             (.right, "window-right-half", "右半屏", "Right Half", "rectangle.righthalf.filled"),
@@ -23,7 +24,11 @@ enum WindowManagementModule {
                   permission: permission, execute: { [weak model] origin in
                 guard let model, let delegate = NSApp.delegate as? Delegate else { return }
                 if origin == .shortcut { delegate.rememberPreviousApplication() }
-                SystemNavigation.shared.placeWindow(command.0, in: delegate.previousApplication) { [weak model, weak delegate] message in
+                let id = UUID()
+                let request = NavigationScanRequest()
+                actions[id] = request
+                SystemNavigation.shared.placeWindow(command.0, in: delegate.previousApplication, request: request) { [weak model, weak delegate] message in
+                    guard actions.removeValue(forKey: id) != nil else { return }
                     if let message {
                         model?.error = message
                         delegate?.toast.show(message, style: .failure)
@@ -31,6 +36,11 @@ enum WindowManagementModule {
                     else { delegate?.hideLauncher() }
                 }
             })
-        }, searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用窗口管理"))
+        }, services: [.init(start: permission.startObserving, stop: {
+            permission.stopObserving()
+            for request in actions.values { request.cancel() }
+            actions.removeAll()
+            SystemNavigation.shared.clearWindowPlacementHistory()
+        })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用窗口管理"))
     }
 }

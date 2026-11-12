@@ -187,6 +187,7 @@ struct LauncherModule {
     struct Service {
         let start: () -> Void
         let stop: () -> Void
+        var resume: (() -> Void)?
     }
 
     let id: ModuleID
@@ -208,6 +209,7 @@ struct LauncherModule {
     var shortcutSettingsUpdates: [AnyPublisher<Void, Never>] = []
     var permissionTitlebar: SettingsTitlebarContribution?
     var registration: Registration?
+    var canDisable: Bool { origin != .application }
 }
 
 extension LauncherModule {
@@ -269,16 +271,27 @@ final class LauncherModuleRegistry {
                               origins: settingsOrigins)
     }
     var settings: [LauncherSettingsPage] { settingsCatalog.pages }
-    private let services: [LauncherModule.Service]
-    private let launcherShownHandlers: [() -> Void]
-    private let launcherHiddenHandlers: [() -> Void]
-    private let applicationFocusedHandlers: [(NSRunningApplication) -> Void]
+    private let modules: [LauncherModule]
+    private let disableableModules: Set<ModuleID>
+    private let preferences: UserDefaults
+    private static let disabledKey = "disabledLauncherModules"
+    private var disabledModules: Set<ModuleID>
+    let availabilityChanges = PassthroughSubject<Void, Never>()
+    private var launcherVisible = false
     private var servicesRunning = false
-    let searchUpdates: AnyPublisher<Void, Never>
-    let presentationUpdates: AnyPublisher<Void, Never>
+    private(set) lazy var searchUpdates: AnyPublisher<Void, Never> =
+        Publishers.MergeMany([updates(\.searchUpdates), availabilityChanges.eraseToAnyPublisher(), registrationUpdates])
+            .eraseToAnyPublisher()
+    private(set) lazy var presentationUpdates: AnyPublisher<Void, Never> =
+        updates(\.presentationUpdates).receive(on: DispatchQueue.main).eraseToAnyPublisher()
 
-    init(modules: [LauncherModule], commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
+    init(modules: [LauncherModule], preferences: UserDefaults = .standard,
+         commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
         self.commandEnabled = commandEnabled
+        self.modules = modules
+        self.preferences = preferences
+        disableableModules = Set(modules.filter(\.canDisable).map(\.id))
+        disabledModules = Set((preferences.stringArray(forKey: Self.disabledKey) ?? []).map(ModuleID.init(rawValue:)))
         _ = try LauncherModuleCatalog(modules: modules.map {
             LauncherModuleDeclaration(id: $0.id, commands: $0.commands.map(\.declaration),
                                       pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
@@ -320,13 +333,44 @@ final class LauncherModuleRegistry {
         })
         registeredSettings = modules.flatMap { module in module.settings.map { Owned(module: module.id, value: $0) } }
             .sorted { $0.value.order < $1.value.order }
-        services = modules.flatMap(\.services)
-        launcherShownHandlers = modules.compactMap(\.launcherShown)
-        launcherHiddenHandlers = modules.compactMap(\.launcherHidden)
-        applicationFocusedHandlers = modules.compactMap(\.applicationFocused)
-        presentationUpdates = Publishers.MergeMany(modules.flatMap(\.presentationUpdates))
-            .receive(on: DispatchQueue.main).eraseToAnyPublisher()
-        searchUpdates = Publishers.MergeMany(modules.flatMap(\.searchUpdates) + [registrationUpdates]).eraseToAnyPublisher()
+    }
+
+    private func updates(_ key: KeyPath<LauncherModule, [AnyPublisher<Void, Never>]>) -> AnyPublisher<Void, Never> {
+        let streams = modules.flatMap { module in
+            let id = module.id
+            return module[keyPath: key].map { stream in
+                stream.filter { [weak self] in self?.isModuleEnabled(id) == true }.eraseToAnyPublisher()
+            }
+        }
+        return Publishers.MergeMany(streams).eraseToAnyPublisher()
+    }
+
+    func module(forSettingsPage id: String) -> ModuleID? {
+        registeredSettings.first { $0.value.id == id && disableableModules.contains($0.module) }?.module
+    }
+
+    func module(forPage id: PageID) -> ModuleID? { pages[id]?.module }
+
+    func isCommandModuleEnabled(_ id: CommandID) -> Bool {
+        moduleOwningCommand(id).map { isModuleEnabled($0) } ?? true
+    }
+
+    @discardableResult
+    func setModuleEnabled(_ id: ModuleID, _ enabled: Bool) -> Bool {
+        guard let module = modules.first(where: { $0.id == id && $0.canDisable }),
+              enabled == disabledModules.contains(id) else { return false }
+        if enabled { disabledModules.remove(id) } else { disabledModules.insert(id) }
+        preferences.set(disabledModules.map(\.rawValue).sorted(), forKey: Self.disabledKey)
+        if servicesRunning {
+            if enabled {
+                module.services.forEach { ($0.resume ?? $0.start)() }
+                if launcherVisible { module.launcherShown?() }
+            } else {
+                module.services.reversed().forEach { $0.stop() }
+            }
+        }
+        availabilityChanges.send()
+        return true
     }
 
     func shortcutSettingsUpdates() -> [AnyPublisher<Void, Never>] {
@@ -334,22 +378,28 @@ final class LauncherModuleRegistry {
             registeredShortcutGroups.flatMap { $0.dynamicCommands?.updates() ?? [] }
     }
 
-    func launcherShown() { launcherShownHandlers.forEach { $0() } }
-    func launcherHidden() { launcherHiddenHandlers.forEach { $0() } }
+    func launcherShown() {
+        launcherVisible = true
+        for module in modules where isModuleEnabled(module.id) { module.launcherShown?() }
+    }
+    func launcherHidden() {
+        launcherVisible = false
+        for module in modules where isModuleEnabled(module.id) { module.launcherHidden?() }
+    }
     func applicationFocused(_ app: NSRunningApplication) {
         guard servicesRunning else { return }
-        applicationFocusedHandlers.forEach { $0(app) }
+        for module in modules where isModuleEnabled(module.id) { module.applicationFocused?(app) }
     }
 
     func startServices() {
         guard !servicesRunning else { return }
         servicesRunning = true
-        for service in services { service.start() }
+        for module in modules where isModuleEnabled(module.id) { module.services.forEach { $0.start() } }
     }
     func stopServices() {
         guard servicesRunning else { return }
         servicesRunning = false
-        for service in services.reversed() { service.stop() }
+        for module in modules.reversed() where isModuleEnabled(module.id) { module.services.reversed().forEach { $0.stop() } }
     }
     /// Preserve a prior disable from the host when a module supplies its own command preference.
     func migrateDisabledCommands(_ disabled: Set<String>) -> Set<String> {
@@ -368,7 +418,7 @@ final class LauncherModuleRegistry {
     }
 
     func page(_ id: PageID, includingInactive: Bool = false) -> LauncherPage? {
-        guard let page = pages[id], includingInactive || isModuleActive(page.module) else { return nil }
+        guard let page = pages[id], includingInactive || isModuleEnabled(page.module) else { return nil }
         return page.value
     }
 
@@ -380,12 +430,13 @@ final class LauncherModuleRegistry {
         moduleRegistrations[id]?.isPresent() ?? true
     }
 
-    private func isModuleActive(_ id: ModuleID) -> Bool {
-        isModulePresent(id) && (moduleRegistrations[id]?.isEnabled() ?? true)
+    func isModuleEnabled(_ id: ModuleID) -> Bool {
+        isModulePresent(id) && (moduleRegistrations[id]?.isEnabled() ?? true) &&
+            (!disableableModules.contains(id) || !disabledModules.contains(id))
     }
 
     private func isCommandEnabled(_ id: CommandID, in module: ModuleID) -> Bool {
-        isModuleActive(module) && commandEnabled(id)
+        isModuleEnabled(module) && commandEnabled(id)
     }
 
     func permissionNeeded(for id: CommandID) -> PermissionFeature? {
@@ -413,7 +464,7 @@ final class LauncherModuleRegistry {
     }
 
     private func provider(for entry: Entry) -> LauncherModule.Provider? {
-        guard let provider = provider(owning: entry.commandID), isModuleActive(provider.module) else { return nil }
+        guard let provider = provider(owning: entry.commandID), isModuleEnabled(provider.module) else { return nil }
         return provider.value
     }
 
@@ -447,7 +498,7 @@ final class LauncherModuleRegistry {
                          detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords)
         } + providers.flatMap { owned in
             let provider = owned.value
-            guard isModuleActive(owned.module), input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
+            guard isModuleEnabled(owned.module), input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
             return provider.entries(input).filter { entry in
                 let id = entry.commandID
                 return provider.namespace.contains(id) && input.namespace?.contains(id) != false &&

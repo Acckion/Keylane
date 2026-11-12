@@ -13,7 +13,7 @@ enum SnippetsModule {
 
     static func make(model: Model) -> LauncherModule {
         let snippets = model.snippets
-        let expansionPermission = PermissionFeature("snippets.expandsKeywords", authorization: .accessibility)
+        let expansionPermission = PermissionFeature("snippets.expandsKeywords", authorization: .accessibility, observeImmediately: false)
         var expansionChanges: AnyCancellable?
         let save: () -> Void = { [weak model] in
             if snippets.save() { model?.pageID = listID }
@@ -84,6 +84,7 @@ enum SnippetsModule {
                       })
             ],
             services: [.init(start: {
+                expansionPermission.startObserving()
                 snippets.expandsKeywords = expansionPermission.available
                 snippets.start()
                 expansionChanges = expansionPermission.updates.receive(on: DispatchQueue.main).sink {
@@ -92,6 +93,7 @@ enum SnippetsModule {
             }, stop: {
                 expansionChanges?.cancel()
                 expansionChanges = nil
+                expansionPermission.stopObserving()
                 snippets.stop()
             })],
             applicationFocused: { _ in snippets.applicationFocused() }

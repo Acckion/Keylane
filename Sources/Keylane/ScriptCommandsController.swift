@@ -299,7 +299,7 @@ final class ScriptCommandsController: ObservableObject {
     }
 
     func canRun(_ script: ScriptCommand) -> Bool {
-        enabled && !disabled.contains(script.id) && folders.contains { Self.contains(script, in: $0) }
+        serviceRunning && enabled && !disabled.contains(script.id) && folders.contains { Self.contains(script, in: $0) }
     }
 
     func command(withID id: String) -> ScriptCommand? { entriesByID[id] }
@@ -387,7 +387,23 @@ final class ScriptCommandsController: ObservableObject {
         launcherVisible = false
         stopDiscovery()
         suspendInlineRefresh()
+        inlineRun = nil
         cancel()
+        cancellation = nil
+        runningScript = nil
+        replaceEntries([])
+        inlineDue.removeAll()
+        inlineOutput.removeAll()
+        selected = nil
+        unavailable = []
+        result = nil
+        liveOutput = ""
+        arguments = ""
+        argumentValues = []
+        error = ""
+        draft = ScriptMetadata()
+        draftChoiceText = []
+        creationError = ""
     }
 
     private func suspendInlineRefresh() {
@@ -448,7 +464,9 @@ final class ScriptCommandsController: ObservableObject {
                                             timeout: timeout, isCancelled: { token.isCancelled },
                                             onOutput: { [weak self] text in
                                                 guard mode == .fullOutput else { return }
-                                                DispatchQueue.main.async { [weak self] in self?.liveOutput = text }
+                                                DispatchQueue.main.async { [weak self] in
+                                                    if self?.cancellation === token, !token.isCancelled { self?.liveOutput = text }
+                                                }
                                             })
             }
             DispatchQueue.main.async {
@@ -458,6 +476,7 @@ final class ScriptCommandsController: ObservableObject {
                     self.inlineRun = nil
                     if !token.isCancelled { self.finish(script, mode: mode, outcome: outcome, background: true) }
                 } else {
+                    guard self.cancellation === token else { return }
                     self.runningScript = nil
                     self.cancellation = nil
                     self.finish(script, mode: mode, outcome: outcome, background: false)

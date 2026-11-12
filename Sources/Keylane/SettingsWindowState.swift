@@ -19,6 +19,7 @@ final class SettingsWindowState: ObservableObject {
         let registry = model.launcherModules
         catalog = registry?.settingsCatalog ?? SettingsWindowCatalog(pages: [])
 
+        registry?.availabilityChanges.sink { [weak self] in self?.objectWillChange.send() }.store(in: &changes)
         registry?.registrationUpdates.sink { [weak self, weak registry] in
             if let registry { self?.catalog = registry.settingsCatalog }
         }.store(in: &changes)
@@ -27,6 +28,11 @@ final class SettingsWindowState: ObservableObject {
         model.$appearance.removeDuplicates().dropFirst().sink { [weak self] in
             self?.colorScheme = $0 == "dark" ? .dark : $0 == "light" ? .light : nil
         }.store(in: &changes)
+    }
+
+    func extensionEnabled(for page: String) -> Binding<Bool>? {
+        guard let registry = model?.launcherModules, let id = registry.module(forSettingsPage: page) else { return nil }
+        return Binding(get: { registry.isModuleEnabled(id) }, set: { [weak model] in model?.setModuleEnabled(id, $0) })
     }
 
     func select(_ page: String) { model?.settingsPage = page }
