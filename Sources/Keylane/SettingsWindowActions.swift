@@ -7,7 +7,9 @@ extension PermissionFeature {
               enabled: Binding(get: { self.enabled }, set: setEnabled),
               updates: $enabled.removeDuplicates().eraseToAnyPublisher(),
               permissionStatus: settingsStatus,
-              openPrivacySettings: canOpenPrivacySettings ? openPrivacySettings : nil)
+              openPrivacySettings: canOpenPrivacySettings ? openPrivacySettings : nil,
+              requestEnable: activate,
+              recheckPermission: recheck)
     }
 }
 
@@ -23,21 +25,18 @@ struct SettingsWindowActions: View {
 
     var body: some View {
         let page = state.catalog.page(state.page)
-        let extensionSwitch = state.extensionEnabled(for: state.page)
+        let hasExtensionSwitch = state.extensionEnabled(for: state.page) != nil
+        let contribution = state.titlebar(for: state.page)
         HStack(spacing: 8) {
             if let toolbar = page?.trailingToolbar {
                 toolbar().id(state.page)
             }
-            if let extensionSwitch {
-                Toggle("启用扩展", isOn: extensionSwitch)
-                    .toggleStyle(.switch).labelsHidden().controlSize(.small)
-                    .help("关闭后停止此扩展的后台活动，保留数据与快捷键。")
-            } else if page?.trailingToolbar == nil, let contribution = page?.titlebar {
+            if let contribution {
                 SettingsTitlebarSwitch(contribution: contribution).id(state.page)
             }
         }
         .padding(.trailing, 12)
-        .frame(width: Self.width(for: page, hasExtensionSwitch: extensionSwitch != nil), height: 44, alignment: .trailing)
+        .frame(width: Self.width(for: page, hasExtensionSwitch: hasExtensionSwitch), height: 44, alignment: .trailing)
         .preferredColorScheme(state.colorScheme)
     }
 }
@@ -65,22 +64,18 @@ private struct SettingsTitlebarSwitch: View {
 struct PermissionSettingsContent: View {
     let contribution: SettingsTitlebarContribution
     let content: () -> AnyView
-    let showsFeedback: Bool
     @State private var enabled: Bool
     @State private var permission = SettingsPermissionStatus()
 
-    init(contribution: SettingsTitlebarContribution, content: @escaping () -> AnyView, showsFeedback: Bool = true) {
+    init(contribution: SettingsTitlebarContribution, content: @escaping () -> AnyView) {
         self.contribution = contribution
         self.content = content
-        self.showsFeedback = showsFeedback
         _enabled = State(initialValue: contribution.enabled.wrappedValue)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if showsFeedback {
-                SettingsPermissionFeedback(status: permission, openPrivacySettings: contribution.openPrivacySettings)
-            }
+            SettingsPermissionFeedback(status: permission, openPrivacySettings: contribution.openPrivacySettings)
             content()
                 .disabled(!enabled)
                 .saturation(enabled ? 1 : 0)

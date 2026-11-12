@@ -92,6 +92,8 @@ struct SettingsTitlebarContribution {
     var searchItem: SettingsItem?
     var permissionStatus: AnyPublisher<SettingsPermissionStatus, Never>?
     var openPrivacySettings: (() -> Void)?
+    var requestEnable: ((@escaping (Bool) -> Void) -> Void)?
+    var recheckPermission: (() -> Void)?
 }
 
 struct LauncherSettingsPage: Identifiable {

@@ -74,24 +74,16 @@ struct SettingsView: View {
 
     private var detailPage: some View {
         SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
-            let enabled = state.extensionEnabled(for: selected)
-            if enabled?.wrappedValue == false {
+            let activation = state.titlebar(for: selected)
+            if let page, let activation, activation.permissionStatus != nil {
+                PermissionSettingsContent(contribution: activation, content: page.content)
+                    .id(activation.searchItem?.id ?? page.id)
+            } else if state.extensionEnabled(for: selected)?.wrappedValue == false {
                 SettingsGroup {
                     SettingsRow("扩展已关闭", detail: "后台活动已停止，数据与快捷键已保留。") { EmptyView() }
                 }
             } else if let page {
-                if let contribution = page.titlebar, enabled != nil {
-                    SettingsGroup {
-                        SettingsPermissionToggle(contribution: contribution, detail: nil)
-                            .id(contribution.searchItem?.id ?? page.id)
-                    }
-                }
-                if let contribution = page.titlebar, contribution.permissionStatus != nil {
-                    PermissionSettingsContent(contribution: contribution, content: page.content,
-                                              showsFeedback: enabled == nil).id(page.id)
-                } else {
-                    page.content()
-                }
+                page.content()
             }
         }
         .overlay(alignment: .top) {
