@@ -5,7 +5,6 @@ import KeylaneCore
 enum AppUtilitiesModule {
     static func make(model: Model) -> LauncherModule {
         let camera = CameraPreviewWindow()
-        let updates = KeylaneReleaseCheck()
         return LauncherModule(id: .init(rawValue: "keylane.app-utilities"), title: "Keylane 工具",
                               symbol: "wrench.and.screwdriver", commands: [
             command("export-settings", "导出 Keylane 设置", "square.and.arrow.up",
@@ -16,7 +15,13 @@ enum AppUtilitiesModule {
                 (NSApp.delegate as? Delegate)?.hideLauncher()
             },
             command("check-for-updates", "检查 Keylane 更新", "arrow.clockwise",
-                    ["Check for Updates", "检查更新"]) { updates.check() },
+                    ["Check for Updates", "检查更新"]) { [weak model] in
+                guard let model, let delegate = NSApp.delegate as? Delegate else { return }
+                model.settingsPage = "about"
+                delegate.hideLauncher()
+                delegate.showSettings()
+                model.updates.check()
+            },
             command("show-camera", "显示相机", "camera",
                     ["Show Camera", "Camera Preview", "摄像头", "相机预览"]) { [weak model] in
                 camera.show(activation: model?.windowActivationBehavior ?? .systemDefault)

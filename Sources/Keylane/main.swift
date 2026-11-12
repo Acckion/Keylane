@@ -8,6 +8,7 @@ import ApplicationServices
 import KeylaneCore
 
 final class Model: ObservableObject {
+    let updates = KeylaneReleaseCheck()
     let store: Store?
     @Published var error = ""
     @Published var settingsPage = "applications"
@@ -507,6 +508,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         modifiers.activate = { [weak self] in self?.show() }
         model.configureModifiers()
         model.launcherModules?.startServices()
+        model.updates.start()
         if onboarding.isComplete { show() }
         else { showOnboarding() }
     }
@@ -573,6 +575,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         shortcuts.stop(); modifiers.stop()
+        model.updates.installOnQuit()
     }
     @objc private func openLauncherSettings() {
         model.runCommand(.init(rawValue: "settings"), origin: .menu)
