@@ -1,10 +1,12 @@
 import AppKit
 import Combine
+import SwiftUI
 import UniformTypeIdentifiers
 import KeylaneCore
 
 enum AppUtilitiesModule {
     static func make(model: Model) -> LauncherModule {
+        let capture = PermissionFeature("screenCapture.enabled", authorization: .screenCapture)
         return LauncherModule(id: .init(rawValue: "keylane.app-utilities"), title: "Keylane 工具",
                               symbol: "wrench.and.screwdriver", commands: [
             command("export-settings", "导出 Keylane 设置", "square.and.arrow.up",
@@ -21,8 +23,18 @@ enum AppUtilitiesModule {
                 delegate.hideLauncher()
                 delegate.showSettings()
                 model.updates.check()
-            }
-        ])
+            },
+            .init(declaration: .init(id: .init(rawValue: "screenshot"), title: "Screenshot / 截图", detail: "截取屏幕区域",
+                                     symbol: "camera.viewfinder", keywords: ["屏幕截取", "截屏"], destination: .action,
+                                     settingsPage: "keylane.app-utilities"),
+                  settingsEnabled: Binding(get: { capture.enabled }, set: capture.setEnabled),
+                  permission: capture, execute: { _ in
+                      (NSApp.delegate as? Delegate)?.hideLauncher()
+                      DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                          if capture.available { SystemTools.shared.screenshot() }
+                      }
+                  })
+        ], searchUpdates: [capture.updates], shortcutSettingsUpdates: [capture.updates])
     }
 
     static func camera(model: Model) -> LauncherModule {

@@ -290,7 +290,7 @@ struct ExtensionCommandPreferences: View {
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(model.$disabledCommands)
-        ]))
+        ] + commands.compactMap { $0.permission?.updates }))
     }
 
     var body: some View {
