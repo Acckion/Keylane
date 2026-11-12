@@ -12,9 +12,14 @@ public struct AgendaEvent: Identifiable, Equatable, Sendable {
     public let notes: String
     public let calendarColor: UInt32?
     public let accepted: Bool
-    public init(id: String, calendarID: String, calendarTitle: String, title: String, start: Date, end: Date, allDay: Bool = false, location: String = "", notes: String = "", calendarColor: UInt32? = nil, accepted: Bool = false) {
+    public let meetingURL: URL?
+    public let editable: Bool
+    public let recurring: Bool
+    public let busy: Bool
+    public init(id: String, calendarID: String, calendarTitle: String, title: String, start: Date, end: Date, allDay: Bool = false, location: String = "", notes: String = "", calendarColor: UInt32? = nil, accepted: Bool = false, meetingURL: URL? = nil, editable: Bool = false, recurring: Bool = false, busy: Bool = true) {
         self.id = id; self.calendarID = calendarID; self.calendarTitle = calendarTitle; self.title = title; self.start = start; self.end = end; self.allDay = allDay; self.location = location; self.notes = notes
         self.calendarColor = calendarColor; self.accepted = accepted
+        self.meetingURL = meetingURL; self.editable = editable; self.recurring = recurring; self.busy = busy
     }
 }
 public enum AgendaPolicy {
@@ -42,5 +47,32 @@ public enum AgendaPolicy {
             return lhs.id < rhs.id
         }
     }
+    public static func freeIntervals(in interval: DateInterval, events: [AgendaEvent]) -> [DateInterval] {
+        var cursor = interval.start
+        var free: [DateInterval] = []
+        for event in events.filter(\.busy).sorted(by: { $0.start < $1.start }) {
+            guard event.end > cursor, event.start < interval.end, event.end > event.start else { continue }
+            if event.start > cursor { free.append(DateInterval(start: cursor, end: event.start)) }
+            cursor = min(interval.end, event.end)
+        }
+        if cursor < interval.end { free.append(DateInterval(start: cursor, end: interval.end)) }
+        return free
+    }
+
+    public static func nearStart(_ events: [AgendaEvent], now: Date, minutes: Int) -> [AgendaEvent] {
+        guard minutes > 0 else { return [] }
+        let threshold = TimeInterval(minutes) * 60
+        return ordered(events.filter { !$0.allDay && abs($0.start.timeIntervalSince(now)) <= threshold })
+    }
+
+    public static func menuEvent(_ events: [AgendaEvent], now: Date, leadMinutes: Int, hideAfterMinutes: Int,
+                                 meetingsOnly: Bool) -> AgendaEvent? {
+        nextTimed(events.filter { event in
+            event.start <= now.addingTimeInterval(TimeInterval(leadMinutes) * 60)
+                && (hideAfterMinutes == 0 || now < event.start.addingTimeInterval(TimeInterval(hideAfterMinutes) * 60))
+                && (!meetingsOnly || event.meetingURL != nil)
+        }, now: now)
+    }
+
     public static func nextTimed(_ events: [AgendaEvent], now: Date) -> AgendaEvent? { upcoming(events, now: now).first { !$0.allDay } }
 }

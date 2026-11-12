@@ -36,4 +36,36 @@ final class AgendaTests: XCTestCase {
         XCTAssertTrue(AgendaPolicy.matching([a,b], query: "评审 不存在").isEmpty)
         XCTAssertEqual(AgendaPolicy.ordered([b,a]).map(\.id), ["a","b"])
     }
+
+    func testFreeIntervalsClipsAndMergesBusyEvents() {
+        let work = DateInterval(start: date("2026-11-11T09:00:00Z"), end: date("2026-11-11T18:00:00Z"))
+        let busy = [
+            event("early", "2026-11-11T08:00:00Z", "2026-11-11T10:00:00Z"),
+            event("overlap", "2026-11-11T09:30:00Z", "2026-11-11T11:00:00Z"),
+            event("late", "2026-11-11T17:00:00Z", "2026-11-11T19:00:00Z"),
+            AgendaEvent(id: "free", calendarID: "fixture", calendarTitle: "日历", title: "空闲",
+                        start: date("2026-11-11T13:00:00Z"), end: date("2026-11-11T14:00:00Z"), busy: false)
+        ]
+        XCTAssertEqual(AgendaPolicy.freeIntervals(in: work, events: busy), [
+            DateInterval(start: date("2026-11-11T11:00:00Z"), end: date("2026-11-11T17:00:00Z"))
+        ])
+    }
+
+    func testMenuEventUsesLeadTimeAndHidesAfterStart() {
+        let event = AgendaEvent(id: "meeting", calendarID: "fixture", calendarTitle: "日历", title: "会议",
+                                start: date("2026-11-11T10:00:00Z"), end: date("2026-11-11T11:00:00Z"),
+                                meetingURL: URL(string: "https://meet.google.com/abc-defg-hij"))
+        let nonMeeting = self.event("other", "2026-11-11T09:55:00Z", "2026-11-11T10:30:00Z")
+        let events = [nonMeeting, event]
+        let now = date("2026-11-11T10:08:00Z")
+        XCTAssertEqual(AgendaPolicy.nearStart(events, now: now, minutes: 10).map(\.id), [event.id])
+        XCTAssertTrue(AgendaPolicy.nearStart(events, now: now, minutes: 0).isEmpty)
+        XCTAssertNil(AgendaPolicy.menuEvent(events, now: date("2026-11-11T09:44:00Z"),
+                                            leadMinutes: 15, hideAfterMinutes: 5, meetingsOnly: true))
+        XCTAssertEqual(AgendaPolicy.menuEvent(events, now: date("2026-11-11T09:45:00Z"),
+                                              leadMinutes: 15, hideAfterMinutes: 5, meetingsOnly: true)?.id, event.id)
+        XCTAssertNil(AgendaPolicy.menuEvent(events, now: date("2026-11-11T10:05:00Z"),
+                                            leadMinutes: 15, hideAfterMinutes: 5, meetingsOnly: true))
+    }
+
 }

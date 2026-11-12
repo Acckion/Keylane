@@ -53,6 +53,8 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let fileSearchPermissions = SettingsItem(id: "permission-file-search", page: "permissions", title: "文件搜索授权", keywords: "权限 文件夹 下载 重新授权 search folders permission")
     public static let folderPermissions = SettingsItem(id: "permission-folders", page: "permissions", title: "文件与文件夹权限", keywords: "授权 搜索范围 截图 files folders permission")
     public static let calendarAccess = SettingsItem(id: "calendar-access", page: "permissions", title: "日历权限", keywords: "日程 权限 calendar events permission")
+    public static let calendarDisplay = SettingsItem(id: "calendar-display", page: "calendar", title: "日程显示与默认应用", keywords: "日历 主搜索 默认应用 浏览器 calendar event google meet")
+    public static let calendarMeetings = SettingsItem(id: "calendar-meetings", page: "calendar", title: "自动加入会议与相机预览", keywords: "会议 视频 相机 auto join meeting camera")
     public static let calendarMenuBar = SettingsItem(id: "calendar-menu-bar", page: "calendar", title: "日历菜单栏摘要", keywords: "下一个 日程 日期 calendar agenda menu bar")
     public static let calendarSelection = SettingsItem(id: "calendar-selection", page: "calendar", title: "选择显示的日历", keywords: "日历 筛选 账户 calendar account filter")
     public static let clipboardCapture = SettingsItem(id: "capture", page: "clipboard", title: "记录剪贴板历史", keywords: "文字 图片 文件 保留 采集 置顶 OCR capture clipboard history")
@@ -116,6 +118,8 @@ public struct SettingsItem: Identifiable, Equatable {
         folderPermissions,
         pasteboardPermission,
         fileSearchPermissions,
+        calendarDisplay,
+        calendarMeetings,
         calendarMenuBar,
         calendarSelection,
         clipboardCapture,

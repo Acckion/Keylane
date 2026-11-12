@@ -4,60 +4,167 @@ import KeylaneCore
 
 struct CalendarPage: View {
     @ObservedObject var controller: CalendarController
+
     var body: some View {
-        ResultDetailLayout(hasResults: controller.enabled && controller.access == .allowed
-                           && !controller.filteredEvents.isEmpty) {
-            SelectableResultList(selection: controller.selectedID, revealAfterLoading: !controller.loading) {
-                ForEach(controller.filteredEvents) { event in
-                    ResultListButton(id: event.id, action: { controller.select(event.id) }) {
-                        ResultListRow(selected: event.id == controller.selectedID, height: 48) {
-                            Image(systemName: event.allDay ? "sun.max.fill" : "calendar").font(.system(size: 21)).foregroundStyle(.blue)
-                        } content: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
-                                Text(event.allDay ? "全天 · \(event.calendarTitle)" : "\(event.start.formatted(date: .omitted, time: .shortened))–\(event.end.formatted(date: .omitted, time: .shortened)) · \(event.calendarTitle)")
-                                    .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+        Group {
+            if !controller.enabled || controller.access != .allowed {
+                CalendarConnectionView(controller: controller)
+            } else {
+                agenda
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if !controller.error.isEmpty {
+                Text(controller.error).font(.caption).foregroundStyle(.orange)
+                    .padding(10).padding(.bottom, VisualStyle.launcherBottomInset)
+            }
+        }
+    }
+
+    private var agenda: some View {
+        let calendar = Calendar.current
+        let firstDay = calendar.startOfDay(for: controller.selectedDate)
+        let rows = controller.filteredEvents
+        let grouped = Dictionary(grouping: rows) { calendar.startOfDay(for: max(firstDay, $0.start)) }
+        return SelectableResultList(selection: controller.selectedID, query: controller.query,
+                                    firstResult: rows.first?.id, revealAfterLoading: !controller.loading) {
+            if controller.query.isEmpty { summary(rows) }
+            ForEach(grouped.keys.sorted(), id: \.self) { day in
+                ResultListSection(title: dayLabel(day, calendar: calendar), isFirst: day == grouped.keys.min()) {
+                    ForEach(grouped[day] ?? []) { event in row(event) }
+                }
+            }
+            if rows.isEmpty && !controller.loading {
+                Text("没有匹配的日程").foregroundStyle(.secondary).padding(10)
+            }
+        }
+    }
+
+    private func summary(_ rows: [AgendaEvent]) -> some View {
+        let now = Date()
+        let daysEvents = AgendaPolicy.day(rows, date: controller.selectedDate)
+        let next = AgendaPolicy.nextTimed(rows, now: now)
+        return HStack(alignment: .top, spacing: 20) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("我的日程").font(.title2.weight(.semibold))
+                Text("\(dayLabel(controller.selectedDate, calendar: .current)) · \(daysEvents.count) 项日程").foregroundStyle(.secondary)
+                DatePicker("起始日期", selection: $controller.selectedDate, displayedComponents: .date)
+                    .labelsHidden().controlSize(.small)
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if let next {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(next.start <= now ? "正在进行" : "接下来的日程").font(.caption).foregroundStyle(.secondary)
+                    Text(next.title).lineLimit(1)
+                    Text(next.start.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }.padding(10).accessibilityElement(children: .combine)
+    }
+
+    private func row(_ event: AgendaEvent) -> some View {
+        let color = event.calendarColor.map { rgb in
+            Color(red: Double((rgb >> 16) & 255) / 255, green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
+        } ?? .accentColor
+        return ResultListButton(id: event.id, action: { controller.select(event.id) }) {
+            ResultListRow(selected: event.id == controller.selectedID, height: 42) {
+                Circle().fill(color.opacity(0.18)).overlay { Circle().strokeBorder(color, lineWidth: 1.5) }
+                    .frame(width: 21, height: 21)
+            } content: {
+                HStack(spacing: 12) {
+                    Text(event.allDay ? "全天" : CalendarController.timeRange(event.start, event.end))
+                        .font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary)
+                        .lineLimit(1).frame(width: 112, alignment: .leading)
+                    HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if event.meetingURL != nil { Image(systemName: "video").accessibilityLabel("包含会议链接") }
+                    if event.recurring { Image(systemName: "repeat").accessibilityLabel("重复日程") }
+                }
+            }.opacity(event.end < Date() ? 0.58 : 1)
+        }
+    }
+
+    private func dayLabel(_ date: Date, calendar: Calendar) -> String {
+        let formatted = date.formatted(.dateTime.month().day().weekday(.wide))
+        if calendar.isDateInToday(date) { return "今天 · " + formatted }
+        if calendar.isDateInTomorrow(date) { return "明天 · " + formatted }
+        return formatted
+    }
+}
+
+struct CalendarEventForm: View {
+    @ObservedObject var controller: CalendarController
+    let back: () -> Void
+    @FocusState private var titleFocused: Bool
+
+    var body: some View {
+        LauncherCreationForm(back: back) { EmptyView() } fields: {
+            LauncherCreationField("标题") {
+                LauncherCreationControl(focused: titleFocused) {
+                    TextField("日程标题", text: $controller.draft.title).textFieldStyle(.plain).focused($titleFocused)
+                }
+            }
+            LauncherCreationField("日历") {
+                LauncherCreationControl {
+                    Picker("日历", selection: $controller.draft.calendarID) {
+                        Text("默认日历").tag("")
+                        ForEach(controller.calendars.filter(\.writable)) { Text($0.title).tag($0.id) }
+                    }.labelsHidden()
+                }
+            }
+            dateField("开始", date: Binding(get: { controller.draft.start }, set: { start in
+                let previous = controller.draft.start
+                if controller.draft.allDay {
+                    let calendar = Calendar.current
+                    let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: previous),
+                                                       to: calendar.startOfDay(for: start)).day ?? 0
+                    if let end = calendar.date(byAdding: .day, value: days, to: controller.draft.end) {
+                        controller.draft.end = end
+                    }
+                } else {
+                    controller.draft.end = controller.draft.end.addingTimeInterval(start.timeIntervalSince(previous))
+                }
+                controller.draft.start = start
+            }))
+            dateField("结束", date: $controller.draft.end)
+            if !controller.draft.allDay {
+                LauncherCreationField("时长") {
+                    LauncherCreationControl {
+                        Picker("时长", selection: Binding(
+                            get: { Int(controller.draft.end.timeIntervalSince(controller.draft.start) / 60) },
+                            set: { minutes in controller.draft.end = controller.draft.start.addingTimeInterval(TimeInterval(minutes) * 60) }
+                        )) {
+                            let duration = Int(controller.draft.end.timeIntervalSince(controller.draft.start) / 60)
+                            ForEach(Array(Set([15, 30, 45, 60, 90, 120, duration])).sorted(), id: \.self) {
+                                Text($0 > 0 ? "\($0) 分钟" : "未设置").tag($0)
                             }
-                        }
+                        }.labelsHidden()
                     }
                 }
             }
-        } detail: {
-            if let event = controller.selectedEvent {
-                ResultDetailPane { _ in
-                    VStack(alignment: .leading, spacing: 14) {
-                        Label(event.calendarTitle, systemImage: "calendar").font(.system(size: 12)).foregroundStyle(.secondary)
-                        Text(event.title).font(.system(size: 21, weight: .semibold)).textSelection(.enabled)
-                        Text(event.start.formatted(date: .complete, time: .omitted)).font(.system(size: 13))
-                        Text(event.allDay ? "全天" : "\(event.start.formatted(date: .omitted, time: .shortened)) – \(event.end.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .topLeading).padding(9)
-                } information: {
-                    DetailInformationSection(rows: [
-                        .init(title: "日历", value: event.calendarTitle),
-                        .init(title: "开始", value: event.start.formatted(date: .abbreviated, time: event.allDay ? .omitted : .shortened)),
-                        .init(title: "结束", value: (event.allDay ? max(event.start, event.end.addingTimeInterval(-1)) : event.end).formatted(date: .abbreviated, time: event.allDay ? .omitted : .shortened))
-                    ] + (event.location.isEmpty ? [] : [.init(title: "地点", value: event.location)]))
-                    if !event.notes.isEmpty { DisclosureGroup("备注") { Text(event.notes).font(.system(size: 12)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) } }
+            LauncherCreationField("全天") { Toggle("全天", isOn: $controller.draft.allDay).labelsHidden().toggleStyle(.checkbox) }
+            LauncherCreationField("地点") {
+                LauncherCreationControl { TextField("添加地点", text: $controller.draft.location).textFieldStyle(.plain) }
+            }
+            LauncherCreationField("备注") {
+                LauncherCreationControl {
+                    TextField("添加备注", text: $controller.draft.notes, axis: .vertical).textFieldStyle(.plain).lineLimit(3...8)
                 }
             }
-        } emptyState: {
-            if !controller.enabled {
-                ContentUnavailableView {
-                    Label("日历已关闭", systemImage: "calendar")
-                } description: {
-                    Text("在日历设置中重新开启后可继续查看日程。")
-                } actions: {
-                    Button("日历设置…") { controller.showSettings?() }.buttonStyle(ContentActionButtonStyle())
-                }
-            } else if controller.access != .allowed {
-                CalendarConnectionView(controller: controller)
-            } else if controller.loading {
-                Text("正在加载日程…").font(VisualStyle.rowText).foregroundStyle(.secondary)
-            } else {
-                ResultDetailEmptyState(title: "没有匹配的日程", message: "可选择其他日期查看日程。")
+            if !controller.formError.isEmpty {
+                LauncherCreationField("") { Text(controller.formError).foregroundStyle(.red) }
+            }
+            Color.clear.frame(height: VisualStyle.launcherBottomInset)
+        }
+        .task { titleFocused = true }
+    }
+
+    private func dateField(_ title: String, date: Binding<Date>) -> some View {
+        LauncherCreationField(title) {
+            LauncherCreationControl {
+                DatePicker(title, selection: date, displayedComponents: controller.draft.allDay ? .date : [.date, .hourAndMinute])
+                    .labelsHidden()
             }
         }
-        .overlay(alignment: .bottom) { if !controller.error.isEmpty { Text(controller.error).font(.caption).foregroundStyle(.orange).padding(10).padding(.bottom, VisualStyle.launcherBottomInset) } }
     }
 }
 
@@ -67,7 +174,7 @@ struct CalendarConnectionView: View {
         VStack(spacing: 16) {
             Image(systemName: "calendar").font(.system(size: 40)).foregroundStyle(.secondary)
             Text(controller.access.message).font(.headline)
-            Text("连接后查看本机日程，并在菜单栏展示摘要。macOS将请求日历完整访问权限；Keylane当前只读取日程。").font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text("连接后查看本机日程，并在菜单栏展示摘要。macOS 将请求日历完整访问权限，以便查看和管理日程。").font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
             if controller.access == .notRequested || controller.access == .writeOnly {
                 Button(controller.requesting ? "正在等待授权…" : "连接日历…") { controller.requestAccess() }.disabled(controller.requesting)
             } else { Button("打开日历隐私设置") { controller.openPrivacySettings() } }
@@ -75,23 +182,17 @@ struct CalendarConnectionView: View {
     }
 }
 
-struct CalendarDateNavigation: View {
-    let controller: CalendarController
-    @StateObject private var observation: ViewObservation
+struct CalendarAgendaFilter: View {
+    @ObservedObject var controller: CalendarController
+    @Binding var open: Bool
+    let navigation: String
 
-    init(controller: CalendarController) {
-        self.controller = controller
-        _observation = StateObject(wrappedValue: ViewObservation([
-            ViewObservation.changes(controller.$selectedDate)
-        ]))
-    }
     var body: some View {
-        HStack(spacing: 4) {
-            Button { controller.shiftDay(-1) } label: { Image(systemName: "chevron.left") }.help("前一天")
-            DatePicker("日期", selection: Binding(get: { controller.selectedDate }, set: { controller.selectedDate = $0 }), displayedComponents: .date).labelsHidden().datePickerStyle(.field).fixedSize()
-            Button { controller.shiftDay(1) } label: { Image(systemName: "chevron.right") }.help("后一天")
-            Button("今天") { controller.showToday() }
-        }.buttonStyle(ContentActionButtonStyle()).controlSize(.small)
+        let calendars = controller.calendars.filter { controller.selectedCalendarIDs?.contains($0.id) ?? true }
+        let options = [ResultFilterOption(id: "all", title: "全部日历", symbol: "calendar")]
+            + calendars.map { ResultFilterOption(id: $0.id, title: $0.title, symbol: "calendar") }
+        ResultTypeFilter(selection: $controller.agendaCalendarID, options: options,
+                         open: $open, navigation: navigation, width: 158, searchPlaceholder: "搜索日历…")
     }
 }
 
@@ -121,6 +222,8 @@ private struct CalendarSettingsGroups: View {
     @StateObject private var observation: ViewObservation
     @ObservedObject var registry: MenuBarRegistry
     @State private var showsCalendars = false
+    @State private var calendarApps: [URL] = []
+    @State private var browsers: [URL] = []
 
     init(model: Model, controller: CalendarController, registry: MenuBarRegistry) {
         self.model = model
@@ -134,6 +237,16 @@ private struct CalendarSettingsGroups: View {
             ViewObservation.changes(controller.$calendars),
             ViewObservation.changes(controller.$selectedCalendarIDs),
             ViewObservation.changes(controller.$menuDisplay),
+            ViewObservation.changes(controller.$searchWindowMinutes),
+            ViewObservation.changes(controller.$menuLeadMinutes),
+            ViewObservation.changes(controller.$menuHideMinutes),
+            ViewObservation.changes(controller.$menuMeetingsOnly),
+            ViewObservation.changes(controller.$calendarApplication),
+            ViewObservation.changes(controller.$googleBrowser),
+            ViewObservation.changes(controller.$autoJoin),
+            ViewObservation.changes(controller.$confirmJoin),
+            ViewObservation.changes(controller.$previewBeforeJoining),
+            ViewObservation.changes(model.$disabledCommands),
             ViewObservation.changes(controller.$error)
         ]))
     }
@@ -183,6 +296,37 @@ private struct CalendarSettingsGroups: View {
             }.settingsAnchor(.calendarSelection)
 
             SettingsGroup {
+                SettingsPicker("在主搜索中显示日程", selection: Binding(
+                    get: { controller.searchWindowMinutes }, set: { controller.searchWindowMinutes = $0 }
+                )) {
+                    Text("关闭").tag(0)
+                    ForEach([2, 5, 10, 15, 30], id: \.self) { Text("开始前后 \($0) 分钟").tag($0) }
+                }
+                Divider()
+                applicationPicker("默认日历应用", defaultTitle: "系统日历", apps: calendarApps, selection: Binding(
+                    get: { controller.calendarApplication }, set: { controller.calendarApplication = $0 }
+                ))
+                Divider()
+                applicationPicker("Google Meet 浏览器", defaultTitle: "系统默认浏览器", apps: browsers, selection: Binding(
+                    get: { controller.googleBrowser }, set: { controller.googleBrowser = $0 }
+                ))
+            }.settingsAnchor(.calendarDisplay)
+
+            SettingsGroup {
+                SettingsRow("自动加入会议", detail: "会议开始时打开日程中的会议链接。") {
+                    Toggle("自动加入会议", isOn: Binding(get: { controller.autoJoin }, set: { controller.autoJoin = $0 }))
+                        .labelsHidden()
+                }
+                Toggle("加入前确认", isOn: Binding(get: { controller.confirmJoin }, set: { controller.confirmJoin = $0 }))
+                    .toggleStyle(.checkbox).disabled(!controller.autoJoin)
+                Divider()
+                SettingsRow("相机预览", detail: "加入会议时调用 Keylane 工具中的相机预览。") {
+                    Toggle("相机预览", isOn: Binding(get: { controller.previewBeforeJoining }, set: { controller.previewBeforeJoining = $0 }))
+                        .labelsHidden()
+                }
+            }.settingsAnchor(.calendarMeetings)
+
+            SettingsGroup {
                 Toggle("在菜单栏显示日历", isOn: Binding(
                     get: { registry.isEnabled("calendar.agenda") },
                     set: { registry.setEnabled("calendar.agenda", $0) }
@@ -193,21 +337,61 @@ private struct CalendarSettingsGroups: View {
                     Text("日期").tag("date")
                     Text("仅图标").tag("icon")
                 }
+                Divider()
+                SettingsPicker("提前显示日程", selection: Binding(get: { controller.menuLeadMinutes }, set: { controller.menuLeadMinutes = $0 })) {
+                    Text("开始时").tag(0)
+                    ForEach([5, 10, 15, 30, 60], id: \.self) { Text("提前 \($0) 分钟").tag($0) }
+                    Text("提前一天").tag(1440)
+                }
+                Divider()
+                Toggle("仅显示带会议链接的日程", isOn: Binding(get: { controller.menuMeetingsOnly }, set: { controller.menuMeetingsOnly = $0 }))
+                Divider()
+                SettingsPicker("隐藏进行中的日程", selection: Binding(get: { controller.menuHideMinutes }, set: { controller.menuHideMinutes = $0 })) {
+                    Text("日程结束后").tag(0)
+                    ForEach([5, 10, 15, 30, 60], id: \.self) { Text("开始后 \($0) 分钟").tag($0) }
+                }
             }
             .disabled(!controller.enabled)
             .settingsAnchor(.calendarMenuBar)
 
             SettingsSectionTitle(title: "日历命令")
-            CommandSettingsList(items: ["calendar"], id: \.self) { id in
+            CommandSettingsList(items: ["create-calendar-event", "calendar"], id: \.self) { id in
                 CommandSettingsEntry(
-                    title: "我的日程",
+                    title: id == "calendar" ? "我的日程" : "创建日程",
                     model: model, commandID: .init(rawValue: id),
+                    isEnabled: Binding(get: { !model.disabledCommands.contains(id) }, set: {
+                        if $0 { model.disabledCommands.remove(id) } else { model.disabledCommands.insert(id) }
+                    }),
                     perform: { model.runCommand(.init(rawValue: id), origin: .menu) },
                     icon: { SettingsIcon(symbol: "calendar", artwork: ModuleArtwork.settings("calendar")) }
                 )
             }.id("calendar-command")
             if !controller.error.isEmpty {
                 Text(controller.error).font(.caption).foregroundStyle(.orange)
+            }
+        }.task {
+            let workspace = NSWorkspace.shared
+            if let calendarURL = URL(string: "webcal://calendar.example/calendar.ics") {
+                calendarApps = workspace.urlsForApplications(toOpen: calendarURL)
+            }
+            if let meetURL = URL(string: "https://meet.google.com") {
+                browsers = workspace.urlsForApplications(toOpen: meetURL)
+            }
+        }
+    }
+
+    private func applicationPicker(_ title: String, defaultTitle: String, apps: [URL], selection: Binding<String>) -> some View {
+        let choices = apps.compactMap { url -> (String, String)? in
+            guard let identifier = Bundle(url: url)?.bundleIdentifier else { return nil }
+            return (identifier, FileManager.default.displayName(atPath: url.deletingPathExtension().path))
+        }
+        return SettingsPicker(title, selection: selection) {
+            Text(defaultTitle).tag("")
+            ForEach(Array(Set(choices.map { $0.0 })).sorted(), id: \.self) { identifier in
+                Text(choices.first { $0.0 == identifier }?.1 ?? identifier).tag(identifier)
+            }
+            if !selection.wrappedValue.isEmpty, !choices.contains(where: { $0.0 == selection.wrappedValue }) {
+                Text("应用已不可用").tag(selection.wrappedValue)
             }
         }
     }
