@@ -1,4 +1,5 @@
 import AppKit
+import EventKit
 import KeylaneCore
 
 let app = NSApplication.shared; app.setActivationPolicy(.prohibited)
@@ -46,6 +47,23 @@ var resolvePermission: ((Bool) -> Void)?
 let calendar = CalendarController(registry: registry, preferences: preferences, authorization: .init(
     check: { authorized }, request: { requests += 1; resolvePermission = $0 }, guidance: "Fixture permission"
 ))
+// Use an unsaved event to verify the fields handed to the real edit form.
+let fixtureStore = EKEventStore()
+let fixtureEvent = EKEvent(eventStore: fixtureStore)
+fixtureEvent.calendar = EKCalendar(for: .event, eventStore: fixtureStore)
+fixtureEvent.startDate = Date()
+fixtureEvent.endDate = fixtureEvent.startDate.addingTimeInterval(3600)
+let fullTitle = String(repeating: "标题", count: 550) + "标题结尾"
+let fullLocation = String(repeating: "地点", count: 1_050) + "地点结尾"
+let fullNotes = String(repeating: "备注", count: 4_050) + "备注结尾"
+fixtureEvent.title = fullTitle
+fixtureEvent.location = fullLocation
+fixtureEvent.notes = fullNotes
+calendar.prepareDraft(event: CalendarController.summary(fixtureEvent))
+precondition(calendar.draft.title == fullTitle)
+precondition(calendar.draft.location == fullLocation)
+precondition(calendar.draft.notes == fullNotes)
+
 func settlePermission() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
 
 calendar.start()

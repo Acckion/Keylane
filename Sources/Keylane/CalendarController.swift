@@ -501,7 +501,7 @@ extension CalendarController {
         return CalendarEventDraft.reminderOptions.first { alarm.relativeOffset == -Double($0 * 60) }
     }
 
-    private static func summary(_ event: EKEvent) -> AgendaEvent {
+    static func summary(_ event: EKEvent) -> AgendaEvent {
         let participants = event.attendees ?? []
         let currentUser = participants.first(where: \.isCurrentUser)
         let organizer = event.organizer
@@ -509,9 +509,9 @@ extension CalendarController {
         let alarms = event.alarms ?? []
         return AgendaEvent(
             id: occurrenceID(event), calendarID: calendar.calendarIdentifier, calendarTitle: calendar.title,
-            title: event.title?.isEmpty == false ? String(event.title.prefix(1000)) : "无标题日程",
+            title: event.title?.isEmpty == false ? event.title : "无标题日程",
             start: event.startDate, end: event.endDate, allDay: event.isAllDay,
-            location: String((event.location ?? "").prefix(2000)), notes: String((event.notes ?? "").prefix(8000)),
+            location: event.location ?? "", notes: event.notes ?? "",
             calendarColor: calendarColor(calendar), accepted: currentUser?.participantStatus == .accepted,
             meetingURL: meetingURL(event), editable: calendar.allowsContentModifications,
             recurring: event.hasRecurrenceRules || event.isDetached,
