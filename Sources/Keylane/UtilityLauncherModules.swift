@@ -204,8 +204,6 @@ enum UtilityLauncherModules {
 
     private static func shortcuts(_ model: Model) -> LauncherModule {
         let controller = model.systemShortcuts
-        let iconPermission = PermissionFeature("shortcuts.iconsEnabled", authorization: .automation(ShortcutIconReader.bundleIdentifier, appName: "快捷指令"), observeImmediately: false)
-        var iconChanges: AnyCancellable?
         let pageID = "shortcuts"
         let provider = LauncherModule.Provider(namespace: .prefix("shortcut:"), entries: { _ in
             controller.entries.compactMap { shortcut in
@@ -231,7 +229,7 @@ enum UtilityLauncherModules {
                                             items: SettingsItem.all.filter { $0.page == pageID },
                                             content: { [weak model] in
                                                 guard let model else { return AnyView(EmptyView()) }
-                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller, iconPermission: iconPermission))
+                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller))
                                             })
         let searchUpdates = Publishers.Merge(
             controller.$entries.removeDuplicates().dropFirst().map { _ in () },
@@ -241,20 +239,7 @@ enum UtilityLauncherModules {
             command("system-shortcuts", "管理快捷指令", "别名、热键与启用状态", "square.stack.3d.up",
                     ["Shortcuts", "Apple Shortcuts", "快捷指令"], destination: .settings(pageID), settings: pageID)
         ], providers: [provider], settings: [settings], services: [
-            .init(start: {
-                iconPermission.startObserving()
-                controller.iconReadingAllowed = { iconPermission.available }
-                iconChanges = iconPermission.updates.receive(on: DispatchQueue.main).sink {
-                    controller.updateIconPermission()
-                }
-                controller.start()
-            }, stop: {
-                iconChanges?.cancel()
-                iconChanges = nil
-                iconPermission.stopObserving()
-                controller.iconReadingAllowed = { false }
-                controller.stop()
-            })
+            .init(start: controller.start, stop: controller.stop)
         ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,
             updates: {
