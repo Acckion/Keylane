@@ -117,7 +117,7 @@ private struct SnippetsList: View {
                 ForEach(snippets) { snippet in
                     ResultListButton(id: snippet.id, action: { controller.selectedID = snippet.id }) {
                         ResultListRow(selected: selection == snippet.id) {
-                            Image(systemName: "text.alignleft").foregroundStyle(.secondary)
+                            SettingsIcon(symbol: "text.alignleft", artwork: ModuleArtwork.settings("snippets"))
                         } content: {
                             HStack {
                                 HighlightedResultText(text: snippet.title, query: controller.query)

@@ -483,7 +483,8 @@ final class LauncherModuleRegistry {
     func artwork(for entry: Entry) -> AnyView? {
         if let artwork = provider(for: entry)?.artwork?(entry) { return artwork }
         let item = declaration(entry.commandID)
-        return ModuleArtwork.command(entry.commandID, settingsPage: item?.settingsPage)
+        return ModuleArtwork.command(entry.commandID, settingsPage: item?.settingsPage,
+                                     moduleID: byID[entry.commandID]?.module)
             .map { AnyView(ModuleArtworkImage(image: $0)) }
     }
 
