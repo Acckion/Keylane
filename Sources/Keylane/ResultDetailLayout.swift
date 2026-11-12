@@ -44,8 +44,14 @@ struct ResultDetailLayout<Results: View, Detail: View, EmptyState: View>: View {
 
 /// Centered presentation for a search that returned no results.
 struct ResultDetailEmptyState: View {
+    struct Action {
+        let title: String
+        let perform: () -> Void
+    }
+
     var title = "没有匹配结果"
     var message: String?
+    var action: Action?
 
     var body: some View {
         VStack(spacing: 14) {
@@ -63,6 +69,13 @@ struct ResultDetailEmptyState: View {
             Text(title).font(VisualStyle.rowText.weight(.medium)).foregroundStyle(.secondary)
             if let message {
                 Text(message).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+            if let action {
+                Button(action.title, action: action.perform)
+                    .font(VisualStyle.rowText.weight(.medium))
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .padding(.top, 4)
             }
         }
     }
