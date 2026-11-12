@@ -69,16 +69,7 @@ struct PermissionSettingsContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if permission.requesting {
-                ProgressView("正在检查系统权限…").controlSize(.small)
-            } else if let message = permission.message {
-                HStack(alignment: .center, spacing: 12) {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                    if let open = contribution.openPrivacySettings {
-                        Button("打开系统设置", action: open).buttonStyle(.bordered).controlSize(.small)
-                    }
-                }
-            }
+            SettingsPermissionFeedback(status: permission, openPrivacySettings: contribution.openPrivacySettings)
             content()
                 .disabled(!enabled)
                 .saturation(enabled ? 1 : 0)
@@ -86,6 +77,24 @@ struct PermissionSettingsContent: View {
         }
         .onReceive(contribution.updates) { enabled = $0 }
         .onReceive(contribution.permissionStatus ?? Empty().eraseToAnyPublisher()) { permission = $0 }
+    }
+}
+
+struct SettingsPermissionFeedback: View {
+    let status: SettingsPermissionStatus
+    let openPrivacySettings: (() -> Void)?
+
+    var body: some View {
+        if status.requesting {
+            ProgressView("正在检查系统权限…").controlSize(.small)
+        } else if let message = status.message {
+            HStack(alignment: .center, spacing: 12) {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+                if let openPrivacySettings {
+                    Button("打开系统设置", action: openPrivacySettings).buttonStyle(.bordered).controlSize(.small)
+                }
+            }
+        }
     }
 }
 

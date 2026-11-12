@@ -634,7 +634,7 @@ struct Launcher: View {
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
         var actions = model.launcherModules?.actions(for: row) ?? [
-            MenuAction(id: "open", title: row.needsPermissionActivation ? "启用并继续" : "执行命令", icon: "return", keys: ["↩"]) {
+            MenuAction(id: "open", title: "执行命令", icon: "return", keys: ["↩"]) {
                 model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
             },
             model.favoriteAction(for: row)
@@ -772,7 +772,6 @@ struct Launcher: View {
         if argumentTarget != nil { return "启动新实例" }
         if let title = page?.primaryTitle?() { return title }
         if let row = selectedEntry {
-            if row.needsPermissionActivation { return "启用并继续" }
             if let title = model.launcherModules?.primaryTitle(for: row) { return title }
             if row.id == "calculator" { return "复制结果" }
         }

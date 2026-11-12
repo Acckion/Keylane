@@ -290,11 +290,14 @@ struct ExtensionCommandPreferences: View {
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(model.$disabledCommands)
-        ]))
+        ] + commands.compactMap { command in
+            command.settingsEnabled.flatMap { _ in command.permission?.settingsUpdates }
+        }))
     }
 
     var body: some View {
-        CommandSettingsList(items: commands, id: \.declaration.id, showsColumns: true) {
+        CommandSettingsList(items: commands, id: \.declaration.id, showsColumns: true,
+                            usesFixedRowHeights: !commands.contains { $0.settingsEnabled != nil && $0.permission != nil }) {
             $0.commandSettingsEntry(model: model)
         }
     }
@@ -311,10 +314,12 @@ private extension LauncherModule.Command {
                     else { model.disabledCommands.insert(id) }
                 }
             )
-        return CommandSettingsEntry(title: declaration.title, model: model, commandID: declaration.id,
+        var entry = CommandSettingsEntry(title: declaration.title, model: model, commandID: declaration.id,
                                     isEnabled: enabled) {
             SettingsIcon(symbol: declaration.symbol,
                          artwork: ModuleArtwork.command(declaration.id, settingsPage: declaration.settingsPage))
         }
+        if settingsEnabled != nil { entry.permission = permission }
+        return entry
     }
 }
