@@ -55,7 +55,10 @@ struct ScreenshotScope: Codable, Identifiable, Equatable {
 }
 
 final class ScreenshotLibrary: ObservableObject {
+    static let columnCounts = 3...6
+    private static let defaultColumnCount = 3
     private static let section = "captures"
+    private static let pinnedSection = "pinned-captures"
     private let defaults: UserDefaults
     @Published var enabled: Bool {
         didSet {
@@ -69,6 +72,9 @@ final class ScreenshotLibrary: ObservableObject {
     }
     @Published var disabledCommands: Set<String> { didSet { defaults.set(Array(disabledCommands), forKey: "disabledScreenshotCommands") } }
     @Published var columns: Int { didSet { defaults.set(columns, forKey: "screenshotColumns") } }
+    @Published private(set) var pinnedIDs: Set<String> {
+        didSet { defaults.set(pinnedIDs.sorted(), forKey: "pinnedScreenshotPaths") }
+    }
     @Published var includeAll: Bool { didSet { defaults.set(includeAll, forKey: "screenshotIncludeAll") } }
     @Published var recognizesText: Bool { didSet { defaults.set(recognizesText, forKey: "screenshotOCR") } }
     @Published var accurate: Bool { didSet { defaults.set(accurate, forKey: "screenshotOCRAccurate") } }
@@ -93,7 +99,9 @@ final class ScreenshotLibrary: ObservableObject {
         self.defaults = defaults
         enabled = false
         disabledCommands = Set(defaults.stringArray(forKey: "disabledScreenshotCommands") ?? [])
-        columns = min(6, max(3, defaults.object(forKey: "screenshotColumns") as? Int ?? 3))
+        let savedColumns = defaults.object(forKey: "screenshotColumns") as? Int ?? Self.defaultColumnCount
+        columns = min(Self.columnCounts.upperBound, max(Self.columnCounts.lowerBound, savedColumns))
+        pinnedIDs = Set(defaults.stringArray(forKey: "pinnedScreenshotPaths") ?? [])
         includeAll = defaults.bool(forKey: "screenshotIncludeAll")
         recognizesText = defaults.bool(forKey: "screenshotOCR")
         accurate = defaults.object(forKey: "screenshotOCRAccurate") as? Bool ?? true
@@ -228,9 +236,32 @@ final class ScreenshotLibrary: ObservableObject {
         if next != selection { selection = next }
     }
 
+    func resetZoom() { columns = Self.defaultColumnCount }
+
+    func zoomIn() {
+        if columns > Self.columnCounts.lowerBound { columns -= 1 }
+    }
+
+    func zoomOut() {
+        if columns < Self.columnCounts.upperBound { columns += 1 }
+    }
+
+    func togglePin(_ item: ScreenshotMedia) throws {
+        try validate(item)
+        let pinned = pinnedIDs.contains(item.id)
+        if pinned { pinnedIDs.remove(item.id) }
+        else { pinnedIDs.insert(item.id) }
+        if selection?.itemID == item.id {
+            selection = .init(sectionID: pinned ? Self.section : Self.pinnedSection, itemID: item.id)
+        }
+    }
+
     var sections: [ResultGridSection<ScreenshotMedia>] {
         let title = filter == .all ? "图片与录屏" : filter.title
-        return [.init(id: Self.section, title: title, items: results)]
+        return [
+            .init(id: Self.pinnedSection, title: "已置顶", items: results.filter { pinnedIDs.contains($0.id) }),
+            .init(id: Self.section, title: title, items: results.filter { !pinnedIDs.contains($0.id) })
+        ]
     }
 
     private func publish(_ results: [ScreenshotMedia]) {
@@ -263,6 +294,45 @@ final class ScreenshotLibrary: ObservableObject {
         guard board.writeObjects([pasteboardItem]) else { throw CocoaError(.fileWriteUnknown) }
     }
 
+    func copyPath(_ item: ScreenshotMedia, to board: NSPasteboard = .general) throws {
+        try validate(item)
+        try writeText(item.url.path, to: board)
+    }
+
+    @MainActor func copyImageText(_ mode: ImageTextRecognition, from item: ScreenshotMedia,
+                                  to board: NSPasteboard = .general) async throws -> Bool {
+        try validate(item)
+        guard item.kind == .image else { throw ImageTextError.notImage }
+        guard allowCloudOCR || !item.needsCloudAccess else { throw ImageTextError.cloudDownloadDisabled }
+        let changeCount = board.changeCount
+        let accurate = accurate
+        let text = try await Task.detached(priority: .userInitiated) {
+            try mode.recognize(in: VNImageRequestHandler(url: item.url), accurate: accurate)
+        }.value
+        guard !text.isEmpty else { return false }
+        try validate(item)
+        guard board.changeCount == changeCount else { throw ImageTextError.pasteboardChanged }
+        try writeText(text, to: board)
+        return true
+    }
+
+    private enum ImageTextError: LocalizedError {
+        case notImage, cloudDownloadDisabled, pasteboardChanged
+
+        var errorDescription: String? {
+            switch self {
+            case .notImage: return "请选择一张截图。"
+            case .cloudDownloadDisabled: return "图片尚未下载。请先下载图片，或在截图设置中允许识别云端文件。"
+            case .pasteboardChanged: return "剪贴板内容已变化，请重新执行复制。"
+            }
+        }
+    }
+
+    private func writeText(_ text: String, to board: NSPasteboard) throws {
+        board.clearContents()
+        guard board.setString(text, forType: .string) else { throw CocoaError(.fileWriteUnknown) }
+    }
+
     func validate(_ item: ScreenshotMedia) throws {
         let values = try item.url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey, .fileSizeKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true,
@@ -276,6 +346,7 @@ final class ScreenshotLibrary: ObservableObject {
         var destination: NSURL?
         try FileManager.default.trashItem(at: item.url, resultingItemURL: &destination)
         items.removeAll { $0.id == item.id }
+        if pinnedIDs.contains(item.id) { pinnedIDs.remove(item.id) }
         search(query)
         return destination as URL?
     }

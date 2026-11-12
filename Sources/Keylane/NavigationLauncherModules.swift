@@ -245,81 +245,28 @@ enum NavigationLauncherModules {
         page.navigateWhileTyping = true
         page.submit = { [weak model] in
             guard let model, let item = library.selected else { return }
-            copyScreenshot(item, model: model)
+            ScreenshotActions.copy(item, model: model)
         }
         page.primaryTitle = { "复制到剪贴板" }
+        page.primaryEnabled = { library.selected != nil }
+        page.actionContextTitle = { library.selected?.name ?? "截图操作" }
+        page.actionShortcutsEnabled = true
         page.actions = { [weak model] in
             guard let model else { return [] }
-            return screenshotActions(model, chooseFolders: chooseFolders)
+            return ScreenshotActions.items(model)
+        }
+        page.badgeActions = { [weak model] in
+            guard let model else { return [] }
+            return ScreenshotActions.controls(model, chooseFolders: chooseFolders)
         }
         let selectedMedia = library.$results.combineLatest(library.$selection)
             .map { results, selection in results.first { $0.id == selection?.itemID } }
-        page.updates = Publishers.Merge(
+        page.updates = Publishers.MergeMany([
             ViewObservation.changes(library.$filter),
+            ViewObservation.changes(library.$columns),
+            ViewObservation.changes(library.$pinnedIDs),
             ViewObservation.changes(selectedMedia)
-        ).eraseToAnyPublisher()
+        ]).eraseToAnyPublisher()
         return page
-    }
-
-    private static func screenshotActions(_ model: Model, chooseFolders: @escaping () -> Void) -> [LauncherAction] {
-        let controls = [
-            LauncherAction(id: "screenshot-refresh", title: "刷新截图", icon: "arrow.clockwise", perform: model.screenshots.refresh),
-            LauncherAction(id: "screenshot-folders", title: "添加搜索文件夹…", icon: "folder.badge.plus", perform: chooseFolders),
-            LauncherAction(id: "screenshot-settings", title: "截图设置…", icon: "gearshape",
-                           perform: { model.openSettings(page: "screenshots") })
-        ]
-        guard let item = model.screenshots.selected else { return controls }
-        return [
-            LauncherAction(id: "screenshot-copy", title: "复制到剪贴板", icon: "doc.on.doc", keys: ["↩"],
-                           perform: { copyScreenshot(item, model: model) }),
-            LauncherAction(id: "screenshot-preview", title: "快速查看", icon: "eye", perform: {
-                withScreenshot(item, model: model) { FilePreview.shared.show(item.url) }
-            }),
-            LauncherAction(id: "screenshot-open", title: "打开原文件", icon: "arrow.up.forward.app", perform: {
-                withScreenshot(item, model: model) {
-                    guard NSWorkspace.shared.open(item.url) else { throw CocoaError(.fileReadUnknown) }
-                    (NSApp.delegate as? Delegate)?.hideLauncher()
-                }
-            }),
-            LauncherAction(id: "screenshot-share", title: "分享…", icon: "square.and.arrow.up", perform: {
-                withScreenshot(item, model: model) { FileActionsWindow.shared.show(item.url, page: "share") }
-            }),
-            LauncherAction(id: "screenshot-reveal", title: "在 Finder 中显示", icon: "folder", perform: {
-                withScreenshot(item, model: model) { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
-            }),
-            LauncherAction(id: "screenshot-trash", title: "移到废纸篓…", icon: "trash", perform: {
-                trashScreenshot(item, model: model)
-            })
-        ] + controls
-    }
-
-    private static func withScreenshot(_ item: ScreenshotMedia, model: Model, perform: () throws -> Void) {
-        do {
-            try model.screenshots.validate(item)
-            try perform()
-        } catch {
-            model.error = "截图操作失败：" + error.localizedDescription
-            model.screenshots.refresh()
-        }
-    }
-
-    private static func copyScreenshot(_ item: ScreenshotMedia, model: Model) {
-        withScreenshot(item, model: model) {
-            try model.screenshots.copy(item)
-            (NSApp.delegate as? Delegate)?.hideLauncher()
-        }
-    }
-
-    private static func trashScreenshot(_ item: ScreenshotMedia, model: Model) {
-        let alert = NSAlert()
-        alert.messageText = "将这张截图移到废纸篓？"
-        alert.informativeText = item.name
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "取消")
-        alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true
-        if alert.runModal() == .alertSecondButtonReturn {
-            withScreenshot(item, model: model) { try model.screenshots.moveToTrash(item) }
-        }
-        model.runCommand(.init(rawValue: ScreenshotCommand.search.rawValue), origin: .menu)
     }
 }
