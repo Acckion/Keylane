@@ -159,9 +159,12 @@ struct Launcher: View {
         .background {
             Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
             Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
-            Button("") { page?.shortcutSubmit?() }.keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
+            Button("") { if page?.optionSubmit != nil { closeMenus() }; page?.shortcutSubmit?() }.keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
             if let optionSubmit = page?.optionSubmit {
-                Button("") { optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
+                Button("") { closeMenus(); optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
+            }
+            if model.pageID == PageID(rawValue: "Clipboard") {
+                clipboardMenuShortcuts
             }
             ForEach(0..<min(10, results.count), id: \.self) { index in
                 Button("") { activateResult(results[index].commandID) }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
@@ -584,6 +587,33 @@ struct Launcher: View {
         .modifier(LauncherMenuSurface(open: open, tint: open ? nil : feedback?.style.color.opacity(0.16)))
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
+    private var clipboardMenuShortcuts: some View {
+        let actions = page?.actions?() ?? []
+        return ForEach(actions) { action in
+            let modifiers = action.keys.dropLast()
+            if !modifiers.isEmpty, let key = action.keys.last,
+               key != "↩" || modifiers.count > 1,
+               let character = key.lowercased().first {
+                clipboardMenuShortcut(action, key: character, modifiers: modifiers)
+            }
+        }
+    }
+
+    private func clipboardMenuShortcut(_ action: MenuAction, key: Character, modifiers: ArraySlice<String>) -> some View {
+        var flags: EventModifiers = []
+        if modifiers.contains("⌘") { flags.insert(.command) }
+        if modifiers.contains("⌥") { flags.insert(.option) }
+        if modifiers.contains("⌃") { flags.insert(.control) }
+        if modifiers.contains("⇧") { flags.insert(.shift) }
+        return Button("") {
+            if action.submenu != nil, !actions { toggleMenu(application: false) }
+            activate(action)
+        }
+        .keyboardShortcut(key == "↩" ? .return : KeyEquivalent(key), modifiers: flags)
+        .hidden()
+        .accessibilityHidden(true)
+    }
+
     private typealias MenuAction = LauncherAction
     private var selectedEntry: Entry? {
         let results = rows

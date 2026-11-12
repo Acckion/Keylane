@@ -25,6 +25,24 @@ final class ClipboardTests: XCTestCase {
         let nul = try reopened.capture(.text("before\0after"))
         XCTAssertEqual(try reopened.detail(id:nul)?.text,"before\0after")
     }
+    func testRenamePreservesContentAndRecentDeletionKeepsPinnedHistory() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let now = Date()
+        let old = try store.capture(.text("older original"), at: now.addingTimeInterval(-7200))
+        let recent = try store.capture(.text("recent original"), at: now)
+        let pinned = try store.capture(.text("pinned original"), at: now)
+        try store.setPinned(id: pinned, pinned: true)
+        try store.rename(id: recent, to: "Meeting Summary")
+        XCTAssertEqual(try store.list(query: "meeting").map(\.id), [recent])
+        XCTAssertEqual(try store.detail(id: recent)?.text, "recent original")
+
+        try store.removeRecent(since: now.addingTimeInterval(-3600))
+
+        XCTAssertEqual(Set(try store.list().map(\.id)), Set([old, pinned]))
+    }
+
     func testUnicodeSubstringSearchAndLiteralSyntax() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at:directory) }
         let store = try ClipboardStore(directory:directory)

@@ -9,6 +9,11 @@ enum SnippetsModule {
     private static let settingsID = "snippets"
     private static let symbol = "text.badge.plus"
 
+    static func create(from text: String, model: Model) {
+        model.snippets.edit(Snippet(text: text))
+        model.openPage(editID, origin: .menu)
+    }
+
     static func make(model: Model) -> LauncherModule {
         let snippets = model.snippets
         let create: (LauncherCommandOrigin) -> Void = { [weak model] origin in

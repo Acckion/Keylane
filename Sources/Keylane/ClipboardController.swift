@@ -372,6 +372,74 @@ final class ClipboardController: ObservableObject {
     func pinSelected() { guard let item = items.first(where: { $0.id == selectedID }) else { return }; mutate { try $0.setPinned(id: item.id, pinned: !item.pinned) } }
     func removeSelected() { guard let id = selectedID else { return }; mutate { try $0.remove(id: id) } }
     func clear(includePinned: Bool) { mutate { try $0.clear(includePinned: includePinned); if includePinned { try $0.removeMigrationBackups() } } }
+    var sharingItem: Any? {
+        guard let detail, detail.item.id == selectedID else { return nil }
+        if let url = detail.assetURL { return url }
+        if !detail.text.isEmpty { return detail.text }
+        return nil
+    }
+
+    private var sharingPicker: NSSharingServicePicker?
+
+    func share(_ item: Any) {
+        guard let view = NSApp.keyWindow?.contentView else { return }
+        let picker = NSSharingServicePicker(items: [item])
+        sharingPicker = picker
+        let anchor = CGRect(x: view.bounds.maxX - 30, y: view.bounds.minY + 30, width: 1, height: 1)
+        picker.show(relativeTo: anchor, of: view, preferredEdge: .maxY)
+    }
+
+    func saveSelectedAsFile() {
+        guard let detail, detail.item.id == selectedID else { return }
+        let panel = NSSavePanel()
+        let asset = detail.assetURL
+        panel.nameFieldStringValue = asset.map { "剪贴板.\($0.pathExtension)" } ?? "剪贴板.txt"
+        panel.begin { response in
+            guard response == .OK, let destination = panel.url else { return }
+            do {
+                let data = try asset.map { try Data(contentsOf: $0) } ?? Data(detail.text.utf8)
+                try data.write(to: destination, options: .atomic)
+                (NSApp.delegate as? Delegate)?.showLauncherFeedback("已保存文件", style: .success)
+            } catch {
+                (NSApp.delegate as? Delegate)?.showLauncherFeedback(error.localizedDescription, style: .failure)
+            }
+        }
+    }
+
+    func renameSelected() {
+        guard let item = items.first(where: { $0.id == selectedID }), let window = NSApp.keyWindow else { return }
+        let alert = NSAlert()
+        alert.messageText = "重命名记录"
+        alert.addButton(withTitle: "保存")
+        alert.addButton(withTitle: "取消")
+        let field = NSTextField(string: item.preview)
+        field.frame.size.width = 280
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard response == .alertFirstButtonReturn, !name.isEmpty else { return }
+            self?.mutate { try $0.rename(id: item.id, to: name) }
+        }
+    }
+
+    func confirmHistoryRemoval(recent: Bool) {
+        let alert = NSAlert()
+        alert.messageText = recent ? "删除过去一小时内未置顶的记录？" : "删除全部剪贴板记录？"
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "删除").hasDestructiveAction = true
+        guard let window = NSApp.keyWindow else { return }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertSecondButtonReturn else { return }
+            if recent {
+                let cutoff = Date().addingTimeInterval(-3600)
+                self?.mutate { try $0.removeRecent(since: cutoff) }
+            } else {
+                self?.clear(includePinned: true)
+            }
+        }
+    }
+
     @discardableResult func copySelected(plainText: Bool = false) -> Bool {
         guard !searching, !loadingDetail else { status = "内容正在加载，请稍后重试。"; return false }
         guard let detail, detail.item.id == selectedID else { status = "请先选择记录并等待内容加载。"; return false }

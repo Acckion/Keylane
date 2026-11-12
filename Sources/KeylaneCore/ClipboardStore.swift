@@ -195,7 +195,7 @@ public final class ClipboardStore {
             try exec("BEGIN IMMEDIATE")
             try write("""
                 INSERT INTO clips(id,kind,preview,payload,searchable,asset,source,bundle,created,copied,bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET copied=excluded.copied,source=excluded.source,bundle=excluded.bundle,payload=excluded.payload,copies=clips.copies+1,bytes=excluded.bytes,searchable=excluded.searchable || ' ' || clips.ocr
+                ON CONFLICT(id) DO UPDATE SET copied=excluded.copied,source=excluded.source,bundle=excluded.bundle,payload=excluded.payload,copies=clips.copies+1,bytes=excluded.bytes,searchable=excluded.searchable || ' ' || clips.ocr || ' ' || clips.preview
                 """, [.text(id),.text(content.kind.rawValue),.text(String(body.prefix(512))),.blob(payload),.text(Self.normalize(body + " " + (snapshot?.plainText ?? "") + " " + source)),asset.map(Value.text) ?? .null,.text(String(source.prefix(256))),.text(String(bundle.prefix(256))),.number(date.timeIntervalSince1970),.number(date.timeIntervalSince1970),.number(Double(max(identity.count,payload.count) + (snapshotData?.count ?? 0)))])
             if let snapshotData { try write("INSERT INTO clip_snapshots(clip_id,payload,search_text) VALUES(?,?,?) ON CONFLICT(clip_id) DO UPDATE SET payload=excluded.payload,search_text=excluded.search_text",[.text(id),.blob(snapshotData),.text(Self.normalize(snapshot?.plainText ?? ""))]) }
             try exec("COMMIT")
@@ -242,6 +242,15 @@ public final class ClipboardStore {
         let value = String(text.prefix(100_000))
         try write("UPDATE clips SET ocr=?,searchable=? || ' ' || coalesce((SELECT search_text FROM clip_snapshots WHERE clip_id=clips.id),'') || ' ' || source WHERE id=? AND kind='image'",[.text(value),.text(Self.normalize("图片 " + value)),.text(id)])
     }
+    public func rename(id: String, to name: String) throws {
+        guard let record = try detail(id: id) else { return }
+        let title = String(name.prefix(512))
+        let searchable = [title, record.text, record.files.map(\.path).joined(separator: " "),
+                          record.snapshot?.plainText ?? "", record.item.source, record.ocrText]
+            .joined(separator: " ")
+        try write("UPDATE clips SET preview=?, searchable=? WHERE id=?",
+                  [.text(title), .text(Self.normalize(searchable)), .text(id)])
+    }
     public func remove(id: String) throws {
         let query = try statement("SELECT asset FROM clips WHERE id=?",[.text(id)])
         let status = sqlite3_step(query)
@@ -250,6 +259,19 @@ public final class ClipboardStore {
         guard status == SQLITE_ROW || status == SQLITE_DONE else { throw ClipboardError.database }
         try write("DELETE FROM clips WHERE id=?",[.text(id)])
         if let asset, let url = assetURL(asset) { try? FileManager.default.removeItem(at:url) }
+    }
+    public func removeRecent(since cutoff: Date) throws {
+        let query = try statement("SELECT id FROM clips WHERE pinned=0 AND copied>=?",
+                                  [.number(cutoff.timeIntervalSince1970)])
+        var ids: [String] = []
+        var status = sqlite3_step(query)
+        while status == SQLITE_ROW {
+            ids.append(string(query, 0))
+            status = sqlite3_step(query)
+        }
+        sqlite3_finalize(query)
+        guard status == SQLITE_DONE else { throw ClipboardError.database }
+        for id in ids { try remove(id: id) }
     }
     public func clear(includePinned: Bool) throws {
         let s = try statement("SELECT id FROM clips" + (includePinned ? "" : " WHERE pinned=0")); var ids: [String] = []
