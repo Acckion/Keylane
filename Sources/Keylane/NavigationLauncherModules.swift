@@ -148,7 +148,32 @@ enum NavigationLauncherModules {
             guidance: "请通过启用开关选择可访问的截图文件夹。"
         ))
         var permissionChanges: AnyCancellable?
-        let commands = ScreenshotCommand.allCases.map { command in
+        let captureAccess = PermissionFeature.Authorization.screenCapture
+        let capture = LauncherModule.Command(
+            declaration: .init(id: .init(rawValue: "screenshot"), title: "Screenshot / 截图", detail: "截取屏幕区域",
+                               symbol: "camera.viewfinder", keywords: ["屏幕截取", "截屏"], destination: .action,
+                               settingsPage: "screenshots"),
+            permission: permission, execute: { _ in
+                let captureIfAllowed = {
+                    guard permission.available else { return }
+                    guard captureAccess.check() == true else {
+                        (NSApp.delegate as? Delegate)?.showLauncherFeedback("屏幕截取需要屏幕录制权限", style: .failure, actionTitle: "系统设置…") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        return
+                    }
+                    (NSApp.delegate as? Delegate)?.hideLauncher()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        if permission.available && captureAccess.check() == true { SystemTools.shared.screenshot() }
+                    }
+                }
+                if captureAccess.check() == true { captureIfAllowed() }
+                else { captureAccess.request { _ in DispatchQueue.main.async(execute: captureIfAllowed) } }
+            }
+        )
+        let commands = [capture] + ScreenshotCommand.allCases.map { command in
             LauncherModule.Command(
                 declaration: .init(id: .init(rawValue: command.rawValue), title: command.title,
                                    detail: "截图管理", symbol: command.symbol, keywords: command.aliases,

@@ -220,7 +220,7 @@ let gated = try LauncherModuleRegistry(modules: [
 let emptyPermissionInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
 let permissionInput = LauncherCommandSearch.Input(query: "Calendar Fixture", page: .root, aliases: [:], favorites: [], usage: [:])
 precondition(gated.candidates(for: emptyPermissionInput).isEmpty)
-precondition(gated.candidates(for: permissionInput).first?.needsPermissionActivation == true)
+precondition(gated.candidates(for: permissionInput).isEmpty)
 precondition(gated.resolve(gatedID, origin: .search, navigate: { _ in }) == nil)
 precondition(requests == 0 && opened == 0)
 func activateFixtureCommand() {
@@ -237,8 +237,8 @@ systemGrant = true
 permissionResponse?(true)
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 precondition(permission.enabled && requests == 2 && opened == 1)
-precondition(gated.candidates(for: permissionInput).first?.needsPermissionActivation == false)
+precondition(gated.candidates(for: permissionInput).map(\.commandID) == [gatedID])
 systemGrant = false
 permission.recheck()
 precondition(gated.resolve(gatedID, origin: .shortcut, navigate: { _ in }) == nil && !permission.enabled)
-print("PASS permission command discovery, explicit activation, denial, continuation and revocation")
+print("PASS disabled permission commands hidden; authorization and revocation update availability")

@@ -18,7 +18,6 @@ struct Entry: Identifiable {
     var isDirectory = false
     var isFallback = false
     var subtitle: String?
-    var needsPermissionActivation = false
 }
 
 struct LauncherAction: Identifiable {
@@ -348,13 +347,11 @@ final class LauncherModuleRegistry {
     func candidates(for input: LauncherCommandSearch.Input) -> [Entry] {
         commands.compactMap { command in
             guard input.namespace?.contains(command.declaration.id) != false,
-                  commandEnabled(command.declaration.id), command.available() else { return nil }
+                  commandEnabled(command.declaration.id), command.available(),
+                  command.permission?.available != false else { return nil }
             let item = command.declaration
-            let needsPermission = command.permission?.available == false
-            if needsPermission && input.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
-                         detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords,
-                         subtitle: needsPermission ? "启用并继续" : nil, needsPermissionActivation: needsPermission)
+                         detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords)
         } + providers.flatMap { provider in
             guard input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
             return provider.entries(input).filter {
