@@ -30,8 +30,7 @@ extension DynamicCommandSettings {
     }
 }
 
-final class ShortcutSettingsControls: ObservableObject {
-    @Published var category: String?
+class SettingsSearchControls: ObservableObject {
     @Published var query = ""
     @Published var searchPresented = false
 
@@ -41,16 +40,19 @@ final class ShortcutSettingsControls: ObservableObject {
     }
 }
 
-struct ShortcutSettingsToolbar: View {
-    let groups: [ShortcutCommandGroup]
-    let navigation: String
-    @ObservedObject var selection: ShortcutSettingsControls
+final class ShortcutSettingsControls: SettingsSearchControls {
+    @Published var category: String?
+}
+
+struct SettingsToolbarSearch: View {
+    let title: String
+    @ObservedObject var selection: SettingsSearchControls
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 8) {
+        Group {
             if selection.searchPresented {
-                SettingsSearchField(text: $selection.query, placeholder: "搜索快捷键…", floating: true,
+                SettingsSearchField(text: $selection.query, placeholder: title + "…", floating: true,
                                     autofocus: true, endEditing: {
                                         if selection.query.isEmpty { selection.searchPresented = false }
                                     }, cancel: selection.dismissSearch)
@@ -66,13 +68,25 @@ struct ShortcutSettingsToolbar: View {
                 }
                 .buttonStyle(.plain)
                 .glassEffect(.regular.interactive(), in: Circle())
-                .accessibilityLabel("搜索快捷键")
-                .help("搜索快捷键")
+                .accessibilityLabel(title)
+                .help(title)
             }
-            ShortcutSettingsCategoryFilter(groups: groups, navigation: navigation, selection: selection)
         }
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: selection.searchPresented)
         .onDisappear(perform: selection.dismissSearch)
+    }
+}
+
+struct ShortcutSettingsToolbar: View {
+    let groups: [ShortcutCommandGroup]
+    let navigation: String
+    @ObservedObject var selection: ShortcutSettingsControls
+
+    var body: some View {
+        HStack(spacing: 8) {
+            SettingsToolbarSearch(title: "搜索快捷键", selection: selection)
+            ShortcutSettingsCategoryFilter(groups: groups, navigation: navigation, selection: selection)
+        }
     }
 }
 

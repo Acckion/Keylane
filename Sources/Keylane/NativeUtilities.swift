@@ -91,7 +91,6 @@ final class SystemShortcutsController: ObservableObject {
         guard active, !loading, force || Date().timeIntervalSince(lastRefresh) > 15 else { return }
         lastRefresh = Date()
         loading = true
-        message = ""
         let request = ExtensionProcessRequest()
         catalogRequest = request
         catalogQueue.async { [weak self, executable] in
@@ -102,11 +101,12 @@ final class SystemShortcutsController: ObservableObject {
                 self.catalogRequest = nil
                 self.loading = false
                 if let records {
-                    self.entries = records
+                    if self.entries != records { self.entries = records }
+                    if !self.message.isEmpty { self.message = "" }
                     self.refreshIcons(force: force)
                     UtilityVerification.record("shortcuts", count: records.count)
                 } else {
-                    self.message = "无法读取快捷指令。打开系统快捷指令后再刷新。"
+                    self.message = "暂时无法读取快捷指令，将自动重试。"
                 }
             }
         }

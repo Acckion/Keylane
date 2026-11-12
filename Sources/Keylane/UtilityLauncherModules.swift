@@ -205,6 +205,7 @@ enum UtilityLauncherModules {
     private static func shortcuts(_ model: Model) -> LauncherModule {
         let controller = model.systemShortcuts
         let pageID = "shortcuts"
+        let search = SettingsSearchControls()
         let provider = LauncherModule.Provider(namespace: .prefix("shortcut:"), entries: { _ in
             controller.entries.compactMap { shortcut in
                 guard !controller.disabledIDs.contains(shortcut.id) else { return nil }
@@ -227,9 +228,12 @@ enum UtilityLauncherModules {
         let settings = LauncherSettingsPage(id: pageID, title: "快捷指令", symbol: "square.stack.3d.up",
                                             subtitle: "为系统快捷指令设置搜索别名与热键。", order: 60,
                                             items: SettingsItem.all.filter { $0.page == pageID },
+                                            trailingToolbar: {
+                                                AnyView(SettingsToolbarSearch(title: "搜索快捷指令", selection: search))
+                                            },
                                             content: { [weak model] in
                                                 guard let model else { return AnyView(EmptyView()) }
-                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller))
+                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller, search: search))
                                             })
         let searchUpdates = Publishers.Merge(
             controller.$entries.removeDuplicates().dropFirst().map { _ in () },
