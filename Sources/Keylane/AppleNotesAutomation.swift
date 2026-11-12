@@ -78,17 +78,37 @@ enum AppleNotesAutomation {
         }
     }
 
+    static let recentlyDeletedFolderNames: [String] = {
+        // Read the system's translations without loading any Notes framework code.
+        let path = "/System/Library/PrivateFrameworks/NotesShared.framework"
+        guard let resources = Bundle(path: path) else { return [] }
+        let key = "Recently Deleted"
+        let names = Set(resources.localizations.map { localization in
+            resources.localizedString(forKey: key, value: key, table: nil,
+                                      localizations: [Locale.Language(identifier: localization)])
+        })
+        // A bundle with no translated matches may be missing the string table.
+        guard names.contains(where: { $0 != key }) else { return [] }
+        return names.union([key]).sorted()
+    }()
+
     private static func execute(_ source: String) throws -> String {
         // Pass the script over stdin so queries and drafts never appear in process arguments.
+        let folderNames = recentlyDeletedFolderNames.map(literal).joined(separator: ", ")
         let script = """
         on deletedNoteIDs()
+            set localizedNames to {\(folderNames)}
+            if localizedNames is {} then error number -2700
             tell application id "com.apple.Notes"
                 set deletedIDs to {}
-                repeat with folderName in {"Recently Deleted", "最近删除", "最近刪除"}
-                    set foldersFound to every folder whose name is (contents of folderName)
-                    repeat with deletedFolder in foldersFound
-                        set deletedIDs to deletedIDs & (id of every note of deletedFolder)
-                    end repeat
+                set availableNames to name of every folder
+                repeat with folderName in localizedNames
+                    if (contents of folderName) is in availableNames then
+                        set foldersFound to every folder whose name is (contents of folderName)
+                        repeat with deletedFolder in foldersFound
+                            set deletedIDs to deletedIDs & (id of every note of deletedFolder)
+                        end repeat
+                    end if
                 end repeat
                 return deletedIDs
             end tell
