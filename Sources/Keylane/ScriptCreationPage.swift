@@ -8,7 +8,7 @@ struct ScriptCreationPage: View {
 
     var body: some View {
         LauncherCreationForm(back: back, spacing: 16) { EmptyView() } fields: {
-            LauncherCreationField("模板") {
+            LauncherCreationField("模板", detail: runtimeRequirement) {
                 LauncherCreationControl {
                     Picker("模板", selection: $controller.template) {
                         ForEach(ScriptTemplate.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -93,6 +93,15 @@ struct ScriptCreationPage: View {
             if mode == .inline { controller.includeArgument = false }
         }
         .onExitCommand(perform: back)
+    }
+
+    private var runtimeRequirement: String? {
+        switch controller.template {
+        case .typescript: "需要支持 TypeScript 类型擦除的 Node.js（例如 22.18 或 24 LTS）。"
+        case .go: "需要本机安装 Go。"
+        case .csharp: "需要 .NET 10 SDK 或更新版本。"
+        default: nil
+        }
     }
 
     private func field(_ title: String, _ prompt: String, _ text: Binding<String>, detail: String? = nil) -> some View {
