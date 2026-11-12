@@ -215,8 +215,10 @@ let gated = try LauncherModuleRegistry(modules: [
         .init(declaration: .init(id: gatedID, title: "Calendar Fixture", detail: "Calendar",
                                  symbol: "calendar", keywords: []), permission: permission,
               execute: { _ in opened += 1 })
-    ])
+    ], shortcutSettingsUpdates: [permission.settingsUpdates])
 ])
+var settingsRefreshes = 0
+let permissionSettingsSubscription = gated.shortcutSettingsUpdates()[0].sink { settingsRefreshes += 1 }
 let emptyPermissionInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
 let permissionInput = LauncherCommandSearch.Input(query: "Calendar Fixture", page: .root, aliases: [:], favorites: [], usage: [:])
 precondition(gated.candidates(for: emptyPermissionInput).isEmpty)
@@ -229,9 +231,12 @@ func activateFixtureCommand() {
     }
 }
 activateFixtureCommand()
+precondition(settingsRefreshes == 1 && permission.requesting && !permission.enabled)
 permissionResponse?(false)
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 precondition(!permission.enabled && requests == 1 && opened == 0)
+precondition(settingsRefreshes == 2 && permission.status.message == "Fixture permission")
+withExtendedLifetime(permissionSettingsSubscription) {}
 activateFixtureCommand()
 systemGrant = true
 permissionResponse?(true)

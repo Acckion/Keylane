@@ -46,6 +46,9 @@ final class PermissionFeature {
         $enabled.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
     }
     var settingsStatus: AnyPublisher<SettingsPermissionStatus, Never> { $status.removeDuplicates().eraseToAnyPublisher() }
+    var settingsUpdates: AnyPublisher<Void, Never> {
+        updates.merge(with: settingsStatus.dropFirst().map { _ in () }).eraseToAnyPublisher()
+    }
     var guidance: String { authorization.guidance }
     var requesting: Bool { status.requesting }
     var canOpenPrivacySettings: Bool { authorization.privacyPane != nil }

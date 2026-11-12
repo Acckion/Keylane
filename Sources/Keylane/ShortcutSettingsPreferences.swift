@@ -291,9 +291,7 @@ struct ExtensionCommandPreferences: View {
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(model.$disabledCommands)
         ] + commands.compactMap { command in
-            command.settingsEnabled.flatMap { _ in command.permission }
-        }.flatMap { permission in
-            [permission.updates, permission.settingsStatus.map { _ in () }.eraseToAnyPublisher()]
+            command.settingsEnabled.flatMap { _ in command.permission?.settingsUpdates }
         }))
     }
 

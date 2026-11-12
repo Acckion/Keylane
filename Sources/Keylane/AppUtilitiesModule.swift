@@ -53,7 +53,7 @@ enum AppUtilitiesModule {
             cameraChanges = nil
             camera.close()
         })], searchUpdates: [capture.updates, cameraPermission.updates],
-           shortcutSettingsUpdates: [capture.updates, cameraPermission.updates])
+           shortcutSettingsUpdates: [capture.settingsUpdates, cameraPermission.settingsUpdates])
     }
 
     private static func command(_ id: String, _ title: String, _ symbol: String, _ keywords: [String],
