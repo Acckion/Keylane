@@ -23,21 +23,26 @@ struct ResultDetailLayout<Results: View, Detail: View>: View {
 struct SecondaryPageBadge: View {
     let title: String
     let symbol: String
+
+    private static let iconSize: CGFloat = 21
+    private static let leadingInset = (VisualStyle.launcherControlDiameter - iconSize) / 2 + 2
+    private static let iconSpacing: CGFloat = 6
+    private static let trailingInset: CGFloat = 12
+
     static func width(for title: String) -> CGFloat {
         let textWidth = (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium)]).width
-        // Keep the icon centered on the left arc; tighten the trailing inset slightly.
-        return 18 + 10.5 + 8 + textWidth + 12
+        return leadingInset + iconSize + iconSpacing + textWidth + trailingInset
     }
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Self.iconSpacing) {
             Image(systemName: symbol)
                 .font(.system(size: 12.5, weight: .medium)).foregroundStyle(.white)
-                .frame(width: 21, height: 21)
+                .frame(width: Self.iconSize, height: Self.iconSize)
                 .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 5))
             Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.primary).lineLimit(1)
         }
-        .padding(.leading, (VisualStyle.launcherControlDiameter - 21) / 2)
-        .padding(.trailing, 12)
+        .padding(.leading, Self.leadingInset)
+        .padding(.trailing, Self.trailingInset)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: VisualStyle.launcherControlDiameter)
         .accessibilityElement(children: .combine)
