@@ -419,6 +419,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var localMonitor: Any?
     let windowDiagnostics = WindowDiagnostics()
     var hotkeyStatus: Int32 = 0
+    private var errorSubscription: AnyCancellable?
     var appearanceSubscription: AnyCancellable?
     var geometrySubscription: AnyCancellable?
     private var dragGuides: LauncherDragGuides?
@@ -462,6 +463,9 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appearanceSubscription = model.$appearance.sink { [weak self] value in
             let appearance = value == "dark" ? NSAppearance(named: .darkAqua) : value == "light" ? NSAppearance(named: .aqua) : nil
             self?.window.appearance = appearance; self?.settingsWindow?.appearance = appearance
+        }
+        errorSubscription = model.$error.filter { !$0.isEmpty }.sink { [weak self] message in
+            self?.showLauncherFeedback(message, style: .failure)
         }
         // Observe geometry inputs only. Other model changes do not resize the window.
         geometrySubscription = Publishers.MergeMany([

@@ -47,7 +47,7 @@ final class SystemShortcutsController: ObservableObject {
     private let iconQueue = DispatchQueue(label: "org.keylane.shortcuts.icons", qos: .utility)
     private let loadsIcons: Bool
     private var lastRefresh = Date.distantPast
-    var onRunFailure: ((String) -> Void)?
+    @Published private(set) var executionMessage = ""
 
     init(loadsIcons: Bool = true) {
         self.loadsIcons = loadsIcons
@@ -60,7 +60,7 @@ final class SystemShortcutsController: ObservableObject {
         loading = true
         message = ""
         catalogQueue.async { [weak self] in
-            let result = Self.invoke(["list", "--show-identifiers"], timeout: 12, capture: true)
+            let result = Self.listShortcuts()
             let records = result.map(SystemShortcut.parse)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -147,41 +147,53 @@ final class SystemShortcutsController: ObservableObject {
     func run(_ id: String) {
         guard UUID(uuidString: id) != nil, !disabledIDs.contains(id), runningID == nil else { return }
         runningID = id
-        message = "正在运行…"
+        executionMessage = "正在运行…"
         runQueue.async { [weak self] in
-            let result = Self.invoke(["run", id], timeout: 180, capture: false)
-            DispatchQueue.main.async {
-                self?.runningID = nil
-                if result == nil {
-                    let message = "快捷指令未完成。请检查指令是否仍存在、所需权限和输入。"
-                    self?.message = message
-                    self?.onRunFailure?(message)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+            process.arguments = ["run", id]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            let status: String
+            do {
+                try process.run()
+                // Interactive shortcuts can wait for user input or a permission dialog.
+                process.waitUntilExit()
+                if process.terminationReason != .exit {
+                    status = "快捷指令进程已中断，无法确认结果。"
+                } else if process.terminationStatus == 0 {
+                    status = "快捷指令已完成。"
                 } else {
-                    self?.message = "快捷指令已完成。"
+                    status = "系统快捷指令返回错误（退出码 \(process.terminationStatus)）。"
                 }
+            } catch {
+                status = "无法启动系统快捷指令。"
+            }
+            DispatchQueue.main.async {
+                self?.executionMessage = status
+                self?.runningID = nil
             }
         }
     }
 
-    private static func invoke(_ arguments: [String], timeout: TimeInterval, capture: Bool) -> String? {
+    private static func listShortcuts() -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
-        process.arguments = arguments
+        process.arguments = ["list", "--show-identifiers"]
         process.standardInput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let pipe = Pipe()
-        process.standardOutput = capture ? pipe : FileHandle.nullDevice
+        process.standardOutput = pipe
         do { try process.run() } catch { return nil }
         let stop = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout, execute: stop)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 12, execute: stop)
         defer { stop.cancel() }
         var bytes = Data()
         var overflow = false
-        if capture {
-            while let chunk = try? pipe.fileHandleForReading.read(upToCount: 16384), !chunk.isEmpty {
-                if bytes.count + chunk.count <= 2 * 1024 * 1024 { bytes.append(chunk) }
-                else { overflow = true }
-            }
+        while let chunk = try? pipe.fileHandleForReading.read(upToCount: 16384), !chunk.isEmpty {
+            if bytes.count + chunk.count <= 2 * 1024 * 1024 { bytes.append(chunk) }
+            else { overflow = true }
         }
         process.waitUntilExit()
         guard process.terminationStatus == 0, !overflow else { return nil }

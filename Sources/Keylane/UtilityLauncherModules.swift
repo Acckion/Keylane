@@ -219,10 +219,7 @@ enum UtilityLauncherModules {
             command("system-shortcuts", "管理快捷指令", "别名、热键与启用状态", "square.stack.3d.up",
                     ["Shortcuts", "Apple Shortcuts", "快捷指令"], destination: .settings(pageID), settings: pageID)
         ], providers: [provider], settings: [settings], services: [
-            .init(start: { [weak model] in
-                controller.onRunFailure = { [weak model] message in model?.error = message }
-                controller.refresh()
-            }, stop: { controller.onRunFailure = nil })
+            .init(start: { controller.refresh() }, stop: {})
         ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,
             updates: {
