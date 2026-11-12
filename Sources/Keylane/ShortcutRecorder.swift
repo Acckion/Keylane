@@ -3,9 +3,14 @@ import AppKit
 import KeylaneCore
 
 struct ShortcutRecorder: View {
+    enum Presentation {
+        case popover, inline
+    }
+
     let shortcut: Shortcut?
     var title = "快捷键"
     var icon: () -> AnyView = { AnyView(Image(systemName: "keyboard")) }
+    var presentation: Presentation = .popover
     let changed: (Shortcut?) -> Void
     @State private var recording = false
     @State private var hovering = false
@@ -15,6 +20,27 @@ struct ShortcutRecorder: View {
     @State private var liveModifiers: [String] = []
     @State private var keyHeld = false
     var body: some View {
+        Group {
+            switch presentation {
+            case .popover:
+                recorderButton.popover(isPresented: $recording, arrowEdge: .bottom) {
+                    recordingPanel
+                }
+            case .inline:
+                VStack(alignment: .leading, spacing: 8) {
+                    recorderButton
+                    if recording {
+                        recordingPanel.background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in finish() }
+            }
+        }
+        .onChange(of: recording) { _, active in if !active { finish() } }
+        .onDisappear { finish() }
+    }
+
+    private var recorderButton: some View {
         HStack(spacing: 4) {
             Button { start() } label: {
                 recorderLabel.font(.system(size: 12))
@@ -34,11 +60,6 @@ struct ShortcutRecorder: View {
         .background(.primary.opacity(hovering || recording ? 0.13 : 0.08), in: RoundedRectangle(cornerRadius: 8))
         .contentShape(RoundedRectangle(cornerRadius: 8))
         .onHover { hovering = $0 }
-        .popover(isPresented: $recording, arrowEdge: .bottom) {
-            recordingPanel
-        }
-        .onChange(of: recording) { _, active in if !active { finish() } }
-        .onDisappear { finish() }
     }
     @ViewBuilder private var recorderLabel: some View {
         if let shortcut { Keycaps(keys: shortcut.keycaps) }
@@ -125,6 +146,7 @@ struct ShortcutRecorder: View {
         guard recording || monitor != nil || resignObserver != nil else { return }
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
         resignObserver = nil
+        draft = nil
         liveModifiers = []; keyHeld = false
         if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
         recording = false

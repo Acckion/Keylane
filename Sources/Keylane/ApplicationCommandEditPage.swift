@@ -45,7 +45,7 @@ struct ApplicationCommandEditPage: View {
                 }
                 LauncherCreationField("快捷键", detail: "录制并确认后立即保存。") {
                     ShortcutRecorder(shortcut: model.bindings[entry.commandID.rawValue], title: entry.name,
-                                     icon: { AnyView(WorkspaceItemIcon(path: entry.id)) }) { shortcut in
+                                     icon: { AnyView(WorkspaceItemIcon(path: entry.id)) }, presentation: .inline) { shortcut in
                         do {
                             try model.updateShortcut(entry.commandID.rawValue, value: shortcut)
                             editor.error = ""
