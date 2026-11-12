@@ -275,9 +275,8 @@ private struct CalendarSettingsGroups: View {
             ViewObservation.changes(controller.$access),
             ViewObservation.changes(controller.$calendars),
             ViewObservation.changes(controller.$selectedCalendarIDs),
-            ViewObservation.changes(controller.$menuDisplay),
             ViewObservation.changes(controller.$searchWindowMinutes),
-            ViewObservation.changes(controller.$menuLeadMinutes),
+            ViewObservation.changes(controller.$menuTiming),
             ViewObservation.changes(controller.$menuHideMinutes),
             ViewObservation.changes(controller.$menuMeetingsOnly),
             ViewObservation.changes(controller.$calendarApplication),
@@ -339,28 +338,23 @@ private struct CalendarSettingsGroups: View {
             }.settingsAnchor(.calendarMeetings)
 
             SettingsGroup {
-                Toggle("在菜单栏显示日历", isOn: Binding(
-                    get: { registry.isEnabled("calendar.agenda") },
-                    set: { registry.setEnabled("calendar.agenda", $0) }
-                ))
-                Divider()
-                SettingsPicker("显示内容", selection: Binding(get: { controller.menuDisplay }, set: { controller.menuDisplay = $0 })) {
-                    Text("下一个日程").tag("next")
-                    Text("日期").tag("date")
-                    Text("仅图标").tag("icon")
+                SettingsPicker("在菜单栏中显示日程", selection: Binding(
+                    get: { registry.isEnabled("calendar.agenda") ? controller.menuTiming : .never },
+                    set: controller.setMenuTiming
+                )) {
+                    ForEach(AgendaMenuTiming.allCases, id: \.self) { timing in
+                        Text(menuTimingTitle(timing)).tag(timing)
+                    }
                 }
+                Toggle("仅显示带会议链接的日程", isOn: Binding(
+                    get: { controller.menuMeetingsOnly }, set: { controller.menuMeetingsOnly = $0 }
+                )).toggleStyle(.checkbox)
                 Divider()
-                SettingsPicker("提前显示日程", selection: Binding(get: { controller.menuLeadMinutes }, set: { controller.menuLeadMinutes = $0 })) {
-                    Text("开始时").tag(0)
-                    ForEach([5, 10, 15, 30, 60], id: \.self) { Text("提前 \($0) 分钟").tag($0) }
-                    Text("提前一天").tag(1440)
-                }
-                Divider()
-                Toggle("仅显示带会议链接的日程", isOn: Binding(get: { controller.menuMeetingsOnly }, set: { controller.menuMeetingsOnly = $0 }))
-                Divider()
-                SettingsPicker("隐藏进行中的日程", selection: Binding(get: { controller.menuHideMinutes }, set: { controller.menuHideMinutes = $0 })) {
-                    Text("日程结束后").tag(0)
-                    ForEach([5, 10, 15, 30, 60], id: \.self) { Text("开始后 \($0) 分钟").tag($0) }
+                SettingsPicker("隐藏当前日程", selection: Binding(
+                    get: { controller.menuHideMinutes }, set: { controller.menuHideMinutes = $0 }
+                )) {
+                    Text("自动").tag(0)
+                    ForEach([2, 5, 10, 15], id: \.self) { Text("开始后 \($0) 分钟").tag($0) }
                 }
             }
             .disabled(!controller.enabled)
@@ -389,6 +383,17 @@ private struct CalendarSettingsGroups: View {
             if let meetURL = URL(string: "https://meet.google.com") {
                 browsers = workspace.urlsForApplications(toOpen: meetURL)
             }
+        }
+    }
+
+    private func menuTimingTitle(_ timing: AgendaMenuTiming) -> String {
+        switch timing {
+        case .always: "始终"
+        case .upcoming: "即将开始的日程"
+        case .oneHour: "提前 1 小时"
+        case .atStart: "日程开始时"
+        case .never: "从不"
+        default: "提前 \(timing.rawValue) 分钟"
         }
     }
 

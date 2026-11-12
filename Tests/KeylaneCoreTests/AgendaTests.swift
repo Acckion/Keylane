@@ -60,12 +60,16 @@ final class AgendaTests: XCTestCase {
         let now = date("2026-11-11T10:08:00Z")
         XCTAssertEqual(AgendaPolicy.nearStart(events, now: now, minutes: 10).map(\.id), [event.id])
         XCTAssertTrue(AgendaPolicy.nearStart(events, now: now, minutes: 0).isEmpty)
+        let early = date("2026-11-11T08:00:00Z")
+        XCTAssertEqual(AgendaPolicy.menuEvent(events, now: early, timing: .upcoming,
+                                              hideAfterMinutes: 0, meetingsOnly: true)?.id, event.id)
+        XCTAssertNil(AgendaPolicy.menuEvent(events, now: early, timing: .never, hideAfterMinutes: 0, meetingsOnly: false))
         XCTAssertNil(AgendaPolicy.menuEvent(events, now: date("2026-11-11T09:44:00Z"),
-                                            leadMinutes: 15, hideAfterMinutes: 5, meetingsOnly: true))
+                                            timing: .fifteenMinutes, hideAfterMinutes: 5, meetingsOnly: true))
         XCTAssertEqual(AgendaPolicy.menuEvent(events, now: date("2026-11-11T09:45:00Z"),
-                                              leadMinutes: 15, hideAfterMinutes: 5, meetingsOnly: true)?.id, event.id)
+                                              timing: .fifteenMinutes, hideAfterMinutes: 5, meetingsOnly: true)?.id, event.id)
         XCTAssertNil(AgendaPolicy.menuEvent(events, now: date("2026-11-11T10:05:00Z"),
-                                            leadMinutes: 15, hideAfterMinutes: 5, meetingsOnly: true))
+                                            timing: .fifteenMinutes, hideAfterMinutes: 5, meetingsOnly: true))
     }
 
 }

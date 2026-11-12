@@ -36,6 +36,10 @@ for _ in 0..<50 { registry.setEnabled("fixture.one", false); precondition(regist
 registry.unregister(owner: "unrelated"); precondition(registry.nativeItem(id: "fixture.one") != nil)
 registry.unregister(owner: "fixture"); precondition(registry.descriptors.isEmpty)
 register(); precondition(registry.nativeItem(id: "fixture.one") != nil) // persisted user choice
+registry.update(id: "fixture.one", presentation: .init(symbol: "calendar", toolTip: "", isVisible: false))
+precondition(registry.isEnabled("fixture.one") && registry.nativeItem(id: "fixture.one") == nil)
+registry.update(id: "fixture.one", presentation: .init(symbol: "calendar", toolTip: ""))
+precondition(registry.nativeItem(id: "fixture.one") != nil)
 var authorized = false
 var requests = 0
 var resolvePermission: ((Bool) -> Void)?
@@ -59,6 +63,10 @@ calendar.permission.setEnabled(true)
 authorized = true
 resolvePermission?(true)
 settlePermission()
+calendar.setMenuTiming(.always)
+precondition(registry.isEnabled("calendar.agenda"))
+calendar.setMenuTiming(.never)
+precondition(!registry.isEnabled("calendar.agenda") && registry.nativeItem(id: "calendar.agenda") == nil)
 registry.setEnabled("calendar.agenda", true)
 precondition(calendar.enabled && preferences.bool(forKey: "calendar.enabled"))
 precondition(registry.nativeItem(id: "calendar.agenda") != nil)

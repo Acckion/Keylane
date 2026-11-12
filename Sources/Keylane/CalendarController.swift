@@ -41,7 +41,6 @@ final class CalendarController: ObservableObject {
     @Published var selectedDate = Date() { didSet { if presenting { refresh() } } }
     @Published private(set) var query = "" { didSet { maintainSelection() } }
     @Published var selectedCalendarIDs: Set<String>? { didSet { preferences.set(selectedCalendarIDs.map { Array($0) }, forKey: "calendar.selectedIDs"); refresh() } }
-    @Published var menuDisplay: String { didSet { preferences.set(menuDisplay, forKey: "calendar.menuDisplay"); updateMenuBar() } }
     @Published var agendaCalendarID = "all" { didSet { maintainSelection() } }
     @Published var searchWindowMinutes: Int {
         didSet {
@@ -50,7 +49,12 @@ final class CalendarController: ObservableObject {
         }
     }
     @Published private(set) var searchEvents: [AgendaEvent] = []
-    @Published var menuLeadMinutes: Int { didSet { preferences.set(menuLeadMinutes, forKey: "calendar.menuLead"); updateMenuBar() } }
+    @Published private(set) var menuTiming: AgendaMenuTiming {
+        didSet {
+            preferences.set(menuTiming.rawValue, forKey: "calendar.menuLead")
+            updateMenuBar()
+        }
+    }
     @Published var menuHideMinutes: Int { didSet { preferences.set(menuHideMinutes, forKey: "calendar.menuHide"); updateMenuBar() } }
     @Published var menuMeetingsOnly: Bool { didSet { preferences.set(menuMeetingsOnly, forKey: "calendar.menuMeetingsOnly"); updateMenuBar() } }
     @Published var calendarApplication: String { didSet { preferences.set(calendarApplication, forKey: "calendar.application") } }
@@ -96,12 +100,13 @@ final class CalendarController: ObservableObject {
          authorization: PermissionFeature.Authorization = .calendar) {
         self.registry = registry; self.preferences = preferences
         permission = PermissionFeature("calendar.enabled", authorization: authorization, defaults: preferences, observeImmediately: false)
-        menuDisplay = preferences.string(forKey: "calendar.menuDisplay") ?? "next"
         selectedCalendarIDs = preferences.stringArray(forKey: "calendar.selectedIDs").map(Set.init)
         searchWindowMinutes = preferences.object(forKey: "calendar.searchWindow") as? Int ?? 10
-        menuLeadMinutes = preferences.object(forKey: "calendar.menuLead") as? Int ?? 15
-        menuHideMinutes = preferences.integer(forKey: "calendar.menuHide")
-        menuMeetingsOnly = preferences.bool(forKey: "calendar.menuMeetingsOnly")
+        let savedLead = preferences.object(forKey: "calendar.menuLead") as? Int ?? 15
+        menuTiming = AgendaMenuTiming(rawValue: savedLead) ?? (savedLead == 1440 ? .upcoming : .fifteenMinutes)
+        let savedHide = preferences.integer(forKey: "calendar.menuHide")
+        menuHideMinutes = [0, 2, 5, 10, 15].contains(savedHide) ? savedHide : 15
+        menuMeetingsOnly = preferences.object(forKey: "calendar.menuMeetingsOnly") as? Bool ?? true
         calendarApplication = preferences.string(forKey: "calendar.application") ?? ""
         googleBrowser = preferences.string(forKey: "calendar.googleBrowser") ?? ""
         autoJoin = preferences.bool(forKey: "calendar.autoJoin")
@@ -155,7 +160,7 @@ final class CalendarController: ObservableObject {
         if enabled {
             if observers.isEmpty { startObserving() }
             registry.register(id: "calendar.agenda", owner: "calendar", title: "日历", defaultVisible: false,
-                              presentation: .init(symbol: "calendar", toolTip: "日历")) { [weak self] in self?.menuCommands() ?? [] }
+                              presentation: .init(symbol: "calendar", toolTip: "日历", isVisible: menuTiming == .always)) { [weak self] in self?.menuCommands() ?? [] }
             let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
                 self?.updateMenuBar()
                 self?.updateSearchEvents()
@@ -335,8 +340,17 @@ final class CalendarController: ObservableObject {
         let rows = AgendaPolicy.nearStart(recentAndUpcoming, now: Date(), minutes: searchWindowMinutes)
         if rows != searchEvents { searchEvents = rows }
     }
+    func setMenuTiming(_ timing: AgendaMenuTiming) {
+        if timing == .never {
+            registry.setEnabled("calendar.agenda", false)
+        } else {
+            menuTiming = timing
+            registry.setEnabled("calendar.agenda", true)
+        }
+    }
+
     private func menuEvent(_ events: [AgendaEvent], now: Date) -> AgendaEvent? {
-        AgendaPolicy.menuEvent(events, now: now, leadMinutes: menuLeadMinutes, hideAfterMinutes: menuHideMinutes,
+        AgendaPolicy.menuEvent(events, now: now, timing: menuTiming, hideAfterMinutes: menuHideMinutes,
                                meetingsOnly: menuMeetingsOnly)
     }
     private func updateMenuBar() {
@@ -345,7 +359,7 @@ final class CalendarController: ObservableObject {
         let next = menuEvent(visibleEvents(now: now), now: now)
         var title = ""
         var symbol: String? = "calendar"
-        if menuDisplay == "next", access == .allowed, let next {
+        if access == .allowed, let next {
             let remaining = next.start.timeIntervalSince(now)
             let relative: String
             if remaining <= 0 { relative = "进行中" }
@@ -353,10 +367,9 @@ final class CalendarController: ObservableObject {
             else { relative = next.start.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)) }
             title = String(next.title.prefix(22)) + " · " + relative
             symbol = nil
-        } else if menuDisplay == "date" {
-            title = now.formatted(.dateTime.month(.twoDigits).day(.twoDigits))
         }
-        registry.update(id: "calendar.agenda", presentation: .init(title: title, symbol: symbol, toolTip: access == .allowed ? "查看日程" : access.message))
+        registry.update(id: "calendar.agenda", presentation: .init(title: title, symbol: symbol,
+                        toolTip: "查看日程", isVisible: next != nil || menuTiming == .always))
     }
     private func menuCommands() -> [MenuBarCommand] {
         let now = Date()

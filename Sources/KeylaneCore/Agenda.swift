@@ -22,6 +22,12 @@ public struct AgendaEvent: Identifiable, Equatable, Sendable {
         self.meetingURL = meetingURL; self.editable = editable; self.recurring = recurring; self.busy = busy
     }
 }
+public enum AgendaMenuTiming: Int, CaseIterable, Sendable {
+    case always = -2, upcoming = -1
+    case oneHour = 60, thirtyMinutes = 30, fifteenMinutes = 15, tenMinutes = 10
+    case fiveMinutes = 5, twoMinutes = 2, atStart = 0, never = -3
+}
+
 public enum AgendaPolicy {
     public static func ordered(_ events: [AgendaEvent]) -> [AgendaEvent] {
         events.sorted { lhs, rhs in
@@ -65,10 +71,11 @@ public enum AgendaPolicy {
         return ordered(events.filter { !$0.allDay && abs($0.start.timeIntervalSince(now)) <= threshold })
     }
 
-    public static func menuEvent(_ events: [AgendaEvent], now: Date, leadMinutes: Int, hideAfterMinutes: Int,
+    public static func menuEvent(_ events: [AgendaEvent], now: Date, timing: AgendaMenuTiming, hideAfterMinutes: Int,
                                  meetingsOnly: Bool) -> AgendaEvent? {
-        nextTimed(events.filter { event in
-            event.start <= now.addingTimeInterval(TimeInterval(leadMinutes) * 60)
+        guard timing != .never else { return nil }
+        return nextTimed(events.filter { event in
+            (timing.rawValue < 0 || event.start <= now.addingTimeInterval(TimeInterval(timing.rawValue) * 60))
                 && (hideAfterMinutes == 0 || now < event.start.addingTimeInterval(TimeInterval(hideAfterMinutes) * 60))
                 && (!meetingsOnly || event.meetingURL != nil)
         }, now: now)
