@@ -229,7 +229,7 @@ enum UtilityLauncherModules {
                                             subtitle: "为系统快捷指令设置搜索别名与热键。", order: 60,
                                             items: SettingsItem.all.filter { $0.page == pageID },
                                             trailingToolbar: {
-                                                AnyView(SettingsToolbarSearch(title: "搜索快捷指令", alwaysExpanded: true, selection: search))
+                                                AnyView(SettingsToolbarSearch(title: "搜索快捷指令", selection: search))
                                             },
                                             content: { [weak model] in
                                                 guard let model else { return AnyView(EmptyView()) }
