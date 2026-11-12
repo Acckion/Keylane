@@ -82,7 +82,6 @@ struct SettingsTitlebarContribution {
     var help: String?
     let enabled: Binding<Bool>
     let updates: AnyPublisher<Bool, Never>
-    var info: (() -> AnyView)?
     var searchItem: SettingsItem?
 }
 
@@ -94,6 +93,7 @@ struct LauncherSettingsPage: Identifiable {
     let order: Int
     let items: [SettingsItem]
     var titlebar: SettingsTitlebarContribution?
+    var trailingToolbar: (() -> AnyView)?
     let content: () -> AnyView
 }
 

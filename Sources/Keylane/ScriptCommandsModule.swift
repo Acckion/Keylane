@@ -206,8 +206,7 @@ enum ScriptCommandsModule {
             id: settingsID, title: "脚本命令", symbol: symbol, subtitle: "从指定文件夹发现并运行本机脚本。",
             order: 65, items: [.scriptFolders, .scriptCommands],
             titlebar: .init(title: "启用脚本命令", enabled: Binding(get: { controller.enabled }, set: { controller.enabled = $0 }),
-                            updates: controller.$enabled.removeDuplicates().eraseToAnyPublisher(),
-                            info: { AnyView(Text("添加脚本文件夹后，可以搜索并显式运行其中的脚本。")) }),
+                            updates: controller.$enabled.removeDuplicates().eraseToAnyPublisher()),
             content: { [weak model] in
                 guard let model else { return AnyView(EmptyView()) }
                 return AnyView(ScriptCommandsPreferences(model: model, controller: controller))

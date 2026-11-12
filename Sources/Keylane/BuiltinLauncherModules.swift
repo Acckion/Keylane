@@ -47,7 +47,8 @@ enum BuiltinLauncherModules {
     }
 
     private static func host(_ model: Model) -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
+        let category = ShortcutSettingsControls()
+        return .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general"),
                          command("show-onboarding", "Show Onboarding", "重新打开 Keylane 的首次引导",
@@ -61,8 +62,11 @@ enum BuiltinLauncherModules {
                          settingsPage(model, "keyboard", "键盘", "keyboard", "管理按键行为、导航和 Hyper Key。", 6) {
                              KeyboardPreferences(model: $0)
                          },
-                         settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7) {
-                             ShortcutSettingsPreferences(model: $0)
+                         settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7, trailingToolbar: { [weak model] in
+                             AnyView(ShortcutSettingsToolbar(groups: model?.launcherModules?.shortcutCommandGroups ?? [],
+                                                                    navigation: model?.navigation ?? "arrows", selection: category))
+                         }) {
+                             ShortcutSettingsPreferences(model: $0, selection: category)
                          },
                          settingsPage(model, "menu-bar", "菜单栏", "menubar.rectangle", "选择各模块在菜单栏中显示的项目。", 70) {
                              MenuBarPreferences(registry: $0.menuBar)
@@ -113,11 +117,7 @@ enum BuiltinLauncherModules {
                          title: "启用应用程序", help: "启用应用搜索和应用快捷键",
                          enabled: Binding(get: { [weak model] in model?.applicationsEnabled ?? false },
                                           set: { [weak model] in model?.applicationsEnabled = $0 }),
-                         updates: model.$applicationsEnabled.removeDuplicates().eraseToAnyPublisher(),
-                         info: { [weak model] in
-                             guard let model else { return AnyView(EmptyView()) }
-                             return AnyView(ApplicationSettingsInfo(model: model))
-                         }
+                         updates: model.$applicationsEnabled.removeDuplicates().eraseToAnyPublisher()
                      ), content: LauncherSettingsContent.applications)],
                      services: [.init(start: { [weak model] in
                          model?.startApplicationDiscovery()
@@ -378,8 +378,9 @@ enum BuiltinLauncherModules {
     }
 
     private static func settingsPage<Content: View>(_ model: Model, _ id: String, _ title: String, _ symbol: String,
-                                     _ subtitle: String, _ order: Int, titlebar: SettingsTitlebarContribution? = nil, content: @escaping (Model) -> Content) -> LauncherSettingsPage {
-        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar) { [weak model] in
+                                     _ subtitle: String, _ order: Int, titlebar: SettingsTitlebarContribution? = nil,
+                                     trailingToolbar: (() -> AnyView)? = nil, content: @escaping (Model) -> Content) -> LauncherSettingsPage {
+        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar, trailingToolbar: trailingToolbar) { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(content(model))
         }
