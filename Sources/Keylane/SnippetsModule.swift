@@ -134,9 +134,9 @@ private struct SnippetsList: View {
             }
         } detail: {
             if let snippet = controller.selected {
-                ResultDetailPane { height in
+                ResultDetailPane { _ in
                     Text(snippet.text).textSelection(.enabled)
-                        .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
                 } information: {
                     DetailInformationSection(rows: [
                         .init(title: "标题", value: snippet.title),

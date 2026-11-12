@@ -82,7 +82,7 @@ struct ClipboardDetail: View {
                 ClipboardLinkPreview(url: url, metadata: linkMetadata).frame(height: height)
             } else {
                 Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(.horizontal, 9).padding(.top, 4)
             }
         } else if detail.item.kind == .image {
