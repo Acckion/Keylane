@@ -11,13 +11,15 @@ enum NavigationLauncherModules {
     private static func navigation(_ model: Model) -> LauncherModule {
         let windows = PageID(rawValue: "Windows")
         let menus = PageID(rawValue: "MenuItems")
-        let permission = PermissionFeature("windowNavigation.enabled", authorization: .accessibility)
+        let permission = PermissionFeature("windowNavigation.enabled", authorization: .accessibility, observeImmediately: false)
         let observeFocus: (NSRunningApplication) -> Void = {
             if permission.available { SystemNavigation.shared.observeFocus(of: $0) }
         }
         var focusObserver: NSObjectProtocol?
         var permissionChanges: AnyCancellable?
         let focusService = LauncherModule.Service(start: { [weak model] in
+            permission.startObserving()
+            if let app = NSWorkspace.shared.frontmostApplication { observeFocus(app) }
             permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink { [weak model] in
                 if !permission.available {
                     SystemNavigation.shared.stopObservingFocus()
@@ -31,8 +33,10 @@ enum NavigationLauncherModules {
                     observeFocus(app)
                 }
             }
-        }, stop: {
+        }, stop: { [weak model] in
             permissionChanges?.cancel()
+            permission.stopObserving()
+            model?.systemNavigation.stopModule()
             permissionChanges = nil
             if let observer = focusObserver {
                 NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -133,7 +137,7 @@ enum NavigationLauncherModules {
                 }
             }
         })
-        return LauncherModule(id: .init(rawValue: "keylane.system-settings"), providers: [provider])
+        return LauncherModule(id: .init(rawValue: "keylane.system-settings"), title: "系统设置", symbol: "gear", providers: [provider])
     }
 
     private static func screenshots(_ model: Model) -> LauncherModule {
@@ -146,7 +150,7 @@ enum NavigationLauncherModules {
                 complete(library.hasAuthorizedScope)
             },
             guidance: "请通过启用开关选择可访问的截图文件夹。"
-        ))
+        ), observeImmediately: false)
         var permissionChanges: AnyCancellable?
         let commands = ScreenshotCommand.allCases.map { command in
             LauncherModule.Command(
@@ -170,6 +174,7 @@ enum NavigationLauncherModules {
         }
         return LauncherModule(id: .init(rawValue: "keylane.screenshots"), commands: commands,
                               pages: [screenshotsPage(id, model: model)], settings: [settings], services: [.init(start: {
+            permission.startObserving()
             library.enabled = permission.available
             permissionChanges = Publishers.Merge(permission.updates, ViewObservation.changes(library.$scopes))
                 .receive(on: DispatchQueue.main).sink {
@@ -180,7 +185,11 @@ enum NavigationLauncherModules {
         }, stop: {
             permissionChanges?.cancel()
             permissionChanges = nil
+            permission.stopObserving()
             library.enabled = false
+            ScreenshotThumbnail.releaseCache()
+            FilePreview.shared.dismiss(owner: .screenshots)
+            FileActionsWindow.shared.dismiss(owner: .screenshots)
         })], searchUpdates: [
             library.$enabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             library.$disabledCommands.removeDuplicates().map { _ in () }.eraseToAnyPublisher()

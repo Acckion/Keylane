@@ -71,7 +71,8 @@ struct PermissionsPreferences: View {
                               requesting: model.contacts.requesting) {
                     if contactsAccess == .notDetermined { model.contacts.requestAccess() }
                     else { openPrivacy("Contacts") }
-                }.settingsAnchor(.contactsPermission)
+                }.disabled(model.launcherModules?.isCommandModuleEnabled(.init(rawValue: "contacts")) == false)
+                    .settingsAnchor(.contactsPermission)
                 if !model.contacts.error.isEmpty { Text(model.contacts.error).font(.caption).foregroundStyle(.secondary) }
                 if showsAdditionalPermissions {
                     Divider()

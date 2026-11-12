@@ -29,7 +29,7 @@ let module = LauncherModule(
     settings: [.init(id: "clipboard", title: "剪贴板", symbol: "clipboard", subtitle: "", order: 0, items: [],
                      content: { views += 1; return AnyView(EmptyView()) })],
     services: [.init(start: { starts += 1 }, stop: { stops += 1 })],
-    searchUpdates: [updates.eraseToAnyPublisher()], canDisable: true
+    searchUpdates: [updates.eraseToAnyPublisher()]
 )
 var shortcutEnabled = true
 let extensionSuite = "org.keylane.extension.fixture.\(UUID())"
@@ -170,10 +170,17 @@ let groupedRegistry = try LauncherModuleRegistry(modules: [
     settingsModule, module,
     .init(id: .init(rawValue: "host"), origin: .application, settings: [hostPage]),
     .init(id: .init(rawValue: "external"), origin: .installedExtension, settings: [externalPage])
-])
+], preferences: extensionPreferences)
 precondition(groupedRegistry.settingsCatalog.sidebarGroups.map(\.id) == [.application, .builtInExtension, .installedExtension])
 precondition(groupedRegistry.settingsCatalog.sidebarGroups.map { $0.pages.map(\.id) } ==
              [["general"], ["clipboard", "applications"], ["external"]])
+let installedID = ModuleID(rawValue: "external")
+let hostID = ModuleID(rawValue: "host")
+precondition(groupedRegistry.module(forSettingsPage: "external") == installedID)
+precondition(groupedRegistry.module(forSettingsPage: "general") == nil)
+precondition(!groupedRegistry.setModuleEnabled(hostID, false) && groupedRegistry.isModuleEnabled(hostID))
+precondition(groupedRegistry.setModuleEnabled(installedID, false) && !groupedRegistry.isModuleEnabled(installedID))
+precondition(groupedRegistry.setModuleEnabled(installedID, true))
 let invalidPage = LauncherSettingsPage(id: "unrelated", title: "", symbol: "", subtitle: "", order: 0,
                                        items: [.applicationScopes], content: { AnyView(EmptyView()) })
 do {

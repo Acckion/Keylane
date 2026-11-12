@@ -2,7 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-enum FilePresentationOwner { case fileSearch, clipboard }
+enum FilePresentationOwner { case fileSearch, clipboard, screenshots }
 
 final class FileActionsModel: ObservableObject {
     @Published private(set) var files: [URL] = []

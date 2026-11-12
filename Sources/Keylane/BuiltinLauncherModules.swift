@@ -12,13 +12,14 @@ enum BuiltinLauncherModules {
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
-            guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
+            guard module.canDisable, module.settings.isEmpty else {
                 return module
             }
             let id = module.id.rawValue
             let title = module.displayTitle
             let symbol = module.displaySymbol
             let commands = module.commands
+            let dynamic = module.dynamicCommandSettings
             let searchItem = SettingsItem(id: id, page: id, title: title,
                                            keywords: commands.flatMap { $0.declaration.keywords }.joined(separator: " "))
             var extensionModule = module
@@ -26,7 +27,17 @@ enum BuiltinLauncherModules {
                                                subtitle: "管理此扩展的命令、别名与快捷键。", order: 120 + index,
                                                items: [searchItem], titlebar: module.permissionTitlebar, content: { [weak model] in
                 guard let model else { return AnyView(EmptyView()) }
-                return AnyView(ExtensionCommandPreferences(model: model, commands: commands).settingsAnchor(searchItem))
+                if !commands.isEmpty {
+                    return AnyView(ExtensionCommandPreferences(model: model, commands: commands).settingsAnchor(searchItem))
+                }
+                return AnyView(SettingsPageSections {
+                    if let list = dynamic?.matchingList(nil) { list(false) }
+                    else {
+                        SettingsGroup {
+                            SettingsRow("搜索结果", detail: "在启动器中输入关键词，查找此扩展提供的项目。") { EmptyView() }
+                        }
+                    }
+                }.settingsAnchor(searchItem))
             })]
             return extensionModule
         }
@@ -126,6 +137,7 @@ enum BuiltinLauncherModules {
                      }, stop: { [weak model] in
                          model?.stopApplicationDiscovery()
                          model?.applicationAutoQuit.stop()
+                         model?.releaseApplicationCatalog()
                      })],
                      searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)],
                      dynamicCommandSettings: .init(
@@ -227,7 +239,7 @@ enum BuiltinLauncherModules {
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
                            updates(model.fileAI.$commandsEnabled), model.finderAutomation.updates],
-           shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)], canDisable: true)
+           shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
 
     private static func fileActions(_ entry: Entry, model: Model) -> [LauncherAction] {
@@ -343,6 +355,7 @@ enum BuiltinLauncherModules {
         ], services: [
             .init(start: {
                 controller.startRuntime()
+                MainActor.assumeIsolated { ClipboardLinkPreviews.shared.start() }
                 permission.startObserving()
                 controller.captureEnabled = permission.available
                 controller.startMonitoring()
@@ -354,11 +367,12 @@ enum BuiltinLauncherModules {
                 permissionChanges = nil
                 permission.stopObserving()
                 controller.stopRuntime()
+                MainActor.assumeIsolated { ClipboardLinkPreviews.shared.stop() }
                 FilePreview.shared.dismiss(owner: .clipboard)
                 FileActionsWindow.shared.dismiss(owner: .clipboard)
             })
         ], searchUpdates: [updates(controller.$historyCommandEnabled)],
-        shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)], canDisable: true)
+        shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
     }
 
     private static func calculator(_ model: Model) -> LauncherModule {
@@ -397,7 +411,7 @@ enum BuiltinLauncherModules {
             command("calculator-help", "计算器", "在搜索框输入表达式", "equal.circle", ["Calculator", "计算"], execute: { [weak model] _ in
                 model?.query = "="
             })
-        ], providers: [provider, hint], searchUpdates: [exchange.updates])
+        ], providers: [provider, hint], services: [.init(start: {}, stop: exchange.stop)], searchUpdates: [exchange.updates])
     }
 
     private static func calculatorResult(_ query: String) -> String? {
@@ -407,7 +421,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func systemTools(_ model: Model) -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
+        return .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
             command("color", "Pick Color / 取色", "Copy hex color", "eyedropper", [], execute: { _ in SystemTools.shared.colorPicker() }),
             command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", [], settings: "permissions", permission: model.clipboardSpeech,
                     execute: { _ in SystemTools.shared.readClipboard() }),
@@ -426,7 +440,14 @@ enum BuiltinLauncherModules {
                     ["Hide Other Apps", "Hide All Apps Except Frontmost"], execute: { _ in SystemActions.hideOtherApplications() }),
             command("unhide-applications", "显示所有隐藏应用", "恢复已隐藏的应用窗口", "eye",
                     ["Unhide All Hidden Apps", "Show Hidden Apps"], execute: { _ in SystemActions.unhideApplications() })
-        ], searchUpdates: [model.lockScreenPermission.updates, model.clipboardSpeech.updates])
+        ], services: [.init(start: { [weak model] in
+            model?.lockScreenPermission.startObserving()
+            model?.clipboardSpeech.startObserving()
+        }, stop: { [weak model] in
+            model?.lockScreenPermission.stopObserving()
+            model?.clipboardSpeech.stopObserving()
+            SystemTools.shared.stopSystemTools()
+        })], searchUpdates: [model.lockScreenPermission.updates, model.clipboardSpeech.updates])
     }
 
     private static func updates<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never>

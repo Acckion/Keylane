@@ -191,7 +191,7 @@ struct LauncherModule {
     var shortcutSettingsBinding: ShortcutSettingsBinding?
     var shortcutSettingsUpdates: [AnyPublisher<Void, Never>] = []
     var permissionTitlebar: SettingsTitlebarContribution?
-    var canDisable = false
+    var canDisable: Bool { origin != .application }
 }
 
 extension LauncherModule {

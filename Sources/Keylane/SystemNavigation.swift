@@ -64,7 +64,7 @@ final class SystemNavigation {
 
     private init() {}
 
-    func placeWindow(_ placement: WindowPlacement, in app: NSRunningApplication?,
+    func placeWindow(_ placement: WindowPlacement, in app: NSRunningApplication?, request: NavigationScanRequest = .init(),
                      completion: @escaping (String?) -> Void) {
         guard AXIsProcessTrusted() else {
             completion(NavigationText.label("请在系统设置中允许 Keylane 使用辅助功能。", "Allow Keylane in Accessibility settings."))
@@ -81,10 +81,13 @@ final class SystemNavigation {
             return CGRect(x: frame.minX, y: top - frame.maxY, width: frame.width, height: frame.height)
         }
         queue.async {
+            guard !request.isCancelled else { return }
             let message = self.applyPlacement(placement, pid: app.processIdentifier, displays: displays)
-            DispatchQueue.main.async { completion(message) }
+            DispatchQueue.main.async { if !request.isCancelled { completion(message) } }
         }
     }
+
+    func clearWindowPlacementHistory() { queue.async { self.previousFrames.removeAll() } }
 
     private func applyPlacement(_ placement: WindowPlacement, pid: pid_t, displays: [CGRect]) -> String? {
         let application = applicationElement(pid)
@@ -212,7 +215,7 @@ final class SystemNavigation {
         return request
     }
 
-    func perform(_ item: NavigationItem, mode: NavigationMode, completion: @escaping (String?) -> Void) {
+    func perform(_ item: NavigationItem, mode: NavigationMode, request: NavigationScanRequest = .init(), completion: @escaping (String?) -> Void) {
         let app = item.application
         guard AXIsProcessTrusted(), !app.isTerminated else {
             completion(NavigationText.label("目标应用已退出或辅助功能权限已关闭。", "The app quit or Accessibility access was turned off."))
@@ -227,15 +230,17 @@ final class SystemNavigation {
             requestedActivation = app.activate(from: .current)
         }
         queue.async {
+            guard !request.isCancelled else { return }
             if !requestedActivation, !app.isActive, !app.isTerminated {
                 let application = self.applicationElement(app.processIdentifier)
                 AXUIElementSetAttributeValue(application, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
             }
             // Give the target a chance to restore its menu validation and active Space.
             let deadline = DispatchTime.now().uptimeNanoseconds + 1_200_000_000
-            while !app.isActive, !app.isTerminated, DispatchTime.now().uptimeNanoseconds < deadline {
+            while !request.isCancelled, !app.isActive, !app.isTerminated, DispatchTime.now().uptimeNanoseconds < deadline {
                 Thread.sleep(forTimeInterval: 0.02)
             }
+            guard !request.isCancelled else { return }
             let message: String?
             if app.isTerminated || !app.isActive {
                 message = NavigationText.label("无法切换到目标应用。", "Could not activate the target app.")
@@ -251,11 +256,11 @@ final class SystemNavigation {
                         let focusDeadline = ProcessInfo.processInfo.systemUptime + 0.3
                         var focused = self.element(application, kAXFocusedWindowAttribute)
                         while let current = focused, !CFEqual(current, item.element),
-                              app.isActive, ProcessInfo.processInfo.systemUptime < focusDeadline {
+                              !request.isCancelled, app.isActive, ProcessInfo.processInfo.systemUptime < focusDeadline {
                             Thread.sleep(forTimeInterval: 0.03)
                             focused = self.element(application, kAXFocusedWindowAttribute)
                         }
-                        self.recordFocus(application, pid: app.processIdentifier)
+                        if !request.isCancelled { self.recordFocus(application, pid: app.processIdentifier) }
                         if let focused, !CFEqual(focused, item.element) {
                             message = NavigationText.label("系统未将焦点切换到所选窗口。", "macOS did not focus the selected window.")
                         } else {
@@ -276,7 +281,7 @@ final class SystemNavigation {
                     }
                 }
             }
-            DispatchQueue.main.async { completion(message) }
+            DispatchQueue.main.async { if !request.isCancelled { completion(message) } }
         }
     }
 

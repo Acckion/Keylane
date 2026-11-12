@@ -6,6 +6,7 @@ final class CameraPreviewWindow: NSObject, NSWindowDelegate {
     private let captureQueue = DispatchQueue(label: "org.keylane.camera-preview", qos: .userInitiated)
     private var window: NSWindow?
     private var generation = 0
+    private var captureStart: DispatchWorkItem?
 
     func show(activation: WindowActivationBehavior) {
         guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else { return }
@@ -37,6 +38,8 @@ final class CameraPreviewWindow: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         generation += 1
+        captureStart?.cancel()
+        captureStart = nil
         window = nil
         if let session {
             self.session = nil
@@ -48,7 +51,10 @@ final class CameraPreviewWindow: NSObject, NSWindowDelegate {
         let session = AVCaptureSession()
         self.session = session
         window?.contentView = CameraPreviewView(session: session)
+        let request = DispatchWorkItem {}
+        captureStart = request
         captureQueue.async { [weak self] in
+            guard !request.isCancelled else { return }
             let started = Self.startSession(session)
             DispatchQueue.main.async {
                 guard !started, let self, self.generation == token else { return }

@@ -103,13 +103,13 @@ enum ClipboardActions {
         }
         actions.append(.init(id: "pin-clip", title: item.pinned ? "取消置顶" : "置顶记录", icon: "pin",
                              keys: ["⌘", "."], group: 1, perform: controller.pinSelected))
-        if !text.isEmpty {
+        if !text.isEmpty, model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.snippets")) == true {
             actions.append(.init(id: "snippet-clip", title: "存为文字片段", icon: "text.badge.plus",
                                  keys: ["⌘", "S"], group: 2) { [weak model] in
                 if let model { SnippetsModule.create(from: text, model: model) }
             })
         }
-        if let quicklink {
+        if let quicklink, model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.links")) == true {
             let title = link?.host() ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
             actions.append(.init(id: "quicklink-clip", title: "存为快捷链接", icon: "link",
                                  keys: ["⇧", "⌘", "S"], group: 2) { [weak model] in
