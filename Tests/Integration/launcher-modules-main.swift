@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import SwiftUI
@@ -294,3 +295,22 @@ systemGrant = false
 permission.recheck()
 precondition(gated.resolve(gatedID, origin: .shortcut, navigate: { _ in }) == nil && !permission.enabled)
 print("PASS disabled permission commands hidden; authorization and revocation update availability")
+
+var pastePermissionGranted = false
+let pastePermission = PermissionFeature("crossAppPaste.enabled", authorization: .init(
+    check: { pastePermissionGranted },
+    request: { $0(false) },
+    guidance: "Return after granting Accessibility access",
+    enableOnReturn: true
+), defaults: permissionDefaults)
+var activationResults: [Bool] = []
+pastePermission.activate { activationResults.append($0) }
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(activationResults == [false] && !pastePermission.available)
+
+pastePermissionGranted = true
+NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(pastePermission.available && permissionDefaults.bool(forKey: "crossAppPaste.enabled"))
+precondition(pastePermission.status == .init() && activationResults == [false])
+print("PASS cross-app paste activates on return after granting Accessibility access")

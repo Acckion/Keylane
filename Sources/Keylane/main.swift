@@ -114,7 +114,7 @@ final class Model: ObservableObject {
     let discovery = ApplicationDiscovery()
     let applicationResultActions = ApplicationResultActions()
     let finderAutomation = PermissionFeature("finderAutomation.enabled", authorization: .automation("com.apple.finder", appName: "Finder"))
-    let crossAppPaste = PermissionFeature("crossAppPaste.enabled", authorization: .postEvent, observeImmediately: false)
+    let crossAppPaste = PermissionFeature("crossAppPaste.enabled", authorization: .postEvent)
     let lockScreenPermission = PermissionFeature("lockScreen.enabled", authorization: .postEvent)
     let clipboardSpeech = PermissionFeature("clipboardSpeech.enabled", authorization: .persistentClipboard, observeImmediately: false)
     let applicationAutoQuit = ApplicationAutoQuit()
