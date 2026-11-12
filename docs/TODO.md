@@ -207,6 +207,17 @@ Raycast 手册将新建应用窗口、从应用结果打开最近文件、以管
 
 Keylane 当前未提供快捷指令输入参数、输出回传或在系统快捷指令 App 中打开指定工作流的动作。Raycast 的通用命令参数和 Quicklink URL 示例无法确认其 macOS 内置 Apple 快捷指令结果有这些入口，待实机对照。
 
+## 脚本命令与 Raycast macOS 的差异
+
+对照基线为 Keylane `dev` 的 `374a714`，依据 [Raycast 手册](https://manual.raycast.com/script-commands)、[元数据规范](https://github.com/raycast/script-commands#metadata)、[参数规范](https://github.com/raycast/script-commands/blob/master/documentation/ARGUMENTS.md)及[输出模式](https://github.com/raycast/script-commands/blob/master/documentation/OUTPUTMODES.md)。Keylane 已有目录监听、创建模板、别名／热键、三类参数、备用搜索及四种输出模式。实现说明见[脚本命令](SCRIPT-COMMANDS.md)，以下沿用现有优先级。
+
+- [ ] **脚本发现与导入验收**。双方支持添加目录和自动更新元数据。Keylane 可读取 `@raycast.*`，混用时同名字段以 `@keylane.*` 为准。用合成脚本验收递归目录、编辑元数据、重命名、移除目录、无效头部和平台限制，记录文件路径变化对既有别名和热键的影响。
+- [ ] **编译型 AppleScript**。Raycast 手册列出 `.applescript` 和 `.scpt`。Keylane 支持文本 AppleScript，发现逻辑显式排除 `.scpt`。评估能否为编译脚本提供可验证的元数据入口，并明确文件搜索中的可见性。
+- [ ] **主搜索参数和热键配置**。Raycast 可在主搜索直接填参数，别名后输入空格可聚焦首个字段，也能从结果直接录制热键。Keylane 有同类参数校验，带参脚本进入执行页填写，热键通过设置配置。评估主搜索就地交互，回归参数可选性、密码字段清空、下拉和百分号编码。
+- [ ] **备用搜索选择**。Keylane 已将无匹配时的查询传给符合条件的脚本，当前保存一个脚本作为备用项。Raycast 在启动器的备用命令列表管理和排序多个候选。评估复用统一的备用命令配置，验收禁用、删除及排序后的行为。
+- [ ] **Inline 调度与输出**。两边都支持四种模式、ANSI 和至少 10 秒的 Inline 刷新间隔。Keylane 需先手动运行，启动器可见时最多自动刷新 10 条，需要确认的脚本不参与自动刷新。验收首次运行、窗口隐藏和恢复、参数或确认脚本、失败输出和长输出截断。
+- [ ] **运行环境、权限与取消**。两边默认从脚本所在目录运行，支持元数据指定工作目录。Raycast 手册承诺使用系统区域的 `LANG`，Keylane 保留已有 `LANG`，缺失时才按区域设置或回退。验收 Finder／热键启动、本机解释器、工作目录、权限拒绝、长脚本取消和超时，并核对截断后仍可复制输出。
+
 ## 原有分项任务与记录
 
 以下保留此前的分项任务和验证记录。执行优先级以上方2026-11-11清单为准；旧阶段编号只用于追踪，不决定新的开发顺序。
