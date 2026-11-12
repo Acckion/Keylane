@@ -5,7 +5,6 @@ struct QuicklinkPreferences: View {
     let model: Model
     @ObservedObject var controller: QuicklinksController
     @StateObject private var observation: ViewObservation
-    @State private var draft: Quicklink?
     @State private var pendingRemoval: Quicklink?
     @State private var failure: String?
     @State private var filter = ""
@@ -30,24 +29,24 @@ struct QuicklinkPreferences: View {
                         if let legacy = QuicklinkLibrary.legacyTemplate(from: .standard),
                            !controller.links.contains(where: { $0.template == legacy }) {
                             Button("恢复旧链接…") {
-                                draft = Quicklink(title: "原快捷链接", template: legacy)
+                                controller.draft = Quicklink(title: "原快捷链接", template: legacy)
                             }.buttonStyle(.bordered)
                         }
                         SettingsIconButton("添加快捷链接", symbol: "plus") {
-                            draft = Quicklink(title: "", template: "")
+                            controller.draft = Quicklink(title: "", template: "")
                         }
                     }.padding(.vertical, 6)
                 }
                 CommandSettingsList(items: filtered, id: \.id, emptyMessage: "没有匹配的快捷链接") { link in
-                    link.commandSettingsEntry(model: model, perform: { draft = link }, menu: [
-                        .init(title: "编辑快捷链接") { draft = link },
+                    link.commandSettingsEntry(model: model, perform: { controller.draft = link }, menu: [
+                        .init(title: "编辑快捷链接") { controller.draft = link },
                         .init(title: "删除快捷链接…") { pendingRemoval = link }
                     ])
                 }
             }
         }
         .settingsAnchor(.quicklink)
-        .sheet(item: $draft) { link in
+        .sheet(item: $controller.draft) { link in
             QuicklinkEditor(link: link, save: controller.save)
         }
         .confirmationDialog("删除快捷链接？", isPresented: Binding(

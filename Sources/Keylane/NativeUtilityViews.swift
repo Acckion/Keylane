@@ -104,12 +104,12 @@ struct ContactsPage: View {
                         Button("重试") { controller.refresh() }.buttonStyle(ContentActionButtonStyle())
                     }
                 } else if let contact = controller.selected {
-                    ResultDetailPane { height in
+                    ResultDetailPane { _ in
                         VStack(spacing: 12) {
                             Image(systemName: "person.crop.circle.fill").font(.system(size: 66)).foregroundStyle(.blue)
                             Text(contact.name).font(.title2.weight(.semibold)).textSelection(.enabled)
                             if !contact.organization.isEmpty { Text(contact.organization).foregroundStyle(.secondary) }
-                        }.frame(maxWidth: .infinity, minHeight: height)
+                        }.frame(maxWidth: .infinity)
                     } information: {
                         DetailInformationSection(rows: contact.phones.enumerated().map {
                             .init(title: $0.offset == 0 ? "电话" : "电话 \($0.offset + 1)", value: $0.element)

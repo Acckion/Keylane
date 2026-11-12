@@ -8,12 +8,15 @@ struct ClipboardListIcon: View {
     @State private var thumbnail: NSImage?
     var body: some View {
         Group {
-            if let thumbnail {
-                Image(nsImage: thumbnail).resizable().scaledToFill()
+            if let color = item.color {
+                ClipboardColorSwatch(color: color, cornerRadius: 5)
+            } else if let thumbnail {
+                Image(nsImage: thumbnail).renderingMode(thumbnail.isTemplate ? .template : .original)
+                    .resizable().aspectRatio(contentMode: item.webURL == nil ? .fill : .fit)
             } else {
                 ZStack {
                     RoundedRectangle(cornerRadius: 5).fill(.primary.opacity(0.15))
-                    Image(systemName: item.kind == .text ? "doc.text.fill" : item.kind == .image ? "photo.fill" : "doc.on.doc.fill")
+                    Image(systemName: symbol)
                         .font(.system(size: 17, weight: .regular)).foregroundStyle(.primary.opacity(0.85))
                 }
             }
@@ -21,9 +24,29 @@ struct ClipboardListIcon: View {
             .accessibilityHidden(true)
             .task(id: item.id + (item.kind == .files ? String(item.copiedAt.timeIntervalSince1970) : "")) {
                 thumbnail = nil
-                let image = await controller.listThumbnail(for: item)
+                let image: NSImage?
+                if let url = item.webURL {
+                    try? await Task.sleep(for: .milliseconds(120))
+                    guard !Task.isCancelled else { return }
+                    image = await ClipboardLinkPreviews.shared.icon(for: url)
+                } else {
+                    image = await controller.listThumbnail(for: item)
+                }
                 guard !Task.isCancelled else { return }
-                thumbnail = image
+                if image != nil || item.webURL == nil { thumbnail = image }
             }
+            .onReceive(ClipboardLinkPreviews.shared.iconUpdates) { origin, icon in
+                if let url = item.webURL, ClipboardLinkPreviews.origin(for: url) == origin { thumbnail = icon }
+            }
+    }
+
+    private var symbol: String {
+        switch item.category {
+        case .link: return "link"
+        case .email: return "at"
+        case .image: return "photo.fill"
+        case .files: return "doc.on.doc.fill"
+        case .text, .color: return "doc.text.fill"
+        }
     }
 }

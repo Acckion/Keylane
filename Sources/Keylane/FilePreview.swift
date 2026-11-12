@@ -3,7 +3,8 @@ import QuickLookUI
 
 final class FilePreview: NSObject, QLPreviewPanelDataSource {
     static let shared = FilePreview()
-    private var url: URL?
+    private var urls: [URL] = []
+    private var fileAccess: AnyObject?
     private weak var panel: QLPreviewPanel?
     private var presenting = false
 
@@ -14,9 +15,13 @@ final class FilePreview: NSObject, QLPreviewPanelDataSource {
         return window === panel
     }
 
-    func show(_ url: URL) {
+    func show(_ url: URL) { show([url]) }
+
+    func show(_ urls: [URL], retaining access: AnyObject? = nil) {
+        guard !urls.isEmpty else { return }
         guard let panel = QLPreviewPanel.shared() else { return }
-        self.url = url
+        self.urls = urls
+        fileAccess = access
         self.panel = panel
         panel.dataSource = self
         panel.reloadData()
@@ -26,13 +31,18 @@ final class FilePreview: NSObject, QLPreviewPanelDataSource {
     }
 
     func dismiss() {
-        url = nil
-        defer { panel = nil }
+        defer {
+            urls = []
+            fileAccess = nil
+            panel = nil
+        }
         guard let panel, panel.dataSource === self else { return }
         panel.orderOut(nil)
         panel.dataSource = nil
     }
 
-    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { url == nil ? 0 : 1 }
-    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! { url as NSURL? }
+    func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int { urls.count }
+    func previewPanel(_ panel: QLPreviewPanel!, previewItemAt index: Int) -> QLPreviewItem! {
+        urls.indices.contains(index) ? urls[index] as NSURL : nil
+    }
 }
