@@ -44,7 +44,7 @@ enum CalendarLauncherModule {
                 move: { calendar.move($0) },
                 submit: { primary(calendar) },
                 actionContextTitle: { calendar.selectedEvent?.title },
-                primaryTitle: { calendar.selectedEvent?.meetingURL == nil ? "打开日历" : "加入会议" },
+                primaryTitle: { calendar.selectedEvent.map(primaryTitle) ?? "打开日历" },
                 actions: { [weak model] in
                     guard let model else { return [] }
                     return actions(model)
@@ -72,7 +72,7 @@ enum CalendarLauncherModule {
                 primaryTitle: { calendar.formTitle },
                 primaryEnabled: { calendar.canSave },
                 updates: Publishers.Merge(
-                    calendar.$draft.map { $0.title }.removeDuplicates().map { _ in () },
+                    ViewObservation.changes(calendar.$draft.map { [$0.title, $0.invitees] }),
                     ViewObservation.changes(calendar.$saving)
                 ).eraseToAnyPublisher()
             )],
@@ -106,6 +106,9 @@ enum CalendarLauncherModule {
                     calendar.previewCamera = { [weak model] in
                         model?.launcherModules?.resolve(CommandID(rawValue: "show-camera"), origin: .menu, navigate: { _ in })?()
                     }
+                    calendar.reportFailure = { message in
+                        (NSApp?.delegate as? Delegate)?.toast.show(message, style: .failure)
+                    }
                     calendar.start()
                 },
                 stop: {
@@ -113,6 +116,7 @@ enum CalendarLauncherModule {
                     calendar.reveal = nil
                     calendar.showSettings = nil
                     calendar.previewCamera = nil
+                    calendar.reportFailure = nil
                 }
             )],
             searchUpdates: [calendar.permission.updates, ViewObservation.changes(calendar.$searchEvents)]
@@ -124,18 +128,47 @@ enum CalendarLauncherModule {
             return calendar.searchEvents.prefix(8).map { event in
                 let id = eventPrefix + event.id
                 return Entry(id: id, commandID: .init(rawValue: id), name: event.title, detail: "日程",
-                             symbol: "calendar", aliases: [event.calendarTitle, event.location],
+                             symbol: event.meetingURL == nil ? "calendar" : "video",
+                             aliases: [event.calendarTitle, event.location] + (event.meetingURL == nil ? [] : ["加入会议", "Join Meeting"]),
                              subtitle: CalendarController.timeRange(event.start, event.end))
             }
         }, resolve: { id, _ in
             guard calendar.enabled, let event = calendar.searchEvents.first(where: { eventPrefix + $0.id == id.rawValue }) else { return nil }
-            return { calendar.show(event) }
-        }, primaryTitle: { _ in "查看日程" }, displayDetail: { _ in "日程" }, permission: { _ in calendar.permission })
+            return { performPrimary(for: event, calendar: calendar) }
+        }, primaryTitle: { entry in
+            calendar.searchEvents.first { eventPrefix + $0.id == entry.id }.map(primaryTitle)
+        }, actions: { entry in
+            guard let event = calendar.searchEvents.first(where: { eventPrefix + $0.id == entry.id }) else { return nil }
+            return eventActions(event, calendar: calendar)
+        }, displayDetail: { _ in "日程" }, permission: { _ in calendar.permission })
+    }
+
+    private static func primaryTitle(for event: AgendaEvent) -> String {
+        event.meetingURL == nil ? "在 Apple 日历中打开" : "加入会议"
+    }
+
+    private static func performPrimary(for event: AgendaEvent, calendar: CalendarController) {
+        if event.meetingURL != nil { calendar.joinMeeting(event) }
+        else { calendar.openEvent(event) }
     }
 
     private static func primary(_ calendar: CalendarController) {
-        if let event = calendar.selectedEvent, event.meetingURL != nil { calendar.joinMeeting(event) }
+        if let event = calendar.selectedEvent { performPrimary(for: event, calendar: calendar) }
         else { calendar.openSystemCalendar() }
+    }
+
+    private static func eventActions(_ event: AgendaEvent, calendar: CalendarController) -> [LauncherAction] {
+        var actions: [LauncherAction] = []
+        if event.meetingURL != nil {
+            actions.append(.init(id: "join-meeting", title: "加入会议", icon: "video", perform: { calendar.joinMeeting(event) }))
+        }
+        actions.append(.init(id: "open-calendar", title: "在 Apple 日历中打开", icon: "calendar",
+                             perform: { calendar.openEvent(event) }))
+        if event.hasInvitation {
+            actions.append(.init(id: "respond-invitation", title: "在日历中回复邀请", icon: "envelope",
+                                 perform: { calendar.openEvent(event) }))
+        }
+        return actions
     }
 
     private static func actions(_ model: Model) -> [LauncherAction] {
@@ -146,17 +179,20 @@ enum CalendarLauncherModule {
             calendar.prepareDraft(event: event, blocking: blocking)
             model.openPage(formID, origin: .search)
         }
-        var actions: [LauncherAction] = []
-        if let event, event.meetingURL != nil {
-            actions.append(.init(id: "join-meeting", title: "加入会议", icon: "video", perform: { calendar.joinMeeting(event) }))
-        }
-        actions.append(.init(id: "open-calendar", title: "打开日历", icon: "calendar", perform: calendar.openSystemCalendar))
+        var actions = event.map { eventActions($0, calendar: calendar) }
+            ?? [.init(id: "open-calendar", title: "打开日历", icon: "calendar", perform: calendar.openSystemCalendar)]
         actions.append(.init(id: "new-event", title: "创建日程", icon: "plus", keys: ["⌘", "N"], group: 1,
                              enabled: canCreate, perform: { form() }))
         if let event {
             if event.editable {
                 actions.append(.init(id: "edit-event", title: "编辑日程", icon: "pencil", keys: ["⌘", "E"], group: 1,
                                      enabled: !calendar.saving, perform: { form(event) }))
+            }
+            if !event.participants.isEmpty {
+                actions.append(.init(id: "copy-attendees", title: "复制参与者及回复状态", icon: "person.2", group: 2, perform: {
+                    let participants = event.participants.map { [$0.name, $0.status].filter { !$0.isEmpty }.joined(separator: " · ") }
+                    _ = UtilityActions.copy(participants.joined(separator: "\n"))
+                }))
             }
             actions += [
                 .init(id: "copy-event", title: "复制日程详情", icon: "doc.on.clipboard", keys: ["⇧", "⌘", "C"], group: 2, perform: {

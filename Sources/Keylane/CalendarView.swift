@@ -77,6 +77,7 @@ struct CalendarPage: View {
                     HighlightedResultText(text: event.title, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
                     Spacer(minLength: 0)
                     if event.meetingURL != nil { Image(systemName: "video").accessibilityLabel("包含会议链接") }
+                    if !event.participants.isEmpty { Image(systemName: "person.2").accessibilityLabel("包含参与者") }
                     if event.recurring { Image(systemName: "repeat").accessibilityLabel("重复日程") }
                 }
             }.opacity(event.end < Date() ? 0.58 : 1)
@@ -142,6 +143,27 @@ struct CalendarEventForm: View {
                 }
             }
             LauncherCreationField("全天") { Toggle("全天", isOn: $controller.draft.allDay).labelsHidden().toggleStyle(.checkbox) }
+            reminderField
+            if controller.editingEvent?.canInvite != false {
+                LauncherCreationField("邀请参与者", detail: "保存时由 Apple 日历添加受邀人。") {
+                    LauncherCreationControl {
+                        TextField("输入邮箱，用逗号分隔", text: $controller.draft.invitees).textFieldStyle(.plain)
+                    }
+                }
+            }
+            if let participants = controller.editingEvent?.participants, !participants.isEmpty {
+                LauncherCreationField("参与者") {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(participants.enumerated()), id: \.offset) { _, participant in
+                            HStack {
+                                Text(participant.name)
+                                Spacer()
+                                Text(participant.status).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
             LauncherCreationField("地点") {
                 LauncherCreationControl { TextField("添加地点", text: $controller.draft.location).textFieldStyle(.plain) }
             }
@@ -151,11 +173,53 @@ struct CalendarEventForm: View {
                 }
             }
             if !controller.formError.isEmpty {
-                LauncherCreationField("") { Text(controller.formError).foregroundStyle(.red) }
+                LauncherCreationField("") {
+                    Text(controller.formError).foregroundStyle(.red)
+                    if let event = controller.editingEvent, !controller.draft.invitees.isEmpty {
+                        HStack {
+                            Button("复制邮箱") { _ = UtilityActions.copy(controller.draft.invitees) }
+                            Button("在 Apple 日历中打开") { controller.openEvent(event) }
+                        }
+                        if !controller.error.isEmpty { Text(controller.error).font(.caption).foregroundStyle(.secondary) }
+                    }
+                }
             }
             Color.clear.frame(height: VisualStyle.launcherBottomInset)
         }
+        .disabled(controller.saving)
         .task { titleFocused = true }
+    }
+
+    private var reminderField: some View {
+        LauncherCreationField("提醒") {
+            LauncherCreationControl {
+                Menu {
+                    ForEach(CalendarEventDraft.reminderOptions, id: \.self) { minutes in
+                        Toggle(reminderTitle(minutes), isOn: Binding(
+                            get: { controller.draft.reminderMinutes.contains(minutes) },
+                            set: { selected in
+                                if selected { controller.draft.reminderMinutes.insert(minutes) }
+                                else { controller.draft.reminderMinutes.remove(minutes) }
+                            }
+                        ))
+                    }
+                } label: {
+                    let labels = controller.draft.reminderMinutes.sorted().map(reminderTitle)
+                    Text(labels.isEmpty ? "选择提醒时间" : labels.joined(separator: "、")).lineLimit(1)
+                }
+                .menuStyle(.borderlessButton)
+            }
+            if controller.editingEvent?.hasOtherReminders == true {
+                Text("此日程还有其他提醒，可在 Apple 日历中管理。").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func reminderTitle(_ minutes: Int) -> String {
+        if minutes == 0 { return "开始时" }
+        if minutes >= 1440 { return "提前 \(minutes / 1440) 天" }
+        if minutes >= 60 { return "提前 \(minutes / 60) 小时" }
+        return "提前 \(minutes) 分钟"
     }
 
     private func dateField(_ title: String, date: Binding<Date>) -> some View {
@@ -314,7 +378,7 @@ private struct CalendarSettingsGroups: View {
                     ForEach([2, 5, 10, 15, 30], id: \.self) { Text("开始前后 \($0) 分钟").tag($0) }
                 }
                 Divider()
-                applicationPicker("默认日历应用", defaultTitle: "系统日历", apps: calendarApps, selection: Binding(
+                applicationPicker("打开日历时使用", defaultTitle: "Apple 日历", apps: calendarApps, selection: Binding(
                     get: { controller.calendarApplication }, set: { controller.calendarApplication = $0 }
                 ))
                 Divider()

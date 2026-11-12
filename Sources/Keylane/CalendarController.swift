@@ -67,7 +67,10 @@ final class CalendarController: ObservableObject {
     @Published private(set) var formError = ""
     private(set) var editingEvent: AgendaEvent?
     var canSave: Bool { enabled && !saving && !draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    var formTitle: String { editingEvent == nil ? "创建日程" : "保存日程" }
+    var formTitle: String {
+        if !draft.invitees.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "保存并邀请" }
+        return editingEvent == nil ? "创建日程" : "保存日程"
+    }
     @Published private(set) var access: CalendarAccess = .notRequested
     @Published private(set) var calendars: [CalendarChoice] = []
     @Published private(set) var events: [AgendaEvent] = []
@@ -80,8 +83,10 @@ final class CalendarController: ObservableObject {
     var reveal: ((AgendaEvent?) -> Void)?
     var showSettings: (() -> Void)?
     var previewCamera: (() -> Void)?
+    var reportFailure: ((String) -> Void)?
     private let registry: MenuBarRegistry
     private let preferences: UserDefaults
+    private let automationWorker = DispatchQueue(label: "org.keylane.calendar.automation", qos: .userInitiated)
     private let worker = DispatchQueue(label: "org.keylane.calendar", qos: .userInitiated)
     private var eventStore: EKEventStore?
     private var runtime: DispatchWorkItem?
@@ -253,19 +258,7 @@ final class CalendarController: ObservableObject {
                 guard !runtime.isCancelled, !targets.isEmpty else { return [] }
                 let predicate = store.predicateForEvents(withStart: start, end: end, calendars: targets)
                 return store.events(matching: predicate).filter { $0.status != .canceled }.map { event in
-                    AgendaEvent(id: Self.occurrenceID(event),
-                                calendarID: event.calendar.calendarIdentifier, calendarTitle: event.calendar.title,
-                                title: event.title?.isEmpty == false ? String(event.title.prefix(1000)) : "无标题日程",
-                                start: event.startDate, end: event.endDate, allDay: event.isAllDay,
-                                location: String((event.location ?? "").prefix(2000)), notes: String((event.notes ?? "").prefix(8000)),
-                                calendarColor: Self.calendarColor(event.calendar),
-                                accepted: event.attendees?.contains { $0.isCurrentUser && $0.participantStatus == .accepted } ?? false,
-                                meetingURL: Self.meetingURL(event),
-                                editable: event.calendar.allowsContentModifications,
-                                recurring: event.hasRecurrenceRules || event.isDetached,
-                                busy: event.availability != .free && !(event.attendees?.contains {
-                                    $0.isCurrentUser && $0.participantStatus == .declined
-                                } ?? false))
+                    Self.summary(event)
                 }
             }
             let daily = includesDay ? fetch(dayStart, dayEnd).sorted {
@@ -324,6 +317,31 @@ final class CalendarController: ObservableObject {
             ?? URL(fileURLWithPath: "/System/Applications/Calendar.app")
         if !NSWorkspace.shared.open(app) { error = "无法打开日历应用。" }
     }
+    func openEvent(_ event: AgendaEvent) {
+        guard enabled else { return }
+        error = ""
+        automationWorker.async { [weak self] in
+            let result = CalendarAutomation.run(event: event)
+            DispatchQueue.main.async {
+                guard let self, self.enabled else { return }
+                switch result {
+                case .success(.event): break
+                case .success(.date):
+                    self.showFailure("日历已打开到当天，无法选中这次日程。")
+                case .failure(CalendarAutomation.Failure.permissionDenied):
+                    self.showFailure("请在「系统设置 → 隐私与安全性 → 自动化」允许 Keylane 控制日历。")
+                default:
+                    self.showFailure("无法在 Apple 日历中定位这项日程。")
+                }
+            }
+        }
+    }
+
+    private func showFailure(_ message: String) {
+        error = message
+        reportFailure?(message)
+    }
+
     func openPrivacySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!) }
     func show(_ event: AgendaEvent) { query = ""; agendaCalendarID = "all"; selectedDate = event.start; selectedID = event.id; reveal?(event) }
     private static func calendarColor(_ calendar: EKCalendar) -> UInt32? {
@@ -380,7 +398,9 @@ final class CalendarController: ObservableObject {
             if let next, next.meetingURL != nil {
                 commands.append(.init(title: "加入会议", symbol: "video", action: { [weak self] in self?.joinMeeting(next) }))
             }
-            commands.append(.init(title: "打开系统日历", symbol: "calendar", action: { [weak self] in self?.openSystemCalendar() }))
+            commands.append(.init(title: next == nil ? "打开日历" : "在 Apple 日历中打开日程", symbol: "calendar", action: { [weak self] in
+                if let next { self?.openEvent(next) } else { self?.openSystemCalendar() }
+            }))
             if let next {
                 commands.append(.init(title: "忽略当前日程", symbol: "xmark.circle", action: { [weak self] in
                     self?.dismissedUntil[next.id] = next.end
@@ -404,7 +424,7 @@ final class CalendarController: ObservableObject {
                     let color = event.calendarColor.map { rgb in
                         NSColor(red: CGFloat((rgb >> 16) & 255) / 255, green: CGFloat((rgb >> 8) & 255) / 255, blue: CGFloat(rgb & 255) / 255, alpha: 1)
                     } ?? .systemOrange
-                    commands.append(.init(title: time + "  " + String(event.title.prefix(60)), symbol: symbol, iconColor: color, action: { [weak self] in self?.show(event) }))
+                    commands.append(.init(title: time + "  " + String(event.title.prefix(60)), symbol: symbol, iconColor: color, action: { [weak self] in self?.openEvent(event) }))
                 }
             }
             if !hasRows { commands += [.separator, .heading(loading ? "正在加载…" : "今天和明天没有待开始的日程")] }
@@ -446,6 +466,10 @@ struct CalendarEventDraft {
     var blocking = false
     var location = ""
     var notes = ""
+    var invitees = ""
+    var reminderMinutes: Set<Int> = []
+
+    static let reminderOptions = [0, 5, 10, 15, 30, 60, 120, 1440, 2880]
 }
 
 extension CalendarController {
@@ -454,18 +478,62 @@ extension CalendarController {
     }
 
     private static let meetingDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    private static let nativeMeetingDetector = try? NSRegularExpression(
+        pattern: #"\b(?:facetime(?:-audio)?|skype):[^\s<>()\[\]]+"#, options: .caseInsensitive
+    )
 
     private static func meetingURL(_ event: EKEvent) -> URL? {
         var candidates = [event.url].compactMap { $0 }
-        if let detector = meetingDetector {
-            let text = String(((event.location ?? "") + "\n" + (event.notes ?? "")).prefix(12_000))
-            candidates += detector.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap(\.url)
-        }
-        let hosts = ["meet.google.com", "teams.microsoft.com", "teams.live.com", "zoom.us", "zoomgov.com", "webex.com"]
-        return candidates.first { url in
-            guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(), url.user == nil else { return false }
-            return hosts.contains { host == $0 || host.hasSuffix("." + $0) }
-        }
+        let text = String(((event.location ?? "") + "\n" + (event.notes ?? "")).prefix(12_000))
+        let range = NSRange(text.startIndex..., in: text)
+        candidates += meetingDetector?.matches(in: text, range: range).compactMap(\.url) ?? []
+        candidates += nativeMeetingDetector?.matches(in: text, range: range).compactMap { match in
+            guard let range = Range(match.range, in: text) else { return nil }
+            let link = text[range].trimmingCharacters(in: CharacterSet(charactersIn: ".,;，。；"))
+            return URL(string: link)
+        } ?? []
+        return candidates.first(where: AgendaMeetingLink.matches)
+    }
+
+    private static func reminderMinutes(_ alarm: EKAlarm) -> Int? {
+        guard alarm.absoluteDate == nil, alarm.structuredLocation == nil,
+              alarm.type == .display else { return nil }
+        return CalendarEventDraft.reminderOptions.first { alarm.relativeOffset == -Double($0 * 60) }
+    }
+
+    private static func summary(_ event: EKEvent) -> AgendaEvent {
+        let participants = event.attendees ?? []
+        let currentUser = participants.first(where: \.isCurrentUser)
+        let organizer = event.organizer
+        let calendar: EKCalendar = event.calendar
+        let alarms = event.alarms ?? []
+        return AgendaEvent(
+            id: occurrenceID(event), calendarID: calendar.calendarIdentifier, calendarTitle: calendar.title,
+            title: event.title?.isEmpty == false ? String(event.title.prefix(1000)) : "无标题日程",
+            start: event.startDate, end: event.endDate, allDay: event.isAllDay,
+            location: String((event.location ?? "").prefix(2000)), notes: String((event.notes ?? "").prefix(8000)),
+            calendarColor: calendarColor(calendar), accepted: currentUser?.participantStatus == .accepted,
+            meetingURL: meetingURL(event), editable: calendar.allowsContentModifications,
+            recurring: event.hasRecurrenceRules || event.isDetached,
+            busy: event.availability != .free && currentUser?.participantStatus != .declined,
+            nativeID: event.calendarItemIdentifier, externalID: event.calendarItemExternalIdentifier,
+            participants: participants.map { participant in
+                let status: String
+                switch participant.participantStatus {
+                case .accepted: status = "已接受"
+                case .declined: status = "已拒绝"
+                case .tentative: status = "暂定"
+                case .pending: status = "待回复"
+                default: status = ""
+                }
+                let name = participant.name ?? participant.url.absoluteString.replacingOccurrences(of: "mailto:", with: "", options: [.anchored, .caseInsensitive])
+                return AgendaParticipant(name: name, status: status)
+            },
+            canInvite: calendar.allowsContentModifications && (organizer?.isCurrentUser ?? true),
+            hasInvitation: currentUser != nil && organizer?.isCurrentUser == false,
+            reminderMinutes: Set(alarms.compactMap(reminderMinutes)),
+            hasOtherReminders: alarms.contains { reminderMinutes($0) == nil }
+        )
     }
 
     func joinMeeting(_ event: AgendaEvent) {
@@ -476,10 +544,10 @@ extension CalendarController {
         if url.host?.lowercased() == "meet.google.com",
            let browser = NSWorkspace.shared.urlForApplication(withBundleIdentifier: googleBrowser) {
             NSWorkspace.shared.open([url], withApplicationAt: browser, configuration: .init()) { [weak self] _, failure in
-                if failure != nil { DispatchQueue.main.async { self?.error = "无法用所选浏览器打开会议链接。" } }
+                if failure != nil { DispatchQueue.main.async { self?.showFailure("无法用所选浏览器打开会议链接。") } }
             }
         } else if !NSWorkspace.shared.open(url) {
-            error = "无法打开会议链接。"
+            showFailure("无法打开会议链接。")
         }
     }
 
@@ -516,6 +584,7 @@ extension CalendarController {
     }
 
     func prepareDraft(event: AgendaEvent? = nil, blocking: Bool = false) {
+        guard !saving else { return }
         editingEvent = event
         formError = ""
         let calendar = Calendar.current
@@ -524,7 +593,8 @@ extension CalendarController {
         if let event {
             draft = .init(title: event.title, calendarID: event.calendarID, start: event.start,
                           end: event.allDay ? max(event.start, event.end.addingTimeInterval(-1)) : event.end,
-                          allDay: event.allDay, location: event.location, notes: event.notes)
+                          allDay: event.allDay, location: event.location, notes: event.notes,
+                          reminderMinutes: event.reminderMinutes)
         } else {
             let selectedStart = calendar.isDate(selectedDate, inSameDayAs: now)
                 ? start : calendar.date(bySettingHour: 9, minute: 0, second: 0, of: selectedDate) ?? selectedDate
@@ -536,6 +606,13 @@ extension CalendarController {
         guard canSave else { return }
         let draft = draft
         let editing = editingEvent
+        let addresses = draft.invitees.split { $0.isWhitespace || ",;，；".contains($0) }.map(String.init)
+        guard addresses.allSatisfy({
+            $0.range(of: #"^[^@<>]+@[^@<>]+\.[^@<>.]+$"#, options: .regularExpression) != nil
+        }) else {
+            formError = "请输入有效的参与者邮箱，用逗号分隔。"
+            return
+        }
         let calendar = Calendar.current
         let start = draft.allDay ? calendar.startOfDay(for: draft.start) : draft.start
         let end = draft.allDay ? calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: draft.end)) : draft.end
@@ -543,14 +620,26 @@ extension CalendarController {
             formError = "结束时间必须晚于开始时间。"
             return
         }
-        mutate(form: true, completion: { [weak self] in
-            self?.selectedDate = start
-            completion()
+        mutate(form: true, completion: { [weak self] (saved: AgendaEvent) in
+            guard let self else { return }
+            self.selectedDate = start
+            if addresses.isEmpty {
+                completion()
+            } else {
+                // The event already exists. A retry can only update that event.
+                self.editingEvent = saved
+                self.addInvitees(addresses, to: saved, completion: completion)
+            }
         }) { store in
             let event = try editing.map { try Self.resolve($0, in: store) } ?? EKEvent(eventStore: store)
             let target = draft.calendarID.isEmpty ? store.defaultCalendarForNewEvents : store.calendar(withIdentifier: draft.calendarID)
             guard let target, target.allowsContentModifications else { throw CalendarMutationError.readOnly }
-            event.calendar = target
+            let changed = editing == nil || editing?.calendarID != target.calendarIdentifier
+                || editing?.title != draft.title || editing?.start != start || editing?.end != end
+                || editing?.allDay != draft.allDay || editing?.location != draft.location
+                || editing?.notes != draft.notes || editing?.reminderMinutes != draft.reminderMinutes
+            guard changed else { return Self.summary(event) }
+            if event.calendar?.calendarIdentifier != target.calendarIdentifier { event.calendar = target }
             if editing?.title != draft.title { event.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines) }
             if editing?.start != start || editing?.end != end || editing?.allDay != draft.allDay {
                 event.startDate = start
@@ -560,7 +649,40 @@ extension CalendarController {
             if draft.blocking && target.supportedEventAvailabilities.contains(.busy) { event.availability = .busy }
             if editing?.location != draft.location { event.location = draft.location.isEmpty ? nil : draft.location }
             if editing?.notes != draft.notes { event.notes = draft.notes.isEmpty ? nil : draft.notes }
+            if draft.reminderMinutes != (editing?.reminderMinutes ?? []) {
+                for alarm in event.alarms ?? [] {
+                    if let minutes = Self.reminderMinutes(alarm), !draft.reminderMinutes.contains(minutes) {
+                        event.removeAlarm(alarm)
+                    }
+                }
+                for minutes in draft.reminderMinutes.subtracting(editing?.reminderMinutes ?? []).sorted() {
+                    event.addAlarm(EKAlarm(relativeOffset: -Double(minutes * 60)))
+                }
+            }
             try store.save(event, span: .thisEvent)
+            return Self.summary(event)
+        }
+    }
+
+    private func addInvitees(_ addresses: [String], to event: AgendaEvent, completion: @escaping () -> Void) {
+        saving = true
+        automationWorker.async { [weak self] in
+            let result = event.canInvite ? CalendarAutomation.run(event: event, addresses: addresses) : .success(.unavailable)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.saving = false
+                self.refresh()
+                guard self.editingEvent?.id == event.id else { return }
+                switch result {
+                case .success(.added):
+                    self.draft.invitees = ""
+                    completion()
+                case .failure(CalendarAutomation.Failure.permissionDenied):
+                    self.formError = "日程已保存。允许 Keylane 自动化控制日历后，可以重试添加参与者。"
+                default:
+                    self.formError = "日程已保存。请在 Apple 日历中确认参与者，并补加未添加的邮箱。"
+                }
+            }
         }
     }
 
@@ -573,7 +695,7 @@ extension CalendarController {
         alert.addButton(withTitle: "删除").hasDestructiveAction = true
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertSecondButtonReturn else { return }
-            self?.mutate(form: false, completion: {}) { store in
+            self?.mutate(form: false, completion: { _ in }) { store in
                 try store.remove(Self.resolve(event, in: store), span: .thisEvent)
             }
         }
@@ -591,8 +713,8 @@ extension CalendarController {
         return event
     }
 
-    private func mutate(form: Bool, completion: @escaping () -> Void,
-                        operation: @escaping (EKEventStore) throws -> Void) {
+    private func mutate<Value: Sendable>(form: Bool, completion: @escaping (Value) -> Void,
+                                        operation: @escaping (EKEventStore) throws -> Value) {
         guard enabled, let runtime, !saving else { return }
         saving = true
         if form { formError = "" } else { error = "" }
@@ -602,14 +724,14 @@ extension CalendarController {
                 guard CalendarAccess.current == .allowed else { throw CalendarMutationError.noAccess }
                 let store = self.eventStore ?? EKEventStore()
                 self.eventStore = store
-                try operation(store)
+                return try operation(store)
             }
             DispatchQueue.main.async {
                 guard !runtime.isCancelled else { return }
                 self.saving = false
                 switch result {
-                case .success:
-                    completion()
+                case .success(let value):
+                    completion(value)
                     self.refresh()
                 case .failure(let failure):
                     if form { self.formError = failure.localizedDescription }

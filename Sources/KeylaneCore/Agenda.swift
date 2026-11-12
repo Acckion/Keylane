@@ -1,5 +1,48 @@
 import Foundation
 
+public struct AgendaParticipant: Equatable, Sendable {
+    public let name: String
+    public let status: String
+
+    public init(name: String, status: String) {
+        self.name = name
+        self.status = status
+    }
+}
+
+public enum AgendaMeetingLink {
+    private static let exactHosts: Set<String> = [
+        "meet.google.com", "teams.microsoft.com", "teams.live.com", "teams.cloud.microsoft",
+        "meet.jit.si", "facetime.apple.com", "join.skype.com", "meet.goto.com",
+        "meeting.tencent.com", "voovmeeting.com", "vc.feishu.cn", "vc.larkoffice.com",
+        "vc.dingtalk.com", "telemost.yandex.ru"
+    ]
+    private static let providerDomains = [
+        "zoom.us", "zoomgov.com", "webex.com", "bluejeans.com", "chime.aws", "whereby.com",
+        "around.co", "chorus.ai", "riverside.fm", "streamyard.com", "gotomeeting.com"
+    ]
+
+    public static func matches(_ url: URL) -> Bool {
+        guard url.user == nil, url.password == nil else { return false }
+        switch url.scheme?.lowercased() {
+        case "facetime", "facetime-audio", "skype":
+            return !url.absoluteString.split(separator: ":", maxSplits: 1).dropFirst().joined().isEmpty
+        case "https":
+            guard let host = url.host?.lowercased() else { return false }
+            let path = url.path.lowercased()
+            if host == "slack.com" || host.hasSuffix(".slack.com") {
+                return path.hasPrefix("/huddle/") || path.hasPrefix("/huddles/")
+            }
+            if host == "app.chime.aws" || host == "chime.aws" {
+                return path != "" && path != "/"
+            }
+            return exactHosts.contains(host) || providerDomains.contains { host == $0 || host.hasSuffix("." + $0) }
+        default:
+            return false
+        }
+    }
+}
+
 public struct AgendaEvent: Identifiable, Equatable, Sendable {
     public let id: String
     public let calendarID: String
@@ -16,10 +59,27 @@ public struct AgendaEvent: Identifiable, Equatable, Sendable {
     public let editable: Bool
     public let recurring: Bool
     public let busy: Bool
-    public init(id: String, calendarID: String, calendarTitle: String, title: String, start: Date, end: Date, allDay: Bool = false, location: String = "", notes: String = "", calendarColor: UInt32? = nil, accepted: Bool = false, meetingURL: URL? = nil, editable: Bool = false, recurring: Bool = false, busy: Bool = true) {
+    public let nativeID: String
+    public let externalID: String?
+    public let participants: [AgendaParticipant]
+    public let canInvite: Bool
+    public let hasInvitation: Bool
+    public let reminderMinutes: Set<Int>
+    public let hasOtherReminders: Bool
+    public init(id: String, calendarID: String, calendarTitle: String, title: String, start: Date, end: Date, allDay: Bool = false, location: String = "", notes: String = "", calendarColor: UInt32? = nil, accepted: Bool = false, meetingURL: URL? = nil, editable: Bool = false, recurring: Bool = false, busy: Bool = true,
+                nativeID: String = "", externalID: String? = nil, participants: [AgendaParticipant] = [],
+                canInvite: Bool = false, hasInvitation: Bool = false, reminderMinutes: Set<Int> = [],
+                hasOtherReminders: Bool = false) {
         self.id = id; self.calendarID = calendarID; self.calendarTitle = calendarTitle; self.title = title; self.start = start; self.end = end; self.allDay = allDay; self.location = location; self.notes = notes
         self.calendarColor = calendarColor; self.accepted = accepted
         self.meetingURL = meetingURL; self.editable = editable; self.recurring = recurring; self.busy = busy
+        self.nativeID = nativeID
+        self.externalID = externalID
+        self.participants = participants
+        self.canInvite = canInvite
+        self.hasInvitation = hasInvitation
+        self.reminderMinutes = reminderMinutes
+        self.hasOtherReminders = hasOtherReminders
     }
 }
 public enum AgendaMenuTiming: Int, CaseIterable, Sendable {

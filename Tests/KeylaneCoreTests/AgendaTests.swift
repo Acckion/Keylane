@@ -72,4 +72,37 @@ final class AgendaTests: XCTestCase {
                                             timing: .fifteenMinutes, hideAfterMinutes: 5, meetingsOnly: true))
     }
 
+    func testMeetingLinksSupportNativeAndRegionalProviders() throws {
+        for link in [
+            "https://us02web.zoom.us/j/12345",
+            "https://app.slack.com/huddle/T123/C456",
+            "https://meet.jit.si/ExampleRoom",
+            "https://teams.cloud.microsoft/meet/123",
+            "https://chime.aws/1234567890",
+            "https://whereby.com/example",
+            "https://riverside.fm/studio/example",
+            "https://streamyard.com/example",
+            "https://meeting.tencent.com/dm/example",
+            "https://vc.feishu.cn/j/123",
+            "facetime:alice@example.com"
+        ] {
+            XCTAssertTrue(AgendaMeetingLink.matches(try XCTUnwrap(URL(string: link))), link)
+        }
+    }
+
+    func testMeetingLinksRejectLookalikesAndNonMeetingSlackLinks() throws {
+        for link in [
+            "https://zoom.us.example.com/j/12345",
+            "https://fakezoom.us/j/12345",
+            "https://alice@meet.google.com/abc-defg-hij",
+            "http://meet.jit.si/ExampleRoom",
+            "https://app.slack.com/archives/C456",
+            "https://chime.aws/",
+            "facetime:",
+            "file:///tmp/meet.jit.si"
+        ] {
+            XCTAssertFalse(AgendaMeetingLink.matches(try XCTUnwrap(URL(string: link))), link)
+        }
+    }
+
 }
