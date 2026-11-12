@@ -125,7 +125,7 @@ struct Launcher: View {
                         } else {
                             VStack(spacing: 12) {
                                 ResultDetailEmptyState(title: model.query.isEmpty ? "搜索文件" : "没有匹配结果",
-                                                       message: model.query.isEmpty ? model.fileSearchStatus : nil)
+                                                       message: model.fileSearchStatus)
                                 Button("选择搜索文件夹…", systemImage: "folder") {
                                     model.chooseFileSearchFolder(returnToLauncher: true)
                                 }.buttonStyle(ContentActionButtonStyle())
