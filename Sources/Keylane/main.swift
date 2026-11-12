@@ -501,6 +501,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     let model = Model()
     var settingsWindow: NSWindow?
+    private var settingsToolbarSizing: AnyCancellable?
     private let onboarding = OnboardingWindowController()
     var window: NSWindow!
     let shortcuts = ShortcutManager()
@@ -639,6 +640,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // a closed settings window does not retain its SwiftUI pages and rows.
         DispatchQueue.main.async { [weak self, weak settings] in
             guard let self, let settings, settings === self.settingsWindow, !settings.isVisible else { return }
+            self.settingsToolbarSizing = nil
             settings.contentView = nil
             settings.toolbar = nil
             for index in settings.titlebarAccessoryViewControllers.indices.reversed() {
@@ -684,8 +686,14 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let trailingActions = NSTitlebarAccessoryViewController()
             trailingActions.layoutAttribute = .right
             trailingActions.view = NSHostingView(rootView: SettingsWindowActions(state: state))
-            trailingActions.view.frame = NSRect(x: 0, y: 0, width: 106, height: 44)
+            trailingActions.view.frame.size.height = 44
             settings.addTitlebarAccessoryViewController(trailingActions)
+            settingsToolbarSizing = state.$page.removeDuplicates().sink { [weak trailingActions, weak state] page in
+                guard let trailingActions else { return }
+                let width = SettingsWindowActions.width(for: state?.catalog.page(page))
+                trailingActions.view.frame.size.width = width
+                trailingActions.isHidden = width == 0
+            }
             settings.center()
             settings.setFrameAutosaveName("KeylaneSettings")
             // Restore the saved height and position, but always use the system settings width.

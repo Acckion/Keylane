@@ -14,27 +14,24 @@ extension PermissionFeature {
 /// Hosted in a native trailing titlebar accessory, independent of toolbar item priorities.
 struct SettingsWindowActions: View {
     @ObservedObject var state: SettingsWindowState
-    @State private var showingInfo = false
+
+    static func width(for page: LauncherSettingsPage?) -> CGFloat {
+        if page?.trailingToolbar != nil { return 214 }
+        return page?.titlebar == nil ? 0 : 64
+    }
 
     var body: some View {
-        let contribution = state.catalog.page(state.page)?.titlebar
-        HStack(spacing: 10) {
-            Button { showingInfo.toggle() } label: {
-                Image(systemName: "info.circle").font(.system(size: 16)).frame(width: 18, height: 20)
-            }
-            .buttonStyle(.glass).buttonBorderShape(.circle).help("页面说明")
-            .popover(isPresented: $showingInfo) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Keylane 设置").font(.headline)
-                    if let info = contribution?.info { info() }
-                    else { Text("在侧栏选择模块，或搜索设置项后跳转。") }
-                }.foregroundStyle(.primary).padding(20).frame(width: 280)
-            }
-            if let contribution {
+        let page = state.catalog.page(state.page)
+        Group {
+            if let toolbar = page?.trailingToolbar {
+                toolbar()
+            } else if let contribution = page?.titlebar {
                 SettingsTitlebarSwitch(contribution: contribution).id(state.page)
             }
-        }.padding(.trailing, 12).frame(width: 106, height: 44, alignment: .trailing)
-            .preferredColorScheme(state.colorScheme)
+        }
+        .padding(.trailing, 12)
+        .frame(width: Self.width(for: page), height: 44, alignment: .trailing)
+        .preferredColorScheme(state.colorScheme)
     }
 }
 
