@@ -86,11 +86,20 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
         }, unavailable.sorted())
     }
 
+    public static func reservesLauncherResult(_ file: URL, in folders: [String]) -> Bool {
+        guard folders.contains(where: { file.path.hasPrefix($0 == "/" ? "/" : $0 + "/") }) else { return false }
+        return file.pathExtension.lowercased() == "scpt" || hasScriptInterpreter(file)
+    }
+
     private static func supports(_ file: URL) -> Bool {
         let fileExtension = file.pathExtension.lowercased()
         let stem = file.deletingPathExtension().lastPathComponent.lowercased()
         guard fileExtension != "scpt", fileExtension != "template", !stem.hasSuffix(".template") else { return false }
-        if interpreters[fileExtension] != nil { return true }
+        return hasScriptInterpreter(file)
+    }
+
+    private static func hasScriptInterpreter(_ file: URL) -> Bool {
+        if interpreters[file.pathExtension.lowercased()] != nil { return true }
         return (file.pathExtension.isEmpty || FileManager.default.isExecutableFile(atPath: file.path))
             && shebang(file) != nil
     }

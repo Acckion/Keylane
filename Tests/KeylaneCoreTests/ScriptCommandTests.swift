@@ -56,6 +56,23 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertEqual(commands.map(\.title), ["My Command"])
     }
 
+    func testRootFileResultsDeferToScriptDiscoveryWithinConfiguredFolders() throws {
+        let compiled = try write("未命名.scpt", "compiled AppleScript fixture")
+        let plain = try write("helper.sh", "exit 0")
+        let declared = try write("command.sh", annotated("Command", "exit 0"))
+        let document = try write("readme.txt", "hello")
+        let neighboringScript = URL(fileURLWithPath: folder.path + "-other/helper.sh")
+        let roots = [folder.path]
+
+        for file in [compiled, plain, declared] {
+            XCTAssertTrue(ScriptCommand.reservesLauncherResult(file, in: roots))
+        }
+        for file in [document, neighboringScript] {
+            XCTAssertFalse(ScriptCommand.reservesLauncherResult(file, in: roots))
+        }
+        XCTAssertEqual(ScriptCommand.discover(in: roots).commands.map(\.url), [declared])
+    }
+
     func testOverlappingRootsPreserveExplicitHiddenDirectoryAndCanCancel() throws {
         let nested = folder.appendingPathComponent("nested", isDirectory: true)
         let hidden = nested.appendingPathComponent(".hidden", isDirectory: true)

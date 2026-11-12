@@ -247,6 +247,7 @@ enum ScriptCommandsModule {
         ] + actionCommands(controller), providers: [provider, cancellation, fallback], pages: [searchPage(model), page, create], settings: [settings],
         services: [.init(start: controller.start, stop: controller.stop)],
         searchUpdates: [
+            ViewObservation.changes(controller.$folders),
             ViewObservation.changes(controller.$entries),
             ViewObservation.changes(controller.$runningScript),
             ViewObservation.changes(controller.$enabled),

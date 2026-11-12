@@ -162,7 +162,10 @@ enum BuiltinLauncherModules {
             guard let model, input.page == .root, model.fileSearch.options.enabled,
                   model.fileSearch.options.searchFromLauncher,
                   !input.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
-            return model.fileResults.lazy.filter { $0.url.pathExtension.lowercased() != "app" }.prefix(10).map(fileEntry)
+            return model.fileResults.lazy.filter {
+                $0.url.pathExtension.lowercased() != "app" &&
+                    ($0.isDirectory || !ScriptCommand.reservesLauncherResult($0.url, in: model.scripts.folders))
+            }.prefix(10).map(fileEntry)
         }, resolve: { [weak model] id, _ in
             guard id.rawValue.hasPrefix("file:"), let model, model.fileSearch.options.enabled,
                   !model.fileSearch.isSearching else { return nil }
