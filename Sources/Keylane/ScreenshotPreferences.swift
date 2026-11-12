@@ -85,7 +85,7 @@ struct ScreenshotPreferences: View {
                 CommandSettingsEntry(title: command.title,
                     model: model, commandID: CommandID(rawValue: command.rawValue),
                     isEnabled: library.commandEnabledBinding(command)) {
-                        SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.settings("screenshots"))
+                        SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.command(.init(rawValue: command.rawValue), settingsPage: "screenshots"))
                     }
             }.disabled(!library.enabled)
         }

@@ -269,7 +269,7 @@ private struct AppleNotesList: View {
             ForEach(controller.results) { note in
                 ResultListButton(id: note.id, action: { controller.selectedID = note.id }) {
                     ResultListRow(selected: controller.selectedID == note.id) {
-                        Image(systemName: "note.text").foregroundStyle(.secondary)
+                        SettingsIcon(symbol: "note.text", artwork: ModuleArtwork.settings("keylane.apple-notes"))
                     } content: {
                         Text(note.title).font(VisualStyle.rowText).lineLimit(1)
                     }
