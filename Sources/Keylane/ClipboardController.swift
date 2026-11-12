@@ -74,8 +74,19 @@ final class ClipboardController: ObservableObject {
             updateCaptureTimer()
         }
     }
-    @Published var automaticOCR: Bool { didSet { preferences.set(automaticOCR, forKey: "clipboardAutomaticOCR") } }
-    @Published var accurateOCR: Bool { didSet { preferences.set(accurateOCR, forKey: "clipboardAccurateOCR") } }
+    @Published var automaticOCR: Bool {
+        didSet {
+            preferences.set(automaticOCR, forKey: "clipboardAutomaticOCR")
+            continueOCR()
+        }
+    }
+    @Published var accurateOCR: Bool {
+        didSet {
+            preferences.set(accurateOCR, forKey: "clipboardAccurateOCR")
+            ocrAttempts.removeAll()
+            requestOCRScan()
+        }
+    }
     @Published var historyCommandEnabled: Bool { didSet { preferences.set(historyCommandEnabled, forKey: "clipboardHistoryCommandEnabled") } }
     @Published var retentionDays: Int { didSet { preferences.set(retentionDays, forKey: "clipboardRetentionDays"); updateLimits() } }
     @Published var maxItems: Int { didSet { preferences.set(maxItems, forKey: "clipboardMaxItems"); updateLimits() } }
@@ -89,6 +100,7 @@ final class ClipboardController: ObservableObject {
     @Published private(set) var migrationBackupCount = 0
     @Published private(set) var loadingDetail = false
     @Published private(set) var searching = false
+    @Published private(set) var indexingImageText = false
     @Published private(set) var accessMessage = ""
     @Published var textDraft: ClipboardTextDraft?
     @Published var showsHistorySettings = false
@@ -121,7 +133,10 @@ final class ClipboardController: ObservableObject {
     private var detailRequest: ClipboardPreviewRequest?
     private var presentationActive: Bool
     private var lastMaintenance = Date()
-    private var recognizing: Set<String> = []
+    private var ocrNeedsScan = true
+    private var ocrRunning = false
+    private var ocrPending: ArraySlice<ClipboardOCRCandidate> = []
+    private var ocrAttempts: [String: Date] = [:]
     init(directory: URL? = nil, board: NSPasteboard = .general, preferences: UserDefaults = .standard, startTimer: Bool = true, presentationActive: Bool = true) {
         self.presentationActive = presentationActive
         self.board = board; self.preferences = preferences; lastChange = board.changeCount
@@ -225,6 +240,7 @@ final class ClipboardController: ObservableObject {
         }
         pendingReload = task
         worker.async(execute: task)
+        continueOCR()
     }
     func select(_ id: String?, force: Bool = false) {
         guard presentationActive else { return }
@@ -406,14 +422,26 @@ final class ClipboardController: ObservableObject {
         guard !items.isEmpty else { captureOutcome = "unsupported"; status = "此内容没有可保存的文字、图片或文件格式。"; return }
         captureOutcome = "saving"
         let name = source.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier:$0) }.map { FileManager.default.displayName(atPath:$0.path) } ?? front?.localizedName ?? "未知来源"
-        let bundle = source ?? front?.bundleIdentifier ?? ""; let ocr = automaticOCR
+        let bundle = source ?? front?.bundleIdentifier ?? ""
         let snapshotItems = items; let files = references
         worker.async { [weak self] in
             guard let self, let store = self.store else { return }
             do {
                 let (content,snapshot) = try ClipboardCapture.decode(snapshotItems,fileReferences:files)
-                let id = try store.capture(content,snapshot:snapshot,source:name,bundle:bundle)
-                DispatchQueue.main.async { self.capturedChanges += 1; self.captureOutcome = "captured"; self.status = ""; self.reload(); if ocr && content.kind == .image { self.recognize(id) } }
+                _ = try store.capture(content,snapshot:snapshot,source:name,bundle:bundle)
+                let mayContainImage: Bool
+                switch content {
+                case .image: mayContainImage = true
+                case .files(let files): mayContainImage = files.count == 1 && files.first.map(Self.isImageFile) == true
+                case .text: mayContainImage = false
+                }
+                DispatchQueue.main.async {
+                    self.capturedChanges += 1
+                    self.captureOutcome = "captured"
+                    self.status = ""
+                    if mayContainImage { self.ocrNeedsScan = true }
+                    self.reload()
+                }
             } catch { DispatchQueue.main.async { self.captureOutcome = "save-failed" }; self.report(error) }
         }
     }
@@ -434,7 +462,11 @@ final class ClipboardController: ObservableObject {
     }
 
     static func isImageFile(_ file: ClipFile) -> Bool {
-        UTType(filenameExtension: URL(fileURLWithPath: file.path).pathExtension)?.conforms(to: .image) == true
+        isImagePath(file.path)
+    }
+
+    private static func isImagePath(_ path: String) -> Bool {
+        UTType(filenameExtension: URL(fileURLWithPath: path).pathExtension)?.conforms(to: .image) == true
     }
 
     private static func imageRepresentation(_ detail: ClipDetail) -> ClipRepresentation? {
@@ -675,16 +707,15 @@ final class ClipboardController: ObservableObject {
         ocrWorker.async { [weak self] in
             guard let self else { return }
             let result = Result {
-                let files = self.files(for: detail)
-                return try withExtendedLifetime(files) {
-                    try mode.recognize(in: Self.imageRequest(for: detail, file: files.urls.first), accurate: accurate)
-                }
+                try self.recognizedText(from: detail, mode: mode, accurate: accurate)
             }
             DispatchQueue.main.async {
                 switch result {
                 case .success(let text) where !text.isEmpty:
-                    if mode == .ocr, detail.item.kind == .image {
-                        self.mutate { try $0.setOCR(id: detail.item.id, text: text) }
+                    if mode == .ocr {
+                        self.mutate { store in
+                            try store.setOCR(id: detail.item.id, text: text, fileCopiedAt: detail.item.copiedAt)
+                        }
                     }
                     guard self.board.changeCount == changeCount else {
                         completion(false, "剪贴板内容已变化，请重新执行复制。")
@@ -706,27 +737,84 @@ final class ClipboardController: ObservableObject {
         throw ClipboardError.missingAttachment
     }
 
-    func recognizeSelected() { if let id = selectedID { recognize(id) } }
-    private func recognize(_ id: String) {
-        guard recognizing.count < 5, recognizing.insert(id).inserted else { return }
-        let accurate = accurateOCR
-        status = "正在识别图片文字…"
-        worker.async { [weak self] in
-            guard let self else { return }
-            do {
-                guard let detail = try self.store?.detail(id: id), detail.item.kind == .image else { DispatchQueue.main.async { self.recognizing.remove(id); self.status = "图片记录已删除。" }; return }
-                self.ocrWorker.async {
-                    defer { DispatchQueue.main.async { self.recognizing.remove(id) } }
-                    do {
-                        let text = try ClipboardImageText.ocr.recognize(
-                            in: Self.imageRequest(for: detail, file: detail.assetURL), accurate: accurate)
-                        self.mutate { try $0.setOCR(id: id, text: text) }
-                        DispatchQueue.main.async { self.status = text.isEmpty ? "未识别到文字" : "图片文字已加入搜索"; if self.selectedID == id { self.select(id,force:true) } }
-                    } catch { self.report(error) }
-                }
-            } catch { DispatchQueue.main.async { self.recognizing.remove(id) }; self.report(error) }
+    private func recognizedText(from detail: ClipDetail, mode: ClipboardImageText, accurate: Bool) throws -> String {
+        let files = files(for: detail)
+        return try withExtendedLifetime(files) {
+            try mode.recognize(in: Self.imageRequest(for: detail, file: files.urls.first), accurate: accurate)
         }
     }
+
+    private func requestOCRScan() {
+        ocrNeedsScan = true
+        continueOCR()
+    }
+
+    private func continueOCR() {
+        let searchingImages = presentationActive && ["all", "image", "files"].contains(kind)
+            && !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasWork = ocrRunning || ocrNeedsScan || !ocrPending.isEmpty
+        let showProgress = searchingImages && hasWork
+        if indexingImageText != showProgress { indexingImageText = showProgress }
+        guard automaticOCR || searchingImages, !ocrRunning, hasWork else { return }
+        ocrRunning = true
+        if ocrNeedsScan {
+            ocrNeedsScan = false
+            worker.async { [weak self] in
+                guard let self else { return }
+                let result = Result {
+                    try (self.store?.pendingOCR() ?? []).filter { $0.filePath.map(Self.isImagePath) ?? true }
+                }
+                DispatchQueue.main.async {
+                    self.ocrRunning = false
+                    switch result {
+                    case .success(let candidates):
+                        let remaining = Set(candidates.map(\.id))
+                        self.ocrAttempts = self.ocrAttempts.filter { remaining.contains($0.key) }
+                        self.ocrPending = candidates.filter { candidate in
+                            self.ocrAttempts[candidate.id] != candidate.copiedAt
+                        }[...]
+                    case .failure(let error):
+                        self.ocrPending = []
+                        self.status = error.localizedDescription
+                    }
+                    self.continueOCR()
+                }
+            }
+        } else {
+            let batch = Array(ocrPending.prefix(3))
+            ocrPending = ocrPending.dropFirst(batch.count)
+            let accurate = accurateOCR
+            ocrWorker.async { [weak self] in
+                guard let self else { return }
+                var updated = false
+                for candidate in batch {
+                    let indexed = autoreleasepool { self.indexImageText(candidate, accurate: accurate) }
+                    updated = updated || indexed
+                }
+                let needsReload = updated
+                DispatchQueue.main.async {
+                    for candidate in batch { self.ocrAttempts[candidate.id] = candidate.copiedAt }
+                    self.ocrRunning = false
+                    if needsReload && self.presentationActive { self.reload() }
+                    else { self.continueOCR() }
+                }
+            }
+        }
+    }
+
+    /// Vision stays off the storage queue. Only the bounded read and write run on that queue.
+    private func indexImageText(_ candidate: ClipboardOCRCandidate, accurate: Bool) -> Bool {
+        do {
+            guard let detail = try worker.sync(execute: { try store?.detail(id: candidate.id) }),
+                  !detail.item.hasOCR, detail.item.copiedAt == candidate.copiedAt else { return false }
+            let text = try recognizedText(from: detail, mode: .ocr, accurate: accurate)
+            guard !text.isEmpty else { return false }
+            return try worker.sync {
+                try store?.setOCR(id: candidate.id, text: text, fileCopiedAt: candidate.copiedAt) ?? false
+            }
+        } catch { return false }
+    }
+
     func addExcludedApplication() {
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.applicationBundle]; panel.allowsMultipleSelection = true
         if panel.runModal() == .OK { for url in panel.urls { if let id = Bundle(url: url)?.bundleIdentifier { excludedApps.insert(id) } } }

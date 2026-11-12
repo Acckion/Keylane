@@ -74,9 +74,8 @@ fallbackController.loadListThumbnail(for:image) { fallbackImage = $0 }
 wait("list thumbnail snapshot fallback") { fallbackImage != nil }
 try FileManager.default.moveItem(at:movedAsset,to:imageAsset)
 
-controller.recognizeSelected()
-wait("Vision OCR") { controller.detail?.ocrText.contains("KEYLANE") == true }
-controller.search("OCR 123"); wait("OCR search") { controller.items.count == 1 && controller.items.first?.id == image.id }
+controller.search("OCR 123")
+wait("Vision OCR") { controller.items.map(\.id) == [image.id] && controller.detail?.ocrText.contains("KEYLANE") == true }
 precondition(controller.copySelected()); precondition(board.data(forType: .png) == png)
 controller.search(""); wait("reset") { controller.items.count == 3 }
 let textItem = controller.items.first { $0.kind == .text }!
@@ -254,4 +253,47 @@ automatic.copyImageText(.qr, from: qrDetail) { copied, message in
 wait("copy QR payload") { copiedQR }
 precondition(automaticBoard.string(forType: .string) == "https://example.com/clipboard-fixture")
 
-print("PASS named pasteboard: six categories, saved text edit and exact replay, OCR from image files, QR decoding, color conversion, rich text/image/file replay, sensitive filtering, persistence and cleanup")
+// Historical raw images and Finder image copies must be searchable without a manual OCR action.
+let searchRoot = root.appendingPathComponent("ocr-search")
+let searchStore = try ClipboardStore(directory: searchRoot)
+let searchBitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 900, pixelsHigh: 175,
+                                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: searchBitmap)
+NSColor.white.setFill()
+NSRect(x: 0, y: 0, width: 900, height: 175).fill()
+("剪贴板文字测试" as NSString).draw(at: NSPoint(x: 40, y: 50), withAttributes: [
+    .font: NSFont(name: "PingFangSC-Semibold", size: 52) ?? NSFont.systemFont(ofSize: 52),
+    .foregroundColor: NSColor.black
+])
+NSGraphicsContext.restoreGraphicsState()
+let searchPNG = searchBitmap.representation(using: .png, properties: [:])!
+let searchImageFile = root.appendingPathComponent("legacy-image.png")
+try searchPNG.write(to: searchImageFile)
+let rawID = try searchStore.capture(.image(searchPNG))
+let imageFileID = try searchStore.capture(.files([.init(path: searchImageFile.path)]))
+precondition(try! searchStore.list(query: "剪贴板文字测试").isEmpty)
+let searchSuite = suite + ".ocr-search"
+let searchPrefs = UserDefaults(suiteName: searchSuite)!
+let searchBoard = NSPasteboard(name: .init(searchSuite))
+let imageSearch = ClipboardController(directory: searchRoot, board: searchBoard, preferences: searchPrefs, startTimer: false)
+defer { searchBoard.releaseGlobally(); searchPrefs.removePersistentDomain(forName: searchSuite) }
+precondition(!imageSearch.automaticOCR)
+imageSearch.search("剪贴板文字测试")
+wait("Vision OCR") { Set(imageSearch.items.map(\.id)) == Set([rawID, imageFileID]) && !imageSearch.indexingImageText }
+imageSearch.kind = "files"
+wait("OCR file filter") { imageSearch.items.map(\.id) == [imageFileID] }
+imageSearch.endPresentation()
+precondition(try! searchStore.list(query: "剪贴板文字测试", category: .image).map(\.id) == [rawID])
+
+let newImageFile = root.appendingPathComponent("background-image.png")
+try searchPNG.write(to: newImageFile)
+imageSearch.automaticOCR = true
+imageSearch.captureEnabled = true
+searchBoard.clearContents()
+precondition(searchBoard.writeObjects([newImageFile as NSURL]))
+imageSearch.poll()
+wait("Vision OCR") { (try? searchStore.list(query: "剪贴板文字测试", category: .files).count) == 2 }
+
+print("PASS named pasteboard: direct Chinese OCR search over historical images and Finder image files, background OCR of a new Finder image with the page closed, six categories, saved text edit and exact replay, QR decoding, color conversion, rich text/image/file replay, sensitive filtering, persistence and cleanup")

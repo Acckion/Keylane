@@ -5,6 +5,33 @@ import SQLite3
 final class ClipboardTests: XCTestCase {
     private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneClipboardTest-" + UUID().uuidString) }
 
+    func testImageFileOCRSearchPreservesPathsAndInvalidatesStaleResults() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let file = ClipFile(path: "/fixtures/clipboard-photo.png")
+        let first = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+        let next = first.addingTimeInterval(1)
+        let id = try store.capture(.files([file]), at: first)
+        let multiple = try store.capture(.files([file, .init(path: "/fixtures/other.png")]), at: first)
+        XCTAssertEqual(try store.pendingOCR().map(\.id), [id])
+        XCTAssertEqual(try store.pendingOCR().first?.filePath, file.path)
+        XCTAssertFalse(try store.setOCR(id: multiple, text: "不应加入索引", fileCopiedAt: first))
+        XCTAssertTrue(try store.setOCR(id: id, text: "图 片\n文字", fileCopiedAt: first))
+        XCTAssertEqual(try store.list(query: "图片文字", category: .files).map(\.id), [id])
+        XCTAssertTrue(try store.list(query: "图片文字", category: .image).isEmpty)
+        XCTAssertTrue(try store.pendingOCR().isEmpty)
+        try store.rename(id: id, to: "自定义名称")
+        XCTAssertEqual(try store.list(query: "clipboard-photo 图片文字").map(\.id), [id])
+
+        XCTAssertEqual(try store.capture(.files([file]), at: next), id)
+        XCTAssertFalse(try store.setOCR(id: id, text: "旧图片正文", fileCopiedAt: first))
+        XCTAssertTrue(try store.list(query: "图片文字").isEmpty)
+        XCTAssertEqual(try store.pendingOCR().map(\.id), [id])
+        XCTAssertTrue(try store.setOCR(id: id, text: "新版图片正文", fileCopiedAt: next))
+        XCTAssertEqual(try store.list(query: "新版图片正文").map(\.id), [id])
+    }
+
     func testLinkMetadataKeepsOriginalURLAndCopyDatesAfterRename() throws {
         let directory = directory()
         defer { try? FileManager.default.removeItem(at: directory) }

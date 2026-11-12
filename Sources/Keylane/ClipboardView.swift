@@ -92,14 +92,16 @@ private struct ClipboardHistoryList: View {
         self.query = query
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(controller.$items),
-            ViewObservation.changes(controller.$selectedID)
+            ViewObservation.changes(controller.$selectedID),
+            ViewObservation.changes(controller.$indexingImageText)
         ]))
     }
 
     var body: some View {
         SelectableResultList(selection: controller.selectedID, query: query, firstResult: controller.items.first?.id) {
             if controller.items.isEmpty {
-                Text("没有匹配记录").font(VisualStyle.sectionText).foregroundStyle(.secondary)
+                Text(controller.indexingImageText ? "正在搜索图片文字…" : "没有匹配记录")
+                    .font(VisualStyle.sectionText).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.top, 80)
             }
             ForEach(controller.items) { item in
@@ -126,6 +128,7 @@ private struct ClipboardHistoryDetail: View {
             controller.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             ViewObservation.changes(controller.$thumbnail),
             ViewObservation.changes(controller.$items.map(\.isEmpty)),
+            ViewObservation.changes(controller.$indexingImageText),
             ViewObservation.changes(controller.$captureEnabled),
             ViewObservation.changes(controller.$status),
             ViewObservation.changes(controller.$accessMessage)
@@ -140,9 +143,13 @@ private struct ClipboardHistoryDetail: View {
         } else {
             VStack(spacing: 10) {
                 Spacer()
-                ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
-                Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
-                    .buttonStyle(ContentActionButtonStyle())
+                if controller.indexingImageText {
+                    ProgressView("正在识别历史图片中的文字…").controlSize(.small)
+                } else {
+                    ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
+                    Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
+                        .buttonStyle(ContentActionButtonStyle())
+                }
                 Spacer()
                 if !controller.accessMessage.isEmpty {
                     Text(controller.accessMessage).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
@@ -191,14 +198,14 @@ struct ClipboardPreferences: View {
             }.settingsAnchor(.clipboardRetention)
             SettingsGroup {
                 Toggle(isOn: binding(\.automaticOCR)) {
-                    SettingsRowLabel(title: "文字识别", detail: "自动提取图片中的文字，以便搜索。")
+                    SettingsRowLabel(title: "文字识别", detail: "在后台识别图片文字。搜索时也会按需识别尚未处理的历史图片。")
                 }
                 Divider()
                 SettingsPicker("识别模式", detail: "快速模式处理更快，准确模式会使用更多 CPU 资源。",
                                selection: binding(\.accurateOCR)) {
                     Text("快速").tag(false)
                     Text("准确").tag(true)
-                }.disabled(!controller.automaticOCR)
+                }
             }.settingsAnchor(.clipboardRecognition)
             SettingsGroup {
                 SettingsRow {
