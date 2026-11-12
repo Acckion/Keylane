@@ -1,9 +1,11 @@
 import AppKit
 import KeylaneCore
+import UniformTypeIdentifiers
 
 final class ApplicationResultActions {
     private let workspace = NSWorkspace.shared
     private var restarting = Set<String>()
+    private var uninstalling = Set<String>()
 
     func actions(for entry: Entry, model: Model) -> [LauncherAction] {
         let url = URL(fileURLWithPath: entry.id)
@@ -49,8 +51,10 @@ final class ApplicationResultActions {
             .init(id: "force-quit-app", title: "强制退出应用", icon: "xmark.octagon", group: 4, enabled: running) {
                 self.forceQuit(at: path, name: entry.name)
             },
-            // TODO: Add opt-in, per-application inactivity tracking and automatic quit rules.
-            .init(id: "auto-quit-app", title: "自动退出（待实现）", icon: "app.badge.clock", group: 4, enabled: false),
+            .init(id: "auto-quit-app", title: "配置自动退出…", icon: "app.badge.clock", group: 4,
+                  enabled: model.applicationAutoQuit.canConfigure(url)) { [weak model] in
+                model?.openApplicationCommandSettings(path: entry.id)
+            },
             .init(id: "restart-app", title: "重启应用", icon: "arrow.clockwise", group: 4, enabled: running) { [weak model] in
                 guard let model else { return }
                 self.restart(url, path: path, model: model)
@@ -59,9 +63,88 @@ final class ApplicationResultActions {
                 model?.setApplicationEnabled(false, path: entry.id)
                 self.feedback("已隐藏「\(entry.name)」。可在应用程序设置中重新启用。", style: .success)
             },
-            // TODO: Confirm the selected bundle and move it to the Trash using NSWorkspace.
-            .init(id: "uninstall-app", title: "卸载应用（待实现）", icon: "trash", group: 4, enabled: false, destructive: true)
+            .init(id: "uninstall-app", title: "卸载应用…", icon: "trash", group: 4,
+                  enabled: uninstallCandidate(url) != nil, destructive: true) { [weak model] in
+                guard let model else { return }
+                self.uninstall(url, model: model)
+            }
         ]
+    }
+
+    func chooseApplicationToUninstall(model: Model) {
+        (NSApp.delegate as? Delegate)?.hideLauncher()
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.title = "选择要卸载的应用"
+        panel.prompt = "继续"
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.resolvesAliases = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        uninstall(url, model: model)
+    }
+
+    func uninstall(_ url: URL, model: Model) {
+        guard let candidate = uninstallCandidate(url) else {
+            feedback("无法卸载所选项目。请选择仍存在且可移除的应用。")
+            return
+        }
+        guard uninstalling.insert(candidate.url.path).inserted else { return }
+
+        (NSApp.delegate as? Delegate)?.hideLauncher()
+        NSApp.activate(ignoringOtherApps: true)
+        let name = model.appName(candidate.url)
+        let alert = NSAlert()
+        alert.messageText = "卸载「\(name)」？"
+        alert.informativeText = "将应用程序移到废纸篓。应用的文档、设置和其他支持文件会保留。\n\n\(candidate.url.path)"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true
+        guard alert.runModal() == .alertSecondButtonReturn else {
+            uninstalling.remove(candidate.url.path)
+            return
+        }
+        guard instances(at: candidate.url.path).isEmpty else {
+            uninstalling.remove(candidate.url.path)
+            feedback("请先退出「\(name)」，然后重新卸载。")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcome = Result {
+                guard let current = self.uninstallCandidate(url),
+                      current.url == candidate.url, current.identity == candidate.identity else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+                try FileManager.default.trashItem(at: candidate.url, resultingItemURL: nil)
+            }
+            DispatchQueue.main.async { [weak model] in
+                self.uninstalling.remove(candidate.url.path)
+                switch outcome {
+                case .success:
+                    model?.applicationAutoQuit.removeRule(at: candidate.url.path)
+                    model?.discovery.refresh()
+                    self.feedback("已将「\(name)」移到废纸篓。", style: .success)
+                case .failure(let error):
+                    self.feedback("无法卸载「\(name)」：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func uninstallCandidate(_ url: URL) -> (url: URL, identity: NSObject)? {
+        guard url.isFileURL, url.pathExtension.lowercased() == "app",
+              let original = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]), original.isSymbolicLink == false else { return nil }
+        let target = URL(fileURLWithPath: url.path).resolvingSymlinksInPath()
+        guard !target.path.hasPrefix("/System/"),
+              !target.deletingLastPathComponent().pathComponents.contains(where: { $0.lowercased().hasSuffix(".app") }),
+              let identifier = Bundle(url: target)?.bundleIdentifier,
+              identifier != Bundle.main.bundleIdentifier,
+              let values = try? target.resourceValues(forKeys: [.isApplicationKey, .fileResourceIdentifierKey]),
+              values.isApplication == true, let identity = values.fileResourceIdentifier as? NSObject else { return nil }
+        return (target, identity)
     }
 
     private func reveal(_ url: URL) {
