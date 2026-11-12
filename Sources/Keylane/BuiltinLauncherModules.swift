@@ -47,7 +47,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func host(_ model: Model) -> LauncherModule {
-        let category = ShortcutSettingsCategory()
+        let category = ShortcutSettingsControls()
         return .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general"),
@@ -63,7 +63,7 @@ enum BuiltinLauncherModules {
                              KeyboardPreferences(model: $0)
                          },
                          settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7, trailingToolbar: { [weak model] in
-                             AnyView(ShortcutSettingsCategoryFilter(groups: model?.launcherModules?.shortcutCommandGroups ?? [],
+                             AnyView(ShortcutSettingsToolbar(groups: model?.launcherModules?.shortcutCommandGroups ?? [],
                                                                     navigation: model?.navigation ?? "arrows", selection: category))
                          }) {
                              ShortcutSettingsPreferences(model: $0, selection: category)

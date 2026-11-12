@@ -30,14 +30,56 @@ extension DynamicCommandSettings {
     }
 }
 
-final class ShortcutSettingsCategory: ObservableObject {
+final class ShortcutSettingsControls: ObservableObject {
     @Published var category: String?
+    @Published var query = ""
+    @Published var searchPresented = false
+
+    func dismissSearch() {
+        query = ""
+        searchPresented = false
+    }
+}
+
+struct ShortcutSettingsToolbar: View {
+    let groups: [ShortcutCommandGroup]
+    let navigation: String
+    @ObservedObject var selection: ShortcutSettingsControls
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if selection.searchPresented {
+                SettingsSearchField(text: $selection.query, placeholder: "搜索快捷键…", floating: true,
+                                    autofocus: true, endEditing: {
+                                        if selection.query.isEmpty { selection.searchPresented = false }
+                                    }, cancel: selection.dismissSearch)
+                    .padding(.horizontal, 9)
+                    .frame(width: 158, height: 36)
+                    .glassEffect(.regular, in: Capsule())
+            } else {
+                Button { selection.searchPresented = true } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(width: 36, height: 36)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: Circle())
+                .accessibilityLabel("搜索快捷键")
+                .help("搜索快捷键")
+            }
+            ShortcutSettingsCategoryFilter(groups: groups, navigation: navigation, selection: selection)
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: selection.searchPresented)
+        .onDisappear(perform: selection.dismissSearch)
+    }
 }
 
 struct ShortcutSettingsCategoryFilter: View {
     let groups: [ShortcutCommandGroup]
     let navigation: String
-    @ObservedObject var selection: ShortcutSettingsCategory
+    @ObservedObject var selection: ShortcutSettingsControls
     @AppStorage("hiddenShortcutSettingsGroups") private var hiddenGroupIDs = ""
     @State private var categoryFilterOpen = false
     @State private var categoryQuery = ""
@@ -94,12 +136,10 @@ struct ShortcutSettingsPreferences: View {
     @StateObject private var observation: ViewObservation
     @AppStorage("hiddenShortcutSettingsGroups") private var hiddenGroupIDs = ""
     @State private var expanded: Set<String> = ["keylane.system-tools"]
-    @ObservedObject var selection: ShortcutSettingsCategory
-    @State private var query = ""
-    @State private var searchPresented = false
+    @ObservedObject var selection: ShortcutSettingsControls
     @State private var collapsedWhileSearching: Set<String> = []
 
-    init(model: Model, selection: ShortcutSettingsCategory) {
+    init(model: Model, selection: ShortcutSettingsControls) {
         self.model = model
         self.selection = selection
         _observation = StateObject(wrappedValue: ViewObservation([
@@ -111,7 +151,7 @@ struct ShortcutSettingsPreferences: View {
 
     private var groups: [ShortcutCommandGroup] { model.launcherModules?.shortcutCommandGroups ?? [] }
     private var hiddenGroups: Set<String> { Set(hiddenGroupIDs.split(separator: "\n").map(String.init)) }
-    private var search: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var search: String { selection.query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
         let searchTerm = search
@@ -124,7 +164,7 @@ struct ShortcutSettingsPreferences: View {
             guard searchTerm.isEmpty || content != nil else { return nil }
             return VisibleGroup(group: group, isExpanded: isExpanded, content: content)
         }
-        let sections = SettingsPageSections {
+        return SettingsPageSections {
             ForEach(visibleGroups, id: \.group.id) { visible in
                 groupCard(visible)
             }
@@ -134,21 +174,11 @@ struct ShortcutSettingsPreferences: View {
                 ContentUnavailableView.search(text: searchTerm)
             }
         }
-        return Group {
-            if searchPresented {
-                sections.searchable(text: $query, isPresented: $searchPresented,
-                                    placement: .toolbar, prompt: "搜索快捷键…")
-            } else {
-                sections
-            }
-        }
-        .toolbar {
-            if !searchPresented {
-                ToolbarItem(placement: .automatic) {
-                    Button("搜索快捷键", systemImage: "magnifyingglass") { searchPresented = true }
-                        .keyboardShortcut("f", modifiers: .command)
-                }
-            }
+        .background {
+            Button("搜索快捷键") { selection.searchPresented = true }
+                .keyboardShortcut("f", modifiers: .command)
+                .hidden()
+                .accessibilityHidden(true)
         }
         .settingsAnchor(.hotkeys)
         .onAppear { if let id = selection.category { expanded.insert(id) } }
