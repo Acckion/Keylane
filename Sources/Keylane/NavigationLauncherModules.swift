@@ -82,6 +82,7 @@ enum NavigationLauncherModules {
                                           : NavigationText.label("搜索菜单项…", "Search Menu Items…")
         var page = LauncherPage(id: id, placeholder: placeholder, badge: (mode.title, mode.symbol))
         page.contentPlacement = .underChrome
+        page.loading = controller.$status.map { $0 == .loading }.removeDuplicates().eraseToAnyPublisher()
         page.maximumActionWidth = 258
         page.content = { [weak model] in
             AnyView(NavigationPage(controller: controller, mode: mode, requestAccess: { [weak model] in
@@ -228,6 +229,8 @@ enum NavigationLauncherModules {
         page.contentPlacement = .underChrome
         page.maximumActionWidth = 258
         page.releasePreview = { FilePreview.shared.dismiss() }
+        page.loading = library.$scanning.combineLatest(library.$searchingText)
+            .map { scanning, searchingText in scanning || searchingText }.removeDuplicates().eraseToAnyPublisher()
         page.content = { [weak model] in
             AnyView(ScreenshotLibraryPage(library: library, query: model?.query ?? "", chooseFolders: chooseFolders))
         }
