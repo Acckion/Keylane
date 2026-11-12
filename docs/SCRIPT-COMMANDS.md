@@ -8,7 +8,7 @@
 
 「创建脚本命令」打开启动器内的表单。选择模板、运行模式，填写标题和所需元数据，再按 ⌘↩ 或点「创建脚本」选择保存位置。已有文件会保留。保存后在访达显示脚本。保存位置在搜索范围内时会刷新结果，其他位置可从设置手动添加。
 
-内置模板包括 Shell（Bash、Zsh、sh）、AppleScript、Swift、Python、JavaScript、TypeScript、Go、Ruby、C#（.NET 10）、PHP 和 PowerShell。TypeScript 模板使用支持类型擦除的 Node.js，Go 使用 `go run`，C# 需要 .NET 10 SDK 或更新版本。脚本也可通过 shebang 指定本机解释器。
+内置模板包括 Shell（Bash、Zsh、sh）、AppleScript、Swift、Python、JavaScript、TypeScript、Go、Ruby、C#（.NET 10）、PHP 和 PowerShell。TypeScript 模板使用支持类型擦除的 Node.js，Go 使用 `go build` 生成临时可执行文件，C# 需要 .NET 10 SDK 或更新版本。脚本也可通过 shebang 指定本机解释器。
 
 ## 导入与运行
 

@@ -136,28 +136,40 @@ public struct ScriptCommand: Identifiable, Equatable, Sendable {
         return (String(interpreter), parts.dropFirst().map(String.init))
     }
 
-    fileprivate func invocation(arguments: [String]) throws -> (URL, [String]) {
+    fileprivate func invocation(arguments: [String]) throws -> (executable: URL, arguments: [String], cleanup: URL?) {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
         guard let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true,
               values.isSymbolicLink != true, url.resolvingSymlinksInPath().path == url.path else {
             throw CocoaError(.fileReadNoSuchFile, userInfo: [NSFilePathErrorKey: url.path])
         }
         if let (interpreter, options) = Self.shebang(url) {
-            if FileManager.default.isExecutableFile(atPath: url.path) { return (url, arguments) }
-            return (URL(fileURLWithPath: interpreter), options + [url.path] + arguments)
+            if FileManager.default.isExecutableFile(atPath: url.path) { return (url, arguments, nil) }
+            return (URL(fileURLWithPath: interpreter), options + [url.path] + arguments, nil)
         }
         guard let interpreter = Self.interpreters[url.pathExtension.lowercased()] else {
             throw CocoaError(.fileReadUnsupportedScheme, userInfo: [NSFilePathErrorKey: url.path])
         }
-        let options: [String]
-        switch interpreter {
-        case "go": options = ["run"]
-        case "dotnet": options = ["--"]
-        default: options = []
+        if interpreter == "go" {
+            let temporaryDirectory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("keylane-go-" + UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: temporaryDirectory, withIntermediateDirectories: false,
+                                                    attributes: [.posixPermissions: 0o700])
+            let binary = temporaryDirectory.appendingPathComponent("command").path
+            // Go treats consecutive .go arguments to "go run" as source files.
+            // Build first, then replace the shell with the program using the original argv.
+            let buildAndRun = """
+                go build -o "$1" "$2" || exit $?
+                binary=$1
+                shift 2
+                exec "$binary" "$@"
+                """
+            return (URL(fileURLWithPath: "/bin/sh"),
+                    ["-c", buildAndRun, "keylane-go", binary, url.path] + arguments, temporaryDirectory)
         }
+        let options = interpreter == "dotnet" ? ["--"] : []
         let args = options + [url.path] + arguments
-        if interpreter.hasPrefix("/") { return (URL(fileURLWithPath: interpreter), args) }
-        return (URL(fileURLWithPath: "/usr/bin/env"), [interpreter] + args)
+        if interpreter.hasPrefix("/") { return (URL(fileURLWithPath: interpreter), args, nil) }
+        return (URL(fileURLWithPath: "/usr/bin/env"), [interpreter] + args, nil)
     }
 }
 
@@ -177,7 +189,10 @@ public enum ScriptRunner {
     public static func run(_ script: ScriptCommand, arguments: [String], directory: URL,
                            timeout: TimeInterval, isCancelled: () -> Bool, onOutput: ((String) -> Void)? = nil) throws -> Result {
         if isCancelled() { return .init(status: .cancelled, output: "", standardOutput: "", truncated: false) }
-        let (executable, argv) = try script.invocation(arguments: arguments)
+        let (executable, argv, cleanup) = try script.invocation(arguments: arguments)
+        defer {
+            if let cleanup { try? FileManager.default.removeItem(at: cleanup) }
+        }
         let process = Process()
         let stdout = Pipe()
         // A shared pipe preserves the child's write order. Inline mode alone needs
