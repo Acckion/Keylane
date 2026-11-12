@@ -120,21 +120,24 @@ final class FileSearchController: ObservableObject {
             if let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope,.withoutUI], bookmarkDataIsStale: &stale), url.startAccessingSecurityScopedResource() { activeURLs.append(url) }
         }
     }
-    var hasAuthorizedScope: Bool { !authorizedRoots.isEmpty }
+    var hasAuthorizedScope: Bool {
+        authorizedRoots.contains { path in
+            var directory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &directory)
+                && directory.boolValue && FileManager.default.isReadableFile(atPath: path)
+        }
+    }
 
     private var authorizedRoots: [String] {
-        options.roots.filter { path in
-            var directory: ObjCBool = false
-            return (selectedScopePaths.contains(path) || grants[path] != nil)
-                && FileManager.default.fileExists(atPath: path, isDirectory: &directory) && directory.boolValue
-                && FileManager.default.isReadableFile(atPath: path)
-        }
+        // Authorization survives a disconnected volume. The scanner applies
+        // keepRemovedVolumes when a configured root is temporarily missing.
+        options.roots.filter { selectedScopePaths.contains($0) || grants[$0] != nil }
     }
 
     func applyPermissionEnabled(_ enabled: Bool) {
         var updated = options
-        if enabled { updated.roots = authorizedRoots }
-        updated.enabled = enabled && !updated.roots.isEmpty
+        updated.enabled = enabled && hasAuthorizedScope
+        if updated.enabled { updated.roots = authorizedRoots }
         if updated != options { options = updated }
     }
 
