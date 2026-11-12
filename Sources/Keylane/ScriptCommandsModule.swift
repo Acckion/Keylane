@@ -361,7 +361,7 @@ private struct ScriptCommandsPreferences: View {
                     title: action.title, model: model, commandID: action.id,
                     isEnabled: controller.commandEnabledBinding(action.rawValue),
                     perform: { model.runCommand(action.id, origin: .menu) },
-                    icon: { Image(systemName: action.icon).foregroundStyle(.secondary) }
+                    icon: { SettingsIcon(symbol: action.icon, artwork: ModuleArtwork.settings("script-commands")) }
                 )
             }
             .disabled(!controller.enabled)
@@ -402,7 +402,7 @@ private extension ScriptCommand {
             title: title, model: model, commandID: commandID,
             isEnabled: controller.commandEnabledBinding(id),
             perform: { model.runCommand(commandID, origin: .menu) },
-            icon: { Image(systemName: "terminal").foregroundStyle(.secondary) }
+            icon: { ScriptArtwork(script: self).frame(width: 24, height: 24) }
         )
     }
 }

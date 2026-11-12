@@ -579,7 +579,8 @@ struct Launcher: View {
                 .transition(.opacity)
             } else if application && secondary {
                 NativeHoverButton(title: "打开\(menuTitle)", action: { toggleMenu(application: true) }) {
-                    SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol)
+                    SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol,
+                                       artwork: model.launcherModules?.module(forPage: model.pageID).flatMap(ModuleArtwork.module))
                 }.frame(width: applicationWidth, height: 36).transition(.opacity)
             } else if application {
                 NativeHoverButton(title: "Keylane 菜单", action: { toggleMenu(application: true) }) {

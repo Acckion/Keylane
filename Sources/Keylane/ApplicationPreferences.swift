@@ -102,7 +102,10 @@ struct ApplicationPreferences: View {
                                          else { model.disabledCommands.insert(id) }
                                      }),
                                      perform: { model.runCommand(commandID, origin: .menu) },
-                                     icon: { Image(systemName: manage ? "app.badge.clock" : "trash") })
+                                     icon: {
+                                         SettingsIcon(symbol: manage ? "app.badge.clock" : "trash",
+                                                      artwork: ModuleArtwork.command(commandID))
+                                     })
             }.disabled(!model.applicationsEnabled)
             HStack {
                 Text("应用程序").font(.system(size: 15, weight: .medium))
