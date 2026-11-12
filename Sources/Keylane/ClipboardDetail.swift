@@ -21,7 +21,8 @@ struct ClipboardDetail: View {
 
     var body: some View {
         ResultDetailPane(scrollsPreview: detail.item.kind == .text && detail.item.color == nil && detail.item.webURL == nil,
-                         previewAspectRatio: previewAspectRatio) { height in
+                         previewAspectRatio: previewAspectRatio,
+                         showsPreviewDivider: detail.item.webURL == nil) { height in
             preview(height: height)
         } information: {
             if let url = detail.item.webURL {

@@ -6,6 +6,7 @@ import QuickLookUI
 struct ResultDetailPane<Preview: View, Information: View>: View {
     var scrollsPreview = true
     var previewAspectRatio: CGFloat? = nil
+    var showsPreviewDivider = true
     @ViewBuilder let preview: (CGFloat) -> Preview
     @ViewBuilder let information: () -> Information
 
@@ -23,8 +24,8 @@ struct ResultDetailPane<Preview: View, Information: View>: View {
                 } else {
                     previewRegion(height: previewHeight)
                         .frame(height: previewHeight + VisualStyle.launcherTopInset)
-                    Divider()
                 }
+                if showsPreviewDivider { Divider() }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18, content: information)
                         .frame(maxWidth: .infinity, alignment: .leading)
