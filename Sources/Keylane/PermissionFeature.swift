@@ -23,7 +23,7 @@ final class PermissionFeature {
     }
 
     @Published private(set) var enabled: Bool
-    @Published private var status = SettingsPermissionStatus()
+    @Published private(set) var status = SettingsPermissionStatus()
     private let authorization: Authorization
     private let defaults: UserDefaults
     private let key: String
@@ -46,6 +46,9 @@ final class PermissionFeature {
         $enabled.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
     }
     var settingsStatus: AnyPublisher<SettingsPermissionStatus, Never> { $status.removeDuplicates().eraseToAnyPublisher() }
+    var settingsUpdates: AnyPublisher<Void, Never> {
+        updates.merge(with: settingsStatus.dropFirst().map { _ in () }).eraseToAnyPublisher()
+    }
     var guidance: String { authorization.guidance }
     var requesting: Bool { status.requesting }
     var canOpenPrivacySettings: Bool { authorization.privacyPane != nil }

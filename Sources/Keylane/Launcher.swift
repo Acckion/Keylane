@@ -161,9 +161,7 @@ struct Launcher: View {
             if let optionSubmit = page?.optionSubmit {
                 Button("") { closeMenus(); optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
             }
-            if model.pageID == PageID(rawValue: "Clipboard") {
-                clipboardMenuShortcuts
-            }
+            pageMenuShortcuts
             ForEach(0..<min(10, results.count), id: \.self) { index in
                 Button("") { activateResult(results[index].commandID) }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
             }
@@ -521,11 +519,19 @@ struct Launcher: View {
         let secondary = page?.badge != nil
         let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
         let badgeSymbol = page?.badge?.symbol ?? ""
+        let menuTitle = page?.badgeActions == nil ? "Keylane 菜单" : "\(badgeTitle)菜单"
         let feedback = application ? model.footerFeedback.current : nil
         let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
             ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty
-        let actionWidth: CGFloat = page?.actionWidth ?? (showsActions ? 196 : 126)
+        let primaryLabel = LauncherFooterButtonLabel(title: primaryTitle,
+            keys: page?.contentPlacement == .form && page?.shortcutSubmit != nil ? ["⌘", "↩"] : ["↩"])
+        let actionsLabel = LauncherFooterButtonLabel(title: "操作", keys: ["⌘", "K"])
+        let actionsWidth = showsActions ? actionsLabel.width : 0
+        let capsuleInset: CGFloat = 4
+        let maximumActionWidth: CGFloat = page?.maximumActionWidth ?? (showsActions ? 196 : 126)
+        let primaryWidth = min(primaryLabel.width, max(0, maximumActionWidth - actionsWidth - 2 * capsuleInset))
+        let actionWidth = primaryWidth + actionsWidth + 2 * capsuleInset
         let rightWidth = actions ? Self.footerMenuWidth : actionWidth
         let availableApplicationWidth = VisualStyle.launcherWidth - 2 * VisualStyle.launcherEdgeInset
             - Self.footerMinimumGap - rightWidth
@@ -541,7 +547,7 @@ struct Launcher: View {
                     .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
             } else if let feedback {
-                NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开 Keylane 菜单" : feedback.label, action: {
+                NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开\(menuTitle)" : feedback.label, action: {
                     if feedback.actionTitle != nil { model.footerFeedback.performAction() }
                     else { toggleMenu(application: true) }
                 }) {
@@ -550,7 +556,7 @@ struct Launcher: View {
                 .frame(width: applicationWidth, height: 36)
                 .transition(.opacity)
             } else if application && secondary {
-                NativeHoverButton(title: "打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
+                NativeHoverButton(title: "打开\(menuTitle)", action: { toggleMenu(application: true) }) {
                     SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol)
                 }.frame(width: applicationWidth, height: 36).transition(.opacity)
             } else if application {
@@ -559,27 +565,18 @@ struct Launcher: View {
                 }.frame(width: 36, height: 36).clipShape(Circle()).transition(.opacity)
             } else {
                 HStack(spacing: 0) {
-                    NativeHoverButton(title: primaryTitle, action: { run() }) {
-                        HStack(spacing: 7) {
-                            Text(primaryTitle).lineLimit(1).truncationMode(.tail)
-                            HStack(spacing: 3) {
-                                if page?.contentPlacement == .form && page?.shortcutSubmit != nil { Keycap(text: "⌘") }
-                                Keycap(text: "↩")
-                            }
-                        }.padding(.horizontal, 6)
+                    NativeHoverButton(title: primaryLabel.title, action: { run() }) {
+                        primaryLabel
                     }
-                    .frame(maxWidth: .infinity).frame(height: 28)
+                    .frame(width: primaryWidth, height: 28)
                     .disabled(!primaryEnabled)
                     .opacity(primaryEnabled ? 1 : 0.45)
                     if showsActions {
-                        NativeHoverButton(title: "操作", action: { toggleMenu(application: false) }) {
-                            HStack(spacing: 7) {
-                                Text("操作")
-                                HStack(spacing: 3) { Keycap(text: "⌘"); Keycap(text: "K") }
-                            }
-                        }.frame(maxWidth: .infinity).frame(height: 28)
+                        NativeHoverButton(title: actionsLabel.title, action: { toggleMenu(application: false) }) {
+                            actionsLabel
+                        }.frame(width: actionsWidth, height: 28)
                     }
-                }.font(.system(size: 13, weight: .medium)).padding(4).frame(width: actionWidth, height: 36).transition(.opacity)
+                }.padding(capsuleInset).frame(width: actionWidth, height: 36).transition(.opacity)
             }
         }
         // The container remains in the same hierarchy. Only its size changes; its bottom
@@ -588,19 +585,19 @@ struct Launcher: View {
         .modifier(LauncherMenuSurface(open: open, tint: open ? nil : feedback?.style.color.opacity(0.16)))
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
-    private var clipboardMenuShortcuts: some View {
-        let actions = page?.actions?() ?? []
-        return ForEach(actions) { action in
+    private var pageMenuShortcuts: some View {
+        let entryActions = model.pageID == PageID(rawValue: "Clipboard") ? page?.actions?() ?? [] : []
+        return ForEach((page?.badgeActions?() ?? []) + entryActions) { action in
             let modifiers = action.keys.dropLast()
-            if !modifiers.isEmpty, let key = action.keys.last,
+            if action.enabled, !modifiers.isEmpty, let key = action.keys.last,
                key != "↩" || modifiers.count > 1,
                let character = key.lowercased().first {
-                clipboardMenuShortcut(action, key: character, modifiers: modifiers)
+                pageMenuShortcut(action, key: character, modifiers: modifiers)
             }
         }
     }
 
-    private func clipboardMenuShortcut(_ action: MenuAction, key: Character, modifiers: ArraySlice<String>) -> some View {
+    private func pageMenuShortcut(_ action: MenuAction, key: Character, modifiers: ArraySlice<String>) -> some View {
         var flags: EventModifiers = []
         if modifiers.contains("⌘") { flags.insert(.command) }
         if modifiers.contains("⌥") { flags.insert(.option) }
@@ -622,6 +619,7 @@ struct Launcher: View {
     }
     private func menuItems(applicationMenu: Bool) -> [MenuAction] {
         if applicationMenu {
+            if let badgeActions = page?.badgeActions { return badgeActions() }
             return [
                 MenuAction(id: "about", title: "关于 Keylane", icon: "app.badge", perform: { model.openSettings(page: "about") }),
                 MenuAction(id: "settings", title: "设置…", icon: "gearshape", keys: ["⌘", ","], perform: { model.runCommand(.init(rawValue: "settings"), origin: .menu) }),
@@ -636,7 +634,7 @@ struct Launcher: View {
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
         var actions = model.launcherModules?.actions(for: row) ?? [
-            MenuAction(id: "open", title: row.needsPermissionActivation ? "启用并继续" : "执行命令", icon: "return", keys: ["↩"]) {
+            MenuAction(id: "open", title: "执行命令", icon: "return", keys: ["↩"]) {
                 model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
             },
             model.favoriteAction(for: row)
@@ -667,7 +665,12 @@ struct Launcher: View {
             item.perform()
         }
     }
-    private func filteredMenu(applicationMenu: Bool) -> [MenuAction] { menuItems(applicationMenu: applicationMenu).filter { actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery) } }
+    private func filteredMenu(applicationMenu: Bool) -> [MenuAction] {
+        menuItems(applicationMenu: applicationMenu).filter {
+            actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery)
+                || $0.value?.localizedCaseInsensitiveContains(actionQuery) == true
+        }
+    }
     private func menuRowsHeight(_ items: [MenuAction]) -> CGFloat {
         guard !items.isEmpty else { return 48 }
         let breaks = zip(items, items.dropFirst()).filter { $0.group != $1.group }.count
@@ -676,7 +679,9 @@ struct Launcher: View {
 
     private func menuPanel(applicationMenu: Bool, items: [MenuAction]) -> some View {
         let title: String
-        if applicationMenu {
+        if applicationMenu, page?.badgeActions != nil {
+            title = page?.badgeTitle?() ?? page?.badge?.title ?? ""
+        } else if applicationMenu {
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版"
             title = "Keylane " + version
         } else {
@@ -702,7 +707,15 @@ struct Launcher: View {
                                 LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
                                                 enabled: item.enabled, destructive: item.destructive, artwork: item.artwork,
                                                 activate: { activate(item) }, highlight: { actionSelection = index }) {
+                                    if let value = item.value {
+                                        Text(value).font(VisualStyle.rowText).foregroundStyle(.secondary)
+                                            .lineLimit(1).help(value)
+                                    }
                                     if !item.keys.isEmpty { Keycaps(keys: item.keys) }
+                                    if item.submenu != nil {
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+                                    }
                                 }
                                 .padding(.horizontal, 8)
                                 .id(item.id)
@@ -720,7 +733,7 @@ struct Launcher: View {
                 }
             }
             Divider().padding(.top, 9)
-            SearchField(text: $actionQuery, placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, fontSize: 14, navigation: model.navigation, submit: {
+            SearchField(text: $actionQuery, placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, compact: true, navigation: model.navigation, submit: {
                 if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
             }, move: moveSelection, escape: escape, back: { escape() }, forward: {
                 if items.indices.contains(actionSelection), items[actionSelection].submenu != nil { activate(items[actionSelection]) }
@@ -759,7 +772,6 @@ struct Launcher: View {
         if argumentTarget != nil { return "启动新实例" }
         if let title = page?.primaryTitle?() { return title }
         if let row = selectedEntry {
-            if row.needsPermissionActivation { return "启用并继续" }
             if let title = model.launcherModules?.primaryTitle(for: row) { return title }
             if row.id == "calculator" { return "复制结果" }
         }
@@ -820,6 +832,33 @@ struct Launcher: View {
         if let submit = page?.submit { submit(); return }
         if model.pageID != .root && !showsFileResults { model.pageID = .root; return }
         if let row = selectedEntry { model.perform(row) }
+    }
+}
+
+private struct LauncherFooterButtonLabel: View {
+    let title: String
+    let keys: [String]
+    private let fontSize: CGFloat = 13
+    private let titleSpacing: CGFloat = 7
+    private let keySpacing: CGFloat = 3
+    private let horizontalPadding: CGFloat = 10
+
+    var width: CGFloat {
+        let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
+        let titleWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+        let keyWidth = CGFloat(keys.count) * Keycap.side + CGFloat(keys.count - 1) * keySpacing
+        return titleWidth + titleSpacing + keyWidth + 2 * horizontalPadding
+    }
+
+    var body: some View {
+        HStack(spacing: titleSpacing) {
+            Text(title).lineLimit(1).truncationMode(.tail)
+            HStack(spacing: keySpacing) {
+                ForEach(keys, id: \.self) { Keycap(text: $0) }
+            }.fixedSize()
+        }
+        .font(.system(size: fontSize, weight: .medium))
+        .padding(.horizontal, horizontalPadding)
     }
 }
 

@@ -40,14 +40,13 @@ struct CalendarPage: View {
                 }
                 else if controller.access != .allowed { CalendarConnectionView(controller: controller) }
                 else if let event = controller.selectedEvent {
-                    ResultDetailPane { height in
+                    ResultDetailPane { _ in
                         VStack(alignment: .leading, spacing: 14) {
                             Label(event.calendarTitle, systemImage: "calendar").font(.system(size: 12)).foregroundStyle(.secondary)
                             Text(event.title).font(.system(size: 21, weight: .semibold)).textSelection(.enabled)
                             Text(event.start.formatted(date: .complete, time: .omitted)).font(.system(size: 13))
                             Text(event.allDay ? "全天" : "\(event.start.formatted(date: .omitted, time: .shortened)) – \(event.end.formatted(date: .omitted, time: .shortened))").foregroundStyle(.secondary)
-                            Spacer(minLength: 0)
-                        }.frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading).padding(9)
+                        }.frame(maxWidth: .infinity, alignment: .topLeading).padding(9)
                     } information: {
                         DetailInformationSection(rows: [
                             .init(title: "日历", value: event.calendarTitle),

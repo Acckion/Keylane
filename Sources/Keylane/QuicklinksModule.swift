@@ -10,6 +10,7 @@ final class QuicklinksController: ObservableObject {
     @Published var parameters: [QuicklinkTemplate.Parameter] = []
     @Published var values: [String: String] = [:]
     @Published var inputError: String?
+    @Published var draft: Quicklink?
 
     func load() {
         do { links = try QuicklinkLibrary.load(from: .standard).links }
@@ -79,8 +80,13 @@ final class QuicklinksController: ObservableObject {
 }
 
 enum QuicklinksModule {
+    static func create(from url: URL, title: String, model: Model) {
+        model.quicklinks.draft = Quicklink(title: title, template: url.absoluteString)
+        model.openSettings(page: "links")
+    }
+
     static func make(model: Model) -> LauncherModule {
-        let controller = QuicklinksController()
+        let controller = model.quicklinks
         let pageID = PageID(rawValue: "QuicklinkParameters")
         let legacyID = CommandID(rawValue: QuicklinkLibrary.legacyID)
         func provider(_ namespace: LauncherCommandNamespace) -> LauncherModule.Provider {

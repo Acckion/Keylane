@@ -6,6 +6,13 @@ import KeylaneCore
 struct ClipboardHistoryView: View {
     let controller: ClipboardController
     let query: String
+    @StateObject private var observation: ViewObservation
+
+    init(controller: ClipboardController, query: String) {
+        self.controller = controller
+        self.query = query
+        _observation = StateObject(wrappedValue: ViewObservation([ViewObservation.changes(controller.$textDraft)]))
+    }
 
     var body: some View {
         ResultDetailLayout {
@@ -14,6 +21,64 @@ struct ClipboardHistoryView: View {
             ClipboardHistoryDetail(controller: controller)
         }
         .onAppear { controller.reload() }
+        .sheet(item: Binding(get: { controller.textDraft }, set: { controller.textDraft = $0 })) { draft in
+            ClipboardTextEditor(draft: draft, controller: controller)
+        }
+    }
+}
+
+private struct ClipboardTextEditor: View {
+    let draft: ClipboardTextDraft
+    let controller: ClipboardController
+    @State private var text: String
+    @State private var error = ""
+    @State private var saving = false
+    @FocusState private var focused: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    init(draft: ClipboardTextDraft, controller: ClipboardController) {
+        self.draft = draft
+        self.controller = controller
+        _text = State(initialValue: draft.text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("编辑文本").font(.headline)
+            LauncherCreationControl(focused: focused) {
+                TextEditor(text: $text).scrollContentBackground(.hidden)
+                    .frame(minHeight: 185).focused($focused).accessibilityLabel("剪贴板文本")
+                    .disabled(saving)
+            }
+            if draft.hasOtherFormats {
+                Text("保存后，这条记录将使用编辑后的纯文本。").font(.caption).foregroundStyle(.secondary)
+            }
+            if !error.isEmpty { Text(error).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
+                Button("保存", action: save).keyboardShortcut(.return, modifiers: .command)
+                    .disabled(saving || text.isEmpty)
+            }
+        }
+        .padding(20).frame(width: 500)
+        .task {
+            await Task.yield()
+            focused = true
+        }
+        .interactiveDismissDisabled(saving)
+    }
+
+    private func save() {
+        saving = true
+        error = ""
+        controller.saveEditedText(id: draft.id, text: text) { result in
+            saving = false
+            switch result {
+            case .success: dismiss()
+            case .failure(let failure): error = failure.localizedDescription
+            }
+        }
     }
 }
 
@@ -27,14 +92,16 @@ private struct ClipboardHistoryList: View {
         self.query = query
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(controller.$items),
-            ViewObservation.changes(controller.$selectedID)
+            ViewObservation.changes(controller.$selectedID),
+            ViewObservation.changes(controller.$indexingImageText)
         ]))
     }
 
     var body: some View {
         SelectableResultList(selection: controller.selectedID, query: query, firstResult: controller.items.first?.id) {
             if controller.items.isEmpty {
-                Text("没有匹配记录").font(VisualStyle.sectionText).foregroundStyle(.secondary)
+                Text(controller.indexingImageText ? "正在搜索图片文字…" : "没有匹配记录")
+                    .font(VisualStyle.sectionText).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity).padding(.top, 80)
             }
             ForEach(controller.items) { item in
@@ -61,6 +128,7 @@ private struct ClipboardHistoryDetail: View {
             controller.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             ViewObservation.changes(controller.$thumbnail),
             ViewObservation.changes(controller.$items.map(\.isEmpty)),
+            ViewObservation.changes(controller.$indexingImageText),
             ViewObservation.changes(controller.$captureEnabled),
             ViewObservation.changes(controller.$status),
             ViewObservation.changes(controller.$accessMessage)
@@ -75,9 +143,13 @@ private struct ClipboardHistoryDetail: View {
         } else {
             VStack(spacing: 10) {
                 Spacer()
-                ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
-                Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
-                    .buttonStyle(ContentActionButtonStyle())
+                if controller.indexingImageText {
+                    ProgressView("正在识别历史图片中的文字…").controlSize(.small)
+                } else {
+                    ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
+                    Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
+                        .buttonStyle(ContentActionButtonStyle())
+                }
                 Spacer()
                 if !controller.accessMessage.isEmpty {
                     Text(controller.accessMessage).font(.caption).foregroundStyle(.orange).padding(.horizontal, 16)
@@ -96,7 +168,6 @@ struct ClipboardPreferences: View {
     let controller: ClipboardController
     let model: Model
     @StateObject private var observation: ViewObservation
-    @State private var showsHistorySettings = false
     @State private var showsUniversalDetails = true
     @State private var excludedApplications: [String: URL] = [:]
 
@@ -107,6 +178,7 @@ struct ClipboardPreferences: View {
             ViewObservation.changes(controller.$automaticOCR),
             ViewObservation.changes(controller.$accurateOCR),
             ViewObservation.changes(controller.$historyCommandEnabled),
+            ViewObservation.changes(controller.$showsHistorySettings),
             ViewObservation.changes(controller.$retentionDays),
             ViewObservation.changes(controller.$excludedApps),
             ViewObservation.changes(model.$aliases.map { $0["clipboard"] }),
@@ -126,14 +198,14 @@ struct ClipboardPreferences: View {
             }.settingsAnchor(.clipboardRetention)
             SettingsGroup {
                 Toggle(isOn: binding(\.automaticOCR)) {
-                    SettingsRowLabel(title: "文字识别", detail: "自动提取图片中的文字，以便搜索。")
+                    SettingsRowLabel(title: "文字识别", detail: "在后台识别图片文字。搜索时也会按需识别尚未处理的历史图片。")
                 }
                 Divider()
                 SettingsPicker("识别模式", detail: "快速模式处理更快，准确模式会使用更多 CPU 资源。",
                                selection: binding(\.accurateOCR)) {
                     Text("快速").tag(false)
                     Text("准确").tag(true)
-                }.disabled(!controller.automaticOCR)
+                }
             }.settingsAnchor(.clipboardRecognition)
             SettingsGroup {
                 SettingsRow {
@@ -179,10 +251,7 @@ struct ClipboardPreferences: View {
             CommandSettingsList(items: ["clipboard", "paste-sequentially", "reset-paste-sequence"], id: \.self) { id in
                 switch id {
                 case "clipboard":
-                    CommandSettingsEntry(title: "剪贴板历史", model: model, commandID: .init(rawValue: id),
-                                         isEnabled: binding(\.historyCommandEnabled), perform: { showsHistorySettings = true }) {
-                        SettingsIcon(symbol: "clipboard", artwork: ModuleArtwork.settings("clipboard"))
-                    }
+                    historyCommandEntry { controller.showsHistorySettings = true }
                 case "paste-sequentially":
                     unavailableCommand("顺序粘贴", symbol: "list.clipboard")
                 default:
@@ -196,17 +265,27 @@ struct ClipboardPreferences: View {
         }
         .onAppear { updateExcludedApplications() }
         .onChange(of: controller.excludedApps) { _, _ in updateExcludedApplications() }
-        .sheet(isPresented: $showsHistorySettings) { historySettings }
+        .sheet(isPresented: binding(\.showsHistorySettings)) { historySettings }
     }
 
     private var historySettings: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsTitle("剪贴板历史")
+            CommandSettingsList(items: ["clipboard"], id: \.self) { _ in historyCommandEntry() }
             ClipboardHistoryStatistics(controller: controller)
-            Button("完成") { showsHistorySettings = false }
+            Button("完成") { controller.showsHistorySettings = false }
                 .keyboardShortcut(.defaultAction)
                 .frame(maxWidth: .infinity, alignment: .trailing)
-        }.padding(20).frame(width: 480)
+        }
+        .padding(20).frame(width: 480)
+        .environment(\.isEnabled, true)
+    }
+
+    private func historyCommandEntry(perform: (() -> Void)? = nil) -> CommandSettingsEntry<SettingsIcon> {
+        CommandSettingsEntry(title: "剪贴板历史", model: model, commandID: .init(rawValue: "clipboard"),
+                             isEnabled: binding(\.historyCommandEnabled), perform: perform) {
+            SettingsIcon(symbol: "clipboard", artwork: ModuleArtwork.settings("clipboard"))
+        }
     }
 
     private func unavailableCommand(_ title: String, symbol: String) -> CommandSettingsEntry<SettingsIcon> {

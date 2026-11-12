@@ -3,7 +3,8 @@ import AppKit
 import UniformTypeIdentifiers
 
 final class FileActionsModel: ObservableObject {
-    @Published private(set) var file: URL?
+    @Published private(set) var files: [URL] = []
+    var file: URL? { files.first }
     @Published private(set) var applications: [URL] = []
     @Published var selectedApplication = ""
     @Published var page = "open"
@@ -11,14 +12,21 @@ final class FileActionsModel: ObservableObject {
     @Published private(set) var opening = false
     @Published var shareRequest = 0
     private var defaultApplication: URL?
+    private var fileAccess: AnyObject?
     private var generation = 0
     var opened: (() -> Void)?
-    var isAvailable: Bool { file.map { FileManager.default.fileExists(atPath:$0.path) } ?? false }
-    func configure(_ url: URL, page: String) {
-        generation += 1; file = url; self.page = page; opening = false; status = ""; applications = []; selectedApplication = ""
-        guard validate() else { return }
+    var isAvailable: Bool { !files.isEmpty && files.allSatisfy { $0.isFileURL && FileManager.default.fileExists(atPath: $0.path) } }
+    func configure(_ urls: [URL], page: String, retaining access: AnyObject?) {
+        generation += 1; files = urls; self.page = page; opening = false; status = ""; applications = []; selectedApplication = ""
+        fileAccess = access
+        guard let url = files.first, validate() else { return }
         defaultApplication = NSWorkspace.shared.urlForApplication(toOpen:url)
-        let compatible = NSWorkspace.shared.urlsForApplications(toOpen:url)
+        var compatible = NSWorkspace.shared.urlsForApplications(toOpen:url)
+        for other in files.dropFirst() {
+            let available = Set(NSWorkspace.shared.urlsForApplications(toOpen: other).map(\.standardizedFileURL))
+            compatible = compatible.filter { available.contains($0.standardizedFileURL) }
+        }
+        if files.count > 1, let app = defaultApplication, !compatible.contains(app) { defaultApplication = nil }
         var seen = Set<String>()
         applications = ((defaultApplication.map { [$0] } ?? []) + compatible).filter { seen.insert($0.standardizedFileURL.path).inserted }
         selectedApplication = applications.first?.path ?? ""
@@ -29,7 +37,7 @@ final class FileActionsModel: ObservableObject {
         return name + (url.standardizedFileURL == defaultApplication?.standardizedFileURL ? "（默认）" : "")
     }
     @discardableResult func validate() -> Bool {
-        guard let file, file.isFileURL, FileManager.default.fileExists(atPath:file.path) else { status = "文件已移走、删除或磁盘已断开。请重新搜索。"; return false }
+        guard isAvailable else { status = "文件已移走、删除或磁盘已断开。请重新搜索。"; return false }
         return true
     }
     func chooseApplication() {
@@ -38,13 +46,14 @@ final class FileActionsModel: ObservableObject {
         if !applications.contains(url) { applications.append(url) }; selectedApplication = url.path
     }
     func openSelected() {
-        guard !opening, validate(), let file, !selectedApplication.isEmpty else { return }
+        guard !opening, validate(), !selectedApplication.isEmpty else { return }
         let application = URL(fileURLWithPath:selectedApplication)
         guard FileManager.default.fileExists(atPath:application.path), application.pathExtension.lowercased() == "app" else { status = "所选应用已不可用，请重新选择。"; return }
         generation += 1; let ticket = generation; opening = true; status = "正在打开…"
         let configuration = NSWorkspace.OpenConfiguration(); configuration.activates = true
-        NSWorkspace.shared.open([file],withApplicationAt:application,configuration:configuration) { [weak self] app,error in
+        NSWorkspace.shared.open(files,withApplicationAt:application,configuration:configuration) { [weak self, fileAccess] app,error in
             DispatchQueue.main.async {
+                defer { withExtendedLifetime(fileAccess) {} }
                 guard let self, self.generation == ticket else { return }
                 self.opening = false
                 guard error == nil, app != nil else { self.status = "无法用所选应用打开文件：" + (error?.localizedDescription ?? "应用未能启动。"); return }
@@ -52,6 +61,7 @@ final class FileActionsModel: ObservableObject {
             }
         }
     }
+    func releaseFiles() { generation += 1; fileAccess = nil; files = [] }
     func feedback(_ message: String) { status = message }
 }
 
@@ -61,8 +71,10 @@ final class FileActionsWindow: NSObject, NSWindowDelegate {
     var onEscape: (() -> Void)?
     var onActivate: ((NSWindow) -> Void)?
     private var window: NSWindow?
-    func show(_ file: URL, page: String) {
-        model.configure(file,page:page)
+    func show(_ file: URL, page: String) { show([file], page: page) }
+
+    func show(_ files: [URL], page: String, retaining access: AnyObject? = nil) {
+        model.configure(files, page: page, retaining: access)
         if window == nil {
             let window = NSWindow(contentRect:NSRect(x:0,y:0,width:520,height:350),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false)
             window.title = "文件操作"; window.titlebarAppearsTransparent = true; window.isReleasedWhenClosed = false
@@ -70,7 +82,7 @@ final class FileActionsWindow: NSObject, NSWindowDelegate {
                 .onExitCommand { [weak self] in self?.onEscape?() })
             window.minSize = NSSize(width:450,height:300); window.center(); window.delegate = self
             self.window = window
-            model.opened = { [weak self] in self?.window?.orderOut(nil) }
+            model.opened = { [weak self] in self?.window?.close() }
         }
         if let window {
             onActivate?(window)
@@ -79,6 +91,7 @@ final class FileActionsWindow: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if page == "share", model.isAvailable { model.shareRequest += 1 }
     }
+    func windowWillClose(_ notification: Notification) { model.releaseFiles() }
 }
 private struct FileActionsView: View {
     @ObservedObject var model: FileActionsModel
@@ -87,7 +100,10 @@ private struct FileActionsView: View {
             if let file = model.file {
                 HStack(spacing:12) {
                     Image(nsImage:NSWorkspace.shared.icon(forFile:file.path)).resizable().scaledToFit().frame(width:40,height:40)
-                    VStack(alignment:.leading,spacing:4) { Text(file.lastPathComponent).font(.headline).lineLimit(2); Text(file.deletingLastPathComponent().path).font(.caption).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled) }
+                    VStack(alignment:.leading,spacing:4) {
+                        Text(model.files.count > 1 ? "\(model.files.count) 个文件" : file.lastPathComponent).font(.headline).lineLimit(2)
+                        Text(file.deletingLastPathComponent().path).font(.caption).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
+                    }
                 }
             }
             Picker("操作",selection:$model.page) { Text("打开方式").tag("open"); Text("分享").tag("share") }.pickerStyle(.segmented).labelsHidden()
@@ -125,7 +141,7 @@ private struct NativeFileShareButton: NSViewRepresentable {
         var model: FileActionsModel
         var lastRequest = 0
         private var picker: NSSharingServicePicker?
-        private var sharingFile: URL?
+        private var sharingFiles: [URL] = []
         init(_ model:FileActionsModel) { self.model = model }
         func presentWhenReady(_ button:NSButton,attempt:Int) {
             DispatchQueue.main.asyncAfter(deadline:.now() + (attempt == 0 ? 0 : 0.05)) { [weak self,weak button] in
@@ -135,14 +151,14 @@ private struct NativeFileShareButton: NSViewRepresentable {
             }
         }
         @objc func show(_ sender:NSButton) {
-            guard model.validate(),let file = model.file, sender.window?.isVisible == true else { return }
-            sharingFile = file
-            let picker = NSSharingServicePicker(items:[file]); picker.delegate = self; self.picker = picker
+            guard model.validate(), sender.window?.isVisible == true else { return }
+            sharingFiles = model.files
+            let picker = NSSharingServicePicker(items: sharingFiles); picker.delegate = self; self.picker = picker
             picker.show(relativeTo:sender.bounds,of:sender,preferredEdge:.minY)
         }
-        func sharingServicePicker(_ sharingServicePicker:NSSharingServicePicker,didChoose service:NSSharingService?) { guard model.file == sharingFile else { return }; model.feedback(service == nil ? "已取消分享" : "已选择系统分享服务") }
+        func sharingServicePicker(_ sharingServicePicker:NSSharingServicePicker,didChoose service:NSSharingService?) { guard model.files == sharingFiles else { return }; model.feedback(service == nil ? "已取消分享" : "已选择系统分享服务") }
         func sharingServicePicker(_ sharingServicePicker:NSSharingServicePicker,delegateFor sharingService:NSSharingService) -> NSSharingServiceDelegate? { self }
-        func sharingService(_ sharingService:NSSharingService,didShareItems items:[Any]) { guard model.file == sharingFile else { return }; model.feedback("系统分享服务已完成") }
-        func sharingService(_ sharingService:NSSharingService,didFailToShareItems items:[Any],error:Error) { guard model.file == sharingFile else { return }; model.feedback("分享未完成：" + error.localizedDescription) }
+        func sharingService(_ sharingService:NSSharingService,didShareItems items:[Any]) { guard model.files == sharingFiles else { return }; model.feedback("系统分享服务已完成") }
+        func sharingService(_ sharingService:NSSharingService,didFailToShareItems items:[Any],error:Error) { guard model.files == sharingFiles else { return }; model.feedback("分享未完成：" + error.localizedDescription) }
     }
 }

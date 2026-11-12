@@ -26,7 +26,7 @@ public struct QuicklinkTemplate {
 
         public var errorDescription: String? {
             switch self {
-            case .invalidURL: "请输入包含主机名的 HTTP 或 HTTPS 链接。"
+            case .invalidURL: "请输入 HTTP、HTTPS 或 mailto 邮件链接。"
             case .invalidParameter: "参数格式应为 {名称} 或 {名称=默认值}，并放在路径、查询或片段中。"
             case let .conflictingDefaults(name): "参数「\(name)」定义了不同的默认值。"
             case let .missingValue(name): "请输入参数「\(name)」。"
@@ -95,7 +95,11 @@ public struct QuicklinkTemplate {
         }.joined()
 
         guard let components = URLComponents(string: expanded),
-              let scheme = components.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              let scheme = components.scheme?.lowercased() else { throw ValidationError.invalidURL }
+        if scheme == "mailto", parameters.isEmpty, components.host == nil,
+           components.query == nil, components.fragment == nil,
+           let url = ClipboardCategory.emailURL(in: components.path) { return url }
+        guard scheme == "https" || scheme == "http",
               let host = components.host, !host.isEmpty, components.user == nil, components.password == nil,
               let url = components.url else { throw ValidationError.invalidURL }
         return url

@@ -8,8 +8,8 @@ import KeylaneCore
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
         let modules = [applications(model), host(model), files(model), clipboard(model), AppleNotesModule.make(model: model),
-                       QuicklinksModule.make(model: model), calculator(model), systemTools(model), screenCapture(), CalendarLauncherModule.make(model: model),
-                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), AppUtilitiesModule.camera(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
+                       QuicklinksModule.make(model: model), calculator(model), systemTools(model), CalendarLauncherModule.make(model: model),
+                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
             guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
@@ -266,10 +266,10 @@ enum BuiltinLauncherModules {
                 guard let controller = model?.clipboard else { return }
                 if (NSApp.delegate as? Delegate)?.pasteTargetName != nil {
                     (NSApp.delegate as? Delegate)?.pasteClipboard()
-                } else { copyClipboardItem(controller) }
+                } else { ClipboardActions.copy(controller) }
             },
             shortcutSubmit: { [weak model] in
-                if let controller = model?.clipboard { copyClipboardItem(controller) }
+                if let controller = model?.clipboard { ClipboardActions.copy(controller) }
             },
             optionSubmit: {
                 guard let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil else { return }
@@ -286,7 +286,7 @@ enum BuiltinLauncherModules {
             primaryEnabled: { [weak model] in model?.clipboard.selectedID != nil },
             actions: { [weak model] in
                 guard let model else { return [] }
-                return clipboardActions(model)
+                return ClipboardActions.items(model)
             },
             updates: Publishers.MergeMany([
                 ViewObservation.changes(model.clipboard.$selectedID),
@@ -300,7 +300,23 @@ enum BuiltinLauncherModules {
                 return AnyView(ResultTypeFilter(selection: Binding(get: { model.clipboard.kind }, set: { model.clipboard.kind = $0 }),
                                          options: ResultFilterOption.clipboard, open: open, navigation: model.navigation))
             },
-            actionWidth: 280
+            badgeActions: { [weak model] in
+                guard let model else { return [] }
+                return [
+                    .init(id: "configure-clipboard-command", title: "配置命令…", icon: "gearshape",
+                          keys: ["⇧", "⌘", ","]) { [weak model] in
+                        model?.clipboard.showsHistorySettings = true
+                        model?.openSettings(page: "clipboard")
+                    },
+                    .init(id: "configure-clipboard-extension", title: "配置扩展", icon: "gearshape",
+                          keys: ["⌥", "⌘", ","]) { [weak model] in
+                        model?.clipboard.showsHistorySettings = false
+                        model?.openSettings(page: "clipboard")
+                    }
+                ]
+            },
+            maximumActionWidth: 280,
+            releasePreview: { FilePreview.shared.dismiss() }
         )
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
@@ -323,84 +339,6 @@ enum BuiltinLauncherModules {
             })
         ], searchUpdates: [updates(controller.$historyCommandEnabled)],
         shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
-    }
-
-    private static func copyClipboardItem(_ controller: ClipboardController, plainText: Bool = false) {
-        let copied = controller.copySelected(plainText: plainText)
-        let message = copied ? (plainText ? "已复制纯文本" : "已复制到剪贴板") : controller.status
-        (NSApp.delegate as? Delegate)?.showLauncherFeedback(message, style: copied ? .success : .failure)
-    }
-
-    private static func clipboardActions(_ model: Model) -> [LauncherAction] {
-        let controller = model.clipboard
-        guard let item = controller.items.first(where: { $0.id == controller.selectedID }) else { return [] }
-        let delegate = NSApp.delegate as? Delegate
-        let targetName = delegate?.pasteTargetName
-        let targetIcon = delegate?.pasteTargetIcon
-        var actions: [LauncherAction] = []
-        if let targetName {
-            actions.append(.init(id: "paste-clip", title: "粘贴到 \(targetName)", icon: "doc.on.clipboard",
-                                 keys: ["↩"], artwork: targetIcon, perform: { delegate?.pasteClipboard() }))
-        }
-        actions.append(.init(id: "copy-clip", title: "复制到剪贴板", icon: "clipboard",
-                             keys: targetName == nil ? ["↩"] : ["⌘", "↩"], perform: { copyClipboardItem(controller) }))
-        if targetName != nil {
-            actions.append(.init(id: "paste-keep-open-clip", title: "粘贴并保持窗口打开", icon: "doc.on.clipboard",
-                                 keys: ["⌥", "↩"], artwork: targetIcon, perform: { delegate?.pasteClipboard(keepOpen: true) }))
-        }
-        let detail = controller.detail.flatMap { $0.item.id == item.id ? $0 : nil }
-        let text = detail?.text ?? ""
-        let copyPlainText = LauncherAction(id: "copy-plain-clip", title: "复制为纯文本", icon: "text.alignleft",
-                                           perform: { copyClipboardItem(controller, plainText: true) })
-        if let targetName {
-            let pastePlainText = LauncherAction(id: "paste-plain-clip", title: "以纯文本粘贴到 \(targetName)",
-                                                icon: "text.insert", keys: ["⌃", "⌘", "↩"], artwork: targetIcon,
-                                                perform: { delegate?.pasteClipboard(plainText: true) })
-            actions.append(.init(id: "paste-as-clip", title: "粘贴为…", icon: "text.insert",
-                                 keys: ["⌥", "⌘", "↩"], artwork: targetIcon,
-                                 submenu: .init(title: "粘贴为…", items: [
-                                     .init(id: "paste-original-clip", title: "原始格式", icon: "clipboard",
-                                           perform: { delegate?.pasteClipboard() }),
-                                     pastePlainText,
-                                     copyPlainText
-                                 ])))
-            actions.append(pastePlainText)
-        } else {
-            actions.append(copyPlainText)
-        }
-        if let sharingItem = controller.sharingItem {
-            actions.append(.init(id: "share-clip", title: "分享…", icon: "square.and.arrow.up", group: 1,
-                                 perform: { controller.share(sharingItem) }))
-        }
-        actions.append(.init(id: "rename-clip", title: "重命名记录…", icon: "rectangle.dashed",
-                             keys: ["⇧", "⌘", "E"], group: 1, perform: { controller.renameSelected() }))
-        actions.append(.init(id: "pin-clip", title: item.pinned ? "取消置顶" : "置顶记录", icon: "pin",
-                             keys: ["⌘", "."], group: 1, perform: { controller.pinSelected() }))
-        if item.kind == .image {
-            actions.append(.init(id: "ocr-clip", title: "识别图片文字", icon: "text.viewfinder", group: 1,
-                                 perform: { controller.recognizeSelected() }))
-        }
-        if !text.isEmpty {
-            actions.append(.init(id: "snippet-clip", title: "存为文字片段", icon: "text.badge.plus",
-                                 keys: ["⌘", "S"], group: 2, perform: { [weak model] in
-                guard let model else { return }
-                SnippetsModule.create(from: text, model: model)
-            }))
-        }
-        if !text.isEmpty || detail?.assetURL != nil {
-            actions.append(.init(id: "save-clip", title: "存为文件…", icon: "arrow.down.document",
-                                 keys: ["⌥", "⇧", "⌘", "S"], group: 2,
-                                 perform: { controller.saveSelectedAsFile() }))
-        }
-        actions += [
-            .init(id: "delete-clip", title: "删除记录", icon: "trash", keys: ["⌃", "X"],
-                  group: 3, destructive: true, perform: { controller.removeSelected() }),
-            .init(id: "delete-recent-clips", title: "删除最近的记录…", icon: "clock", keys: ["⇧", "⌘", "X"],
-                  group: 3, destructive: true, perform: { controller.confirmHistoryRemoval(recent: true) }),
-            .init(id: "delete-all-clips", title: "删除全部记录", icon: "trash", keys: ["⌃", "⇧", "X"],
-                  group: 3, destructive: true, perform: { controller.confirmHistoryRemoval(recent: false) })
-        ]
-        return actions
     }
 
     private static func calculator(_ model: Model) -> LauncherModule {
@@ -446,19 +384,6 @@ enum BuiltinLauncherModules {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Calculator.isExpression(trimmed), let value = Calculator.evaluate(trimmed) else { return nil }
         return String(format: "%.12g", value)
-    }
-
-    private static func screenCapture() -> LauncherModule {
-        let permission = PermissionFeature("screenCapture.enabled", authorization: .screenCapture)
-        return .init(id: .init(rawValue: "keylane.screen-capture"), title: "屏幕截取", symbol: "camera.viewfinder", commands: [
-            command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", [],
-                    settings: "keylane.screen-capture", permission: permission, execute: { _ in
-                (NSApp.delegate as? Delegate)?.hideLauncher()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    if permission.available { SystemTools.shared.screenshot() }
-                }
-            })
-        ], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用屏幕截取"))
     }
 
     private static func systemTools(_ model: Model) -> LauncherModule {
