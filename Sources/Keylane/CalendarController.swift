@@ -3,7 +3,13 @@ import Combine
 import EventKit
 import KeylaneCore
 
-struct CalendarChoice: Identifiable, Equatable, Sendable { let id: String; let title: String; let source: String; let writable: Bool }
+struct CalendarChoice: Identifiable, Equatable, Sendable {
+    let id: String
+    let title: String
+    let source: String
+    let writable: Bool
+    let color: UInt32?
+}
 enum CalendarAccess: String {
     case notRequested, allowed, denied, restricted, writeOnly
     static var current: Self {
@@ -216,7 +222,16 @@ final class CalendarController: ObservableObject {
             let store = self.eventStore ?? EKEventStore()
             self.eventStore = store
             let all = store.calendars(for: .event)
-            let choices = all.map { CalendarChoice(id: $0.calendarIdentifier, title: $0.title, source: $0.source.title, writable: $0.allowsContentModifications) }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            let choices = all.map { calendar in
+                let source: String
+                switch calendar.type {
+                case .birthday: source = "其他"
+                case .subscription: source = "订阅的日历"
+                default: source = calendar.source.title
+                }
+                return CalendarChoice(id: calendar.calendarIdentifier, title: calendar.title, source: source,
+                                      writable: calendar.allowsContentModifications, color: Self.calendarColor(calendar))
+            }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
             let targets = selected.map { ids in all.filter { ids.contains($0.calendarIdentifier) } } ?? all
             let dayStart = calendar.startOfDay(for: date)
             let today = calendar.startOfDay(for: now)

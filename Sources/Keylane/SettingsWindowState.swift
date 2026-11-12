@@ -34,13 +34,15 @@ final class SettingsWindowState: ObservableObject {
     }
 
     func extensionEnabled(for page: String) -> Binding<Bool>? {
-        guard let registry = model?.launcherModules, let id = registry.module(forSettingsPage: page) else { return nil }
+        guard catalog.page(page)?.parentID == nil,
+              let registry = model?.launcherModules, let id = registry.module(forSettingsPage: page) else { return nil }
         return Binding(get: { registry.isModuleEnabled(id) }, set: { [weak model] in model?.setModuleEnabled(id, $0) })
     }
 
     func titlebar(for page: String) -> SettingsTitlebarContribution? {
-        let contribution = catalog.page(page)?.titlebar
-        guard let model, let registry = model.launcherModules,
+        let settingsPage = catalog.page(page)
+        let contribution = settingsPage?.titlebar
+        guard settingsPage?.parentID == nil, let model, let registry = model.launcherModules,
               let module = registry.module(forSettingsPage: page) else { return contribution }
 
         let moduleEnabled = registry.availabilityChanges.map { [weak registry] _ in

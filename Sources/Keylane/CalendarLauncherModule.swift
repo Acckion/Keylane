@@ -9,6 +9,7 @@ enum CalendarLauncherModule {
     private static let createID = CommandID(rawValue: "create-calendar-event")
     private static let eventPrefix = "calendar-event:"
     private static let settingsID = "calendar"
+    static let enabledCalendarsSettingsID = "calendar-enabled"
 
     static func make(model: Model) -> LauncherModule {
         let calendar = model.calendar
@@ -84,6 +85,11 @@ enum CalendarLauncherModule {
                     guard let model else { return AnyView(EmptyView()) }
                     return AnyView(CalendarPreferences(model: model))
                 }
+            ), .init(
+                id: enabledCalendarsSettingsID, title: "已启用的日历", symbol: "calendar", subtitle: "", order: 51,
+                items: [.calendarSelection], parentID: settingsID,
+                loading: calendar.$loading.eraseToAnyPublisher(),
+                content: { AnyView(EnabledCalendarsPreferences(controller: calendar)) }
             )],
             services: [.init(
                 start: { [weak model] in

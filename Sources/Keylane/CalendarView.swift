@@ -208,6 +208,46 @@ struct MenuBarPreferences: View {
     }
 }
 
+struct EnabledCalendarsPreferences: View {
+    @ObservedObject var controller: CalendarController
+
+    var body: some View {
+        let groups = Dictionary(grouping: controller.calendars, by: \.source)
+        SettingsPageSections {
+            ForEach(groups.keys.sorted { $0.localizedStandardCompare($1) == .orderedAscending }, id: \.self) { source in
+                SettingsSectionTitle(title: source)
+                SettingsGroup {
+                    let rows = groups[source] ?? []
+                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, calendar in
+                        if index > 0 { Divider() }
+                        Toggle(isOn: Binding(
+                            get: { controller.selectedCalendarIDs?.contains(calendar.id) ?? true },
+                            set: { controller.setCalendar(calendar.id, enabled: $0) }
+                        )) {
+                            HStack(spacing: 9) {
+                                Circle().fill(color(calendar.color)).frame(width: 12, height: 12)
+                                    .accessibilityHidden(true)
+                                Text(calendar.title)
+                            }
+                        }
+                    }
+                }
+            }
+            if groups.isEmpty {
+                SettingsGroup {
+                    Text("系统中没有可用日历").foregroundStyle(.secondary)
+                }
+            }
+        }.settingsAnchor(.calendarSelection)
+    }
+
+    private func color(_ rgb: UInt32?) -> Color {
+        guard let rgb else { return .secondary }
+        return Color(red: Double((rgb >> 16) & 255) / 255, green: Double((rgb >> 8) & 255) / 255,
+                     blue: Double(rgb & 255) / 255)
+    }
+}
+
 struct CalendarPreferences: View {
     let model: Model
 
@@ -221,7 +261,6 @@ private struct CalendarSettingsGroups: View {
     let controller: CalendarController
     @StateObject private var observation: ViewObservation
     @ObservedObject var registry: MenuBarRegistry
-    @State private var showsCalendars = false
     @State private var calendarApps: [URL] = []
     @State private var browsers: [URL] = []
 
@@ -255,45 +294,18 @@ private struct CalendarSettingsGroups: View {
         SettingsPageSections {
             SettingsGroup {
                 Button {
-                    showsCalendars.toggle()
+                    model.settingsPage = CalendarLauncherModule.enabledCalendarsSettingsID
                 } label: {
                     HStack {
                         Text("已启用的日历")
                         Spacer()
-                        Image(systemName: showsCalendars ? "chevron.down" : "chevron.forward")
-                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.forward").foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!controller.enabled || controller.access != .allowed)
-
-                if showsCalendars && controller.enabled && controller.access == .allowed {
-                    Divider()
-                    HStack {
-                        Spacer()
-                        Button("全选") { controller.selectedCalendarIDs = nil }
-                        Button("清空") { controller.selectedCalendarIDs = [] }
-                    }
-                    .buttonStyle(ContentActionButtonStyle())
-                    ForEach(controller.calendars) { calendar in
-                        Divider()
-                        Toggle(isOn: Binding(
-                            get: { controller.selectedCalendarIDs?.contains(calendar.id) ?? true },
-                            set: { controller.setCalendar(calendar.id, enabled: $0) }
-                        )) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(calendar.title)
-                                Text(calendar.source).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    if controller.calendars.isEmpty {
-                        Text("系统中没有可用日历").foregroundStyle(.secondary)
-                    }
-                }
-            }.settingsAnchor(.calendarSelection)
+            }
 
             SettingsGroup {
                 SettingsPicker("在主搜索中显示日程", selection: Binding(
