@@ -116,7 +116,7 @@ enum SystemActions {
     }
 
     private static func feedback(_ message: String, style: ToastStyle = .neutral) {
-        delegate?.toast.show(message, style: style)
+        delegate?.showLauncherFeedback(message, style: style)
     }
 }
 

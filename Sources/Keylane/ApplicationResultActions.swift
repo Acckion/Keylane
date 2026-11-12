@@ -28,12 +28,12 @@ final class ApplicationResultActions {
             },
             .init(id: "favorite", title: favorite ? "取消收藏" : "添加到收藏",
                   icon: favorite ? "star.fill" : "star", group: 1) { [weak model] in
-                model?.toggleFavorite(entry.id)
+                model?.toggleFavorite(entry.id, showsFeedback: true)
             },
-            .init(id: "copy-path", title: "复制路径", icon: "doc.on.doc", group: 2) { UtilityActions.copy(url.path) },
-            .init(id: "copy-name", title: "复制名称", icon: "textformat", group: 2) { UtilityActions.copy(entry.name) },
+            .init(id: "copy-path", title: "复制路径", icon: "doc.on.doc", group: 2) { UtilityActions.copy(url.path, feedback: "已复制路径") },
+            .init(id: "copy-name", title: "复制名称", icon: "textformat", group: 2) { UtilityActions.copy(entry.name, feedback: "已复制名称") },
             .init(id: "copy-bundle-id", title: "复制 Bundle Identifier", icon: "number", group: 2, enabled: bundleID != nil) {
-                if let bundleID { UtilityActions.copy(bundleID) }
+                if let bundleID { UtilityActions.copy(bundleID, feedback: "已复制 Bundle Identifier") }
             },
             .init(id: "command-settings", title: "命令设置", icon: "keyboard", group: 3) { [weak model] in
                 model?.openApplicationCommandSettings(path: entry.id)
@@ -240,6 +240,6 @@ final class ApplicationResultActions {
     }
 
     private func feedback(_ message: String, style: ToastStyle = .failure) {
-        (NSApp.delegate as? Delegate)?.toast.show(message, style: style)
+        (NSApp.delegate as? Delegate)?.showLauncherFeedback(message, style: style)
     }
 }

@@ -6,6 +6,7 @@ enum VisualStyle {
     // 28pt outer radius - 18pt control radius = 10pt inset.
     static let launcherCornerRadius: CGFloat = 28
     static let launcherControlDiameter: CGFloat = 36
+    static let launcherWidth: CGFloat = 760
     static let launcherEdgeInset: CGFloat = 10
     static let launcherTopInset: CGFloat = 61
     static let launcherBottomInset: CGFloat = 52
