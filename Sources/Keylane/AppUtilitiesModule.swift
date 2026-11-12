@@ -7,6 +7,9 @@ import KeylaneCore
 enum AppUtilitiesModule {
     static func make(model: Model) -> LauncherModule {
         let capture = PermissionFeature("screenCapture.enabled", authorization: .screenCapture)
+        let camera = CameraPreviewWindow()
+        let cameraPermission = PermissionFeature("cameraPreview.enabled", authorization: .camera)
+        var cameraChanges: AnyCancellable?
         return LauncherModule(id: .init(rawValue: "keylane.app-utilities"), title: "Keylane 工具",
                               symbol: "wrench.and.screwdriver", commands: [
             command("export-settings", "导出 Keylane 设置", "square.and.arrow.up",
@@ -33,30 +36,24 @@ enum AppUtilitiesModule {
                       DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                           if capture.available { SystemTools.shared.screenshot() }
                       }
-                  })
-        ], searchUpdates: [capture.updates], shortcutSettingsUpdates: [capture.updates])
-    }
-
-    static func camera(model: Model) -> LauncherModule {
-        let camera = CameraPreviewWindow()
-        let permission = PermissionFeature("cameraPreview.enabled", authorization: .camera)
-        var changes: AnyCancellable?
-        return .init(id: .init(rawValue: "keylane.camera-preview"), title: "相机预览", symbol: "camera", commands: [
+                  }),
             .init(declaration: .init(id: .init(rawValue: "show-camera"), title: "显示相机", detail: "实时相机预览",
                                      symbol: "camera", keywords: ["Show Camera", "Camera Preview", "摄像头", "相机预览"],
-                                     destination: .action, settingsPage: "keylane.camera-preview"),
-                  permission: permission, execute: { [weak model] _ in
+                                     destination: .action, settingsPage: "keylane.app-utilities"),
+                  settingsEnabled: Binding(get: { cameraPermission.enabled }, set: cameraPermission.setEnabled),
+                  permission: cameraPermission, execute: { [weak model] _ in
                       camera.show(activation: model?.windowActivationBehavior ?? .systemDefault)
                   })
         ], services: [.init(start: {
-            changes = permission.updates.receive(on: DispatchQueue.main).sink {
-                if !permission.available { camera.close() }
+            cameraChanges = cameraPermission.updates.receive(on: DispatchQueue.main).sink {
+                if !cameraPermission.available { camera.close() }
             }
         }, stop: {
-            changes?.cancel()
-            changes = nil
+            cameraChanges?.cancel()
+            cameraChanges = nil
             camera.close()
-        })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用相机预览"))
+        })], searchUpdates: [capture.updates, cameraPermission.updates],
+           shortcutSettingsUpdates: [capture.updates, cameraPermission.updates])
     }
 
     private static func command(_ id: String, _ title: String, _ symbol: String, _ keywords: [String],
