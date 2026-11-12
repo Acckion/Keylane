@@ -36,7 +36,8 @@ enum SnippetPasteboard {
 
     /// Keep the user's clipboard intact, including when another application copies during the paste.
     static func pasteTemporarily(_ rendered: DynamicTemplate.Rendered, richText: Data, suffix: String,
-                                 response: TimeInterval, completion: @escaping () -> Void) -> Bool {
+                                 response: TimeInterval, target: pid_t, canPaste: () -> Bool,
+                                 completion: @escaping () -> Void) -> Bool {
         let board = NSPasteboard.general
         guard board.accessBehavior == .alwaysAllow else { return false }
         let source = CGEventSource(stateID: .combinedSessionState)
@@ -58,9 +59,8 @@ enum SnippetPasteboard {
             }
             saved.append(snapshot)
         }
-        guard board.changeCount == initialGeneration else { return false }
         let temporary = item(rendered, richText: richText, suffix: suffix)
-        guard temporary.types.contains(.rtf) else { return false }
+        guard temporary.types.contains(.rtf), canPaste(), board.changeCount == initialGeneration else { return false }
         temporary.setString("1", forType: .init("org.nspasteboard.TransientType"))
         board.clearContents()
         guard board.writeObjects([temporary]) else {
@@ -71,8 +71,8 @@ enum SnippetPasteboard {
         let generation = board.changeCount
         down.flags = .maskCommand
         up.flags = .maskCommand
-        ModifierShortcuts.postWithoutHyperRemapping(down)
-        ModifierShortcuts.postWithoutHyperRemapping(up)
+        down.postToPid(target)
+        up.postToPid(target)
         DispatchQueue.main.asyncAfter(deadline: .now() + max(0.12, response * 2)) {
             if board.changeCount == generation {
                 board.clearContents()

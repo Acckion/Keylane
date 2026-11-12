@@ -58,4 +58,17 @@ final class SnippetTests: XCTestCase {
                                                                     delimiter: ",", withinWords: false)?.suffix, "")
     }
 
+    func testImmediateExpansionPreservesAnIncomingDelimiter() {
+        for delimiter in [" ", ",", "!"] {
+            let before = SnippetExpansionMode.immediately.match(in: "😀 !hi", caret: 6, keyword: "!hi",
+                                                                delimiter: delimiter, withinWords: false,
+                                                                delimiterPending: true)
+            XCTAssertEqual(before?.expected, "!hi")
+            XCTAssertEqual(before?.suffix, delimiter)
+            let after = SnippetExpansionMode.immediately.match(in: "😀 !hi" + delimiter, caret: 7, keyword: "!hi",
+                                                               delimiter: delimiter, withinWords: false)
+            XCTAssertEqual(after?.expected, "!hi" + delimiter)
+            XCTAssertEqual(after?.suffix, delimiter)
+        }
+    }
 }

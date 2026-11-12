@@ -106,10 +106,10 @@ public enum SnippetExpansionMode: String, CaseIterable, Codable {
         if !withinWords {
             if range.location > 0, let previous = source.substring(to: range.location).last,
                previous.isLetter || previous.isNumber || previous == "_" { return nil }
-            if self == .immediately, caret < source.length,
+            if self == .immediately, delimiter.isEmpty, caret < source.length,
                let next = source.substring(from: caret).first, next.isLetter || next.isNumber || next == "_" { return nil }
         }
-        return .init(range: range, expected: expected, suffix: self == .keepDelimiter ? delimiter : "")
+        return .init(range: range, expected: expected, suffix: self == .discardDelimiter ? "" : delimiter)
     }
 }
 

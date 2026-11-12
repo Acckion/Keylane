@@ -191,6 +191,11 @@ enum SnippetsModule {
                 expansionPermission.stopObserving()
                 snippets.stop()
             })],
+            launcherHidden: { [weak model] in
+                guard snippets.input?.trigger != nil else { return }
+                snippets.clearInput()
+                if model?.pageID == argumentsID { model?.pageID = .root }
+            },
             applicationFocused: { _ in snippets.applicationFocused() }
         )
     }
