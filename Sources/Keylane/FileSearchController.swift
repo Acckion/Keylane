@@ -39,6 +39,7 @@ final class FileSearchController: ObservableObject {
     private var localQueryResolved = false
     private var didStart = false
     private var grants: [String: Data]
+    private var selectedScopePaths: Set<String>
     private var activeURLs: [URL] = []
     private var spotlight = SpotlightSearch()
     private var spotlightResults: [RankedFile] = []
@@ -53,13 +54,16 @@ final class FileSearchController: ObservableObject {
     private var needsFullScan = false
     static var defaults: FileSearchOptions {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return FileSearchOptions(roots: [home, "/Applications", home + "/Library/Mobile Documents/com~apple~CloudDocs"])
+        var options = FileSearchOptions(roots: [home, "/Applications", home + "/Library/Mobile Documents/com~apple~CloudDocs"])
+        options.enabled = false
+        return options
     }
     init(directory: URL? = nil, preferences: UserDefaults = .standard, defaultOptions: FileSearchOptions? = nil, watchChanges: Bool = true, availableCapacity: ((URL) -> Int64)? = nil) {
         self.preferences = preferences; self.watchEnabled = watchChanges
         self.availableCapacity = availableCapacity ?? { url in (try? FileManager.default.attributesOfFileSystem(forPath:url.path)[.systemFreeSize] as? Int64) ?? 0 }
         options = preferences.data(forKey: "fileSearchOptions").flatMap { try? JSONDecoder().decode(FileSearchOptions.self, from: $0) } ?? defaultOptions ?? Self.defaults
         grants = preferences.dictionary(forKey: "fileSearchGrants") as? [String: Data] ?? [:]
+        selectedScopePaths = Set(preferences.stringArray(forKey: "fileSearchSelectedScopes") ?? [])
         if preferences.data(forKey:"fileSearchOptions") == nil, preferences.string(forKey:"fileSearchScope") == "folder", let data = preferences.data(forKey:"fileSearchBookmark") {
             var stale = false
             if let url = try? URL(resolvingBookmarkData:data,options:[.withSecurityScope,.withoutUI],bookmarkDataIsStale:&stale) {
@@ -116,6 +120,27 @@ final class FileSearchController: ObservableObject {
             if let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope,.withoutUI], bookmarkDataIsStale: &stale), url.startAccessingSecurityScopedResource() { activeURLs.append(url) }
         }
     }
+    var hasAuthorizedScope: Bool {
+        authorizedRoots.contains { path in
+            var directory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: path, isDirectory: &directory)
+                && directory.boolValue && FileManager.default.isReadableFile(atPath: path)
+        }
+    }
+
+    private var authorizedRoots: [String] {
+        // Authorization survives a disconnected volume. The scanner applies
+        // keepRemovedVolumes when a configured root is temporarily missing.
+        options.roots.filter { selectedScopePaths.contains($0) || grants[$0] != nil }
+    }
+
+    func applyPermissionEnabled(_ enabled: Bool) {
+        var updated = options
+        updated.enabled = enabled && hasAuthorizedScope
+        if updated.enabled { updated.roots = authorizedRoots }
+        if updated != options { options = updated }
+    }
+
     func addScope(suggested: URL? = nil) {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
         panel.directoryURL = suggested ?? FileManager.default.homeDirectoryForCurrentUser
@@ -125,18 +150,34 @@ final class FileSearchController: ObservableObject {
         var roots = options.roots
         for url in panel.urls {
             let path = url.standardizedFileURL.path
+            selectedScopePaths.insert(path)
             if let data = try? url.bookmarkData(options: [.withSecurityScope,.securityScopeAllowOnlyReadAccess], includingResourceValuesForKeys: nil, relativeTo: nil) { grants[path] = data }
             if !roots.contains(path) { roots.append(path) }
         }
-        preferences.set(grants, forKey: "fileSearchGrants"); resolveGrants()
+        preferences.set(grants, forKey: "fileSearchGrants")
+        preferences.set(Array(selectedScopePaths), forKey: "fileSearchSelectedScopes")
+        resolveGrants()
         if options.roots == roots { startIndex() } else { options.roots = roots }
     }
-    func removeScope(_ path: String) { grants.removeValue(forKey: path); preferences.set(grants, forKey: "fileSearchGrants"); options.roots.removeAll { $0 == path }; resolveGrants() }
+    func removeScope(_ path: String) {
+        grants.removeValue(forKey: path)
+        selectedScopePaths.remove(path)
+        preferences.set(grants, forKey: "fileSearchGrants")
+        preferences.set(Array(selectedScopePaths), forKey: "fileSearchSelectedScopes")
+        options.roots.removeAll { $0 == path }
+        resolveGrants()
+    }
     func restore(_ path: String) { restored.insert(path); automaticExclusions.removeAll { $0.path == path }; saveAutomatic(); startIndex() }
     private func saveAutomatic() { preferences.set(try? JSONEncoder().encode(automaticExclusions), forKey: "fileSearchAutomaticExclusions") }
     func reset() {
-        grants = [:]; preferences.removeObject(forKey: "fileSearchGrants"); resolveGrants()
-        automaticExclusions = []; saveAutomatic(); options = Self.defaults; startIndex()
+        grants.removeAll()
+        selectedScopePaths.removeAll()
+        preferences.removeObject(forKey: "fileSearchGrants")
+        preferences.removeObject(forKey: "fileSearchSelectedScopes")
+        resolveGrants()
+        automaticExclusions = []
+        saveAutomatic()
+        options = Self.defaults
     }
     func cancel() {
         cancelMerge()

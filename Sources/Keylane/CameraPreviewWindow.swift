@@ -8,6 +8,7 @@ final class CameraPreviewWindow: NSObject, NSWindowDelegate {
     private var generation = 0
 
     func show(activation: WindowActivationBehavior) {
+        guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else { return }
         (NSApp.delegate as? Delegate)?.hideLauncher()
         NSApp.activate(ignoringOtherApps: true)
         if let window {
@@ -29,21 +30,10 @@ final class CameraPreviewWindow: NSObject, NSWindowDelegate {
         showMessage("正在打开相机…")
         window.makeKeyAndOrderFront(nil)
 
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            start(token: token)
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { [weak self] allowed in
-                DispatchQueue.main.async {
-                    guard let self, self.generation == token else { return }
-                    if allowed { self.start(token: token) }
-                    else { self.showPermissionMessage() }
-                }
-            }
-        default:
-            showPermissionMessage()
-        }
+        start(token: token)
     }
+
+    func close() { window?.close() }
 
     func windowWillClose(_ notification: Notification) {
         generation += 1
@@ -74,10 +64,6 @@ final class CameraPreviewWindow: NSObject, NSWindowDelegate {
         session.addInput(input)
         session.startRunning()
         return session.isRunning
-    }
-
-    private func showPermissionMessage() {
-        showMessage("请在「系统设置 → 隐私与安全性 → 相机」允许 Keylane 访问相机。")
     }
 
     private func showMessage(_ message: String) {

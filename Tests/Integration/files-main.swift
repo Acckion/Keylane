@@ -29,6 +29,9 @@ let excluded = scope.appendingPathComponent("already-excluded", isDirectory: tru
 try FileManager.default.createDirectory(at: excluded, withIntermediateDirectories: false)
 let exclusion = AutomaticFileExclusion(path: excluded.path, reason: "fixture", events: 0)
 prefs.set(try JSONEncoder().encode([exclusion]), forKey: "fileSearchAutomaticExclusions")
+let localScope = root.appendingPathComponent("always-available", isDirectory: true)
+try FileManager.default.createDirectory(at: localScope, withIntermediateDirectories: false)
+prefs.set([scope.path, localScope.path], forKey: "fileSearchSelectedScopes")
 defer { prefs.removePersistentDomain(forName:suite) }
 var config = FileSearchOptions(roots:[scope.path]); config.ignorePatterns = ["*.tmp"]
 let controller = FileSearchController(directory:root.appendingPathComponent("index"),preferences:prefs,defaultOptions:config,watchChanges:true)
@@ -110,11 +113,28 @@ let untouched = try index.search("sentinel", options: controller.options)
 precondition(untouched.first?.id == sentinel, "An already excluded path must not trigger a full sweep")
 let stats = controller.stats
 precondition(stats.entries > 0 && stats.files > 0 && stats.bytes > 0)
-try FileManager.default.moveItem(at:scope,to:root.appendingPathComponent("disconnected"))
-controller.startIndex(); wait("Disconnected retention scan") { !controller.indexing }
+let disconnected = root.appendingPathComponent("disconnected", isDirectory: true)
+try FileManager.default.moveItem(at: scope, to: disconnected)
+controller.options.enabled = false
+controller.options.roots = [scope.path, localScope.path]
+precondition(controller.hasAuthorizedScope, "The readable scope must allow re-enabling file search")
+controller.applyPermissionEnabled(true)
+precondition(controller.options.enabled && controller.options.roots == [scope.path, localScope.path],
+             "Enabling must retain configured scopes on disconnected volumes")
+let savedOptions = try JSONDecoder().decode(FileSearchOptions.self, from: prefs.data(forKey: "fileSearchOptions")!)
+precondition(savedOptions.roots == [scope.path, localScope.path], "Disconnected scope must remain in saved options")
+wait("Disconnected retention scan") { !controller.indexing }
 controller.search("作业"); wait("Keep offline record") { results.first?.name == "作业-2.pdf" }
+try FileManager.default.moveItem(at: disconnected, to: scope)
+let reconnected = scope.appendingPathComponent("reconnected-fixture.txt")
+try Data("reconnected scope".utf8).write(to: reconnected)
+controller.startIndex()
+controller.search("reconnected-fixture")
+wait("Reconnected scope indexed without selecting it again") { !controller.indexing && results.first?.id == reconnected.path }
+try FileManager.default.moveItem(at: scope, to: disconnected)
 controller.options.keepRemovedVolumes = false
 wait("Remove offline records") { !controller.indexing && controller.stats.entries == 0 }
+precondition(controller.options.roots == [scope.path, localScope.path], "Removing offline records must keep configured scopes")
 var blockedOptions = config; blockedOptions.enforceDiskSpace = true
 let blocked = FileSearchController(directory:root.appendingPathComponent("blocked-index"),preferences:UserDefaults(suiteName:suite+".blocked")!,defaultOptions:blockedOptions,watchChanges:false,availableCapacity:{ _ in 0 })
 // Restore a live synthetic scope so the low-space branch is reached.

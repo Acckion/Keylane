@@ -19,7 +19,11 @@ struct SettingsView: View {
             sidebar(matches: matches)
         } detail: {
             SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
-                page?.content()
+                if let page, let contribution = page.titlebar, contribution.permissionStatus != nil {
+                    PermissionSettingsContent(contribution: contribution, content: page.content).id(page.id)
+                } else {
+                    page?.content()
+                }
             }
         }.toggleStyle(SettingsSwitchStyle())
         .navigationTitle(headerScrolledAway ? (page?.title ?? "设置") : "")

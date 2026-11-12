@@ -8,8 +8,8 @@ import KeylaneCore
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
         let modules = [applications(model), host(model), files(model), clipboard(model), AppleNotesModule.make(model: model),
-                       QuicklinksModule.make(model: model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model),
-                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
+                       QuicklinksModule.make(model: model), calculator(model), systemTools(model), screenCapture(), CalendarLauncherModule.make(model: model),
+                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), AppUtilitiesModule.camera(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
             guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
@@ -24,7 +24,7 @@ enum BuiltinLauncherModules {
             var extensionModule = module
             extensionModule.settings = [.init(id: id, title: title, symbol: symbol,
                                                subtitle: "管理此扩展的命令、别名与快捷键。", order: 120 + index,
-                                               items: [searchItem], content: { [weak model] in
+                                               items: [searchItem], titlebar: module.permissionTitlebar, content: { [weak model] in
                 guard let model else { return AnyView(EmptyView()) }
                 return AnyView(ExtensionCommandPreferences(model: model, commands: commands).settingsAnchor(searchItem))
             })]
@@ -36,18 +36,20 @@ enum BuiltinLauncherModules {
                                 _ keywords: [String], destination: LauncherCommandDeclaration.Destination = .action,
                                 settings: String? = nil,
                                 available: @escaping () -> Bool = { true },
+                                permission: PermissionFeature? = nil,
                                 dynamicDetail: (() -> String)? = nil,
                                 settingsEnabled: Binding<Bool>? = nil,
                                 execute: @escaping (LauncherCommandOrigin) -> Void = { _ in }) -> LauncherModule.Command {
         LauncherModule.Command(
             declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
                                keywords: keywords, destination: destination, settingsPage: settings),
-            detail: dynamicDetail, settingsEnabled: settingsEnabled, available: available, execute: execute
+            detail: dynamicDetail, settingsEnabled: settingsEnabled, available: available, permission: permission, execute: execute
         )
     }
 
     private static func host(_ model: Model) -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
+        let category = ShortcutSettingsControls()
+        return .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general"),
                          command("show-onboarding", "Show Onboarding", "重新打开 Keylane 的首次引导",
@@ -61,8 +63,11 @@ enum BuiltinLauncherModules {
                          settingsPage(model, "keyboard", "键盘", "keyboard", "管理按键行为、导航和 Hyper Key。", 6) {
                              KeyboardPreferences(model: $0)
                          },
-                         settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7) {
-                             ShortcutSettingsPreferences(model: $0)
+                         settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7, trailingToolbar: { [weak model] in
+                             AnyView(ShortcutSettingsToolbar(groups: model?.launcherModules?.shortcutCommandGroups ?? [],
+                                                                    navigation: model?.navigation ?? "arrows", selection: category))
+                         }) {
+                             ShortcutSettingsPreferences(model: $0, selection: category)
                          },
                          settingsPage(model, "menu-bar", "菜单栏", "menubar.rectangle", "选择各模块在菜单栏中显示的项目。", 70) {
                              MenuBarPreferences(registry: $0.menuBar)
@@ -113,11 +118,7 @@ enum BuiltinLauncherModules {
                          title: "启用应用程序", help: "启用应用搜索和应用快捷键",
                          enabled: Binding(get: { [weak model] in model?.applicationsEnabled ?? false },
                                           set: { [weak model] in model?.applicationsEnabled = $0 }),
-                         updates: model.$applicationsEnabled.removeDuplicates().eraseToAnyPublisher(),
-                         info: { [weak model] in
-                             guard let model else { return AnyView(EmptyView()) }
-                             return AnyView(ApplicationSettingsInfo(model: model))
-                         }
+                         updates: model.$applicationsEnabled.removeDuplicates().eraseToAnyPublisher()
                      ), content: LauncherSettingsContent.applications)],
                      services: [.init(start: { [weak model] in
                          model?.startApplicationDiscovery()
@@ -146,6 +147,16 @@ enum BuiltinLauncherModules {
     }
 
     private static func files(_ model: Model) -> LauncherModule {
+        let controller = model.fileSearch
+        let permission = PermissionFeature("fileSearch.scopeOptIn", authorization: .init(
+            check: { controller.hasAuthorizedScope },
+            request: { complete in
+                controller.addScope()
+                complete(controller.hasAuthorizedScope)
+            },
+            guidance: "请通过启用开关选择可访问的文件夹。文件搜索只会扫描你授权的范围。"
+        ))
+        var permissionChanges: AnyCancellable?
         let page = PageID(rawValue: "Files")
         let provider = LauncherModule.Provider(namespace: .prefix("file:"), entries: { [weak model] input in
             guard let model, input.page == .root, model.fileSearch.options.enabled,
@@ -162,16 +173,16 @@ enum BuiltinLauncherModules {
         return .init(id: .init(rawValue: "keylane.files"), commands: [
             command("file-search", "搜索文件", "Spotlight", "doc.text.magnifyingglass",
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
-                    available: { [weak model] in model?.fileSearch.options.enabled == true }),
+                    permission: permission),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
-                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
+                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"), execute: { [weak model] origin in
                 guard let model else { return }
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model.fileAI.present(model.fileResults.map(\.url))
             }),
             command("ask-finder", "询问 Finder", "AI", "sparkles", ["Ask Finder"], settings: "files",
-                    available: { [weak model] in model.map { $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false },
+                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.finderAutomation.available && $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-finder"), execute: { [weak model] origin in
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model?.fileAI.presentFinder()
@@ -182,15 +193,23 @@ enum BuiltinLauncherModules {
                          leave: { [weak model] in model?.fileSearch.cancel() },
                          updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
                          releasePreview: { FilePreview.shared.dismiss() })
-        ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: SettingsTitlebarContribution(
-                         title: "启用文件搜索",
-                         enabled: Binding(get: { [weak model] in model?.fileSearch.options.enabled ?? false },
-                                          set: { [weak model] in model?.fileSearch.options.enabled = $0 }),
-                         updates: model.fileSearch.$options.map(\.enabled).removeDuplicates().eraseToAnyPublisher()
-                     ), content: LauncherSettingsContent.files)],
+        ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"), content: LauncherSettingsContent.files)],
+           services: [.init(start: {
+               controller.applyPermissionEnabled(permission.available)
+               let scopeChanges = controller.$options.map { [$0.enabled ? "enabled" : "disabled"] + $0.roots }
+               permissionChanges = Publishers.Merge(permission.updates, ViewObservation.changes(scopeChanges))
+                   .receive(on: DispatchQueue.main).sink {
+                       permission.recheck()
+                       controller.applyPermissionEnabled(permission.available)
+                   }
+           }, stop: {
+               permissionChanges?.cancel()
+               permissionChanges = nil
+               controller.cancel()
+           })],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
-                           updates(model.fileAI.$commandsEnabled)],
+                           updates(model.fileAI.$commandsEnabled), model.finderAutomation.updates],
            shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
 
@@ -226,6 +245,10 @@ enum BuiltinLauncherModules {
     private static func clipboard(_ model: Model) -> LauncherModule {
         let id = PageID(rawValue: "Clipboard")
         let controller = model.clipboard
+        let permission = PermissionFeature("clipboardPersistentCapture", authorization: .persistentClipboard)
+        var titlebar = permission.titlebar(SettingsItem.clipboardCapture.title)
+        titlebar.searchItem = .clipboardCapture
+        var permissionChanges: AnyCancellable?
         let page = LauncherPage(
             id: id, placeholder: "搜索剪贴板历史…", badge: ("剪贴板历史", "list.clipboard"), actionTitle: "剪贴板操作",
             contentPlacement: .underChrome,
@@ -266,16 +289,19 @@ enum BuiltinLauncherModules {
                     available: { controller.historyCommandEnabled },
                     settingsEnabled: Binding(get: { controller.historyCommandEnabled }, set: { controller.historyCommandEnabled = $0 }))
         ], pages: [page], settings: [
-            settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: .init(
-                title: SettingsItem.clipboardCapture.title,
-                help: "控制后台采集，已保存的记录仍可查看。",
-                enabled: Binding(get: { controller.captureEnabled }, set: { controller.captureEnabled = $0 }),
-                updates: controller.$captureEnabled.removeDuplicates().eraseToAnyPublisher(),
-                searchItem: .clipboardCapture
-            ), content: LauncherSettingsContent.clipboard)
+            settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: titlebar, content: LauncherSettingsContent.clipboard)
         ], services: [
-            .init(start: { [weak model] in model?.clipboard.startMonitoring() },
-                  stop: { [weak model] in model?.clipboard.stopMonitoring() })
+            .init(start: {
+                controller.captureEnabled = permission.available
+                controller.startMonitoring()
+                permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
+                    controller.captureEnabled = permission.available
+                }
+            }, stop: {
+                permissionChanges?.cancel()
+                permissionChanges = nil
+                controller.stopMonitoring()
+            })
         ], searchUpdates: [updates(controller.$historyCommandEnabled)],
         shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
     }
@@ -347,18 +373,29 @@ enum BuiltinLauncherModules {
         return String(format: "%.12g", value)
     }
 
-    private static func systemTools() -> LauncherModule {
-        .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
-            command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", [], execute: { _ in
+    private static func screenCapture() -> LauncherModule {
+        let permission = PermissionFeature("screenCapture.enabled", authorization: .screenCapture)
+        return .init(id: .init(rawValue: "keylane.screen-capture"), title: "屏幕截取", symbol: "camera.viewfinder", commands: [
+            command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", [],
+                    settings: "keylane.screen-capture", permission: permission, execute: { _ in
                 (NSApp.delegate as? Delegate)?.hideLauncher()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { SystemTools.shared.screenshot() }
-            }),
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    if permission.available { SystemTools.shared.screenshot() }
+                }
+            })
+        ], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用屏幕截取"))
+    }
+
+    private static func systemTools(_ model: Model) -> LauncherModule {
+        .init(id: .init(rawValue: "keylane.system-tools"), title: "系统", symbol: "gearshape", commands: [
             command("color", "Pick Color / 取色", "Copy hex color", "eyedropper", [], execute: { _ in SystemTools.shared.colorPicker() }),
-            command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", [], execute: { _ in SystemTools.shared.readClipboard() }),
+            command("speak", "Read Clipboard / 朗读", "System text to speech", "speaker.wave.2", [], settings: "permissions", permission: model.clipboardSpeech,
+                    execute: { _ in SystemTools.shared.readClipboard() }),
             command("stop-speaking", "Stop Reading / 停止朗读", "Stop speech playback", "stop.circle", [], execute: { _ in SystemTools.shared.stopReading() }),
             command("finder", "Open Home / 个人文件夹", "Finder", "folder", [], execute: { _ in NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) }),
             command("lock-screen", "锁定屏幕", "锁定当前 macOS 会话", "lock.fill",
-                    ["Lock Screen", "锁屏"], execute: { _ in SystemActions.lockScreen() }),
+                    ["Lock Screen", "锁屏"], settings: "permissions", permission: model.lockScreenPermission,
+                    execute: { _ in SystemActions.lockScreen() }),
             command("sleep-mac", "让 Mac 睡眠", "让电脑进入睡眠", "moon.zzz",
                     ["Sleep Mac", "系统睡眠", "休眠"], execute: { _ in SystemActions.requestPowerAction(.sleep) }),
             command("sleep-displays", "让显示器睡眠", "关闭显示器画面", "display",
@@ -369,7 +406,7 @@ enum BuiltinLauncherModules {
                     ["Hide Other Apps", "Hide All Apps Except Frontmost"], execute: { _ in SystemActions.hideOtherApplications() }),
             command("unhide-applications", "显示所有隐藏应用", "恢复已隐藏的应用窗口", "eye",
                     ["Unhide All Hidden Apps", "Show Hidden Apps"], execute: { _ in SystemActions.unhideApplications() })
-        ])
+        ], searchUpdates: [model.lockScreenPermission.updates, model.clipboardSpeech.updates])
     }
 
     private static func updates<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never>
@@ -378,8 +415,9 @@ enum BuiltinLauncherModules {
     }
 
     private static func settingsPage<Content: View>(_ model: Model, _ id: String, _ title: String, _ symbol: String,
-                                     _ subtitle: String, _ order: Int, titlebar: SettingsTitlebarContribution? = nil, content: @escaping (Model) -> Content) -> LauncherSettingsPage {
-        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar) { [weak model] in
+                                     _ subtitle: String, _ order: Int, titlebar: SettingsTitlebarContribution? = nil,
+                                     trailingToolbar: (() -> AnyView)? = nil, content: @escaping (Model) -> Content) -> LauncherSettingsPage {
+        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar, trailingToolbar: trailingToolbar) { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(content(model))
         }

@@ -29,7 +29,9 @@ enum CalendarAccess: String {
 /// One serial queue owns the EventKit store; only immutable summaries enter the UI.
 /// No calendar data is written to disk, uploaded, or modified through EventKit.
 final class CalendarController: ObservableObject {
-    @Published var enabled: Bool { didSet { preferences.set(enabled, forKey: "calendar.enabled"); if started { configure() } } }
+    let permission: PermissionFeature
+    var enabled: Bool { permission.available }
+    private var permissionChanges: AnyCancellable?
     @Published var selectedDate = Date() { didSet { if presenting { refresh() } } }
     @Published private(set) var query = "" { didSet { maintainSelection() } }
     @Published var selectedCalendarIDs: Set<String>? { didSet { preferences.set(selectedCalendarIDs.map { Array($0) }, forKey: "calendar.selectedIDs"); refresh() } }
@@ -57,9 +59,10 @@ final class CalendarController: ObservableObject {
     private var started = false
     private var presenting = false
     private var dismissedUntil: [String: Date] = [:]
-    init(registry: MenuBarRegistry, preferences: UserDefaults = .standard) {
+    init(registry: MenuBarRegistry, preferences: UserDefaults = .standard,
+         authorization: PermissionFeature.Authorization = .calendar) {
         self.registry = registry; self.preferences = preferences
-        enabled = preferences.object(forKey: "calendar.enabled") as? Bool ?? true
+        permission = PermissionFeature("calendar.enabled", authorization: authorization, defaults: preferences)
         menuDisplay = preferences.string(forKey: "calendar.menuDisplay") ?? "next"
         selectedCalendarIDs = preferences.stringArray(forKey: "calendar.selectedIDs").map(Set.init)
     }
@@ -68,6 +71,10 @@ final class CalendarController: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink { [weak self] in
+            guard let self, self.started else { return }
+            self.configure()
+        }
         configure()
     }
     private func startObserving() {
@@ -81,6 +88,7 @@ final class CalendarController: ObservableObject {
         observers.append(center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.refresh() })
     }
     func stop() {
+        permissionChanges = nil
         generation += 1; started = false; pending?.cancel(); timer?.invalidate(); timer = nil
         loading = false
         endPresentation()
@@ -138,6 +146,7 @@ final class CalendarController: ObservableObject {
         guard started || presenting else { return }
         generation += 1; let ticket = generation; pending?.cancel()
         access = .current
+        permission.recheck()
         guard enabled, access == .allowed else {
             events = []; upcoming = []; calendars = []; selectedID = nil; loading = false; lastUpdated = nil; updateMenuBar(); writeAcceptanceReport(); return
         }

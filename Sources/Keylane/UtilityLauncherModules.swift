@@ -5,17 +5,23 @@ import SwiftUI
 
 enum UtilityLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        [contacts(model.contacts), dictionary(model), emoji(model), shortcuts(model)]
+        [contacts(model), dictionary(model), emoji(model), shortcuts(model)]
     }
 
-    private static func contacts(_ controller: ContactsController) -> LauncherModule {
+    private static func contacts(_ model: Model) -> LauncherModule {
+        let controller = model.contacts
+        let permission = PermissionFeature("contacts.enabled", authorization: .contacts)
+        var permissionChanges: AnyCancellable?
         let pageID = PageID(rawValue: "Contacts")
         let selectedContact = controller.$visible.combineLatest(controller.$selectedID)
             .map { results, id in results.first { $0.id == id } }
         var page = LauncherPage(id: pageID, placeholder: "搜索联系人…",
                                 badge: ("联系人", "person.crop.circle"),
                                 contentPlacement: .underChrome,
-                                content: { AnyView(ContactsPage(controller: controller)) },
+                                content: { [weak model] in
+                                    AnyView(ContactsPage(controller: controller, permission: permission,
+                                                         showSettings: { model?.openSettings(page: "keylane.contacts") }))
+                                },
                                 queryChanged: { controller.query = $0 },
                                 leave: controller.stop,
                                 move: controller.move,
@@ -28,14 +34,23 @@ enum UtilityLauncherModules {
                                 updates: ViewObservation.changes(selectedContact))
         page.enter = { query in
             controller.query = query
-            controller.start()
+            if permission.available { controller.start() }
             return nil
         }
-        page.resume = controller.start
+        page.resume = { if permission.available { controller.start() } }
         return .init(id: .init(rawValue: "keylane.contacts"), title: "联系人", symbol: "person.crop.circle", commands: [
             command("contacts", "搜索联系人", "系统通讯录", "person.crop.circle",
-                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID))
-        ], pages: [page])
+                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID), settings: "keylane.contacts",
+                    permission: permission)
+        ], pages: [page], services: [.init(start: {
+            permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
+                if !permission.available { controller.stop() }
+            }
+        }, stop: {
+            permissionChanges?.cancel()
+            permissionChanges = nil
+            controller.stop()
+        })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用联系人"))
     }
 
     private static func contactActions(_ controller: ContactsController) -> [LauncherAction] {
@@ -184,6 +199,8 @@ enum UtilityLauncherModules {
 
     private static func shortcuts(_ model: Model) -> LauncherModule {
         let controller = model.systemShortcuts
+        let iconPermission = PermissionFeature("shortcuts.iconsEnabled", authorization: .automation(ShortcutIconReader.bundleIdentifier, appName: "快捷指令"))
+        var iconChanges: AnyCancellable?
         let pageID = "shortcuts"
         let provider = LauncherModule.Provider(namespace: .prefix("shortcut:"), entries: { _ in
             controller.entries.compactMap { shortcut in
@@ -209,7 +226,7 @@ enum UtilityLauncherModules {
                                             items: SettingsItem.all.filter { $0.page == pageID },
                                             content: { [weak model] in
                                                 guard let model else { return AnyView(EmptyView()) }
-                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller))
+                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller, iconPermission: iconPermission))
                                             })
         let searchUpdates = Publishers.Merge(
             controller.$entries.removeDuplicates().dropFirst().map { _ in () },
@@ -219,7 +236,18 @@ enum UtilityLauncherModules {
             command("system-shortcuts", "管理快捷指令", "别名、热键与启用状态", "square.stack.3d.up",
                     ["Shortcuts", "Apple Shortcuts", "快捷指令"], destination: .settings(pageID), settings: pageID)
         ], providers: [provider], settings: [settings], services: [
-            .init(start: { controller.refresh() }, stop: {})
+            .init(start: {
+                controller.iconReadingAllowed = { iconPermission.available }
+                iconChanges = iconPermission.updates.receive(on: DispatchQueue.main).sink {
+                    controller.updateIconPermission()
+                }
+                controller.refresh()
+            }, stop: {
+                iconChanges?.cancel()
+                iconChanges = nil
+                controller.iconReadingAllowed = { false }
+                controller.updateIconPermission()
+            })
         ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,
             updates: {
@@ -249,8 +277,8 @@ enum UtilityLauncherModules {
 
     private static func command(_ id: String, _ title: String, _ detail: String, _ symbol: String,
                                 _ keywords: [String], destination: LauncherCommandDeclaration.Destination,
-                                settings: String? = nil) -> LauncherModule.Command {
+                                settings: String? = nil, permission: PermissionFeature? = nil) -> LauncherModule.Command {
         .init(declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
-                                keywords: keywords, destination: destination, settingsPage: settings))
+                                keywords: keywords, destination: destination, settingsPage: settings), permission: permission)
     }
 }

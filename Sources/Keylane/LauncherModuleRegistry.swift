@@ -18,6 +18,7 @@ struct Entry: Identifiable {
     var isDirectory = false
     var isFallback = false
     var subtitle: String?
+    var needsPermissionActivation = false
 }
 
 struct LauncherAction: Identifiable {
@@ -82,8 +83,9 @@ struct SettingsTitlebarContribution {
     var help: String?
     let enabled: Binding<Bool>
     let updates: AnyPublisher<Bool, Never>
-    var info: (() -> AnyView)?
     var searchItem: SettingsItem?
+    var permissionStatus: AnyPublisher<SettingsPermissionStatus, Never>?
+    var openPrivacySettings: (() -> Void)?
 }
 
 struct LauncherSettingsPage: Identifiable {
@@ -94,6 +96,7 @@ struct LauncherSettingsPage: Identifiable {
     let order: Int
     let items: [SettingsItem]
     var titlebar: SettingsTitlebarContribution?
+    var trailingToolbar: (() -> AnyView)?
     let content: () -> AnyView
 }
 
@@ -144,6 +147,7 @@ struct LauncherModule {
         var detail: (() -> String)?
         var settingsEnabled: Binding<Bool>?
         var available: () -> Bool = { true }
+        var permission: PermissionFeature?
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
     }
     struct Provider {
@@ -180,6 +184,7 @@ struct LauncherModule {
     var dynamicCommandSettings: DynamicCommandSettings?
     var shortcutSettingsBinding: ShortcutSettingsBinding?
     var shortcutSettingsUpdates: [AnyPublisher<Void, Never>] = []
+    var permissionTitlebar: SettingsTitlebarContribution?
 }
 
 extension LauncherModule {
@@ -313,6 +318,13 @@ final class LauncherModuleRegistry {
 
     func page(_ id: PageID) -> LauncherPage? { pages[id] }
 
+    func permissionNeeded(for id: CommandID) -> PermissionFeature? {
+        guard let command = byID[id], commandEnabled(id), command.available(),
+              let permission = command.permission else { return nil }
+        permission.recheck()
+        return permission.available ? nil : permission
+    }
+
     private func provider(for entry: Entry) -> LauncherModule.Provider? {
         providers.first { $0.namespace.contains(entry.commandID) }
     }
@@ -335,8 +347,11 @@ final class LauncherModuleRegistry {
             guard input.namespace?.contains(command.declaration.id) != false,
                   commandEnabled(command.declaration.id), command.available() else { return nil }
             let item = command.declaration
+            let needsPermission = command.permission?.available == false
+            if needsPermission && input.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
-                         detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords)
+                         detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords,
+                         subtitle: needsPermission ? "启用并继续" : nil, needsPermissionActivation: needsPermission)
         } + providers.flatMap { provider in
             guard input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
             return provider.entries(input).filter {
@@ -348,7 +363,8 @@ final class LauncherModuleRegistry {
     func resolve(_ id: CommandID, origin: LauncherCommandOrigin,
                  navigate: @escaping (LauncherCommandDeclaration.Destination) -> Void) -> (() -> Void)? {
         if let command = byID[id] {
-            guard commandEnabled(command.declaration.id), command.available() else { return nil }
+            guard commandEnabled(command.declaration.id), command.available(),
+                  command.permission?.available != false else { return nil }
             return {
                 command.execute(origin)
                 switch command.declaration.destination {

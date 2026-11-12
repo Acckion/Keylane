@@ -516,7 +516,7 @@ struct Launcher: View {
         let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
         let badgeSymbol = page?.badge?.symbol ?? ""
         let feedback = application ? model.footerFeedback.current : nil
-        let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.message) }
+        let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
             ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty
         let actionWidth: CGFloat = page?.actionWidth ?? (showsActions ? 196 : 126)
@@ -535,7 +535,10 @@ struct Launcher: View {
                     .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
             } else if let feedback {
-                NativeHoverButton(title: "\(feedback.message) · 打开 Keylane 菜单", action: { toggleMenu(application: true) }) {
+                NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开 Keylane 菜单" : feedback.label, action: {
+                    if feedback.actionTitle != nil { model.footerFeedback.performAction() }
+                    else { toggleMenu(application: true) }
+                }) {
                     LauncherFooterFeedbackLabel(feedback: feedback)
                 }
                 .frame(width: applicationWidth, height: 36)
@@ -600,7 +603,7 @@ struct Launcher: View {
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
         var actions = model.launcherModules?.actions(for: row) ?? [
-            MenuAction(id: "open", title: "执行命令", icon: "return", keys: ["↩"]) {
+            MenuAction(id: "open", title: row.needsPermissionActivation ? "启用并继续" : "执行命令", icon: "return", keys: ["↩"]) {
                 model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
             },
             model.favoriteAction(for: row)
@@ -723,6 +726,7 @@ struct Launcher: View {
         if argumentTarget != nil { return "启动新实例" }
         if let title = page?.primaryTitle?() { return title }
         if let row = selectedEntry {
+            if row.needsPermissionActivation { return "启用并继续" }
             if let title = model.launcherModules?.primaryTitle(for: row) { return title }
             if row.id == "calculator" { return "复制结果" }
         }

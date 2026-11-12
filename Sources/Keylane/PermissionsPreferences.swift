@@ -88,6 +88,12 @@ struct PermissionsPreferences: View {
                 }
             }
             if showsAdditionalPermissions {
+                SettingsGroup("按功能授权") {
+                    SettingsPermissionToggle(contribution: model.crossAppPaste.titlebar("跨应用粘贴"), detail: "允许 Keylane 把已复制的内容粘贴到上一个应用。")
+                    SettingsPermissionToggle(contribution: model.lockScreenPermission.titlebar("锁定屏幕"), detail: "允许 Keylane 发送锁屏快捷键。")
+                    SettingsPermissionToggle(contribution: model.finderAutomation.titlebar("Finder 自动化"), detail: "显示应用的 Finder 信息，或读取 Finder 选中的文件。")
+                    SettingsPermissionToggle(contribution: model.clipboardSpeech.titlebar("朗读剪贴板"), detail: "允许从系统命令中朗读剪贴板文本。")
+                }
                 SettingsGroup("文件与文件夹") {
                     SettingsActionRow(title: "文件搜索范围", actionTitle: "选择文件夹…") { model.fileSearch.addScope() }
                     Divider()

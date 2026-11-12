@@ -220,16 +220,3 @@ struct ApplicationsIcon: View {
     }
     private func tile(_ colors: [Color]) -> some View { RoundedRectangle(cornerRadius: 6).fill(LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom)) }
 }
-
-
-struct ApplicationSettingsInfo: View {
-    let model: Model
-    @State private var status = ""
-
-    var body: some View {
-        Group {
-            Text(status)
-            Text("关闭模块会停用应用搜索、应用快捷键和自动退出。已保存的配置会保留。")
-        }.onReceive(model.$scanStatus.removeDuplicates()) { status = $0 }
-    }
-}

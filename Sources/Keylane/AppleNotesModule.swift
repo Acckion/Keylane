@@ -9,7 +9,8 @@ enum AppleNotesModule {
     private static let symbol = "note.text"
 
     static func make(model: Model) -> LauncherModule {
-        let notes = AppleNotesController()
+        let permission = PermissionFeature("appleNotes.enabled", authorization: .automation("com.apple.Notes", appName: "备忘录"))
+        let notes = AppleNotesController(permission: permission)
         let create: (LauncherCommandOrigin) -> Void = { [weak model] origin in
             notes.resetDraft()
             model?.openPage(createPage, origin: origin)
@@ -45,12 +46,14 @@ enum AppleNotesModule {
         return .init(id: .init(rawValue: "keylane.apple-notes"), title: "Apple 备忘录", symbol: symbol, commands: [
             .init(declaration: .init(id: .init(rawValue: "search-apple-notes"), title: "搜索 Apple 备忘录",
                                      detail: "按标题或正文搜索，使用原生编辑器打开", symbol: symbol,
-                                     keywords: ["Notes", "Search Notes", "笔记", "便签"], destination: .page(searchPage))),
+                                     keywords: ["Notes", "Search Notes", "笔记", "便签"], destination: .page(searchPage), settingsPage: "keylane.apple-notes"),
+                  permission: permission),
             .init(declaration: .init(id: .init(rawValue: "create-apple-note"), title: "新建 Apple 备忘录",
                                      detail: "快速记录到 Apple 备忘录的默认文件夹", symbol: "square.and.pencil",
-                                     keywords: ["Create Note", "新建笔记", "记笔记"], destination: .action),
-                  execute: create)
-        ], pages: [search, editor])
+                                     keywords: ["Create Note", "新建笔记", "记笔记"], destination: .action, settingsPage: "keylane.apple-notes"),
+                  permission: permission, execute: create)
+        ], pages: [search, editor], searchUpdates: [permission.updates],
+           permissionTitlebar: permission.titlebar("启用 Apple 备忘录"))
     }
 }
 
@@ -68,6 +71,9 @@ private final class AppleNotesController: ObservableObject {
     private var revision = 0
     private var pendingSearch: DispatchWorkItem?
     private let queue = DispatchQueue(label: "org.keylane.apple-notes", qos: .userInitiated)
+    private let permission: PermissionFeature
+
+    init(permission: PermissionFeature) { self.permission = permission }
 
     var updates: AnyPublisher<Void, Never> {
         Publishers.MergeMany([
@@ -82,6 +88,7 @@ private final class AppleNotesController: ObservableObject {
     }
 
     func search(_ value: String) {
+        guard permission.available else { clearSearch(); return }
         let term = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if term == query, searching { return }
         query = term
@@ -108,7 +115,16 @@ private final class AppleNotesController: ObservableObject {
             }
         }
         pendingSearch = request
-        queue.asyncAfter(deadline: .now() + 0.22, execute: request)
+        permission.verifyForUse { [weak self] allowed in
+            guard let self, self.revision == requested else { return }
+            if allowed {
+                self.queue.asyncAfter(deadline: .now() + 0.22, execute: request)
+            } else {
+                self.pendingSearch = nil
+                self.searching = false
+                self.searchError = self.permission.guidance
+            }
+        }
     }
 
     func retrySearch() { search(query) }
@@ -131,17 +147,14 @@ private final class AppleNotesController: ObservableObject {
     }
 
     func openSelected() {
-        guard let selectedID, !saving else { return }
+        guard permission.available, let selectedID, !saving else { return }
         saving = true
         searchError = ""
-        queue.async {
-            let outcome = Result { try AppleNotesAutomation.show(selectedID) }
-            DispatchQueue.main.async {
-                self.saving = false
-                switch outcome {
-                case .success: (NSApp.delegate as? Delegate)?.hideLauncher()
-                case .failure(let error): self.searchError = error.localizedDescription
-                }
+        performAuthorized({ try AppleNotesAutomation.show(selectedID) }) { outcome in
+            self.saving = false
+            switch outcome {
+            case .success: (NSApp.delegate as? Delegate)?.hideLauncher()
+            case .failure(let error): self.searchError = error.localizedDescription
             }
         }
     }
@@ -155,29 +168,46 @@ private final class AppleNotesController: ObservableObject {
     }
 
     func create() {
-        guard canCreate, !saving else { return }
+        guard permission.available, canCreate, !saving else { return }
         let heading = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let text = body
         let existing = createdID
         saving = true
         draftError = ""
-        queue.async {
-            var noteID = existing
-            let outcome = Result {
-                let id = try noteID ?? AppleNotesAutomation.create(title: heading, body: text)
-                noteID = id
-                try AppleNotesAutomation.show(id)
-            }
-            DispatchQueue.main.async {
+        permission.verifyForUse { allowed in
+            guard allowed else {
                 self.saving = false
-                self.createdID = noteID
-                switch outcome {
-                case .success:
-                    self.resetDraft()
-                    (NSApp.delegate as? Delegate)?.hideLauncher()
-                case .failure(let error):
-                    self.draftError = noteID == nil ? error.localizedDescription : "备忘录已创建。\(error.localizedDescription)"
+                self.draftError = self.permission.guidance
+                return
+            }
+            self.queue.async {
+                var noteID = existing
+                let outcome = Result {
+                    let id = try noteID ?? AppleNotesAutomation.create(title: heading, body: text)
+                    noteID = id
+                    try AppleNotesAutomation.show(id)
                 }
+                DispatchQueue.main.async {
+                    self.saving = false
+                    self.createdID = noteID
+                    switch outcome {
+                    case .success:
+                        self.resetDraft()
+                        (NSApp.delegate as? Delegate)?.hideLauncher()
+                    case .failure(let error):
+                        self.draftError = noteID == nil ? error.localizedDescription : "备忘录已创建。\(error.localizedDescription)"
+                    }
+                }
+            }
+        }
+    }
+
+    private func performAuthorized(_ operation: @escaping () throws -> Void, completion: @escaping (Result<Void, Error>) -> Void) {
+        permission.verifyForUse { allowed in
+            guard allowed else { completion(.failure(AppleNotesAutomation.Failure(code: -1743))); return }
+            self.queue.async {
+                let result = Result { try operation() }
+                DispatchQueue.main.async { completion(result) }
             }
         }
     }
