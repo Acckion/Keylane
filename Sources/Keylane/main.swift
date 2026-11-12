@@ -103,6 +103,9 @@ final class Model: ObservableObject {
     @Published var modifierStatus = ""
     @Published var scanStatus = "正在扫描…"
     let fileSearch = FileSearchController(startImmediately: false)
+    var fileSearchSeed: String?
+    private var mutatingFiles = Set<String>()
+    private(set) var fileDetailPath: String?
     @Published var fileResults: [SpotlightFile] = [] {
         didSet { filteredFileEntries.removeAll() }
     }
@@ -291,7 +294,13 @@ final class Model: ObservableObject {
         }
         discovery.failed = { [weak self] text in self?.error = text }
         fileSearch.updated = { [weak self] files, status in
-            guard let self else { return }; if self.fileResults != files { self.fileResults = files }; if self.fileSearchStatus != status { self.fileSearchStatus = status }
+            guard let self else { return }
+            if self.fileResults != files { self.fileResults = files }
+            else if self.pageID == .root {
+                self.commandSearch.invalidate()
+                self.rootSearchUpdates.send()
+            }
+            if self.fileSearchStatus != status { self.fileSearchStatus = status }
         }
         refreshLogin()
         moduleRegistrationChanges = launcherModules?.registrationUpdates.sink { [weak self] in
@@ -456,18 +465,110 @@ final class Model: ObservableObject {
 
     func discoveredIdentity(for url: URL) -> ApplicationIdentity? { appIdentities[url.path] }
     func appName(_ url: URL) -> String { appIdentities[url.path]?.displayName ?? url.deletingPathExtension().lastPathComponent }
-    var searchesFilesHere: Bool { fileSearch.isRunning && fileSearch.options.enabled && (activeLauncherPage?.contentPlacement == .fileResults || (pageID == .root && fileSearch.options.searchFromLauncher)) }
-    func searchFiles() {
-        fileSearch.search(query, includeContents: pageID != .root || rootFileContentSearch)
+    var searchesFilesHere: Bool {
+        fileSearch.isRunning && fileSearch.options.enabled
+            && (activeLauncherPage?.contentPlacement == .fileResults
+                || (pageID == .root && (fileSearch.options.searchFromLauncher || FileSearchLocation.typedURL(query) != nil)))
     }
+
+    func searchFiles() {
+        guard searchesFilesHere else {
+            fileSearch.cancel()
+            if !fileResults.isEmpty { fileResults = [] }
+            return
+        }
+        if query != fileDetailPath { fileDetailPath = nil }
+        fileSearch.search(query, includeContents: pageID != .root || rootFileContentSearch,
+                          standalone: pageID != .root, showPathItself: query == fileDetailPath)
+    }
+
+    func showFileLocation(_ url: URL, browse: Bool) {
+        do {
+            let file = try fileSearch.inspect(url)
+            guard !browse || file.isDirectory else { throw CocoaError(.fileReadUnknown) }
+            fileDetailPath = browse ? nil : file.id
+            if pageID == BuiltinLauncherModules.fileSearchPage {
+                if query == file.id { searchFiles() } else { query = file.id }
+            } else {
+                fileSearchSeed = file.id
+                openPage(BuiltinLauncherModules.fileSearchPage, origin: .search)
+            }
+        } catch { fileActionFeedback(error.localizedDescription, style: .failure) }
+    }
+
+    func withFileResult(_ url: URL, perform: (SpotlightFile) -> Void) {
+        do { perform(try fileSearch.inspect(url)) }
+        catch { fileActionFeedback(error.localizedDescription, style: .failure) }
+    }
+
+    func performFileMutation(_ url: URL, trash: Bool) {
+        guard !mutatingFiles.contains(url.path) else { return }
+        let target: FileResultOperations.Target
+        do { target = try fileSearch.mutationTarget(url) }
+        catch { fileActionFeedback(error.localizedDescription, style: .failure); return }
+        mutatingFiles.insert(url.path)
+        let execute = { [weak self] in
+            guard let self else { return }
+            do { _ = try self.fileSearch.mutationTarget(url) }
+            catch {
+                self.mutatingFiles.remove(url.path)
+                self.fileActionFeedback(error.localizedDescription, style: .failure)
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let result = Result { () -> URL in
+                    if trash { try FileResultOperations.trash(target); return target.url }
+                    return try FileResultOperations.duplicate(target)
+                }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.mutatingFiles.remove(url.path)
+                    switch result {
+                    case .success(let changed):
+                        self.fileSearch.refreshAfterFileAction(changed, removed: trash)
+                        self.fileActionFeedback(trash ? "已移到废纸篓" : "已创建「\(changed.lastPathComponent)」", style: .success)
+                    case .failure(let error):
+                        self.fileActionFeedback(error.localizedDescription, style: .failure)
+                    }
+                }
+            }
+        }
+        if trash {
+            guard let window = (NSApp.delegate as? Delegate)?.window, window.attachedSheet == nil else {
+                mutatingFiles.remove(url.path)
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "将「\(url.lastPathComponent)」移到废纸篓？"
+            alert.informativeText = url.path
+            alert.addButton(withTitle: "取消")
+            alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true
+            alert.beginSheetModal(for: window) { [weak self] response in
+                if response == .alertSecondButtonReturn { execute() }
+                else { self?.mutatingFiles.remove(url.path) }
+            }
+        } else { execute() }
+    }
+
+    func fileActionFeedback(_ message: String, style: ToastStyle) {
+        (NSApp.delegate as? Delegate)?.showLauncherFeedback(message, style: style)
+    }
+
     func chooseFileSearchFolder(returnToLauncher: Bool = false) {
         fileSearch.addScope()
         if returnToLauncher { (NSApp.delegate as? Delegate)?.revealLauncherDestination() }
     }
     func openFile(_ url: URL) {
         guard !fileSearch.isSearching else { return }
-        guard FileManager.default.fileExists(atPath: url.path), NSWorkspace.shared.open(url) else { error = "文件无法打开，可能已移走、删除或没有访问权限。"; searchFiles(); return }
-        (NSApp.delegate as? Delegate)?.hideLauncher()
+        do {
+            let file = try fileSearch.inspect(url)
+            guard NSWorkspace.shared.open(file.url) else { throw CocoaError(.fileReadUnknown) }
+            fileSearch.rememberOpenedFile(file)
+            (NSApp.delegate as? Delegate)?.hideLauncher()
+        } catch {
+            fileActionFeedback("无法打开文件。\(error.localizedDescription)", style: .failure)
+            searchFiles()
+        }
     }
     func launchFromHotkey(_ url: URL) {
         guard applicationsEnabled, !excluded.contains(url.path) else { return }

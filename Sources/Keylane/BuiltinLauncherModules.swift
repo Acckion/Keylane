@@ -192,6 +192,8 @@ enum BuiltinLauncherModules {
               name: file.name, detail: "File", symbol: "doc", rankingKind: .file, isDirectory: file.isDirectory)
     }
 
+    static let fileSearchPage = PageID(rawValue: "Files")
+
     private static func files(_ model: Model) -> LauncherModule {
         let controller = model.fileSearch
         let permission = PermissionFeature("fileSearch.scopeOptIn", authorization: .init(
@@ -215,11 +217,19 @@ enum BuiltinLauncherModules {
                     controller.applyPermissionEnabled(permission.available)
                 }
         }
-        let page = PageID(rawValue: "Files")
+        let page = fileSearchPage
         let provider = LauncherModule.Provider(namespace: .prefix("file:"), entries: { [weak model] input in
             guard let model, input.page == .root, model.fileSearch.options.enabled,
-                  model.fileSearch.options.searchFromLauncher,
+                  model.fileSearch.lastPublishedQuery == input.query,
                   !input.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
+            if FileSearchLocation.typedURL(input.query) != nil, let file = model.fileResults.first {
+                var entry = fileEntry(file)
+                entry.matchScore = 1000
+                entry.rankingKind = .command
+                entry.subtitle = "在 Finder 中打开位置"
+                return [entry]
+            }
+            guard model.fileSearch.options.searchFromLauncher else { return [] }
             let reserveScripts = model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.script-commands")) != false
             return model.fileResults.lazy.filter {
                 $0.url.pathExtension.lowercased() != "app" &&
@@ -227,15 +237,42 @@ enum BuiltinLauncherModules {
             }.prefix(10).map(fileEntry)
         }, resolve: { [weak model] id, _ in
             guard id.rawValue.hasPrefix("file:"), let model, model.fileSearch.options.enabled,
-                  !model.fileSearch.isSearching else { return nil }
+                  model.fileSearch.lastPublishedQuery == model.query, !model.fileSearch.isSearching else { return nil }
             let path = String(id.rawValue.dropFirst("file:".count))
             guard let file = model.fileResults.first(where: { $0.id == path }) else { return nil }
-            return { [weak model] in model?.openFile(file.url) }
-        }, actions: { [weak model] entry in model.map { fileActions(entry, model: $0) } })
+            let directPath = model.pageID == .root && FileSearchLocation.typedURL(model.query) != nil
+            return { [weak model] in
+                guard let model else { return }
+                if directPath {
+                    model.withFileResult(file.url) { item in
+                        if item.isDirectory { model.openFile(item.url) }
+                        else {
+                            NSWorkspace.shared.activateFileViewerSelecting([item.url])
+                            (NSApp.delegate as? Delegate)?.hideLauncher()
+                        }
+                    }
+                } else { model.openFile(file.url) }
+            }
+        }, primaryTitle: { $0.rankingKind == .command ? "在 Finder 中打开位置" : nil },
+        actions: { [weak model] entry in model.map { fileActions(entry, model: $0) } })
         return .init(id: .init(rawValue: "keylane.files"), commands: [
             command("file-search", "搜索文件", "Spotlight", "doc.text.magnifyingglass",
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
                     permission: permission),
+            command("rebuild-file-index", "重建文件索引", "重新检查已授权范围并更新索引", "arrow.clockwise",
+                    ["Rebuild File Index", "Reindex Files"], settings: "files",
+                    available: { controller.options.enabled && !controller.indexPaused }, execute: { [weak model] _ in
+                        controller.startIndex(force: true)
+                        model?.fileActionFeedback("正在重建文件索引", style: .neutral)
+                    }),
+            command("toggle-file-index", "暂停或恢复文件索引", "继续使用已建立的索引", "pause.circle",
+                    ["Pause File Index", "Resume File Index"], settings: "files",
+                    available: { controller.options.enabled },
+                    dynamicDetail: { controller.indexPaused ? "当前已暂停" : "当前已启用" },
+                    execute: { [weak model] _ in
+                        controller.setIndexPaused(!controller.indexPaused)
+                        model?.fileActionFeedback(controller.indexPaused ? "已暂停文件索引" : "已恢复文件索引", style: .neutral)
+                    }),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
                     available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"), execute: { [weak model] origin in
@@ -251,9 +288,14 @@ enum BuiltinLauncherModules {
             })
         ], providers: [provider], pages: [
             LauncherPage(id: page, placeholder: "搜索文件…", badge: ("文件搜索", "doc.text.magnifyingglass"),
-                         contentPlacement: .fileResults, queryChanged: { [weak model] in model?.fileSearch.search($0) },
+                         contentPlacement: .fileResults, queryChanged: { [weak model] _ in model?.searchFiles() },
                          leave: { [weak model] in model?.fileSearch.cancel() },
                          updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                         enter: { [weak model] _ in
+                             let seed = model?.fileSearchSeed
+                             model?.fileSearchSeed = nil
+                             return seed
+                         },
                          releasePreview: { FilePreview.shared.dismiss() },
                           loading: controller.$isSearching.eraseToAnyPublisher())
         ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"),
@@ -274,25 +316,78 @@ enum BuiltinLauncherModules {
            })],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
-                           updates(model.fileAI.$commandsEnabled), model.finderAutomation.updates],
+                           updates(model.fileAI.$commandsEnabled), model.finderAutomation.updates,
+                           updates(controller.$indexPaused)],
            shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
 
     private static func fileActions(_ entry: Entry, model: Model) -> [LauncherAction] {
         let url = URL(fileURLWithPath: entry.id)
-        return [
-            openAction("打开文件", entry: entry, model: model),
+        let title = entry.rankingKind == .command ? "在 Finder 中打开位置"
+            : entry.isDirectory ? "在 Finder 中打开文件夹" : "打开文件"
+        var actions = [
+            openAction(title, entry: entry, model: model),
             .init(id: "preview", title: "快速查看", icon: "eye") { [weak model] in
-                if FileManager.default.fileExists(atPath: url.path) { FilePreview.shared.show(url, owner: .fileSearch) }
-                else { model?.error = "文件已移走或删除。"; model?.searchFiles() }
+                model?.withFileResult(url) { FilePreview.shared.show($0.url, owner: .fileSearch) }
             },
-            .init(id: "open-with-file", title: "打开方式…", icon: "app") { FileActionsWindow.shared.show(url, page: "open", owner: .fileSearch) },
-            .init(id: "share-file", title: "分享…", icon: "square.and.arrow.up") { FileActionsWindow.shared.show(url, page: "share", owner: .fileSearch) },
-            .init(id: "ask-file", title: "询问此文件…", icon: "sparkles") { [weak model] in model?.fileAI.present([url]) },
-            .init(id: "reveal-file", title: "在 Finder 中显示", icon: "folder") { NSWorkspace.shared.activateFileViewerSelecting([url]) },
+            .init(id: "open-with-file", title: "打开方式…", icon: "app") { [weak model] in
+                model?.withFileResult(url) { FileActionsWindow.shared.show($0.url, page: "open", owner: .fileSearch) }
+            },
+            .init(id: "share-file", title: "分享…", icon: "square.and.arrow.up") { [weak model] in
+                model?.withFileResult(url) { FileActionsWindow.shared.show($0.url, page: "share", owner: .fileSearch) }
+            },
+            .init(id: "ask-file", title: "询问此文件…", icon: "sparkles") { [weak model] in
+                model?.withFileResult(url) { model?.fileAI.present([$0.url]) }
+            },
+            .init(id: "reveal-file", title: "在 Finder 中显示", icon: "folder") { [weak model] in
+                model?.withFileResult(url) { NSWorkspace.shared.activateFileViewerSelecting([$0.url]) }
+            },
             copyPathAction(id: "copy-file-path", url: url),
             model.favoriteAction(for: entry)
         ]
+        if model.pageID == .root {
+            actions.insert(.init(id: "file-detail", title: "在文件搜索中查看详情", icon: "sidebar.right") { [weak model] in
+                model?.showFileLocation(url, browse: false)
+            }, at: 1)
+        }
+        if entry.isDirectory {
+            actions.insert(.init(id: "browse-file-directory", title: "浏览文件夹", icon: "folder") { [weak model] in
+                model?.showFileLocation(url, browse: true)
+            }, at: 1)
+        }
+        actions.append(.init(id: "exclude-file-result", title: "从文件搜索中排除", icon: "eye.slash") { [weak model] in
+            guard let model else { return }
+            do {
+                let path = try model.fileSearch.exclude(url)
+                (NSApp.delegate as? Delegate)?.showLauncherFeedback("已排除所选路径", style: .success, actionTitle: "撤销") { [weak model] in
+                    model?.fileSearch.undoExclusion(path)
+                }
+            } catch { model.fileActionFeedback(error.localizedDescription, style: .failure) }
+        })
+        if entry.isDirectory {
+            actions.append(.init(id: "terminal-file-directory", title: "在终端中打开文件夹", icon: "terminal") { [weak model] in
+                model?.withFileResult(url) { file in
+                    guard file.isDirectory, let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal") else {
+                        model?.fileActionFeedback("无法在终端中打开此文件夹。", style: .failure)
+                        return
+                    }
+                    NSWorkspace.shared.open([file.url], withApplicationAt: terminal, configuration: .init()) { _, error in
+                        if let error {
+                            DispatchQueue.main.async { model?.fileActionFeedback(error.localizedDescription, style: .failure) }
+                        }
+                    }
+                }
+            })
+        }
+        actions += [
+            .init(id: "duplicate-file-result", title: "创建副本", icon: "plus.square.on.square") { [weak model] in
+                model?.performFileMutation(url, trash: false)
+            },
+            .init(id: "trash-file-result", title: "移到废纸篓…", icon: "trash", destructive: true) { [weak model] in
+                model?.performFileMutation(url, trash: true)
+            }
+        ]
+        return actions
     }
 
     private static func openAction(_ title: String, entry: Entry, model: Model) -> LauncherAction {

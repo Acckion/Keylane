@@ -3,6 +3,7 @@ import Foundation
 public struct FileSearchOptions: Codable, Equatable {
     public var roots: [String]
     public var ignorePatterns: [String]
+    public var excludedPaths: [String] = []
     public var searchFromLauncher = false
     public var contentSearch = false
     public var includeHidden = false
@@ -12,11 +13,12 @@ public struct FileSearchOptions: Codable, Equatable {
     public var enforceDiskSpace = false
     public var enabled = true
     public init(roots: [String]) { self.roots = roots; ignorePatterns = Self.defaultIgnores }
-    private enum CodingKeys: String, CodingKey { case roots, ignorePatterns, searchFromLauncher, contentSearch, includeHidden, useIgnoreFiles, externalVolumes, keepRemovedVolumes, enforceDiskSpace, enabled }
+    private enum CodingKeys: String, CodingKey { case roots, ignorePatterns, excludedPaths, searchFromLauncher, contentSearch, includeHidden, useIgnoreFiles, externalVolumes, keepRemovedVolumes, enforceDiskSpace, enabled }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         self.init(roots: try values.decode([String].self, forKey: .roots))
         ignorePatterns = try values.decodeIfPresent([String].self, forKey: .ignorePatterns) ?? Self.defaultIgnores
+        excludedPaths = try values.decodeIfPresent([String].self, forKey: .excludedPaths) ?? []
         searchFromLauncher = try values.decodeIfPresent(Bool.self, forKey: .searchFromLauncher) ?? false
         contentSearch = try values.decodeIfPresent(Bool.self, forKey: .contentSearch) ?? false
         includeHidden = try values.decodeIfPresent(Bool.self, forKey: .includeHidden) ?? false

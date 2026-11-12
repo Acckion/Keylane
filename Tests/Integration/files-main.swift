@@ -36,12 +36,13 @@ defer { prefs.removePersistentDomain(forName:suite) }
 var config = FileSearchOptions(roots:[scope.path]); config.ignorePatterns = ["*.tmp"]
 let controller = FileSearchController(directory:root.appendingPathComponent("index"),preferences:prefs,defaultOptions:config,watchChanges:true)
 var results: [SpotlightFile] = []
+var resultStatus = ""
 var recordsRefresh = false; var emptyFrames = 0; var repeatedRefreshes = 0
-controller.updated = { rows,_ in results = rows; if recordsRefresh { repeatedRefreshes += 1; if rows.isEmpty { emptyFrames += 1 } } }
+controller.updated = { rows,status in results = rows; resultStatus = status; if recordsRefresh { repeatedRefreshes += 1; if rows.isEmpty { emptyFrames += 1 } } }
 func wait(_ label: String, _ condition: () -> Bool) {
     let deadline = Date().addingTimeInterval(35)
     while !condition(), Date() < deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.03)) }
-    precondition(condition(),label + " status=" + controller.indexStatus)
+    precondition(condition(), label + " status=" + controller.indexStatus + " results=" + results.map(\.id).description + " detail=" + resultStatus)
 }
 controller.search("")
 precondition(!controller.indexing, "Opening an empty search should not start a full scan")
@@ -136,7 +137,9 @@ controller.options.keepRemovedVolumes = false
 wait("Remove offline records") { !controller.indexing && controller.stats.entries == 0 }
 precondition(controller.options.roots == [scope.path, localScope.path], "Removing offline records must keep configured scopes")
 var blockedOptions = config; blockedOptions.enforceDiskSpace = true
-let blocked = FileSearchController(directory:root.appendingPathComponent("blocked-index"),preferences:UserDefaults(suiteName:suite+".blocked")!,defaultOptions:blockedOptions,watchChanges:false,availableCapacity:{ _ in 0 })
+let blockedPreferences = UserDefaults(suiteName:suite+".blocked")!
+blockedPreferences.set([scope.path], forKey: "fileSearchSelectedScopes")
+let blocked = FileSearchController(directory:root.appendingPathComponent("blocked-index"),preferences:blockedPreferences,defaultOptions:blockedOptions,watchChanges:false,availableCapacity:{ _ in 0 })
 // Restore a live synthetic scope so the low-space branch is reached.
 try FileManager.default.createDirectory(at:scope,withIntermediateDirectories:true)
 try Data("capacity check".utf8).write(to:scope.appendingPathComponent("capacity.txt"))
@@ -147,6 +150,110 @@ controller.options.keepRemovedVolumes = true
 wait("Reopened file scope") { !controller.indexing }
 controller.search("capacity")
 wait("Existing file before runtime stop") { results.first?.name == "capacity.txt" }
+controller.options.includeHidden = false
+controller.options.useIgnoreFiles = true
+wait("Restore ignore rules before browsing") { !controller.indexing }
+let browse = scope.appendingPathComponent("目录 [测试]", isDirectory: true)
+try FileManager.default.createDirectory(at: browse, withIntermediateDirectories: false)
+let special = browse.appendingPathComponent("A [预算]*?.txt")
+let newer = browse.appendingPathComponent("Z 文件.txt")
+try Data("exact file".utf8).write(to: special)
+try Data("newer file".utf8).write(to: newer)
+try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 15_000),
+                                       .modificationDate: Date(timeIntervalSince1970: 5_000)], ofItemAtPath: special.path)
+try FileManager.default.setAttributes([.creationDate: Date(timeIntervalSince1970: 3_000),
+                                       .modificationDate: Date(timeIntervalSince1970: 10_000)], ofItemAtPath: newer.path)
+try Data("skip-*.txt\n".utf8).write(to: browse.appendingPathComponent(".rayignore"))
+try Data().write(to: browse.appendingPathComponent("skip-private.txt"))
+let outside = root.appendingPathComponent("outside.txt")
+try Data().write(to: outside)
+let alias = browse.appendingPathComponent("outside-link")
+try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: outside)
+controller.search(browse.path)
+wait("Browse only authorized, nonexcluded children") { !controller.isSearching && results.map(\.id) == [special.path, newer.path] }
+controller.setDirectorySort(.created)
+wait("Browse creation sort") { !controller.isSearching && results.map(\.id) == [special.path, newer.path] }
+controller.setDirectorySort(.modified)
+wait("Browse modification sort") { !controller.isSearching && results.map(\.id) == [newer.path, special.path] }
+let restoredPrefs = FileSearchController(directory: root.appendingPathComponent("unused-index"), preferences: prefs, startImmediately: false)
+precondition(restoredPrefs.directorySort == .modified)
+controller.search(special.path, standalone: false)
+wait("Exact special-character path") { !controller.isSearching && results.map(\.id) == [special.path] }
+controller.search(browse.path, showPathItself: true)
+wait("Directory itself can be selected for detail") { !controller.isSearching && results.map(\.id) == [browse.path] }
+controller.search(alias.path)
+wait("Escaping symlink must not expose its target") { !controller.isSearching && results.isEmpty }
+controller.search(outside.path)
+wait("Outside scope") { !controller.isSearching && results.isEmpty }
+controller.options.roots.append(root.path)
+wait("Unapproved configured root stays unavailable") { !controller.indexing && !controller.isSearching && results.isEmpty }
+controller.options.roots.removeAll { $0 == root.path }
+controller.search(browse.appendingPathComponent("missing.txt").path)
+wait("Missing path") { !controller.isSearching && results.isEmpty }
+
+controller.rememberOpenedFile(try controller.inspect(special))
+controller.rememberOpenedFile(try controller.inspect(newer))
+controller.rememberOpenedFile(try controller.inspect(special))
+controller.search("")
+wait("Recents are deduplicated and ordered by successful opens") { !controller.isSearching && results.map(\.id) == [special.path, newer.path] }
+precondition(prefs.stringArray(forKey: "fileSearchRecentPaths") == [special.path, newer.path])
+let excludedPath = try controller.exclude(special)
+wait("Exact exclusion removes recent file") { !controller.isSearching && results.map(\.id) == [newer.path] }
+let storedExclusions = try JSONDecoder().decode(FileSearchOptions.self, from: prefs.data(forKey: "fileSearchOptions")!).excludedPaths
+precondition(storedExclusions == [special.path])
+controller.undoExclusion(excludedPath)
+controller.undoExclusion(excludedPath)
+wait("Undo restores the recent file") { !controller.isSearching && results.map(\.id) == [special.path, newer.path] }
+controller.startIndex(force: true)
+controller.search("预算")
+wait("Rebuild indexes newly created files") { !controller.indexing && results.contains { $0.id == special.path } }
+controller.setIndexPaused(true)
+let whilePaused = browse.appendingPathComponent("new-while-paused.txt")
+try Data().write(to: whilePaused)
+controller.search("预算")
+wait("Paused reader still has existing results") { !controller.isSearching && results.contains { $0.id == special.path } }
+controller.search("new-while-paused")
+wait("Pause prevents background ingestion") { !controller.isSearching && results.isEmpty }
+controller.setIndexPaused(false)
+wait("Resume indexes new content and refreshes active query") { !controller.indexing && results.map(\.id) == [whilePaused.path] }
+
+let copy = try FileResultOperations.duplicate(controller.mutationTarget(special))
+let secondCopy = try FileResultOperations.duplicate(controller.mutationTarget(special))
+let sourceBytes = try Data(contentsOf: special)
+let copyBytes = try Data(contentsOf: copy)
+precondition(copy != secondCopy && copyBytes == sourceBytes)
+try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: copy.path)
+do {
+    _ = try controller.inspect(copy)
+    preconditionFailure("Unreadable files must not be used")
+} catch {}
+try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: copy.path)
+let oldTarget = try controller.mutationTarget(copy)
+try FileManager.default.moveItem(at: copy, to: browse.appendingPathComponent("original-copy.txt"))
+try Data().write(to: copy)
+do {
+    _ = try FileResultOperations.duplicate(oldTarget)
+    preconditionFailure("A replacement file must not be copied with an old target")
+} catch {}
+if ProcessInfo.processInfo.environment["KEYLANE_VERIFY_FILE_TRASH"] == "1" {
+    let unique = browse.appendingPathComponent("Keylane-Trash-Fixture-" + UUID().uuidString + ".txt")
+    try FileManager.default.copyItem(at: secondCopy, to: unique)
+    controller.startIndex()
+    controller.search(unique.lastPathComponent)
+    wait("Synthetic copy indexed before trash") { !controller.indexing && results.first?.id == unique.path }
+    let target = try controller.mutationTarget(unique)
+    // Constructing a confirmation target has no filesystem side effect when cancelled.
+    precondition(FileManager.default.fileExists(atPath: unique.path))
+    let trashed = try FileResultOperations.trash(target)!
+    controller.refreshAfterFileAction(unique, removed: true)
+    wait("Trashed file removed from active results") { !controller.isSearching && results.isEmpty }
+    precondition(!FileManager.default.fileExists(atPath: unique.path))
+    precondition(FileManager.default.fileExists(atPath: trashed.path) && FileManager.default.fileExists(atPath: special.path))
+    try FileManager.default.moveItem(at: trashed, to: unique)
+    precondition(FileManager.default.fileExists(atPath: unique.path))
+    print("PASS synthetic copy moved to Trash and restored")
+}
+print("PASS authorized paths, folder sort persistence, recents, undo, pause/resume, duplicate and permission failures")
 controller.stopRuntime()
 precondition(!controller.isRunning && !controller.indexing && results.isEmpty && controller.options.enabled)
 let resumed = scope.appendingPathComponent("runtime-restored.txt")

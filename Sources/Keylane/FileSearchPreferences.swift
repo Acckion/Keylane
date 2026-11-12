@@ -43,10 +43,11 @@ struct FileSearchPreferences: View {
                 SettingsActionRow(title: "恢复默认设置", detail: "恢复搜索范围、忽略规则和各项开关；不会删除原文件。", actionTitle: "重置…") { resets = true }
             }
             SettingsSectionTitle(title: "命令")
-            CommandSettingsList(items: ["file-search"], id: \.self) { id in
-                CommandSettingsEntry(title: "搜索文件",
-                    model: model, commandID: .init(rawValue: id),
-                    icon: { Image(systemName: "doc.text.magnifyingglass").font(VisualStyle.actionSymbol) })
+            CommandSettingsList(items: ["file-search", "toggle-file-index", "rebuild-file-index"], id: \.self) { id in
+                let commandID = CommandID(rawValue: id)
+                let declaration = model.launcherModules?.declaration(commandID)
+                return CommandSettingsEntry(title: declaration?.title ?? id, model: model, commandID: commandID,
+                    icon: { Image(systemName: declaration?.symbol ?? "doc.text.magnifyingglass").font(VisualStyle.actionSymbol) })
             }
             SettingsSectionTitle(title: "AI 扩展")
             CommandSettingsList(items: ["ask-files", "ask-finder"], id: \.self, entry: aiCommand)
@@ -90,6 +91,15 @@ struct FileSearchPreferences: View {
                 }.padding(.bottom, 5)
             }
             Divider()
+            if !controller.options.excludedPaths.isEmpty {
+                SettingsListHeader(title: "从结果排除", detail: "仅排除所选路径及其子项目。") { EmptyView() }
+                SettingsCompactList(items: controller.options.excludedPaths, id: \.self) { path in
+                    SettingsFolderRow(path: path, selectable: true, showsActionsOnHover: true) {
+                        SettingsRemoveItemButton(label: "恢复 \(path)", help: "恢复搜索") { controller.undoExclusion(path) }
+                    }
+                }.padding(.bottom, 5)
+                Divider()
+            }
             SettingsListHeader(title: "自动排除", detail: "跳过构建输出或依赖缓存。恢复后重新索引该目录。") {
                 EmptyView()
             }
@@ -139,7 +149,8 @@ private struct FileIndexStatistics: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(controller.$stats),
             ViewObservation.changes(controller.$indexStatus),
-            ViewObservation.changes(controller.$indexing)
+            ViewObservation.changes(controller.$indexing),
+            ViewObservation.changes(controller.$indexPaused)
         ]))
     }
 
@@ -153,10 +164,12 @@ private struct FileIndexStatistics: View {
                 Text("索引统计").foregroundStyle(.secondary)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button("重新索引") { controller.startIndex() }
+                Button(controller.indexPaused ? "恢复索引" : "暂停索引") { controller.setIndexPaused(!controller.indexPaused) }
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button("重新索引") { controller.startIndex(force: true) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(controller.indexing)
+                    .disabled(controller.indexing || controller.indexPaused)
             }
             .padding(.horizontal, 9)
             DetailInformationRows(rows: [
