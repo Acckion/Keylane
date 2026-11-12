@@ -160,6 +160,9 @@ struct Launcher: View {
             Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
             Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             Button("") { page?.shortcutSubmit?() }.keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
+            if let optionSubmit = page?.optionSubmit {
+                Button("") { optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
+            }
             ForEach(0..<min(10, results.count), id: \.self) { index in
                 Button("") { activateResult(results[index].commandID) }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
             }
@@ -646,7 +649,7 @@ struct Launcher: View {
             let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版"
             title = "Keylane " + version
         } else {
-            let base = page?.actionTitle ?? selectedEntry?.name ?? "操作"
+            let base = page?.actionContextTitle?() ?? page?.actionTitle ?? selectedEntry?.name ?? "操作"
             title = submenu.map { base + " › " + $0.title } ?? base
         }
         return VStack(alignment: .leading, spacing: 0) {
@@ -666,7 +669,7 @@ struct Launcher: View {
                                     Divider().padding(.horizontal, 16).frame(height: 9)
                                 }
                                 LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
-                                                enabled: item.enabled, destructive: item.destructive,
+                                                enabled: item.enabled, destructive: item.destructive, artwork: item.artwork,
                                                 activate: { activate(item) }, highlight: { actionSelection = index }) {
                                     if !item.keys.isEmpty { Keycaps(keys: item.keys) }
                                 }

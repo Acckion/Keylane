@@ -22,7 +22,6 @@ final class ClipboardController: ObservableObject {
             updateCaptureTimer()
         }
     }
-    @Published var primaryAction: String { didSet { preferences.set(primaryAction,forKey:"clipboardPrimaryAction") } }
     @Published var automaticOCR: Bool { didSet { preferences.set(automaticOCR, forKey: "clipboardAutomaticOCR") } }
     @Published var accurateOCR: Bool { didSet { preferences.set(accurateOCR, forKey: "clipboardAccurateOCR") } }
     @Published var historyCommandEnabled: Bool { didSet { preferences.set(historyCommandEnabled, forKey: "clipboardHistoryCommandEnabled") } }
@@ -74,7 +73,6 @@ final class ClipboardController: ObservableObject {
         self.board = board; self.preferences = preferences; lastChange = board.changeCount
         // The old memory-only opt-in does not silently become permission to persist.
         captureEnabled = preferences.bool(forKey: "clipboardPersistentCapture")
-        primaryAction = preferences.string(forKey:"clipboardPrimaryAction") ?? "copy"
         automaticOCR = preferences.bool(forKey: "clipboardAutomaticOCR")
         accurateOCR = preferences.object(forKey: "clipboardAccurateOCR") as? Bool ?? true
         historyCommandEnabled = preferences.object(forKey: "clipboardHistoryCommandEnabled") as? Bool ?? true

@@ -107,7 +107,6 @@ struct ClipboardPreferences: View {
             ViewObservation.changes(controller.$automaticOCR),
             ViewObservation.changes(controller.$accurateOCR),
             ViewObservation.changes(controller.$historyCommandEnabled),
-            ViewObservation.changes(controller.$primaryAction),
             ViewObservation.changes(controller.$retentionDays),
             ViewObservation.changes(controller.$excludedApps),
             ViewObservation.changes(model.$aliases.map { $0["clipboard"] }),
@@ -203,13 +202,6 @@ struct ClipboardPreferences: View {
     private var historySettings: some View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsTitle("剪贴板历史")
-            SettingsGroup {
-                SettingsPicker("回车动作", selection: binding(\.primaryAction)) {
-                    Text("仅复制").tag("copy")
-                    Text("粘贴到上个应用").tag("paste")
-                }
-
-            }
             ClipboardHistoryStatistics(controller: controller)
             Button("完成") { showsHistorySettings = false }
                 .keyboardShortcut(.defaultAction)
