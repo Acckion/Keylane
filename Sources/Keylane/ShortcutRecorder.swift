@@ -5,11 +5,12 @@ import KeylaneCore
 struct ShortcutRecorder: View {
     let shortcut: Shortcut?
     var title = "快捷键"
-    var icon: AnyView = AnyView(Image(systemName: "keyboard"))
+    var icon: () -> AnyView = { AnyView(Image(systemName: "keyboard")) }
     let changed: (Shortcut?) -> Void
     @State private var recording = false
     @State private var hovering = false
     @State private var monitor: Any?
+    @State private var resignObserver: NSObjectProtocol?
     @State private var draft: Shortcut?
     @State private var liveModifiers: [String] = []
     @State private var keyHeld = false
@@ -38,7 +39,6 @@ struct ShortcutRecorder: View {
         }
         .onChange(of: recording) { _, active in if !active { finish() } }
         .onDisappear { finish() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in finish() }
     }
     @ViewBuilder private var recorderLabel: some View {
         if let shortcut { Keycaps(keys: shortcut.keycaps) }
@@ -75,7 +75,7 @@ struct ShortcutRecorder: View {
             }.frame(maxWidth: .infinity).padding(28)
             Divider()
             HStack {
-                icon.frame(width: 20, height: 20).accessibilityHidden(true)
+                icon().frame(width: 20, height: 20).accessibilityHidden(true)
                 Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 Spacer()
                 Button("取消") { finish() }.buttonStyle(.plain)
@@ -92,6 +92,8 @@ struct ShortcutRecorder: View {
         draft = shortcut
         liveModifiers = []; keyHeld = false
         (NSApp.delegate as? Delegate)?.shortcuts.suspend(); recording = true
+        resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.willResignActiveNotification,
+                                                                 object: NSApp, queue: .main) { _ in finish() }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
             if event.type == .flagsChanged {
@@ -120,8 +122,13 @@ struct ShortcutRecorder: View {
     }
 
     private func finish() {
+        guard recording || monitor != nil || resignObserver != nil else { return }
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        resignObserver = nil
         liveModifiers = []; keyHeld = false
         if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
-        if recording { recording = false; do { try (NSApp.delegate as? Delegate)?.shortcuts.resume() } catch { (NSApp.delegate as? Delegate)?.model.error = error.localizedDescription } }
+        recording = false
+        do { try (NSApp.delegate as? Delegate)?.shortcuts.resume() }
+        catch { (NSApp.delegate as? Delegate)?.model.error = error.localizedDescription }
     }
 }

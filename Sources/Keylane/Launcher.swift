@@ -3,19 +3,6 @@ import AppKit
 import Combine
 import KeylaneCore
 
-private final class IconCache {
-    static let shared = IconCache()
-    private let icons = NSCache<NSString, NSImage>()
-    private init() { icons.countLimit = 512 }
-
-    func image(_ path: String) -> NSImage {
-        let key = path as NSString
-        if let image = icons.object(forKey: key) { return image }
-        let image = NSWorkspace.shared.icon(forFile: path)
-        icons.setObject(image, forKey: key)
-        return image
-    }
-}
 struct Launcher: View {
     let model: Model
     @StateObject private var observation: ViewObservation
@@ -24,6 +11,7 @@ struct Launcher: View {
     @State private var selectionQuery = ""
     @State private var pageRevision = 0
     @State private var presentation = LauncherPagePresentation()
+    @State private var surfaceMounted = false
     @State private var dispatchedQuery: String?
     private var launcherVisible: Bool { presentation.visible }
     private var page: LauncherPage? { model.activeLauncherPage }
@@ -185,7 +173,23 @@ struct Launcher: View {
 
     var body: some View {
         let _ = pageRevision
-        launcherSurface
+        Group {
+            if surfaceMounted {
+                launcherSurface
+            } else {
+                Color.clear
+            }
+        }
+        .task(id: launcherVisible) {
+            guard !launcherVisible, surfaceMounted, model.pageID == .root || showsFileResults else { return }
+            // Keep fast hotkey toggles warm. The outer view retains query,
+            // selection and page state independently of the rendered surface.
+            do { try await Task.sleep(for: .seconds(2)) }
+            catch { return }
+            // Secondary pages keep their own scroll and editing state.
+            guard !launcherVisible, model.pageID == .root || showsFileResults else { return }
+            surfaceMounted = false
+        }
         .onAppear {
             updatePresentation(visible: (NSApp.delegate as? Delegate)?.window?.isVisible == true)
             focusToken += 1
@@ -245,6 +249,7 @@ struct Launcher: View {
         let change = presentation.update(page: current, visible: visible)
         if wasVisible != visible {
             if visible {
+                surfaceMounted = true
                 modifiers.start()
                 model.launcherModules?.launcherShown()
             } else {
@@ -334,7 +339,7 @@ struct Launcher: View {
                     Button { model.perform(row) } label: {
                         Group {
                             if let artwork = model.launcherModules?.artwork(for: row) { artwork }
-                            else if row.id.hasSuffix(".app") { Image(nsImage: IconCache.shared.image(row.id)).resizable() }
+                            else if row.id.hasSuffix(".app") { WorkspaceItemIcon(path: row.id) }
                             else { Image(systemName: row.symbol).resizable().scaledToFit() }
                         }.frame(width: 26, height: 26)
                     }.buttonStyle(.plain).help(row.name).accessibilityLabel(row.name)
@@ -368,7 +373,8 @@ struct Launcher: View {
     }
     private func commandList(_ results: [Entry], selectedIndex: Int?) -> some View {
         SelectableResultList(selection: selectedIndex.map { results[$0].commandID },
-                             query: model.query, firstResult: results.first?.commandID) {
+                             query: model.query, firstResult: results.first?.commandID,
+                             revealInitialSelection: true) {
             if results.isEmpty {
                 VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(ContentActionButtonStyle()).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
             }
@@ -415,7 +421,7 @@ struct Launcher: View {
         let url = URL(fileURLWithPath: row.id)
         let isFolder = row.isDirectory
         return ResultListRow(selected: selected, height: isFolder ? 48 : 40) {
-            Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high)
+            WorkspaceItemIcon(path: row.id, fallbackSymbol: isFolder ? "folder" : "doc")
         } content: {
             VStack(alignment: .leading, spacing: 3) {
                 HighlightedResultText(text: row.name, query: model.query)
@@ -433,7 +439,7 @@ struct Launcher: View {
         ResultListRow(selected: selected, layout: .root) {
             Group {
                 if let artwork = model.launcherModules?.artwork(for: row) { artwork }
-                else if row.id.hasSuffix(".app") || row.detail == "File" { Image(nsImage: IconCache.shared.image(row.id)).resizable().interpolation(.high) }
+                else if row.id.hasSuffix(".app") || row.detail == "File" { WorkspaceItemIcon(path: row.id, fallbackSymbol: row.detail == "File" ? (row.isDirectory ? "folder" : "doc") : "app") }
                 else { Image(systemName: row.symbol).font(.system(size: 21, weight: .regular)).foregroundStyle(iconColor(row.id)) }
             }
             .frame(width: 26, height: 26)

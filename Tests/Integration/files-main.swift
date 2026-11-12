@@ -18,6 +18,11 @@ try Data("*.log\n!keep.log\n".utf8).write(to:scope.appendingPathComponent(".giti
 try Data("ignored".utf8).write(to:scope.appendingPathComponent("skip.log"))
 try Data("kept".utf8).write(to:scope.appendingPathComponent("keep.log"))
 try Data("hidden".utf8).write(to:scope.appendingPathComponent(".隐藏文件.txt"))
+let wideDirectory = scope.appendingPathComponent("wide", isDirectory: true)
+try FileManager.default.createDirectory(at: wideDirectory, withIntermediateDirectories: false)
+for index in 0..<130 {
+    try Data("batch fixture".utf8).write(to: wideDirectory.appendingPathComponent("batch-fixture-\(index).txt"))
+}
 let suite = "org.keylane.file-integration." + UUID().uuidString
 let prefs = UserDefaults(suiteName:suite)!
 let excluded = scope.appendingPathComponent("already-excluded", isDirectory: true)
@@ -37,6 +42,8 @@ func wait(_ label: String, _ condition: () -> Bool) {
 }
 controller.search("")
 precondition(!controller.indexing, "Opening an empty search should not start a full scan")
+controller.search("batch-fixture")
+wait("Wide directory across index batches") { !controller.indexing && results.count == 130 }
 controller.search("作业")
 wait("Chinese filename") { !controller.indexing && results.contains { $0.name == "作业-2.pdf" } }
 precondition(results.first(where: { $0.name == "作业-2.pdf" })?.contentType?.conforms(to: .pdf) == true,

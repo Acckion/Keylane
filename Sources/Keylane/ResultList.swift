@@ -23,11 +23,15 @@ struct SelectableResultList<ID: Hashable, Content: View>: View {
     var query: String? = nil
     var firstResult: ID? = nil
     var revealAfterLoading = false
+    var revealInitialSelection = false
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         ScrollViewReader { proxy in
             ResultListScrollView(content: content)
+                .onAppear {
+                    if revealInitialSelection, let selection, selection != firstResult { proxy.scrollTo(selection) }
+                }
                 .onChange(of: selection) { _, id in
                     if let id { proxy.scrollTo(id) }
                 }

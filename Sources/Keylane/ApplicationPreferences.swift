@@ -144,7 +144,7 @@ struct ApplicationPreferences: View {
 extension ApplicationPreferenceItem {
     var commandID: String { "app:" + id }
 
-    func commandSettingsEntry(model: Model) -> CommandSettingsEntry<SettingsApplicationIcon> {
+    func commandSettingsEntry(model: Model) -> CommandSettingsEntry<WorkspaceItemIcon> {
         let revision = ApplicationCommandRevision(
             title: self.title, alias: model.aliases[self.id] ?? "", shortcut: model.bindings[commandID],
             enabled: !model.excluded.contains(self.id), favorite: model.favorites.contains(self.id)
@@ -162,7 +162,7 @@ extension ApplicationPreferenceItem {
                 .init(title: "配置自动退出…") { model.openApplicationCommandSettings(path: self.id) }
             ] : []),
             renderRevision: revision,
-            icon: { SettingsApplicationIcon(path: self.id) }
+            icon: { WorkspaceItemIcon(path: self.id) }
         )
     }
 

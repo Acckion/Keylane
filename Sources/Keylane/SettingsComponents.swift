@@ -531,7 +531,7 @@ struct SettingsShortcutBindingRow: View {
 
     var body: some View {
         SettingsRow(title) {
-            ShortcutRecorder(shortcut: shortcut, title: title, icon: AnyView(Image(systemName: symbol)), changed: change)
+            ShortcutRecorder(shortcut: shortcut, title: title, icon: { AnyView(Image(systemName: symbol)) }, changed: change)
         }
     }
 }
