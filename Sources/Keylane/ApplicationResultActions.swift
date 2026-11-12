@@ -8,6 +8,8 @@ final class ApplicationResultActions {
     private let workspace = NSWorkspace.shared
     private var restarting = Set<String>()
     private var uninstalling = Set<String>()
+    private let uninstallQueue = DispatchQueue(label: "org.keylane.applications.uninstall", qos: .userInitiated)
+    private var uninstallLoad: DispatchWorkItem?
 
     private static let directShortcuts: [(String, [String])] = [
         ("finder-reveal", ["⌘", "⇧", "F"]),
@@ -101,7 +103,7 @@ final class ApplicationResultActions {
                 self.feedback("已隐藏「\(entry.name)」。可在应用程序设置中重新启用。", style: .success)
             },
             .init(id: "uninstall-app", title: "卸载应用…", icon: "trash", group: 4,
-                  enabled: uninstallCandidate(url) != nil, destructive: true) { [weak model] in
+                  enabled: Self.uninstallCandidate(url) != nil, destructive: true) { [weak model] in
                 guard let model else { return }
                 self.uninstall(url, model: model)
             }
@@ -122,11 +124,34 @@ final class ApplicationResultActions {
     }
 
     func loadUninstallCandidates(_ items: [ApplicationPreferenceItem]) {
-        uninstallSelection.load(items.filter { uninstallCandidate($0.url) != nil })
+        uninstallLoad?.cancel()
+        let request = DispatchWorkItem {}
+        uninstallLoad = request
+        uninstallSelection.isLoading = true
+        uninstallQueue.async { [weak self] in
+            var candidates: [ApplicationPreferenceItem] = []
+            for item in items {
+                guard !request.isCancelled else { return }
+                if Self.uninstallCandidate(item.url) != nil { candidates.append(item) }
+            }
+            let result = candidates
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.uninstallLoad === request else { return }
+                self.uninstallLoad = nil
+                self.uninstallSelection.load(result)
+                self.uninstallSelection.isLoading = false
+            }
+        }
+    }
+
+    func stopUninstallSelection() {
+        uninstallLoad?.cancel()
+        uninstallLoad = nil
+        uninstallSelection.clear()
     }
 
     func uninstall(_ url: URL, model: Model, keepLauncher: Bool = false) {
-        guard let candidate = uninstallCandidate(url) else {
+        guard let candidate = Self.uninstallCandidate(url) else {
             feedback("无法卸载所选项目。请选择仍存在且可移除的应用。")
             return
         }
@@ -171,7 +196,7 @@ final class ApplicationResultActions {
     private func trashApplication(_ url: URL, candidate: (url: URL, identity: NSObject), name: String, model: Model?) {
         DispatchQueue.global(qos: .userInitiated).async { [weak model] in
             let outcome = Result {
-                guard let current = self.uninstallCandidate(url),
+                guard let current = Self.uninstallCandidate(url),
                       current.url == candidate.url, current.identity == candidate.identity else {
                     throw CocoaError(.fileNoSuchFile)
                 }
@@ -192,7 +217,7 @@ final class ApplicationResultActions {
         }
     }
 
-    private func uninstallCandidate(_ url: URL) -> (url: URL, identity: NSObject)? {
+    private static func uninstallCandidate(_ url: URL) -> (url: URL, identity: NSObject)? {
         guard url.isFileURL, url.pathExtension.lowercased() == "app",
               let original = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]), original.isSymbolicLink == false else { return nil }
         let target = URL(fileURLWithPath: url.path).resolvingSymlinksInPath()

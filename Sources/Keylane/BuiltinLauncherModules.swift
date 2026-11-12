@@ -97,19 +97,7 @@ enum BuiltinLauncherModules {
     private static func applications(_ model: Model) -> LauncherModule {
         let provider = LauncherModule.Provider(namespace: .prefix("app:"), entries: { [weak model] _ in
             guard let model, model.applicationsEnabled else { return [] }
-            let apps = model.apps.filter { !model.excluded.contains($0.path) }
-            let names = Dictionary(grouping: apps) { model.appName($0).folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) }
-            return apps.map { url in
-                let identity = model.discoveredIdentity(for: url)
-                let path = url.path
-                let name = identity?.displayName ?? url.deletingPathExtension().lastPathComponent
-                let nameKey = name.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-                let duplicate = names[nameKey, default: []].count > 1
-                return Entry(id: path, commandID: .init(rawValue: "app:" + path),
-                             name: name, detail: "Application", symbol: "app",
-                             aliases: (identity?.aliases ?? []) + (duplicate ? [path] : []),
-                             subtitle: duplicate ? (path as NSString).abbreviatingWithTildeInPath : nil)
-            }
+            return model.applicationSearchEntries()
         }, resolve: { [weak model] id, origin in
             guard id.rawValue.hasPrefix("app:"), let model, model.applicationsEnabled else { return nil }
             let path = String(id.rawValue.dropFirst("app:".count))
@@ -145,7 +133,7 @@ enum BuiltinLauncherModules {
                                     model.applicationResultActions.loadUninstallCandidates($0)
                                 })
                         },
-                        queryChanged: uninstallSelection.filter, move: uninstallSelection.move, submit: submitUninstall,
+                        queryChanged: uninstallSelection.filter, leave: model.applicationResultActions.stopUninstallSelection, move: uninstallSelection.move, submit: submitUninstall,
                         actionContextTitle: { uninstallSelection.selected?.title }, primaryTitle: { "卸载应用…" },
                         primaryEnabled: { uninstallSelection.selected != nil },
                         updates: Publishers.Merge(ViewObservation.changes(uninstallSelection.$selectedID),
@@ -173,6 +161,7 @@ enum BuiltinLauncherModules {
                          model?.startApplicationDiscovery()
                          model?.applicationAutoQuit.start { [weak model] in model?.applicationsEnabled ?? false }
                      }, stop: { [weak model] in
+                         model?.applicationResultActions.stopUninstallSelection()
                          model?.stopApplicationDiscovery()
                          model?.applicationAutoQuit.stop()
                          model?.releaseApplicationCatalog()
