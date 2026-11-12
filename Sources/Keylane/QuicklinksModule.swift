@@ -20,7 +20,7 @@ final class QuicklinksController: ObservableObject {
     }
 
     func save(_ link: Quicklink) throws {
-        _ = try makeTemplate(link)
+        _ = try link.parsedTemplate(context: templateContext())
         var updated = links
         if let index = updated.firstIndex(where: { $0.id == link.id }) { updated[index] = link }
         else { updated.append(link) }
@@ -39,7 +39,7 @@ final class QuicklinksController: ObservableObject {
 
     func launch(_ link: Quicklink, presentParameters: () -> Void) {
         do {
-            let template = try makeTemplate(link)
+            let template = try link.parsedTemplate(context: templateContext())
             if template.parameters.isEmpty {
                 try open(template.url())
             } else {
@@ -64,10 +64,6 @@ final class QuicklinksController: ObservableObject {
             inputError = error.localizedDescription
             return false
         }
-    }
-
-    private func makeTemplate(_ link: Quicklink) throws -> QuicklinkTemplate {
-        try QuicklinkTemplate(link.template, context: templateContext(), legacy: link.usesDynamicPlaceholders != true)
     }
 
     func clearInput() {

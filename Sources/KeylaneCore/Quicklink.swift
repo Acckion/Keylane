@@ -6,9 +6,19 @@ public struct Quicklink: Codable, Equatable, Identifiable {
     public var template: String
     public var usesDynamicPlaceholders: Bool?
 
-    public var editableTemplate: String {
-        guard usesDynamicPlaceholders != true else { return template }
-        return DynamicTemplate(template, usage: .quicklink, legacyQuicklinkOnly: true).legacySyntaxMigration
+    public func preparedForEditing() -> Self {
+        guard usesDynamicPlaceholders != true else { return self }
+        let migrated = DynamicTemplate(template, usage: .quicklink, legacyQuicklinkOnly: true).legacySyntaxMigration
+        guard (try? QuicklinkTemplate(migrated)) != nil else { return self }
+
+        var draft = self
+        draft.template = migrated
+        draft.usesDynamicPlaceholders = true
+        return draft
+    }
+
+    public func parsedTemplate(context: DynamicTemplate.Context = .init()) throws -> QuicklinkTemplate {
+        try QuicklinkTemplate(template, context: context, legacy: usesDynamicPlaceholders != true)
     }
 
     public init(id: String = "quicklink:" + UUID().uuidString, title: String, template: String) {

@@ -30,6 +30,46 @@ final class QuicklinkTests: XCTestCase {
         }
     }
 
+    func testLegacyFourParameterQuicklinkCanBeRenamedSavedAndResolved() throws {
+        let suite = "Keylane.QuicklinksTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let stored = Data(#"{"links":[{"id":"quicklink:legacy","title":"旧链接","template":"https://example.com/{a}/{b}/{c}/{d}"}]}"#.utf8)
+        defaults.set(stored, forKey: QuicklinkLibrary.storageKey)
+        let original = try XCTUnwrap(QuicklinkLibrary.load(from: defaults).links.first)
+
+        var draft = original.preparedForEditing()
+        draft.title = "新标题"
+        XCTAssertNoThrow(try draft.parsedTemplate())
+        try QuicklinkLibrary(links: [draft]).save(to: defaults)
+
+        let saved = try XCTUnwrap(QuicklinkLibrary.load(from: defaults).links.first)
+        XCTAssertEqual(saved.title, "新标题")
+        XCTAssertEqual(saved.id, original.id)
+        XCTAssertEqual(saved.template, original.template)
+        XCTAssertNil(saved.usesDynamicPlaceholders)
+        let template = try saved.parsedTemplate()
+        XCTAssertEqual(template.parameters.map(\.id), ["a", "b", "c", "d"])
+        let url = try template.url(values: ["a": "one", "b": "two", "c": "three", "d": "four/five"])
+        XCTAssertEqual(url.absoluteString, "https://example.com/one/two/three/four%2Ffive")
+    }
+
+    func testLegacyDraftMigratesWithinDynamicArgumentLimit() throws {
+        let stored = Data(#"{"id":"quicklink:legacy","title":"旧链接","template":"https://example.com/{date}/{q=旧值}"}"#.utf8)
+        let draft = try JSONDecoder().decode(Quicklink.self, from: stored).preparedForEditing()
+        XCTAssertEqual(draft.usesDynamicPlaceholders, true)
+        XCTAssertEqual(draft.template, #"https://example.com/{argument name="date"}/{argument name="q" default="旧值"}"#)
+        let template = try draft.parsedTemplate()
+        XCTAssertEqual(template.parameters.map(\.id), ["date", "q"])
+        XCTAssertEqual(try template.url(values: ["date": "explicit"]).absoluteString,
+                       "https://example.com/explicit/%E6%97%A7%E5%80%BC")
+
+        let newLink = Quicklink(title: "新链接", template: "https://example.com/{argument}/{argument}/{argument}/{argument}")
+        XCTAssertThrowsError(try newLink.preparedForEditing().parsedTemplate()) {
+            XCTAssertEqual($0 as? DynamicTemplate.Failure, .tooManyArguments)
+        }
+    }
+
     func testMigrationPreservesOriginalAndDoesNotRecreateDeletedLink() throws {
         let suite = "Keylane.QuicklinksTests." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
