@@ -29,8 +29,9 @@ struct ResultDetailLayout<Results: View, Detail: View, EmptyState: View>: View {
                 Divider()
                     .mask {
                         VStack(spacing: 0) {
-                            Color.clear.frame(height: VisualStyle.launcherTopInset - 10)
-                            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                            let headerOpacity = Color.black.opacity(0.4)
+                            headerOpacity.frame(height: VisualStyle.launcherTopInset - 10)
+                            LinearGradient(colors: [headerOpacity, .black], startPoint: .top, endPoint: .bottom)
                                 .frame(height: 10)
                             Color.black
                         }
