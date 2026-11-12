@@ -5,6 +5,7 @@ struct MenuBarPresentation: Equatable {
     var title = ""
     var symbol: String?
     var toolTip: String
+    var isVisible = true
 }
 
 struct MenuBarCommand {
@@ -67,7 +68,7 @@ final class MenuBarRegistry: NSObject, ObservableObject, NSMenuDelegate {
     func update(id: String, presentation: MenuBarPresentation) {
         precondition(Thread.isMainThread)
         guard let entry = registrations[id], entry.presentation != presentation else { return }
-        entry.presentation = presentation; apply(entry)
+        entry.presentation = presentation; reconcile(id)
     }
     func unregister(owner: String) {
         precondition(Thread.isMainThread)
@@ -82,7 +83,7 @@ final class MenuBarRegistry: NSObject, ObservableObject, NSMenuDelegate {
     }
     private func reconcile(_ id: String) {
         guard let entry = registrations[id] else { return }
-        guard isEnabled(id) else { removeItem(entry); return }
+        guard isEnabled(id), entry.presentation.isVisible else { removeItem(entry); return }
         if entry.item == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
             item.autosaveName = "Keylane." + id

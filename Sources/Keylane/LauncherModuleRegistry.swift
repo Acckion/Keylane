@@ -92,6 +92,8 @@ struct SettingsTitlebarContribution {
     var searchItem: SettingsItem?
     var permissionStatus: AnyPublisher<SettingsPermissionStatus, Never>?
     var openPrivacySettings: (() -> Void)?
+    var requestEnable: ((@escaping (Bool) -> Void) -> Void)?
+    var recheckPermission: (() -> Void)?
 }
 
 struct LauncherSettingsPage: Identifiable {
@@ -101,6 +103,7 @@ struct LauncherSettingsPage: Identifiable {
     let subtitle: String
     let order: Int
     let items: [SettingsItem]
+    var parentID: String? = nil
     var titlebar: SettingsTitlebarContribution?
     var trailingToolbar: (() -> AnyView)?
     var loading: AnyPublisher<Bool, Never>?
@@ -136,7 +139,7 @@ struct SettingsWindowCatalog {
     init(pages: [LauncherSettingsPage], origins: [String: LauncherModuleOrigin] = [:]) {
         self.pages = pages
         sidebarGroups = LauncherModuleOrigin.allCases.compactMap { origin in
-            let matches = pages.filter { (origins[$0.id] ?? .builtInExtension) == origin }
+            let matches = pages.filter { $0.parentID == nil && (origins[$0.id] ?? .builtInExtension) == origin }
             return matches.isEmpty ? nil : SettingsSidebarGroup(id: origin, pages: matches)
         }
         items = pages.flatMap(\.items)

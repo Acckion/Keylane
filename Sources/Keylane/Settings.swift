@@ -31,7 +31,7 @@ struct SettingsView: View {
         } detail: {
             detailPage
         }.toggleStyle(SettingsSwitchStyle())
-        .navigationTitle(headerScrolledAway ? (page?.title ?? "设置") : "")
+        .navigationTitle(headerScrolledAway || page?.parentID != nil ? (page?.title ?? "设置") : "")
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .preferredColorScheme(state.colorScheme)
@@ -73,25 +73,18 @@ struct SettingsView: View {
     }
 
     private var detailPage: some View {
-        SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
-            let enabled = state.extensionEnabled(for: selected)
-            if enabled?.wrappedValue == false {
+        SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, showsHeader: page?.parentID == nil, headerScrolledAway: $headerScrolledAway) {
+            let owner = page?.parentID ?? selected
+            let activation = state.titlebar(for: owner)
+            if let page, let activation, activation.permissionStatus != nil {
+                PermissionSettingsContent(contribution: activation, content: page.content)
+                    .id(activation.searchItem?.id ?? page.id)
+            } else if state.extensionEnabled(for: owner)?.wrappedValue == false {
                 SettingsGroup {
                     SettingsRow("扩展已关闭", detail: "后台活动已停止，数据与快捷键已保留。") { EmptyView() }
                 }
             } else if let page {
-                if let contribution = page.titlebar, enabled != nil {
-                    SettingsGroup {
-                        SettingsPermissionToggle(contribution: contribution, detail: nil)
-                            .id(contribution.searchItem?.id ?? page.id)
-                    }
-                }
-                if let contribution = page.titlebar, contribution.permissionStatus != nil {
-                    PermissionSettingsContent(contribution: contribution, content: page.content,
-                                              showsFeedback: enabled == nil).id(page.id)
-                } else {
-                    page.content()
-                }
+                page.content()
             }
         }
         .overlay(alignment: .top) {
@@ -155,7 +148,7 @@ struct SettingsView: View {
     }
 
     private var settingsPages: some View {
-        List(selection: $selected) {
+        List(selection: Binding(get: { page?.parentID ?? selected }, set: { selected = $0 })) {
             searchClearance
             ForEach(state.catalog.sidebarGroups) { group in
                 Section {
