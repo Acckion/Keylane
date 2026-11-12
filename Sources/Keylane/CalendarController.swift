@@ -232,7 +232,7 @@ final class CalendarController: ObservableObject {
             let store = self.eventStore ?? EKEventStore()
             self.eventStore = store
             let all = store.calendars(for: .event)
-            let choices = all.map { calendar in
+            let choices = all.map { (calendar: EKCalendar) -> CalendarChoice in
                 let source: String
                 switch calendar.type {
                 case .birthday: source = "其他"
