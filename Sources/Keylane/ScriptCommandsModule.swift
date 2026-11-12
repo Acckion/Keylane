@@ -203,6 +203,7 @@ enum ScriptCommandsModule {
             order: 65, items: [.scriptFolders, .scriptCommands],
             titlebar: .init(title: "启用脚本命令", enabled: Binding(get: { controller.enabled }, set: { controller.enabled = $0 }),
                             updates: controller.$enabled.removeDuplicates().eraseToAnyPublisher()),
+            loading: controller.$scanning.eraseToAnyPublisher(),
             content: { [weak model] in
                 guard let model else { return AnyView(EmptyView()) }
                 return AnyView(ScriptCommandsPreferences(model: model, controller: controller))
@@ -223,7 +224,8 @@ enum ScriptCommandsModule {
             },
             updates: Publishers.Merge(ViewObservation.changes(controller.$runningScript),
                                       ViewObservation.changes(controller.$result)).eraseToAnyPublisher(),
-            enter: { _ in "" }
+            enter: { _ in "" },
+            loading: controller.$runningScript.map { $0 != nil }.removeDuplicates().eraseToAnyPublisher()
         )
         let create = LauncherPage(
             id: createPageID, placeholder: "", badge: ("创建脚本命令", "plus.square"),
@@ -359,7 +361,7 @@ private struct ScriptCommandsPreferences: View {
                     title: action.title, model: model, commandID: action.id,
                     isEnabled: controller.commandEnabledBinding(action.rawValue),
                     perform: { model.runCommand(action.id, origin: .menu) },
-                    icon: { Image(systemName: action.icon).foregroundStyle(.secondary) }
+                    icon: { SettingsIcon(symbol: action.icon, artwork: ModuleArtwork.settings("script-commands")) }
                 )
             }
             .disabled(!controller.enabled)
@@ -382,7 +384,6 @@ private struct ScriptCommandsPreferences: View {
                 .buttonStyle(.plain)
                 .disabled(!controller.enabled || controller.disabled.contains(ScriptCommandsModule.Action.create.rawValue))
             }
-            if controller.scanning { ProgressView().controlSize(.small) }
             if !controller.entries.isEmpty {
                 CommandSettingsList(items: controller.entries, id: \.id) { script in
                     script.commandSettingsEntry(model: model, controller: controller)
@@ -401,7 +402,7 @@ private extension ScriptCommand {
             title: title, model: model, commandID: commandID,
             isEnabled: controller.commandEnabledBinding(id),
             perform: { model.runCommand(commandID, origin: .menu) },
-            icon: { Image(systemName: "terminal").foregroundStyle(.secondary) }
+            icon: { ScriptArtwork(script: self).frame(width: 24, height: 24) }
         )
     }
 }
@@ -461,7 +462,6 @@ private struct ScriptCommandRunView: View {
 
                 if controller.running {
                     HStack {
-                        ProgressView().controlSize(.small)
                         Text("正在运行")
                         Button("取消运行", action: controller.cancel)
                     }

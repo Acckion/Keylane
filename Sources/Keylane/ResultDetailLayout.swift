@@ -72,6 +72,7 @@ struct ResultDetailEmptyState: View {
 struct SecondaryPageBadge: View {
     let title: String
     let symbol: String
+    let artwork: NSImage?
 
     private static let iconSize: CGFloat = 21
     private static let leadingInset = (VisualStyle.launcherControlDiameter - iconSize) / 2 + 2
@@ -84,10 +85,17 @@ struct SecondaryPageBadge: View {
     }
     var body: some View {
         HStack(spacing: Self.iconSpacing) {
-            Image(systemName: symbol)
-                .font(.system(size: 12.5, weight: .medium)).foregroundStyle(.white)
-                .frame(width: Self.iconSize, height: Self.iconSize)
-                .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 5))
+            Group {
+                if let artwork {
+                    ModuleArtworkImage(image: artwork)
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 12.5, weight: .medium)).foregroundStyle(.white)
+                        .frame(width: Self.iconSize, height: Self.iconSize)
+                        .background(.blue.gradient, in: RoundedRectangle(cornerRadius: 5))
+                }
+            }
+            .frame(width: Self.iconSize, height: Self.iconSize)
             Text(title).font(.system(size: 13, weight: .medium)).foregroundStyle(.primary).lineLimit(1)
         }
         .padding(.leading, Self.leadingInset)

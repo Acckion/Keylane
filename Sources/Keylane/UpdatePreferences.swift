@@ -8,7 +8,6 @@ struct UpdatePreferences: View {
             SettingsRow {
                 SettingsCaption(title: "检查更新", detail: updates.status)
             } control: {
-                if updates.busy { ProgressView().controlSize(.small) }
                 Button("检查更新") { updates.check() }
                     .disabled(updates.busy || updates.ready)
             }

@@ -13,18 +13,35 @@ enum ModuleArtwork {
         "keylane.calculator": "calculator", "keylane.system-tools": "system-actions",
         "keylane.app-utilities": "keylane-tools", "keylane.navigation": "navigation",
         "keylane.contacts": "contacts", "keylane.dictionary": "dictionary", "keylane.emoji": "emoji",
+        "keylane.apple-notes": "notes", "keylane.window-management": "window-management",
+        "snippets": "snippets",
+    ]
+
+    private static let modulePages = [
+        "keylane.host": "general", "keylane.applications": "applications", "keylane.files": "files",
+        "keylane.clipboard": "clipboard", "keylane.screenshots": "screenshots", "keylane.calendar": "calendar",
+        "keylane.shortcuts": "shortcuts", "keylane.script-commands": "script-commands",
+        "keylane.snippets": "snippets", "keylane.links": "links",
     ]
 
     private static let commandNames = [
         "settings": "general", "show-onboarding": "launcher",
         "ask-files": "ai", "ask-finder": "ai",
         "calculator": "calculator", "calculator-hint": "calculator", "calculator-help": "calculator",
-        "screenshot": "screenshots", "color": "color-picker", "speak": "read-aloud",
+        "screenshot": "capture-screen", "paste-latest-screenshot": "paste-screenshot", "color": "color-picker", "speak": "read-aloud",
         "stop-speaking": "read-aloud", "finder": "file-search",
         "switch-windows": "navigation", "search-menu-items": "navigation",
         "contacts": "contacts", "dictionary": "dictionary", "dictionary-query": "dictionary",
         "emoji-symbols": "emoji", "export-settings": "export-settings",
         "view-release-notes": "changelog", "check-for-updates": "check-updates", "show-camera": "camera",
+        "window-left-half": "window-left", "window-right-half": "window-right",
+        "window-top-half": "window-top", "window-bottom-half": "window-bottom",
+        "window-center": "window-center", "window-maximize": "window-maximize",
+        "window-restore": "window-restore", "window-next-display": "window-next-display",
+        "uninstall-application": "app-uninstall", "manage-auto-quit": "auto-quit",
+        "lock-screen": "lock-screen", "sleep-mac": "sleep", "sleep-displays": "display-sleep",
+        "toggle-output-mute": "mute-audio", "hide-other-applications": "hide-apps", "unhide-applications": "show-apps",
+        "cancel-running-script": "script-commands", "quicklink": "quicklinks",
     ]
 
     private static let cache = NSCache<NSString, NSImage>()
@@ -33,9 +50,14 @@ enum ModuleArtwork {
         settingsNames[pageID].flatMap(image)
     }
 
-    static func command(_ id: CommandID, settingsPage: String? = nil) -> NSImage? {
+    static func module(_ id: ModuleID) -> NSImage? {
+        settings(modulePages[id.rawValue] ?? id.rawValue)
+    }
+
+    static func command(_ id: CommandID, settingsPage: String? = nil, moduleID: ModuleID? = nil) -> NSImage? {
         if let name = commandNames[id.rawValue] { return image(name) }
-        return settingsPage.flatMap(settings)
+        if id.rawValue.hasPrefix("quicklink:") { return settings("links") }
+        return settingsPage.flatMap(settings) ?? moduleID.flatMap(module)
     }
 
     private static func image(_ name: String) -> NSImage? {

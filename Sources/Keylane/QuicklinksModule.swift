@@ -188,6 +188,6 @@ extension Quicklink {
             if $0 { model.disabledCommands.remove(id) }
             else { model.disabledCommands.insert(id) }
         }), perform: perform ?? { model.runCommand(commandID, origin: .menu) },
-           help: template, menu: menu) { Image(systemName: "link") }
+           help: template, menu: menu) { SettingsIcon(symbol: "link", artwork: ModuleArtwork.settings("links")) }
     }
 }

@@ -32,6 +32,7 @@ enum UtilityLauncherModules {
                                 primaryTitle: { controller.selected?.firstValue == nil ? "打开联系人" : "复制" },
                                 actions: { contactActions(controller) },
                                 updates: ViewObservation.changes(selectedContact))
+        page.loading = controller.$loading.eraseToAnyPublisher()
         page.enter = { query in
             controller.query = query
             if permission.available { controller.start() }
@@ -102,6 +103,7 @@ enum UtilityLauncherModules {
                                 primaryTitle: { controller.definition == nil ? "打开词典" : "复制释义" },
                                 actions: { dictionaryActions(controller) },
                                 updates: ViewObservation.changes(controller.$definition))
+        page.loading = controller.$loading.eraseToAnyPublisher()
         page.enter = { _ in
             let term = controller.initialTerm
             controller.initialTerm = ""
@@ -169,6 +171,8 @@ enum UtilityLauncherModules {
                                 },
                                 updates: Publishers.Merge(ViewObservation.changes(controller.$selection),
                                                           ViewObservation.changes(controller.$category)).eraseToAnyPublisher())
+        page.loading = controller.$isLoading.combineLatest(controller.$isSearching)
+            .map { loading, searching in loading || searching }.removeDuplicates().eraseToAnyPublisher()
         page.enter = { query in
             controller.query = query
             controller.start()
@@ -204,9 +208,8 @@ enum UtilityLauncherModules {
 
     private static func shortcuts(_ model: Model) -> LauncherModule {
         let controller = model.systemShortcuts
-        let iconPermission = PermissionFeature("shortcuts.iconsEnabled", authorization: .automation(ShortcutIconReader.bundleIdentifier, appName: "快捷指令"), observeImmediately: false)
-        var iconChanges: AnyCancellable?
         let pageID = "shortcuts"
+        let search = SettingsSearchControls()
         let provider = LauncherModule.Provider(namespace: .prefix("shortcut:"), entries: { _ in
             controller.entries.compactMap { shortcut in
                 guard !controller.disabledIDs.contains(shortcut.id) else { return nil }
@@ -229,9 +232,14 @@ enum UtilityLauncherModules {
         let settings = LauncherSettingsPage(id: pageID, title: "快捷指令", symbol: "square.stack.3d.up",
                                             subtitle: "为系统快捷指令设置搜索别名与热键。", order: 60,
                                             items: SettingsItem.all.filter { $0.page == pageID },
+                                            trailingToolbar: {
+                                                AnyView(SettingsToolbarSearch(title: "搜索快捷指令", selection: search))
+                                            },
+                                            loading: controller.$loading.combineLatest(controller.$entries)
+                                                .map { $0 && $1.isEmpty }.removeDuplicates().eraseToAnyPublisher(),
                                             content: { [weak model] in
                                                 guard let model else { return AnyView(EmptyView()) }
-                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller, iconPermission: iconPermission))
+                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller, search: search))
                                             })
         let searchUpdates = Publishers.Merge(
             controller.$entries.removeDuplicates().dropFirst().map { _ in () },
@@ -241,20 +249,7 @@ enum UtilityLauncherModules {
             command("system-shortcuts", "管理快捷指令", "别名、热键与启用状态", "square.stack.3d.up",
                     ["Shortcuts", "Apple Shortcuts", "快捷指令"], destination: .settings(pageID), settings: pageID)
         ], providers: [provider], settings: [settings], services: [
-            .init(start: {
-                iconPermission.startObserving()
-                controller.iconReadingAllowed = { iconPermission.available }
-                iconChanges = iconPermission.updates.receive(on: DispatchQueue.main).sink {
-                    controller.updateIconPermission()
-                }
-                controller.start()
-            }, stop: {
-                iconChanges?.cancel()
-                iconChanges = nil
-                iconPermission.stopObserving()
-                controller.iconReadingAllowed = { false }
-                controller.stop()
-            })
+            .init(start: controller.start, stop: controller.stop)
         ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,
             updates: {
