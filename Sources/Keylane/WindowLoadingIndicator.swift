@@ -1,8 +1,8 @@
 import Combine
 import SwiftUI
 
-/// A window-edge activity indicator driven by a page's loading state.
-struct LauncherLoadingIndicator: View {
+/// A window-edge activity indicator driven by an asynchronous loading state.
+struct WindowLoadingIndicator: View {
     let loading: AnyPublisher<Bool, Never>
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

@@ -72,11 +72,14 @@ enum BuiltinLauncherModules {
                          settingsPage(model, "menu-bar", "菜单栏", "menubar.rectangle", "选择各模块在菜单栏中显示的项目。", 70) {
                              MenuBarPreferences(registry: $0.menuBar)
                          },
-                         settingsPage(model, "permissions", "权限", "lock.shield", "查看和管理 Keylane 使用的系统权限。", 95) {
+                         settingsPage(model, "permissions", "权限", "lock.shield", "查看和管理 Keylane 使用的系统权限。", 95,
+                                      loading: model.calendar.$requesting.combineLatest(model.contacts.$requesting)
+                                          .map { $0 || $1 }.removeDuplicates().eraseToAnyPublisher()) {
                              PermissionsPreferences(model: $0)
                          },
                          settingsPage(model, "advanced", "高级", "wrench.and.screwdriver", "管理窗口、导出和连接设置。", 100, content: LauncherSettingsContent.advanced),
-                         settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 110, content: LauncherSettingsContent.about)],
+                         settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 110,
+                                      loading: model.updates.$busy.eraseToAnyPublisher(), content: LauncherSettingsContent.about)],
               shortcutSettingsBinding: .init(id: "launcher", title: "Keylane 热键", symbol: "command"))
     }
 
@@ -197,7 +200,8 @@ enum BuiltinLauncherModules {
                          updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
                          releasePreview: { FilePreview.shared.dismiss() },
                          loading: model.fileSearch.$isSearching.eraseToAnyPublisher())
-        ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"), content: LauncherSettingsContent.files)],
+        ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"),
+                                  loading: controller.$indexing.eraseToAnyPublisher(), content: LauncherSettingsContent.files)],
            services: [.init(start: {
                controller.applyPermissionEnabled(permission.available)
                let scopeChanges = controller.$options.map { [$0.enabled ? "enabled" : "disabled"] + $0.roots }
@@ -421,8 +425,9 @@ enum BuiltinLauncherModules {
 
     private static func settingsPage<Content: View>(_ model: Model, _ id: String, _ title: String, _ symbol: String,
                                      _ subtitle: String, _ order: Int, titlebar: SettingsTitlebarContribution? = nil,
-                                     trailingToolbar: (() -> AnyView)? = nil, content: @escaping (Model) -> Content) -> LauncherSettingsPage {
-        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar, trailingToolbar: trailingToolbar) { [weak model] in
+                                     trailingToolbar: (() -> AnyView)? = nil, loading: AnyPublisher<Bool, Never>? = nil,
+                                     content: @escaping (Model) -> Content) -> LauncherSettingsPage {
+        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar, trailingToolbar: trailingToolbar, loading: loading) { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(content(model))
         }

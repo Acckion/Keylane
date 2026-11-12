@@ -86,7 +86,7 @@ struct SettingsPermissionFeedback: View {
 
     var body: some View {
         if status.requesting {
-            ProgressView("正在检查系统权限…").controlSize(.small)
+            Text("正在检查系统权限…").font(.caption).foregroundStyle(.secondary)
         } else if let message = status.message {
             HStack(alignment: .center, spacing: 12) {
                 Text(message).font(.caption).foregroundStyle(.secondary)

@@ -156,7 +156,7 @@ struct Launcher: View {
         .frame(width: VisualStyle.launcherWidth, height: model.presentedLauncherHeight, alignment: .top)
         .overlay(alignment: .top) {
             if launcherVisible, argumentTarget == nil, let loading {
-                LauncherLoadingIndicator(loading: loading).id(model.pageID)
+                WindowLoadingIndicator(loading: loading).id(model.pageID)
             }
         }
         .scaleEffect(model.interfaceScale)

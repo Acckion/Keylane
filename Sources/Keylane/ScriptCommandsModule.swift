@@ -203,6 +203,7 @@ enum ScriptCommandsModule {
             order: 65, items: [.scriptFolders, .scriptCommands],
             titlebar: .init(title: "启用脚本命令", enabled: Binding(get: { controller.enabled }, set: { controller.enabled = $0 }),
                             updates: controller.$enabled.removeDuplicates().eraseToAnyPublisher()),
+            loading: controller.$scanning.eraseToAnyPublisher(),
             content: { [weak model] in
                 guard let model else { return AnyView(EmptyView()) }
                 return AnyView(ScriptCommandsPreferences(model: model, controller: controller))
@@ -383,7 +384,6 @@ private struct ScriptCommandsPreferences: View {
                 .buttonStyle(.plain)
                 .disabled(!controller.enabled || controller.disabled.contains(ScriptCommandsModule.Action.create.rawValue))
             }
-            if controller.scanning { ProgressView().controlSize(.small) }
             if !controller.entries.isEmpty {
                 CommandSettingsList(items: controller.entries, id: \.id) { script in
                     script.commandSettingsEntry(model: model, controller: controller)

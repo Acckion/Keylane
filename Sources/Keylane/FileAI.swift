@@ -167,6 +167,10 @@ struct FileAIView: View {
             HStack { Button("发送所选资料") { controller.send() }.buttonStyle(.glassProminent).disabled(controller.running); if controller.running { Button("取消") { controller.cancel() }.buttonStyle(.glass) }; Spacer() }
             Text(controller.status).font(.caption).foregroundStyle(.secondary)
             if !controller.answer.isEmpty { Divider(); Text(controller.answer).textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading) }
-        }.padding(24) }.confirmationDialog("删除此服务的本机密钥？",isPresented:$confirmsKeyDelete,titleVisibility:.visible) { Button("删除密钥",role:.destructive) { controller.deleteKey() }; Button("取消",role:.cancel) {} }
+        }.padding(24) }
+        .overlay(alignment: .top) {
+            WindowLoadingIndicator(loading: controller.$running.eraseToAnyPublisher())
+        }
+        .confirmationDialog("删除此服务的本机密钥？",isPresented:$confirmsKeyDelete,titleVisibility:.visible) { Button("删除密钥",role:.destructive) { controller.deleteKey() }; Button("取消",role:.cancel) {} }
     }
 }

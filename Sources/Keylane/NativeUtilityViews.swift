@@ -39,7 +39,6 @@ struct SystemShortcutsPreferences: View {
                     Button("刷新", systemImage: "arrow.clockwise") { controller.refresh(force: true) }.disabled(controller.loading)
                     Button("打开快捷指令") { UtilityActions.openApplication("com.apple.shortcuts") }
                 }.buttonStyle(.bordered).controlSize(.small)
-                if controller.loading { ProgressView().controlSize(.small) }
                 if !controller.executionMessage.isEmpty { SettingsDescription(controller.executionMessage) }
                 if !controller.message.isEmpty { Text(controller.message).foregroundStyle(.secondary) }
                 if !controller.loading, controller.entries.isEmpty, controller.message.isEmpty { Text("系统中没有快捷指令").foregroundStyle(.secondary) }

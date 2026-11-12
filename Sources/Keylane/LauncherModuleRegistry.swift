@@ -103,6 +103,7 @@ struct LauncherSettingsPage: Identifiable {
     let items: [SettingsItem]
     var titlebar: SettingsTitlebarContribution?
     var trailingToolbar: (() -> AnyView)?
+    var loading: AnyPublisher<Bool, Never>?
     let content: () -> AnyView
 }
 

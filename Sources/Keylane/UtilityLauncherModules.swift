@@ -228,6 +228,8 @@ enum UtilityLauncherModules {
         let settings = LauncherSettingsPage(id: pageID, title: "快捷指令", symbol: "square.stack.3d.up",
                                             subtitle: "为系统快捷指令设置搜索别名与热键。", order: 60,
                                             items: SettingsItem.all.filter { $0.page == pageID },
+                                            loading: controller.$loading.combineLatest(iconPermission.$status)
+                                                .map { $0 || $1.requesting }.removeDuplicates().eraseToAnyPublisher(),
                                             content: { [weak model] in
                                                 guard let model else { return AnyView(EmptyView()) }
                                                 return AnyView(SystemShortcutsPreferences(model: model, controller: controller, iconPermission: iconPermission))
