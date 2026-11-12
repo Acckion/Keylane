@@ -14,6 +14,7 @@ struct CommandSettingsEntry<Icon: View> {
     var menu: [CommandSettingsAction] = []
     /// Optional value snapshot for entries with a stable icon and stable handlers for this item ID.
     var renderRevision: AnyHashable?
+    var permission: PermissionFeature? = nil
 }
 
 struct CommandSettingsAction: Identifiable {
@@ -65,7 +66,7 @@ private struct CommandSettingsRow<Icon: View>: View {
                 .id(commandIdentity)
                 .frame(width: CommandSettingsColumns.shortcutWidth, alignment: .leading)
             if let isEnabled = entry.isEnabled {
-                checkbox(isEnabled)
+                checkbox(isEnabled).disabled(entry.permission?.requesting == true)
             } else {
                 checkbox(.constant(false)).hidden().accessibilityHidden(true)
             }
@@ -91,6 +92,7 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
     var emptyMessage = "暂无命令"
     var showsColumns = false
     var showsBackground = true
+    var usesFixedRowHeights = true
     let entry: (Item) -> CommandSettingsEntry<Icon>
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
 
@@ -115,7 +117,7 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
             if items.isEmpty {
                 CommandSettingsEmptyState(message: emptyMessage)
             }
-            if items.count > 64, !voiceOverEnabled {
+            if usesFixedRowHeights, items.count > 64, !voiceOverEnabled {
                 CommandSettingsViewport(items: items) { item in
                     row(item, lastID: lastID)
                 }
@@ -205,6 +207,14 @@ private struct CommandSettingsListRow<Icon: View>: View, Equatable {
                 .contextMenu {
                     ForEach(entry.menu) { action in Button(action.title, action: action.perform) }
                 }
+            if let permission = entry.permission, permission.requesting || permission.status.message != nil {
+                SettingsPermissionFeedback(status: permission.status,
+                                           openPrivacySettings: permission.canOpenPrivacySettings ? permission.openPrivacySettings : nil)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 48)
+                    .padding(.trailing, 14)
+                    .padding(.bottom, 8)
+            }
             if showsDivider { CommandSettingsListDivider() }
         }
     }

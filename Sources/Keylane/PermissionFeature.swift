@@ -23,7 +23,7 @@ final class PermissionFeature {
     }
 
     @Published private(set) var enabled: Bool
-    @Published private var status = SettingsPermissionStatus()
+    @Published private(set) var status = SettingsPermissionStatus()
     private let authorization: Authorization
     private let defaults: UserDefaults
     private let key: String
