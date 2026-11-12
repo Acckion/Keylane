@@ -251,6 +251,8 @@ print("PASS disabled permission commands hidden; authorization and revocation up
 let registeredModuleID = ModuleID(rawValue: "fixture.registered")
 let registeredCommandID = CommandID(rawValue: "fixture.registered.static")
 let dynamicCommandID = CommandID(rawValue: "fixture.registered:dynamic")
+let registeredLauncherPageID = PageID(rawValue: "fixture-installed-page")
+var pageLeaves = 0
 let registeredPage = LauncherSettingsPage(id: "fixture-registered", title: "Registered", symbol: "gear",
                                          subtitle: "", order: 0, items: [], content: { AnyView(EmptyView()) })
 var isPresent = false
@@ -275,7 +277,8 @@ let registered = try LauncherModuleRegistry(modules: [
             let version = resolvedVersion
             return { executions.append("dynamic:\(version)") }
         }, permission: { _ in dynamicPermission })
-    ], settings: [registeredPage], registration: .init(isPresent: { isPresent },
+    ], pages: [.init(id: registeredLauncherPageID, placeholder: "", leave: { pageLeaves += 1 })],
+       settings: [registeredPage], registration: .init(isPresent: { isPresent },
                                                         updates: registrationChanged.eraseToAnyPublisher(),
                                                         isEnabled: { moduleEnabled }, generation: { installationGeneration }))
 ], commandEnabled: { !disabledIDs.contains($0) })
@@ -288,6 +291,7 @@ precondition(registered.moduleOwningCommand(registeredCommandID) == registeredMo
 precondition(registered.moduleOwningCommand(dynamicCommandID) == registeredModuleID)
 precondition(registered.settingsCatalog.pages.isEmpty && registered.shortcutCommandGroups.isEmpty)
 precondition(registered.candidates(for: registeredSearchInput).isEmpty && providerReads == 0)
+precondition(registered.page(registeredLauncherPageID) == nil)
 for origin in origins {
     precondition(!registered.invoke(dynamicCommandID, origin: origin, navigate: { _ in }))
 }
@@ -300,7 +304,11 @@ precondition(registered.shortcutCommandGroups.map(\.id) == [registeredModuleID] 
 precondition(registered.candidates(for: registeredSearchInput).map(\.commandID) == [registeredCommandID, dynamicCommandID])
 let queuedStatic = registered.resolve(registeredCommandID, origin: .menu, navigate: { _ in })!
 let queuedDynamic = registered.resolve(dynamicCommandID, origin: .shortcut, navigate: { _ in })!
+precondition(registered.page(registeredLauncherPageID) != nil)
 moduleEnabled = false
+precondition(registered.page(registeredLauncherPageID) == nil)
+registered.page(registeredLauncherPageID, includingInactive: true)?.leave()
+precondition(pageLeaves == 1)
 queuedStatic()
 queuedDynamic()
 precondition(executions.isEmpty && registered.candidates(for: registeredSearchInput).isEmpty)

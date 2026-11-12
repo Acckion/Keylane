@@ -38,6 +38,7 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let fileAI = FileAIController()
     private var moduleSearchChanges: AnyCancellable?
+    private var moduleRegistrationChanges: AnyCancellable?
     let rootSearchUpdates = PassthroughSubject<Void, Never>()
     let clipboard = ClipboardController(startTimer: false, presentationActive: false)
     let screenshots = ScreenshotLibrary()
@@ -232,6 +233,10 @@ final class Model: ObservableObject {
             guard let self else { return }; if self.fileResults != files { self.fileResults = files }; if self.fileSearchStatus != status { self.fileSearchStatus = status }
         }
         refreshLogin()
+        moduleRegistrationChanges = launcherModules?.registrationUpdates.sink { [weak self] in
+            guard let self, self.pageID != .root, self.activeLauncherPage == nil else { return }
+            self.pageID = .root
+        }
         moduleSearchChanges = launcherModules?.searchUpdates
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in

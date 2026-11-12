@@ -260,7 +260,7 @@ final class LauncherModuleRegistry {
     private let byID: [CommandID: Owned<LauncherModule.Command>]
     private let providers: [Owned<LauncherModule.Provider>]
     private let moduleRegistrations: [ModuleID: LauncherModule.Registration]
-    private let pages: [PageID: LauncherPage]
+    private let pages: [PageID: Owned<LauncherPage>]
     private let registeredSettings: [Owned<LauncherSettingsPage>]
     private let settingsOrigins: [String: LauncherModuleOrigin]
     let registrationUpdates: AnyPublisher<Void, Never>
@@ -300,7 +300,9 @@ final class LauncherModuleRegistry {
         commands = modules.flatMap { module in module.commands.map { Owned(module: module.id, value: $0) } }
         byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.value.declaration.id, $0) })
         providers = modules.flatMap { module in module.providers.map { Owned(module: module.id, value: $0) } }
-        pages = Dictionary(uniqueKeysWithValues: modules.flatMap(\.pages).map { ($0.id, $0) })
+        pages = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
+            module.pages.map { ($0.id, Owned(module: module.id, value: $0)) }
+        })
         let settingsPages = modules.flatMap(\.settings).sorted { $0.order < $1.order }
         var itemIDs: Set<String> = []
         for page in settingsPages {
@@ -365,7 +367,10 @@ final class LauncherModuleRegistry {
         return command.value.declaration
     }
 
-    func page(_ id: PageID) -> LauncherPage? { pages[id] }
+    func page(_ id: PageID, includingInactive: Bool = false) -> LauncherPage? {
+        guard let page = pages[id], includingInactive || isModuleActive(page.module) else { return nil }
+        return page.value
+    }
 
     func moduleOwningCommand(_ id: CommandID) -> ModuleID? {
         byID[id]?.module ?? provider(owning: id)?.module
@@ -375,8 +380,12 @@ final class LauncherModuleRegistry {
         moduleRegistrations[id]?.isPresent() ?? true
     }
 
+    private func isModuleActive(_ id: ModuleID) -> Bool {
+        isModulePresent(id) && (moduleRegistrations[id]?.isEnabled() ?? true)
+    }
+
     private func isCommandEnabled(_ id: CommandID, in module: ModuleID) -> Bool {
-        isModulePresent(module) && (moduleRegistrations[module]?.isEnabled() ?? true) && commandEnabled(id)
+        isModuleActive(module) && commandEnabled(id)
     }
 
     func permissionNeeded(for id: CommandID) -> PermissionFeature? {
@@ -404,7 +413,7 @@ final class LauncherModuleRegistry {
     }
 
     private func provider(for entry: Entry) -> LauncherModule.Provider? {
-        guard let provider = provider(owning: entry.commandID), isModulePresent(provider.module) else { return nil }
+        guard let provider = provider(owning: entry.commandID), isModuleActive(provider.module) else { return nil }
         return provider.value
     }
 
@@ -438,7 +447,7 @@ final class LauncherModuleRegistry {
                          detail: command.detail?() ?? item.detail, symbol: item.symbol, aliases: item.keywords)
         } + providers.flatMap { owned in
             let provider = owned.value
-            guard isModulePresent(owned.module), input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
+            guard isModuleActive(owned.module), input.namespace?.overlaps(provider.namespace) != false else { return [Entry]() }
             return provider.entries(input).filter { entry in
                 let id = entry.commandID
                 return provider.namespace.contains(id) && input.namespace?.contains(id) != false &&
