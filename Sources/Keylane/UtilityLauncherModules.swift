@@ -236,8 +236,7 @@ enum UtilityLauncherModules {
             command("system-shortcuts", "管理快捷指令", "别名、热键与启用状态", "square.stack.3d.up",
                     ["Shortcuts", "Apple Shortcuts", "快捷指令"], destination: .settings(pageID), settings: pageID)
         ], providers: [provider], settings: [settings], services: [
-            .init(start: { [weak model] in
-                controller.onRunFailure = { [weak model] message in model?.error = message }
+            .init(start: {
                 controller.iconReadingAllowed = { iconPermission.available }
                 iconChanges = iconPermission.updates.receive(on: DispatchQueue.main).sink {
                     controller.updateIconPermission()
@@ -248,7 +247,6 @@ enum UtilityLauncherModules {
                 iconChanges = nil
                 controller.iconReadingAllowed = { false }
                 controller.updateIconPermission()
-                controller.onRunFailure = nil
             })
         ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,

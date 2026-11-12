@@ -45,7 +45,6 @@ struct Launcher: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$pageID),
             ViewObservation.changes(model.$query),
-            ViewObservation.changes(model.$error),
             ViewObservation.changes(model.$appearance),
             ViewObservation.changes(model.$interfaceSize),
             ViewObservation.changes(model.$windowMode),
@@ -131,7 +130,6 @@ struct Launcher: View {
                         .mask(LinearGradient(stops: [.init(color: .black.opacity(0.85), location: 0), .init(color: .black.opacity(0.7), location: 0.48), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom))
                 }
                 Spacer(minLength: 0)
-                if !model.error.isEmpty { Text(model.error).font(.caption).foregroundStyle(.red).padding(8).background(.regularMaterial) }
                 ChromeBlur().frame(height: 78)
                     .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black.opacity(0.55), location: 0.5), .init(color: .black.opacity(0.8), location: 1)], startPoint: .top, endPoint: .bottom))
             }.allowsHitTesting(false) }
