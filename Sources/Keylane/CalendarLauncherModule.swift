@@ -15,7 +15,7 @@ enum CalendarLauncherModule {
                 declaration: .init(id: commandID, title: "我的日程", detail: "查看系统日历与日程",
                                    symbol: "calendar", keywords: ["Calendar", "My Schedule", "日历", "日程", "会议"],
                                    destination: .page(pageID), settingsPage: settingsID),
-                available: { calendar.enabled },
+                permission: calendar.permission,
                 execute: { [weak model] _ in
                     if model?.pageID == pageID { model?.query = "" }
                     calendar.showToday()
@@ -43,11 +43,7 @@ enum CalendarLauncherModule {
             settings: [.init(
                 id: settingsID, title: "日历", symbol: "calendar", subtitle: "查看日程和会议。", order: 50,
                 items: SettingsItem.all.filter { $0.page == settingsID },
-                titlebar: .init(
-                    title: "启用日历",
-                    enabled: Binding(get: { calendar.enabled }, set: { calendar.enabled = $0 }),
-                    updates: calendar.$enabled.removeDuplicates().eraseToAnyPublisher()
-                ),
+                titlebar: calendar.permission.titlebar("启用日历"),
                 content: { [weak model] in
                     guard let model else { return AnyView(EmptyView()) }
                     return AnyView(CalendarPreferences(model: model))
@@ -73,7 +69,7 @@ enum CalendarLauncherModule {
                     calendar.showSettings = nil
                 }
             )],
-            searchUpdates: [calendar.$enabled.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()]
+            searchUpdates: [calendar.permission.updates]
         )
     }
 }

@@ -46,6 +46,8 @@ final class SystemShortcutsController: ObservableObject {
     private let runQueue = DispatchQueue(label: "org.keylane.shortcuts.run", qos: .userInitiated)
     private let iconQueue = DispatchQueue(label: "org.keylane.shortcuts.icons", qos: .utility)
     private let loadsIcons: Bool
+    var iconReadingAllowed: () -> Bool = { false }
+    private var iconGeneration = 0
     private var lastRefresh = Date.distantPast
     var onRunFailure: ((String) -> Void)?
 
@@ -81,20 +83,29 @@ final class SystemShortcutsController: ObservableObject {
         return icons[String(commandID.dropFirst("shortcut:".count))]
     }
 
+    func updateIconPermission() {
+        iconGeneration += 1
+        icons = [:]
+        iconAccess = .inactive
+        if iconReadingAllowed() { refreshIcons(force: true) }
+    }
+
     private func refreshIcons(force: Bool) {
-        guard loadsIcons, iconAccess != .loading, !entries.isEmpty else { return }
+        guard loadsIcons, iconReadingAllowed(), iconAccess != .loading, !entries.isEmpty else { return }
         let ids = entries.map(\.id)
         guard force || iconAccess == .inactive || (iconAccess == .allowed && Set(ids) != Set(icons.keys)) else { return }
         iconAccess = .loading
+        let ticket = iconGeneration
 
         let load: () -> Void = { [weak self] in
-            guard let self else { return }
+            guard let self, self.iconGeneration == ticket, self.iconReadingAllowed() else { return }
             self.iconQueue.async { [weak self] in
-                let permission = ShortcutIconReader.requestPermissionIfNeeded()
+                let permission = ShortcutIconReader.permissionStatus()
                 guard permission == noErr else {
                     DispatchQueue.main.async {
-                        self?.icons = [:]
-                        self?.iconAccess = permission == -1743 || permission == -1744 ? .denied : .unavailable
+                        guard let self, self.iconGeneration == ticket else { return }
+                        self.icons = [:]
+                        self.iconAccess = permission == -1743 || permission == -1744 ? .denied : .unavailable
                     }
                     return
                 }
@@ -110,7 +121,7 @@ final class SystemShortcutsController: ObservableObject {
                 let result = rendered
                 let authorizationLost = denied
                 DispatchQueue.main.async {
-                    guard let self else { return }
+                    guard let self, self.iconGeneration == ticket, self.iconReadingAllowed() else { return }
                     if authorizationLost {
                         self.icons = [:]
                         self.iconAccess = .denied
@@ -135,7 +146,8 @@ final class SystemShortcutsController: ObservableObject {
             configuration.addsToRecentItems = false
             NSWorkspace.shared.openApplication(at: url, configuration: configuration) { [weak self] app, error in
                 DispatchQueue.main.async {
-                    if app == nil || error != nil { self?.iconAccess = .unavailable }
+                    guard let self, self.iconGeneration == ticket else { return }
+                    if app == nil || error != nil { self.iconAccess = .unavailable }
                     else { load() }
                 }
             }

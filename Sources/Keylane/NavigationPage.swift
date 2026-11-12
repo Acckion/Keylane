@@ -41,6 +41,11 @@ final class NavigationController: ObservableObject {
         }
     }
 
+    func permissionRequired() {
+        stop()
+        status = .permission
+    }
+
     func stop() {
         scanRequest?.cancel()
         scanRequest = nil
@@ -151,7 +156,7 @@ struct NavigationPage: View {
             } description: {
                 Text(NavigationText.label("允许 Keylane 读取和操作其他应用的窗口与菜单。", "Allow Keylane to read and control other apps’ windows and menus."))
             } actions: {
-                Button(NavigationText.label("打开系统授权", "Request Access"), action: requestAccess)
+                Button(NavigationText.label("窗口与菜单设置…", "Window & Menu Settings…"), action: requestAccess)
                 Button(NavigationText.label("重新检查", "Check Again"), action: reload)
             }.buttonStyle(ContentActionButtonStyle())
         case .noApplication:

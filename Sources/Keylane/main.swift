@@ -111,6 +111,10 @@ final class Model: ObservableObject {
     @Published var loginEnabled = false
     let discovery = ApplicationDiscovery()
     let applicationResultActions = ApplicationResultActions()
+    let finderAutomation = PermissionFeature("finderAutomation.enabled", authorization: .automation("com.apple.finder", appName: "Finder"))
+    let crossAppPaste = PermissionFeature("crossAppPaste.enabled", authorization: .postEvent)
+    let lockScreenPermission = PermissionFeature("lockScreen.enabled", authorization: .postEvent)
+    let clipboardSpeech = PermissionFeature("clipboardSpeech.enabled", authorization: .persistentClipboard)
     let applicationAutoQuit = ApplicationAutoQuit()
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
@@ -259,13 +263,55 @@ final class Model: ObservableObject {
     func perform(_ entry: Entry) {
         runCommand(entry.commandID, origin: .search, usageKey: entry.id)
     }
+    private var commandInvocation = 0
+
+    func cancelPendingCommand() { commandInvocation += 1 }
+
     func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil) {
+        guard let registry = launcherModules else { return }
+        let permissionNeeded = registry.permissionNeeded(for: id)
+        guard permissionNeeded?.requesting != true else { return }
+        commandInvocation += 1
+        guard let permission = permissionNeeded else {
+            executeCommand(id, origin: origin, usageKey: usageKey, revealDestination: false)
+            return
+        }
+        let settingsPage = registry.declaration(id)?.settingsPage ?? "permissions"
+        if origin == .shortcut {
+            openSettings(page: settingsPage)
+            return
+        }
+        let invocation = commandInvocation
+        let originalQuery = query
+        let originalPage = pageID
+        permission.activate { [weak self] allowed in
+            // Give module observers time to start their services before entering a page.
+            DispatchQueue.main.async {
+                guard let self, self.commandInvocation == invocation, self.query == originalQuery,
+                      self.pageID == originalPage else { return }
+                if allowed {
+                    self.executeCommand(id, origin: origin, usageKey: usageKey, revealDestination: true)
+                } else {
+                    let delegate = NSApp.delegate as? Delegate
+                    delegate?.revealLauncherDestination()
+                    if permission.canOpenPrivacySettings {
+                        delegate?.showLauncherFeedback("功能尚未启用", style: .failure, actionTitle: "授权设置…") { [weak self] in
+                            self?.openSettings(page: settingsPage)
+                        }
+                    } else {
+                        delegate?.showLauncherFeedback("未启用。请选择一个可访问的文件夹后重试。", style: .failure)
+                    }
+                }
+            }
+        }
+    }
+
+    private func executeCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String?, revealDestination: Bool) {
         guard let action = launcherModules?.resolve(id, origin: origin, navigate: { [weak self] destination in
             guard let self else { return }
             switch destination {
             case .action: break
-            case let .page(page):
-                self.openPage(page, origin: origin)
+            case let .page(page): self.openPage(page, origin: origin)
             case let .settings(page): self.openSettings(page: page)
             }
         }) else { return }
@@ -273,7 +319,11 @@ final class Model: ObservableObject {
             let queryKey = pageID == .root && origin != .shortcut ? SearchUsageHistory.queryKey(query) : nil
             recordUsage(for: usageKey, queryKey: queryKey)
         }
+        let originalPage = pageID
         action()
+        if revealDestination, origin == .search, pageID != originalPage {
+            (NSApp.delegate as? Delegate)?.revealLauncherDestination()
+        }
     }
     func openPage(_ page: PageID, origin: LauncherCommandOrigin) {
         guard launcherModules?.page(page) != nil else { return }
@@ -306,8 +356,43 @@ final class Model: ObservableObject {
         bindings = proposed
         UserDefaults.standard.set(data, forKey: "shortcuts")
     }
+    func setHyperKey(_ value: Bool) {
+        if value {
+            guard requestModifierAccess(needsInputMonitoring: true) else { return }
+        }
+        hyperkey = value
+        configureModifiers()
+    }
+
+    func setDoubleTap(_ value: String) {
+        if value != "off" {
+            guard requestModifierAccess(needsInputMonitoring: false) else { return }
+        }
+        doubleTap = value
+        configureModifiers()
+    }
+
+    private func requestModifierAccess(needsInputMonitoring: Bool) -> Bool {
+        guard AXIsProcessTrusted() else {
+            requestKeyboardAccess()
+            modifierStatus = "请先授予辅助功能权限，再启用修饰键快捷方式。"
+            return false
+        }
+        if needsInputMonitoring && !CGPreflightListenEventAccess() && !CGRequestListenEventAccess() {
+            modifierStatus = "请先授予输入监控权限，再启用 Hyper Key。"
+            return false
+        }
+        return true
+    }
+
     func configureModifiers() {
         guard let delegate = NSApp.delegate as? Delegate else { return }
+        if !AXIsProcessTrusted() {
+            doubleTap = "off"
+            hyperkey = false
+        } else if hyperkey && !CGPreflightListenEventAccess() {
+            hyperkey = false
+        }
         if let issue = delegate.modifiers.configure(doubleTap: doubleTap, hyper: hyperkey, includeShift: hyperIncludesShift) {
             modifierStatus = issue
         } else { modifierStatus = doubleTap == "off" && !hyperkey ? "未启用" : "已启用（需实际键盘验证）" }
@@ -395,7 +480,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         pasteIntoPreviousApplication()
     }
     func pasteIntoPreviousApplication() {
-        guard AXIsProcessTrusted() else { showPasteFailure("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
+        guard model.crossAppPaste.available else {
+            showLauncherFeedback("已复制，跨应用粘贴未启用", style: .failure, actionTitle: "粘贴设置…") { [weak self] in
+                self?.model.openSettings(page: "permissions")
+            }
+            return
+        }
         guard let target = previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
         hideLauncher(); target.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
@@ -622,9 +712,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
     }
-    func showLauncherFeedback(_ message: String, style: ToastStyle) {
+    func showLauncherFeedback(_ message: String, style: ToastStyle,
+                              actionTitle: String? = nil, action: (() -> Void)? = nil) {
         if let window, window.isVisible {
-            model.footerFeedback.show(message, style: style, in: window)
+            model.footerFeedback.show(message, style: style, in: window, actionTitle: actionTitle, action: action)
         } else {
             toast.show(message, style: style)
         }
@@ -633,6 +724,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func hideLauncher(reason: String = "command") {
         dragGuides?.cancel()
         guard window.isVisible else { return }
+        // System authorization can temporarily take focus from the launcher.
+        if reason != "resignKey" { model.cancelPendingCommand() }
         resizeTimer?.invalidate()
         resizeTimer = nil
         resizeTarget = nil

@@ -5,25 +5,38 @@ import SwiftUI
 struct LauncherFooterFeedback: Equatable {
     let message: String
     let style: ToastStyle
+    var actionTitle: String? = nil
+    var label: String { actionTitle.map { message + " · " + $0 } ?? message }
 }
 
 final class LauncherFooterFeedbackPresenter {
     @Published private(set) var current: LauncherFooterFeedback?
     private var dismissal: DispatchWorkItem?
+    private var action: (() -> Void)?
 
-    func show(_ message: String, style: ToastStyle, in window: NSWindow) {
+    func show(_ message: String, style: ToastStyle, in window: NSWindow,
+              actionTitle: String? = nil, action: (() -> Void)? = nil) {
         dismissal?.cancel()
-        current = LauncherFooterFeedback(message: message, style: style)
+        self.action = action
+        let feedback = LauncherFooterFeedback(message: message, style: style, actionTitle: actionTitle)
+        current = feedback
         NSAccessibility.post(element: window, notification: .announcementRequested,
-                             userInfo: [.announcement: message])
+                             userInfo: [.announcement: feedback.label])
         let dismissal = DispatchWorkItem { [weak self] in self?.clear() }
         self.dismissal = dismissal
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: dismissal)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (action == nil ? 3 : 8), execute: dismissal)
+    }
+
+    func performAction() {
+        let action = action
+        clear()
+        action?()
     }
 
     func clear() {
         dismissal?.cancel()
         dismissal = nil
+        action = nil
         current = nil
     }
 }
@@ -49,7 +62,7 @@ struct LauncherFooterFeedbackLabel: View {
             Circle()
                 .fill(feedback.style.color)
                 .frame(width: Self.dotSize, height: Self.dotSize)
-            Text(feedback.message)
+            Text(feedback.label)
                 .font(.system(size: Self.fontSize, weight: .medium))
                 .lineLimit(1)
         }
