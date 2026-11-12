@@ -12,6 +12,7 @@ public struct SettingsItem: Identifiable, Equatable {
         self.keywords = keywords
     }
 
+    public static let applicationAutoQuit = SettingsItem(id: "application-auto-quit", page: "applications", title: "自动退出", keywords: "闲置 退出 auto quit idle")
     public static let applicationScopes = SettingsItem(id: "scopes", page: "applications", title: "应用搜索范围", keywords: "应用 文件夹 applications folders scope")
     public static let applicationFavorites = SettingsItem(id: "favorites", page: "applications", title: "收藏", keywords: "排序 favorite pin")
     public static let screenshotColumns = SettingsItem(id: "screenshot-columns", page: "screenshots", title: "截图列数", keywords: "screenshots grid columns 截屏 缩略图")
@@ -94,6 +95,7 @@ public struct SettingsItem: Identifiable, Equatable {
         login,
         glass,
         applicationScopes,
+        applicationAutoQuit,
         fileSearchScope,
         fileSearchInline,
         screenshotColumns,

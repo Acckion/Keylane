@@ -140,7 +140,11 @@ final class FileSearchController: ObservableObject {
     }
     func cancel() {
         cancelMerge()
+        let wasSearching = !currentQuery.isEmpty
         queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
+        if wasSearching {
+            reader.async { [weak self] in self?.readDB?.releaseCachedPages() }
+        }
     }
     func search(_ text: String, homeOnly: Bool = false, root: URL? = nil, includeContents: Bool = true) {
         let scopeChanged = includesQueryContents != includeContents
@@ -270,6 +274,7 @@ final class FileSearchController: ObservableObject {
         indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []; startWatch()
         writer.async { [weak self] in
             guard let self, let db = self.writeDB, !token.cancelled else { return }
+            defer { db.releaseCachedPages() }
             let start = Date(); var lastProgress = Date.distantPast; var invalid = 0; var denied: [String] = []; var auto: [AutomaticFileExclusion] = []; var processed = 0
             let homeLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
             let epoch = (config.contentSearch ? "c:" : "n:") + UUID().uuidString
@@ -336,53 +341,78 @@ final class FileSearchController: ObservableObject {
                         if inaccessibleAncestor { continue }
                         if blocked { try db.removeUnseen(root: root, subtree: subtree, epoch: epoch); continue }
                     }
-                    var queue: [(URL,[FileSearchRules.IgnoreRule])] = [(firstDirectory,inheritedRules)]; var position = 0; var complete = true
+                    // Keep only pending paths and inherited rules. Enumerated URLs can
+                    // carry prefetched resource values for each file and directory.
+                    var queue: [(path: String, rules: [FileSearchRules.IgnoreRule])?] = [(firstDirectory.path, inheritedRules)]
+                    var position = 0
+                    var complete = true
+                    var explicitEntry = entry
                     while position < queue.count && !token.cancelled {
-                        let (directory,inherited) = queue[position]; position += 1
-                        var rules = inherited; if config.useIgnoreFiles { rules += FileSearchRules.readIgnoreRules(in: directory) }
-                        let children: [URL]
-                        do {
-                            if let entry, position == 1 {
-                                children = [entry]
-                            } else {
-                                let priority = ["Downloads": 0, "Desktop": 1, "Documents": 2]
-                                children = try FileManager.default.contentsOfDirectory(
-                                    at: directory, includingPropertiesForKeys: Array(keys),
-                                    options: config.includeHidden ? [] : [.skipsHiddenFiles]
-                                ).sorted { (priority[$0.lastPathComponent] ?? 3) < (priority[$1.lastPathComponent] ?? 3) }
+                        let (path, inherited) = queue[position]!
+                        queue[position] = nil
+                        position += 1
+                        if position >= 1024 && position >= queue.count - position {
+                            queue.removeFirst(position)
+                            position = 0
+                        }
+                        let pendingEntry = explicitEntry
+                        explicitEntry = nil
+                        try autoreleasepool {
+                            let directory = URL(fileURLWithPath: path, isDirectory: true)
+                            var rules = inherited; if config.useIgnoreFiles { rules += FileSearchRules.readIgnoreRules(in: directory) }
+                            let children: [URL]
+                            do {
+                                if let pendingEntry {
+                                    children = [pendingEntry]
+                                } else {
+                                    let priority = ["Downloads": 0, "Desktop": 1, "Documents": 2]
+                                    children = try FileManager.default.contentsOfDirectory(
+                                        at: directory, includingPropertiesForKeys: Array(keys),
+                                        options: config.includeHidden ? [] : [.skipsHiddenFiles]
+                                    ).sorted { (priority[$0.lastPathComponent] ?? 3) < (priority[$1.lastPathComponent] ?? 3) }
+                                }
+                            } catch {
+                                invalid += 1; complete = false
+                                if denied.count < 24 { denied.append(directory.path) }
+                                return
                             }
-                        } catch {
-                            invalid += 1; complete = false
-                            if denied.count < 24 { denied.append(directory.path) }
-                            continue
-                        }
-                        if config.enforceDiskSpace {
-                            let free = self.availableCapacity(db.url.deletingLastPathComponent())
-                            // Reserve room for SQLite/WAL and the next directory batch.
-                            let estimate = Int64(children.count * (config.contentSearch ? 102_400 : 1024)) + 128 * 1024 * 1024
-                            guard free > estimate else { throw FileIndexError.diskSpace }
-                        }
-                        try db.transaction {
-                            for url in children {
-                                if token.cancelled { return }
-                                let value: URLResourceValues
-                                do { value = try url.resourceValues(forKeys: keys) }
-                                catch {
-                                    if entry == url, Self.isMissing(error) { continue }
-                                    invalid += 1; complete = false; continue
+                            if config.enforceDiskSpace {
+                                let free = self.availableCapacity(db.url.deletingLastPathComponent())
+                                // Reserve room for SQLite/WAL and the next directory batch.
+                                let estimate = Int64(children.count * (config.contentSearch ? 102_400 : 1024)) + 128 * 1024 * 1024
+                                guard free > estimate else { throw FileIndexError.diskSpace }
+                            }
+                            try db.transaction {
+                                // Bound temporary metadata and content allocations even in wide directories.
+                                let batchSize = 64
+                                for offset in stride(from: 0, to: children.count, by: batchSize) {
+                                    try autoreleasepool {
+                                        for url in children[offset..<min(offset + batchSize, children.count)] {
+                                            if token.cancelled { return }
+                                            let value: URLResourceValues
+                                            do { value = try url.resourceValues(forKeys: keys) }
+                                            catch {
+                                                if entry == url, Self.isMissing(error) { continue }
+                                                invalid += 1; complete = false; continue
+                                            }
+                                            let isDir = value.isDirectory == true; let symlink = value.isSymbolicLink == true; let path = url.path
+                                            guard !excluded(url, directory: isDir, rules: rules) else { continue }
+                                            if !config.externalVolumes && (value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false) { continue }
+                                            if isDir && path == homeLibrary && root != homeLibrary { continue } // iCloud is a separate explicit scope.
+                                            if isDir && [".build","DerivedData","node_modules"].contains(url.lastPathComponent) && !restored.contains(path) {
+                                                auto.append(.init(path: path, reason: "构建输出或依赖缓存", events: 0)); continue
+                                            }
+                                            let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
+                                            if try !db.touchUnchanged(record, root: root, epoch: epoch, contentSearch: config.contentSearch) {
+                                                let body = config.contentSearch && !isDir && !symlink ? FileSearchIndex.content(at: url) : ""
+                                                try db.put(record, body: body, root: root, epoch: epoch)
+                                            }
+                                            processed += 1
+                                            if isDir && !symlink && url.pathExtension != "app" { queue.append((path, rules)) }
+                                        }
+                                    }
+                                    if token.cancelled { return }
                                 }
-                                let isDir = value.isDirectory == true; let symlink = value.isSymbolicLink == true; let path = url.path
-                                guard !excluded(url, directory: isDir, rules: rules) else { continue }
-                                if !config.externalVolumes && (value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false) { continue }
-                                if isDir && path == homeLibrary && root != homeLibrary { continue } // iCloud is a separate explicit scope.
-                                if isDir && [".build","DerivedData","node_modules"].contains(url.lastPathComponent) && !restored.contains(path) {
-                                    auto.append(.init(path: path, reason: "构建输出或依赖缓存", events: 0)); continue
-                                }
-                                let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
-                                if try db.touchUnchanged(record,root:root,epoch:epoch,contentSearch:config.contentSearch) { processed += 1; if isDir && !symlink && url.pathExtension != "app" { queue.append((url,rules)) }; continue }
-                                let body = config.contentSearch && !isDir && !symlink ? FileSearchIndex.content(at:url) : ""
-                                try db.put(record,body:body,root:root,epoch:epoch); processed += 1
-                                if isDir && !symlink && url.pathExtension != "app" { queue.append((url,rules)) }
                             }
                         }
                         if Date().timeIntervalSince(lastProgress) >= 1 {

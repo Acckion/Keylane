@@ -107,15 +107,16 @@ private struct EmbeddedFilePreview: NSViewRepresentable {
     func makeNSView(context: Context) -> QLPreviewView {
         let view = QLPreviewView(frame: .zero, style: .compact)!
         view.autostarts = false
-        view.shouldCloseWithWindow = true
+        view.shouldCloseWithWindow = false
         return view
     }
     func updateNSView(_ view: QLPreviewView, context: Context) {
         if (view.previewItem as? NSURL) != url as NSURL { view.previewItem = url as NSURL }
     }
     static func dismantleNSView(_ view: QLPreviewView, coordinator: ()) {
-        // Release content during dismantling; the window owns closing the native view.
+        // The launcher panel is reused and can be hidden without closing.
         view.previewItem = nil
+        view.close()
     }
 }
 

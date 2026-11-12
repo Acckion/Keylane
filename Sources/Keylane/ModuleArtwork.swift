@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 import KeylaneCore
 
@@ -48,7 +49,16 @@ enum ModuleArtwork {
                 .appendingPathComponent("Resources/ModuleArtwork/\(name).png")
         }
         #endif
-        guard let url, let artwork = NSImage(contentsOf: url) else { return nil }
+        // Artwork is displayed at up to 36 points. Decode at Retina size
+        // rather than retaining a 256×256 bitmap for each module.
+        guard let url,
+              let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 96,
+                kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary) else { return nil }
+        let artwork = NSImage(cgImage: image, size: .zero)
         cache.setObject(artwork, forKey: key)
         return artwork
     }

@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Carbon
 import Combine
+import Darwin
 import ServiceManagement
 import ApplicationServices
 import KeylaneCore
@@ -109,6 +110,7 @@ final class Model: ObservableObject {
     @Published var loginEnabled = false
     let discovery = ApplicationDiscovery()
     let applicationResultActions = ApplicationResultActions()
+    let applicationAutoQuit = ApplicationAutoQuit()
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -422,6 +424,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var resizeTimer: Timer?
     private var resizeTarget: NSRect?
     private var launcherHiddenAt: TimeInterval?
+    private var idleMemoryTrim: DispatchWorkItem?
+    private var restingLauncherFrame: NSRect?
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         FileActionsWindow.shared.onEscape = { [weak self] in self?.closeUtilityWindowOnEscape() }
@@ -537,6 +541,21 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         else { window.makeKeyAndOrderFront(nil); windowDiagnostics.record("reopen", launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus) }
         return false
     }
+    func windowWillClose(_ notification: Notification) {
+        guard let settings = notification.object as? NSWindow, settings === settingsWindow else { return }
+        // AppKit is still completing the close. Detach on the next turn so
+        // a closed settings window does not retain its SwiftUI pages and rows.
+        DispatchQueue.main.async { [weak self, weak settings] in
+            guard let self, let settings, settings === self.settingsWindow, !settings.isVisible else { return }
+            settings.contentView = nil
+            settings.toolbar = nil
+            for index in settings.titlebarAccessoryViewControllers.indices.reversed() {
+                settings.removeTitlebarAccessoryViewController(at: index)
+            }
+            self.settingsWindow = nil
+            self.scheduleIdleMemoryTrim()
+        }
+    }
     func windowDidBecomeKey(_ notification: Notification) {
         guard let settingsWindow, notification.object as? NSWindow === settingsWindow else { return }
         toast.hide()
@@ -612,9 +631,34 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.footerFeedback.clear()
         NotificationCenter.default.post(name: .launcherHidden, object: nil)
         windowDiagnostics.record("hidden:" + reason, launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
+        scheduleIdleMemoryTrim()
     }
+
+    private func scheduleIdleMemoryTrim() {
+        idleMemoryTrim?.cancel()
+        let trim = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.idleMemoryTrim = nil
+            guard !self.window.isVisible, self.settingsWindow?.isVisible != true else { return }
+            if self.restingLauncherFrame == nil,
+               self.model.pageID == .root || self.model.activeLauncherPage?.contentPlacement == .fileResults {
+                // The released surface no longer needs a full-size window backing.
+                self.restingLauncherFrame = self.window.frame
+                self.window.setContentSize(NSSize(width: 1, height: 1))
+            }
+            WorkspaceItemIcon.discardCachedImages()
+            // Let the hidden views finish releasing their objects before
+            // returning unused allocator pages to the system.
+            DispatchQueue.global(qos: .utility).async {
+                _ = malloc_zone_pressure_relief(nil, 0)
+            }
+        }
+        idleMemoryTrim = trim
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: trim)
+    }
+
     func updateLauncherGeometry(animated: Bool = true) {
-        guard window != nil else { return }
+        guard window != nil, restingLauncherFrame == nil else { return }
         let backingScale = max(1, window.backingScaleFactor)
         // Align the requested size before comparing it with AppKit's frame.
         // A value like 760 * 1.1 can otherwise round up by an entire point.
@@ -689,6 +733,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     /// Present the current destination without applying the launcher's compact-mode reset.
     private func presentLauncher() {
+        if let frame = restingLauncherFrame {
+            restingLauncherFrame = nil
+            window.setFrame(frame, display: false)
+        }
         launcherHiddenAt = nil
         updateLauncherGeometry(animated: false)
         rememberPreviousApplication()
