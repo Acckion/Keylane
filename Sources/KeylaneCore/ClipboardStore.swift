@@ -169,6 +169,15 @@ public final class ClipboardStore {
         guard let kind = ClipKind(rawValue: string(s,1)) else { throw ClipboardError.database }
         return ClipItem(id: string(s,0), kind: kind, preview: string(s,2), source: string(s,3), sourceBundle: string(s,4), copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)), pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)), byteCount: Int(sqlite3_column_int64(s,8)), assetName: sqlite3_column_type(s,9) == SQLITE_NULL ? nil : string(s,9), hasOCR: sqlite3_column_int(s,10) != 0)
     }
+    private func retainedSearchTerms(id: String) throws -> String {
+        let record = try statement("SELECT preview, ocr FROM clips WHERE id=?", [.text(id)])
+        defer { sqlite3_finalize(record) }
+        let status = sqlite3_step(record)
+        if status == SQLITE_DONE { return "" }
+        guard status == SQLITE_ROW else { throw ClipboardError.database }
+        return string(record, 0) + " " + string(record, 1)
+    }
+
     public func capture(_ content: ClipContent, snapshot: ClipSnapshot? = nil, source: String = "", bundle: String = "", at date: Date = Date()) throws -> String {
         let snapshotData = try snapshot?.encoded()
         let payload: Data; let identity: Data; let body: String; var asset: String?
@@ -193,10 +202,12 @@ public final class ClipboardStore {
         }
         do {
             try exec("BEGIN IMMEDIATE")
+            let searchable = Self.normalize([body, snapshot?.plainText ?? "", source, try retainedSearchTerms(id: id)]
+                .joined(separator: " "))
             try write("""
                 INSERT INTO clips(id,kind,preview,payload,searchable,asset,source,bundle,created,copied,bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET copied=excluded.copied,source=excluded.source,bundle=excluded.bundle,payload=excluded.payload,copies=clips.copies+1,bytes=excluded.bytes,searchable=excluded.searchable || ' ' || clips.ocr || ' ' || clips.preview
-                """, [.text(id),.text(content.kind.rawValue),.text(String(body.prefix(512))),.blob(payload),.text(Self.normalize(body + " " + (snapshot?.plainText ?? "") + " " + source)),asset.map(Value.text) ?? .null,.text(String(source.prefix(256))),.text(String(bundle.prefix(256))),.number(date.timeIntervalSince1970),.number(date.timeIntervalSince1970),.number(Double(max(identity.count,payload.count) + (snapshotData?.count ?? 0)))])
+                ON CONFLICT(id) DO UPDATE SET copied=excluded.copied,source=excluded.source,bundle=excluded.bundle,payload=excluded.payload,copies=clips.copies+1,bytes=excluded.bytes,searchable=excluded.searchable
+                """, [.text(id),.text(content.kind.rawValue),.text(String(body.prefix(512))),.blob(payload),.text(searchable),asset.map(Value.text) ?? .null,.text(String(source.prefix(256))),.text(String(bundle.prefix(256))),.number(date.timeIntervalSince1970),.number(date.timeIntervalSince1970),.number(Double(max(identity.count,payload.count) + (snapshotData?.count ?? 0)))])
             if let snapshotData { try write("INSERT INTO clip_snapshots(clip_id,payload,search_text) VALUES(?,?,?) ON CONFLICT(clip_id) DO UPDATE SET payload=excluded.payload,search_text=excluded.search_text",[.text(id),.blob(snapshotData),.text(Self.normalize(snapshot?.plainText ?? ""))]) }
             try exec("COMMIT")
         } catch { try? exec("ROLLBACK"); if let newAsset { try? FileManager.default.removeItem(at:newAsset) }; throw error }
