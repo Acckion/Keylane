@@ -18,21 +18,27 @@ enum SnippetsModule {
         let save: () -> Void = { [weak model] in
             if snippets.save() { model?.pageID = listID }
         }
+        let create: () -> Void = { [weak model] in
+            model?.runCommand(createCommandID, origin: .menu)
+        }
         let useSelected = {
             if let snippet = snippets.selected { snippets.use(snippet, paste: true) }
         }
         let list = LauncherPage(
             id: listID, placeholder: "搜索文字片段…", badge: ("文字片段", symbol),
             contentPlacement: .underChrome,
-            content: { AnyView(SnippetsList(controller: snippets)) },
+            content: { AnyView(SnippetsList(controller: snippets, create: create)) },
             queryChanged: { snippets.query = $0 },
-            move: snippets.move, submit: useSelected,
+            move: snippets.move,
+            submit: { if snippets.entries.isEmpty { create() } else { useSelected() } },
             primaryTitle: {
-                (NSApp?.delegate as? Delegate)?.pasteTargetName.map { "粘贴到 \($0)" } ?? "复制片段"
+                if snippets.entries.isEmpty { return "创建文字片段" }
+                return (NSApp?.delegate as? Delegate)?.pasteTargetName.map { "粘贴到 \($0)" } ?? "复制片段"
             },
+            primaryEnabled: { snippets.entries.isEmpty || snippets.selected != nil },
             actions: { [weak model] in
                 var actions = [LauncherAction(id: "snippet-create", title: "创建片段", icon: "plus",
-                                              perform: { model?.runCommand(createCommandID, origin: .menu) })]
+                                              perform: create)]
                 if let selected = snippets.selected {
                     actions += [
                         .init(id: "snippet-paste", title: "粘贴片段", icon: "clipboard", keys: ["↩"], perform: useSelected),
@@ -103,6 +109,7 @@ enum SnippetsModule {
 
 private struct SnippetsList: View {
     @ObservedObject var controller: SnippetsController
+    let create: () -> Void
 
     var body: some View {
         let snippets = controller.visible
@@ -138,8 +145,14 @@ private struct SnippetsList: View {
                 }
             }
         } emptyState: {
-            ResultDetailEmptyState(title: "没有匹配的文字片段",
-                                   message: controller.error.isEmpty ? "可在操作菜单中创建片段。" : controller.error)
+            let isLibraryEmpty = controller.entries.isEmpty
+            ResultDetailEmptyState(
+                title: isLibraryEmpty ? "还没有文字片段" : "没有匹配的文字片段",
+                message: controller.error.isEmpty
+                    ? (isLibraryEmpty ? "保存常用文字，方便随时插入。" : nil)
+                    : controller.error,
+                action: isLibraryEmpty ? .init(title: "创建文字片段", perform: create) : nil
+            )
         }
     }
 }
