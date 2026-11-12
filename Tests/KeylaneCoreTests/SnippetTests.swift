@@ -71,4 +71,37 @@ final class SnippetTests: XCTestCase {
             XCTAssertEqual(after?.suffix, delimiter)
         }
     }
+
+    func testImmediateKeywordPrefersCompletedLongerKeywordOverDelimiterMatch() {
+        let short = Snippet(text: "short", keyword: ";")
+        let long = Snippet(text: "long", keyword: ";;")
+        let longest = Snippet(text: "longest", keyword: ";;;")
+        let punctuation = Snippet(text: "punctuation", keyword: "!")
+        let entries = [longest, long, short, punctuation]
+        func match(_ input: String) -> Snippet? { entries.first { input.hasSuffix($0.keyword) } }
+
+        let completed = SnippetExpansionMode.immediately.keywordMatch(in: ";;", delimited: short, matching: match)
+        XCTAssertEqual(completed?.snippet, long)
+        XCTAssertEqual(completed?.usesDelimiter, false)
+
+        let extended = SnippetExpansionMode.immediately.keywordMatch(in: ";;;", delimited: long, matching: match)
+        XCTAssertEqual(extended?.snippet, longest)
+        XCTAssertEqual(extended?.usesDelimiter, false)
+
+        for delimiter in [" ", ",", "!"] {
+            let result = SnippetExpansionMode.immediately.keywordMatch(in: ";" + delimiter, delimited: short, matching: match)
+            XCTAssertEqual(result?.snippet, short)
+            XCTAssertEqual(result?.usesDelimiter, true)
+        }
+
+        let afterPause = SnippetExpansionMode.immediately.keywordMatch(in: ";", delimited: nil, matching: match)
+        XCTAssertEqual(afterPause?.snippet, short)
+        XCTAssertEqual(afterPause?.usesDelimiter, false)
+
+        for mode in [SnippetExpansionMode.keepDelimiter, .discardDelimiter] {
+            let result = mode.keywordMatch(in: ";;", delimited: short, matching: match)
+            XCTAssertEqual(result?.snippet, short)
+            XCTAssertEqual(result?.usesDelimiter, true)
+        }
+    }
 }

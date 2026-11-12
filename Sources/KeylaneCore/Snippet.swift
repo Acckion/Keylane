@@ -94,6 +94,15 @@ public enum SnippetExpansionMode: String, CaseIterable, Codable {
         Snippet.isReservedDelimiter(character) || (character.isPunctuation && character != "-" && character != "_")
     }
 
+    public func keywordMatch(in typed: String, delimited: Snippet?, matching: (String) -> Snippet?)
+        -> (snippet: Snippet, usesDelimiter: Bool)? {
+        if self == .immediately, let immediate = matching(typed),
+           immediate.keyword.count > (delimited?.keyword.count ?? 0) {
+            return (immediate, false)
+        }
+        return delimited.map { ($0, true) }
+    }
+
     public func match(in text: String, caret: Int, keyword: String, delimiter: String = "",
                       withinWords: Bool, delimiterPending: Bool = false) -> Match? {
         guard !keyword.isEmpty, Snippet.validKeyword(keyword) else { return nil }

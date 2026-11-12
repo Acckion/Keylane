@@ -143,16 +143,21 @@ final class SnippetExpansion {
         let mode = options.mode
         let onDelimiter = isDelimiter && (mode != .immediately || waiting ||
             (beforeDelivery && snippets.contains { prior.hasSuffix($0.keyword) && isSystemKeyword($0.keyword) }))
-        let candidate = onDelimiter ? prior : typed
-        guard (mode == .immediately || onDelimiter), let snippet = snippets.first(where: {
-            candidate.hasSuffix($0.keyword) && (options.overrideSystem || !isSystemKeyword($0.keyword))
-        }) else { return false }
+        func matchingSnippet(in input: String) -> Snippet? {
+            snippets.first {
+                input.hasSuffix($0.keyword) && (options.overrideSystem || !isSystemKeyword($0.keyword))
+            }
+        }
+        let delimited = onDelimiter ? matchingSnippet(in: prior) : nil
+        guard let (snippet, usesDelimiter) = mode.keywordMatch(in: typed, delimited: delimited, matching: matchingSnippet) else {
+            return false
+        }
 
-        let delimiter = onDelimiter ? characters : ""
+        let delimiter = usesDelimiter ? characters : ""
         let intercepted: Trigger?
-        if beforeDelivery, onDelimiter, isSystemKeyword(snippet.keyword) {
-            intercepted = interceptDelimiter(delimiter, for: snippet, in: target, mode: mode)
-            if intercepted != nil { typed = "" }
+        if beforeDelivery, let delimited, isSystemKeyword(delimited.keyword) {
+            intercepted = intercept(characters, for: snippet, in: target, mode: mode, delimiter: delimiter)
+            if intercepted != nil, usesDelimiter { typed = "" }
         } else {
             intercepted = nil
         }
@@ -180,37 +185,39 @@ final class SnippetExpansion {
     private func isSystemKeyword(_ keyword: String) -> Bool { systemKeywords.contains(keyword.lowercased()) }
 
     private func match(_ snippet: Snippet, target: NSRunningApplication, delimiter: String,
-                       mode: SnippetExpansionMode, delimiterPending: Bool = false) -> Trigger? {
+                       mode: SnippetExpansionMode) -> Trigger? {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier,
               let position = SnippetTextTarget.position(in: target), position.range.length == 0,
               let match = mode.match(in: position.text, caret: position.range.location, keyword: snippet.keyword,
-                                     delimiter: delimiter, withinWords: options.withinWords,
-                                     delimiterPending: delimiterPending) else { return nil }
+                                     delimiter: delimiter, withinWords: options.withinWords) else { return nil }
         return .init(application: target, position: position, match: match)
     }
 
-    private func interceptDelimiter(_ delimiter: String, for snippet: Snippet, in target: NSRunningApplication,
-                                    mode: SnippetExpansionMode) -> Trigger? {
-        guard let trigger = match(snippet, target: target, delimiter: delimiter, mode: mode, delimiterPending: true),
-              let original = currentPosition(for: trigger),
+    private func intercept(_ character: String, for snippet: Snippet, in target: NSRunningApplication,
+                           mode: SnippetExpansionMode, delimiter: String) -> Trigger? {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier,
+              let original = SnippetTextTarget.position(in: target), original.range.length == 0,
               SnippetTextTarget.canReplaceSelection(in: original.element) else { return nil }
         let caret = NSRange(location: original.range.location, length: 0)
-        let text = (original.text as NSString).replacingCharacters(in: caret, with: delimiter)
-        let location = caret.location + delimiter.utf16.count
+        let text = (original.text as NSString).replacingCharacters(in: caret, with: character)
+        let location = caret.location + character.utf16.count
         guard let match = mode.match(in: text, caret: location, keyword: snippet.keyword,
                                      delimiter: delimiter, withinWords: options.withinWords),
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier,
-              SnippetTextTarget.replaceSelection(with: delimiter, in: original.element) else { return nil }
+              currentPosition(in: target, matching: original) != nil,
+              SnippetTextTarget.replaceSelection(with: character, in: original.element) else { return nil }
 
-        // Write the delimiter literally to bypass macOS text replacement. The original input
-        // then stays intact if an argument prompt is cancelled or the target changes.
+        // Deliver the key literally so the system cannot replace the preceding keyword,
+        // including when the key completes a longer keyword instead of delimiting it.
         let position = SnippetTextTarget.Position(element: original.element, range: CFRange(location: location, length: 0), text: text)
         return .init(application: target, position: position, match: match)
     }
 
     private func currentPosition(for trigger: Trigger, selection: CFRange? = nil) -> SnippetTextTarget.Position? {
-        let app = trigger.application
-        let original = trigger.position
+        currentPosition(in: trigger.application, matching: trigger.position, selection: selection)
+    }
+
+    private func currentPosition(in app: NSRunningApplication, matching original: SnippetTextTarget.Position,
+                                 selection: CFRange? = nil) -> SnippetTextTarget.Position? {
         let expected = selection ?? original.range
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
               !options.excludes(app.bundleIdentifier), let current = SnippetTextTarget.position(in: app),
