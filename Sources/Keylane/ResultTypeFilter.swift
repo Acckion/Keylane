@@ -34,15 +34,17 @@ struct ResultTypeFilter: View {
     var width: CGFloat = 138
     var searchPlaceholder = "搜索类型…"
     @State private var query = ""
-    @State private var highlighted = 0
     private var current: ResultFilterOption { options.first { $0.id == selection } ?? ResultFilterOption(id: "all", title: "全部类型", symbol: "list.bullet") }
-    private var matches: [ResultFilterOption] { options.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query) } }
+    private var matches: [ResultFilterOption] { ResultFilterPanel.matches(options, query: query) }
     var body: some View {
         ZStack(alignment: .topTrailing) {
             if open {
-                panel.transition(.opacity)
+                ResultFilterPanel(selection: selection, options: matches, query: $query,
+                                  searchPlaceholder: searchPlaceholder, navigation: navigation,
+                                  choose: { open = false; selection = $0.id }, dismiss: { open = false })
+                    .transition(.opacity)
             } else {
-                NativeHoverButton(title: "筛选：\(current.title)", action: { query = ""; highlighted = 0; open = true }) {
+                NativeHoverButton(title: "筛选：\(current.title)", action: { query = ""; open = true }) {
                     HStack(spacing: 9) {
                         Image(systemName: current.symbol)
                         Text(current.title).lineLimit(1)
@@ -59,9 +61,27 @@ struct ResultTypeFilter: View {
                alignment: .topTrailing)
         .modifier(LauncherMenuSurface(open: open))
     }
-    private var panel: some View {
-        let options = matches
-        return ScrollViewReader { proxy in
+}
+
+struct ResultFilterPanel: View {
+    let selection: String
+    let options: [ResultFilterOption]
+    @Binding var query: String
+    let searchPlaceholder: String
+    var emptyTitle = "没有匹配类型"
+    var navigation = "arrows"
+    let choose: (ResultFilterOption) -> Void
+    let dismiss: () -> Void
+    @State private var highlighted = 0
+
+    static func matches(_ options: [ResultFilterOption], query: String) -> [ResultFilterOption] {
+        options.filter {
+            query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
             VStack(spacing: 0) {
                 SearchField(text: $query, placeholder: searchPlaceholder, focusToken: 0, fontSize: 14,
                             navigation: navigation, submit: {
@@ -69,11 +89,11 @@ struct ResultTypeFilter: View {
                             }, move: { delta in
                                 highlighted = NavigationBounds.move(highlighted, by: delta, count: options.count)
                                 if options.indices.contains(highlighted) { proxy.scrollTo(options[highlighted].id) }
-                            }, escape: { open = false })
+                            }, escape: dismiss)
                     .padding(14)
                     .onChange(of: query) { _, _ in
                         highlighted = 0
-                        if let first = matches.first { proxy.scrollTo(first.id, anchor: .top) }
+                        if let first = options.first { proxy.scrollTo(first.id, anchor: .top) }
                     }
                 Divider()
                 ScrollView {
@@ -84,14 +104,13 @@ struct ResultTypeFilter: View {
                                 if selection == option.id { Image(systemName: "checkmark").font(.caption) }
                             }.id(option.id)
                         }
-                        if options.isEmpty { Text("没有匹配类型").foregroundStyle(.secondary).padding(14) }
+                        if options.isEmpty { Text(emptyTitle).foregroundStyle(.secondary).padding(14) }
                     }.padding(8)
                 }.frame(height: CGFloat(min(8, max(1, options.count))) * 43 + 16)
             }.frame(width: 220, alignment: .top)
         }
     }
 
-    private func choose(_ option: ResultFilterOption) { open = false; selection = option.id }
 }
 
 enum FileResultTypeFilter {
