@@ -50,7 +50,7 @@ struct SettingsToolbarSearch: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        Group {
+        HStack(spacing: 0) {
             if selection.searchPresented {
                 SettingsSearchField(text: $selection.query, placeholder: title + "…", floating: true,
                                     autofocus: true, endEditing: {
@@ -276,7 +276,7 @@ struct ShortcutSettingsPreferences: View {
                         }
                     } label: {
                         HStack(spacing: 8) {
-                            SettingsIcon(symbol: group.symbol, size: 18)
+                            SettingsIcon(symbol: group.symbol, size: 18, artwork: ModuleArtwork.module(group.id))
                             SettingsTitle(group.title)
                             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                                 .font(.caption.weight(.semibold))
@@ -336,7 +336,8 @@ private extension LauncherModule.Command {
         var entry = CommandSettingsEntry(title: declaration.title, model: model, commandID: declaration.id,
                                     isEnabled: enabled) {
             SettingsIcon(symbol: declaration.symbol,
-                         artwork: ModuleArtwork.command(declaration.id, settingsPage: declaration.settingsPage))
+                         artwork: ModuleArtwork.command(declaration.id, settingsPage: declaration.settingsPage,
+                                                        moduleID: model.launcherModules?.moduleOwningCommand(declaration.id)))
         }
         if settingsEnabled != nil { entry.permission = permission }
         return entry

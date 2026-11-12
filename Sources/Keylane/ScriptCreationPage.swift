@@ -137,5 +137,7 @@ struct ScriptArtwork: View {
         }
     }
 
-    private var fallback: some View { Image(systemName: "terminal").foregroundStyle(.secondary) }
+    private var fallback: some View {
+        SettingsIcon(symbol: "terminal", artwork: ModuleArtwork.settings("script-commands"))
+    }
 }

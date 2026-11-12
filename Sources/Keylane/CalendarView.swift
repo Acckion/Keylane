@@ -204,38 +204,12 @@ private struct CalendarSettingsGroups: View {
                     title: "我的日程",
                     model: model, commandID: .init(rawValue: id),
                     perform: { model.runCommand(.init(rawValue: id), origin: .menu) },
-                    icon: { CalendarSettingsIcon(size: 24) }
+                    icon: { SettingsIcon(symbol: "calendar", artwork: ModuleArtwork.settings("calendar")) }
                 )
             }.id("calendar-command")
             if !controller.error.isEmpty {
                 Text(controller.error).font(.caption).foregroundStyle(.orange)
             }
         }
-    }
-}
-
-struct CalendarSettingsIcon: View {
-    var size: CGFloat = 56
-
-    var body: some View {
-        let today = Date()
-        VStack(spacing: 0) {
-            Text(today.formatted(.dateTime.month(.abbreviated)).uppercased())
-                .font(.system(size: size * 0.17, weight: .bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-                .frame(maxWidth: .infinity)
-                .frame(height: size * 0.32)
-                .background(.white.opacity(0.13))
-            Text(today.formatted(.dateTime.day()))
-                .font(.system(size: size * 0.49, weight: .semibold))
-                .monospacedDigit()
-                .frame(maxHeight: .infinity)
-        }
-        .foregroundStyle(.white)
-        .frame(width: size, height: size)
-        .background(Color(white: 0.16).gradient)
-        .clipShape(RoundedRectangle(cornerRadius: size * 0.22))
-        .accessibilityHidden(true)
     }
 }

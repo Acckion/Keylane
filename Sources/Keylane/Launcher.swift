@@ -16,6 +16,13 @@ struct Launcher: View {
     private var launcherVisible: Bool { presentation.visible }
     private var page: LauncherPage? { model.activeLauncherPage }
     private var showsFileResults: Bool { page?.contentPlacement == .fileResults }
+    private var loading: AnyPublisher<Bool, Never>? {
+        if model.pageID == .root {
+            return model.searchesFilesHere ? model.fileSearch.$isSearching.eraseToAnyPublisher() : nil
+        }
+        return page?.loading
+    }
+
     @State private var fileType = "all"
     private enum Menu { case application, actions, filter }
     @State private var menu: Menu?
@@ -147,6 +154,11 @@ struct Launcher: View {
             }
         }
         .frame(width: VisualStyle.launcherWidth, height: model.presentedLauncherHeight, alignment: .top)
+        .overlay(alignment: .top) {
+            if launcherVisible, argumentTarget == nil, let loading {
+                WindowLoadingIndicator(loading: loading).id(model.pageID)
+            }
+        }
         .scaleEffect(model.interfaceScale)
         .frame(width: VisualStyle.launcherWidth * model.interfaceScale, height: model.presentedLauncherHeight * model.interfaceScale)
         .scrollIndicators(.visible, axes: .vertical)
@@ -567,7 +579,8 @@ struct Launcher: View {
                 .transition(.opacity)
             } else if application && secondary {
                 NativeHoverButton(title: "打开\(menuTitle)", action: { toggleMenu(application: true) }) {
-                    SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol)
+                    SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol,
+                                       artwork: model.launcherModules?.module(forPage: model.pageID).flatMap(ModuleArtwork.module))
                 }.frame(width: applicationWidth, height: 36).transition(.opacity)
             } else if application {
                 NativeHoverButton(title: "Keylane 菜单", action: { toggleMenu(application: true) }) {

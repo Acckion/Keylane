@@ -32,6 +32,7 @@ enum UtilityLauncherModules {
                                 primaryTitle: { controller.selected?.firstValue == nil ? "打开联系人" : "复制" },
                                 actions: { contactActions(controller) },
                                 updates: ViewObservation.changes(selectedContact))
+        page.loading = controller.$loading.eraseToAnyPublisher()
         page.enter = { query in
             controller.query = query
             if permission.available { controller.start() }
@@ -102,6 +103,7 @@ enum UtilityLauncherModules {
                                 primaryTitle: { controller.definition == nil ? "打开词典" : "复制释义" },
                                 actions: { dictionaryActions(controller) },
                                 updates: ViewObservation.changes(controller.$definition))
+        page.loading = controller.$loading.eraseToAnyPublisher()
         page.enter = { _ in
             let term = controller.initialTerm
             controller.initialTerm = ""
@@ -169,6 +171,8 @@ enum UtilityLauncherModules {
                                 },
                                 updates: Publishers.Merge(ViewObservation.changes(controller.$selection),
                                                           ViewObservation.changes(controller.$category)).eraseToAnyPublisher())
+        page.loading = controller.$isLoading.combineLatest(controller.$isSearching)
+            .map { loading, searching in loading || searching }.removeDuplicates().eraseToAnyPublisher()
         page.enter = { query in
             controller.query = query
             controller.start()
@@ -231,6 +235,8 @@ enum UtilityLauncherModules {
                                             trailingToolbar: {
                                                 AnyView(SettingsToolbarSearch(title: "搜索快捷指令", selection: search))
                                             },
+                                            loading: controller.$loading.combineLatest(controller.$entries)
+                                                .map { $0 && $1.isEmpty }.removeDuplicates().eraseToAnyPublisher(),
                                             content: { [weak model] in
                                                 guard let model else { return AnyView(EmptyView()) }
                                                 return AnyView(SystemShortcutsPreferences(model: model, controller: controller, search: search))

@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AppKit
 import KeylaneCore
 
@@ -12,6 +13,16 @@ struct SettingsView: View {
     @State private var history = ["applications"]
     @State private var historyIndex = 0
     private var page: LauncherSettingsPage? { state.catalog.page(selected) ?? state.catalog.pages.first }
+
+    private var loading: AnyPublisher<Bool, Never>? {
+        let work = page?.loading
+        let permission = page?.titlebar?.permissionStatus?.map(\.requesting)
+        if let work, let permission {
+            return work.combineLatest(permission).map { $0 || $1 }
+                .removeDuplicates().eraseToAnyPublisher()
+        }
+        return work ?? permission?.removeDuplicates().eraseToAnyPublisher()
+    }
 
     var body: some View {
         let matches = SettingsItem.search(query, in: state.catalog.items)
@@ -38,6 +49,9 @@ struct SettingsView: View {
                         page.content()
                     }
                 }
+            }
+            .overlay(alignment: .top) {
+                if let loading { WindowLoadingIndicator(loading: loading).id(selected) }
             }
         }.toggleStyle(SettingsSwitchStyle())
         .navigationTitle(headerScrolledAway ? (page?.title ?? "设置") : "")

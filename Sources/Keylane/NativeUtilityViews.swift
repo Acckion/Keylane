@@ -27,9 +27,8 @@ struct SystemShortcutsPreferences: View {
 
     var body: some View {
         SettingsPageSections {
-            if controller.entries.isEmpty || !controller.executionMessage.isEmpty || !controller.message.isEmpty {
+            if (!controller.loading && controller.entries.isEmpty) || !controller.executionMessage.isEmpty || !controller.message.isEmpty {
                 SettingsGroup {
-                    if controller.loading && controller.entries.isEmpty { ProgressView().controlSize(.small) }
                     if !controller.executionMessage.isEmpty { SettingsDescription(controller.executionMessage) }
                     if !controller.message.isEmpty { Text(controller.message).foregroundStyle(.secondary) }
                     if !controller.loading, controller.entries.isEmpty, controller.message.isEmpty {
@@ -119,7 +118,7 @@ struct ContactsPage: View {
                         if contact.firstValue == nil { Text("没有电话或邮箱").foregroundStyle(.secondary).font(.caption) }
                     }
                 } else if controller.loading {
-                    ProgressView("正在读取联系人…")
+                    Text("正在读取联系人…").foregroundStyle(.secondary)
                 } else { ContentUnavailableView("没有匹配联系人", systemImage: "person.crop.circle") }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -155,7 +154,7 @@ struct DictionaryPage: View {
                         Text(definition).font(VisualStyle.rowText).textSelection(.enabled)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
                 }
-            } else if controller.loading { ProgressView("正在查询…") }
+            } else if controller.loading { Text("正在查询…").foregroundStyle(.secondary) }
             else if controller.term.isEmpty {
                 ContentUnavailableView("输入要查找的词语", systemImage: "book.closed")
             } else {

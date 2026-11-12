@@ -81,6 +81,7 @@ struct LauncherPage {
     var maximumActionWidth: CGFloat?
     var releasePreview: (() -> Void)?
     var actionShortcutsEnabled = false
+    var loading: AnyPublisher<Bool, Never>?
 }
 
 struct SettingsTitlebarContribution {
@@ -102,6 +103,7 @@ struct LauncherSettingsPage: Identifiable {
     let items: [SettingsItem]
     var titlebar: SettingsTitlebarContribution?
     var trailingToolbar: (() -> AnyView)?
+    var loading: AnyPublisher<Bool, Never>?
     let content: () -> AnyView
 }
 
@@ -483,7 +485,8 @@ final class LauncherModuleRegistry {
     func artwork(for entry: Entry) -> AnyView? {
         if let artwork = provider(for: entry)?.artwork?(entry) { return artwork }
         let item = declaration(entry.commandID)
-        return ModuleArtwork.command(entry.commandID, settingsPage: item?.settingsPage)
+        return ModuleArtwork.command(entry.commandID, settingsPage: item?.settingsPage,
+                                     moduleID: byID[entry.commandID]?.module)
             .map { AnyView(ModuleArtworkImage(image: $0)) }
     }
 

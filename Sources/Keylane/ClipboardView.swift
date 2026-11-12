@@ -144,7 +144,7 @@ private struct ClipboardHistoryDetail: View {
             VStack(spacing: 10) {
                 Spacer()
                 if controller.indexingImageText {
-                    ProgressView("正在识别历史图片中的文字…").controlSize(.small)
+                    Text("正在识别历史图片中的文字…").font(.caption).foregroundStyle(.secondary)
                 } else {
                     ContentUnavailableView(controller.items.isEmpty ? "暂无匹配记录" : "正在加载", systemImage: "clipboard", description: Text(controller.captureEnabled ? "复制文字、图片或文件后，会自动保存到这台 Mac。" : "采集已关闭。可在剪贴板设置中开启本地历史。"))
                     Button("剪贴板设置…") { (NSApp.delegate as? Delegate)?.model.openSettings(page: "clipboard") }
