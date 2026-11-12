@@ -8,8 +8,8 @@ import KeylaneCore
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
         let modules = [applications(model), host(model), files(model), clipboard(model), AppleNotesModule.make(model: model),
-                       QuicklinksModule.make(model: model), calculator(model), systemTools(model), screenCapture(), CalendarLauncherModule.make(model: model),
-                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), AppUtilitiesModule.camera(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
+                       QuicklinksModule.make(model: model), calculator(model), systemTools(model), CalendarLauncherModule.make(model: model),
+                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
             guard module.origin == .builtInExtension, module.settings.isEmpty, !module.commands.isEmpty else {
@@ -443,19 +443,6 @@ enum BuiltinLauncherModules {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard Calculator.isExpression(trimmed), let value = Calculator.evaluate(trimmed) else { return nil }
         return String(format: "%.12g", value)
-    }
-
-    private static func screenCapture() -> LauncherModule {
-        let permission = PermissionFeature("screenCapture.enabled", authorization: .screenCapture)
-        return .init(id: .init(rawValue: "keylane.screen-capture"), title: "屏幕截取", symbol: "camera.viewfinder", commands: [
-            command("screenshot", "Screenshot / 截图", "Select region · copy image", "camera.viewfinder", [],
-                    settings: "keylane.screen-capture", permission: permission, execute: { _ in
-                (NSApp.delegate as? Delegate)?.hideLauncher()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    if permission.available { SystemTools.shared.screenshot() }
-                }
-            })
-        ], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用屏幕截取"))
     }
 
     private static func systemTools(_ model: Model) -> LauncherModule {
