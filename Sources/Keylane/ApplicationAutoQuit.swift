@@ -183,7 +183,6 @@ final class ApplicationAutoQuit: ObservableObject {
         let request = DispatchWorkItem {}
         protectionRequest = request
         let protection = self.protection
-        let now = uptime()
         protectionQueue.async { [weak self] in
             guard !request.isCancelled else { return }
             let media = protection()
@@ -192,7 +191,7 @@ final class ApplicationAutoQuit: ObservableObject {
                 self.protectionRequest = nil
                 let repeatCheck = self.checkAgain
                 self.checkAgain = false
-                self.apply(media, to: candidates, at: now)
+                self.apply(media, to: candidates, at: self.uptime())
                 if repeatCheck { self.check() }
             }
         }
