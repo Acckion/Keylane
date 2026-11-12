@@ -95,15 +95,22 @@ public struct ScriptMetadata: Equatable, Sendable {
     }
 
     public static func parse(_ source: String) throws -> Self? {
-        var fields: [String: String] = [:]
+        var keylaneFields: [String: String] = [:]
+        var raycastFields: [String: String] = [:]
         for line in source.split(whereSeparator: \.isNewline) {
             let text = line.trimmingCharacters(in: .whitespaces)
             guard let marker = ["#", "//", "--", ";"].first(where: text.hasPrefix) else { continue }
             let comment = text.dropFirst(marker.count).trimmingCharacters(in: .whitespaces)
-            guard comment.hasPrefix("@raycast.") else { continue }
-            let parts = comment.dropFirst("@raycast.".count).split(maxSplits: 1, whereSeparator: \.isWhitespace)
-            if parts.count == 2 { fields[String(parts[0])] = String(parts[1]).trimmingCharacters(in: .whitespaces) }
+            let parts = comment.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+            guard parts.count == 2 else { continue }
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+            if parts[0].hasPrefix("@keylane.") {
+                keylaneFields[String(parts[0].dropFirst("@keylane.".count))] = value
+            } else if parts[0].hasPrefix("@raycast.") {
+                raycastFields[String(parts[0].dropFirst("@raycast.".count))] = value
+            }
         }
+        let fields = raycastFields.merging(keylaneFields) { _, native in native }
         guard !fields.isEmpty else { return nil }
         guard fields["schemaVersion"] == "1", let title = fields["title"], !title.isEmpty,
               let rawMode = fields["mode"], let mode = Mode(rawValue: rawMode),
@@ -153,7 +160,7 @@ public struct ScriptMetadata: Equatable, Sendable {
         }
         return fields.compactMap { key, value in
             let value = clean(value)
-            return value.isEmpty ? nil : "\(comment) @raycast.\(key) \(value)"
+            return value.isEmpty ? nil : "\(comment) @keylane.\(key) \(value)"
         }.joined(separator: "\n")
     }
 }

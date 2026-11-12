@@ -129,6 +129,26 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertEqual(result.standardOutput, "Hello from Keylane\n")
     }
 
+    func testKeylaneMetadataTakesPrecedenceOverRaycastMetadata() throws {
+        let metadata = try XCTUnwrap(ScriptMetadata.parse("""
+            # @raycast.schemaVersion 1
+            # @keylane.title Native title
+            # @raycast.title Compatibility title
+            # @raycast.mode silent
+            # @keylane.mode compact
+            # @raycast.argument1 {"placeholder":"Input"}
+            """))
+        XCTAssertEqual(metadata.title, "Native title")
+        XCTAssertEqual(metadata.mode, .compact)
+        XCTAssertEqual(metadata.arguments.first?.placeholder, "Input")
+
+        let header = try metadata.header(comment: "#")
+        XCTAssertTrue(header.contains("# @keylane.schemaVersion 1"))
+        XCTAssertTrue(header.contains("# @keylane.argument1 "))
+        XCTAssertFalse(header.contains("@raycast."))
+        XCTAssertEqual(try ScriptMetadata.parse(header), metadata)
+    }
+
     func testAllFormTemplatesAreDiscoverable() throws {
         for template in ScriptTemplate.allCases {
             let url = folder.appendingPathComponent(template.rawValue).appendingPathExtension(template.fileExtension)

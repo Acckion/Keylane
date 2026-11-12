@@ -284,7 +284,7 @@ private struct ScriptSearchView: View {
                              query: model.query, firstResult: entries.first?.id) {
             if entries.isEmpty {
                 ContentUnavailableView("没有匹配的脚本", systemImage: "terminal",
-                                       description: Text("请在脚本命令设置中添加文件夹，并在脚本中声明 @raycast.schemaVersion、@raycast.title 和 @raycast.mode。"))
+                                       description: Text("请在脚本命令设置中添加文件夹，并在脚本中声明 @keylane.schemaVersion、@keylane.title 和 @keylane.mode。兼容 @raycast.*。"))
                     .frame(maxWidth: .infinity)
             }
             ForEach(entries) { entry in
@@ -332,7 +332,7 @@ private struct ScriptCommandsPreferences: View {
         SettingsPageSections {
             SettingsSearchScopeCard(
                 title: "脚本文件夹", paths: controller.folders,
-                detail: "扫描这些文件夹及子文件夹，只收录声明了 Raycast 命令元数据的脚本。",
+                detail: "扫描这些文件夹及子文件夹，只收录包含有效 @keylane.* 或 @raycast.* 命令元数据的脚本。",
                 anchor: .scriptFolders, add: controller.addFolder, remove: controller.removeFolder
             ) {
                 if !controller.unavailable.isEmpty {
