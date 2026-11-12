@@ -107,13 +107,8 @@ private struct SnippetsList: View {
     var body: some View {
         let snippets = controller.visible
         let selection = controller.selected?.id
-        ResultDetailLayout {
+        ResultDetailLayout(hasResults: !snippets.isEmpty) {
             SelectableResultList(selection: selection, query: controller.query, firstResult: snippets.first?.id) {
-                if snippets.isEmpty {
-                    ContentUnavailableView("没有匹配的文字片段", systemImage: "text.badge.plus",
-                                           description: Text("可在操作菜单中创建片段。"))
-                        .frame(maxWidth: .infinity)
-                }
                 ForEach(snippets) { snippet in
                     ResultListButton(id: snippet.id, action: { controller.selectedID = snippet.id }) {
                         ResultListRow(selected: selection == snippet.id) {
@@ -141,9 +136,10 @@ private struct SnippetsList: View {
                     ])
                     if !controller.error.isEmpty { Text(controller.error).foregroundStyle(.red) }
                 }
-            } else if !controller.error.isEmpty {
-                Text(controller.error).foregroundStyle(.red).padding()
             }
+        } emptyState: {
+            ResultDetailEmptyState(title: "没有匹配的文字片段",
+                                   message: controller.error.isEmpty ? "可在操作菜单中创建片段。" : controller.error)
         }
     }
 }

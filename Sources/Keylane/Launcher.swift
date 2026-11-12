@@ -108,10 +108,22 @@ struct Launcher: View {
             else if compactSurface { Color.clear }
             else {
                 if showsFileResults {
-                    ResultDetailLayout {
+                    ResultDetailLayout(hasResults: !results.isEmpty) {
                         commandList(results, selectedIndex: selectedIndex)
                     } detail: {
                         FileSearchDetail(url: selectedIndex.map { URL(fileURLWithPath: results[$0].id) })
+                    } emptyState: {
+                        if model.fileSearch.isSearching {
+                            Text("正在搜索文件…").font(VisualStyle.rowText).foregroundStyle(.secondary)
+                        } else {
+                            VStack(spacing: 12) {
+                                ResultDetailEmptyState(title: model.query.isEmpty ? "搜索文件" : "没有匹配结果",
+                                                       message: model.query.isEmpty ? model.fileSearchStatus : nil)
+                                Button("选择搜索文件夹…", systemImage: "folder") {
+                                    model.chooseFileSearchFolder(returnToLauncher: true)
+                                }.buttonStyle(ContentActionButtonStyle())
+                            }
+                        }
                     }
                 } else if model.pageID == .root {
                     commandList(results, selectedIndex: selectedIndex).frame(height: 470, alignment: .top)
@@ -383,8 +395,9 @@ struct Launcher: View {
         SelectableResultList(selection: selectedIndex.map { results[$0].commandID },
                              query: model.query, firstResult: results.first?.commandID,
                              revealInitialSelection: true) {
-            if results.isEmpty {
-                VStack(spacing: 10) { Image(systemName: "magnifyingglass").font(.system(size: 26)); Text(showsFileResults && model.query.isEmpty ? "搜索文件" : "没有匹配结果").font(.system(size: 14)); Text(showsFileResults ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式").font(.caption); if showsFileResults { Button("选择搜索文件夹…", systemImage: "folder") { model.chooseFileSearchFolder(returnToLauncher: true) }.buttonStyle(ContentActionButtonStyle()).padding(.top, 8) } }.foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 80)
+            if results.isEmpty && !showsFileResults {
+                ResultDetailEmptyState(message: "试试应用名称、拼音或计算表达式")
+                    .frame(maxWidth: .infinity).padding(.top, 80)
             }
             ForEach(Array(results.enumerated()), id: \.element.commandID) { index, row in
                 if row.id == "calculator" {

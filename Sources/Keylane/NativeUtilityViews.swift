@@ -76,7 +76,8 @@ struct ContactsPage: View {
     @State private var permissionEnabled = false
 
     var body: some View {
-        ResultDetailLayout {
+        ResultDetailLayout(hasResults: permissionEnabled && controller.canRead
+                           && controller.error.isEmpty && !controller.visible.isEmpty) {
             SelectableResultList(selection: controller.selectedID) {
                 ForEach(controller.visible) { contact in
                     ResultListButton(id: contact.id, action: { controller.select(contact.id) }) {
@@ -89,39 +90,42 @@ struct ContactsPage: View {
                 }
             }
         } detail: {
-            Group {
-                if !permissionEnabled {
-                    ContentUnavailableView {
-                        Label("联系人已关闭", systemImage: "person.crop.circle")
-                    } actions: {
-                        Button("联系人设置…", action: showSettings).buttonStyle(ContentActionButtonStyle())
-                    }
-                } else if !controller.canRead { connection }
-                else if !controller.error.isEmpty {
-                    ContentUnavailableView {
-                        Label("联系人读取失败", systemImage: "exclamationmark.triangle")
-                    } description: { Text(controller.error) } actions: {
-                        Button("重试") { controller.refresh() }.buttonStyle(ContentActionButtonStyle())
-                    }
-                } else if let contact = controller.selected {
-                    ResultDetailPane { _ in
-                        VStack(spacing: 12) {
-                            Image(systemName: "person.crop.circle.fill").font(.system(size: 66)).foregroundStyle(.blue)
-                            Text(contact.name).font(.title2.weight(.semibold)).textSelection(.enabled)
-                            if !contact.organization.isEmpty { Text(contact.organization).foregroundStyle(.secondary) }
-                        }.frame(maxWidth: .infinity)
-                    } information: {
-                        DetailInformationSection(rows: contact.phones.enumerated().map {
-                            .init(title: $0.offset == 0 ? "电话" : "电话 \($0.offset + 1)", value: $0.element)
-                        } + contact.emails.enumerated().map {
-                            .init(title: $0.offset == 0 ? "邮箱" : "邮箱 \($0.offset + 1)", value: $0.element)
-                        })
-                        if contact.firstValue == nil { Text("没有电话或邮箱").foregroundStyle(.secondary).font(.caption) }
-                    }
-                } else if controller.loading {
-                    ProgressView("正在读取联系人…")
-                } else { ContentUnavailableView("没有匹配联系人", systemImage: "person.crop.circle") }
-            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let contact = controller.selected {
+                ResultDetailPane { _ in
+                    VStack(spacing: 12) {
+                        Image(systemName: "person.crop.circle.fill").font(.system(size: 66)).foregroundStyle(.blue)
+                        Text(contact.name).font(.title2.weight(.semibold)).textSelection(.enabled)
+                        if !contact.organization.isEmpty { Text(contact.organization).foregroundStyle(.secondary) }
+                    }.frame(maxWidth: .infinity)
+                } information: {
+                    DetailInformationSection(rows: contact.phones.enumerated().map {
+                        .init(title: $0.offset == 0 ? "电话" : "电话 \($0.offset + 1)", value: $0.element)
+                    } + contact.emails.enumerated().map {
+                        .init(title: $0.offset == 0 ? "邮箱" : "邮箱 \($0.offset + 1)", value: $0.element)
+                    })
+                    if contact.firstValue == nil { Text("没有电话或邮箱").foregroundStyle(.secondary).font(.caption) }
+                }
+            }
+        } emptyState: {
+            if !permissionEnabled {
+                ContentUnavailableView {
+                    Label("联系人已关闭", systemImage: "person.crop.circle")
+                } actions: {
+                    Button("联系人设置…", action: showSettings).buttonStyle(ContentActionButtonStyle())
+                }
+            } else if !controller.canRead {
+                connection
+            } else if !controller.error.isEmpty {
+                ContentUnavailableView {
+                    Label("联系人读取失败", systemImage: "exclamationmark.triangle")
+                } description: { Text(controller.error) } actions: {
+                    Button("重试") { controller.refresh() }.buttonStyle(ContentActionButtonStyle())
+                }
+            } else if controller.loading {
+                Text("正在读取联系人…").font(VisualStyle.rowText).foregroundStyle(.secondary)
+            } else {
+                ResultDetailEmptyState(title: "没有匹配联系人")
+            }
         }
         .onReceive(permission.$enabled) { permissionEnabled = $0 }
     }
