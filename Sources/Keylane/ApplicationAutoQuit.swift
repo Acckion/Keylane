@@ -25,6 +25,9 @@ final class ApplicationAutoQuit: ObservableObject {
     private let workspace = NSWorkspace.shared
     private var observations: [NSObjectProtocol] = []
     private var timer: Timer?
+    private let protectionQueue = DispatchQueue(label: "org.keylane.applications.auto-quit.protection", qos: .utility)
+    private var protectionRequest: DispatchWorkItem?
+    private var checkAgain = false
     private var inactivity: [pid_t: Inactivity] = [:]
     private var sessionActive = true
     private var sleeping = false
@@ -58,6 +61,7 @@ final class ApplicationAutoQuit: ObservableObject {
 
     func setDefaultMinutes(_ minutes: Int) {
         guard Self.intervals.contains(minutes), minutes != defaultMinutes else { return }
+        cancelProtectionCheck()
         defaultMinutes = minutes
         defaults.set(minutes, forKey: Self.defaultKey)
         inactivity = inactivity.filter {
@@ -85,6 +89,7 @@ final class ApplicationAutoQuit: ObservableObject {
     }
 
     private func rulesChanged(at path: String) {
+        cancelProtectionCheck()
         defaults.set(try? JSONEncoder().encode(rules), forKey: Self.key)
         inactivity = inactivity.filter {
             $0.value.application.bundleURL?.resolvingSymlinksInPath().path != path
@@ -109,6 +114,7 @@ final class ApplicationAutoQuit: ObservableObject {
                      NSWorkspace.willSleepNotification, NSWorkspace.didWakeNotification] {
             observations.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] notification in
                 guard let self else { return }
+                self.cancelProtectionCheck()
                 self.inactivity.removeAll()
                 switch notification.name {
                 case NSWorkspace.willSleepNotification: self.sleeping = true
@@ -122,12 +128,19 @@ final class ApplicationAutoQuit: ObservableObject {
     }
 
     func stop() {
+        cancelProtectionCheck()
         timer?.invalidate()
         timer = nil
         for observation in observations { workspace.notificationCenter.removeObserver(observation) }
         observations.removeAll()
         inactivity.removeAll()
         enabled = { false }
+    }
+
+    private func cancelProtectionCheck() {
+        protectionRequest?.cancel()
+        protectionRequest = nil
+        checkAgain = false
     }
 
     private func updateTimer() {
@@ -147,23 +160,50 @@ final class ApplicationAutoQuit: ObservableObject {
     func check() {
         guard sessionActive, !sleeping, enabled(), !rules.isEmpty,
               let foregroundPID = workspace.frontmostApplication?.processIdentifier else {
+            cancelProtectionCheck()
             inactivity.removeAll()
             return
         }
+        if protectionRequest != nil {
+            checkAgain = true
+            return
+        }
+        let configuredBundleIDs = Set(rules.values.map(\.bundleID))
         let candidates = workspace.runningApplications.compactMap { app -> (NSRunningApplication, URL, Int)? in
             guard app.activationPolicy == .regular, !app.isTerminated, app.processIdentifier != foregroundPID,
-                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier, app.bundleIdentifier != "com.apple.finder",
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+                  let bundleID = app.bundleIdentifier, bundleID != "com.apple.finder", configuredBundleIDs.contains(bundleID),
                   let url = app.bundleURL?.resolvingSymlinksInPath(), let rule = rules[url.path],
-                  rule.bundleID == app.bundleIdentifier, rule.minutes.map(Self.intervals.contains) ?? true else { return nil }
+                  rule.bundleID == bundleID, rule.minutes.map(Self.intervals.contains) ?? true else { return nil }
             return (app, url, rule.minutes ?? defaultMinutes)
         }
         let running = Set(candidates.map { $0.0.processIdentifier })
         inactivity = inactivity.filter { running.contains($0.key) }
         guard !candidates.isEmpty else { return }
-        let now = uptime()
-        let media = protection()
+        let request = DispatchWorkItem {}
+        protectionRequest = request
+        let protection = self.protection
+        protectionQueue.async { [weak self] in
+            guard !request.isCancelled else { return }
+            let media = protection()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.protectionRequest === request else { return }
+                self.protectionRequest = nil
+                let repeatCheck = self.checkAgain
+                self.checkAgain = false
+                self.apply(media, to: candidates, at: self.uptime())
+                if repeatCheck { self.check() }
+            }
+        }
+    }
+
+    private func apply(_ media: ApplicationAutoQuitProtection, to candidates: [(NSRunningApplication, URL, Int)],
+                       at now: TimeInterval) {
+        guard sessionActive, !sleeping, enabled(),
+              let foregroundPID = workspace.frontmostApplication?.processIdentifier else { return }
         for (app, url, minutes) in candidates {
             let pid = app.processIdentifier
+            guard !app.isTerminated, !app.isActive, pid != foregroundPID else { continue }
             if media.protects(pid: pid, bundleID: app.bundleIdentifier) {
                 if inactivity[pid]?.requested != true { inactivity.removeValue(forKey: pid) }
                 continue

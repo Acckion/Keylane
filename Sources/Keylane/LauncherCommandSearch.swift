@@ -19,6 +19,11 @@ final class LauncherCommandSearch {
 
     func invalidate() { cached = nil }
 
+    func releasePreparedNames() {
+        invalidate()
+        preparedNames.removeAll()
+    }
+
     func results(for input: Input, registry: LauncherModuleRegistry) -> [Entry] {
         let now = Date.now
         if let cached, cached.input == input, now.timeIntervalSince(cached.date) < 60 { return cached.results }
