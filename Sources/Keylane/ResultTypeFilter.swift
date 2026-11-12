@@ -6,6 +6,7 @@ struct ResultFilterOption: Identifiable {
     let id: String
     let title: String
     let symbol: String
+    var help: String? = nil
     static let clipboard: [Self] = [
         .init(id: "all", title: "全部类型", symbol: "list.bullet"),
         .init(id: "text", title: "仅文字", symbol: "textformat"),
@@ -73,6 +74,7 @@ struct ResultFilterPanel: View {
     let searchPlaceholder: String
     var emptyTitle = "没有匹配类型"
     var navigation = "arrows"
+    var width: CGFloat = 220
     let choose: (ResultFilterOption) -> Void
     let dismiss: () -> Void
     @State private var highlighted = 0
@@ -104,13 +106,15 @@ struct ResultFilterPanel: View {
                         ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
                             LauncherMenuRow(title: option.title, symbol: option.symbol, selected: highlighted == index,
                                             style: .filter, activate: { choose(option) }, highlight: { highlighted = index }) {
-                                if selection == option.id { Image(systemName: "checkmark").font(.caption) }
+                                if let help = option.help {
+                                    Image(systemName: "info.circle").help(help).accessibilityLabel(help)
+                                } else if selection == option.id { Image(systemName: "checkmark").font(.caption) }
                             }.id(option.id)
                         }
                         if options.isEmpty { Text(emptyTitle).foregroundStyle(.secondary).padding(14) }
                     }.padding(8)
                 }.frame(height: CGFloat(min(8, max(1, options.count))) * 43 + 16)
-            }.frame(width: 220, alignment: .top)
+            }.frame(width: width, alignment: .top)
         }
     }
 

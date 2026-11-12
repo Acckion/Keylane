@@ -47,7 +47,7 @@ struct QuicklinkPreferences: View {
         }
         .settingsAnchor(.quicklink)
         .sheet(item: $controller.draft) { link in
-            QuicklinkEditor(link: link, save: controller.save)
+            QuicklinkEditor(link: link.preparedForEditing(), save: controller.save)
         }
         .confirmationDialog("删除快捷链接？", isPresented: Binding(
             get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }
@@ -90,6 +90,10 @@ private struct QuicklinkEditor: View {
             TextField("链接", text: $link.template, prompt: Text("https://example.com/?q={关键词}"))
             Text("使用 {名称} 添加参数，或使用 {名称=默认值} 提供默认值。")
                 .font(.caption).foregroundStyle(.secondary)
+            if link.usesDynamicPlaceholders == true {
+                Link("动态占位符指南", destination: URL(string: "https://manual.raycast.com/dynamic-placeholders")!)
+                    .font(.caption)
+            }
             if let error { Text(error).foregroundStyle(.red) }
             HStack {
                 Spacer()

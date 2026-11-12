@@ -11,6 +11,8 @@ final class QuicklinksController: ObservableObject {
     @Published var values: [String: String] = [:]
     @Published var inputError: String?
     @Published var draft: Quicklink?
+    var templateContext: () -> DynamicTemplate.Context = { .init() }
+    private var pendingTemplate: QuicklinkTemplate?
 
     func load() {
         do { links = try QuicklinkLibrary.load(from: .standard).links; storageError = nil }
@@ -18,7 +20,7 @@ final class QuicklinksController: ObservableObject {
     }
 
     func save(_ link: Quicklink) throws {
-        _ = try QuicklinkTemplate(link.template)
+        _ = try link.parsedTemplate(context: templateContext())
         var updated = links
         if let index = updated.firstIndex(where: { $0.id == link.id }) { updated[index] = link }
         else { updated.append(link) }
@@ -37,10 +39,11 @@ final class QuicklinksController: ObservableObject {
 
     func launch(_ link: Quicklink, presentParameters: () -> Void) {
         do {
-            let template = try QuicklinkTemplate(link.template)
+            let template = try link.parsedTemplate(context: templateContext())
             if template.parameters.isEmpty {
                 try open(template.url())
             } else {
+                pendingTemplate = template
                 selected = link
                 parameters = template.parameters
                 values = [:]
@@ -53,9 +56,9 @@ final class QuicklinksController: ObservableObject {
     }
 
     func submit() -> Bool {
-        guard let selected else { return false }
+        guard let pendingTemplate else { return false }
         do {
-            try open(QuicklinkTemplate(selected.template).url(values: values))
+            try open(pendingTemplate.url(values: values))
             return true
         } catch {
             inputError = error.localizedDescription
@@ -64,6 +67,7 @@ final class QuicklinksController: ObservableObject {
     }
 
     func clearInput() {
+        pendingTemplate = nil
         selected = nil
         parameters = []
         values = [:]
@@ -90,6 +94,7 @@ enum QuicklinksModule {
 
     static func make(model: Model) -> LauncherModule {
         let controller = model.quicklinks
+        controller.templateContext = { [weak model] in model?.snippets.templateContext() ?? .init() }
         let pageID = PageID(rawValue: "QuicklinkParameters")
         let legacyID = CommandID(rawValue: QuicklinkLibrary.legacyID)
         func provider(_ namespace: LauncherCommandNamespace) -> LauncherModule.Provider {
@@ -148,35 +153,11 @@ private struct QuicklinkParameterForm: View {
     @ObservedObject var controller: QuicklinksController
     let back: () -> Void
     let submit: () -> Void
-    @FocusState private var focused: String?
-
     var body: some View {
-        LauncherCreationForm(back: back) {
-            Text(controller.selected?.title ?? "快捷链接").font(.headline)
-        } fields: {
-            ForEach(controller.parameters) { parameter in
-                LauncherCreationField(parameter.id) {
-                    LauncherCreationControl(focused: focused == parameter.id) {
-                        TextField(parameter.id, text: Binding(
-                            get: { controller.values[parameter.id, default: ""] },
-                            set: { controller.values[parameter.id] = $0; controller.inputError = nil }
-                        ), prompt: Text(parameter.defaultValue ?? "必填"))
-                        .textFieldStyle(.plain)
-                        .focused($focused, equals: parameter.id)
-                        .onSubmit {
-                            if let next = controller.parameters.drop(while: { $0.id != parameter.id }).dropFirst().first {
-                                focused = next.id
-                            } else { submit() }
-                        }
-                    }
-                }
-            }
-            if let error = controller.inputError {
-                Text(error).font(.callout).foregroundStyle(.red)
-            }
-        }
-        .task(id: controller.selected?.id) { focused = controller.parameters.first?.id }
+        DynamicArgumentsForm(title: controller.selected?.title ?? "快捷链接", arguments: controller.parameters,
+                             values: $controller.values, error: controller.inputError, back: back, submit: submit)
     }
+
 }
 
 extension Quicklink {
