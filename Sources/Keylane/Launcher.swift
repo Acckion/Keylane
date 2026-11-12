@@ -500,7 +500,7 @@ struct Launcher: View {
         if let detail = model.launcherModules?.displayDetail(for: row) { return detail }
         return "命令"
     }
-    private func iconColor(_ id: String) -> Color { switch id { case "notes": return .yellow; case "clipboard": return .orange; case "screenshot": return .purple; case "quicklink": return .blue; default: return .primary.opacity(0.8) } }
+    private func iconColor(_ id: String) -> Color { switch id { case "clipboard": return .orange; case "screenshot": return .purple; case "quicklink": return .blue; default: return .primary.opacity(0.8) } }
     private static let footerMenuWidth: CGFloat = 345
     private static let footerMinimumGap: CGFloat = 24
 
@@ -592,7 +592,6 @@ struct Launcher: View {
                 MenuAction(id: "about", title: "关于 Keylane", icon: "app.badge", perform: { model.openSettings(page: "about") }),
                 MenuAction(id: "settings", title: "设置…", icon: "gearshape", keys: ["⌘", ","], perform: { model.runCommand(.init(rawValue: "settings"), origin: .menu) }),
                 MenuAction(id: "clipboard", title: "剪贴板历史", icon: "list.clipboard", perform: { model.runCommand(.init(rawValue: "clipboard"), origin: .menu) }),
-                MenuAction(id: "notes", title: "便笺", icon: "note", perform: { model.runCommand(.init(rawValue: "notes"), origin: .menu) }),
                 MenuAction(id: "hide", title: "隐藏 Keylane", icon: "rectangle.compress.vertical", keys: ["esc"], perform: { (NSApp.delegate as? Delegate)?.hideLauncher() }),
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
             ]

@@ -9,7 +9,7 @@ enum ModuleArtwork {
         "menu-bar": "menu-bar", "permissions": "permissions", "advanced": "advanced", "about": "about",
         "applications": "applications", "files": "file-search", "screenshots": "screenshots",
         "clipboard": "clipboard-history", "calendar": "calendar", "shortcuts": "shortcuts",
-        "notes": "notes", "links": "quicklinks", "script-commands": "script-commands",
+        "links": "quicklinks", "script-commands": "script-commands",
         "keylane.calculator": "calculator", "keylane.system-tools": "system-actions",
         "keylane.app-utilities": "keylane-tools", "keylane.navigation": "navigation",
         "keylane.contacts": "contacts", "keylane.dictionary": "dictionary", "keylane.emoji": "emoji",

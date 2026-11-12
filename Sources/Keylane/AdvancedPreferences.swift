@@ -63,7 +63,7 @@ struct AdvancedPreferences: View {
                     model.runCommand(.init(rawValue: "export-settings"), origin: .menu)
                 }.settingsAnchor(.exportPreferences)
                 Divider()
-                SettingsActionRow(title: "导出本地资料", detail: "将现有便笺、链接和片段记录导出为 JSON。",
+                SettingsActionRow(title: "导出本地资料", detail: "将本地链接和片段记录导出为 JSON。",
                                   actionTitle: "导出…", action: model.exportData)
                     .settingsAnchor(.exportLocalRecords)
             }

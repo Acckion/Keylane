@@ -65,7 +65,7 @@ public enum ClipboardPolicy {
 }
 
 /// A thread-confined SQLite store. The app owns it on a dedicated serial queue.
-/// Its database is separate from notes; no existing note schema or data is migrated.
+/// Clipboard history uses a separate database from the shared record store.
 public final class ClipboardStore {
     private var db: OpaquePointer?
     public let directory: URL

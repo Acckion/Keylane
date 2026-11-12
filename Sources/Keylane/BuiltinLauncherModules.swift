@@ -7,7 +7,7 @@ import KeylaneCore
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        let modules = [applications(model), host(model), files(model), clipboard(model), notes(model),
+        let modules = [applications(model), host(model), files(model), clipboard(model), AppleNotesModule.make(model: model),
                        QuicklinksModule.make(model: model), calculator(model), systemTools(), CalendarLauncherModule.make(model: model),
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
@@ -300,17 +300,6 @@ enum BuiltinLauncherModules {
         }
         actions.append(.init(id: "delete-clip", title: "删除记录", icon: "trash", perform: { controller.removeSelected() }))
         return actions
-    }
-
-    private static func notes(_ model: Model) -> LauncherModule {
-        let id = PageID(rawValue: "Notes")
-        return .init(id: .init(rawValue: "keylane.notes"), commands: [
-            command("notes", "便笺", "本地便笺", "note.text", ["Notes", "便签", "笔记"],
-                    destination: .page(id), settings: "notes")
-        ], pages: [LauncherPage(id: id, placeholder: "便笺", content: { [weak model] in
-            guard let model else { return AnyView(EmptyView()) }
-            return AnyView(LauncherNotesPage(model: model))
-        })], settings: [settingsPage(model, "notes", "便笺", "note.text", "保存你的想法，随时继续。", 80, content: LauncherSettingsContent.notes)])
     }
 
     private static func calculator(_ model: Model) -> LauncherModule {

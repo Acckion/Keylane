@@ -33,8 +33,6 @@ final class Model: ObservableObject {
     @Published var presentedLauncherHeight: CGFloat = 470
     var launcherHeight: CGFloat { isCompact ? (compactFavorites && !favorites.isEmpty ? 109 : 61) : 470 }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
-    @Published var savedNotes: [KeylaneCore.Record] = []
-    @Published var noteID = "scratchpad"
     @Published var query = ""
     @Published var pageID = PageID.root
     let fileAI = FileAIController()
@@ -51,7 +49,6 @@ final class Model: ObservableObject {
     let systemNavigation = NavigationController()
     let menuBar = MenuBarRegistry()
     lazy var calendar = CalendarController(registry: menuBar)
-    @Published var notes: String = UserDefaults.standard.string(forKey: "notes") ?? "" { didSet { saveNote() } }
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots
     @Published var excluded = Set(UserDefaults.standard.stringArray(forKey: "excludedApps") ?? [])
     @Published var applicationsEnabled = (UserDefaults.standard.object(forKey: "applicationsEnabled") as? Bool) ?? true { didSet { UserDefaults.standard.set(applicationsEnabled, forKey: "applicationsEnabled") } }
@@ -204,12 +201,19 @@ final class Model: ObservableObject {
             (NSApp.delegate as? Delegate)?.showLauncherFeedback("已重置「\(entry.name)」的搜索优先级。", style: .success)
         }
     }
-    func saveNote() { do { try store?.save(KeylaneCore.Record(id: noteID, kind: "note", title: String(notes.prefix(60)), body: notes)); savedNotes = try store?.records(kind: "note") ?? [] } catch { self.error = error.localizedDescription } }
-    func newNote() { noteID = UUID().uuidString; notes = "" }
     func exportData() { let panel = NSSavePanel(); panel.nameFieldStringValue = "Keylane-backup.json"; if panel.runModal() == .OK, let url = panel.url { do { try store?.export(to: url) } catch { self.error = error.localizedDescription } } }
     init() {
         do { store = try Store(url: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane/data.sqlite")) } catch { store = nil; self.error = error.localizedDescription }
-        do { savedNotes = try store?.records(kind: "note") ?? []; if let note = savedNotes.first { noteID = note.id; notes = note.body } } catch { self.error = error.localizedDescription }
+        let defaults = UserDefaults.standard
+        defaults.removeObject(forKey: "notes")
+        if aliases.removeValue(forKey: "notes") != nil { defaults.set(aliases, forKey: "aliases") }
+        if bindings.removeValue(forKey: "notes") != nil, let data = try? JSONEncoder().encode(bindings) {
+            defaults.set(data, forKey: "shortcuts")
+        }
+        if disabledCommands.contains("notes") { disabledCommands.remove("notes") }
+        let oldSearchUsage = searchUsage
+        searchUsage.reset(id: "notes")
+        if usage.removeValue(forKey: "notes") != nil || oldSearchUsage != searchUsage { persistUsage() }
 
         discovery.updated = { [weak self] records, elapsed in
             guard let self else { return }
