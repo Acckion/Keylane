@@ -81,6 +81,7 @@ struct LauncherPage {
     var maximumActionWidth: CGFloat?
     var releasePreview: (() -> Void)?
     var actionShortcutsEnabled = false
+    var loading: AnyPublisher<Bool, Never>?
 }
 
 struct SettingsTitlebarContribution {

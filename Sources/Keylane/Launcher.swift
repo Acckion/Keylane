@@ -16,6 +16,13 @@ struct Launcher: View {
     private var launcherVisible: Bool { presentation.visible }
     private var page: LauncherPage? { model.activeLauncherPage }
     private var showsFileResults: Bool { page?.contentPlacement == .fileResults }
+    private var loading: AnyPublisher<Bool, Never>? {
+        if model.pageID == .root {
+            return model.searchesFilesHere ? model.fileSearch.$isSearching.eraseToAnyPublisher() : nil
+        }
+        return page?.loading
+    }
+
     @State private var fileType = "all"
     private enum Menu { case application, actions, filter }
     @State private var menu: Menu?
@@ -147,6 +154,11 @@ struct Launcher: View {
             }
         }
         .frame(width: VisualStyle.launcherWidth, height: model.presentedLauncherHeight, alignment: .top)
+        .overlay(alignment: .top) {
+            if launcherVisible, argumentTarget == nil, let loading {
+                LauncherLoadingIndicator(loading: loading).id(model.pageID)
+            }
+        }
         .scaleEffect(model.interfaceScale)
         .frame(width: VisualStyle.launcherWidth * model.interfaceScale, height: model.presentedLauncherHeight * model.interfaceScale)
         .scrollIndicators(.visible, axes: .vertical)

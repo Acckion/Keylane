@@ -223,7 +223,8 @@ enum ScriptCommandsModule {
             },
             updates: Publishers.Merge(ViewObservation.changes(controller.$runningScript),
                                       ViewObservation.changes(controller.$result)).eraseToAnyPublisher(),
-            enter: { _ in "" }
+            enter: { _ in "" },
+            loading: controller.$runningScript.map { $0 != nil }.removeDuplicates().eraseToAnyPublisher()
         )
         let create = LauncherPage(
             id: createPageID, placeholder: "", badge: ("创建脚本命令", "plus.square"),
@@ -461,7 +462,6 @@ private struct ScriptCommandRunView: View {
 
                 if controller.running {
                     HStack {
-                        ProgressView().controlSize(.small)
                         Text("正在运行")
                         Button("取消运行", action: controller.cancel)
                     }

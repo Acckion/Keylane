@@ -30,7 +30,9 @@ enum AppleNotesModule {
                 return actions
             },
             updates: notes.updates,
-            enter: { _ in notes.search(""); return "" }
+            enter: { _ in notes.search(""); return "" },
+            loading: notes.$searching.combineLatest(notes.$saving)
+                .map { searching, saving in searching || saving }.removeDuplicates().eraseToAnyPublisher()
         )
         let editor = LauncherPage(
             id: createPage, placeholder: "", badge: ("新建 Apple 备忘录", symbol),
@@ -41,7 +43,8 @@ enum AppleNotesModule {
             submit: notes.create, shortcutSubmit: notes.create,
             primaryTitle: { notes.createdID == nil ? "创建备忘录" : "打开备忘录" },
             primaryEnabled: { notes.canCreate && !notes.saving },
-            updates: notes.updates
+            updates: notes.updates,
+            loading: notes.$saving.eraseToAnyPublisher()
         )
         return .init(id: .init(rawValue: "keylane.apple-notes"), title: "Apple 备忘录", symbol: symbol, commands: [
             .init(declaration: .init(id: .init(rawValue: "search-apple-notes"), title: "搜索 Apple 备忘录",
@@ -219,7 +222,7 @@ private struct AppleNotesList: View {
     var body: some View {
         SelectableResultList(selection: controller.selectedID, query: "", firstResult: controller.results.first?.id) {
             if controller.searching {
-                ProgressView("正在搜索 Apple 备忘录…").frame(maxWidth: .infinity).padding(24)
+                Text("正在搜索 Apple 备忘录…").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(24)
             } else if !controller.searchError.isEmpty {
                 VStack(spacing: 12) {
                     Text(controller.searchError).foregroundStyle(.secondary)

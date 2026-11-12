@@ -211,7 +211,7 @@ struct EmojiSearchPage: View {
                 .minimumScaleFactor(0.55)
         } emptyState: {
             Group {
-                if controller.isLoading || controller.isSearching { ProgressView() }
+                if controller.isLoading || controller.isSearching { Text(EmojiCatalog.label("正在加载…", "Loading…")) }
                 else if controller.loadFailed {
                     Button(EmojiCatalog.label("重新加载符号目录", "Reload Symbol Catalog")) { controller.start() }
                         .buttonStyle(ContentActionButtonStyle())

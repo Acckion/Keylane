@@ -15,7 +15,7 @@ struct ScreenshotLibraryPage: View {
         } emptyState: {
             VStack(spacing: 14) {
                 if library.scanning || library.searchingText {
-                    ProgressView(library.scanning ? "正在查找截图…" : "正在识别图片文字…")
+                    Text(library.scanning ? "正在查找截图…" : "正在识别图片文字…")
                 } else if !ScreenshotQuery(query).text.isEmpty && !library.recognizesText {
                     Text("文字搜索需要启用图片文字识别")
                     Button("启用文字识别") {

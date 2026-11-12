@@ -149,7 +149,7 @@ struct NavigationPage: View {
     @ViewBuilder private var emptyState: some View {
         switch controller.status {
         case .loading:
-            ProgressView(NavigationText.label("正在读取…", "Loading…"))
+            Text(NavigationText.label("正在读取…", "Loading…")).foregroundStyle(.secondary)
         case .permission:
             ContentUnavailableView {
                 Label(NavigationText.label("需要辅助功能权限", "Accessibility Access Required"), systemImage: "accessibility")

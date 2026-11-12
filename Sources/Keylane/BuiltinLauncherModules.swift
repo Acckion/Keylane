@@ -195,7 +195,8 @@ enum BuiltinLauncherModules {
                          contentPlacement: .fileResults, queryChanged: { [weak model] in model?.fileSearch.search($0) },
                          leave: { [weak model] in model?.fileSearch.cancel() },
                          updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-                         releasePreview: { FilePreview.shared.dismiss() })
+                         releasePreview: { FilePreview.shared.dismiss() },
+                         loading: model.fileSearch.$isSearching.eraseToAnyPublisher())
         ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"), content: LauncherSettingsContent.files)],
            services: [.init(start: {
                controller.applyPermissionEnabled(permission.available)
@@ -317,7 +318,10 @@ enum BuiltinLauncherModules {
             },
             maximumActionWidth: 280,
             releasePreview: { FilePreview.shared.dismiss() },
-            actionShortcutsEnabled: true
+            actionShortcutsEnabled: true,
+            loading: controller.$searching.combineLatest(controller.$loadingDetail, controller.$indexingImageText)
+                .map { searching, detail, imageText in searching || detail || imageText }
+                .removeDuplicates().eraseToAnyPublisher()
         )
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
