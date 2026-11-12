@@ -31,6 +31,31 @@ final class SnippetTests: XCTestCase {
         XCTAssertNil(Snippet.expansionRange(in: "word;test ", caret: 10, keyword: ";test"))
         XCTAssertNil(Snippet.expansionRange(in: ";test", caret: 5, keyword: ";test"))
         XCTAssertNil(Snippet.expansionRange(in: "", caret: 0, keyword: ""))
-        XCTAssertFalse(Snippet.validKeyword("缩写"))
+        XCTAssertTrue(Snippet.validKeyword("缩写"))
+        XCTAssertFalse(Snippet.validKeyword("two words"))
     }
+
+    func testRaycastJSONAndLegacyStorage() throws {
+        let sample = Data(#"[{"name":"date","text":"today is {date}","keyword":"date","tags":["date"]}]"#.utf8)
+        let imported = try JSONDecoder().decode([SnippetExchange].self, from: sample).map { $0.snippet() }
+        XCTAssertEqual(imported.first?.text, "today is {date}")
+        XCTAssertEqual(imported.first?.tags, ["date"])
+        XCTAssertEqual(try JSONDecoder().decode([SnippetExchange].self, from: SnippetExchange.encode(imported)),
+                       try JSONDecoder().decode([SnippetExchange].self, from: sample))
+        let old = Data(#"{"id":"old","title":"Old","text":"{time}","keyword":";old"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(Snippet.self, from: old),
+                       Snippet(id: "old", title: "Old", text: "{time}", keyword: ";old"))
+    }
+
+    func testExpansionModesAndWordBoundary() {
+        XCTAssertNotNil(SnippetExpansionMode.immediately.match(in: "!hi", caret: 3, keyword: "!hi", withinWords: false))
+        XCTAssertNil(SnippetExpansionMode.immediately.match(in: "x!hi", caret: 4, keyword: "!hi", withinWords: false))
+        XCTAssertNotNil(SnippetExpansionMode.immediately.match(in: "x!hi", caret: 4, keyword: "!hi", withinWords: true))
+        XCTAssertNil(SnippetExpansionMode.immediately.match(in: "!hithere", caret: 3, keyword: "!hi", withinWords: false))
+        XCTAssertEqual(SnippetExpansionMode.keepDelimiter.match(in: "!hi,", caret: 4, keyword: "!hi",
+                                                                 delimiter: ",", withinWords: false)?.suffix, ",")
+        XCTAssertEqual(SnippetExpansionMode.discardDelimiter.match(in: "!hi,", caret: 4, keyword: "!hi",
+                                                                    delimiter: ",", withinWords: false)?.suffix, "")
+    }
+
 }

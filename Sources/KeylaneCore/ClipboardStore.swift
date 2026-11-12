@@ -448,6 +448,25 @@ public final class ClipboardStore {
         while true { let status = sqlite3_step(s); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW else { throw ClipboardError.database }; result.append(try item(s)) }
         return result
     }
+    public func recentText(offset: Int, current: String?) throws -> String? {
+        guard (1...5000).contains(offset) else { return nil }
+        let skip: Int
+        if let current, try textAtCopyOffset(0) != current { skip = offset - 1 }
+        else { skip = offset }
+        return try textAtCopyOffset(skip)
+    }
+
+    private func textAtCopyOffset(_ offset: Int) throws -> String? {
+        let statement = try statement("SELECT id FROM clips WHERE kind='text' ORDER BY copied DESC,id LIMIT 1 OFFSET ?",
+                                      [.number(Double(offset))])
+        defer { sqlite3_finalize(statement) }
+        switch sqlite3_step(statement) {
+        case SQLITE_ROW: return try detail(id: string(statement, 0))?.text
+        case SQLITE_DONE: return nil
+        default: throw ClipboardError.database
+        }
+    }
+
     public func detail(id: String) throws -> ClipDetail? {
         let s = try statement("SELECT " + Self.columns + ",payload,ocr FROM clips WHERE id=?",[.text(id)]); defer { sqlite3_finalize(s) }
         let status = sqlite3_step(s); if status == SQLITE_DONE { return nil }; guard status == SQLITE_ROW else { throw ClipboardError.database }

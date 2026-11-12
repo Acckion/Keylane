@@ -509,7 +509,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         pasteIntoPreviousApplication(keepOpen: keepOpen, isFile: isFile)
     }
 
-    func pasteIntoPreviousApplication(keepOpen: Bool = false, isFile: Bool = false) {
+    func pasteIntoPreviousApplication(keepOpen: Bool = false, isFile: Bool = false,
+                                      placeCursor: (text: String, offset: Int)? = nil) {
         guard retainedPasteID == nil, pendingFilePasteID == nil else { return }
         guard model.crossAppPaste.available else {
             showLauncherFeedback("已复制，跨应用粘贴未启用", style: .failure, actionTitle: "粘贴设置…") { [weak self] in
@@ -536,10 +537,24 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。")
                 return
             }
+            let original = placeCursor == nil ? nil : SnippetTextTarget.position(in: target)
             guard self.postPasteShortcut() else {
                 self.finishRetainedPaste(pasteID, target: target)
                 self.showPasteFailure("已复制，无法发送粘贴按键。")
                 return
+            }
+            if let placeCursor, let original {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                    guard self?.pasteTargetIsFrontmost(target) == true,
+                          let current = SnippetTextTarget.position(in: target),
+                          CFEqual(original.element, current.element), current.range.length == 0,
+                          current.range.location == original.range.location + placeCursor.text.utf16.count,
+                          current.text == (original.text as NSString).replacingCharacters(
+                              in: NSRange(location: original.range.location, length: original.range.length),
+                              with: placeCursor.text) else { return }
+                    _ = SnippetTextTarget.select(CFRange(location: original.range.location + placeCursor.offset, length: 0),
+                                                 in: current.element)
+                }
             }
             if let pasteID {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in

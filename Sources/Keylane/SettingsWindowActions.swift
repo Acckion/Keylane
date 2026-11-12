@@ -19,6 +19,7 @@ struct SettingsWindowActions: View {
 
     static func width(for page: LauncherSettingsPage?, hasExtensionSwitch: Bool) -> CGFloat {
         if page?.trailingToolbar != nil { return hasExtensionSwitch ? 226 : 214 }
+        if page?.guideURL != nil { return hasExtensionSwitch ? 100 : 52 }
         if hasExtensionSwitch { return 64 }
         return page?.titlebar == nil ? 0 : 64
     }
@@ -30,6 +31,15 @@ struct SettingsWindowActions: View {
         HStack(spacing: 8) {
             if let toolbar = page?.trailingToolbar {
                 toolbar().id(state.page)
+            }
+            if let guideURL = page?.guideURL {
+                Link(destination: guideURL) {
+                    Image(systemName: "info.circle")
+                        .font(.system(size: 15, weight: .medium))
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("使用指南")
+                .help("使用指南")
             }
             if let contribution {
                 SettingsTitlebarSwitch(contribution: contribution).id(state.page)

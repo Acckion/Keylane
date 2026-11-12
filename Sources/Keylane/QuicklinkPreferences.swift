@@ -90,6 +90,8 @@ private struct QuicklinkEditor: View {
             TextField("链接", text: $link.template, prompt: Text("https://example.com/?q={关键词}"))
             Text("使用 {名称} 添加参数，或使用 {名称=默认值} 提供默认值。")
                 .font(.caption).foregroundStyle(.secondary)
+            Link("动态占位符指南", destination: URL(string: "https://manual.raycast.com/dynamic-placeholders")!)
+                .font(.caption)
             if let error { Text(error).foregroundStyle(.red) }
             HStack {
                 Spacer()
@@ -99,6 +101,10 @@ private struct QuicklinkEditor: View {
         }
         .padding(22)
         .frame(width: 490)
+        .onAppear {
+            link.template = link.editableTemplate
+            link.usesDynamicPlaceholders = true
+        }
     }
 
     private func submit() {

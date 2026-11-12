@@ -250,11 +250,22 @@ public final class Store {
         for (i,v) in values.enumerated() { sqlite3_bind_text(stmt, Int32(i+1), v, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self)) }; return stmt
     }
     private func write(_ sql: String, _ values: [String]) throws { let stmt = try statement(sql, values); defer { sqlite3_finalize(stmt) }; guard sqlite3_step(stmt) == SQLITE_DONE else { throw StoreError.sqlite(String(cString: sqlite3_errmsg(db))) } }
-    public func save(_ record: Record) throws {
-        try execute("BEGIN IMMEDIATE"); do {
-            try write("INSERT OR REPLACE INTO records VALUES(?,?,?,?,?)", [record.id, record.kind, record.title, record.body, String(record.updated)])
-            try write("DELETE FROM records_fts WHERE id=?", [record.id]); try write("INSERT INTO records_fts VALUES(?,?,?)", [record.id, record.title, record.body]); try execute("COMMIT")
-        } catch { try? execute("ROLLBACK"); throw error }
+    public func save(_ record: Record) throws { try save([record]) }
+
+    public func save(_ records: [Record]) throws {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            for record in records {
+                try write("INSERT OR REPLACE INTO records VALUES(?,?,?,?,?)",
+                          [record.id, record.kind, record.title, record.body, String(record.updated)])
+                try write("DELETE FROM records_fts WHERE id=?", [record.id])
+                try write("INSERT INTO records_fts VALUES(?,?,?)", [record.id, record.title, record.body])
+            }
+            try execute("COMMIT")
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
     }
     public func remove(id: String) throws { try execute("BEGIN IMMEDIATE"); do { try write("DELETE FROM records WHERE id=?",[id]); try write("DELETE FROM records_fts WHERE id=?",[id]); try execute("COMMIT") } catch { try? execute("ROLLBACK"); throw error } }
     public func records(kind: String) throws -> [Record] {

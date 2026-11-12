@@ -852,6 +852,11 @@ final class ClipboardController: ObservableObject {
         return writeToPasteboard(objects, markLegacyReplay: detail.snapshot == nil)
     }
 
+    func placeholderHistory(offset: Int, current: String?) -> String? {
+        guard captureEnabled, runtime != nil else { return nil }
+        return worker.sync { try? store?.recentText(offset: offset, current: current) }
+    }
+
     func copyColor(_ color: ClipboardColor, as format: ClipboardColor.Format) -> Bool {
         copyText(color.formatted(as: format))
     }

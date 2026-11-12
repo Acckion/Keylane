@@ -9,6 +9,7 @@ struct CommandSettingsEntry<Icon: View> {
     let setShortcut: (Shortcut?) -> Void
     @ViewBuilder let icon: () -> Icon
     var perform: (() -> Void)? = nil
+    var showsDisclosure = false
     var available = true
     var help: String?
     var menu: [CommandSettingsAction] = []
@@ -40,7 +41,17 @@ private struct CommandSettingsRow<Icon: View>: View {
             entry.icon().frame(width: 24, height: 24).accessibilityHidden(true)
             Group {
                 if let perform = entry.perform {
-                    Button(entry.title, action: perform).buttonStyle(.plain)
+                    Button(action: perform) {
+                        HStack(spacing: 6) {
+                            Text(entry.title)
+                            if entry.showsDisclosure {
+                                Image(systemName: "chevron.forward")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
                 } else {
                     Text(entry.title)
                 }
