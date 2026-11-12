@@ -181,6 +181,31 @@ automatic.loadListThumbnail(for:fileImageItem) { fileThumbnail = $0 }
 wait("copied image file list thumbnail") { fileThumbnail != nil }
 precondition(FileManager.default.fileExists(atPath:copiedImageFile.path))
 
+let originalColor = " #0c4cdd "
+automaticBoard.clearContents()
+automaticBoard.setString(originalColor, forType: .string)
+wait("automatic color capture") { automatic.total == 6 }
+automaticBoard.clearContents()
+automaticBoard.setString("https://example.com/", forType: .URL)
+wait("automatic link capture") { automatic.total == 7 }
+automaticBoard.clearContents()
+automaticBoard.setString("design@example.com", forType: .string)
+wait("automatic email capture") { automatic.total == 8 }
+for category: ClipboardCategory in [.link, .email, .color] {
+    automatic.kind = category.rawValue
+    wait("header \(category) filter") {
+        automatic.items.count == 1 && automatic.detail?.item.category == category
+    }
+}
+precondition(automatic.copySelected())
+precondition(automaticBoard.string(forType: .string) == originalColor)
+let color = automatic.detail!.item.color!
+for format in ClipboardColor.Format.allCases {
+    precondition(automatic.copyColor(color, as: format))
+    precondition(automaticBoard.string(forType: .string) == color.formatted(as: format))
+    automatic.poll()
+}
+automatic.kind = "all"
+wait("converted colors were not recaptured") { automatic.items.count == 8 && automatic.total == 8 }
 
-
-print("PASS named pasteboard: automatic timer text/image capture, rich RTF/HTML exact roundtrip, plain copy, mixed items, inert HTML, stable detail, default-off, text, dedupe, stable pin, replay exclusion, sensitive exclusion, native PNG roundtrip, Vision OCR/search, file roundtrip, original retained, reopen, clear policies")
+print("PASS named pasteboard: text/image/file/link/email/color capture and filters, original color and six formatted copies, rich RTF/HTML exact roundtrip, plain copy, mixed items, inert HTML, stable detail, default-off, dedupe, stable pin, replay exclusion, sensitive exclusion, native PNG roundtrip, Vision OCR/search, file roundtrip, original retained, reopen, clear policies")

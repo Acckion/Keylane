@@ -14,7 +14,7 @@ struct ClipboardDetail: View {
     @State private var metrics: ClipboardDetailMetrics?
 
     var body: some View {
-        ResultDetailPane(scrollsPreview: detail.item.kind == .text) { height in
+        ResultDetailPane(scrollsPreview: detail.item.kind == .text && detail.item.color == nil) { height in
             preview(height: height)
         } information: {
             DetailInformationSection(rows: information)
@@ -58,9 +58,13 @@ struct ClipboardDetail: View {
     @ViewBuilder private func preview(height: CGFloat) -> some View {
         switch detail.item.kind {
         case .text:
-            Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
-                .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
-                .padding(.horizontal, 9).padding(.top, 4)
+            if let color = detail.item.color {
+                ClipboardColorPreview(color: color)
+            } else {
+                Text(detail.text).font(.system(size: 13)).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+                    .padding(.horizontal, 9).padding(.top, 4)
+            }
         case .image:
             if let thumbnail {
                 GeometryReader { geometry in
@@ -81,15 +85,24 @@ struct ClipboardDetail: View {
     private var information: [DetailInformationValue] {
         let sourceURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: detail.item.sourceBundle)
         let sourceIcon = sourceURL.map { NSWorkspace.shared.icon(forFile: $0.path) }
-        let type = detail.item.kind == .text ? "文字" : detail.item.kind == .image ? "图片" : detail.files.count == 1 ? "文件" : "多个文件"
+        let type: String
+        switch detail.item.category {
+        case .text: type = "文字"
+        case .image: type = "图片"
+        case .files: type = detail.files.count == 1 ? "文件" : "多个文件"
+        case .link: type = "链接"
+        case .email: type = "邮箱"
+        case .color: type = "颜色"
+        }
         var rows: [DetailInformationValue] = [
             .init(title: "来源", value: detail.item.source.isEmpty ? "未知来源" : detail.item.source, icon: sourceIcon),
             .init(title: "类型", value: type)
         ]
         switch detail.item.kind {
-        case .text:
+        case .text where detail.item.color == nil:
             rows.append(.init(title: "字符数", value: metrics.map { String($0.characters) } ?? "…"))
             rows.append(.init(title: "词数", value: metrics.map { String($0.words) } ?? "…"))
+        case .text: break
         case .image:
             if let dimensions = metrics?.dimensions { rows.append(.init(title: "尺寸", value: dimensions)) }
             rows.append(.init(title: "大小", value: size(metrics?.imageBytes)))
@@ -106,6 +119,54 @@ struct ClipboardDetail: View {
     }
     private func size(_ bytes: Int?) -> String { bytes.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "—" }
     private func releaseScopes() { scopes.forEach { $0.stopAccessingSecurityScopedResource() }; scopes = [] }
+}
+
+struct ClipboardColorPreview: View {
+    let color: ClipboardColor
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ClipboardColorSwatch(color: color, cornerRadius: 8)
+                .frame(maxHeight: .infinity)
+            Text(color.hexLabel)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color.black)
+                .textSelection(.enabled)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 8)
+        }
+        .padding(4)
+        .frame(maxWidth: 210, maxHeight: 186)
+        .background(.white, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct ClipboardColorSwatch: View {
+    let color: ClipboardColor
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius)
+        ZStack {
+            if color.alpha < 1 {
+                Canvas { context, size in
+                    let side = cornerRadius
+                    context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
+                    for row in 0..<Int(ceil(size.height / side)) {
+                        for column in stride(from: row % 2, to: Int(ceil(size.width / side)), by: 2) {
+                            let square = CGRect(x: CGFloat(column) * side, y: CGFloat(row) * side,
+                                                width: side, height: side)
+                            context.fill(Path(square), with: .color(Color(white: 0.75)))
+                        }
+                    }
+                }
+            }
+            Color(.sRGB, red: color.red, green: color.green, blue: color.blue, opacity: color.alpha)
+        }
+        .clipShape(shape)
+        .overlay { shape.strokeBorder(.primary.opacity(0.20), lineWidth: 0.5) }
+        .accessibilityHidden(true)
+    }
 }
 
 private struct ClipboardDetailMetrics: Sendable {

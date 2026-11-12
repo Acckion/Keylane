@@ -667,7 +667,12 @@ struct Launcher: View {
             item.perform()
         }
     }
-    private func filteredMenu(applicationMenu: Bool) -> [MenuAction] { menuItems(applicationMenu: applicationMenu).filter { actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery) } }
+    private func filteredMenu(applicationMenu: Bool) -> [MenuAction] {
+        menuItems(applicationMenu: applicationMenu).filter {
+            actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery)
+                || $0.value?.localizedCaseInsensitiveContains(actionQuery) == true
+        }
+    }
     private func menuRowsHeight(_ items: [MenuAction]) -> CGFloat {
         guard !items.isEmpty else { return 48 }
         let breaks = zip(items, items.dropFirst()).filter { $0.group != $1.group }.count
@@ -702,7 +707,15 @@ struct Launcher: View {
                                 LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
                                                 enabled: item.enabled, destructive: item.destructive, artwork: item.artwork,
                                                 activate: { activate(item) }, highlight: { actionSelection = index }) {
+                                    if let value = item.value {
+                                        Text(value).font(VisualStyle.rowText).foregroundStyle(.secondary)
+                                            .lineLimit(1).help(value)
+                                    }
                                     if !item.keys.isEmpty { Keycaps(keys: item.keys) }
+                                    if item.submenu != nil {
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
+                                    }
                                 }
                                 .padding(.horizontal, 8)
                                 .id(item.id)

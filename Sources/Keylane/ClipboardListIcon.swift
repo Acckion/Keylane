@@ -8,12 +8,14 @@ struct ClipboardListIcon: View {
     @State private var thumbnail: NSImage?
     var body: some View {
         Group {
-            if let thumbnail {
+            if let color = item.color {
+                ClipboardColorSwatch(color: color, cornerRadius: 5)
+            } else if let thumbnail {
                 Image(nsImage: thumbnail).resizable().scaledToFill()
             } else {
                 ZStack {
                     RoundedRectangle(cornerRadius: 5).fill(.primary.opacity(0.15))
-                    Image(systemName: item.kind == .text ? "doc.text.fill" : item.kind == .image ? "photo.fill" : "doc.on.doc.fill")
+                    Image(systemName: symbol)
                         .font(.system(size: 17, weight: .regular)).foregroundStyle(.primary.opacity(0.85))
                 }
             }
@@ -25,5 +27,15 @@ struct ClipboardListIcon: View {
                 guard !Task.isCancelled else { return }
                 thumbnail = image
             }
+    }
+
+    private var symbol: String {
+        switch item.category {
+        case .link: return "link"
+        case .email: return "at"
+        case .image: return "photo.fill"
+        case .files: return "doc.on.doc.fill"
+        case .text, .color: return "doc.text.fill"
+        }
     }
 }

@@ -365,6 +365,19 @@ enum BuiltinLauncherModules {
         } else {
             actions.append(copyPlainText)
         }
+        if let color = item.color {
+            let title = "复制颜色为…"
+            let formats = ClipboardColor.Format.allCases.map { format in
+                LauncherAction(id: "copy-color-\(format)", title: format.rawValue, icon: "",
+                               value: color.formatted(as: format), perform: {
+                    let copied = controller.copyColor(color, as: format)
+                    delegate?.showLauncherFeedback(copied ? "已复制颜色" : controller.status,
+                                                   style: copied ? .success : .failure)
+                })
+            }
+            actions.append(.init(id: "copy-color-as", title: title, icon: "eyedropper",
+                                 submenu: .init(title: title, items: formats)))
+        }
         if let sharingItem = controller.sharingItem {
             actions.append(.init(id: "share-clip", title: "分享…", icon: "square.and.arrow.up", group: 1,
                                  perform: { controller.share(sharingItem) }))
@@ -386,8 +399,14 @@ enum BuiltinLauncherModules {
         }
         if !text.isEmpty || detail?.assetURL != nil {
             actions.append(.init(id: "save-clip", title: "存为文件…", icon: "arrow.down.document",
-                                 keys: ["⌥", "⇧", "⌘", "S"], group: 2,
-                                 perform: { controller.saveSelectedAsFile() }))
+                                 keys: ["⌥", "⇧", "⌘", "S"], group: 2, perform: {
+                controller.saveSelectedAsFile { result in
+                    switch result {
+                    case .success: delegate?.showLauncherFeedback("已保存文件", style: .success)
+                    case .failure(let error): delegate?.showLauncherFeedback(error.localizedDescription, style: .failure)
+                    }
+                }
+            }))
         }
         actions += [
             .init(id: "delete-clip", title: "删除记录", icon: "trash", keys: ["⌃", "X"],

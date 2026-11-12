@@ -4,6 +4,67 @@ import SQLite3
 
 final class ClipboardTests: XCTestCase {
     private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneClipboardTest-" + UUID().uuidString) }
+
+    func testColorFormatsAndAlpha() throws {
+        let color = try XCTUnwrap(ClipboardColor(" #0c4cdd\n"))
+        XCTAssertEqual(color.hexLabel, "#0C4CDD")
+        XCTAssertEqual(color.formatted(as: .hexAlpha), "#0C4CDDFF")
+        XCTAssertEqual(color.formatted(as: .rgba), "rgba(12, 76, 221, 1)")
+        XCTAssertEqual(color.formatted(as: .rgbaPercent), "rgba(4.71%, 29.8%, 86.67%, 1)")
+        XCTAssertEqual(color.formatted(as: .cssRGB), "rgb(12 76 221)")
+        XCTAssertEqual(color.formatted(as: .hsl), "hsl(221.63deg 89.7% 45.69%)")
+
+        let translucent = try XCTUnwrap(ClipboardColor("hsl(-.5turn 100% 50% / 50%)"))
+        XCTAssertEqual(translucent.hexLabel, "#00FFFF80")
+        XCTAssertEqual(translucent.formatted(as: .cssRGB), "rgb(0 255 255 / 0.5)")
+        XCTAssertEqual(translucent.formatted(as: .hsl), "hsl(180deg 100% 50% / 0.5)")
+        XCTAssertEqual(ClipboardColor("#0f88")?.hexLabel, "#00FF8888")
+        XCTAssertEqual(ClipboardColor("rgba(100%, 0%, 100%, 0.25)")?.hexLabel, "#FF00FF40")
+        for format in ClipboardColor.Format.allCases {
+            let roundTrip = try XCTUnwrap(ClipboardColor(color.formatted(as: format)))
+            XCTAssertEqual(roundTrip.hexLabel, color.hexLabel, format.rawValue)
+        }
+        for invalid in ["#0C4CDD title", "#-11", "# 11", "#12345", "rgb(1 2 3 /)", "rgb(300,0,0)",
+                        "hsl(nan 50% 50%)", "rgba(1,2,3,1.5)", "rgb(1,,3)", "#fff\0text", "#fff\n#aaa"] {
+            XCTAssertNil(ClipboardColor(invalid), invalid)
+        }
+    }
+
+    func testSemanticFiltersUseOriginalContentBeforeLimit() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = " #0c4cdd "
+        let snapshot = ClipSnapshot(items: [.init([
+            .init(type: "public.utf8-plain-text", data: Data(original.utf8))
+        ])], plainText: original)
+        let store = try ClipboardStore(directory: directory)
+        let now = Date()
+        let color = try store.capture(.text(original), snapshot: snapshot, at: now.addingTimeInterval(-60))
+        try store.rename(id: color, to: "品牌蓝")
+        let link = try store.capture(.text("https://example.com/colors?q=%23fff"))
+        let email = try store.capture(.text("design+test@example.com"))
+        let plain = try store.capture(.text("颜色 #0c4cdd"))
+        let long = try store.capture(.text("#fff" + String(repeating: "a", count: 5000)))
+        let image = try store.capture(.image(Data([137, 80, 78, 71])))
+        let files = try store.capture(.files([.init(path: "/tmp/#0C4CDD")]))
+
+        let reopened = try ClipboardStore(directory: directory)
+        XCTAssertEqual(try reopened.list(category: .color, limit: 1).map(\.id), [color])
+        XCTAssertEqual(try reopened.list(query: "0c4cdd", category: .color).first?.preview, "品牌蓝")
+        XCTAssertEqual(try reopened.list(category: .link).map(\.id), [link])
+        XCTAssertEqual(try reopened.list(category: .email).map(\.id), [email])
+        XCTAssertEqual(Set(try reopened.list(category: .text).map(\.id)), Set([plain, long]))
+        XCTAssertEqual(try reopened.list(category: .image).map(\.id), [image])
+        XCTAssertEqual(try reopened.list(category: .files).map(\.id), [files])
+        XCTAssertEqual(try reopened.count(), 7)
+        let detail = try XCTUnwrap(reopened.detail(id: color))
+        XCTAssertEqual(detail.item.category, .color)
+        XCTAssertEqual(detail.item.color?.hexLabel, "#0C4CDD")
+        XCTAssertEqual(detail.text, original)
+        XCTAssertEqual(detail.snapshot, snapshot)
+        XCTAssertNil(reopened.lastMigrationBackupURL)
+    }
+
     func testPersistenceExactDeduplicationAndStablePins() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
         let now = Date()

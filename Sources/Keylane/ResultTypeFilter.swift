@@ -10,7 +10,10 @@ struct ResultFilterOption: Identifiable {
         .init(id: "all", title: "全部类型", symbol: "list.bullet"),
         .init(id: "text", title: "仅文字", symbol: "textformat"),
         .init(id: "image", title: "仅图片", symbol: "photo"),
-        .init(id: "files", title: "仅文件", symbol: "doc")
+        .init(id: "files", title: "仅文件", symbol: "doc"),
+        .init(id: "link", title: "仅链接", symbol: "link"),
+        .init(id: "email", title: "仅邮箱", symbol: "at"),
+        .init(id: "color", title: "仅颜色", symbol: "eyedropper")
     ]
     static let files: [Self] = [
         .init(id: "all", title: "全部类型", symbol: "list.bullet"),
@@ -150,11 +153,13 @@ struct LauncherMenuRow<Trailing: View>: View {
     var body: some View {
         Button(action: activate) {
             HStack(spacing: style == .action ? VisualStyle.actionSpacing : 11) {
-                Group {
-                    if let artwork { Image(nsImage: artwork).resizable().scaledToFit().frame(width: 18, height: 18) }
-                    else { Image(systemName: symbol).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome) }
+                if artwork != nil || !symbol.isEmpty {
+                    Group {
+                        if let artwork { Image(nsImage: artwork).resizable().scaledToFit().frame(width: 18, height: 18) }
+                        else { Image(systemName: symbol).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome) }
+                    }
+                    .frame(width: style == .action ? VisualStyle.actionIconWidth : 20, height: 20)
                 }
-                .frame(width: style == .action ? VisualStyle.actionIconWidth : 20, height: 20)
                 Text(title).font(VisualStyle.rowText)
                 Spacer()
                 trailing()

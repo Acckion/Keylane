@@ -3,6 +3,28 @@ import SQLite3
 import CryptoKit
 
 public enum ClipKind: String, Codable, CaseIterable { case text, image, files }
+
+public enum ClipboardCategory: String, CaseIterable, Sendable {
+    case text, image, files, link, email, color
+
+    private static let emailPattern = try! NSRegularExpression(
+        pattern: #"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}"#
+    )
+
+    static func classify(_ text: String, color: ClipboardColor?) -> Self {
+        if color != nil { return .color }
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.contains("@"), value.utf8.count <= 254 {
+            let range = NSRange(value.startIndex..., in: value)
+            if emailPattern.firstMatch(in: value, range: range)?.range == range { return .email }
+        }
+        let lower = value.lowercased()
+        if lower.hasPrefix("https://") || lower.hasPrefix("http://"),
+           !value.contains(where: { $0.isWhitespace || $0.isNewline }),
+           let url = URLComponents(string: value), let host = url.host, !host.isEmpty { return .link }
+        return .text
+    }
+}
 public struct ClipFile: Codable, Equatable {
     public let path: String
     public let bookmark: Data?
@@ -16,6 +38,8 @@ public enum ClipContent {
 public struct ClipItem: Identifiable, Equatable {
     public let id: String
     public let kind: ClipKind
+    public let category: ClipboardCategory
+    public let color: ClipboardColor?
     public let preview: String
     public let source: String
     public let sourceBundle: String
@@ -79,6 +103,7 @@ public final class ClipboardStore {
         let path = directory.appendingPathComponent("clipboard.sqlite").path
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { sqlite3_close(db); throw ClipboardError.database }
         do {
+            try registerCategoryFunction()
             let version = try scalar("PRAGMA user_version")
             guard version <= 3 else { throw ClipboardError.newerSchema }
             try exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=2000; PRAGMA secure_delete=ON; PRAGMA foreign_keys=ON;")
@@ -131,6 +156,21 @@ public final class ClipboardStore {
         return folder
     }
     deinit { sqlite3_close(db) }
+    private func registerCategoryFunction() throws {
+        // Classify the original, bounded text before LIMIT without rewriting history.
+        let status = sqlite3_create_function_v2(db, "clip_text_category", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC,
+                                                nil, { context, _, values in
+            guard let input = values?[0], let bytes = sqlite3_value_text(input) else {
+                sqlite3_result_null(context)
+                return
+            }
+            let value = String(decoding: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_value_bytes(input))), as: UTF8.self)
+            let category = ClipboardCategory.classify(value, color: ClipboardColor(value))
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            category.rawValue.withCString { sqlite3_result_text(context, $0, -1, transient) }
+        }, nil, nil, nil)
+        guard status == SQLITE_OK else { throw ClipboardError.database }
+    }
     private enum Value { case text(String), blob(Data), number(Double), null }
     private func exec(_ sql: String) throws { guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw ClipboardError.database } }
     private func statement(_ sql: String, _ values: [Value] = []) throws -> OpaquePointer {
@@ -164,10 +204,20 @@ public final class ClipboardStore {
         return Data(bytes: bytes, count: count)
     }
     private static func normalize(_ text: String) -> String { text.folding(options: [.caseInsensitive,.diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX")) }
-    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0)"
+    private static let shortText = "CASE WHEN kind='text' AND length(payload)<=4096 THEN payload END"
+    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0),\(shortText)"
     private func item(_ s: OpaquePointer) throws -> ClipItem {
         guard let kind = ClipKind(rawValue: string(s,1)) else { throw ClipboardError.database }
-        return ClipItem(id: string(s,0), kind: kind, preview: string(s,2), source: string(s,3), sourceBundle: string(s,4), copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)), pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)), byteCount: Int(sqlite3_column_int64(s,8)), assetName: sqlite3_column_type(s,9) == SQLITE_NULL ? nil : string(s,9), hasOCR: sqlite3_column_int(s,10) != 0)
+        let text = String(decoding: blob(s,11), as: UTF8.self)
+        let color = ClipboardColor(text)
+        let category: ClipboardCategory
+        switch kind {
+        case .text: category = .classify(text, color: color)
+        case .image: category = .image
+        case .files: category = .files
+        }
+        return ClipItem(id: string(s,0), kind: kind, category: category, color: color,
+                        preview: string(s,2), source: string(s,3), sourceBundle: string(s,4), copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)), pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)), byteCount: Int(sqlite3_column_int64(s,8)), assetName: sqlite3_column_type(s,9) == SQLITE_NULL ? nil : string(s,9), hasOCR: sqlite3_column_int(s,10) != 0)
     }
     private func retainedSearchTerms(id: String) throws -> String {
         let record = try statement("SELECT preview, ocr FROM clips WHERE id=?", [.text(id)])
@@ -215,7 +265,7 @@ public final class ClipboardStore {
         guard try scalar("SELECT count(*) FROM clips WHERE id=?",[.text(id)]) > 0 else { throw ClipboardError.storageFull }
         return id
     }
-    public func list(query: String = "", kind: ClipKind? = nil, pinnedOnly: Bool = false, limit: Int = 200) throws -> [ClipItem] {
+    public func list(query: String = "", kind: ClipKind? = nil, category: ClipboardCategory? = nil, pinnedOnly: Bool = false, limit: Int = 200) throws -> [ClipItem] {
         var conditions: [String] = []; var values: [Value] = []
         let search = Self.normalize(String(query.prefix(256))).trimmingCharacters(in:.whitespacesAndNewlines)
         for token in search.split(whereSeparator: \.isWhitespace).prefix(16).map(String.init) {
@@ -223,6 +273,15 @@ public final class ClipboardStore {
             else { conditions.append("searchable LIKE ? ESCAPE '\\'"); values.append(.text("%" + token.replacingOccurrences(of:"\\",with:"\\\\").replacingOccurrences(of:"%",with:"\\%").replacingOccurrences(of:"_",with:"\\_") + "%")) }
         }
         if let kind { conditions.append("kind=?"); values.append(.text(kind.rawValue)) }
+        if let category {
+            switch category {
+            case .image, .files:
+                conditions.append("kind=?")
+            case .text, .link, .email, .color:
+                conditions.append("kind='text' AND coalesce(clip_text_category(\(Self.shortText)), 'text')=?")
+            }
+            values.append(.text(category.rawValue))
+        }
         if pinnedOnly { conditions.append("pinned=1") }
         let filter = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator:" AND ")
         let s = try statement("SELECT " + Self.columns + " FROM clips" + filter + " ORDER BY pinned DESC,pin_order,copied DESC,id LIMIT ?",values + [.number(Double(max(1,min(500,limit))))]); defer { sqlite3_finalize(s) }
@@ -233,11 +292,11 @@ public final class ClipboardStore {
     public func detail(id: String) throws -> ClipDetail? {
         let s = try statement("SELECT " + Self.columns + ",payload,ocr FROM clips WHERE id=?",[.text(id)]); defer { sqlite3_finalize(s) }
         let status = sqlite3_step(s); if status == SQLITE_DONE { return nil }; guard status == SQLITE_ROW else { throw ClipboardError.database }
-        let record = try item(s); let data = blob(s,11)
+        let record = try item(s); let data = blob(s,12)
         let files = record.kind == .files ? try JSONDecoder().decode([ClipFile].self, from:data) : []
         let q = try statement("SELECT payload FROM clip_snapshots WHERE clip_id=?",[.text(id)]); defer { sqlite3_finalize(q) }
         let snapshot = sqlite3_step(q) == SQLITE_ROW ? try PropertyListDecoder().decode(ClipSnapshot.self,from:blob(q,0)) : nil
-        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,12),snapshot:snapshot)
+        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,13),snapshot:snapshot)
     }
     public func assetURL(_ name: String) -> URL? {
         let parts = name.split(separator: ".", omittingEmptySubsequences: false)

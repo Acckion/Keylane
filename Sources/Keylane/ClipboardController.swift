@@ -138,13 +138,13 @@ final class ClipboardController: ObservableObject {
         reload()
     }
     func reload() {
-        generation += 1; let ticket = generation; let value = query; let filter = ClipKind(rawValue: kind); let pins = pinnedOnly
+        generation += 1; let ticket = generation; let value = query; let filter = ClipboardCategory(rawValue: kind); let pins = pinnedOnly
         let includeRecords = presentationActive
         pendingReload?.cancel()
         let task = DispatchWorkItem { [weak self] in
             guard let self, let store = self.store else { return }
             do {
-                let records = includeRecords ? try store.list(query: value, kind: filter, pinnedOnly: pins) : []; let count = try store.count(); let backups = (try? store.migrationBackups().count) ?? self.migrationBackupCount
+                let records = includeRecords ? try store.list(query: value, category: filter, pinnedOnly: pins) : []; let count = try store.count(); let backups = (try? store.migrationBackups().count) ?? self.migrationBackupCount
                 DispatchQueue.main.async {
                     guard ticket == self.generation else { return }
                     if self.total != count { self.total = count }
@@ -389,20 +389,17 @@ final class ClipboardController: ObservableObject {
         picker.show(relativeTo: anchor, of: view, preferredEdge: .maxY)
     }
 
-    func saveSelectedAsFile() {
+    func saveSelectedAsFile(completion: @escaping (Result<Void, Error>) -> Void) {
         guard let detail, detail.item.id == selectedID else { return }
         let panel = NSSavePanel()
         let asset = detail.assetURL
         panel.nameFieldStringValue = asset.map { "剪贴板.\($0.pathExtension)" } ?? "剪贴板.txt"
         panel.begin { response in
             guard response == .OK, let destination = panel.url else { return }
-            do {
+            completion(Result {
                 let data = try asset.map { try Data(contentsOf: $0) } ?? Data(detail.text.utf8)
                 try data.write(to: destination, options: .atomic)
-                (NSApp.delegate as? Delegate)?.showLauncherFeedback("已保存文件", style: .success)
-            } catch {
-                (NSApp.delegate as? Delegate)?.showLauncherFeedback(error.localizedDescription, style: .failure)
-            }
+            })
         }
     }
 
@@ -449,7 +446,7 @@ final class ClipboardController: ObservableObject {
         if plainText {
             let text = detail.snapshot.map { !$0.plainText.isEmpty ? $0.plainText : (!detail.ocrText.isEmpty ? detail.ocrText : detail.files.map(\.path).joined(separator:"\n")) } ?? (!detail.text.isEmpty ? detail.text : (!detail.ocrText.isEmpty ? detail.ocrText : detail.files.map(\.path).joined(separator:"\n")))
             guard !text.isEmpty else { status = "这条记录没有可复制的文字；可先识别图片文字。"; return false }
-            let item = NSPasteboardItem(); item.setString(text,forType:.string); item.setString("1",forType:.init("org.keylane.clipboard.replay")); objects = [item]
+            return copyText(text)
         } else if let snapshot = detail.snapshot {
             var resolved: [String:URL] = [:]
             for reference in detail.files {
@@ -484,9 +481,25 @@ final class ClipboardController: ObservableObject {
             objects = urls.map { $0 as NSURL }
         }
         }
+        return writeToPasteboard(objects, markLegacyReplay: detail.snapshot == nil)
+    }
+
+    func copyColor(_ color: ClipboardColor, as format: ClipboardColor.Format) -> Bool {
+        copyText(color.formatted(as: format))
+    }
+
+    private func copyText(_ text: String) -> Bool {
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setString("1", forType: .init("org.keylane.clipboard.replay"))
+        return writeToPasteboard([item])
+    }
+
+    private func writeToPasteboard(_ objects: [NSPasteboardWriting], markLegacyReplay: Bool = false) -> Bool {
         board.clearContents()
         guard board.writeObjects(objects) else { status = "无法写入剪贴板，请重试。"; return false }
-        if detail.snapshot == nil && !plainText { board.setString("1",forType:.init("org.keylane.clipboard.replay")) }; lastChange = board.changeCount
+        if markLegacyReplay { board.setString("1", forType: .init("org.keylane.clipboard.replay")) }
+        lastChange = board.changeCount
         status = ""
         return true
     }
