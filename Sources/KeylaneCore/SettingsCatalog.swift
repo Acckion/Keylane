@@ -72,6 +72,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let dataDirectory = SettingsItem(id: "directory", page: "advanced", title: "资料目录", keywords: "数据 sqlite directory storage")
     public static let privacy = SettingsItem(id: "privacy", page: "advanced", title: "隐私与遥测", keywords: "privacy telemetry")
     public static let version = SettingsItem(id: "version", page: "about", title: "关于 Keylane", keywords: "版本 许可 about version license")
+    public static let softwareUpdates = SettingsItem(id: "software-updates", page: "about", title: "软件更新", keywords: "检查更新 自动更新 测试版 Alpha Beta GitHub update")
     public static let developmentStatus = SettingsItem(id: "status", page: "about", title: "开发状态", keywords: "功能 限制 roadmap status")
 
     public static let all: [SettingsItem] = [
@@ -134,6 +135,7 @@ public struct SettingsItem: Identifiable, Equatable {
         dataDirectory,
         privacy,
         version,
+        softwareUpdates,
         developmentStatus
     ]
     public static func search(_ query: String, in items: [SettingsItem] = all) -> [SettingsItem] {
