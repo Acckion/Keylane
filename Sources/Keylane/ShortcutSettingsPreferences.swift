@@ -96,6 +96,7 @@ struct ShortcutSettingsPreferences: View {
     @State private var expanded: Set<String> = ["keylane.system-tools"]
     @ObservedObject var selection: ShortcutSettingsCategory
     @State private var query = ""
+    @State private var searchPresented = false
     @State private var collapsedWhileSearching: Set<String> = []
 
     init(model: Model, selection: ShortcutSettingsCategory) {
@@ -123,7 +124,7 @@ struct ShortcutSettingsPreferences: View {
             guard searchTerm.isEmpty || content != nil else { return nil }
             return VisibleGroup(group: group, isExpanded: isExpanded, content: content)
         }
-        SettingsPageSections {
+        let sections = SettingsPageSections {
             ForEach(visibleGroups, id: \.group.id) { visible in
                 groupCard(visible)
             }
@@ -133,7 +134,22 @@ struct ShortcutSettingsPreferences: View {
                 ContentUnavailableView.search(text: searchTerm)
             }
         }
-        .searchable(text: $query, placement: .toolbar, prompt: "搜索快捷键…")
+        return Group {
+            if searchPresented {
+                sections.searchable(text: $query, isPresented: $searchPresented,
+                                    placement: .toolbar, prompt: "搜索快捷键…")
+            } else {
+                sections
+            }
+        }
+        .toolbar {
+            if !searchPresented {
+                ToolbarItem(placement: .automatic) {
+                    Button("搜索快捷键", systemImage: "magnifyingglass") { searchPresented = true }
+                        .keyboardShortcut("f", modifiers: .command)
+                }
+            }
+        }
         .settingsAnchor(.hotkeys)
         .onAppear { if let id = selection.category { expanded.insert(id) } }
         .onChange(of: selection.category) { _, id in if let id { expanded.insert(id) } }
