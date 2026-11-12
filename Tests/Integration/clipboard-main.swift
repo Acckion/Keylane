@@ -320,4 +320,171 @@ searchBoard.setString("new entry after restart", forType: .string)
 wait("automatic capture after restart") { (try? searchStore.count()) == savedCount + 1 }
 imageSearch.stopRuntime()
 
+// Reproduce a remote generation whose payload is delivered later without a new change count.
+let universalSuite = suite + ".universal"
+let universalPreferences = UserDefaults(suiteName: universalSuite)!
+let universalBoard = NSPasteboard(name: .init(universalSuite))
+let universalDirectory = root.appendingPathComponent("universal")
+let universal = ClipboardController(directory: universalDirectory,
+                                    board: universalBoard, preferences: universalPreferences, startTimer: false)
+defer { universalBoard.releaseGlobally(); universalPreferences.removePersistentDomain(forName: universalSuite) }
+let remoteType = NSPasteboard.PasteboardType(ClipboardCapture.remoteType)
+universal.captureEnabled = true
+precondition(!universal.savesUniversalClipboardImmediately)
+universalBoard.clearContents()
+precondition(universalBoard.setString("1", forType: remoteType))
+precondition(universalBoard.setString("Disabled universal fixture", forType: .string))
+universal.universalClipboardArrived(universalBoard.changeCount)
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(universal.total == 0)
+
+universal.savesUniversalClipboardImmediately = true
+precondition(universalPreferences.bool(forKey: "clipboardSaveUniversalImmediately"))
+universalBoard.clearContents()
+precondition(universalBoard.setString("1", forType: remoteType))
+let remoteGeneration = universalBoard.changeCount
+let logEvent = Data("{\"eventMessage\":\"Current generation after remote pasteboard change: \(remoteGeneration)\"}".utf8)
+precondition(UniversalClipboardMonitor.generation(in: logEvent) == remoteGeneration)
+precondition(UniversalClipboardMonitor.generation(in: Data("{\"count\":0,\"finished\":1}".utf8)) == nil)
+universal.universalClipboardArrived(UniversalClipboardMonitor.generation(in: logEvent)!)
+precondition(universal.total == 0)
+precondition(universalBoard.setString("Delayed universal text 中文", forType: .string))
+precondition(universalBoard.changeCount == remoteGeneration)
+wait("same-generation universal retry") {
+    universal.poll()
+    return universal.total == 1 && universal.detail?.text == "Delayed universal text 中文"
+}
+precondition(universal.detail?.item.source == "通用剪贴板")
+universal.universalClipboardArrived(remoteGeneration)
+universal.poll()
+precondition(universal.detail?.item.copyCount == 1)
+
+universalBoard.clearContents()
+precondition(universalBoard.setString("Local after remote", forType: .string))
+universal.universalClipboardArrived(remoteGeneration)
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(universal.total == 1)
+universal.poll()
+wait("new local generation") { universal.total == 2 && universal.items.first?.preview == "Local after remote" }
+
+universalBoard.clearContents()
+precondition(universalBoard.setString("1", forType: remoteType))
+precondition(universalBoard.setString("Link title", forType: .string))
+precondition(universalBoard.setString("https://example.com/universal-fixture", forType: .URL))
+universal.poll()
+wait("polling fallback for a remote link") {
+    universal.total == 3 && universal.items.first?.category == .link
+}
+universalBoard.clearContents()
+precondition(universalBoard.setString("1", forType: remoteType))
+precondition(universalBoard.setData(png, forType: .png))
+precondition(universalBoard.setData(bitmap.tiffRepresentation!, forType: .tiff))
+universal.universalClipboardArrived(universalBoard.changeCount)
+wait("universal image") { universal.total == 4 && universal.items.first?.kind == .image }
+let universalImageID = universal.items.first!.id
+universal.select(universalImageID)
+wait("universal image snapshot") { universal.detail?.item.id == universalImageID }
+precondition(universal.detail?.snapshot?.formats == ["public.png"])
+
+// The system can expose a remote file URL before the local file is readable.
+let transferredFile = root.appendingPathComponent("通用剪贴板 1.txt")
+let alreadyAvailableFile = root.appendingPathComponent("通用剪贴板 2.txt")
+try Data("Second file".utf8).write(to: alreadyAvailableFile)
+let firstRemoteItem = NSPasteboardItem()
+firstRemoteItem.setString("1", forType: remoteType)
+firstRemoteItem.setString(transferredFile.absoluteString, forType: .fileURL)
+firstRemoteItem.setString("File name fallback", forType: .string)
+let secondRemoteItem = NSPasteboardItem()
+let fileReference = (alreadyAvailableFile as NSURL).fileReferenceURL()!
+secondRemoteItem.setString(fileReference.absoluteString, forType: .fileURL)
+universalBoard.clearContents()
+precondition(universalBoard.writeObjects([firstRemoteItem, secondRemoteItem]))
+let fileGeneration = universalBoard.changeCount
+universal.universalClipboardArrived(fileGeneration)
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(universal.total == 4)
+try Data("Universal Clipboard test file".utf8).write(to: transferredFile)
+precondition(universalBoard.changeCount == fileGeneration)
+wait("same-generation universal file becomes available") {
+    universal.poll()
+    return universal.total == 5 && universal.items.first?.category == .files
+}
+let universalFileID = universal.items.first!.id
+universal.select(universalFileID)
+wait("universal file detail") { universal.detail?.item.id == universalFileID }
+let storedFiles = universal.detail!.files.map { URL(fileURLWithPath: $0.path) }
+precondition(storedFiles.map(\.lastPathComponent) == [transferredFile.lastPathComponent, alreadyAvailableFile.lastPathComponent])
+precondition(storedFiles.allSatisfy { $0.path.hasPrefix(universalDirectory.appendingPathComponent("files").path + "/") })
+precondition(universal.detail?.snapshot?.formats == ["public.file-url"])
+try FileManager.default.removeItem(at: transferredFile)
+try FileManager.default.removeItem(at: alreadyAvailableFile)
+let reopenedUniversalStore = try ClipboardStore(directory: universalDirectory)
+let reopenedDetail = try reopenedUniversalStore.detail(id: universalFileID)
+precondition(reopenedDetail?.files.map(\.path) == storedFiles.map(\.path))
+precondition(universal.copySelected())
+let replayedUniversalFiles = universalBoard.readObjects(forClasses: [NSURL.self],
+                                                       options: [.urlReadingFileURLsOnly: true]) as? [URL]
+precondition(replayedUniversalFiles?.map(\.path) == storedFiles.map(\.path))
+let replayedContents = try storedFiles.map { try String(contentsOf: $0, encoding: .utf8) }
+precondition(replayedContents == ["Universal Clipboard test file", "Second file"])
+
+universalBoard.clearContents()
+precondition(universalBoard.setString("1", forType: remoteType))
+precondition(universalBoard.setString("1", forType: .init("org.nspasteboard.ConcealedType")))
+precondition(universalBoard.setString("Sensitive universal fixture", forType: .string))
+universal.universalClipboardArrived(universalBoard.changeCount)
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(universal.total == 5)
+
+universalBoard.clearContents()
+precondition(universalBoard.setString("1", forType: remoteType))
+let cancelledGeneration = universalBoard.changeCount
+universal.universalClipboardArrived(cancelledGeneration)
+universal.savesUniversalClipboardImmediately = false
+precondition(universalBoard.setString("Cancelled universal fixture", forType: .string))
+precondition(universalBoard.changeCount == cancelledGeneration)
+universal.poll()
+RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+precondition(universal.total == 5)
+universal.select(universalFileID)
+universal.removeSelected()
+wait("transferred file removal") {
+    universal.total == 4 && storedFiles.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) }
+}
+if getuid() != 0 {
+    let protectedFile = root.appendingPathComponent("system-transfer-reference.txt")
+    try Data("Transfer available by URL".utf8).write(to: protectedFile)
+    try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: protectedFile.path)
+    let protectedItem = NSPasteboardItem()
+    protectedItem.setString("1", forType: remoteType)
+    protectedItem.setString(protectedFile.absoluteString, forType: .fileURL)
+    universal.savesUniversalClipboardImmediately = true
+    universalBoard.clearContents()
+    precondition(universalBoard.writeObjects([protectedItem]))
+    universal.universalClipboardArrived(universalBoard.changeCount)
+    wait("protected system transfer appears in history") {
+        universal.total == 5 && universal.items.first?.category == .files
+    }
+    universal.select(universal.items.first!.id)
+    wait("protected system transfer is saved as a file reference") {
+        universal.detail?.files.first?.isSystemTransferReference == true
+    }
+    precondition(universal.detail?.files.map(\.path) == [protectedFile.path])
+    let originalTransfer = universalBoard.changeCount
+    precondition(universal.copySelected())
+    precondition(universalBoard.changeCount == originalTransfer)
+    let urls = universalBoard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]
+    precondition(urls?.map(\.path) == [protectedFile.path])
+    universalBoard.clearContents()
+    precondition(universalBoard.setString("Unrelated current content", forType: .string))
+    let unrelatedChange = universalBoard.changeCount
+    precondition(!universal.copySelected())
+    precondition(universalBoard.changeCount == unrelatedChange)
+    precondition(universalBoard.string(forType: .string) == "Unrelated current content")
+    try FileManager.default.removeItem(at: protectedFile)
+    precondition(!universal.copySelected())
+}
+universal.stopRuntime()
+print("PASS universal clipboard fixtures: opt-in, arrival parsing, deferred data, stale generations, polling fallback, text/link/image/file snapshots, sensitive filtering and cancellation")
+
 print("PASS named pasteboard: direct Chinese OCR search over historical images and Finder image files, background OCR of a new Finder image with the page closed, six categories, saved text edit and exact replay, QR decoding, color conversion, rich text/image/file replay, sensitive filtering, persistence and cleanup")

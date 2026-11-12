@@ -83,6 +83,23 @@ struct NavigationChecks {
             FileManager.default.fileExists(atPath: marker.path) ? true : nil
         }) == true, "The menu action did not reach the fixture")
 
+        let pasteMarker = temporary.appendingPathComponent("pasted")
+        var filePaste: SystemNavigation.PasteMenuResult?
+        navigation.pasteFile(in: fixture, isCurrent: { false }) { filePaste = $0 }
+        guard case .cancelled? = awaitValue(timeout: 4, { filePaste }) else {
+            throw CheckError.failed("A stale file paste was not cancelled")
+        }
+        try require(!FileManager.default.fileExists(atPath: pasteMarker.path), "A stale file paste executed")
+        filePaste = nil
+        navigation.pasteFile(in: fixture, isCurrent: { true }) { filePaste = $0 }
+        guard case .performed? = awaitValue(timeout: 4, { filePaste }) else {
+            throw CheckError.failed("The native file paste menu did not execute")
+        }
+        try require(awaitValue(timeout: 2, {
+            FileManager.default.fileExists(atPath: pasteMarker.path) ? true : nil
+        }) == true, "The paste menu action did not reach the target")
+        print("Native file paste menu and stale paste cancellation passed")
+
         fixtureProcess.terminate()
         fixtureProcess.waitUntilExit()
         try require(try !perform(a, mode: .windows).isEmpty, "A terminated app was treated as available")
@@ -144,6 +161,9 @@ private final class NavigationFixture: NSObject, NSApplicationDelegate {
         nested.submenu?.autoenablesItems = false
         disabled.isEnabled = false
         nested.submenu?.addItem(disabled)
+        let paste = NSMenuItem(title: "Paste Fixture", action: #selector(pasteFile), keyEquivalent: "v")
+        paste.target = self
+        menu.addItem(paste)
         NSApp.mainMenu = menuBar
         NSApp.activate(ignoringOtherApps: true)
         for (index, letter) in ["A", "B"].enumerated() {
@@ -155,6 +175,10 @@ private final class NavigationFixture: NSObject, NSApplicationDelegate {
         }
         FileManager.default.createFile(atPath: folder.appendingPathComponent("ready").path, contents: nil)
     }
+    @objc private func pasteFile() {
+        FileManager.default.createFile(atPath: folder.appendingPathComponent("pasted").path, contents: nil)
+    }
+
     @objc private func press() {
         FileManager.default.createFile(atPath: folder.appendingPathComponent("pressed").path, contents: nil)
     }

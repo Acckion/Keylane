@@ -333,16 +333,57 @@ final class SystemNavigation {
         return scan
     }
 
-    private func menuItems(_ app: NSRunningApplication, request: NavigationScanRequest) -> NavigationScan {
+    enum PasteMenuResult {
+        case performed, useKeyboard, cancelled, failed
+    }
+
+    func pasteFile(in app: NSRunningApplication, isCurrent: @escaping () -> Bool,
+                   completion: @escaping (PasteMenuResult) -> Void) {
+        queue.async {
+            let activationDeadline = ProcessInfo.processInfo.systemUptime + 1
+            while !app.isActive, !app.isTerminated, ProcessInfo.processInfo.systemUptime < activationDeadline {
+                Thread.sleep(forTimeInterval: 0.025)
+            }
+            let result: PasteMenuResult
+            if !app.isActive {
+                result = .cancelled
+            } else if let item = self.menuItems(app, request: .init(), matchingShortcut: ["⌘", "V"]).items.first {
+                let readinessDeadline = ProcessInfo.processInfo.systemUptime + 0.35
+                var enabled = self.value(item.element, kAXEnabledAttribute) as? Bool == true
+                while !enabled, app.isActive, ProcessInfo.processInfo.systemUptime < readinessDeadline {
+                    Thread.sleep(forTimeInterval: 0.025)
+                    enabled = self.value(item.element, kAXEnabledAttribute) as? Bool == true
+                }
+                if !app.isActive || !DispatchQueue.main.sync(execute: isCurrent) {
+                    result = .cancelled
+                } else if !enabled {
+                    result = .useKeyboard
+                } else {
+                    let press = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+                    switch press {
+                    case .success: result = .performed
+                    case .actionUnsupported, .notImplemented: result = .useKeyboard
+                    default: result = .failed
+                    }
+                }
+            } else {
+                result = .useKeyboard
+            }
+            DispatchQueue.main.async { completion(result) }
+        }
+    }
+
+    private func menuItems(_ app: NSRunningApplication, request: NavigationScanRequest,
+                           matchingShortcut: [String]? = nil) -> NavigationScan {
         let application = applicationElement(app.processIdentifier)
         let (error, raw) = read(application, kAXMenuBarAttribute)
         guard let bar = asElement(raw) else { return NavigationScan(incomplete: error == .cannotComplete) }
         var scan = NavigationScan()
-        let deadline = ProcessInfo.processInfo.systemUptime + 5
+        let deadline = ProcessInfo.processInfo.systemUptime + (matchingShortcut == nil ? 5 : 0.5)
         var visited = Set<AXUIElement>()
 
         func visit(_ node: AXUIElement, path: [String], depth: Int) {
-            guard !request.isCancelled else { return }
+            guard !request.isCancelled, matchingShortcut == nil || scan.items.isEmpty else { return }
             guard depth <= 18, ProcessInfo.processInfo.systemUptime < deadline else { scan.incomplete = true; return }
             guard visited.insert(node).inserted else { return }
             let attrs = values(node, [kAXRoleAttribute, kAXTitleAttribute, kAXChildrenAttribute, kAXEnabledAttribute,
@@ -354,6 +395,7 @@ final class SystemNavigation {
             if role == kAXMenuItemRole && children.isEmpty && !title.isEmpty {
                 let keys = NavigationShortcut.keys(character: attrs[4] as? String,
                                                    virtualKey: attrs[5] as? Int, glyph: attrs[6] as? Int, modifiers: attrs[7] as? Int)
+                guard matchingShortcut == nil || matchingShortcut == keys else { return }
                 scan.items.append(NavigationItem(id: scan.items.count, title: title,
                                                  detail: path.joined(separator: " › "), application: app,
                                                  element: node, keys: keys, enabled: attrs[3] as? Bool ?? true))

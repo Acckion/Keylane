@@ -45,7 +45,13 @@ public enum ClipboardCategory: String, CaseIterable, Sendable {
 public struct ClipFile: Codable, Equatable {
     public let path: String
     public let bookmark: Data?
-    public init(path: String, bookmark: Data? = nil) { self.path = path; self.bookmark = bookmark }
+    public let isSystemTransferReference: Bool?
+
+    public init(path: String, bookmark: Data? = nil, isSystemTransferReference: Bool? = nil) {
+        self.path = path
+        self.bookmark = bookmark
+        self.isSystemTransferReference = isSystemTransferReference
+    }
 }
 public enum ClipImageFormat: String, CaseIterable { case png, gif, jpg, tiff, heic, webp }
 public enum ClipContent {
@@ -94,7 +100,7 @@ public struct ClipboardLimits {
     }
 }
 public enum ClipboardError: LocalizedError {
-    case database, newerSchema, oversized, pinnedLimit, storageFull, missingAttachment, unavailableText, duplicateText
+    case database, newerSchema, oversized, pinnedLimit, storageFull, missingAttachment, unsupportedTransferredFile, transferredFileReadDenied, unavailableText, duplicateText
     public var errorDescription: String? {
         switch self {
         case .database: return "剪贴板资料库操作失败，请检查储存空间。"
@@ -103,6 +109,8 @@ public enum ClipboardError: LocalizedError {
         case .pinnedLimit: return "最多可置顶100条记录。"
         case .storageFull: return "剪贴板空间已满，请清理部分记录或取消置顶。"
         case .missingAttachment: return "历史图片已丢失，无法复制或预览。"
+        case .unsupportedTransferredFile: return "通用剪贴板只保存可读取的普通文件。"
+        case .transferredFileReadDenied: return "无法读取通用剪贴板文件。"
         case .unavailableText: return "这条文字记录已不可用。"
         case .duplicateText: return "相同文字已在剪贴板历史中。"
         }
@@ -280,8 +288,107 @@ public final class ClipboardStore {
     }
 
     public func capture(_ content: ClipContent, snapshot: ClipSnapshot? = nil, source: String = "", bundle: String = "", at date: Date = Date()) throws -> String {
+        try capture(content, snapshot: snapshot, source: source, bundle: bundle, at: date, ownedFiles: nil, fileBytes: 0)
+    }
+
+    public func captureTransferredFiles(_ urls: [URL], source: String) throws -> [ClipFile] {
+        do {
+            return try saveTransferredFileCopies(urls, source: source)
+        } catch ClipboardError.transferredFileReadDenied {
+            // A recipient can use the file URL while Continuity retains the file,
+            // even when Keylane cannot open the protected system container.
+            let files = urls.map { ClipFile(path: $0.path, isSystemTransferReference: true) }
+            _ = try capture(.files(files), snapshot: Self.transferredFileSnapshot(files), source: source)
+            return files
+        }
+    }
+
+    public static func isFileReadDenied(_ error: Error) -> Bool {
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain, error.code == CocoaError.fileReadNoPermission.rawValue {
+            return true
+        }
+        // FileHandle may wrap a read-side EACCES in a Cocoa file-write error.
+        let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError
+        return [error, underlying].compactMap { $0 }.contains {
+            $0.domain == NSPOSIXErrorDomain && ($0.code == Int(EACCES) || $0.code == Int(EPERM))
+        }
+    }
+
+    private func saveTransferredFileCopies(_ urls: [URL], source: String) throws -> [ClipFile] {
+        guard !urls.isEmpty, urls.count <= 128 else { throw ClipboardError.oversized }
+        let name = UUID().uuidString
+        let folder = transferredFilesURL(name)
+        let manager = FileManager.default
+        try manager.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var stored = false
+        defer {
+            if !stored, (try? scalar("SELECT count(*) FROM clips WHERE asset=?", [.text(name)])) == 0 {
+                try? manager.removeItem(at: folder)
+            }
+        }
+        var files: [ClipFile] = []
+        var bytes = 0
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        for (index, url) in urls.enumerated() {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            let values = try readTransferredFile { try url.resourceValues(forKeys: keys) }
+            guard values.isRegularFile == true, values.isSymbolicLink != true, let size = values.fileSize else {
+                throw ClipboardError.unsupportedTransferredFile
+            }
+            guard size <= limits.maxBytes - bytes else { throw ClipboardError.storageFull }
+            let itemFolder = folder.appendingPathComponent(String(index), isDirectory: true)
+            try manager.createDirectory(at: itemFolder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            let destination = itemFolder.appendingPathComponent(url.lastPathComponent)
+            bytes += try writeTransferredFile(from: url, to: destination, limit: limits.maxBytes - bytes)
+            files.append(ClipFile(path: destination.path))
+        }
+        let snapshot = Self.transferredFileSnapshot(files)
+        _ = try capture(.files(files), snapshot: snapshot, source: source, bundle: "", at: Date(), ownedFiles: name, fileBytes: bytes)
+        stored = true
+        return files
+    }
+
+    private static func transferredFileSnapshot(_ files: [ClipFile]) -> ClipSnapshot {
+        ClipSnapshot(items: files.map { file in
+            let url = URL(fileURLWithPath: file.path)
+            return ClipSnapshotItem([ClipRepresentation(type: "public.file-url", data: Data(url.absoluteString.utf8))])
+        })
+    }
+
+    private func readTransferredFile<T>(_ read: () throws -> T) throws -> T {
+        do { return try read() }
+        catch where Self.isFileReadDenied(error) { throw ClipboardError.transferredFileReadDenied }
+    }
+
+    private func writeTransferredFile(from source: URL, to destination: URL, limit: Int) throws -> Int {
+        let input = try readTransferredFile { try FileHandle(forReadingFrom: source) }
+        defer { try? input.close() }
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil,
+                                             attributes: [.posixPermissions: 0o600]) else {
+            throw ClipboardError.database
+        }
+        let output = try FileHandle(forWritingTo: destination)
+        defer { try? output.close() }
+        var bytes = 0
+        while let chunk = try readTransferredFile({ try input.read(upToCount: 1_048_576) }), !chunk.isEmpty {
+            guard chunk.count <= limit - bytes else { throw ClipboardError.storageFull }
+            try output.write(contentsOf: chunk)
+            bytes += chunk.count
+        }
+        try output.synchronize()
+        return bytes
+    }
+
+    private func transferredFilesURL(_ name: String) -> URL {
+        directory.appendingPathComponent("files", isDirectory: true).appendingPathComponent(name, isDirectory: true)
+    }
+
+    private func capture(_ content: ClipContent, snapshot: ClipSnapshot?, source: String, bundle: String, at date: Date,
+                         ownedFiles: String?, fileBytes: Int) throws -> String {
         let snapshotData = try snapshot?.encoded()
-        let payload: Data; let identity: Data; let body: String; var asset: String?
+        let payload: Data; let identity: Data; let body: String; var asset = ownedFiles
         switch content {
         case .text(let text):
             payload = Data(text.utf8); identity = payload; body = text
@@ -309,7 +416,7 @@ public final class ClipboardStore {
                 INSERT INTO clips(id,kind,preview,payload,searchable,asset,source,bundle,created,copied,bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(id) DO UPDATE SET copied=excluded.copied,source=excluded.source,bundle=excluded.bundle,payload=excluded.payload,copies=clips.copies+1,bytes=excluded.bytes,searchable=excluded.searchable,
                   ocr=CASE WHEN clips.kind='files' THEN '' ELSE clips.ocr END
-                """, [.text(id),.text(content.kind.rawValue),.text(String(body.prefix(512))),.blob(payload),.text(searchable),asset.map(Value.text) ?? .null,.text(String(source.prefix(256))),.text(String(bundle.prefix(256))),.number(date.timeIntervalSince1970),.number(date.timeIntervalSince1970),.number(Double(max(identity.count,payload.count) + (snapshotData?.count ?? 0)))])
+                """, [.text(id),.text(content.kind.rawValue),.text(String(body.prefix(512))),.blob(payload),.text(searchable),asset.map(Value.text) ?? .null,.text(String(source.prefix(256))),.text(String(bundle.prefix(256))),.number(date.timeIntervalSince1970),.number(date.timeIntervalSince1970),.number(Double(max(identity.count,payload.count) + (snapshotData?.count ?? 0) + fileBytes))])
             if let snapshotData { try write("INSERT INTO clip_snapshots(clip_id,payload,search_text) VALUES(?,?,?) ON CONFLICT(clip_id) DO UPDATE SET payload=excluded.payload,search_text=excluded.search_text",[.text(id),.blob(snapshotData),.text(Self.normalize(snapshot?.plainText ?? ""))]) }
             try exec("COMMIT")
         } catch { try? exec("ROLLBACK"); if let newAsset { try? FileManager.default.removeItem(at:newAsset) }; throw error }
@@ -463,7 +570,10 @@ public final class ClipboardStore {
         sqlite3_finalize(query)
         guard status == SQLITE_ROW || status == SQLITE_DONE else { throw ClipboardError.database }
         try write("DELETE FROM clips WHERE id=?",[.text(id)])
-        if let asset, let url = assetURL(asset) { try? FileManager.default.removeItem(at:url) }
+        if let asset {
+            let url = UUID(uuidString: asset) != nil ? transferredFilesURL(asset) : assetURL(asset)
+            if let url { try? FileManager.default.removeItem(at: url) }
+        }
     }
     public func removeRecent(since cutoff: Date) throws {
         let query = try statement("SELECT id FROM clips WHERE pinned=0 AND copied>=?",

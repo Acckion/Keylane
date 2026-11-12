@@ -44,15 +44,19 @@ struct ClipboardHistoryView: View {
                             .buttonStyle(ContentActionButtonStyle())
                     }
                 }
-                if !controller.accessMessage.isEmpty {
-                    Text(controller.accessMessage).font(.caption).foregroundStyle(.orange)
-                }
-                if !controller.status.isEmpty {
-                    Text(controller.status).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                }
             }
         }
         .onAppear { controller.reload() }
+        .onReceive(controller.$status.combineLatest(controller.$accessMessage)
+            .map { status, accessMessage in accessMessage.isEmpty ? status : accessMessage }
+            .removeDuplicates()) { message in
+                guard !message.isEmpty else { return }
+                DispatchQueue.main.async {
+                    guard let delegate = NSApp.delegate as? Delegate,
+                          delegate.model.footerFeedback.current?.message != message else { return }
+                    delegate.showLauncherFeedback(message, style: .failure)
+                }
+            }
         .sheet(item: Binding(get: { controller.textDraft }, set: { controller.textDraft = $0 })) { draft in
             ClipboardTextEditor(draft: draft, controller: controller)
         }
@@ -189,23 +193,16 @@ private struct ClipboardHistoryDetail: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             controller.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             ViewObservation.changes(controller.$thumbnail),
-            ViewObservation.changes(controller.$loadingDetail),
-            ViewObservation.changes(controller.$status),
-            ViewObservation.changes(controller.$accessMessage)
+            ViewObservation.changes(controller.$loadingDetail)
         ]))
     }
 
     var body: some View {
         if let detail = controller.detail {
-            ClipboardDetail(detail: detail, thumbnail: controller.thumbnail,
-                            status: controller.status, accessMessage: controller.accessMessage)
+            ClipboardDetail(detail: detail, thumbnail: controller.thumbnail)
                 .id(detail.item.id)
         } else if controller.loadingDetail {
             Text("正在加载预览…").font(VisualStyle.rowText).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if !controller.status.isEmpty {
-            Text(controller.status).font(.caption).foregroundStyle(.secondary)
-                .textSelection(.enabled).padding(20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -215,13 +212,13 @@ struct ClipboardPreferences: View {
     let controller: ClipboardController
     let model: Model
     @StateObject private var observation: ViewObservation
-    @State private var showsUniversalDetails = true
     @State private var excludedApplications: [String: URL] = [:]
 
     init(controller: ClipboardController, model: Model) {
         self.controller = controller
         self.model = model
         _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(controller.$savesUniversalClipboardImmediately),
             ViewObservation.changes(controller.$automaticOCR),
             ViewObservation.changes(controller.$accurateOCR),
             ViewObservation.changes(controller.$historyCommandEnabled),
@@ -255,19 +252,10 @@ struct ClipboardPreferences: View {
                 }
             }.settingsAnchor(.clipboardRecognition)
             SettingsGroup {
-                SettingsRow {
-                    VStack(alignment: .leading, spacing: 4) {
-                        SettingsTitle("立即保存通用剪贴板内容")
-                        if showsUniversalDetails {
-                            SettingsDescription("macOS 没有提供单独控制跨设备剪贴板保存时机的公开接口。")
-                        }
-                        Button(showsUniversalDetails ? "收起" : "了解更多") {
-                            showsUniversalDetails.toggle()
-                        }.buttonStyle(.plain).foregroundStyle(.secondary)
-                    }
-                } control: {
-                    Toggle("立即保存通用剪贴板内容", isOn: .constant(false))
-                        .labelsHidden().toggleStyle(.switch).controlSize(.small).disabled(true)
+                SettingsRow("立即保存通用剪贴板内容",
+                            detail: "自动保存通过通用剪贴板传来的文字、链接和图片。可读取的文件会保存副本。受 macOS 保护的文件可使用当前通用剪贴板粘贴。") {
+                    Toggle("立即保存通用剪贴板内容", isOn: binding(\.savesUniversalClipboardImmediately))
+                        .labelsHidden().toggleStyle(.switch).controlSize(.small)
                 }
             }
             SettingsListCard(title: "不记录这些应用", detail: "这些应用的剪贴板变化不会记录到历史。", anchor: .clipboardExclusions) {
