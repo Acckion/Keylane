@@ -1,10 +1,10 @@
 import AppKit
+import Combine
 import UniformTypeIdentifiers
 import KeylaneCore
 
 enum AppUtilitiesModule {
     static func make(model: Model) -> LauncherModule {
-        let camera = CameraPreviewWindow()
         return LauncherModule(id: .init(rawValue: "keylane.app-utilities"), title: "Keylane 工具",
                               symbol: "wrench.and.screwdriver", commands: [
             command("export-settings", "导出 Keylane 设置", "square.and.arrow.up",
@@ -21,12 +21,30 @@ enum AppUtilitiesModule {
                 delegate.hideLauncher()
                 delegate.showSettings()
                 model.updates.check()
-            },
-            command("show-camera", "显示相机", "camera",
-                    ["Show Camera", "Camera Preview", "摄像头", "相机预览"]) { [weak model] in
-                camera.show(activation: model?.windowActivationBehavior ?? .systemDefault)
             }
         ])
+    }
+
+    static func camera(model: Model) -> LauncherModule {
+        let camera = CameraPreviewWindow()
+        let permission = PermissionFeature("cameraPreview.enabled", authorization: .camera)
+        var changes: AnyCancellable?
+        return .init(id: .init(rawValue: "keylane.camera-preview"), title: "相机预览", symbol: "camera", commands: [
+            .init(declaration: .init(id: .init(rawValue: "show-camera"), title: "显示相机", detail: "实时相机预览",
+                                     symbol: "camera", keywords: ["Show Camera", "Camera Preview", "摄像头", "相机预览"],
+                                     destination: .action, settingsPage: "keylane.camera-preview"),
+                  available: { permission.available }, execute: { [weak model] _ in
+                      camera.show(activation: model?.windowActivationBehavior ?? .systemDefault)
+                  })
+        ], services: [.init(start: {
+            changes = permission.updates.receive(on: DispatchQueue.main).sink {
+                if !permission.available { camera.close() }
+            }
+        }, stop: {
+            changes?.cancel()
+            changes = nil
+            camera.close()
+        })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用相机预览"))
     }
 
     private static func command(_ id: String, _ title: String, _ symbol: String, _ keywords: [String],

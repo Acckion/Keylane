@@ -84,6 +84,7 @@ struct SettingsTitlebarContribution {
     let updates: AnyPublisher<Bool, Never>
     var info: (() -> AnyView)?
     var searchItem: SettingsItem?
+    var permissionStatus: AnyPublisher<SettingsPermissionStatus, Never>?
 }
 
 struct LauncherSettingsPage: Identifiable {
@@ -180,6 +181,7 @@ struct LauncherModule {
     var dynamicCommandSettings: DynamicCommandSettings?
     var shortcutSettingsBinding: ShortcutSettingsBinding?
     var shortcutSettingsUpdates: [AnyPublisher<Void, Never>] = []
+    var permissionTitlebar: SettingsTitlebarContribution?
 }
 
 extension LauncherModule {

@@ -111,6 +111,10 @@ final class Model: ObservableObject {
     @Published var loginEnabled = false
     let discovery = ApplicationDiscovery()
     let applicationResultActions = ApplicationResultActions()
+    let finderAutomation = PermissionFeature("finderAutomation.enabled", authorization: .automation("com.apple.finder", appName: "Finder"))
+    let crossAppPaste = PermissionFeature("crossAppPaste.enabled", authorization: .postEvent)
+    let lockScreenPermission = PermissionFeature("lockScreen.enabled", authorization: .postEvent)
+    let clipboardSpeech = PermissionFeature("clipboardSpeech.enabled", authorization: .persistentClipboard)
     let applicationAutoQuit = ApplicationAutoQuit()
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
@@ -306,8 +310,43 @@ final class Model: ObservableObject {
         bindings = proposed
         UserDefaults.standard.set(data, forKey: "shortcuts")
     }
+    func setHyperKey(_ value: Bool) {
+        if value {
+            guard requestModifierAccess(needsInputMonitoring: true) else { return }
+        }
+        hyperkey = value
+        configureModifiers()
+    }
+
+    func setDoubleTap(_ value: String) {
+        if value != "off" {
+            guard requestModifierAccess(needsInputMonitoring: false) else { return }
+        }
+        doubleTap = value
+        configureModifiers()
+    }
+
+    private func requestModifierAccess(needsInputMonitoring: Bool) -> Bool {
+        guard AXIsProcessTrusted() else {
+            requestKeyboardAccess()
+            modifierStatus = "请先授予辅助功能权限，再启用修饰键快捷方式。"
+            return false
+        }
+        if needsInputMonitoring && !CGPreflightListenEventAccess() && !CGRequestListenEventAccess() {
+            modifierStatus = "请先授予输入监控权限，再启用 Hyper Key。"
+            return false
+        }
+        return true
+    }
+
     func configureModifiers() {
         guard let delegate = NSApp.delegate as? Delegate else { return }
+        if !AXIsProcessTrusted() {
+            doubleTap = "off"
+            hyperkey = false
+        } else if hyperkey && !CGPreflightListenEventAccess() {
+            hyperkey = false
+        }
         if let issue = delegate.modifiers.configure(doubleTap: doubleTap, hyper: hyperkey, includeShift: hyperIncludesShift) {
             modifierStatus = issue
         } else { modifierStatus = doubleTap == "off" && !hyperkey ? "未启用" : "已启用（需实际键盘验证）" }
@@ -395,7 +434,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         pasteIntoPreviousApplication()
     }
     func pasteIntoPreviousApplication() {
-        guard AXIsProcessTrusted() else { showPasteFailure("已复制。粘贴到其他应用需要在系统设置中授予辅助功能权限。"); return }
+        guard model.crossAppPaste.available else {
+            showPasteFailure("已复制。请在 Keylane 的「权限」中启用跨应用粘贴。")
+            return
+        }
         guard let target = previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
         hideLauncher(); target.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in

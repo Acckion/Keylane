@@ -9,6 +9,8 @@ enum UtilityLauncherModules {
     }
 
     private static func contacts(_ controller: ContactsController) -> LauncherModule {
+        let permission = PermissionFeature("contacts.enabled", authorization: .contacts)
+        var permissionChanges: AnyCancellable?
         let pageID = PageID(rawValue: "Contacts")
         let selectedContact = controller.$visible.combineLatest(controller.$selectedID)
             .map { results, id in results.first { $0.id == id } }
@@ -28,14 +30,23 @@ enum UtilityLauncherModules {
                                 updates: ViewObservation.changes(selectedContact))
         page.enter = { query in
             controller.query = query
-            controller.start()
+            if permission.available { controller.start() }
             return nil
         }
-        page.resume = controller.start
+        page.resume = { if permission.available { controller.start() } }
         return .init(id: .init(rawValue: "keylane.contacts"), title: "联系人", symbol: "person.crop.circle", commands: [
             command("contacts", "搜索联系人", "系统通讯录", "person.crop.circle",
-                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID))
-        ], pages: [page])
+                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID),
+                    available: { permission.available })
+        ], pages: [page], services: [.init(start: {
+            permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
+                if !permission.available { controller.stop() }
+            }
+        }, stop: {
+            permissionChanges?.cancel()
+            permissionChanges = nil
+            controller.stop()
+        })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用联系人"))
     }
 
     private static func contactActions(_ controller: ContactsController) -> [LauncherAction] {
@@ -184,6 +195,8 @@ enum UtilityLauncherModules {
 
     private static func shortcuts(_ model: Model) -> LauncherModule {
         let controller = model.systemShortcuts
+        let iconPermission = PermissionFeature("shortcuts.iconsEnabled", authorization: .automation(ShortcutIconReader.bundleIdentifier, appName: "快捷指令"))
+        var iconChanges: AnyCancellable?
         let pageID = "shortcuts"
         let provider = LauncherModule.Provider(namespace: .prefix("shortcut:"), entries: { _ in
             controller.entries.compactMap { shortcut in
@@ -209,7 +222,7 @@ enum UtilityLauncherModules {
                                             items: SettingsItem.all.filter { $0.page == pageID },
                                             content: { [weak model] in
                                                 guard let model else { return AnyView(EmptyView()) }
-                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller))
+                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller, iconPermission: iconPermission))
                                             })
         let searchUpdates = Publishers.Merge(
             controller.$entries.removeDuplicates().dropFirst().map { _ in () },
@@ -221,8 +234,18 @@ enum UtilityLauncherModules {
         ], providers: [provider], settings: [settings], services: [
             .init(start: { [weak model] in
                 controller.onRunFailure = { [weak model] message in model?.error = message }
+                controller.iconReadingAllowed = { iconPermission.available }
+                iconChanges = iconPermission.updates.receive(on: DispatchQueue.main).sink {
+                    controller.updateIconPermission()
+                }
                 controller.refresh()
-            }, stop: { controller.onRunFailure = nil })
+            }, stop: {
+                iconChanges?.cancel()
+                iconChanges = nil
+                controller.iconReadingAllowed = { false }
+                controller.updateIconPermission()
+                controller.onRunFailure = nil
+            })
         ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,
             updates: {
@@ -252,8 +275,8 @@ enum UtilityLauncherModules {
 
     private static func command(_ id: String, _ title: String, _ detail: String, _ symbol: String,
                                 _ keywords: [String], destination: LauncherCommandDeclaration.Destination,
-                                settings: String? = nil) -> LauncherModule.Command {
+                                settings: String? = nil, available: @escaping () -> Bool = { true }) -> LauncherModule.Command {
         .init(declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
-                                keywords: keywords, destination: destination, settingsPage: settings))
+                                keywords: keywords, destination: destination, settingsPage: settings), available: available)
     }
 }

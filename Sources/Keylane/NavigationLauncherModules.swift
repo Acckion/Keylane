@@ -11,9 +11,19 @@ enum NavigationLauncherModules {
     private static func navigation(_ model: Model) -> LauncherModule {
         let windows = PageID(rawValue: "Windows")
         let menus = PageID(rawValue: "MenuItems")
-        let observeFocus: (NSRunningApplication) -> Void = { SystemNavigation.shared.observeFocus(of: $0) }
+        let permission = PermissionFeature("windowNavigation.enabled", authorization: .accessibility)
+        let observeFocus: (NSRunningApplication) -> Void = {
+            if permission.available { SystemNavigation.shared.observeFocus(of: $0) }
+        }
         var focusObserver: NSObjectProtocol?
-        let focusService = LauncherModule.Service(start: {
+        var permissionChanges: AnyCancellable?
+        let focusService = LauncherModule.Service(start: { [weak model] in
+            permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink { [weak model] in
+                if !permission.available {
+                    SystemNavigation.shared.stopObservingFocus()
+                    model?.systemNavigation.stop()
+                }
+            }
             focusObserver = NSWorkspace.shared.notificationCenter.addObserver(
                 forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
             ) { notification in
@@ -22,6 +32,8 @@ enum NavigationLauncherModules {
                 }
             }
         }, stop: {
+            permissionChanges?.cancel()
+            permissionChanges = nil
             if let observer = focusObserver {
                 NSWorkspace.shared.notificationCenter.removeObserver(observer)
                 focusObserver = nil
@@ -34,28 +46,29 @@ enum NavigationLauncherModules {
                 detail: NavigationText.label("查找并切换已打开的窗口", "Find and switch open windows"),
                 symbol: NavigationMode.windows.symbol, keywords: ["Switch Windows", "窗口切换", "窗口", "Navigation"],
                 destination: .page(windows)
-            )),
+            ), available: { permission.available }),
             .init(declaration: .init(
                 id: .init(rawValue: "search-menu-items"), title: NavigationMode.menus.title,
                 detail: NavigationText.label("搜索并执行前一个应用的菜单命令", "Find and run a menu command in the previous app"),
                 symbol: NavigationMode.menus.symbol, keywords: ["Search Menu Items", "菜单", "菜单栏", "Navigation"],
                 destination: .page(menus)
-            ))
+            ), available: { permission.available })
         ], pages: [
-            navigationPage(windows, mode: .windows, model: model),
-            navigationPage(menus, mode: .menus, model: model)
-        ], services: [focusService], applicationFocused: observeFocus)
+            navigationPage(windows, mode: .windows, model: model, permission: permission),
+            navigationPage(menus, mode: .menus, model: model, permission: permission)
+        ], services: [focusService], searchUpdates: [permission.updates], applicationFocused: observeFocus,
+           permissionTitlebar: permission.titlebar("启用窗口与菜单"))
     }
 
-    private static func navigationPage(_ id: PageID, mode: NavigationMode, model: Model) -> LauncherPage {
+    private static func navigationPage(_ id: PageID, mode: NavigationMode, model: Model, permission: PermissionFeature) -> LauncherPage {
         let controller = model.systemNavigation
         let reload: () -> Void = { [weak model] in
-            guard let model else { return }
+            guard permission.available, let model else { return }
             controller.query = model.query
             controller.load(mode, target: (NSApp.delegate as? Delegate)?.previousApplication)
         }
         let activate: (NavigationItem) -> Void = { item in
-            guard let delegate = NSApp.delegate as? Delegate else { return }
+            guard permission.available, let delegate = NSApp.delegate as? Delegate else { return }
             controller.perform(item, mode: mode) { [weak delegate] message in
                 if let message { delegate?.toast.show(message) }
                 else if item.application.isActive { delegate?.hideLauncher() }
@@ -72,6 +85,7 @@ enum NavigationLauncherModules {
             }, reload: reload, activate: activate))
         }
         page.enter = { query in
+            guard permission.available else { return nil }
             controller.query = query
             controller.load(mode, target: (NSApp.delegate as? Delegate)?.previousApplication)
             return nil
@@ -125,6 +139,15 @@ enum NavigationLauncherModules {
     private static func screenshots(_ model: Model) -> LauncherModule {
         let id = PageID(rawValue: "Screenshots")
         let library = model.screenshots
+        let permission = PermissionFeature("screenshots.scopeOptIn", authorization: .init(
+            check: { library.hasAuthorizedScope },
+            request: { complete in
+                library.chooseFolders()
+                complete(library.hasAuthorizedScope)
+            },
+            guidance: "请通过启用开关选择可访问的截图文件夹。"
+        ))
+        var permissionChanges: AnyCancellable?
         let commands = ScreenshotCommand.allCases.map { command in
             LauncherModule.Command(
                 declaration: .init(id: .init(rawValue: command.rawValue), title: command.title,
@@ -140,17 +163,25 @@ enum NavigationLauncherModules {
         let settings = LauncherSettingsPage(
             id: "screenshots", title: "截图", symbol: "viewfinder", subtitle: "搜索和管理截图与录屏。",
             order: 30, items: SettingsItem.all.filter { $0.page == "screenshots" },
-            titlebar: .init(
-                title: "启用截图管理",
-                enabled: Binding(get: { library.enabled }, set: { library.enabled = $0 }),
-                updates: library.$enabled.removeDuplicates().eraseToAnyPublisher()
-            )
+            titlebar: permission.titlebar("启用截图管理")
         ) { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(ScreenshotPreferences(library: library, model: model))
         }
         return LauncherModule(id: .init(rawValue: "keylane.screenshots"), commands: commands,
-                              pages: [screenshotsPage(id, model: model)], settings: [settings], searchUpdates: [
+                              pages: [screenshotsPage(id, model: model)], settings: [settings], services: [.init(start: {
+            library.enabled = permission.available
+            permissionChanges = Publishers.Merge(permission.updates, ViewObservation.changes(library.$scopes))
+                .receive(on: DispatchQueue.main).sink {
+                    permission.recheck()
+                    let enabled = permission.available
+                    if library.enabled != enabled { library.enabled = enabled }
+                }
+        }, stop: {
+            permissionChanges?.cancel()
+            permissionChanges = nil
+            library.enabled = false
+        })], searchUpdates: [
             library.$enabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             library.$disabledCommands.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ], shortcutSettingsUpdates: [ViewObservation.changes(library.$disabledCommands)])

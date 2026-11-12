@@ -323,8 +323,8 @@ final class ClipboardController: ObservableObject {
         if Date().timeIntervalSince(lastMaintenance) > 3600 { lastMaintenance = Date(); mutate { try $0.prune() } }
         guard captureEnabled, board.changeCount != lastChange else { return }
         let observation = board.changeCount
-        if board.name == NSPasteboard.general.name, board.accessBehavior == .alwaysDeny {
-            captureOutcome = "access-denied"; accessMessage = "macOS已拒绝剪贴板读取。请在系统设置中允许Keylane访问剪贴板。"; lastChange = observation; return
+        if board.name == NSPasteboard.general.name, board.accessBehavior != .alwaysAllow {
+            captureOutcome = "access-denied"; accessMessage = "后台采集需要持续访问剪贴板。请在系统设置中选择始终允许。"; lastChange = observation; return
         }
         guard let pasteboardItems = board.pasteboardItems else { captureOutcome = "read-unavailable"; accessMessage = "无法读取剪贴板，请检查系统授权。"; lastChange = observation; return }
         let types = pasteboardItems.flatMap { $0.types.map(\.rawValue) }

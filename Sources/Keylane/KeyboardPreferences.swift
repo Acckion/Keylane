@@ -25,6 +25,7 @@ struct KeyboardPreferences: View {
             ViewObservation.changes(model.$navigation),
             ViewObservation.changes(model.$pageNavigationKeys),
             ViewObservation.changes(model.$doubleTap),
+            ViewObservation.changes(model.$modifierStatus),
             ViewObservation.changes(model.$hyperkey),
             ViewObservation.changes(model.$hyperIncludesShift),
             ViewObservation.changes(model.$replaceHyperKeycaps)
@@ -73,7 +74,7 @@ struct KeyboardPreferences: View {
             }
             SettingsGroup {
                 SettingsPicker("Hyper Key", detail: "将 Caps Lock 映射为 Control、Option 和 Command，可选加入 Shift。",
-                               selection: binding(\.hyperkey, updatesModifiers: true)) {
+                               selection: Binding(get: { model.hyperkey }, set: model.setHyperKey)) {
                     Text("无").tag(false)
                     Text("Caps Lock").tag(true)
                 }.settingsAnchor(.keyboardHyperKey)
@@ -93,12 +94,15 @@ struct KeyboardPreferences: View {
                     model.setShortcut("launcher", value: $0)
                 }.settingsAnchor(.keyboard)
                 Divider()
-                SettingsPicker("双击左侧修饰键唤起", selection: binding(\.doubleTap, updatesModifiers: true)) {
+                SettingsPicker("双击左侧修饰键唤起", selection: Binding(get: { model.doubleTap }, set: model.setDoubleTap)) {
                     Text("关闭").tag("off")
                     Text("Command").tag("command")
                     Text("Option").tag("option")
                     Text("Control").tag("control")
                     Text("Shift").tag("shift")
+                }
+                if !model.modifierStatus.isEmpty {
+                    Text(model.modifierStatus).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }

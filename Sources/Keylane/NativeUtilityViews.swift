@@ -7,11 +7,13 @@ struct SystemShortcutsPreferences: View {
     let model: Model
     @StateObject private var observation: ViewObservation
     let controller: SystemShortcutsController
+    let iconPermission: PermissionFeature
     @State private var filter = ""
 
-    init(model: Model, controller: SystemShortcutsController) {
+    init(model: Model, controller: SystemShortcutsController, iconPermission: PermissionFeature) {
         self.model = model
         self.controller = controller
+        self.iconPermission = iconPermission
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
@@ -25,6 +27,10 @@ struct SystemShortcutsPreferences: View {
 
     var body: some View {
         SettingsPageSections {
+            SettingsGroup {
+                SettingsPermissionToggle(contribution: iconPermission.titlebar("显示快捷指令原始图标"),
+                                         detail: "读取图标需要快捷指令的自动化权限。")
+            }
             SettingsGroup {
                 HStack {
                     SettingsSearchField(text: $filter, placeholder: "查找快捷指令…")

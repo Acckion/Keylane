@@ -123,7 +123,7 @@ private struct CalendarSettingsGroups: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases.map { $0["calendar"] }),
             ViewObservation.changes(model.$bindings.map { $0["calendar"] }),
-            ViewObservation.changes(controller.$enabled),
+            controller.permission.updates,
             ViewObservation.changes(controller.$access),
             ViewObservation.changes(controller.$calendars),
             ViewObservation.changes(controller.$selectedCalendarIDs),

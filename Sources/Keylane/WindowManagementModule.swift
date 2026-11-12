@@ -1,8 +1,10 @@
 import AppKit
 import KeylaneCore
+import Combine
 
 enum WindowManagementModule {
     static func make(model: Model) -> LauncherModule {
+        let permission = PermissionFeature("windowManagement.enabled", authorization: .accessibility)
         let commands: [(WindowPlacement, String, String, String, String)] = [
             (.left, "window-left-half", "左半屏", "Left Half", "rectangle.lefthalf.filled"),
             (.right, "window-right-half", "右半屏", "Right Half", "rectangle.righthalf.filled"),
@@ -18,7 +20,7 @@ enum WindowManagementModule {
                                      title: NavigationText.label(command.2, command.3),
                                      detail: NavigationText.label("窗口管理", "Window Management"), symbol: command.4,
                                      keywords: [command.2, command.3, "窗口管理", "Window Management"], destination: .action),
-                  execute: { [weak model] origin in
+                  available: { permission.available }, execute: { [weak model] origin in
                 guard let model, let delegate = NSApp.delegate as? Delegate else { return }
                 if origin == .shortcut { delegate.rememberPreviousApplication() }
                 SystemNavigation.shared.placeWindow(command.0, in: delegate.previousApplication) { [weak model, weak delegate] message in
@@ -29,6 +31,6 @@ enum WindowManagementModule {
                     else { delegate?.hideLauncher() }
                 }
             })
-        })
+        }, searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用窗口管理"))
     }
 }

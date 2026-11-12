@@ -20,8 +20,8 @@ final class ApplicationResultActions {
             .init(id: "finder-reveal", title: "在 Finder 中显示", icon: "folder") {
                 self.reveal(url)
             },
-            .init(id: "finder-info", title: "在 Finder 中显示信息", icon: "info.circle") {
-                self.showFinderInfo(url)
+            .init(id: "finder-info", title: "在 Finder 中显示信息", icon: "info.circle", enabled: model.finderAutomation.available) { [weak model] in
+                if model?.finderAutomation.available == true { self.showFinderInfo(url) }
             },
             .init(id: "package-contents", title: "显示包内容", icon: "shippingbox") {
                 self.reveal(url.appendingPathComponent("Contents", isDirectory: true))
