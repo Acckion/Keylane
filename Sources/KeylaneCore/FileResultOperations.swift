@@ -45,7 +45,7 @@ public struct FileResultOperations {
         let stem = target.url.deletingPathExtension().lastPathComponent
         let ext = target.url.pathExtension
         for index in 1...1000 {
-            let suffix = index == 1 ? " 副本" : " 副本 \\(index)"
+            let suffix = index == 1 ? " 副本" : " 副本 \(index)"
             let name = stem + suffix + (ext.isEmpty ? "" : "." + ext)
             let destination = parent.appendingPathComponent(name)
             do {
