@@ -1,0 +1,44 @@
+name: 问题反馈或功能建议
+description: 报告 Keylane 的问题，或提出改进建议
+body:
+  - type: dropdown
+    id: category
+    attributes:
+      label: 反馈类型
+      options:
+        - 问题反馈
+        - 功能建议
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: 发生了什么，或希望改进什么？
+      description: 报告问题时，请描述实际结果和预期结果。提出建议时，请说明使用场景和希望达到的效果。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 如果是问题，请列出从打开 Keylane 到问题出现的操作，并注明是否每次都会发生。
+      placeholder: |
+        1. 打开……
+        2. 按下……
+        3. 看到……
+  - type: input
+    id: keylane-version
+    attributes:
+      label: Keylane 版本
+      description: 可在「关于 Keylane」中查看。报告问题时请填写版本及构建号（如有）。
+      placeholder: 例如 1.0.2（构建号 26）
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS 版本
+      placeholder: 例如 macOS 26.1
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 截图、录屏或日志
+      description: 可拖入相关文件。Issue 是公开的，请先遮盖账号、密钥、私人文件路径和其他敏感内容。
