@@ -316,7 +316,8 @@ enum BuiltinLauncherModules {
                 ]
             },
             maximumActionWidth: 280,
-            releasePreview: { FilePreview.shared.dismiss() }
+            releasePreview: { FilePreview.shared.dismiss() },
+            actionShortcutsEnabled: true
         )
         return .init(id: .init(rawValue: "keylane.clipboard"), commands: [
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",

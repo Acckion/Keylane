@@ -31,32 +31,6 @@ final class ClipboardFiles {
     var isAvailable: Bool { !urls.isEmpty && urls.allSatisfy { FileManager.default.fileExists(atPath: $0.path) } }
 }
 
-enum ClipboardImageText {
-    case ocr, qr
-
-    func recognize(in handler: VNImageRequestHandler, accurate: Bool) throws -> String {
-        switch self {
-        case .ocr:
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = accurate ? .accurate : .fast
-            request.automaticallyDetectsLanguage = true
-            let supported = try request.supportedRecognitionLanguages()
-            request.recognitionLanguages = ["zh-Hans", "en-US"].filter { supported.contains($0) }
-            try handler.perform([request])
-            return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-        case .qr:
-            let request = VNDetectBarcodesRequest()
-            request.symbologies = [.qr]
-            try handler.perform([request])
-            var seen = Set<String>()
-            return (request.results ?? []).compactMap(\.payloadStringValue)
-                .filter { !$0.isEmpty && seen.insert($0).inserted }.joined(separator: "\n")
-        }
-    }
-
-    var emptyMessage: String { self == .qr ? "未识别到二维码文本。" : "未识别到图片文字。" }
-}
-
 private final class ClipboardPreviewRequest: @unchecked Sendable {
     private let lock = NSLock()
     private var stopped = false
@@ -694,7 +668,7 @@ final class ClipboardController: ObservableObject {
         return true
     }
 
-    func copyImageText(_ mode: ClipboardImageText, from detail: ClipDetail,
+    func copyImageText(_ mode: ImageTextRecognition, from detail: ClipDetail,
                        completion: @escaping (Bool, String) -> Void) {
         if mode == .ocr, !detail.ocrText.isEmpty {
             let copied = copyText(detail.ocrText)
@@ -736,7 +710,7 @@ final class ClipboardController: ObservableObject {
         throw ClipboardError.missingAttachment
     }
 
-    private func recognizedText(from detail: ClipDetail, mode: ClipboardImageText, accurate: Bool) throws -> String {
+    private func recognizedText(from detail: ClipDetail, mode: ImageTextRecognition, accurate: Bool) throws -> String {
         let files = files(for: detail)
         return try withExtendedLifetime(files) {
             try mode.recognize(in: Self.imageRequest(for: detail, file: files.urls.first), accurate: accurate)

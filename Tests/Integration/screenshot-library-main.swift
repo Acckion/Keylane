@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CoreImage.CIFilterBuiltins
 import QuickLookThumbnailing
 
 @main
@@ -65,6 +66,34 @@ struct ScreenshotLibraryCheck {
         try library.copy(item, to: pasteboard)
         try require(pasteboard.data(forType: .png) != nil, "Screenshot did not copy as PNG")
         try require(pasteboard.string(forType: .fileURL) == item.url.absoluteString, "Screenshot file URL missing")
+        try library.copyPath(item, to: pasteboard)
+        try require(pasteboard.string(forType: .string) == item.url.path, "Screenshot path missing")
+        let copiedOCR = try await library.copyImageText(.ocr, from: item, to: pasteboard)
+        try require(copiedOCR && pasteboard.string(forType: .string)?.contains("KEYLANE") == true,
+                    "Image text action did not copy recognized text")
+        let copiedQRFromText = try await library.copyImageText(.qr, from: item, to: pasteboard)
+        try require(!copiedQRFromText && pasteboard.string(forType: .string)?.contains("KEYLANE") == true,
+                    "A missing QR code must preserve the clipboard")
+
+        library.zoomOut()
+        try require(library.columns == 4 && library.selected?.id == item.id, "Zooming out must preserve selection")
+        for _ in 0..<4 { library.zoomOut() }
+        try require(library.columns == 6, "Grid must stop at six columns")
+        library.zoomIn()
+        try require(library.columns == 5, "Zooming in must reduce the column count")
+        try require(ScreenshotLibrary(defaults: defaults).columns == 5, "Column count must persist")
+        library.resetZoom()
+        library.zoomIn()
+        try require(library.columns == 3, "Actual size and the lower zoom bound must use three columns")
+
+        try library.togglePin(item)
+        try require(library.sections.first?.items.map(\.id) == [item.id] && library.selected?.id == item.id,
+                    "Pinned media must move to the first section without losing selection")
+        try require(ScreenshotLibrary(defaults: defaults).pinnedIDs == [item.id], "Pin must persist")
+        try library.togglePin(item)
+        try require(library.pinnedIDs.isEmpty && library.sections.first?.items.isEmpty == true
+                    && library.selected?.id == item.id, "Unpinning must return media to its original section")
+        try library.togglePin(item)
 
         let destination = try library.moveToTrash(item)
         if let destination, destination.lastPathComponent.hasPrefix("Screenshot Settings Fixture") {
@@ -73,8 +102,33 @@ struct ScreenshotLibraryCheck {
             try require(FileManager.default.fileExists(atPath: destination.path), "Trash did not receive the fixture")
         }
         try require(!FileManager.default.fileExists(atPath: image.path), "Original still in scope after trash")
-        try require(library.results.isEmpty, "Trashed item still in the grid")
-        print("Screenshot scope, filename query, Quick Look thumbnail, local Vision OCR, copy, and trash passed")
+        try require(library.results.isEmpty && library.pinnedIDs.isEmpty, "Trash must clear the grid and the pin")
+
+        let qr = folder.appendingPathComponent("Screenshot QR Fixture.png")
+        try writeQR(qr)
+        let movie = folder.appendingPathComponent("Screen Recording Fixture.mov")
+        try Data([0]).write(to: movie)
+        library.filter = .all
+        library.refresh()
+        try await wait { !library.scanning }
+        library.search("name:QR Fixture")
+        guard let qrItem = library.selected else { throw CheckError.failure("QR fixture not indexed") }
+        let copiedQR = try await library.copyImageText(.qr, from: qrItem, to: pasteboard)
+        try require(copiedQR && pasteboard.string(forType: .string) == "KEYLANE-QR-FIXTURE",
+                    "QR action must copy the decoded payload")
+
+        library.filter = .movies
+        library.search("")
+        guard let movieItem = library.selected else { throw CheckError.failure("Recording fixture not indexed") }
+        try library.copy(movieItem, to: pasteboard)
+        try require(pasteboard.string(forType: .fileURL) == movieItem.url.absoluteString
+                    && pasteboard.data(forType: .png) == nil, "Recording must copy as a file URL")
+        try library.togglePin(movieItem)
+        try require(library.sections.first?.items.map(\.id) == [movieItem.id], "Recording pin missing")
+        library.filter = .images
+        try require(library.sections.first?.items.isEmpty == true, "Pins must respect the media filter")
+
+        print("Screenshot scope, query, Quick Look thumbnail, OCR and QR, file copy, pinning, grid zoom, and trash passed")
     }
 
     @MainActor private static func writeImage(_ url: URL) throws {
@@ -90,6 +144,19 @@ struct ScreenshotLibraryCheck {
         guard let data = image.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) })?.representation(using: .png, properties: [:])
         else { throw CheckError.failure("Could not make test image") }
         try data.write(to: url)
+    }
+
+    private static func writeQR(_ url: URL) throws {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data("KEYLANE-QR-FIXTURE".utf8)
+        guard let output = filter.outputImage else { throw CheckError.failure("Could not generate QR code") }
+        let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
+        let canvas = CGRect(x: 0, y: 0, width: 440, height: 440)
+        let code = scaled.transformed(by: .init(translationX: (canvas.width - scaled.extent.width) / 2,
+                                                y: (canvas.height - scaled.extent.height) / 2))
+        let image = code.composited(over: CIImage(color: .white)).cropped(to: canvas)
+        try CIContext().writePNGRepresentation(of: image, to: url, format: .RGBA8,
+                                               colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 
     @MainActor private static func wait(_ condition: () -> Bool) async throws {

@@ -28,8 +28,8 @@ struct ScreenshotPreferences: View {
             SettingsCard(anchor: .screenshotColumns) {
                 Text("列数").font(VisualStyle.rowText)
                 HStack {
-                    ForEach(3...6, id: \.self) { count in
-                        if count != 3 { Spacer(minLength: 8) }
+                    ForEach(ScreenshotLibrary.columnCounts, id: \.self) { count in
+                        if count != ScreenshotLibrary.columnCounts.lowerBound { Spacer(minLength: 8) }
                         Button { library.columns = count } label: {
                             VStack(spacing: 5) {
                                 ColumnDiagram(count: count, selected: library.columns == count)
