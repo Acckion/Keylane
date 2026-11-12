@@ -105,7 +105,6 @@ final class PermissionFeature {
     }
 
     func activate(_ completion: @escaping (Bool) -> Void) {
-        if enabled && available { completion(true); return }
         guard !status.requesting else { completion(false); return }
         revision += 1
         let ticket = revision

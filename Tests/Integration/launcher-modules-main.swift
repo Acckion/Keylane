@@ -190,6 +190,14 @@ do {
 } catch let error as LauncherModuleRegistry.SettingsRegistrationError {
     precondition(error == .wrongPage(item: "scopes", expected: "unrelated"))
 }
+let calendarParent = LauncherSettingsPage(id: "calendar", title: "日历", symbol: "calendar", subtitle: "", order: 0,
+                                          items: [], content: { AnyView(EmptyView()) })
+let calendarChild = LauncherSettingsPage(id: "calendar-enabled", title: "已启用的日历", symbol: "calendar", subtitle: "", order: 1,
+                                         items: [.calendarSelection], parentID: "calendar", content: { AnyView(EmptyView()) })
+let calendarSettingsCatalog = SettingsWindowCatalog(pages: [calendarParent, calendarChild])
+precondition(calendarSettingsCatalog.sidebarGroups.flatMap(\.pages).map(\.id) == ["calendar"])
+precondition(calendarSettingsCatalog.page("calendar-enabled")?.parentID == "calendar")
+precondition(calendarSettingsCatalog.item(SettingsItem.calendarSelection.id)?.page == "calendar-enabled")
 print("PASS settings catalog lookup, ordering and page ownership")
 
 
