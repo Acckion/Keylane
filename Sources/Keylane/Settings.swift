@@ -29,30 +29,7 @@ struct SettingsView: View {
         return NavigationSplitView {
             sidebar(matches: matches)
         } detail: {
-            SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
-                let enabled = state.extensionEnabled(for: selected)
-                if enabled?.wrappedValue == false {
-                    SettingsGroup {
-                        SettingsRow("扩展已关闭", detail: "后台活动已停止，数据与快捷键已保留。") { EmptyView() }
-                    }
-                } else if let page {
-                    if let contribution = page.titlebar, enabled != nil {
-                        SettingsGroup {
-                            SettingsPermissionToggle(contribution: contribution, detail: nil)
-                                .id(contribution.searchItem?.id ?? page.id)
-                        }
-                    }
-                    if let contribution = page.titlebar, contribution.permissionStatus != nil {
-                        PermissionSettingsContent(contribution: contribution, content: page.content,
-                                                  showsFeedback: enabled == nil).id(page.id)
-                    } else {
-                        page.content()
-                    }
-                }
-            }
-            .overlay(alignment: .top) {
-                if let loading { WindowLoadingIndicator(loading: loading).id(selected) }
-            }
+            detailPage
         }.toggleStyle(SettingsSwitchStyle())
         .navigationTitle(headerScrolledAway ? (page?.title ?? "设置") : "")
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
@@ -92,13 +69,47 @@ struct SettingsView: View {
             query = ""
             target = nil
         }
-        .toolbar {
-            if #available(macOS 26.1, *) {
-                historyToolbar.visibilityPriority(.high)
-            } else {
-                historyToolbar
+        .toolbar { prioritizedHistoryToolbar }
+    }
+
+    private var detailPage: some View {
+        SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, headerScrolledAway: $headerScrolledAway) {
+            let enabled = state.extensionEnabled(for: selected)
+            if enabled?.wrappedValue == false {
+                SettingsGroup {
+                    SettingsRow("扩展已关闭", detail: "后台活动已停止，数据与快捷键已保留。") { EmptyView() }
+                }
+            } else if let page {
+                if let contribution = page.titlebar, enabled != nil {
+                    SettingsGroup {
+                        SettingsPermissionToggle(contribution: contribution, detail: nil)
+                            .id(contribution.searchItem?.id ?? page.id)
+                    }
+                }
+                if let contribution = page.titlebar, contribution.permissionStatus != nil {
+                    PermissionSettingsContent(contribution: contribution, content: page.content,
+                                              showsFeedback: enabled == nil).id(page.id)
+                } else {
+                    page.content()
+                }
             }
         }
+        .overlay(alignment: .top) {
+            if let loading { WindowLoadingIndicator(loading: loading).id(selected) }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var prioritizedHistoryToolbar: some ToolbarContent {
+        #if compiler(>=6.4)
+        if #available(macOS 26.1, *) {
+            historyToolbar.visibilityPriority(.high)
+        } else {
+            historyToolbar
+        }
+        #else
+        historyToolbar
+        #endif
     }
 
     private var historyToolbar: some ToolbarContent {
