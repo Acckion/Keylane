@@ -198,8 +198,12 @@ private struct ApplicationCommandRevision: Hashable {
 final class ApplicationSettingsCatalog: ObservableObject {
     @Published private(set) var items: [ApplicationPreferenceItem] = []
     private var changes: AnyCancellable?
+    private weak var model: Model?
 
-    init(model: Model) {
+    init(model: Model) { self.model = model }
+
+    func start() {
+        guard changes == nil, let model else { return }
         changes = model.$apps.combineLatest(model.$excluded).sink { [weak self, weak model] apps, excluded in
             guard let self, let model else { return }
             var paths = Set(apps.map(\.path))
@@ -215,6 +219,12 @@ final class ApplicationSettingsCatalog: ObservableObject {
             }
             if items != updated { items = updated }
         }
+    }
+
+    func stop() {
+        changes?.cancel()
+        changes = nil
+        items = []
     }
 }
 
