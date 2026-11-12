@@ -47,7 +47,7 @@ final class SystemShortcutsController: ObservableObject {
     private let iconQueue = DispatchQueue(label: "org.keylane.shortcuts.icons", qos: .utility)
     private let loadsIcons: Bool
     private let executable: URL
-    var iconReadingAllowed: () -> Bool = { false }
+    private var iconPermissionRequested = false
     private var iconGeneration = 0
     private var iconRequest: DispatchWorkItem?
     private var catalogRequest: ExtensionProcessRequest?
@@ -68,11 +68,16 @@ final class SystemShortcutsController: ObservableObject {
 
     func stop() {
         active = false
+        iconPermissionRequested = false
         catalogRequest?.cancel()
         catalogRequest = nil
         runRequest?.cancel()
         runRequest = nil
-        updateIconPermission()
+        iconGeneration += 1
+        iconRequest?.cancel()
+        iconRequest = nil
+        icons = [:]
+        iconAccess = .inactive
         entries = []
         loading = false
         runningID = nil
@@ -82,10 +87,10 @@ final class SystemShortcutsController: ObservableObject {
     }
 
     func refresh(force: Bool = false) {
+        if force && loadsIcons && active { iconPermissionRequested = true }
         guard active, !loading, force || Date().timeIntervalSince(lastRefresh) > 15 else { return }
         lastRefresh = Date()
         loading = true
-        message = ""
         let request = ExtensionProcessRequest()
         catalogRequest = request
         catalogQueue.async { [weak self, executable] in
@@ -96,11 +101,12 @@ final class SystemShortcutsController: ObservableObject {
                 self.catalogRequest = nil
                 self.loading = false
                 if let records {
-                    self.entries = records
+                    if self.entries != records { self.entries = records }
+                    if !self.message.isEmpty { self.message = "" }
                     self.refreshIcons(force: force)
                     UtilityVerification.record("shortcuts", count: records.count)
                 } else {
-                    self.message = "无法读取快捷指令。打开系统快捷指令后再刷新。"
+                    self.message = "暂时无法读取快捷指令，将自动重试。"
                 }
             }
         }
@@ -111,34 +117,29 @@ final class SystemShortcutsController: ObservableObject {
         return icons[String(commandID.dropFirst("shortcut:".count))]
     }
 
-    func updateIconPermission() {
-        iconGeneration += 1
-        iconRequest?.cancel()
-        iconRequest = nil
-        icons = [:]
-        iconAccess = .inactive
-        if iconReadingAllowed() { refreshIcons(force: true) }
-    }
-
     private func refreshIcons(force: Bool) {
-        guard active, loadsIcons, iconReadingAllowed(), iconAccess != .loading, !entries.isEmpty else { return }
+        guard active, loadsIcons, iconAccess != .loading, !entries.isEmpty else { return }
         let ids = entries.map(\.id)
-        guard force || iconAccess == .inactive || (iconAccess == .allowed && Set(ids) != Set(icons.keys)) else { return }
+        guard force || iconPermissionRequested || iconAccess == .inactive ||
+                (iconAccess == .allowed && Set(ids) != Set(icons.keys)) else { return }
+        let prompt = iconPermissionRequested
+        iconPermissionRequested = false
         iconAccess = .loading
         let ticket = iconGeneration
         let request = DispatchWorkItem {}
         iconRequest = request
 
         let load: () -> Void = { [weak self] in
-            guard let self, self.iconGeneration == ticket, self.iconReadingAllowed() else { return }
+            guard let self, self.iconGeneration == ticket, self.active else { return }
             self.iconQueue.async { [weak self] in
                 guard !request.isCancelled else { return }
-                let permission = ShortcutIconReader.permissionStatus()
+                let permission = ShortcutIconReader.permissionStatus(prompt: prompt)
                 guard permission == noErr else {
                     DispatchQueue.main.async {
                         guard let self, self.iconGeneration == ticket else { return }
                         self.icons = [:]
                         self.iconAccess = permission == -1743 || permission == -1744 ? .denied : .unavailable
+                        if self.iconPermissionRequested { self.refreshIcons(force: true) }
                     }
                     return
                 }
@@ -154,7 +155,8 @@ final class SystemShortcutsController: ObservableObject {
                 let result = rendered
                 let authorizationLost = denied
                 DispatchQueue.main.async {
-                    guard let self, self.iconGeneration == ticket, self.iconReadingAllowed() else { return }
+                    guard let self, self.iconGeneration == ticket, self.active else { return }
+                    self.iconPermissionRequested = false
                     if authorizationLost {
                         self.icons = [:]
                         self.iconAccess = .denied

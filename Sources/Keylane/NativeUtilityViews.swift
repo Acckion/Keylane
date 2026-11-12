@@ -7,13 +7,12 @@ struct SystemShortcutsPreferences: View {
     let model: Model
     @StateObject private var observation: ViewObservation
     let controller: SystemShortcutsController
-    let iconPermission: PermissionFeature
-    @State private var filter = ""
+    @ObservedObject var search: SettingsSearchControls
 
-    init(model: Model, controller: SystemShortcutsController, iconPermission: PermissionFeature) {
+    init(model: Model, controller: SystemShortcutsController, search: SettingsSearchControls) {
         self.model = model
         self.controller = controller
-        self.iconPermission = iconPermission
+        self.search = search
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
@@ -28,29 +27,30 @@ struct SystemShortcutsPreferences: View {
 
     var body: some View {
         SettingsPageSections {
-            SettingsGroup {
-                SettingsPermissionToggle(contribution: iconPermission.titlebar("显示快捷指令原始图标"),
-                                         detail: "读取图标需要快捷指令的自动化权限。")
+            if (!controller.loading && controller.entries.isEmpty) || !controller.executionMessage.isEmpty || !controller.message.isEmpty {
+                SettingsGroup {
+                    if !controller.executionMessage.isEmpty { SettingsDescription(controller.executionMessage) }
+                    if !controller.message.isEmpty { Text(controller.message).foregroundStyle(.secondary) }
+                    if !controller.loading, controller.entries.isEmpty, controller.message.isEmpty {
+                        Text("系统中没有快捷指令").foregroundStyle(.secondary)
+                    }
+                }
             }
-            SettingsGroup {
-                HStack {
-                    SettingsSearchField(text: $filter, placeholder: "查找快捷指令…")
-                        .frame(height: 24)
-                    Button("刷新", systemImage: "arrow.clockwise") { controller.refresh(force: true) }.disabled(controller.loading)
-                    Button("打开快捷指令") { UtilityActions.openApplication("com.apple.shortcuts") }
-                }.buttonStyle(.bordered).controlSize(.small)
-                if !controller.executionMessage.isEmpty { SettingsDescription(controller.executionMessage) }
-                if !controller.message.isEmpty { Text(controller.message).foregroundStyle(.secondary) }
-                if !controller.loading, controller.entries.isEmpty, controller.message.isEmpty { Text("系统中没有快捷指令").foregroundStyle(.secondary) }
-            }.settingsAnchor(.systemShortcuts)
             if !controller.entries.isEmpty {
                 CommandSettingsList(items: controller.entries.filter {
-                    filter.isEmpty || $0.name.localizedCaseInsensitiveContains(filter)
+                    search.query.isEmpty || $0.name.localizedCaseInsensitiveContains(search.query)
                 }, id: \.id, emptyMessage: "没有匹配的快捷指令") { entry in
                     entry.commandSettingsEntry(model: model, controller: controller)
                 }
             }
-        }.onAppear { controller.refresh(force: true) }
+        }.settingsAnchor(.systemShortcuts).task {
+            controller.refresh(force: true)
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(15)) }
+                catch { return }
+                controller.refresh()
+            }
+        }
     }
 }
 
