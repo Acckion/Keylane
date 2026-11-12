@@ -157,7 +157,10 @@ struct Launcher: View {
         .background {
             Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
             Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
-            Button("") { if page?.optionSubmit != nil { closeMenus() }; page?.shortcutSubmit?() }.keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
+            if let shortcutSubmit = page?.shortcutSubmit {
+                Button("") { if page?.optionSubmit != nil { closeMenus() }; shortcutSubmit() }
+                    .keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
+            }
             if let optionSubmit = page?.optionSubmit {
                 Button("") { closeMenus(); optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
             }
@@ -593,15 +596,21 @@ struct Launcher: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
     private var pageMenuShortcuts: some View {
-        let entryActions = model.pageID == PageID(rawValue: "Clipboard") ? page?.actions?() ?? [] : []
+        let entryActions = page?.actionShortcutsEnabled == true ? page?.actions?() ?? [] : []
         return ForEach((page?.badgeActions?() ?? []) + entryActions) { action in
             let modifiers = action.keys.dropLast()
             if action.enabled, !modifiers.isEmpty, let key = action.keys.last,
-               key != "↩" || modifiers.count > 1,
+               !usesPageSubmitShortcut(key: key, modifiers: modifiers),
                let character = key.lowercased().first {
                 pageMenuShortcut(action, key: character, modifiers: modifiers)
             }
         }
+    }
+
+    private func usesPageSubmitShortcut(key: String, modifiers: ArraySlice<String>) -> Bool {
+        guard key == "↩" else { return false }
+        return (modifiers.elementsEqual(["⌘"]) && page?.shortcutSubmit != nil)
+            || (modifiers.elementsEqual(["⌥"]) && page?.optionSubmit != nil)
     }
 
     private func pageMenuShortcut(_ action: MenuAction, key: Character, modifiers: ArraySlice<String>) -> some View {

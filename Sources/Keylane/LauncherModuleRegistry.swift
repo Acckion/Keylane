@@ -80,6 +80,7 @@ struct LauncherPage {
     var badgeActions: (() -> [LauncherAction])?
     var maximumActionWidth: CGFloat?
     var releasePreview: (() -> Void)?
+    var actionShortcutsEnabled = false
 }
 
 struct SettingsTitlebarContribution {

@@ -31,57 +31,6 @@ final class ClipboardFiles {
     var isAvailable: Bool { !urls.isEmpty && urls.allSatisfy { FileManager.default.fileExists(atPath: $0.path) } }
 }
 
-enum ClipboardImageText {
-    case ocr, qr
-
-    func recognize(accurate: Bool, perform: (VNRequest) throws -> Void) throws -> String {
-        switch self {
-        case .ocr:
-            let request = VNRecognizeTextRequest()
-            request.recognitionLevel = accurate ? .accurate : .fast
-            request.automaticallyDetectsLanguage = true
-            let supported = try request.supportedRecognitionLanguages()
-            request.recognitionLanguages = ["zh-Hans", "en-US"].filter { supported.contains($0) }
-            try perform(request)
-            return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-        case .qr:
-            let request = VNDetectBarcodesRequest()
-            request.symbologies = [.qr]
-            try perform(request)
-            var seen = Set<String>()
-            return (request.results ?? []).compactMap(\.payloadStringValue)
-                .filter { !$0.isEmpty && seen.insert($0).inserted }.joined(separator: "\n")
-        }
-    }
-
-    var emptyMessage: String { self == .qr ? "未识别到二维码文本。" : "未识别到图片文字。" }
-}
-
-private final class ClipboardPreviewRequest: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stopped = false
-    private var visionRequest: VNRequest?
-    var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
-
-    func cancel() {
-        lock.lock()
-        stopped = true
-        let request = visionRequest
-        lock.unlock()
-        request?.cancel()
-    }
-
-    func perform(_ request: VNRequest, in handler: VNImageRequestHandler) throws {
-        lock.lock()
-        guard !stopped else { lock.unlock(); throw CancellationError() }
-        visionRequest = request
-        lock.unlock()
-        defer { lock.lock(); visionRequest = nil; lock.unlock() }
-        guard !cancelled else { throw CancellationError() }
-        try handler.perform([request])
-    }
-}
-
 /// Pasteboard reads and published state belong to the main thread. SQLite belongs
 /// exclusively to worker; OCR never blocks that queue or resurrects deleted rows.
 final class ClipboardController: ObservableObject {
@@ -131,7 +80,7 @@ final class ClipboardController: ObservableObject {
     private let listPreviewWorker = DispatchQueue(label: "org.keylane.clipboard.list-preview", qos: .utility)
     private let ocrWorker = DispatchQueue(label: "org.keylane.clipboard.ocr", qos: .utility)
     private let storageDirectory: URL
-    private var runtime: ClipboardPreviewRequest?
+    private var runtime: ImageTextRecognitionWork?
     private var store: ClipboardStore?
     private let listThumbnailCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
@@ -150,7 +99,7 @@ final class ClipboardController: ObservableObject {
     private var generation = 0
     private var pendingSearch: DispatchWorkItem?
     private var pendingReload: DispatchWorkItem?
-    private var detailRequest: ClipboardPreviewRequest?
+    private var detailRequest: ImageTextRecognitionWork?
     private var presentationActive: Bool
     private var lastMaintenance = Date()
     private var ocrNeedsScan = true
@@ -175,7 +124,7 @@ final class ClipboardController: ObservableObject {
 
     func startRuntime() {
         guard runtime == nil else { return }
-        let token = ClipboardPreviewRequest()
+        let token = ImageTextRecognitionWork()
         runtime = token
         lastChange = board.changeCount
         let limits = ClipboardLimits(maxItems: maxItems, retentionDays: retentionDays)
@@ -309,7 +258,7 @@ final class ClipboardController: ObservableObject {
         detailRequest?.cancel()
         detailRequest = nil
         guard let id else { detail = nil; thumbnail = nil; loadingDetail = false; return }
-        let request = ClipboardPreviewRequest()
+        let request = ImageTextRecognitionWork()
         detailRequest = request
         loadingDetail = true
         let finish: (ClipDetail?, NSImage?) -> Void = { [weak self] record, image in
@@ -351,7 +300,7 @@ final class ClipboardController: ObservableObject {
         }
     }
     func listThumbnail(for item: ClipItem) async -> NSImage? {
-        let request = ClipboardPreviewRequest()
+        let request = ImageTextRecognitionWork()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 loadListThumbnail(for: item, request: request) { continuation.resume(returning: $0) }
@@ -362,11 +311,11 @@ final class ClipboardController: ObservableObject {
     }
 
     func loadListThumbnail(for item: ClipItem, completion: @escaping (NSImage?) -> Void) {
-        loadListThumbnail(for: item, request: ClipboardPreviewRequest(), completion: completion)
+        loadListThumbnail(for: item, request: ImageTextRecognitionWork(), completion: completion)
     }
 
     /// SQLite supplies the image reference; thumbnail decoding never occupies the storage queue.
-    private func loadListThumbnail(for item: ClipItem, request: ClipboardPreviewRequest,
+    private func loadListThumbnail(for item: ClipItem, request: ImageTextRecognitionWork,
                                    completion: @escaping (NSImage?) -> Void) {
         guard let runtime, item.kind != .text, !runtime.cancelled, !request.cancelled else { completion(nil); return }
         let finish: (NSImage?) -> Void = { image in
@@ -768,7 +717,7 @@ final class ClipboardController: ObservableObject {
         return true
     }
 
-    func copyImageText(_ mode: ClipboardImageText, from detail: ClipDetail,
+    func copyImageText(_ mode: ImageTextRecognition, from detail: ClipDetail,
                        completion: @escaping (Bool, String) -> Void) {
         if mode == .ocr, !detail.ocrText.isEmpty {
             let copied = copyText(detail.ocrText)
@@ -812,11 +761,11 @@ final class ClipboardController: ObservableObject {
         throw ClipboardError.missingAttachment
     }
 
-    private func recognizedText(from detail: ClipDetail, mode: ClipboardImageText, accurate: Bool, runtime: ClipboardPreviewRequest) throws -> String {
+    private func recognizedText(from detail: ClipDetail, mode: ImageTextRecognition, accurate: Bool, runtime: ImageTextRecognitionWork) throws -> String {
         let files = files(for: detail)
         return try withExtendedLifetime(files) {
             let handler = try Self.imageRequest(for: detail, file: files.urls.first)
-            return try mode.recognize(accurate: accurate) { try runtime.perform($0, in: handler) }
+            return try mode.recognize(in: handler, accurate: accurate, work: runtime)
         }
     }
 
@@ -882,7 +831,7 @@ final class ClipboardController: ObservableObject {
     }
 
     /// Vision stays off the storage queue. Only the bounded read and write run on that queue.
-    private func indexImageText(_ candidate: ClipboardOCRCandidate, accurate: Bool, runtime: ClipboardPreviewRequest) -> Bool {
+    private func indexImageText(_ candidate: ClipboardOCRCandidate, accurate: Bool, runtime: ImageTextRecognitionWork) -> Bool {
         do {
             guard let detail = try worker.sync(execute: { try store?.detail(id: candidate.id) }),
                   !detail.item.hasOCR, detail.item.copiedAt == candidate.copiedAt else { return false }

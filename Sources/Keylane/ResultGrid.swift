@@ -99,6 +99,9 @@ struct ResultGrid<Item: Identifiable, Tile: View, EmptyState: View>: View {
             .onChange(of: selection) { _, value in
                 if let value { proxy.scrollTo(value) }
             }
+            .onChange(of: columnCount) { _, _ in
+                if let selection { proxy.scrollTo(selection) }
+            }
         }
     }
 }
