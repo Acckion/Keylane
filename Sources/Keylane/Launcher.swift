@@ -24,13 +24,19 @@ struct Launcher: View {
     }
 
     @State private var fileType = "all"
-    private enum Menu { case application, actions, filter }
+    private enum Menu { case application, actions, filter, sort }
     @State private var menu: Menu?
     private var actions: Bool { menu == .actions }
     private var appMenu: Bool { menu == .application }
-    private var filterOpen: Bool { menu == .filter }
+    private var filterOpen: Bool { menu == .filter || menu == .sort }
+    private var sortBinding: Binding<Bool> {
+        Binding(get: { menu == .sort }, set: { open in
+            closeMenus()
+            if open { menu = .sort }
+        })
+    }
     private var filterBinding: Binding<Bool> {
-        Binding(get: { filterOpen }, set: { open in
+        Binding(get: { menu == .filter }, set: { open in
             closeMenus()
             if open { menu = .filter }
         })
@@ -70,6 +76,8 @@ struct Launcher: View {
             ViewObservation.changes(model.$rootFileContentSearch),
             ViewObservation.changes(model.$fileResults),
             ViewObservation.changes(model.fileSearch.$isSearching),
+            ViewObservation.changes(model.fileSearch.$browsingDirectory),
+            ViewObservation.changes(model.fileSearch.$directorySort),
             ViewObservation.changes(model.$fileSearchStatus),
             ViewObservation.changes(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] })
         ]))
@@ -204,8 +212,7 @@ struct Launcher: View {
         .preferredColorScheme(model.colorScheme)
     }
 
-    var body: some View {
-        let _ = pageRevision
+    private var observedSurface: some View {
         Group {
             if surfaceMounted {
                 launcherSurface
@@ -253,9 +260,18 @@ struct Launcher: View {
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
             updatePresentation(visible: false)
         }
+    }
+
+    var body: some View {
+        let _ = pageRevision
+        observedSurface
         .onChange(of: fileType) { _, _ in resetResultSelection(); focusToken += 1 }
+        .onChange(of: model.fileSearch.browsingDirectory) { _, directory in
+            if directory == nil && menu == .sort { closeMenus() }
+        }
         .onChange(of: model.query) { _, _ in
             guard presentation.page == model.pageID else { return }
+            if showsFileResults && FileSearchLocation.typedURL(model.query) != nil { fileType = "all" }
             if launcherVisible { refreshActiveQuery() }
             if selectionQuery != model.query { resetResultSelection() }
         }
@@ -319,7 +335,10 @@ struct Launcher: View {
 
         switch change.activation {
         case .enter:
-            if let seed = page?.enter?(model.query) { model.query = seed }
+            if let seed = page?.enter?(model.query) {
+                if showsFileResults { fileType = "all" }
+                model.query = seed
+            }
             refreshActiveQuery()
         case .resume:
             if let resume = page?.resume {
@@ -340,7 +359,7 @@ struct Launcher: View {
         guard dispatchedQuery != model.query else { return }
         dispatchedQuery = model.query
         if let page { page.queryChanged(model.query) }
-        else if model.searchesFilesHere { model.searchFiles() }
+        else if model.pageID == .root { model.searchFiles() }
     }
     private func moveSelection(_ delta: Int) {
         if model.isCompact { model.compactExpanded = true; return }
@@ -393,7 +412,8 @@ struct Launcher: View {
                 .frame(height: 30)
             if let accessory = page?.searchAccessory { accessory() }
             else if showsTypeFilter {
-                Color.clear.frame(width: page?.typeFilterWidth ?? 138, height: 36).accessibilityHidden(true)
+                Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
+                    .accessibilityHidden(true)
             }
         }.padding(.horizontal, model.pageID == .root ? 19 : VisualStyle.launcherEdgeInset)
             .frame(height: model.pageID == .root ? 61 : VisualStyle.launcherControlDiameter + 2 * VisualStyle.launcherEdgeInset)
@@ -401,7 +421,25 @@ struct Launcher: View {
     }
     @ViewBuilder private var typeFilter: some View {
         if showsFileResults {
-            ResultTypeFilter(selection: $fileType, options: ResultFilterOption.files, open: filterBinding, navigation: model.navigation)
+            HStack(alignment: .top, spacing: 8) {
+                if let directory = model.fileSearch.browsingDirectory {
+                    Button("上一级文件夹", systemImage: "arrow.up") {
+                        closeMenus()
+                        model.showFileLocation(directory.deletingLastPathComponent(), browse: true)
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .frame(width: 30, height: VisualStyle.launcherControlDiameter)
+                    .help("上一级文件夹")
+                    ResultTypeFilter(selection: Binding(
+                        get: { model.fileSearch.directorySort.rawValue },
+                        set: { if let sort = FileDirectorySort(rawValue: $0) { model.fileSearch.setDirectorySort(sort) } }
+                    ), options: FileDirectorySort.allCases.map {
+                        .init(id: $0.rawValue, title: $0.title, symbol: "arrow.up.arrow.down")
+                    }, open: sortBinding, navigation: model.navigation, width: 128, searchPlaceholder: "查找排序方式…")
+                }
+                ResultTypeFilter(selection: $fileType, options: ResultFilterOption.files, open: filterBinding, navigation: model.navigation)
+            }
         } else if let filter = page?.typeFilter { filter(filterBinding) }
     }
     private func commandList(_ results: [Entry], selectedIndex: Int?) -> some View {
@@ -409,7 +447,9 @@ struct Launcher: View {
                              query: model.query, firstResult: results.first?.commandID,
                              revealInitialSelection: true) {
             if results.isEmpty && !showsFileResults {
-                ResultDetailEmptyState(message: "试试应用名称、拼音或计算表达式")
+                ResultDetailEmptyState(message: FileSearchLocation.typedURL(model.query) != nil
+                    && model.fileSearch.lastPublishedQuery == model.query
+                    ? model.fileSearchStatus : "试试应用名称、拼音或计算表达式")
                     .frame(maxWidth: .infinity).padding(.top, 80)
             }
             ForEach(Array(results.enumerated()), id: \.element.commandID) { index, row in

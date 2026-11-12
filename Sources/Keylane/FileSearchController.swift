@@ -18,6 +18,9 @@ final class FileSearchController: ObservableObject {
     @Published private(set) var indexStatus = "尚未建立本地补充索引"
     @Published private(set) var inaccessible: [String] = []
     @Published private(set) var indexing = false
+    @Published private(set) var indexPaused: Bool
+    @Published private(set) var directorySort: FileDirectorySort
+    @Published private(set) var browsingDirectory: URL?
     @Published private(set) var isSearching = false
     var updated: (([SpotlightFile], String) -> Void)?
     private let preferences: UserDefaults
@@ -35,10 +38,15 @@ final class FileSearchController: ObservableObject {
     private var pendingQuery: DispatchWorkItem?
     private var queryCancellation = FileScanCancellation()
     private var lastPublished: [SpotlightFile] = []
-    private var lastPublishedQuery = ""
+    private(set) var lastPublishedQuery = ""
     private var lastPublishedStatus = ""
     private var currentQuery = ""
     private var includesQueryContents = true
+    private var standalone = true
+    private var showPathItself = false
+    private var hasQuery = false
+    private var recentPaths: [String]
+    private var recentlyRemoved = Set<String>()
     private var localQueryResolved = false
     private var didStart = false
     private var grants: [String: Data]
@@ -63,6 +71,9 @@ final class FileSearchController: ObservableObject {
     }
     init(directory: URL? = nil, preferences: UserDefaults = .standard, defaultOptions: FileSearchOptions? = nil, watchChanges: Bool = true, availableCapacity: ((URL) -> Int64)? = nil, startImmediately: Bool = true) {
         self.preferences = preferences; self.watchEnabled = watchChanges
+        indexPaused = preferences.bool(forKey: "fileIndexPaused")
+        directorySort = preferences.string(forKey: "fileDirectorySort").flatMap(FileDirectorySort.init(rawValue:)) ?? .name
+        recentPaths = Array((preferences.stringArray(forKey: "fileSearchRecentPaths") ?? []).prefix(60))
         databaseURL = directory?.appendingPathComponent("index.sqlite") ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane/FileSearch/index.sqlite")
         self.availableCapacity = availableCapacity ?? { url in (try? FileManager.default.attributesOfFileSystem(forPath:url.path)[.systemFreeSize] as? Int64) ?? 0 }
         options = preferences.data(forKey: "fileSearchOptions").flatMap { try? JSONDecoder().decode(FileSearchOptions.self, from: $0) } ?? defaultOptions ?? Self.defaults
@@ -102,8 +113,8 @@ final class FileSearchController: ObservableObject {
                     self.refreshStats(runtime: token)
                 }
                 DispatchQueue.main.async {
-                    guard !token.cancelled, !self.currentQuery.isEmpty else { return }
-                    self.refreshQuery()
+                    guard !token.cancelled else { return }
+                    self.reloadSearch()
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -117,6 +128,7 @@ final class FileSearchController: ObservableObject {
         guard let runtime else { return }
         runtime.cancel()
         self.runtime = nil
+        recentlyRemoved.removeAll()
         cancellation.cancel()
         cancellation = FileScanCancellation()
         cancel()
@@ -139,6 +151,16 @@ final class FileSearchController: ObservableObject {
         preferences.set(try? JSONEncoder().encode(options), forKey: "fileSearchOptions")
         var previous = old; previous.searchFromLauncher = options.searchFromLauncher
         guard previous != options, let runtime else { return }
+        let changedExclusions = Set(previous.excludedPaths).symmetricDifference(options.excludedPaths)
+        previous.excludedPaths = options.excludedPaths
+        if previous == options {
+            reloadSearch()
+            if !indexPaused {
+                dirtyPaths.formUnion(changedExclusions)
+                scheduleRefresh()
+            }
+            return
+        }
         cancelMerge(); cancellation.cancel(); spotlight.cancel(); spotlightResults = []; localResults = []; stopWatch()
         let contentEnabled = options.contentSearch
         let removed = old.roots.filter { !options.roots.contains($0) }
@@ -149,10 +171,8 @@ final class FileSearchController: ObservableObject {
             }
         }
         if options.enabled {
-            let query = currentQuery
-            currentQuery = ""
             startIndex()
-            search(query, includeContents: includesQueryContents)
+            reloadSearch()
         }
         else { indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
@@ -176,6 +196,107 @@ final class FileSearchController: ObservableObject {
         // Authorization survives a disconnected volume. The scanner applies
         // keepRemovedVolumes when a configured root is temporarily missing.
         options.roots.filter { selectedScopePaths.contains($0) || grants[$0] != nil }
+    }
+
+    private var authorizedOptions: FileSearchOptions {
+        var authorized = options
+        authorized.roots = authorizedRoots
+        return authorized
+    }
+
+    func inspect(_ url: URL) throws -> SpotlightFile {
+        guard isRunning, options.enabled else { throw FileSearchLocation.Failure.outsideScope }
+        var locations = FileSearchLocation(options: authorizedOptions, automaticExclusions: automaticExclusions.map(\.path), restored: restored)
+        return try locations.item(at: url)
+    }
+
+    func rememberOpenedFile(_ file: SpotlightFile) {
+        guard !file.isDirectory else { return }
+        recentPaths.removeAll { $0 == file.id }
+        recentPaths.insert(file.id, at: 0)
+        if recentPaths.count > 60 { recentPaths.removeLast() }
+        preferences.set(recentPaths, forKey: "fileSearchRecentPaths")
+    }
+
+    func setDirectorySort(_ sort: FileDirectorySort) {
+        guard directorySort != sort else { return }
+        directorySort = sort
+        preferences.set(sort.rawValue, forKey: "fileDirectorySort")
+        if browsingDirectory != nil { reloadSearch() }
+    }
+
+    func setIndexPaused(_ paused: Bool) {
+        guard indexPaused != paused else { return }
+        indexPaused = paused
+        preferences.set(paused, forKey: "fileIndexPaused")
+        if paused {
+            cancellation.cancel()
+            cancellation = FileScanCancellation()
+            stopWatch()
+            indexing = false
+            indexStatus = "本地索引已暂停，仍可搜索已有条目。"
+        } else { startIndex() }
+    }
+
+    func exclude(_ url: URL) throws -> String {
+        let item = try inspect(url)
+        guard !authorizedRoots.contains(item.id) else {
+            throw FileSearchLocation.Failure.scopeRoot
+        }
+        if !options.excludedPaths.contains(item.id) {
+            let path = item.id
+            let visible = lastPublished.filter { !FileSearchLocation.contains($0.id, in: path) }
+            options.excludedPaths.append(path)
+            if hasQuery { emit(visible, visible.isEmpty ? "没有匹配项。" : lastPublishedStatus) }
+        }
+        return item.id
+    }
+
+    func undoExclusion(_ path: String) {
+        options.excludedPaths.removeAll { $0 == path }
+    }
+
+    func mutationTarget(_ url: URL) throws -> FileResultOperations.Target {
+        let file = try inspect(url)
+        guard !authorizedRoots.contains(file.id),
+              let root = authorizedRoots.filter({ FileSearchLocation.contains(file.id, in: $0) }).max(by: { $0.count < $1.count }),
+              let canonicalRoot = FileSearchLocation.canonicalPath(root) else { throw FileResultOperations.Failure.unsupported }
+        let relative = file.id.dropFirst(root.count).drop(while: { $0 == "/" })
+        let expected = URL(fileURLWithPath: canonicalRoot).appendingPathComponent(String(relative)).path
+        guard FileSearchLocation.canonicalPath(file.id) == expected else { throw FileResultOperations.Failure.unsupported }
+        return try FileResultOperations.target(for: file.url)
+    }
+
+    func refreshAfterFileAction(_ url: URL, removed: Bool) {
+        guard isRunning, options.enabled else { return }
+        if removed {
+            recentlyRemoved.insert(url.path)
+            let visible = lastPublished.filter { !FileSearchLocation.contains($0.id, in: url.path) }
+            emit(visible, visible.isEmpty ? "没有匹配项。" : lastPublishedStatus)
+            recentPaths.removeAll { FileSearchLocation.contains($0, in: url.path) }
+            preferences.set(recentPaths, forKey: "fileSearchRecentPaths")
+            let roots = authorizedRoots
+            let token = runtime
+            writer.async { [weak self] in
+                guard let self, token?.cancelled == false else { return }
+                do {
+                    let epoch = UUID().uuidString
+                    for root in roots { try self.writeDB?.removeUnseen(root: root, subtree: url.path, epoch: epoch) }
+                } catch {
+                    DispatchQueue.main.async { if token?.cancelled == false { self.indexStatus = error.localizedDescription } }
+                }
+                DispatchQueue.main.async {
+                    guard token?.cancelled == false else { return }
+                    self.recentlyRemoved.remove(url.path)
+                    self.reloadSearch()
+                }
+            }
+        }
+        if !indexPaused {
+            dirtyPaths.insert(url.path)
+            scheduleRefresh()
+        }
+        if !removed && (browsingDirectory != nil || currentQuery.isEmpty) { reloadSearch() }
     }
 
     func applyPermissionEnabled(_ enabled: Bool) {
@@ -221,39 +342,119 @@ final class FileSearchController: ObservableObject {
         resolveGrants()
         automaticExclusions = []
         saveAutomatic()
+        recentPaths = []
+        preferences.removeObject(forKey: "fileSearchRecentPaths")
+        indexPaused = false
+        preferences.removeObject(forKey: "fileIndexPaused")
+        directorySort = .name
+        preferences.removeObject(forKey: "fileDirectorySort")
         options = Self.defaults
     }
     func cancel() {
         cancelMerge()
-        let wasSearching = !currentQuery.isEmpty
+        let wasSearching = hasQuery
+        hasQuery = false
+        browsingDirectory = nil
         queryVersion += 1; pendingQuery?.cancel(); pendingQuery = nil; queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
         if wasSearching {
             reader.async { [weak self] in self?.readDB?.releaseCachedPages() }
         }
     }
-    func search(_ text: String, homeOnly: Bool = false, root: URL? = nil, includeContents: Bool = true) {
-        let scopeChanged = includesQueryContents != includeContents
-        let changed = currentQuery != text || scopeChanged
+    func search(_ text: String, includeContents: Bool = true, standalone: Bool = true, showPathItself: Bool = false) {
+        let scopeChanged = includesQueryContents != includeContents || self.standalone != standalone
+        let changed = !hasQuery || currentQuery != text || scopeChanged || self.showPathItself != showPathItself
+        hasQuery = true
         currentQuery = text
         includesQueryContents = includeContents
+        self.standalone = standalone
+        self.showPathItself = showPathItself
         guard isRunning, options.enabled else { emit([], "文件搜索已关闭，请在设置中开启。"); return }
-        guard !FileSearchRules.tokens(text).isEmpty, text.count <= 256 else {
-            cancelMerge()
-            queryVersion += 1; pendingQuery?.cancel(); queryCancellation.cancel(); spotlight.cancel(); isSearching = false
-            localResults = []; spotlightResults = []; localQueryResolved = false
+        if let path = FileSearchLocation.typedURL(text) {
+            searchLocations([path], browse: standalone && !showPathItself)
+            return
+        }
+        browsingDirectory = nil
+        let blank = FileSearchRules.tokens(text).isEmpty
+        if blank, standalone {
+            searchLocations(recentPaths.map { URL(fileURLWithPath: $0) }, browse: false, recent: true)
+            return
+        }
+        guard !blank, text.count <= 256 else {
+            stopSearchJobs()
+            isSearching = false
             emit([], text.count > 256 ? "文件搜索最多256个字符。" : "输入文件名或多个关键词；搜索范围可在设置中添加并授权。")
             return
         }
         if !didStart { startIndex() }
         if changed {
-            cancelMerge()
-            spotlight.cancel(); spotlightResults = []; localResults = []
-            localQueryResolved = false
+            stopSearchJobs()
             isSearching = true
             if scopeChanged { emit([], "正在搜索…") }
-            if !options.useIgnoreFiles { spotlight.search(text, root: options.roots.count == 1 ? URL(fileURLWithPath:options.roots[0]) : nil) }
+            let roots = authorizedRoots
+            if !options.useIgnoreFiles, !roots.isEmpty {
+                spotlight.search(text, root: roots.count == 1 ? URL(fileURLWithPath: roots[0]) : nil)
+            }
         }
         refreshQuery(delay: changed ? 0.06 : 0)
+    }
+
+    private func stopSearchJobs() {
+        cancelMerge()
+        queryVersion += 1
+        pendingQuery?.cancel()
+        queryCancellation.cancel()
+        spotlight.cancel()
+        localResults = []
+        spotlightResults = []
+        localQueryResolved = false
+    }
+
+    private func reloadSearch() {
+        guard hasQuery else { return }
+        let query = currentQuery
+        hasQuery = false
+        search(query, includeContents: includesQueryContents, standalone: standalone, showPathItself: showPathItself)
+    }
+
+    private func searchLocations(_ urls: [URL], browse: Bool, recent: Bool = false) {
+        stopSearchJobs()
+        let cancellation = FileScanCancellation()
+        queryCancellation = cancellation
+        let ticket = queryVersion
+        let config = authorizedOptions
+        let exclusions = automaticExclusions.map(\.path)
+        let restored = restored
+        let sort = directorySort
+        if !browse { browsingDirectory = nil }
+        isSearching = true
+        reader.async { [weak self] in
+            guard !cancellation.cancelled else { return }
+            var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
+            let result = Result { () -> ([SpotlightFile], String, URL?) in
+                if recent {
+                    let files = Array(urls.lazy.compactMap { try? locations.item(at: $0) }.filter { !$0.isDirectory }.prefix(30))
+                    return (files, files.isEmpty ? "通过 Keylane 打开文件后会显示在这里。" : "最近使用 · \(files.count) 项", nil)
+                }
+                let file = try locations.item(at: urls[0])
+                if browse && file.isDirectory {
+                    let children = try locations.children(of: file.url, sortedBy: sort, isCancelled: { cancellation.cancelled })
+                    return (children, children.isEmpty ? "该文件夹没有可显示的项目。" : "\(file.name) · \(children.count) 项", file.url)
+                }
+                return ([file], file.url.path, nil)
+            }
+            DispatchQueue.main.async {
+                guard let self, self.queryVersion == ticket, !cancellation.cancelled else { return }
+                switch result {
+                case .success(let (items, status, directory)):
+                    self.browsingDirectory = directory
+                    self.emit(items, status)
+                case .failure(let error):
+                    self.browsingDirectory = nil
+                    self.emit([], error.localizedDescription)
+                }
+                self.isSearching = false
+            }
+        }
     }
     private func refreshQuery(delay: Double = 0) {
         guard isRunning, options.enabled, !currentQuery.isEmpty else { return }
@@ -261,10 +462,10 @@ final class FileSearchController: ObservableObject {
         let cancellation = queryCancellation
         queryVersion += 1; let ticket = queryVersion
         let text = currentQuery
-        var config = options
+        var config = authorizedOptions
         config.contentSearch = config.contentSearch && includesQueryContents
         let queryOptions = config
-        let excluded = automaticExclusions.map(\.path)
+        let excluded = options.excludedPaths + automaticExclusions.map(\.path)
         let work = DispatchWorkItem { [weak self] in
             guard let self, !cancellation.cancelled else { return }
             self.reader.async { [weak self] in
@@ -308,21 +509,25 @@ final class FileSearchController: ObservableObject {
         cancelMerge()
         let ticket = mergeVersion
         let query = currentQuery
-        let config = options
-        let exclusions = automaticExclusions.map(\.path)
+        let config = authorizedOptions
+        let exclusions = config.excludedPaths + automaticExclusions.map(\.path)
         let local = localResults
+        let removed = recentlyRemoved
         let system = config.useIgnoreFiles ? [] : spotlightResults
+        let restored = restored
         let task = DispatchWorkItem { [weak self] in
-            let ignored = FileSearchRules.pathFilter(config.ignorePatterns)
-            let allowed = system.filter { hit in
-                let path = hit.file.id
-                return config.roots.contains { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
-                    && (config.includeHidden || !path.split(separator: "/").contains { $0.hasPrefix(".") })
-                    && !ignored(path, hit.file.url.lastPathComponent)
-                    && !exclusions.contains { path == $0 || path.hasPrefix($0 + "/") }
+            var allowed: [RankedFile] = []
+            if !system.isEmpty {
+                var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
+                allowed = system.filter { hit in
+                    config.roots.contains { FileSearchLocation.contains(hit.file.id, in: $0) }
+                        && (try? locations.item(at: hit.file.url)) != nil
+                }
             }
             var seen = Set<String>()
-            let ordered = (local + allowed).filter { seen.insert($0.file.id).inserted }
+            let ordered = (local + allowed).filter { hit in
+                !removed.contains { FileSearchLocation.contains(hit.file.id, in: $0) } && seen.insert(hit.file.id).inserted
+            }
                 .sorted { $0.precedes($1) }
             let best = ordered.prefix(200).map { $0.file.readingResourceMetadata() }
             let truncated = ordered.count >= 200
@@ -359,15 +564,20 @@ final class FileSearchController: ObservableObject {
             DispatchQueue.main.async { if !runtime.cancelled { self.indexStatus = error.localizedDescription } }
         }
     }
-    func startIndex() {
+    func startIndex(force: Bool = false) {
         dirtyPaths.removeAll()
         needsFullScan = false
-        scanIndex()
+        scanIndex(force: force)
     }
-    private func scanIndex(paths: [String]? = nil) {
+
+    private func scanIndex(paths: [String]? = nil, force: Bool = false) {
         guard isRunning, options.enabled else { return }
+        guard !indexPaused else {
+            indexStatus = "本地索引已暂停，仍可搜索已有条目。"
+            return
+        }
         didStart = true; cancellation.cancel(); let token = FileScanCancellation(); cancellation = token
-        let config = options; let exclusions = automaticExclusions.map(\.path); let restored = restored
+        let config = authorizedOptions; let exclusions = config.excludedPaths + automaticExclusions.map(\.path); let restored = restored
         indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []; startWatch()
         writer.async { [weak self] in
             guard let self, let db = self.writeDB, !token.cancelled else { return }
@@ -500,7 +710,7 @@ final class FileSearchController: ObservableObject {
                                                 auto.append(.init(path: path, reason: "构建输出或依赖缓存", events: 0)); continue
                                             }
                                             let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
-                                            if try !db.touchUnchanged(record, root: root, epoch: epoch, contentSearch: config.contentSearch) {
+                                            if try force || !db.touchUnchanged(record, root: root, epoch: epoch, contentSearch: config.contentSearch) {
                                                 let body = config.contentSearch && !isDir && !symlink ? FileSearchIndex.content(at: url) : ""
                                                 try db.put(record, body: body, root: root, epoch: epoch)
                                             }
@@ -516,7 +726,8 @@ final class FileSearchController: ObservableObject {
                             lastProgress = Date(); let count = processed
                             DispatchQueue.main.async { if self.cancellation === token {
                                 self.indexStatus = "正在索引：\(count)项"
-                                if self.lastPublished.isEmpty && !self.currentQuery.isEmpty && !self.isSearching { self.refreshQuery() }
+                                if self.lastPublished.isEmpty && !self.currentQuery.isEmpty && FileSearchLocation.typedURL(self.currentQuery) == nil
+                                    && !self.isSearching { self.refreshQuery() }
                             } }
                         }
                     }
@@ -532,7 +743,10 @@ final class FileSearchController: ObservableObject {
                     self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
                     for value in auto where !self.automaticExclusions.contains(where: { $0.path == value.path }) { self.automaticExclusions.append(value) }; self.saveAutomatic()
                     self.indexStatus = denied.isEmpty ? "索引已更新" : "部分目录无法访问，请重新授权搜索范围。"
-                    if !self.currentQuery.isEmpty { self.refreshQuery() }
+                    if self.hasQuery, !self.currentQuery.isEmpty {
+                        if FileSearchLocation.typedURL(self.currentQuery) == nil { self.refreshQuery() }
+                        else { self.reloadSearch() }
+                    }
                     self.scheduleRefresh()
                 }
             } catch { DispatchQueue.main.async {
@@ -549,7 +763,8 @@ final class FileSearchController: ObservableObject {
 
     private func stopWatch() { pendingRefresh?.cancel(); pendingRefresh = nil; dirtyPaths.removeAll(); needsFullScan = false; if let watch { FSEventStreamStop(watch); FSEventStreamInvalidate(watch); FSEventStreamRelease(watch) }; watch = nil }
     private func startWatch() {
-        guard watch == nil, watchEnabled, options.enabled, !options.roots.isEmpty else { return }
+        let roots = authorizedRoots
+        guard watch == nil, watchEnabled, options.enabled, !indexPaused, !roots.isEmpty else { return }
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
         watch = FSEventStreamCreate(nil, { _, context, count, rawPaths, flags, _ in
             guard let context else { return }
@@ -557,7 +772,7 @@ final class FileSearchController: ObservableObject {
             let paths = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue() as! [String]
             let recovery = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
             owner.changed(Array(paths.prefix(count)), requiresFullScan: (0..<count).contains { flags[$0] & recovery != 0 })
-        }, &context, options.roots as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 2, FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
+        }, &context, roots as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 2, FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
         if let watch {
             FSEventStreamSetDispatchQueue(watch, .main)
             if !FSEventStreamStart(watch) {
@@ -610,7 +825,9 @@ final class FileSearchController: ObservableObject {
             if path == library || path.hasPrefix(library + "/") {
                 guard options.roots.contains(where:{ ($0 == library || $0.hasPrefix(library + "/")) && (path == $0 || path.hasPrefix($0 + "/")) }) else { return false }
             }
-            return !automaticExclusions.contains { path == $0.path || path.hasPrefix($0.path + "/") } && !options.ignorePatterns.contains { FileSearchRules.glob($0,matches:path) }
+            return !automaticExclusions.contains { FileSearchLocation.contains(path, in: $0.path) }
+                && !options.excludedPaths.contains { FileSearchLocation.contains(path, in: $0) }
+                && !options.ignorePatterns.contains { FileSearchRules.glob($0,matches:path) }
         }
         dirtyPaths.formUnion(relevant)
         // Purge newly excluded subtrees even though their own events are filtered above.
@@ -625,7 +842,7 @@ final class FileSearchController: ObservableObject {
     }
 
     private func scheduleRefresh() {
-        guard !indexing, pendingRefresh == nil, needsFullScan || !dirtyPaths.isEmpty else { return }
+        guard !indexPaused, !indexing, pendingRefresh == nil, needsFullScan || !dirtyPaths.isEmpty else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingRefresh = nil
