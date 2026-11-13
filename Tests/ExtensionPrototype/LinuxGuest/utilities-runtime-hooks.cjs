@@ -1,5 +1,5 @@
 const { createHash } = require("node:crypto");
-const { Cache, cacheAvailable, cacheWritesBlocked } = require("./cache-api.cjs");
+const { Cache, cacheAvailable, cacheWritesBlocked, cachedQueriesBlocked } = require("./cache-api.cjs");
 
 const halfLifeMilliseconds = 7 * 24 * 60 * 60 * 1000;
 const maximumRankedItems = 24;
@@ -96,7 +96,7 @@ function utilitiesRuntimeHooksFor(apiProvider, usePromise) {
 
     const state = usePromise(fn, args, {
       ...options,
-      execute: options.execute !== false && !cacheWritesBlocked(),
+      execute: options.execute !== false && !cachedQueriesBlocked(),
       onData(data) {
         if (key !== undefined) writeCache(cache, key, data);
         options.onData?.(data);

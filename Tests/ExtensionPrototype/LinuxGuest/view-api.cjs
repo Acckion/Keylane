@@ -28,7 +28,7 @@ const { describeUtilityIcon } = require("./utilities-visual-feedback.cjs");
 const { captureException, captureMemorySnapshot } = require("./diagnostics-api.cjs");
 
 const { Alert, AlertActionStyle, makePreferences, randomId, viewID, specialKeys } = require("./foundation-api.cjs");
-const { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCacheWriteLifetime } = require("./cache-api.cjs");
+const { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCurrentViewInput, withCacheWriteLifetime } = require("./cache-api.cjs");
 const { makePushNavigation, pushActionComponent, checkedViewRoute, lifecycleReceipt } = require("./push-navigation.cjs");
 
 const { makeApplicationQueries } = require("./applications-api.cjs");
@@ -467,7 +467,7 @@ async function renderView(renderPage, input, scope) {
   async function searchDropdown(text) {
     const handler = dropdownSearchHandler(root);
     if (!handler || typeof text !== "string" || Buffer.byteLength(text) > 256) return;
-    await routeReplay.run(true, () => withCacheWritesBlocked(() => handler(text)));
+    await routeReplay.run(true, () => withCurrentViewInput(() => handler(text)));
     appliedQuery = text;
     effects = [];
     root = renderRoot();
@@ -508,11 +508,15 @@ async function renderView(renderPage, input, scope) {
       root = renderRoot();
     }
     if (menuSearch && input.dropdownQuery !== appliedQuery) await searchDropdown(input.dropdownQuery);
-    await settleEffects();
+    if (replayingViewInput) {
+      await routeReplay.run(true, () => withCurrentViewInput(settleEffects));
+    } else {
+      await settleEffects();
+    }
     if (formEvents.length) {
       replayingViewInput = true;
       for (const event of formEvents) {
-        await routeReplay.run(true, () => withCacheWritesBlocked(async () => {
+        await routeReplay.run(true, () => withCurrentViewInput(async () => {
           await replayFormEvent(root, children, event, dropdownContext);
           effects = [];
           root = renderRoot();
@@ -540,7 +544,7 @@ async function renderView(renderPage, input, scope) {
       const handler = root.props.onSelectionChange;
       if (typeof handler === "function") {
         replayingViewInput = true;
-        await routeReplay.run(true, () => withCacheWritesBlocked(async () => {
+        await routeReplay.run(true, () => withCurrentViewInput(async () => {
           if (typeof selected === "string") await handler(selected);
           else if (!visible.length) await handler(null);
           await new Promise(setImmediate);
@@ -561,11 +565,13 @@ async function renderView(renderPage, input, scope) {
       replayingViewInput = true;
       actionMenu = await replayActionMenu(menuRoute, () => panelForRoute(root, query, menuRow, scope.panel), children,
         async (callback, ...args) => {
-          await routeReplay.run(true, () => withCacheWritesBlocked(async () => {
+          await routeReplay.run(true, () => withCurrentViewInput(async () => {
             await callback(...args);
             await new Promise(setImmediate);
+            effects = [];
+            root = renderRoot();
+            await settleEffects();
           }));
-          root = renderRoot();
         });
     }
   } finally {

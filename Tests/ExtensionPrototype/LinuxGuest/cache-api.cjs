@@ -6,6 +6,7 @@ const maximumNameBytes = 128;
 const maximumValueBytes = 2048;
 const unpairedSurrogate = /[\uD800-\uDFFF]/u;
 const cacheWriteBlock = new AsyncLocalStorage();
+const currentViewInput = Symbol("currentViewInput");
 
 let scope;
 
@@ -61,8 +62,14 @@ function withCacheWritesBlocked(callback) {
   return cacheWriteBlock.run(true, callback);
 }
 
+function withCurrentViewInput(callback) {
+  const parent = cacheWriteBlock.getStore();
+  return cacheWriteBlock.run(parent === true || parent?.active === false ? true : currentViewInput, callback);
+}
+
 function withCacheWriteLifetime(lifetime, callback) {
-  return cacheWriteBlock.run(cacheWriteBlock.getStore() === true ? true : lifetime, callback);
+  const parent = cacheWriteBlock.getStore();
+  return cacheWriteBlock.run(parent === true || parent === currentViewInput || parent?.active === false ? parent : lifetime, callback);
 }
 
 function cacheAvailable() {
@@ -70,6 +77,11 @@ function cacheAvailable() {
 }
 
 function cacheWritesBlocked() {
+  const guard = cacheWriteBlock.getStore();
+  return scope?.writable === false || guard === true || guard === currentViewInput || guard?.active === false;
+}
+
+function cachedQueriesBlocked() {
   const guard = cacheWriteBlock.getStore();
   return scope?.writable === false || guard === true || guard?.active === false;
 }
@@ -205,4 +217,4 @@ class Cache {
   }
 }
 
-module.exports = { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCacheWriteLifetime, cacheAvailable, cacheWritesBlocked };
+module.exports = { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCurrentViewInput, withCacheWriteLifetime, cacheAvailable, cacheWritesBlocked, cachedQueriesBlocked };

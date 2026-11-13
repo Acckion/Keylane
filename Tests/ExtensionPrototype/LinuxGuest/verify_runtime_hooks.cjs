@@ -95,3 +95,52 @@ test("DeeplinkType exposes the declared script and extension values", () => {
   assert.deepEqual(DeeplinkType, { ScriptCommand: "script-command", Extension: "extension" });
   assert.equal(Object.isFrozen(DeeplinkType), true);
 });
+
+test("current selection and form input run cached queries without persisting results", async () => {
+  const { Form, Grid, useState, LocalStorage } = api;
+  for (const View of [List, Grid, Form]) {
+    const calls = [];
+    const command = () => {
+      const [value, update] = useState("");
+      const cached = useCachedPromise(async (input) => {
+        calls.push(input);
+        await assert.rejects(LocalStorage.setItem("blocked", input), /LocalStorage writes are unavailable/);
+        assert.throws(() => new api.Cache().set("blocked", input), /unavailable/);
+        return input.toUpperCase();
+      }, [value], { execute: value !== "" });
+      const ordinary = usePromise(async (input) => `:${input}`, [value], { execute: value !== "" });
+      const title = cached.data && ordinary.data ? cached.data + ordinary.data : "initial";
+      if (View === Form) {
+        return Form({ navigationTitle: title, children: Form.TextField({ id: "input", value, onChange: update }) });
+      }
+      return View({ onSelectionChange: update, children: View.Item({ id: "item", title, content: "📄" }) });
+    };
+    const input = View === Form
+      ? { formEvents: [{ id: "input", kind: "change", value: "item" }] }
+      : { selectionEvent: true, selectedItemId: "item" };
+    const reply = await render(command, { ...input, cache: {}, storage: {} });
+    assert.equal(reply.form?.navigationTitle ?? reply.rows?.[0].title ?? reply.grid.sections[0].items[0].title, "ITEM:item");
+    assert.deepEqual(calls, ["item"]);
+    assert.equal(reply.cache, undefined);
+  }
+});
+
+test("current input cannot enable cached work when reconstructing an ancestor route", async () => {
+  const { useState } = api;
+  let calls = 0;
+  const command = () => {
+    const [value, update] = useState("");
+    const result = useCachedPromise(async (input) => { calls++; return input; }, [value], { execute: !!value });
+    return List({ onSelectionChange: update, children: List.Item({
+      id: "item", title: "Item", actions: ActionPanel({ children: Action.Push({
+        title: "Open", target: Detail({ markdown: result.data ?? "cached query blocked" }),
+      }) }),
+    }) });
+  };
+  const reply = await render(command, {
+    cache: {}, viewRoute: [{ mode: "action", row: 0, id: 0, selectedItemId: "item", query: "" }],
+  });
+  assert.equal(reply.detail.markdown, "cached query blocked");
+  assert.equal(calls, 0);
+  assert.equal(reply.cache, undefined);
+});
