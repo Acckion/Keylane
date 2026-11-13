@@ -142,13 +142,17 @@ enum UtilityLauncherModules {
         let pageID = PageID(rawValue: "Emoji")
         let title = EmojiCatalog.label("Emoji 与符号", "Emoji & Symbols")
         let use: (EmojiItem, Bool) -> Void = { item, paste in
-            UtilityActions.copy(item.glyph)
-            controller.recordUse(item)
             let delegate = NSApp.delegate as? Delegate
+            guard controller.selected?.id == item.id else { return }
+            guard let generation = controller.copy(item) else {
+                delegate?.showLauncherFeedback(EmojiCatalog.label("无法复制字符", "Could not copy character"), style: .failure)
+                return
+            }
             if paste, let delegate, delegate.pasteTargetName != nil {
-                delegate.pasteIntoPreviousApplication()
+                delegate.pasteIntoPreviousApplication(clipboardGeneration: generation)
             } else {
                 delegate?.hideLauncher()
+                delegate?.showLauncherFeedback(EmojiCatalog.label("已复制字符", "Character copied"), style: .success)
             }
         }
         var page = LauncherPage(id: pageID,
@@ -166,7 +170,7 @@ enum UtilityLauncherModules {
                                         LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
                                                        keys: ["↩"], perform: { use(item, true) }),
                                         LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"),
-                                                       icon: "doc.on.doc", perform: { use(item, false) })
+                                                       icon: "doc.on.doc", keys: ["⌘", "↩"], perform: { use(item, false) })
                                     ]
                                 },
                                 updates: Publishers.Merge(ViewObservation.changes(controller.$selection),
@@ -180,6 +184,8 @@ enum UtilityLauncherModules {
         }
         page.leave = controller.stop
         page.resume = controller.start
+        page.primaryEnabled = { controller.selected != nil }
+        page.shortcutSubmit = { if let item = controller.selected { use(item, false) } }
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
