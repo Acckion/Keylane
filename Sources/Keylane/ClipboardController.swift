@@ -5,6 +5,14 @@ import Vision
 import UniformTypeIdentifiers
 import KeylaneCore
 
+enum ClipboardPrimaryAction: String {
+    case paste, copy
+}
+
+enum ClipboardReplayFormat: Hashable {
+    case preferred, original, plainText, representation(String), pngFromTIFF
+}
+
 struct ClipboardTextDraft: Identifiable, Equatable {
     let id: String
     let text: String
@@ -62,6 +70,18 @@ final class ClipboardController: ObservableObject {
             ocrAttempts.removeAll()
             requestOCRScan()
         }
+    }
+    @Published var primaryAction: ClipboardPrimaryAction {
+        didSet { preferences.set(primaryAction.rawValue, forKey: "clipboardPrimaryAction") }
+    }
+    @Published var prefersPlainText: Bool {
+        didSet { preferences.set(prefersPlainText, forKey: "clipboardPrefersPlainText") }
+    }
+    @Published var updatesHistoryAfterReplay: Bool {
+        didSet { preferences.set(updatesHistoryAfterReplay, forKey: "clipboardUpdatesHistoryAfterReplay") }
+    }
+    @Published var showsLinkVisuals: Bool {
+        didSet { preferences.set(showsLinkVisuals, forKey: "clipboardShowsLinkVisuals") }
     }
     @Published var historyCommandEnabled: Bool { didSet { preferences.set(historyCommandEnabled, forKey: "clipboardHistoryCommandEnabled") } }
     @Published var retentionDays: Int { didSet { preferences.set(retentionDays, forKey: "clipboardRetentionDays"); updateLimits() } }
@@ -135,6 +155,10 @@ final class ClipboardController: ObservableObject {
         savesUniversalClipboardImmediately = preferences.bool(forKey: "clipboardSaveUniversalImmediately")
         automaticOCR = preferences.bool(forKey: "clipboardAutomaticOCR")
         accurateOCR = preferences.object(forKey: "clipboardAccurateOCR") as? Bool ?? true
+        primaryAction = preferences.string(forKey: "clipboardPrimaryAction").flatMap(ClipboardPrimaryAction.init(rawValue:)) ?? .paste
+        prefersPlainText = preferences.bool(forKey: "clipboardPrefersPlainText")
+        updatesHistoryAfterReplay = preferences.bool(forKey: "clipboardUpdatesHistoryAfterReplay")
+        showsLinkVisuals = preferences.object(forKey: "clipboardShowsLinkVisuals") as? Bool ?? true
         historyCommandEnabled = preferences.object(forKey: "clipboardHistoryCommandEnabled") as? Bool ?? true
         retentionDays = preferences.object(forKey: "clipboardRetentionDays") as? Int ?? 30
         maxItems = preferences.object(forKey: "clipboardMaxItems") as? Int ?? 500
@@ -788,9 +812,64 @@ final class ClipboardController: ObservableObject {
     }
 
     @discardableResult func copySelected(plainText: Bool = false) -> Bool {
+        copySelected(format: plainText ? .plainText : .original)
+    }
+
+    func replayFormat(_ format: ClipboardReplayFormat, for detail: ClipDetail?) -> ClipboardReplayFormat {
+        guard format == .preferred else { return format }
+        guard prefersPlainText, let detail, detail.item.kind == .text, !plainText(of: detail).isEmpty else { return .original }
+        if let snapshot = detail.snapshot {
+            let textTypes: Set<String> = ["public.utf8-plain-text", "public.utf16-plain-text", "public.rtf",
+                                          "com.apple.flat-rtfd", "public.html", "public.url"]
+            guard snapshot.items.count == 1, Set(snapshot.formats).isSubset(of: textTypes) else { return .original }
+        }
+        return .plainText
+    }
+
+    func recordReplay(of id: String?) {
+        guard updatesHistoryAfterReplay, let id else { return }
+        let date = Date()
+        mutate { try $0.recordReplay(id: id, at: date) }
+    }
+
+    private func plainText(of detail: ClipDetail) -> String {
+        if let text = detail.snapshot?.plainText, !text.isEmpty { return text }
+        // Snapshot-backed PDF and RTFD records may use a display label as their stored text.
+        if detail.snapshot == nil, !detail.text.isEmpty { return detail.text }
+        if !detail.ocrText.isEmpty { return detail.ocrText }
+        return detail.files.map(\.path).joined(separator: "\n")
+    }
+
+    var availableReplayFormats: [ClipboardReplayFormat] {
+        guard let detail = selectedDetail else { return [] }
+        var formats: [ClipboardReplayFormat] = plainText(of: detail).isEmpty ? [] : [.plainText]
+        if let items = detail.snapshot?.items, let first = items.first {
+            let common = items.dropFirst().reduce(Set(first.representations.map(\.type))) { types, item in
+                types.intersection(item.representations.map(\.type))
+            }
+            let types = common.subtracting(["public.utf8-plain-text", "public.utf16-plain-text", "public.file-url"])
+            formats += types.sorted().map { .representation($0) }
+            if detail.item.kind == .image, common.contains(UTType.tiff.identifier), !common.contains(UTType.png.identifier) {
+                formats.append(.pngFromTIFF)
+            }
+        } else if detail.item.kind == .image, detail.assetURL?.pathExtension.lowercased() == "tiff" {
+            formats.append(.pngFromTIFF)
+        }
+        return formats
+    }
+
+    @discardableResult func copySelected(format requested: ClipboardReplayFormat) -> Bool {
+        guard runtime != nil else { return false }
         guard !searching, !loadingDetail else { status = "内容正在加载，请稍后重试。"; return false }
-        guard let detail, detail.item.id == selectedID else { status = "请先选择记录并等待内容加载。"; return false }
-        if !plainText, detail.files.contains(where: { $0.isSystemTransferReference == true }),
+        guard let detail = selectedDetail else { status = "请先选择记录并等待内容加载。"; return false }
+        let format = replayFormat(requested, for: detail)
+        if format == .plainText {
+            let text = plainText(of: detail)
+            guard !text.isEmpty else { status = "这条记录没有可复制的文字。"; return false }
+            return copyText(text)
+        }
+        if format != .original { return copyRepresentations(format, from: detail) }
+        if detail.files.contains(where: { $0.isSystemTransferReference == true }),
            let transfer = currentUniversalFiles, transfer.generation == board.changeCount,
            transfer.paths == detail.files.map(\.path) {
             // Rewriting the URL would drop the system's original file access grant.
@@ -800,11 +879,7 @@ final class ClipboardController: ObservableObject {
         var accessed: [URL] = []
         defer { accessed.forEach { $0.stopAccessingSecurityScopedResource() } }
         let objects: [NSPasteboardWriting]
-        if plainText {
-            let text = detail.snapshot.map { !$0.plainText.isEmpty ? $0.plainText : (!detail.ocrText.isEmpty ? detail.ocrText : detail.files.map(\.path).joined(separator:"\n")) } ?? (!detail.text.isEmpty ? detail.text : (!detail.ocrText.isEmpty ? detail.ocrText : detail.files.map(\.path).joined(separator:"\n")))
-            guard !text.isEmpty else { status = "这条记录没有可复制的文字；可先识别图片文字。"; return false }
-            return copyText(text)
-        } else if let snapshot = detail.snapshot {
+        if let snapshot = detail.snapshot {
             var resolved: [String:URL] = [:]
             for reference in detail.files {
                 var url = URL(fileURLWithPath:reference.path)
@@ -850,6 +925,69 @@ final class ClipboardController: ObservableObject {
         }
         }
         return writeToPasteboard(objects, markLegacyReplay: detail.snapshot == nil)
+    }
+
+    private func copyRepresentations(_ format: ClipboardReplayFormat, from detail: ClipDetail) -> Bool {
+        let sourceType: String
+        let outputType: String
+        switch format {
+        case .representation(let type):
+            sourceType = type
+            outputType = type
+        case .pngFromTIFF:
+            sourceType = UTType.tiff.identifier
+            outputType = UTType.png.identifier
+        default:
+            return false
+        }
+        let representations: [Data]
+        if let snapshot = detail.snapshot {
+            representations = snapshot.items.compactMap { item in
+                item.representations.first { $0.type == sourceType }?.data
+            }
+            guard !representations.isEmpty, representations.count == snapshot.items.count else {
+                status = "并非每个项目都提供所选格式。"
+                return false
+            }
+        } else if format == .pngFromTIFF, let url = detail.assetURL, url.pathExtension.lowercased() == "tiff",
+                  let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count <= 16 * 1024 * 1024 {
+            representations = [data]
+        } else {
+            status = "此记录没有所选格式。"
+            return false
+        }
+        var totalBytes = 0
+        var items: [NSPasteboardItem] = []
+        for data in representations {
+            let output = format == .pngFromTIFF ? Self.png(fromTIFF: data) : data
+            guard let output, output.count <= 16 * 1024 * 1024,
+                  totalBytes + output.count <= 32 * 1024 * 1024 else {
+                status = "无法转换图片，或转换后的图片超出大小限制。"
+                return false
+            }
+            totalBytes += output.count
+            let item = NSPasteboardItem()
+            item.setData(output, forType: .init(outputType))
+            if items.isEmpty { item.setString("1", forType: .init("org.keylane.clipboard.replay")) }
+            items.append(item)
+        }
+        return writeToPasteboard(items)
+    }
+
+    private static func png(fromTIFF data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetType(source) == UTType.tiff.identifier as CFString,
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0, width <= 24_000_000 / height,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 
     func placeholderHistory(offset: Int, current: String?) -> String? {

@@ -4,6 +4,7 @@ import ImageIO
 import KeylaneCore
 import LinkPresentation
 import SwiftUI
+import Synchronization
 import UniformTypeIdentifiers
 
 struct ClipboardLinkMetadata {
@@ -64,13 +65,18 @@ final class ClipboardLinkPreviews {
     private var active = false
     private var generation = 0
     private var webSession: URLSession?
+    private let makeSession: () -> URLSession
+
+    init(makeSession: @escaping () -> URLSession = ClipboardLinkPreviews.ephemeralSession) {
+        self.makeSession = makeSession
+    }
     private let pages = RequestCache<ClipboardLinkMetadata>(count: 48, bytes: 24 * 1024 * 1024, lifetime: 900)
     private let icons = RequestCache<NSImage>(count: 128, bytes: 4 * 1024 * 1024, lifetime: 3600)
 
-    func start() { active = true }
-
-    func stop() {
-        active = false
+    func setEnabled(_ enabled: Bool) {
+        guard active != enabled else { return }
+        active = enabled
+        guard !enabled else { return }
         generation += 1
         pages.clear()
         icons.clear()
@@ -108,15 +114,17 @@ final class ClipboardLinkPreviews {
 
     func icon(for url: URL) async -> NSImage? {
         guard active, let origin = Self.origin(for: url) else { return nil }
+        let ticket = generation
         let session = sessionForPreviews()
         // Rows request only an origin's icon. Fetch the full URL only for the selected entry.
-        return await icons.value(for: origin, cost: { Self.imageCost($0) }) {
+        let result = await icons.value(for: origin, cost: { Self.imageCost($0) }) {
             if let icon = await Self.downloadImage(origin.appendingPathComponent("favicon.ico"), maximum: 64, session: session) { return icon }
             let metadata = await Self.fetch(origin)
             if let icon = await Self.loadImage(metadata?.iconProvider, maximum: 64) { return icon }
             let head = await Self.webPageHead(at: origin, session: session)
             return await Self.downloadImage(head?.icon, maximum: 64, session: session)
         }
+        return active && generation == ticket ? result : nil
     }
 
     static func origin(for url: URL) -> URL? {
@@ -141,13 +149,17 @@ final class ClipboardLinkPreviews {
 
     private func sessionForPreviews() -> URLSession {
         if let webSession { return webSession }
+        let session = makeSession()
+        webSession = session
+        return session
+    }
+
+    private nonisolated static func ephemeralSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.timeoutIntervalForRequest = 5
         configuration.timeoutIntervalForResource = 8
-        let session = URLSession(configuration: configuration)
-        webSession = session
-        return session
+        return URLSession(configuration: configuration)
     }
 
     private nonisolated static func request(for url: URL, accepts: String) -> URLRequest {
@@ -218,12 +230,28 @@ final class ClipboardLinkPreviews {
     }
 
     private static func loadImage(_ provider: NSItemProvider?, maximum: Int) async -> NSImage? {
-        guard let provider,
+        guard !Task.isCancelled, let provider,
               let type = provider.registeredTypeIdentifiers.first(where: { UTType($0)?.conforms(to: .image) == true }) else { return nil }
-        return await withCheckedContinuation { continuation in
-            _ = provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
-                continuation.resume(returning: data.flatMap { decode($0, maximum: maximum) })
+        let load = Mutex<(cancelled: Bool, progress: Progress?)>((false, nil))
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else { continuation.resume(returning: nil); return }
+                let progress = provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                    continuation.resume(returning: data.flatMap { decode($0, maximum: maximum) })
+                }
+                let cancelled = load.withLock { state in
+                    guard !state.cancelled else { return true }
+                    state.progress = progress
+                    return false
+                }
+                if cancelled { progress.cancel() }
             }
+        } onCancel: {
+            let progress = load.withLock { state in
+                state.cancelled = true
+                return state.progress
+            }
+            progress?.cancel()
         }
     }
 
