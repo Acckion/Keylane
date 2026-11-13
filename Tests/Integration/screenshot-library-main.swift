@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import CoreImage.CIFilterBuiltins
+import KeylaneCore
 import QuickLookThumbnailing
 
 @main
@@ -18,7 +19,7 @@ struct ScreenshotLibraryCheck {
         defer { try? FileManager.default.removeItem(at: folder) }
         let defaults = UserDefaults(suiteName: identifier)!
         defer { defaults.removePersistentDomain(forName: identifier) }
-        defaults.set(try JSONEncoder().encode([ScreenshotScope(path: folder.path, bookmark: nil)]), forKey: "screenshotScopes")
+        defaults.set(try JSONEncoder().encode([ScreenshotScope(path: folder.standardizedFileURL.path, bookmark: nil)]), forKey: "screenshotScopes")
         let image = folder.appendingPathComponent("Screenshot Settings Fixture.png")
         try writeImage(image)
 
@@ -141,6 +142,7 @@ struct ScreenshotLibraryCheck {
         try require(library.sections.first?.items.map(\.id) == [movieItem.id], "Re-enabled screenshots must restore pins")
 
         try await verifyLiveChanges(library, folder: folder, image: qr, movie: movie)
+        try await verifyOCRLifecycle(in: folder, defaults: defaults)
         print("Screenshot scope, live changes, mixed media, latest image, Quick Look thumbnail, OCR and QR, file copy, pinning, grid zoom, and trash passed")
     }
 
@@ -216,19 +218,139 @@ struct ScreenshotLibraryCheck {
         }
     }
 
-    @MainActor private static func writeImage(_ url: URL) throws {
+    @MainActor private static func verifyOCRLifecycle(in base: URL, defaults: UserDefaults) async throws {
+        let folder = base.appendingPathComponent("OCR fixtures")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defaults.set(try JSONEncoder().encode([ScreenshotScope(path: folder.standardizedFileURL.path, bookmark: nil)]), forKey: "screenshotScopes")
+        let image = folder.appendingPathComponent("Screenshot OCR Lifecycle.png")
+        let bad = folder.appendingPathComponent("Screenshot Invalid.png")
+        let timestamp = Date(timeIntervalSince1970: 1_780_000_000)
+        let size = 512 * 1024
+        func replace(_ text: String) throws {
+            try writeImage(image, text: text, fixedSize: size)
+            try FileManager.default.setAttributes([.modificationDate: timestamp, .creationDate: timestamp], ofItemAtPath: image.path)
+        }
+        try replace("KEYLANE ORIGINAL")
+        try Data("Invalid image".utf8).write(to: bad)
+        let library = ScreenshotLibrary(defaults: defaults)
+        try require(library.accurate && !library.allowCloudOCR, "Recognition and cloud defaults changed")
+        library.enabled = true
+        library.recognizesText = true
+        library.start()
+        defer { library.stop() }
+        try await wait("initial OCR fixtures") { !library.scanning && library.results.count == 2 }
+        guard let original = library.results.first(where: { $0.name == image.lastPathComponent }),
+              let invalid = library.results.first(where: { $0.name == bad.lastPathComponent }) else {
+            throw CheckError.failure("OCR fixtures are missing")
+        }
+        func search(_ query: String) async throws {
+            library.search(query)
+            try await wait(query) { !library.searchingText }
+        }
+        try await search("text:ORIGINAL")
+        try require(library.results.map(\.id) == [original.id] && library.skippedOCR == 1,
+                    "English OCR or unreadable image feedback failed")
+        try await search("text:ORIGINAL")
+        try require(library.results.map(\.id) == [original.id], "Repeated OCR query lost the original match")
+
+        try replace("REPLACEMENT 截图测试")
+        library.refresh()
+        library.search("name:Lifecycle")
+        try await wait("replacement identity") { !library.scanning && library.selected?.identity != original.identity }
+        guard let updated = library.selected else { throw CheckError.failure("Replacement not indexed") }
+        try require(updated.id == original.id && updated.modified == original.modified && updated.size == original.size,
+                    "Replacement must preserve the former cache key")
+        try await search("text:ORIGINAL")
+        try require(library.results.isEmpty, "Replacement incorrectly reused old OCR text at the same path, date and size")
+        try await search("text:REPLACEMENT")
+        try require(library.results.map(\.id) == [updated.id], "Changed image was not recognized")
+        try await search("文字:截图测试")
+        try require(library.results.map(\.id) == [updated.id], "Chinese OCR failed")
+
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        func seedPasteboard() {
+            pasteboard.clearContents()
+            pasteboard.setString("Untouched", forType: .string)
+        }
+        seedPasteboard()
+        var rejected = false
+        do { _ = try await library.copyImageText(.ocr, from: invalid, to: pasteboard) }
+        catch { rejected = true }
+        try require(rejected && pasteboard.string(forType: .string) == "Untouched", "Invalid image changed the pasteboard")
+
+        let waiting = Task { @MainActor in try await library.copyImageText(.ocr, from: updated, to: pasteboard) }
+        await Task.yield()
+        library.stop()
+        var cancelled = false
+        do { _ = try await waiting.value }
+        catch is CancellationError { cancelled = true }
+        try require(cancelled && pasteboard.string(forType: .string) == "Untouched",
+                    "Closing the screenshot page did not cancel OCR copy")
+
+        let large = folder.appendingPathComponent("Large")
+        try FileManager.default.createDirectory(at: large, withIntermediateDirectories: false)
+        for index in 0..<384 {
+            let name = String(format: "Screenshot Load %03d.png", index)
+            try FileManager.default.linkItem(at: image, to: large.appendingPathComponent(name))
+        }
+        for _ in 0..<3 {
+            library.search("name:Lifecycle")
+            library.start()
+            try await wait("reopen before large OCR") { !library.scanning && !library.searchingText }
+            library.search("name:Load text:REPLACEMENT")
+            try require(library.searchingText, "Large text query was not started")
+            library.search("name:Lifecycle")
+            try require(!library.searchingText && library.results.map(\.id) == [updated.id],
+                        "A newer metadata query did not supersede OCR")
+            library.search("name:Load text:REPLACEMENT")
+            library.stop()
+            try await Task.sleep(for: .milliseconds(200))
+            try require(!library.searchingText && library.results.isEmpty && library.skippedOCR == 0,
+                        "Stopped text query published results or feedback")
+        }
+
+        library.search("name:Lifecycle")
+        library.start()
+        try await wait("reopen after cancellation") { !library.scanning && !library.searchingText }
+        try await search("name:Lifecycle text:REPLACEMENT")
+        try require(library.results.map(\.id) == [updated.id], "OCR failed after reopening")
+        library.accurate = false
+        try await wait("fast recognition mode") { !library.searchingText }
+        try require(library.results.map(\.id) == [updated.id], "Switching OCR mode lost the current query")
+        library.accurate = true
+        try await wait("accurate recognition mode") { !library.searchingText }
+        library.search("name:Load text:REPLACEMENT")
+        library.recognizesText = false
+        try await Task.sleep(for: .milliseconds(200))
+        try require(!library.searchingText && library.results.isEmpty, "Turning off OCR did not cancel the active text query")
+
+        var removedScopeRejected = false
+        library.removeFolder(at: folder.standardizedFileURL.path)
+        do { _ = try await library.copyImageText(.ocr, from: updated, to: pasteboard) }
+        catch { removedScopeRejected = true }
+        try require(removedScopeRejected && pasteboard.string(forType: .string) == "Untouched",
+                    "OCR copy accepted an item from a removed search scope")
+        print("PASS OCR lifecycle: repeated and bilingual queries, equal-size replacement, unreadable image, pasteboard preservation, page exit, stale queries, 384-image cancellation and scope removal")
+    }
+
+    @MainActor private static func writeImage(_ url: URL, text: String = "KEYLANE SCREENSHOT", fixedSize: Int? = nil) throws {
         let size = NSSize(width: 720, height: 420)
         let image = NSImage(size: size, flipped: false) { rect in
             NSColor.white.setFill()
             rect.fill()
-            ("KEYLANE SCREENSHOT" as NSString).draw(at: CGPoint(x: 45, y: 180), withAttributes: [
+            (text as NSString).draw(at: CGPoint(x: 45, y: 180), withAttributes: [
                 .font: NSFont.systemFont(ofSize: 42, weight: .bold), .foregroundColor: NSColor.black
             ])
             return true
         }
-        guard let data = image.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) })?.representation(using: .png, properties: [:])
+        guard var data = image.tiffRepresentation.flatMap({ NSBitmapImageRep(data: $0) })?.representation(using: .png, properties: [:])
         else { throw CheckError.failure("Could not make test image") }
-        try data.write(to: url)
+        if let fixedSize {
+            try require(data.count <= fixedSize, "Generated PNG exceeds the fixture size")
+            data.append(Data(count: fixedSize - data.count))
+        }
+        try data.write(to: url, options: .atomic)
     }
 
     private static func writeQR(_ url: URL) throws {
@@ -244,10 +366,10 @@ struct ScreenshotLibraryCheck {
                                                colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
     }
 
-    @MainActor private static func wait(_ condition: () -> Bool) async throws {
+    @MainActor private static func wait(_ label: String = "", _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(8)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
-        try require(condition(), "Timed out")
+        try require(condition(), "Timed out " + label)
     }
 
     private enum CheckError: Error { case failure(String) }
