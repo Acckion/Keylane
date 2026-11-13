@@ -618,30 +618,37 @@ public final class ClipboardStore {
         sqlite3_finalize(query)
         guard status == SQLITE_ROW || status == SQLITE_DONE else { throw ClipboardError.database }
         try write("DELETE FROM clips WHERE id=?",[.text(id)])
-        if let asset {
-            let url = UUID(uuidString: asset) != nil ? transferredFilesURL(asset) : assetURL(asset)
-            if let url { try? FileManager.default.removeItem(at: url) }
-        }
+        if let asset { removeAsset(asset) }
     }
-    public func removeRecent(since cutoff: Date) throws {
-        let query = try statement("SELECT id FROM clips WHERE pinned=0 AND copied>=?",
-                                  [.number(cutoff.timeIntervalSince1970)])
-        var ids: [String] = []
-        var status = sqlite3_step(query)
-        while status == SQLITE_ROW {
-            ids.append(string(query, 0))
-            status = sqlite3_step(query)
-        }
-        sqlite3_finalize(query)
-        guard status == SQLITE_DONE else { throw ClipboardError.database }
-        for id in ids { try remove(id: id) }
+
+    public func removeRecent(since cutoff: Date, through end: Date) throws {
+        try removeEntries(where: " WHERE pinned=0 AND copied>=? AND copied<=?",
+                          [.number(cutoff.timeIntervalSince1970), .number(end.timeIntervalSince1970)])
     }
+
     public func clear(includePinned: Bool) throws {
-        let s = try statement("SELECT id FROM clips" + (includePinned ? "" : " WHERE pinned=0")); var ids: [String] = []
-        while sqlite3_step(s) == SQLITE_ROW { ids.append(string(s,0)) }; sqlite3_finalize(s)
-        for id in ids { try remove(id:id) }
+        try removeEntries(where: includePinned ? "" : " WHERE pinned=0")
         try exec("PRAGMA wal_checkpoint(TRUNCATE)")
     }
+
+    private func removeEntries(where filter: String, _ values: [Value] = []) throws {
+        let deletion = try statement("DELETE FROM clips" + filter + " RETURNING asset", values)
+        defer { sqlite3_finalize(deletion) }
+        var assets: [String] = []
+        var status = sqlite3_step(deletion)
+        while status == SQLITE_ROW {
+            if sqlite3_column_type(deletion, 0) != SQLITE_NULL { assets.append(string(deletion, 0)) }
+            status = sqlite3_step(deletion)
+        }
+        guard status == SQLITE_DONE else { throw ClipboardError.database }
+        for asset in assets { removeAsset(asset) }
+    }
+
+    private func removeAsset(_ asset: String) {
+        let url = UUID(uuidString: asset) != nil ? transferredFilesURL(asset) : assetURL(asset)
+        if let url { try? FileManager.default.removeItem(at: url) }
+    }
+
     public func prune(now: Date = Date()) throws {
         let cutoff = now.addingTimeInterval(-Double(limits.retentionDays)*86400).timeIntervalSince1970
         let pinned = try scalar("SELECT count(*) FROM clips WHERE pinned=1")

@@ -451,6 +451,7 @@ enum BuiltinLauncherModules {
             updates: Publishers.MergeMany([
                 ViewObservation.changes(model.clipboard.$selectedID),
                 ViewObservation.changes(model.clipboard.$items),
+                ViewObservation.changes(model.clipboard.$total.map { $0 > 0 }),
                 ViewObservation.changes(model.clipboard.$kind),
                 ViewObservation.changes(model.clipboard.$primaryAction),
                 model.clipboard.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher()

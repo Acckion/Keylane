@@ -416,6 +416,9 @@ private struct ClipboardHistoryStatistics: View {
         .confirmationDialog("清理剪贴板历史？", isPresented: $confirmsClear, titleVisibility: .visible) {
             Button(clearAll ? "删除全部记录、历史图片及升级备份" : "删除未置顶记录及历史图片", role: .destructive) { controller.clear(includePinned: clearAll) }
             Button("取消", role: .cancel) {}
-        } message: { Text("此操作无法撤销。原文件和当前剪贴板内容不会被删除。") }
+        } message: {
+            Text(clearAll ? "包括置顶记录。此操作无法撤销。原文件和当前剪贴板内容会保留。"
+                          : "此操作无法撤销。原文件和当前剪贴板内容会保留。")
+        }
     }
 }

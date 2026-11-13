@@ -213,9 +213,48 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(try store.list(query: "meeting").map(\.id), [recent])
         XCTAssertEqual(try store.detail(id: recent)?.text, "recent original")
 
-        try store.removeRecent(since: now.addingTimeInterval(-3600))
+        try store.removeRecent(since: now.addingTimeInterval(-3600), through: now)
 
         XCTAssertEqual(Set(try store.list().map(\.id)), Set([old, pinned]))
+    }
+
+    func testBulkDeletionRollsBackBeforeRemovingOwnedAssets() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let now = Date()
+        let image = try store.capture(.image(Data([137, 80, 78, 71])), at: now)
+        let asset = try XCTUnwrap(store.detail(id: image)?.assetURL)
+        let snapshot = ClipSnapshot(items: [ClipSnapshotItem([
+            .init(type: "public.utf8-plain-text", data: Data("deletion fixture".utf8))
+        ])], plainText: "deletion fixture")
+        let text = try store.capture(.text("deletion fixture"), snapshot: snapshot, at: now)
+
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(directory.appendingPathComponent("clipboard.sqlite").path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(sqlite3_exec(database, """
+            CREATE TRIGGER fail_test_deletion AFTER DELETE ON clips WHEN OLD.id = '\(text)'
+            BEGIN SELECT RAISE(ABORT, 'test failure'); END;
+            """, nil, nil, nil), SQLITE_OK)
+
+        XCTAssertThrowsError(try store.removeRecent(since: now, through: now))
+        XCTAssertThrowsError(try store.clear(includePinned: true))
+        XCTAssertEqual(try store.count(), 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: asset.path))
+        XCTAssertEqual(try store.list(query: "deletion fixture").map(\.id), [text])
+        XCTAssertEqual(try store.detail(id: text)?.snapshot, snapshot)
+
+        XCTAssertEqual(sqlite3_exec(database, "DROP TRIGGER fail_test_deletion", nil, nil, nil), SQLITE_OK)
+        try store.removeRecent(since: now, through: now)
+        XCTAssertEqual(try store.count(), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: asset.path))
+        XCTAssertTrue(try store.list(query: "deletion fixture").isEmpty)
+        var query: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(database, "SELECT count(*) FROM clip_snapshots", -1, &query, nil), SQLITE_OK)
+        defer { sqlite3_finalize(query) }
+        XCTAssertEqual(sqlite3_step(query), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(query, 0), 0)
     }
 
     func testUnicodeSubstringSearchAndLiteralSyntax() throws {
