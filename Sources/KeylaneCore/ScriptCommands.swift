@@ -238,7 +238,8 @@ public enum ScriptRunner {
         var output = Data()
         var diagnostics = Data()
         let limit = 256 * 1024
-        var truncated = false
+        var stdoutTruncated = false
+        var stderrTruncated = false
         var publishedBytes = 0
         var lastOutput = ProcessInfo.processInfo.systemUptime
         var buffer = [UInt8](repeating: 0, count: 8192)
@@ -253,11 +254,11 @@ public enum ScriptRunner {
                     if index == 0 {
                         let accepted = min(count, limit - output.count)
                         output.append(contentsOf: buffer.prefix(accepted))
-                        truncated = truncated || accepted < count
+                        stdoutTruncated = stdoutTruncated || accepted < count
                     } else {
                         let accepted = min(count, limit - diagnostics.count)
                         diagnostics.append(contentsOf: buffer.prefix(accepted))
-                        truncated = truncated || accepted < count
+                        stderrTruncated = stderrTruncated || accepted < count
                     }
                 }
             }
@@ -271,7 +272,7 @@ public enum ScriptRunner {
             if output.count != publishedBytes, now - lastOutput >= 0.1, let onOutput {
                 lastOutput = now
                 publishedBytes = output.count
-                onOutput(String(decoding: output, as: UTF8.self))
+                onOutput(decodeOutput(output, mayEndMidScalar: true))
             }
             if isCancelled() { interruption = .cancelled }
             else if ProcessInfo.processInfo.systemUptime >= deadline { interruption = .timedOut }
@@ -294,9 +295,27 @@ public enum ScriptRunner {
         drain()
         let status = interruption ?? (process.terminationReason == .exit
             ? .exited(process.terminationStatus) : .signalled(process.terminationStatus))
-        let stdoutText = String(decoding: output, as: UTF8.self)
-        let diagnosticText = String(decoding: diagnostics, as: UTF8.self)
+        let stdoutText = decodeOutput(output, mayEndMidScalar: stdoutTruncated)
+        let diagnosticText = decodeOutput(diagnostics, mayEndMidScalar: stderrTruncated)
         let resultText = status != .exited(0) && !diagnosticText.isEmpty ? diagnosticText : stdoutText
-        return .init(status: status, output: resultText, standardOutput: stdoutText, truncated: truncated)
+        return .init(status: status, output: resultText, standardOutput: stdoutText,
+                     truncated: stdoutTruncated || stderrTruncated)
+    }
+
+    private static func decodeOutput(_ bytes: Data, mayEndMidScalar: Bool) -> String {
+        // A live snapshot or the byte limit can end between bytes of one scalar.
+        if mayEndMidScalar, let lead = bytes.suffix(3).lastIndex(where: { $0 & 0xc0 != 0x80 }) {
+            let length: Int
+            switch bytes[lead] {
+            case 0xc2...0xdf: length = 2
+            case 0xe0...0xef: length = 3
+            case 0xf0...0xf4: length = 4
+            default: length = 1
+            }
+            if bytes.endIndex - lead < length {
+                return String(decoding: bytes[..<lead], as: UTF8.self)
+            }
+        }
+        return String(decoding: bytes, as: UTF8.self)
     }
 }
