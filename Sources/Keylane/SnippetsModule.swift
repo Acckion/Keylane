@@ -207,7 +207,8 @@ private struct SnippetsList: View {
 
     var body: some View {
         let snippets = controller.visible
-        let selection = controller.selected?.id
+        let selected = controller.selected
+        let selection = selected?.id
         ResultDetailLayout(hasResults: !snippets.isEmpty) {
             SelectableResultList(selection: selection, query: controller.query, firstResult: snippets.first?.id) {
                 ForEach(snippets) { snippet in
@@ -228,7 +229,7 @@ private struct SnippetsList: View {
                 }
             }
         } detail: {
-            if let snippet = controller.selected {
+            if let snippet = selected {
                 ResultDetailPane { _ in
                     Group {
                         if let richText = SnippetPasteboard.attributedText(snippet.richText),
