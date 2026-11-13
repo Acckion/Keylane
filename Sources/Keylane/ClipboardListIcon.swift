@@ -5,12 +5,13 @@ import KeylaneCore
 struct ClipboardListIcon: View {
     let item: ClipItem
     let controller: ClipboardController
+    let showsLinkVisuals: Bool
     @State private var thumbnail: NSImage?
     var body: some View {
         Group {
             if let color = item.color {
                 ClipboardColorSwatch(color: color, cornerRadius: 5)
-            } else if let thumbnail {
+            } else if let thumbnail, item.webURL == nil || showsLinkVisuals {
                 Image(nsImage: thumbnail).renderingMode(thumbnail.isTemplate ? .template : .original)
                     .resizable().aspectRatio(contentMode: item.webURL == nil ? .fill : .fit)
             } else {
@@ -33,11 +34,13 @@ struct ClipboardListIcon: View {
                 }
             }
             .accessibilityHidden(true)
-            .task(id: item.id + (item.kind == .files ? String(item.copiedAt.timeIntervalSince1970) : "")) {
+            .task(id: item.id + (item.kind == .files ? String(item.copiedAt.timeIntervalSince1970) : "")
+                     + (item.webURL != nil && showsLinkVisuals ? ":link-visuals" : "")) {
                 thumbnail = nil
                 guard item.fileCount <= 1 else { return }
                 let image: NSImage?
                 if let url = item.webURL {
+                    guard showsLinkVisuals else { return }
                     try? await Task.sleep(for: .milliseconds(120))
                     guard !Task.isCancelled else { return }
                     image = await ClipboardLinkPreviews.shared.icon(for: url)
@@ -48,7 +51,8 @@ struct ClipboardListIcon: View {
                 if image != nil || item.webURL == nil { thumbnail = image }
             }
             .onReceive(ClipboardLinkPreviews.shared.iconUpdates) { origin, icon in
-                if let url = item.webURL, ClipboardLinkPreviews.origin(for: url) == origin { thumbnail = icon }
+                if showsLinkVisuals, let url = item.webURL,
+                   ClipboardLinkPreviews.origin(for: url) == origin { thumbnail = icon }
             }
     }
 

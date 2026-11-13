@@ -5,6 +5,41 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import KeylaneCore
 
+final class PreviewFixtureProtocol: URLProtocol {
+    static let lock = NSLock()
+    static var requests = 0
+    static var cancellations = 0
+    static let icon = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aHv8AAAAASUVORK5CYII=")!
+
+    static func counts() -> (requests: Int, cancellations: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (requests, cancellations)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host?.hasSuffix(".example") == true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self.requests += 1
+        Self.lock.unlock()
+        guard let url = request.url, url.host != "delayed.example" else { return }
+        let headers = ["Content-Type": "image/png", "Content-Length": String(Self.icon.count)]
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.icon)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {
+        guard request.url?.host == "delayed.example" else { return }
+        Self.lock.lock()
+        Self.cancellations += 1
+        Self.lock.unlock()
+    }
+}
+
 let app = NSApplication.shared
 let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYLANE_CLIPBOARD_TEST_ROOT"]!).appendingPathComponent("fixtures")
 let suite = "org.keylane.clipboard.test." + UUID().uuidString
@@ -18,6 +53,41 @@ func wait(_ message: String, _ condition: () -> Bool) {
 }
 func write(_ text: String) { board.clearContents(); board.setString(text, forType: .string); controller.poll() }
 defer { board.releaseGlobally(); prefs.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+var previewTestFinished = false
+Task { @MainActor in
+    let previews = ClipboardLinkPreviews {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PreviewFixtureProtocol.self]
+        return URLSession(configuration: config)
+    }
+    let url = URL(string: "https://favicon.example/clip")!
+    let disabledIcon = await previews.icon(for: url)
+    let disabledPage = await previews.preview(for: url)
+    precondition(disabledIcon == nil && disabledPage == nil && PreviewFixtureProtocol.counts().requests == 0)
+    previews.setEnabled(true)
+    let enabledIcon = await previews.icon(for: url)
+    precondition(enabledIcon != nil && PreviewFixtureProtocol.counts().requests == 1)
+    let delayed = URL(string: "https://delayed.example/clip")!
+    let task = Task { await previews.icon(for: delayed) }
+    for _ in 0..<100 {
+        if PreviewFixtureProtocol.counts().requests == 2 { break }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    precondition(PreviewFixtureProtocol.counts().requests == 2)
+    previews.setEnabled(false)
+    let cancelledIcon = await task.value
+    let cachedIcon = await previews.icon(for: url)
+    let disabledAgain = await previews.preview(for: delayed)
+    precondition(cancelledIcon == nil && cachedIcon == nil && disabledAgain == nil)
+    precondition(PreviewFixtureProtocol.counts().requests == 2 && PreviewFixtureProtocol.counts().cancellations == 1)
+    previews.setEnabled(true)
+    let reenabledIcon = await previews.icon(for: url)
+    precondition(reenabledIcon != nil && PreviewFixtureProtocol.counts().requests == 3)
+    previews.setEnabled(false)
+    previewTestFinished = true
+}
+wait("preview opt-out stops and cancels requests") { previewTestFinished }
+print("PASS link preview opt-out, in-flight cancellation and re-enable")
 write("MUST NOT CAPTURE")
 RunLoop.current.run(until: Date().addingTimeInterval(0.2))
 precondition(controller.total == 0)
@@ -130,6 +200,17 @@ precondition(controller.copySelected())
 precondition(board.data(forType:.rtf) == rtf && board.data(forType:.html) == html)
 precondition(controller.copySelected(plainText:true))
 precondition(board.string(forType:.string) == richString && board.data(forType:.rtf) == nil && board.data(forType:.html) == nil)
+precondition(controller.availableReplayFormats.contains(.representation("public.rtf")))
+precondition(controller.availableReplayFormats.contains(.representation("public.html")))
+precondition(controller.copySelected(format: .representation("public.rtf")))
+precondition(board.data(forType: .rtf) == rtf && board.data(forType: .html) == nil)
+precondition(controller.copySelected(format: .representation("public.html")))
+precondition(board.data(forType: .html) == html && board.data(forType: .rtf) == nil)
+controller.prefersPlainText = true
+precondition(controller.copySelected(format: .preferred))
+precondition(board.string(forType: .string) == richString && board.data(forType: .rtf) == nil)
+precondition(controller.copySelected(format: .original))
+precondition(board.data(forType: .rtf) == rtf && board.data(forType: .html) == html)
 let firstItem = NSPasteboardItem(); firstItem.setString("多个项目里的文字",forType:.string)
 let secondItem = NSPasteboardItem(); secondItem.setData(png,forType:.png)
 board.clearContents(); board.writeObjects([firstItem,secondItem]); controller.poll()
@@ -137,7 +218,10 @@ wait("multiple representations") { controller.total == 2 }
 let mixedID = controller.items.first { $0.id != richID }!.id
 controller.select(mixedID); wait("mixed detail") { controller.detail?.item.id == mixedID && !controller.loadingDetail }
 precondition(controller.detail?.snapshot?.items.count == 2)
-precondition(controller.copySelected())
+let beforeInvalidSelection = board.changeCount
+precondition(!controller.copySelected(format: .representation("public.png")))
+precondition(board.changeCount == beforeInvalidSelection)
+precondition(controller.copySelected(format: .preferred))
 precondition(board.pasteboardItems?.count == 2)
 precondition(board.pasteboardItems?.first?.string(forType:.string) == "多个项目里的文字")
 precondition(board.pasteboardItems?.last?.data(forType:.png) == png)
@@ -148,6 +232,34 @@ board.clearContents(); board.writeObjects([htmlOnly]); controller.poll()
 wait("inert HTML projection") { controller.total == 3 }
 controller.search("猫&狗"); wait("HTML text search") { controller.items.count == 1 && controller.detail?.snapshot?.plainText == "猫&狗" }
 precondition(controller.copySelected(plainText:true)); precondition(board.string(forType:.string) == "猫&狗")
+controller.search(""); wait("unfiltered replay list") { controller.items.count == 3 && !controller.searching }
+controller.select(richID); wait("old selection ready") { controller.selectedDetail?.item.id == richID }
+controller.recordReplay(of: richID)
+let firstBeforeReplay = try ClipboardStore(directory: root).list().first?.id
+precondition(firstBeforeReplay != richID)
+controller.updatesHistoryAfterReplay = true
+controller.recordReplay(of: richID)
+wait("replay moves old row to top") { controller.items.first?.id == richID }
+precondition(controller.items.first?.copyCount == 1)
+let tiff = bitmap.representation(using: .tiff, properties: [:])!
+let tiffItem = NSPasteboardItem()
+tiffItem.setData(tiff, forType: .tiff)
+board.clearContents(); board.writeObjects([tiffItem]); controller.poll()
+wait("TIFF capture") { controller.items.contains { $0.assetName?.hasSuffix(".tiff") == true } }
+let tiffID = controller.items.first { $0.assetName?.hasSuffix(".tiff") == true }!.id
+controller.select(tiffID)
+wait("TIFF detail") { !controller.loadingDetail && controller.selectedDetail?.item.id == tiffID }
+precondition(controller.availableReplayFormats.contains(.pngFromTIFF))
+precondition(controller.copySelected(format: .pngFromTIFF))
+let converted = NSBitmapImageRep(data: board.data(forType: .png)!)
+precondition(converted?.pixelsWide == bitmap.pixelsWide && converted?.pixelsHigh == bitmap.pixelsHigh)
+precondition(board.pasteboardItems?.first?.types.contains(.tiff) == false)
+controller.primaryAction = .copy
+controller.showsLinkVisuals = false
+let reloadedPreferences = ClipboardController(directory: root, board: board, preferences: prefs, startTimer: false, startStorage: false)
+precondition(reloadedPreferences.primaryAction == .copy && reloadedPreferences.prefersPlainText)
+precondition(reloadedPreferences.updatesHistoryAfterReplay && !reloadedPreferences.showsLinkVisuals)
+print("PASS selected RTF/HTML, TIFF-to-PNG, mixed payload, replay order and persisted preferences")
 controller.clear(includePinned:true); wait("cleanup final") { controller.total == 0 }
 // Automatic monitor regression: no explicit poll calls, including while the app is inactive.
 let automaticSuite = suite + ".automatic"
