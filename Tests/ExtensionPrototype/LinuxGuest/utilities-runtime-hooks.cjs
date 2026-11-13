@@ -1,5 +1,5 @@
 const { createHash } = require("node:crypto");
-const { Cache, cacheAvailable, cacheWritesBlocked, cachedQueriesBlocked } = require("./cache-api.cjs");
+const { Cache, cacheAvailable, cacheWritesBlocked, cachedQueriesBlocked, writeCache } = require("./cache-api.cjs");
 
 const halfLifeMilliseconds = 7 * 24 * 60 * 60 * 1000;
 const maximumRankedItems = 24;
@@ -17,24 +17,6 @@ function readCache(cache, key) {
     return JSON.parse(encoded);
   } catch {
     return undefined;
-  }
-}
-
-function writeCache(cache, key, data) {
-  if (!cacheAvailable() || cacheWritesBlocked()) return;
-  let encoded;
-  try {
-    encoded = JSON.stringify(data);
-  } catch {
-    // Preserve this run's value when it cannot be represented in the cache.
-    return;
-  }
-  if (encoded === undefined || Buffer.byteLength(encoded) > 2048) return;
-  try {
-    cache.set(key, encoded);
-  } catch (error) {
-    // Hitting the extension's shared cache budget does not invalidate fresh data.
-    if (!(error instanceof RangeError)) throw error;
   }
 }
 

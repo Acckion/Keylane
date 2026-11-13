@@ -196,3 +196,32 @@ test("Cache subscriptions register and unsubscribe independently", () => {
   cache.set("b", "B");
   assert.deepEqual(events, [["a", "A"], ["a", "A"], ["a", undefined], [undefined, undefined]]);
 });
+
+test("withCache returns successful results even when they cannot be persisted", async () => {
+  configureCache({});
+  const oversized = "x".repeat(2048);
+  assert.equal(await withCache(async () => oversized)(), oversized);
+  const circular = {};
+  circular.self = circular;
+  assert.equal(await withCache(async () => circular)(), circular);
+  assert.equal(takeCacheSnapshot(), undefined);
+
+  const occupied = new Cache({ namespace: "other" });
+  occupied.set("one", "x".repeat(2000));
+  occupied.set("two", "x".repeat(2000));
+  const before = takeCacheSnapshot();
+  assert.equal(await withCache(async () => "small result")(), "small result");
+  assert.deepEqual(takeCacheSnapshot(), before);
+  const failure = new Error("operation failed");
+  await assert.rejects(withCache(async () => { throw failure; })(), (error) => error === failure);
+  assert.deepEqual(takeCacheSnapshot(), before);
+});
+
+test("withCache runs without persisting when storage is read-only or unavailable", async () => {
+  const cached = withCache(async () => "computed");
+  configureCache({});
+  assert.equal(await withCacheWritesBlocked(() => cached()), "computed");
+  assert.equal(takeCacheSnapshot(), undefined);
+  configureCache(undefined);
+  assert.equal(await cached(), "computed");
+});

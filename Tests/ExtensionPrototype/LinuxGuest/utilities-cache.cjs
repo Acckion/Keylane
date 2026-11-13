@@ -1,5 +1,5 @@
 const { createHash } = require("node:crypto");
-const { Cache } = require("./cache-api.cjs");
+const { Cache, cacheAvailable, writeCache } = require("./cache-api.cjs");
 
 function hash(text) {
   return createHash("sha256").update(text).digest("hex");
@@ -36,7 +36,7 @@ function withCache(fn, { maxAge, validate } = {}) {
   const cache = new Cache({ namespace: `function:${hash(Function.prototype.toString.call(fn))}` });
   const wrapped = async function (...args) {
     const key = hash(JSON.stringify(args));
-    const data = cache.get(key);
+    const data = cacheAvailable() ? cache.get(key) : undefined;
     let entry;
     if (data !== undefined) {
       try { entry = JSON.parse(data); } catch { /* A corrupt entry is a cache miss. */ }
@@ -47,7 +47,7 @@ function withCache(fn, { maxAge, validate } = {}) {
       return entry.result;
     }
     const result = await fn.apply(this, args);
-    cache.set(key, JSON.stringify({ timestamp: Date.now(), result }));
+    writeCache(cache, key, { timestamp: Date.now(), result });
     return result;
   };
   wrapped.clearCache = () => cache.clear();

@@ -92,6 +92,24 @@ function takeCacheSnapshot() {
   return scope.ordered ? [...scope.entries] : snapshot;
 }
 
+function writeCache(cache, key, data) {
+  if (!cacheAvailable() || cacheWritesBlocked()) return;
+  let encoded;
+  try {
+    encoded = JSON.stringify(data);
+  } catch {
+    // Preserve this run's value when it cannot be represented in the cache.
+    return;
+  }
+  if (encoded === undefined || Buffer.byteLength(encoded) > maximumValueBytes) return;
+  try {
+    cache.set(key, encoded);
+  } catch (error) {
+    // Hitting the extension's shared cache budget does not invalidate fresh data.
+    if (!(error instanceof RangeError)) throw error;
+  }
+}
+
 function currentScope(writing = false) {
   if (!scope) throw new Error("Cache is unavailable for this extension invocation");
   if (writing && cacheWritesBlocked()) throw new Error("Cache changes are unavailable in this context");
@@ -217,4 +235,4 @@ class Cache {
   }
 }
 
-module.exports = { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCurrentViewInput, withCacheWriteLifetime, cacheAvailable, cacheWritesBlocked, cachedQueriesBlocked };
+module.exports = { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCurrentViewInput, withCacheWriteLifetime, cacheAvailable, cacheWritesBlocked, cachedQueriesBlocked, writeCache };
