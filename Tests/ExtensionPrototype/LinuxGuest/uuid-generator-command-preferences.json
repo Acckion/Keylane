@@ -1,0 +1,24 @@
+{
+  "generateV5": [
+    {
+      "name": "uuidNamespace",
+      "type": "textfield",
+      "required": false,
+      "default": "",
+      "title": "UUID v5 Namespace",
+      "label": "Namespace",
+      "description": "The namespace for UUID v5"
+    }
+  ],
+  "generateV7": [
+    {
+      "name": "base32Encoding",
+      "type": "checkbox",
+      "required": false,
+      "default": false,
+      "title": "Options",
+      "label": "Base32 Encoding",
+      "description": "Should letters be Base32 encoded?"
+    }
+  ]
+}
