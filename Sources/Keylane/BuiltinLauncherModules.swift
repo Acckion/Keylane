@@ -409,6 +409,7 @@ enum BuiltinLauncherModules {
         var titlebar = permission.titlebar(SettingsItem.clipboardCapture.title)
         titlebar.searchItem = .clipboardCapture
         var permissionChanges: AnyCancellable?
+        var linkVisualChanges: AnyCancellable?
         let page = LauncherPage(
             id: id, placeholder: "搜索剪贴板历史…", badge: ("剪贴板历史", "list.clipboard"), actionTitle: "剪贴板操作",
             contentPlacement: .underChrome,
@@ -421,15 +422,13 @@ enum BuiltinLauncherModules {
             move: { [weak model] in model?.clipboard.move($0) },
             submit: { [weak model] in
                 guard let controller = model?.clipboard else { return }
-                if (NSApp.delegate as? Delegate)?.pasteTargetName != nil {
-                    (NSApp.delegate as? Delegate)?.pasteClipboard()
-                } else { ClipboardActions.copy(controller) }
+                ClipboardActions.submit(controller)
             },
             shortcutSubmit: { [weak model] in
-                if let controller = model?.clipboard { ClipboardActions.copy(controller) }
+                if let controller = model?.clipboard { ClipboardActions.submit(controller, alternate: true) }
             },
             optionSubmit: {
-                guard let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil else { return }
+                guard !SearchField.isComposing, let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil else { return }
                 delegate.pasteClipboard(keepOpen: true)
             },
             actionContextTitle: { [weak model] in
@@ -438,7 +437,10 @@ enum BuiltinLauncherModules {
                 return item.preview.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             },
             primaryTitle: {
-                (NSApp.delegate as? Delegate)?.pasteTargetName.map { "粘贴到 \($0)" } ?? "复制到剪贴板"
+                if controller.primaryAction == .paste, let target = (NSApp.delegate as? Delegate)?.pasteTargetName {
+                    return "粘贴到 \(target)"
+                }
+                return "复制到剪贴板"
             },
             primaryEnabled: { [weak model] in model?.clipboard.selectedID != nil },
             actions: { [weak model] in
@@ -448,8 +450,9 @@ enum BuiltinLauncherModules {
             updates: Publishers.MergeMany([
                 ViewObservation.changes(model.clipboard.$selectedID),
                 ViewObservation.changes(model.clipboard.$items),
-                ViewObservation.changes(model.clipboard.$detail.map { $0?.item.id }),
-                ViewObservation.changes(model.clipboard.$kind)
+                ViewObservation.changes(model.clipboard.$kind),
+                ViewObservation.changes(model.clipboard.$primaryAction),
+                model.clipboard.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher()
             ]).eraseToAnyPublisher(),
             typeFilterWidth: 138,
             typeFilter: { [weak model] open in
@@ -489,7 +492,9 @@ enum BuiltinLauncherModules {
         ], services: [
             .init(start: {
                 controller.startRuntime()
-                MainActor.assumeIsolated { ClipboardLinkPreviews.shared.start() }
+                linkVisualChanges = controller.$showsLinkVisuals.removeDuplicates().sink { enabled in
+                    MainActor.assumeIsolated { ClipboardLinkPreviews.shared.setEnabled(enabled) }
+                }
                 permission.startObserving()
                 controller.captureEnabled = permission.available
                 controller.startMonitoring()
@@ -501,7 +506,9 @@ enum BuiltinLauncherModules {
                 permissionChanges = nil
                 permission.stopObserving()
                 controller.stopRuntime()
-                MainActor.assumeIsolated { ClipboardLinkPreviews.shared.stop() }
+                linkVisualChanges?.cancel()
+                linkVisualChanges = nil
+                MainActor.assumeIsolated { ClipboardLinkPreviews.shared.setEnabled(false) }
                 FilePreview.shared.dismiss(owner: .clipboard)
                 FileActionsWindow.shared.dismiss(owner: .clipboard)
             })

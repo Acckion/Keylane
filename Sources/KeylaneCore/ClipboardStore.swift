@@ -69,6 +69,7 @@ public struct ClipItem: Identifiable, Equatable {
     public let sourceBundle: String
     public let copiedAt: Date
     public let firstCopiedAt: Date
+    public let lastUsedAt: Date
     public let pinned: Bool
     public let copyCount: Int
     public let fileCount: Int
@@ -165,7 +166,16 @@ public final class ClipboardStore {
             if try scalar("SELECT count(*) FROM pragma_table_info('clip_snapshots') WHERE name='search_text'") == 0 {
                 try exec("ALTER TABLE clip_snapshots ADD COLUMN search_text TEXT NOT NULL DEFAULT ''")
             }
-            try exec("PRAGMA user_version=3; COMMIT;")
+            if try scalar("SELECT count(*) FROM pragma_table_info('clips') WHERE name='replayed'") == 0 {
+                try exec("ALTER TABLE clips ADD COLUMN replayed REAL")
+            }
+            // The added column is optional and remains readable by older version 3 builds.
+            try exec("""
+                CREATE INDEX IF NOT EXISTS clips_replay_order
+                  ON clips(pinned DESC,pin_order,max(copied,coalesce(replayed,copied)) DESC,id);
+                PRAGMA user_version=3;
+                COMMIT;
+                """)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
         } catch { try? exec("ROLLBACK"); sqlite3_close(db); db = nil; throw error }
     }
@@ -256,7 +266,7 @@ public final class ClipboardStore {
         CASE WHEN kind='files' AND json_valid(CAST(payload AS TEXT))
              THEN json_array_length(CAST(payload AS TEXT)) ELSE 0 END
         """
-    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0),\(shortText),created,\(fileCount)"
+    private static let columns = "id,kind,preview,source,bundle,copied,pinned,copies,bytes,asset,(length(ocr)>0),\(shortText),created,\(fileCount),max(copied,coalesce(replayed,copied))"
     private func item(_ s: OpaquePointer) throws -> ClipItem {
         guard let kind = ClipKind(rawValue: string(s,1)) else { throw ClipboardError.database }
         let text = String(decoding: blob(s,11), as: UTF8.self)
@@ -272,6 +282,7 @@ public final class ClipboardStore {
                         preview: string(s,2), source: string(s,3), sourceBundle: string(s,4),
                         copiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,5)),
                         firstCopiedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,12)),
+                        lastUsedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,14)),
                         pinned: sqlite3_column_int(s,6) != 0, copyCount: Int(sqlite3_column_int(s,7)),
                         fileCount: Int(sqlite3_column_int(s,13)),
                         byteCount: Int(sqlite3_column_int64(s,8)),
@@ -443,7 +454,7 @@ public final class ClipboardStore {
         }
         if pinnedOnly { conditions.append("pinned=1") }
         let filter = conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator:" AND ")
-        let s = try statement("SELECT " + Self.columns + " FROM clips" + filter + " ORDER BY pinned DESC,pin_order,copied DESC,id LIMIT ?",values + [.number(Double(max(1,min(500,limit))))]); defer { sqlite3_finalize(s) }
+        let s = try statement("SELECT " + Self.columns + " FROM clips" + filter + " ORDER BY pinned DESC,pin_order,max(copied,coalesce(replayed,copied)) DESC,id LIMIT ?",values + [.number(Double(max(1,min(500,limit))))]); defer { sqlite3_finalize(s) }
         var result: [ClipItem] = []
         while true { let status = sqlite3_step(s); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW else { throw ClipboardError.database }; result.append(try item(s)) }
         return result
@@ -470,17 +481,23 @@ public final class ClipboardStore {
     public func detail(id: String) throws -> ClipDetail? {
         let s = try statement("SELECT " + Self.columns + ",payload,ocr FROM clips WHERE id=?",[.text(id)]); defer { sqlite3_finalize(s) }
         let status = sqlite3_step(s); if status == SQLITE_DONE { return nil }; guard status == SQLITE_ROW else { throw ClipboardError.database }
-        let record = try item(s); let data = blob(s,14)
+        let record = try item(s); let data = blob(s,15)
         let files = record.kind == .files ? try JSONDecoder().decode([ClipFile].self, from:data) : []
         let q = try statement("SELECT payload FROM clip_snapshots WHERE clip_id=?",[.text(id)]); defer { sqlite3_finalize(q) }
         let snapshot = sqlite3_step(q) == SQLITE_ROW ? try PropertyListDecoder().decode(ClipSnapshot.self,from:blob(q,0)) : nil
-        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,15),snapshot:snapshot)
+        return ClipDetail(item:record,text:record.kind == .text ? String(data:data,encoding:.utf8) ?? "" : "", files:files,assetURL:record.assetName.flatMap(assetURL),ocrText:string(s,16),snapshot:snapshot)
     }
     public func assetURL(_ name: String) -> URL? {
         let parts = name.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 2, parts[0].count == 64, parts[0].allSatisfy({ "0123456789abcdef".contains($0) }), ClipImageFormat(rawValue: String(parts[1])) != nil else { return nil }
         return attachments.appendingPathComponent(name)
     }
+    public func recordReplay(id: String, at date: Date = Date()) throws {
+        let timestamp = Value.number(date.timeIntervalSince1970)
+        try write("UPDATE clips SET replayed=max(coalesce(replayed,?),?) WHERE id=?",
+                  [timestamp, timestamp, .text(id)])
+    }
+
     public func setPinned(id: String, pinned: Bool) throws {
         if pinned, try scalar("SELECT count(*) FROM clips WHERE pinned=1") >= 100 { throw ClipboardError.pinnedLimit }
         let order = pinned ? (try scalar("SELECT coalesce(max(pin_order),0)+1 FROM clips WHERE pinned=1")) : 0
