@@ -346,6 +346,15 @@ enum BuiltinLauncherModules {
             copyPathAction(id: "copy-file-path", url: url),
             model.favoriteAction(for: entry)
         ]
+        if model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.links")) == true {
+            actions.append(.init(id: "save-file-quicklink", title: "存为快捷链接…", icon: "link.badge.plus") { [weak model] in
+                guard let model, !model.fileSearch.isSearching,
+                      model.fileSearch.lastPublishedQuery == model.query else { return }
+                model.withFileResult(url) { file in
+                    QuicklinksModule.create(from: file.url, title: file.name, model: model)
+                }
+            })
+        }
         if model.pageID == .root {
             actions.insert(.init(id: "file-detail", title: "在文件搜索中查看详情", icon: "sidebar.right") { [weak model] in
                 model?.showFileLocation(url, browse: false)

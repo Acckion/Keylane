@@ -49,7 +49,7 @@ public struct Quicklink: Codable, Equatable, Identifiable {
     }
 
     public func preparedForEditing() -> Self {
-        guard usesDynamicPlaceholders != true else { return self }
+        guard usesDynamicPlaceholders != true, !QuicklinkTemplate.isLocalInput(template) else { return self }
         let migrated = DynamicTemplate(template, usage: .quicklink, legacyQuicklinkOnly: true).legacySyntaxMigration
         guard (try? QuicklinkTemplate(migrated)) != nil else { return self }
 
@@ -76,13 +76,15 @@ public struct QuicklinkTemplate {
 
     public enum ValidationError: LocalizedError, Equatable {
         case invalidURL
+        case invalidLocalURL
         case invalidParameter
         case conflictingDefaults(String)
         case missingValue(String)
 
         public var errorDescription: String? {
             switch self {
-            case .invalidURL: "请输入 HTTP、HTTPS 或 mailto 邮件链接。"
+            case .invalidURL: "请输入网页、邮件链接或本地文件的绝对路径。"
+            case .invalidLocalURL: "请输入本机 file:// 链接或绝对路径。文件链接不支持参数、查询或片段。"
             case .invalidParameter: "请在路径、查询或片段中输入有效的动态占位符或 {名称} 参数。"
             case let .conflictingDefaults(name): "参数「\(name)」定义了不同的默认值。"
             case let .missingValue(name): "请输入参数「\(name)」。"
@@ -91,10 +93,21 @@ public struct QuicklinkTemplate {
     }
 
     public let parameters: [Parameter]
-    private let plan: DynamicTemplate.Plan
+    private enum Target { case local(URL), template(DynamicTemplate.Plan) }
+    private let target: Target
+
+    public var localURL: URL? {
+        if case .local(let url) = target { return url }
+        return nil
+    }
 
     public init(_ input: String, context: DynamicTemplate.Context = .init(), legacy: Bool = false) throws {
         let input = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if Self.isLocalInput(input) {
+            target = .local(try Self.localFileURL(input))
+            parameters = []
+            return
+        }
         let template = DynamicTemplate(input, usage: .quicklink, legacyQuicklinkArguments: true,
                                        legacyQuicklinkOnly: legacy)
         let probe = NSMutableString(string: input)
@@ -107,16 +120,52 @@ public struct QuicklinkTemplate {
         guard authority?.contains("{") != true else { throw ValidationError.invalidParameter }
         _ = try Self.url(sample, hasPlaceholders: !template.placeholderRanges.isEmpty)
 
-        do { plan = try template.plan(context: context, allowMoreLegacyArguments: legacy) }
+        let planned: DynamicTemplate.Plan
+        do { planned = try template.plan(context: context, allowMoreLegacyArguments: legacy) }
         catch DynamicTemplate.Failure.conflictingArgument(let name) { throw ValidationError.conflictingDefaults(name) }
-        parameters = plan.arguments
+        target = .template(planned)
+        parameters = planned.arguments
     }
 
     public func url(values: [String: String] = [:]) throws -> URL {
+        let plan: DynamicTemplate.Plan
+        switch target {
+        case .local(let url): return url
+        case .template(let value): plan = value
+        }
         let output: DynamicTemplate.Rendered
         do { output = try plan.resolve(values) }
         catch DynamicTemplate.Failure.missingArgument(let name) { throw ValidationError.missingValue(name) }
         return try Self.url(output.text, hasPlaceholders: !output.replacements.isEmpty)
+    }
+
+    fileprivate static func isLocalInput(_ input: String) -> Bool {
+        let input = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return input.hasPrefix("/") || input.lowercased().hasPrefix("file:")
+    }
+
+    private static func localFileURL(_ input: String) throws -> URL {
+        let path: String
+        if input.hasPrefix("/") {
+            path = input
+        } else {
+            guard input.lowercased().hasPrefix("file://"),
+                  let url = URL(string: input, encodingInvalidCharacters: false),
+                  let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  parts.host?.isEmpty != false || parts.host?.lowercased() == "localhost",
+                  parts.user == nil, parts.password == nil, parts.port == nil,
+                  parts.query == nil, parts.fragment == nil,
+                  !parts.percentEncodedPath.lowercased().contains("%2f"),
+                  let decodedPath = parts.percentEncodedPath.removingPercentEncoding else {
+                throw ValidationError.invalidLocalURL
+            }
+            path = decodedPath
+        }
+        guard path.hasPrefix("/"), !path.hasPrefix("//"), !path.utf8.contains(0) else {
+            throw ValidationError.invalidLocalURL
+        }
+        // Avoid filesystem probing when validating, editing or importing a link.
+        return URL(fileURLWithPath: path, isDirectory: path.hasSuffix("/"))
     }
 
     private static func url(_ expanded: String, hasPlaceholders: Bool) throws -> URL {
@@ -221,7 +270,12 @@ extension QuicklinkLibrary {
 
             init(_ title: String, _ template: String) {
                 self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.template = template.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
+                if QuicklinkTemplate.isLocalInput(trimmed) {
+                    self.template = (try? QuicklinkTemplate(trimmed))?.localURL?.absoluteString ?? trimmed
+                } else {
+                    self.template = trimmed
+                }
             }
         }
         let records = try JSONDecoder().decode([QuicklinkExchange].self, from: data)

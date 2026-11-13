@@ -61,7 +61,7 @@ func verify() throws {
     precondition(repeated.links.isEmpty && repeated.duplicates == 2)
     let beforeFailure = preferences.data(forKey: QuicklinkLibrary.storageKey)
     do {
-        _ = try controller.importData(Data(#"[{"name":"新链接","link":"https://example.com/"},{"name":"无效","link":"file:///tmp"}]"#.utf8))
+        _ = try controller.importData(Data(#"[{"name":"新链接","link":"https://example.com/"},{"name":"无效","link":"file://remote/tmp"}]"#.utf8))
         fatalError("Invalid import was accepted")
     } catch {
         precondition(preferences.data(forKey: QuicklinkLibrary.storageKey) == beforeFailure)
@@ -83,6 +83,7 @@ func verify() throws {
         precondition(preferences.data(forKey: QuicklinkLibrary.storageKey) == corrupt)
     }
     try verifyEditorNavigation()
+    try verifyLocalLinks()
     print("QUICKLINKS_INTEGRATION_OK editor_hide=true editor_cancel=true legacy=4 cancel=true retry=true import=true duplicate=true reload=true corrupt_protected=true")
 }
 
@@ -156,6 +157,60 @@ func verifyEditorNavigation() throws {
     precondition(present(true).deactivation == editor && route == list)
     let reloaded = try QuicklinkLibrary.load(from: preferences)
     precondition(reloaded.links.first?.title == "Edited after reopening")
+}
+
+func verifyLocalLinks() throws {
+    let suite = "org.keylane.quicklinks.local." + UUID().uuidString
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("Quicklink 临时目录 " + UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let file = folder.appendingPathComponent("中文 {clipboard} #100%.txt")
+    try Data("synthetic document".utf8).write(to: file)
+    try QuicklinkLibrary(links: []).save(to: preferences)
+    var opened: [URL] = []
+    var error = ""
+    let controller = QuicklinksController(preferences: preferences, openURL: { opened.append($0); return true })
+    controller.feedback = { message, _ in error = message }
+    controller.load()
+    let fileLink = Quicklink(title: "文件", template: file.path)
+    controller.edit(fileLink)
+    _ = controller.leaveEditor(currentPage: QuicklinksController.editorPage)
+    precondition(controller.links.isEmpty && opened.isEmpty)
+    controller.edit(fileLink)
+    precondition(controller.saveDraft() == fileLink.id)
+    let stored = controller.links[0]
+    precondition(stored.template == file.absoluteString)
+    precondition(controller.launch(stored) { fatalError("A local path prompted for a parameter") })
+    precondition(opened.last?.path == file.path)
+    controller.edit(stored)
+    controller.draft?.template = folder.absoluteString
+    precondition(controller.saveDraft() == stored.id)
+    precondition(controller.launch(controller.links[0]) {})
+    precondition(opened.last?.path == folder.path)
+    let other = Quicklink(title: "外部", template: file.path)
+    let exchange = try QuicklinkLibrary(links: [other]).exportJSON()
+    let imported = try controller.importData(exchange)
+    precondition(imported.links.first?.template == file.absoluteString && opened.count == 2)
+    let repeated = try controller.importData(exchange)
+    precondition(repeated.duplicates == 1 && repeated.links.isEmpty)
+    let blocked = folder.appendingPathComponent("unreadable.txt")
+    try Data().write(to: blocked)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: blocked.path)
+    precondition(!controller.launch(Quicklink(title: "无权限", template: blocked.absoluteString)) {})
+    precondition(error.contains("权限") && opened.count == 2)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: blocked.path)
+    precondition(!controller.launch(Quicklink(title: "可执行文件", template: blocked.absoluteString)) {})
+    precondition(error.contains("普通文件") && opened.count == 2)
+    try FileManager.default.removeItem(at: file)
+    precondition(!controller.launch(stored) {})
+    precondition(error.contains("访问") && opened.count == 2)
+    controller.stop()
+    controller.load()
+    precondition(controller.links.map(\.id).contains(stored.id))
+    print("PASS local quicklinks: cancel, Chinese and literal URL characters, save/edit/open, permissions, missing targets, import without launch, and reload")
 }
 
 try verify()
