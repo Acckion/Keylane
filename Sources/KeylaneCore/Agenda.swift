@@ -143,11 +143,15 @@ public enum AgendaPolicy {
             && event.start <= now && event.end > now
     }
 
+    public static func overlapsJoinedMeeting(_ event: AgendaEvent, joinedMeetings: [DateInterval]) -> Bool {
+        joinedMeetings.contains { $0.start < event.end && event.start < $0.end }
+    }
+
     public static func automaticMeeting(_ events: [AgendaEvent], now: Date, excluded: Set<String>,
-                                        occupiedUntil: Date?) -> AgendaEvent? {
-        guard occupiedUntil.map({ $0 <= now }) ?? true else { return nil }
-        return ordered(events.filter {
+                                        joinedMeetings: [DateInterval]) -> AgendaEvent? {
+        ordered(events.filter {
             canAutoJoin($0, now: now) && now.timeIntervalSince($0.start) < 60 && !excluded.contains($0.id)
+                && !overlapsJoinedMeeting($0, joinedMeetings: joinedMeetings)
         }).first
     }
 

@@ -98,15 +98,20 @@ final class AgendaTests: XCTestCase {
         }
         let events = [meeting("b"), meeting("a"), meeting("pending", attending: false),
                       meeting("free", busy: false), meeting("all-day", allDay: true)]
-        func candidate(_ now: Date, excluding: Set<String> = [], occupiedUntil: Date? = nil) -> String? {
-            AgendaPolicy.automaticMeeting(events, now: now, excluded: excluding, occupiedUntil: occupiedUntil)?.id
+        func candidate(_ now: Date, excluding: Set<String> = [], joinedMeetings: [DateInterval] = []) -> String? {
+            AgendaPolicy.automaticMeeting(events, now: now, excluded: excluding, joinedMeetings: joinedMeetings)?.id
         }
         XCTAssertNil(candidate(start.addingTimeInterval(-1)))
         XCTAssertEqual(candidate(start), "a")
         let midnight = date("2026-11-12T00:00:00Z")
         XCTAssertEqual(candidate(midnight, excluding: ["a"]), "b")
         XCTAssertNil(candidate(midnight, excluding: ["a", "b"]))
-        XCTAssertNil(candidate(midnight, excluding: ["a"], occupiedUntil: end))
+        let tomorrow = DateInterval(start: date("2026-11-12T12:00:00Z"), end: date("2026-11-12T13:00:00Z"))
+        XCTAssertEqual(candidate(start, excluding: ["a"], joinedMeetings: [tomorrow]), "b")
+        let adjacent = DateInterval(start: end, duration: 1800)
+        XCTAssertEqual(candidate(midnight, excluding: ["a"], joinedMeetings: [adjacent]), "b")
+        let overlapping = DateInterval(start: midnight, end: end)
+        XCTAssertNil(candidate(midnight, excluding: ["a"], joinedMeetings: [tomorrow, overlapping]))
         XCTAssertNil(candidate(start.addingTimeInterval(60)))
         XCTAssertFalse(AgendaPolicy.canAutoJoin(meeting("ended"), now: end))
     }

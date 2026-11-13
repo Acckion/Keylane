@@ -107,7 +107,7 @@ final class CalendarController: ObservableObject {
     private var recentAndUpcoming: [AgendaEvent] = []
     private var handledMeetings: [String: Date] = [:]
     private var joinPromptVisible = false
-    private var meetingOccupiedUntil: Date?
+    private var joinedMeetings: [String: DateInterval] = [:]
     private var awaitingFreshEvents = true
     private var sleeping = false
     private var autoJoinGeneration = 0
@@ -568,7 +568,9 @@ extension CalendarController {
     func joinMeeting(_ event: AgendaEvent) {
         guard enabled, let url = event.meetingURL else { return }
         handledMeetings[event.id] = event.end
-        meetingOccupiedUntil = max(meetingOccupiedUntil ?? event.end, event.end)
+        if event.end > event.start {
+            joinedMeetings[event.id] = DateInterval(start: event.start, end: event.end)
+        }
         error = ""
         if previewBeforeJoining { previewCamera?() }
         if url.host?.lowercased() == "meet.google.com",
@@ -585,9 +587,10 @@ extension CalendarController {
         guard enabled, autoJoin, !joinPromptVisible, !sleeping, !awaitingFreshEvents else { return }
         let now = Date()
         handledMeetings = handledMeetings.filter { $0.value > now }
+        joinedMeetings = joinedMeetings.filter { $0.value.end > now }
         let excluded = Set(handledMeetings.keys).union(dismissedUntil.keys)
         guard let event = AgendaPolicy.automaticMeeting(upcoming, now: now, excluded: excluded,
-                                                        occupiedUntil: meetingOccupiedUntil) else { return }
+                                                        joinedMeetings: Array(joinedMeetings.values)) else { return }
         handledMeetings[event.id] = event.end
         if !confirmJoin {
             joinMeeting(event)
@@ -606,10 +609,10 @@ extension CalendarController {
             guard response == .alertFirstButtonReturn, self.enabled, self.autoJoin,
                   ticket == self.autoJoinGeneration, !self.sleeping, !self.awaitingFreshEvents,
                   self.dismissedUntil[event.id] == nil,
-                  self.meetingOccupiedUntil.map({ $0 <= Date() }) ?? true,
                   let current = self.upcoming.first(where: { $0.id == event.id }),
                   current.meetingURL == event.meetingURL,
-                  AgendaPolicy.canAutoJoin(current, now: Date()) else { return }
+                  AgendaPolicy.canAutoJoin(current, now: Date()),
+                  !AgendaPolicy.overlapsJoinedMeeting(current, joinedMeetings: Array(self.joinedMeetings.values)) else { return }
             self.joinMeeting(current)
         }
         if let window = NSApp.keyWindow, window.attachedSheet == nil {
