@@ -267,3 +267,51 @@ test("date and tag interactions keep their SDK types through focus, selection, c
   ] });
   assert.deepEqual(forged.form.fields.map(({ value }) => value), [defaultDay, ["a"]]);
 });
+
+test("form replay settles async dropdown options before a following change", async () => {
+  const { usePromise } = require("./raycast-utils.cjs").utilitiesFor(() => require("./view-api.cjs"));
+  const { useEffect } = require("./view-api.cjs");
+  const calls = [];
+  const command = () => {
+    const [query, setQuery] = useState("");
+    const [value, setValue] = useState("default");
+    const options = usePromise(async (text) => {
+      calls.push(text);
+      return [text || "default"];
+    }, [query]);
+    const detail = usePromise(async (selected) => `Selected ${selected}`, [value]);
+    useEffect(async () => {
+      if (!query) return;
+      await assert.rejects(LocalStorage.setItem("blocked", query), /LocalStorage writes are unavailable/);
+      calls.push("write denied");
+    }, [query]);
+    return Form({ navigationTitle: detail.data, children: Form.Dropdown({
+      id: "choice", value, onChange: setValue, onSearchTextChange: setQuery,
+      isLoading: options.isLoading,
+      children: options.data?.map((item) => Form.Dropdown.Item({ value: item, title: item })),
+    }) });
+  };
+  const { form } = await render(command, { storage: {}, formEvents: [
+    { id: "choice", kind: "search", value: "new" },
+    { id: "choice", kind: "change", value: "new" },
+  ] });
+  assert.equal(form.navigationTitle, "Selected new");
+  assert.equal(form.fields[0].value, "new");
+  assert.equal(form.fields[0].search.isLoading, false);
+  assert.deepEqual(calls, ["", "new", "write denied"]);
+});
+
+test("form replay uses one effect pass budget for all events", async () => {
+  const { useEffect } = require("./view-api.cjs");
+  let runs = 0;
+  const command = () => {
+    const [query, setQuery] = useState("");
+    useEffect(() => { runs++; }, [query]);
+    return Form({ children: Form.Dropdown({ id: "choice", onSearchTextChange: setQuery }) });
+  };
+  const formEvents = Array.from({ length: 8 }, (_, index) => ({
+    id: "choice", kind: "search", value: String(index),
+  }));
+  await assert.rejects(render(command, { formEvents }), /View effects did not settle/);
+  assert.equal(runs, 8);
+});

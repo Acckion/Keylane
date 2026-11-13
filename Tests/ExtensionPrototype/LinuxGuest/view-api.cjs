@@ -472,6 +472,22 @@ async function renderView(renderPage, input, scope) {
     effects = [];
     root = renderRoot();
   }
+  let effectPasses = 0;
+  async function settleEffects() {
+    try {
+      while (effects.length) {
+        if (effectPasses++ === 8) throw new Error("View effects did not settle");
+        const pending = effects;
+        effects = undefined;
+        for (const effect of pending) await effect();
+        await new Promise(setImmediate);
+        effects = [];
+        root = renderRoot();
+      }
+    } finally {
+      effects = undefined;
+    }
+  }
   try {
     if (dropdownChange) {
       await searchDropdown(input.dropdownSelectionQuery);
@@ -492,21 +508,16 @@ async function renderView(renderPage, input, scope) {
       root = renderRoot();
     }
     if (menuSearch && input.dropdownQuery !== appliedQuery) await searchDropdown(input.dropdownQuery);
-    for (let pass = 0; effects.length; pass++) {
-      if (pass === 8) throw new Error("View effects did not settle");
-      const pending = effects;
-      effects = undefined;
-      for (const effect of pending) await effect();
-      await new Promise(setImmediate);
-      effects = [];
-      root = renderRoot();
-    }
-    effects = undefined;
+    await settleEffects();
     if (formEvents.length) {
       replayingViewInput = true;
       for (const event of formEvents) {
-        await routeReplay.run(true, () => withCacheWritesBlocked(() => replayFormEvent(root, children, event, dropdownContext)));
-        root = renderRoot();
+        await routeReplay.run(true, () => withCacheWritesBlocked(async () => {
+          await replayFormEvent(root, children, event, dropdownContext);
+          effects = [];
+          root = renderRoot();
+          await settleEffects();
+        }));
       }
     }
     if (root?.type === "list" || root?.type === "grid") {
