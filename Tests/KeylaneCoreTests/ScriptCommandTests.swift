@@ -282,6 +282,18 @@ final class ScriptCommandTests: XCTestCase {
         XCTAssertLessThanOrEqual(checks, 9)
     }
 
+    func testTruncatedOutputKeepsCompleteUTF8Scalars() throws {
+        let url = try write("unicode.sh", annotated("Fixture", """
+            /usr/bin/head -c 262143 /dev/zero | /usr/bin/tr '\\000' x
+            printf '%s' '中'
+            """))
+        let script = try ScriptCommand.read(url)
+        let result = try ScriptRunner.run(script, arguments: [], directory: folder, timeout: 5, isCancelled: { false })
+        XCTAssertTrue(result.truncated)
+        XCTAssertEqual(result.output.utf8.count, 262143)
+        XCTAssertEqual(result.output.last, "x")
+    }
+
     func testLargeOutputIsBoundedWithoutBlocking() throws {
         _ = try write("large.sh", annotated("Fixture", "/usr/bin/head -c 300000 /dev/zero | /usr/bin/tr '\\000' x"))
         let script = try XCTUnwrap(ScriptCommand.discover(in: [folder.path]).commands.first)
