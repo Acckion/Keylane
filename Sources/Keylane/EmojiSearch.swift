@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct EmojiItem: Identifiable, Sendable {
@@ -70,8 +71,8 @@ final class EmojiSearchController: ObservableObject {
     @Published private(set) var isSearching = false
     @Published private(set) var loadFailed = false
     @Published var selection: ResultGridSelection<String>?
-    @Published var category = "all" { didSet { if oldValue != category { refresh(resetSelection: true) } } }
-    var query = "" { didSet { if oldValue != query { refresh(resetSelection: true) } } }
+    @Published var category = "all" { didSet { if oldValue != category { refresh() } } }
+    var query = "" { didSet { if oldValue != query { refresh() } } }
 
     private var loadTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
@@ -80,13 +81,23 @@ final class EmojiSearchController: ObservableObject {
     private var items: [EmojiItem] = []
     private var grouped: [String: [EmojiItem]] = [:]
     private var itemsByID: [String: EmojiItem] = [:]
-    private var history = UserDefaults.standard.dictionary(forKey: recentsKey) as? [String: Int] ?? [:]
+    private let defaults: UserDefaults
+    private var history: [String: Int]
+    private var pendingSelection: ResultGridSelection<String>?
 
-    var selected: EmojiItem? { selection.flatMap { itemsByID[$0.itemID] } }
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        history = defaults.dictionary(forKey: Self.recentsKey) as? [String: Int] ?? [:]
+    }
+
+    var selected: EmojiItem? {
+        guard active, let selection else { return nil }
+        return sections.first { $0.id == selection.sectionID }?.items.first { $0.id == selection.itemID }
+    }
 
     func start() {
         active = true
-        if !items.isEmpty { refresh(resetSelection: false); return }
+        if !items.isEmpty { refresh(); return }
         guard !isLoading else { return }
         isLoading = true
         loadFailed = false
@@ -100,15 +111,23 @@ final class EmojiSearchController: ObservableObject {
                 self.items = loaded
                 self.grouped = Dictionary(grouping: loaded, by: \.category)
                 self.itemsByID = Dictionary(loaded.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-                self.refresh(resetSelection: true)
+                self.refresh()
             }
         }
     }
 
-    func recordUse(_ item: EmojiItem) {
+    func copy(_ item: EmojiItem, to pasteboard: NSPasteboard = .general) -> Int? {
+        guard active, selected?.id == item.id else { return nil }
+        pasteboard.clearContents()
+        guard pasteboard.setString(item.glyph, forType: .string) else { return nil }
+        recordUse(item)
+        return pasteboard.changeCount
+    }
+
+    private func recordUse(_ item: EmojiItem) {
         history[item.id, default: 0] += 1
-        UserDefaults.standard.set(history, forKey: Self.recentsKey)
-        if query.split(whereSeparator: \.isWhitespace).isEmpty { refresh(resetSelection: false) }
+        defaults.set(history, forKey: Self.recentsKey)
+        if query.split(whereSeparator: \.isWhitespace).isEmpty { refresh() }
     }
 
     func move(_ delta: Int, vertical: Bool) {
@@ -132,6 +151,7 @@ final class EmojiSearchController: ObservableObject {
         items = []
         grouped = [:]
         itemsByID = [:]
+        pendingSelection = nil
         query = ""
     }
 
@@ -142,8 +162,9 @@ final class EmojiSearchController: ObservableObject {
         if isSearching { isSearching = false }
     }
 
-    private func refresh(resetSelection: Bool) {
+    private func refresh() {
         guard active else { return }
+        let priorSelection = selection ?? pendingSelection
         cancelSearch()
         let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
         let groups = EmojiCatalog.categories.dropFirst().filter { category == "all" || category == $0.id }
@@ -173,7 +194,7 @@ final class EmojiSearchController: ObservableObject {
             let candidates = items
             let terms = terms.map(String.init)
             let revision = searchRevision
-            let priorSelection = resetSelection ? nil : selection
+            pendingSelection = priorSelection
             // Drop the old selection immediately so Return cannot activate a stale result.
             publish([], retaining: nil)
             guard !candidates.isEmpty else { return }
@@ -186,6 +207,7 @@ final class EmojiSearchController: ObservableObject {
                     let updated: [ResultGridSection<EmojiItem>] = ranked.isEmpty ? [] : [
                         .init(id: "results", title: EmojiCatalog.label("搜索结果", "Results"), items: ranked)
                     ]
+                    self.pendingSelection = nil
                     self.publish(updated, retaining: priorSelection)
                     self.isSearching = false
                     self.searchTask = nil
@@ -193,12 +215,18 @@ final class EmojiSearchController: ObservableObject {
             }
             return
         }
-        publish(updated, retaining: resetSelection ? nil : selection)
+        pendingSelection = nil
+        publish(updated, retaining: priorSelection)
     }
 
     private func publish(_ updated: [ResultGridSection<EmojiItem>], retaining priorSelection: ResultGridSelection<String>?) {
         if !sections.isEmpty || !updated.isEmpty { sections = updated }
-        let next = ResultGridSelection.retaining(priorSelection, in: updated)
+        let preferred = priorSelection.flatMap { previous -> ResultGridSelection<String>? in
+            let section = updated.first { $0.id == previous.sectionID && $0.items.contains { $0.id == previous.itemID } }
+                ?? updated.first { $0.items.contains { $0.id == previous.itemID } }
+            return section.map { .init(sectionID: $0.id, itemID: previous.itemID) }
+        }
+        let next = ResultGridSelection.retaining(preferred, in: updated)
         if next != selection { selection = next }
     }
 
