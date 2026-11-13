@@ -82,9 +82,9 @@ public enum SearchRanker {
 }
 
 public enum Calculator {
-    public static func evaluate(_ input: String) -> Double? {
+    public static func evaluate(_ input: String, locale: Locale = Locale(identifier: "en_US_POSIX")) -> Double? {
         guard input.utf16.count <= 512 else { return nil }
-        let normalized = input.folding(options: .widthInsensitive, locale: .current)
+        let normalized = decimalInput(input.folding(options: .widthInsensitive, locale: locale), locale: locale)
             .replacingOccurrences(of: "×", with: "*")
             .replacingOccurrences(of: "÷", with: "/")
             .replacingOccurrences(of: "−", with: "-")
@@ -94,6 +94,16 @@ public enum Calculator {
         guard let value = parser.expression(), value.isFinite else { return nil }
         parser.skipSpaces()
         return parser.index == parser.chars.count ? value : nil
+    }
+
+    static func decimalInput(_ input: String, locale: Locale) -> String {
+        guard let separator = locale.decimalSeparator, separator != "." else { return input }
+        return input.replacingOccurrences(of: separator, with: ".")
+    }
+
+    public static func format(_ value: Double, locale: Locale = .current) -> String {
+        let number = String(format: "%.12g", locale: Locale(identifier: "en_US_POSIX"), value == 0 ? 0 : value)
+        return number.replacingOccurrences(of: ".", with: locale.decimalSeparator ?? ".")
     }
 
     public static func isExpression(_ input: String) -> Bool {

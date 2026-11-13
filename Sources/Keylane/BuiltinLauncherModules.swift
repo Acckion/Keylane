@@ -534,9 +534,12 @@ enum BuiltinLauncherModules {
         }, resolve: { [weak model] command, origin in
             guard command == id, origin != .shortcut, let query = model?.query, let value = result(query)?.value else { return nil }
             return {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(value, forType: .string)
+                UtilityActions.copy(value, feedback: "已复制计算结果")
             }
+        }, actions: { [weak model] row in
+            [LauncherAction(id: "calculator-copy", title: "复制结果", icon: "doc.on.doc", keys: ["↩"]) { [weak model] in
+                model?.runCommand(row.commandID, origin: .menu, usageKey: row.id)
+            }]
         })
         let hintID = CommandID(rawValue: "calculator-hint")
         let hint = LauncherModule.Provider(namespace: .exact(hintID), entries: { input in
@@ -548,17 +551,20 @@ enum BuiltinLauncherModules {
             return [Entry(id: hintID.rawValue, commandID: hintID, name: message,
                           detail: "计算器", symbol: "equal", rankingKind: .calculator)]
         }, resolve: { _, _ in nil })
-        return .init(id: .init(rawValue: "keylane.calculator"), commands: [
+        var module = LauncherModule(id: .init(rawValue: "keylane.calculator"), commands: [
             command("calculator-help", "计算器", "在搜索框输入表达式", "equal.circle", ["Calculator", "计算"], execute: { [weak model] _ in
                 model?.query = "="
             })
         ], providers: [provider, hint], services: [.init(start: {}, stop: exchange.stop)], searchUpdates: [exchange.updates])
+        module.launcherShown = exchange.startPresenting
+        module.launcherHidden = exchange.endPresentation
+        return module
     }
 
     private static func calculatorResult(_ query: String) -> String? {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Calculator.isExpression(trimmed), let value = Calculator.evaluate(trimmed) else { return nil }
-        return String(format: "%.12g", value)
+        guard Calculator.isExpression(trimmed), let value = Calculator.evaluate(trimmed, locale: .current) else { return nil }
+        return Calculator.format(value)
     }
 
     private static func systemTools(_ model: Model) -> LauncherModule {

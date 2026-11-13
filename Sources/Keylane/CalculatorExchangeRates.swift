@@ -4,11 +4,13 @@ import KeylaneCore
 
 final class CalculatorExchangeRates: ObservableObject {
     private enum RefreshState { case idle, loading, offline, failed }
+    private let presentationUpdates = PassthroughSubject<Void, Never>()
     @Published private var state = RefreshState.idle
     private var rates: ECBReferenceRates?
     private var lastAttempt: TimeInterval?
     private var refreshTask: URLSessionDataTask?
     private var revision = 0
+    private var presenting = false
     private let defaults: UserDefaults
     private let session: URLSession
     private let cacheKey = "calculatorECBReferenceRates"
@@ -17,19 +19,19 @@ final class CalculatorExchangeRates: ObservableObject {
     init(defaults: UserDefaults = .standard, session: URLSession = .shared) {
         self.defaults = defaults
         self.session = session
-
     }
 
     var updates: AnyPublisher<Void, Never> {
-        $state.dropFirst().receive(on: DispatchQueue.main).map { _ in () }.eraseToAnyPublisher()
+        $state.dropFirst().map { _ in () }.merge(with: presentationUpdates)
+            .receive(on: DispatchQueue.main).eraseToAnyPublisher()
     }
 
-    func result(_ conversion: CalculatorConversion) -> (value: String?, detail: String)? {
+    func result(_ conversion: CalculatorConversion, locale: Locale = .current) -> (value: String?, detail: String)? {
         guard let pair = conversion.currencies else { return nil }
         if rates == nil && lastAttempt == nil {
             rates = defaults.data(forKey: cacheKey).flatMap { try? JSONDecoder().decode(ECBReferenceRates.self, from: $0) }
         }
-        refreshIfNeeded()
+        if presenting { refreshIfNeeded() }
         let status: String
         switch state {
         case .idle: status = ""
@@ -45,13 +47,27 @@ final class CalculatorExchangeRates: ObservableObject {
         guard let converted = rates.convert(conversion.amount, from: pair.source, to: pair.target) else {
             return (nil, "暂无 \(pair.source) / \(pair.target) 汇率 · \(detail)")
         }
-        return (String(format: "%.12g", converted) + " " + pair.target, detail)
+        return (Calculator.format(converted, locale: locale) + " " + pair.target, detail)
     }
 
-    func stop() {
+    func startPresenting() {
+        presenting = true
+        // Invalidate any result cached while the launcher was hidden.
+        presentationUpdates.send()
+    }
+
+    func endPresentation() {
+        presenting = false
+        guard refreshTask != nil else { return }
         revision += 1
         refreshTask?.cancel()
         refreshTask = nil
+        lastAttempt = nil
+        state = .idle
+    }
+
+    func stop() {
+        endPresentation()
         rates = nil
         lastAttempt = nil
         state = .idle
