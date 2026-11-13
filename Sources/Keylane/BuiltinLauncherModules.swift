@@ -486,7 +486,17 @@ enum BuiltinLauncherModules {
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
                     ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard",
                     available: { controller.historyCommandEnabled },
-                    settingsEnabled: Binding(get: { controller.historyCommandEnabled }, set: { controller.historyCommandEnabled = $0 }))
+                    settingsEnabled: Binding(get: { controller.historyCommandEnabled }, set: { controller.historyCommandEnabled = $0 })),
+            command(ClipboardSequenceCommand.paste.rawValue, ClipboardSequenceCommand.paste.title,
+                    "粘贴下一条剪贴板记录", ClipboardSequenceCommand.paste.symbol,
+                    ["Paste Sequentially", "顺序粘贴", "依次粘贴"], settings: "clipboard", execute: { _ in
+                (NSApp.delegate as? Delegate)?.pasteClipboardSequentially()
+            }),
+            command(ClipboardSequenceCommand.reset.rawValue, ClipboardSequenceCommand.reset.title,
+                    "从最新复制的记录重新开始", ClipboardSequenceCommand.reset.symbol,
+                    ["Reset Paste Sequence", "重置粘贴顺序"], settings: "clipboard", execute: { _ in
+                (NSApp.delegate as? Delegate)?.resetClipboardPasteSequence()
+            })
         ], pages: [page], settings: [
             settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: titlebar, content: LauncherSettingsContent.clipboard)
         ], services: [
