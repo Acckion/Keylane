@@ -646,6 +646,104 @@ universal.stopRuntime()
 print("PASS universal clipboard fixtures: opt-in, arrival parsing, deferred data, stale generations, polling fallback, text/link/image/file snapshots, sensitive filtering and cancellation")
 
 print("PASS named pasteboard: direct Chinese OCR search over historical images and Finder image files, background OCR of a new Finder image with the page closed, six categories, saved text edit and exact replay, QR decoding, color conversion, rich text/image/file replay, sensitive filtering, persistence and cleanup")
+
+func verifyHistoryRemoval() throws {
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.orderFront(nil)
+    defer { window.orderOut(nil) }
+    let titles = ["过去 5 分钟", "过去 15 分钟", "过去 30 分钟", "过去 1 小时", "过去 24 小时"]
+
+    func picker(in view: NSView?) -> NSPopUpButton? {
+        guard let view else { return nil }
+        if let picker = view as? NSPopUpButton { return picker }
+        for child in view.subviews {
+            if let picker = picker(in: child) { return picker }
+        }
+        return nil
+    }
+
+    for (index, minutes) in [5, 15, 30, 60, 1440].enumerated() {
+        let suite = "org.keylane.clipboard.removal." + UUID().uuidString
+        let directory = root.appendingPathComponent(suite)
+        let preferences = UserDefaults(suiteName: suite)!
+        let board = NSPasteboard(name: .init(suite))
+        defer {
+            board.releaseGlobally()
+            preferences.removePersistentDomain(forName: suite)
+        }
+        board.clearContents()
+        board.setString("Current clipboard", forType: .string)
+        let generation = board.changeCount
+
+        let store = try ClipboardStore(directory: directory)
+        let end = Date()
+        let cutoff = end.addingTimeInterval(-Double(minutes) * 60)
+        let old = try store.capture(.text("Old but replayed"), at: cutoff.addingTimeInterval(-1))
+        try store.recordReplay(id: old, at: end)
+        let boundary = try store.capture(.text("Cutoff"), at: cutoff)
+        let newest = try store.capture(.text("At confirmation"), at: end)
+        let pinned = try store.capture(.text("Pinned"), at: end)
+        try store.setPinned(id: pinned, pinned: true)
+        let later = try store.capture(.text("After confirmation"), at: end.addingTimeInterval(1))
+
+        let controller = ClipboardController(directory: directory, board: board, preferences: preferences, startTimer: false)
+        defer { controller.stopRuntime() }
+        wait("load synthetic history for range \(minutes)") { controller.total == 5 }
+        controller.select(boundary)
+        wait("load detail before deletion") { controller.selectedDetail?.item.id == boundary }
+        var clockReads = 0
+        let now = {
+            clockReads += 1
+            return end
+        }
+
+        if index == 0 {
+            for recent in [true, false] {
+                controller.confirmHistoryRemoval(recent: recent, in: window, now: now)
+                let sheet = window.attachedSheet!
+                if let picker = picker(in: sheet.contentView) { picker.selectItem(at: 4) }
+                window.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+                wait("dismiss canceled deletion sheet") { window.attachedSheet == nil }
+                precondition(clockReads == 0 && controller.total == 5 && controller.selectedID == boundary)
+                let count = try store.count()
+                precondition(count == 5)
+            }
+        }
+
+        controller.confirmHistoryRemoval(recent: true, in: window, now: now)
+        let rangeSheet = window.attachedSheet!
+        let selector = picker(in: rangeSheet.contentView)!
+        precondition(selector.itemTitles == titles && selector.indexOfSelectedItem == 3)
+        precondition(clockReads == 0)
+        selector.selectItem(at: index)
+        window.endSheet(rangeSheet, returnCode: .alertSecondButtonReturn)
+        wait("apply confirmed range \(minutes) and replace stale detail") {
+            controller.total == 3 && controller.selectedDetail?.item.id == pinned
+        }
+        precondition(clockReads == 1)
+        precondition(Set(controller.items.map(\.id)) == Set([old, pinned, later]))
+        let removed = try store.detail(id: newest)
+        precondition(removed == nil)
+
+        if index == 0 {
+            controller.confirmHistoryRemoval(recent: false, in: window)
+            let allSheet = window.attachedSheet!
+            precondition(picker(in: allSheet.contentView) == nil)
+            window.endSheet(allSheet, returnCode: .alertSecondButtonReturn)
+            wait("clear all including pinned and reset the presentation") {
+                controller.total == 0 && controller.items.isEmpty && controller.selectedID == nil && controller.detail == nil
+            }
+            let count = try store.count()
+            precondition(count == 0)
+        }
+        precondition(board.changeCount == generation && board.string(forType: .string) == "Current clipboard")
+    }
+    print("PASS bulk history deletion: all five ranges, inclusive boundaries, pinned protection, replay timestamps, cancel, clear all, selection refresh and unchanged named pasteboard")
+}
+
+try verifyHistoryRemoval()
+
 func verifySequentialPaste() throws {
     let suite = "org.keylane.clipboard.sequence." + UUID().uuidString
     let directory = root.appendingPathComponent(suite)
@@ -719,7 +817,8 @@ func verifySequentialPaste() throws {
     try store.setPinned(id: mid, pinned: true)
     controller.sequenceAddsNewline = true
     try paste("Middle\n")
-    try store.remove(id: old)
+    try store.setPinned(id: old, pinned: false)
+    try store.removeRecent(since: earlier, through: earlier)
     let deleted = next()
     precondition((try? deleted.get()) == nil && board.string(forType: .string) == "Middle\n")
     precondition((try? next().get()) == nil)

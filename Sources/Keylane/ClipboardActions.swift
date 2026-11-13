@@ -39,7 +39,9 @@ enum ClipboardActions {
 
     static func items(_ model: Model) -> [LauncherAction] {
         let controller = model.clipboard
-        guard let item = controller.items.first(where: { $0.id == controller.selectedID }) else { return [] }
+        guard let item = controller.items.first(where: { $0.id == controller.selectedID }) else {
+            return controller.total > 0 ? bulkRemovalActions(controller) : []
+        }
         let detail = controller.selectedDetail
         let text = detail?.text ?? ""
         let canEdit = item.category.canEditText
@@ -179,15 +181,18 @@ enum ClipboardActions {
                 }
             ]
         }
-        actions += [
-            .init(id: "delete-clip", title: "删除记录", icon: "trash", keys: ["⌃", "X"],
-                  group: 3, destructive: true, perform: controller.removeSelected),
+        actions.append(.init(id: "delete-clip", title: "删除记录", icon: "trash", keys: ["⌃", "X"],
+                             group: 3, destructive: true, perform: controller.removeSelected))
+        return actions + bulkRemovalActions(controller)
+    }
+
+    private static func bulkRemovalActions(_ controller: ClipboardController) -> [LauncherAction] {
+        [
             .init(id: "delete-recent-clips", title: "删除最近的记录…", icon: "clock", keys: ["⇧", "⌘", "X"],
                   group: 3, destructive: true, perform: { controller.confirmHistoryRemoval(recent: true) }),
             .init(id: "delete-all-clips", title: "删除全部记录", icon: "trash", keys: ["⌃", "⇧", "X"],
                   group: 3, destructive: true, perform: { controller.confirmHistoryRemoval(recent: false) })
         ]
-        return actions
     }
 
     private static func fileActions(_ detail: ClipDetail, controller: ClipboardController, hasImage: Bool,
