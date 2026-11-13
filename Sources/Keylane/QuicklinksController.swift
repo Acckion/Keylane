@@ -82,7 +82,8 @@ final class QuicklinksController: ObservableObject {
         link.title = link.title.trimmingCharacters(in: .whitespacesAndNewlines)
         link.template = link.template.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !link.title.isEmpty else { throw Message("请输入名称。") }
-        _ = try link.parsedTemplate(context: templateContext())
+        let parsed = try link.parsedTemplate(context: templateContext())
+        if let url = parsed.localURL { link.template = url.absoluteString }
         var updated = links
         if let index = updated.firstIndex(where: { $0.id == link.id }) { updated[index] = link }
         else { updated.append(link) }
@@ -172,6 +173,26 @@ final class QuicklinksController: ObservableObject {
     }
 
     private func open(_ url: URL) throws {
+        if url.isFileURL {
+            let target = url.resolvingSymlinksInPath()
+            let values: URLResourceValues
+            do {
+                values = try target.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isApplicationKey, .isAliasFileKey, .isReadableKey])
+            } catch {
+                throw Message("无法访问本地目标。请检查路径是否仍存在，以及 Keylane 是否有权限访问。")
+            }
+            guard values.isReadable == true else {
+                throw Message("无法访问本地目标。请检查 Keylane 是否有权限访问。")
+            }
+            guard values.isApplication != true, values.isAliasFile != true,
+                  values.isDirectory == true || (values.isRegularFile == true
+                      && !FileManager.default.isExecutableFile(atPath: target.path)
+                      && target.pathExtension.lowercased() != "command") else {
+                throw Message("请选择普通文件或文件夹。")
+            }
+            guard openURL(target) else { throw Message("无法打开本地文件或文件夹。") }
+            return
+        }
         guard openURL(url) else { throw Message("无法打开快捷链接。") }
     }
 

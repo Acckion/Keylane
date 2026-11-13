@@ -103,7 +103,7 @@ struct QuicklinkLauncherEditor: View {
                         .focused($focused, equals: .title).onSubmit { if !SearchField.isComposing { focused = .link } }
                 }
             }
-            LauncherCreationField("链接", detail: "支持 HTTP、HTTPS 和邮件地址。") {
+            LauncherCreationField("链接", detail: "支持网页、邮件、本地绝对路径或 file:// 链接。") {
                 LauncherCreationControl(focused: focused == .link) {
                     TextField("https://example.com/?q={关键词}", text: field(\.template)).textFieldStyle(.plain)
                         .focused($focused, equals: .link).onSubmit { if !SearchField.isComposing { focused = .tags } }
