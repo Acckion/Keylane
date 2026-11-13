@@ -8,3 +8,10 @@
 38项Swift测试及6项分发工具测试通过。集成验证使用实际系统快捷指令服务、系统词典和生成联系人，不在输出中打印个人名称、号码、邮箱或词典全文。0.12.0开发版已签名安装，安装二进制与ZIP一致。源码已同步到当前工程。完整安装版视觉、授权和键盘交互仍需按模块验收。
 
 接口参考 [Apple 快捷指令命令行指南](https://support.apple.com/guide/shortcuts-mac/apd455c82f02/mac)、[Contacts](https://developer.apple.com/documentation/contacts) 和 [Dictionary Services](https://developer.apple.com/documentation/coreservices/dictionary_services)。
+
+## 词典 Beta 回归
+
+- 2026-11-13 用本机 Dictionary Services 查询 `apple`、`苹果`，两者均有结果。一个合成不存在的词返回空结果。其他设备的可用语言取决于 Apple 词典启用的来源。Keylane 显示该接口返回的首条纯文本释义，词库设置和完整条目可在 Apple 词典中查看。[Apple API 文档](https://developer.apple.com/documentation/coreservices/1446842-dcscopytextdefinition)
+- 查询中回车等待结果。空白可打开系统词典，超过 256 个 UTF-16 单元时提示缩短输入。隔离回归覆盖旧结果丢弃、取消后重开和独立剪贴板复制。
+- 本机 Apple 词典声明支持 `dict:` 协议。隔离回归验证了中文和保留字符编码。真实启动器中的按键、滚动与跳转仍待实机验收。
+- Raycast 官方更新日志确认其内建 Define Word 支持查询词语和短语，并支持格式化释义。Keylane 当前使用系统纯文本查询接口。[Raycast 更新日志](https://www.raycast.com/changelog/1-3-0)
