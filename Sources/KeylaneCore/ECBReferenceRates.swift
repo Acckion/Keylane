@@ -18,9 +18,15 @@ public struct ECBReferenceRates: Codable {
     }
 
     public func convert(_ amount: Double, from: String, to: String) -> Double? {
-        guard let source = rates[from], let target = rates[to], source > 0, target > 0 else { return nil }
-        let result = amount / source * target
-        return result.isFinite ? result : nil
+        guard amount.isFinite, let source = rates[from], let target = rates[to],
+              source.isFinite, target.isFinite, source > 0, target > 0 else { return nil }
+        if from == to || amount == 0 { return amount }
+        let base = amount / source
+        let result = base * target
+        if base != 0, result.isFinite { return result }
+        let ratio = target / source
+        let converted = amount * ratio
+        return ratio > 0 && converted.isFinite ? converted : nil
     }
 
     /// Calendar days in the publisher's timezone. Allow a normal weekend between releases.
