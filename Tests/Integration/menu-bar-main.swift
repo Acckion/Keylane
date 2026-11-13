@@ -46,7 +46,7 @@ var requests = 0
 var resolvePermission: ((Bool) -> Void)?
 let calendar = CalendarController(registry: registry, preferences: preferences, authorization: .init(
     check: { authorized }, request: { requests += 1; resolvePermission = $0 }, guidance: "Fixture permission"
-))
+), readAccess: { .denied })
 // Use an unsaved event to verify the fields handed to the real edit form.
 let fixtureStore = EKEventStore()
 let fixtureEvent = EKEvent(eventStore: fixtureStore)
@@ -59,10 +59,19 @@ let fullNotes = String(repeating: "备注", count: 4_050) + "备注结尾"
 fixtureEvent.title = fullTitle
 fixtureEvent.location = fullLocation
 fixtureEvent.notes = fullNotes
-calendar.prepareDraft(event: CalendarController.summary(fixtureEvent))
+fixtureEvent.url = URL(string: "https://example.invalid/agenda")
+let summary = CalendarController.summary(fixtureEvent)
+precondition(summary.eventURL == fixtureEvent.url && summary.meetingURL == nil && summary.attending)
+calendar.prepareDraft(event: summary)
 precondition(calendar.draft.title == fullTitle)
 precondition(calendar.draft.location == fullLocation)
 precondition(calendar.draft.notes == fullNotes)
+precondition(calendar.draft.urlText == "https://example.invalid/agenda")
+calendar.draft.urlText = "invalid"
+calendar.prepareDraft()
+precondition(calendar.draft.urlText.isEmpty, "Leaving edit and creating another event must reset the URL")
+calendar.prepareDraft(event: summary)
+precondition(calendar.draft.urlText == fixtureEvent.url?.absoluteString, "Reopening must restore the event URL")
 
 func settlePermission() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
 
