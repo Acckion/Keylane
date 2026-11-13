@@ -28,7 +28,7 @@ struct ScreenshotLibraryCheck {
                     "Screenshot management must stay inactive until enabled")
         try require(library.hasAuthorizedScope, "Fixture folder must be readable")
         library.enabled = true
-        library.refresh()
+        library.start()
         try await wait { !library.scanning }
         guard let item = library.selected else {
             throw CheckError.failure("Fixture not indexed (\(library.inaccessibleFolders) unreadable folders)")
@@ -140,7 +140,80 @@ struct ScreenshotLibraryCheck {
         try await wait { !library.scanning && library.selected?.id == movieItem.id }
         try require(library.sections.first?.items.map(\.id) == [movieItem.id], "Re-enabled screenshots must restore pins")
 
-        print("Screenshot scope, query, Quick Look thumbnail, OCR and QR, file copy, pinning, grid zoom, and trash passed")
+        try await verifyLiveChanges(library, folder: folder, image: qr, movie: movie)
+        print("Screenshot scope, live changes, mixed media, latest image, Quick Look thumbnail, OCR and QR, file copy, pinning, grid zoom, and trash passed")
+    }
+
+    @MainActor private static func verifyLiveChanges(_ library: ScreenshotLibrary, folder: URL,
+                                                    image: URL, movie: URL) async throws {
+        library.filter = .images
+        library.search("name:Fixture")
+        library.start()
+        try await wait { library.selected?.name == image.lastPathComponent }
+
+        let nested = folder.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false)
+        let added = nested.appendingPathComponent("Screenshot New Fixture.png")
+        try writeImage(added)
+        try await wait { library.results.contains { $0.name == added.lastPathComponent } }
+        try require(library.selected?.name == image.lastPathComponent && library.results.allSatisfy { $0.kind == .image },
+                    "New screenshot changed the selection or media filter")
+        let renamed = folder.appendingPathComponent("Screenshot Renamed Fixture.png")
+        try FileManager.default.moveItem(at: image, to: renamed)
+        try await wait { library.selected?.name == renamed.lastPathComponent }
+        let removedItem = library.selected!
+        try FileManager.default.removeItem(at: renamed)
+        try await wait { library.selected?.name == added.lastPathComponent }
+        do {
+            try library.validate(removedItem)
+            throw CheckError.failure("A deleted item still passed validation")
+        } catch is CocoaError {}
+
+        let ordinary = nested.appendingPathComponent("Ordinary.png")
+        try writeImage(ordinary)
+        let latestDate = Date().addingTimeInterval(30)
+        try FileManager.default.setAttributes([.creationDate: latestDate], ofItemAtPath: ordinary.path)
+        try FileManager.default.setAttributes([.creationDate: latestDate.addingTimeInterval(60)], ofItemAtPath: movie.path)
+        library.includeAll = true
+        library.filter = .all
+        library.search("")
+        try await wait { library.results.first?.kind == .movie && library.results.count == 3 }
+        let latest = await withCheckedContinuation { continuation in
+            library.latest { continuation.resume(returning: $0) }
+        }
+        try require(latest?.name == ordinary.lastPathComponent, "Latest command must skip newer movies and respect all media")
+
+        let secondScope = folder.deletingLastPathComponent().appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: secondScope, withIntermediateDirectories: false)
+        let movedScope = secondScope.appendingPathExtension("moved")
+        defer {
+            try? FileManager.default.removeItem(at: secondScope)
+            try? FileManager.default.removeItem(at: movedScope)
+        }
+        let outside = secondScope.appendingPathComponent("Screenshot Outside.png")
+        try writeImage(outside)
+        let missing = secondScope.appendingPathComponent("Missing", isDirectory: true)
+        try require(library.addFolders([secondScope, missing]) == [missing], "Missing directory must be rejected")
+        try await wait { library.results.count == 4 }
+        try FileManager.default.moveItem(at: secondScope, to: movedScope)
+        try await wait { library.unavailableScopePaths.contains(secondScope.standardizedFileURL.path) && library.results.count == 3 }
+        try require(library.hasAuthorizedScope, "Other scopes must remain available after a scope is moved")
+        try require(library.addFolders([movedScope]).isEmpty, "Moved scope can be authorized at its new location")
+        try await wait { library.results.count == 4 }
+        library.removeFolder(at: movedScope.standardizedFileURL.path)
+        library.removeFolder(at: secondScope.standardizedFileURL.path)
+        try await wait { library.results.count == 3 && library.unavailableScopePaths.isEmpty }
+
+        library.stop()
+        let hidden = nested.appendingPathComponent("Screenshot While Hidden.png")
+        try writeImage(hidden)
+        try await Task.sleep(for: .seconds(1))
+        try require(!library.results.contains { $0.name == hidden.lastPathComponent }, "Inactive page must stop watching")
+        for _ in 0..<3 {
+            library.start()
+            try await wait { !library.scanning && library.results.contains { $0.name == hidden.lastPathComponent } }
+            library.stop()
+        }
     }
 
     @MainActor private static func writeImage(_ url: URL) throws {

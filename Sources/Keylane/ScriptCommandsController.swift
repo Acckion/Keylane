@@ -60,7 +60,11 @@ final class ScriptCommandsController: ObservableObject {
     private let worker = DispatchQueue(label: "org.keylane.scripts.run", qos: .userInitiated)
     private var scanToken: DispatchWorkItem?
     private var lastScan: TimeInterval?
-    private let folderWatcher = ScriptFolderWatcher()
+    private let folderWatcher: FolderChangeWatcher = {
+        let watcher = FolderChangeWatcher()
+        watcher.ignoresDirectory = ScriptCommand.ignoresDiscoveryDirectory(named:)
+        return watcher
+    }()
     private var pendingFolderRefresh: DispatchWorkItem?
     private var rebuildWatch = false
     private var rescanRequested = false

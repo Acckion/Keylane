@@ -1,12 +1,12 @@
 import CoreServices
 import Darwin
 import Foundation
-import KeylaneCore
 
 /// Delivers recursive changes on the main queue, including replacement of a configured root.
-final class ScriptFolderWatcher {
+final class FolderChangeWatcher {
     private var stream: FSEventStreamRef?
     private var roots: [String] = []
+    var ignoresDirectory: (String) -> Bool = { _ in false }
     var changed: ((_ rebuildWatch: Bool) -> Void)?
     var isWatching: Bool { stream != nil }
 
@@ -45,7 +45,7 @@ final class ScriptFolderWatcher {
         let flags = kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot
         guard let stream = FSEventStreamCreate(nil, { _, info, count, paths, flags, _ in
             guard let info else { return }
-            let watcher = Unmanaged<ScriptFolderWatcher>.fromOpaque(info).takeUnretainedValue()
+            let watcher = Unmanaged<FolderChangeWatcher>.fromOpaque(info).takeUnretainedValue()
             let paths = Unmanaged<CFArray>.fromOpaque(paths).takeUnretainedValue() as! [String]
             watcher.handle(paths: paths, flags: UnsafeBufferPointer(start: flags, count: count))
         }, &context, Array(watchPaths) as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
@@ -99,6 +99,6 @@ final class ScriptFolderWatcher {
         let components = path.dropFirst(prefix.count).split(separator: "/")
         let directories = isDirectory ? components[...] : components.dropLast()
         return components.last?.hasPrefix(".") != true
-            && !directories.contains { ScriptCommand.ignoresDiscoveryDirectory(named: String($0)) }
+            && !directories.contains { ignoresDirectory(String($0)) }
     }
 }

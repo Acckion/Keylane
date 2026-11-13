@@ -10,6 +10,16 @@ public struct ScreenshotMedia: Identifiable, Hashable, Sendable {
     public let size: Int
     public let kind: Kind
     public let needsCloudAccess: Bool
+    public struct Identity: Hashable, Sendable {
+        fileprivate let volume: Data
+        fileprivate let file: Data
+
+        public func matches(_ values: URLResourceValues) -> Bool {
+            volume == values.volumeIdentifier as? Data && file == values.fileResourceIdentifier as? Data
+        }
+    }
+
+    public internal(set) var identity: Identity? = nil
     public var id: String { url.path }
     public var name: String { url.lastPathComponent }
 }
@@ -23,7 +33,8 @@ public enum ScreenshotCatalog {
     public static func scan(folders: [URL], includeAllMedia: Bool) -> ScreenshotScan {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .creationDateKey,
                                         .contentModificationDateKey, .fileSizeKey, .fileAllocatedSizeKey,
-                                        .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
+                                        .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey,
+                                        .fileResourceIdentifierKey, .volumeIdentifierKey]
         let manager = FileManager.default
         var items: [ScreenshotMedia] = []
         var seen: Set<String> = []
@@ -48,8 +59,14 @@ public enum ScreenshotCatalog {
                 let cloud = (values.isUbiquitousItem == true && values.ubiquitousItemDownloadingStatus != .current
                               && values.ubiquitousItemDownloadingStatus != .downloaded)
                     || (url.path.contains("/Library/CloudStorage/") && (values.fileAllocatedSize ?? 0) == 0)
+                let identity: ScreenshotMedia.Identity?
+                if let volume = values.volumeIdentifier as? Data, let file = values.fileResourceIdentifier as? Data {
+                    identity = .init(volume: volume, file: file)
+                } else {
+                    identity = nil
+                }
                 items.append(.init(url: url, date: values.creationDate ?? modified, modified: modified,
-                                   size: values.fileSize ?? 0, kind: kind, needsCloudAccess: cloud))
+                                   size: values.fileSize ?? 0, kind: kind, needsCloudAccess: cloud, identity: identity))
             }
         }
         return ScreenshotScan(items: items.sorted {
@@ -74,7 +91,9 @@ public enum ScreenshotCatalog {
 
     private static func isSystemCapture(_ url: URL) -> Bool {
         let filename = url.lastPathComponent.lowercased()
-        if ["screenshot", "screen shot", "screen recording", "截屏", "截图", "录屏", "螢幕快照", "螢幕錄製"]
+        if ["screenshot", "screen shot", "screen recording", "截屏", "截图", "录屏", "螢幕快照", "螢幕錄製",
+            "bildschirmfoto", "bildschirmaufnahme", "capture d’écran", "capture d'écran",
+            "enregistrement de l’écran", "enregistrement de l'écran"]
             .contains(where: { filename.hasPrefix($0) }) { return true }
         guard let metadata = MDItemCreateWithURL(nil, url as CFURL) else { return false }
         return (MDItemCopyAttribute(metadata, "kMDItemIsScreenCapture" as CFString) as? Bool) == true
@@ -86,11 +105,11 @@ public struct ScreenshotQuery: Sendable {
     public let text: String
     public let date: String
     private let calendar: Calendar
-    private let now: Date
+    private let dateRange: DateInterval?
+    private let nameDateRange: DateInterval?
 
     public init(_ query: String, calendar: Calendar = .current, now: Date = Date()) {
         self.calendar = calendar
-        self.now = now
         let expression = try! NSRegularExpression(pattern: #"(?i)(?:^|\s)(name|text|date|名称|文字|日期)[:：]\s*"#)
         let input = query as NSString
         let fields = expression.matches(in: query, range: NSRange(location: 0, length: input.length))
@@ -112,21 +131,37 @@ public struct ScreenshotQuery: Sendable {
         self.name = names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.joined(separator: " ")
         self.text = text
         self.date = date.lowercased()
+        dateRange = Self.relativeRange(self.date, calendar: calendar, now: now)
+        nameDateRange = Self.relativeRange(self.name.lowercased(), calendar: calendar, now: now)
     }
 
     public func matchesMetadata(_ item: ScreenshotMedia) -> Bool {
-        let dateMatch = date.isEmpty || matches(date, captureDate: item.date)
+        let dateMatch = date.isEmpty || matches(date, range: dateRange, captureDate: item.date)
         let nameMatch = name.isEmpty || item.name.localizedStandardContains(name)
-            || matches(name.lowercased(), captureDate: item.date)
+            || matches(name.lowercased(), range: nameDateRange, captureDate: item.date)
         return dateMatch && nameMatch
     }
 
-    private func matches(_ input: String, captureDate: Date) -> Bool {
-        if ["today", "今天", "今日"].contains(input) { return calendar.isDate(captureDate, inSameDayAs: now) }
-        if ["yesterday", "昨天", "昨日"].contains(input),
-           let yesterday = calendar.date(byAdding: .day, value: -1, to: now) {
-            return calendar.isDate(captureDate, inSameDayAs: yesterday)
+    private static func relativeRange(_ input: String, calendar: Calendar, now: Date) -> DateInterval? {
+        let component: Calendar.Component
+        let offset: Int
+        switch input.split(whereSeparator: \.isWhitespace).joined(separator: " ") {
+        case "today", "今天", "今日": (component, offset) = (.day, 0)
+        case "yesterday", "昨天", "昨日": (component, offset) = (.day, -1)
+        case "this week", "本周", "这周", "本週", "這週": (component, offset) = (.weekOfYear, 0)
+        case "last week", "上周", "上週": (component, offset) = (.weekOfYear, -1)
+        case "this month", "本月", "这个月", "這個月": (component, offset) = (.month, 0)
+        case "last month", "上月", "上个月", "上個月": (component, offset) = (.month, -1)
+        case "this year", "今年", "本年": (component, offset) = (.year, 0)
+        case "last year", "去年", "上年": (component, offset) = (.year, -1)
+        default: return nil
         }
+        guard let date = calendar.date(byAdding: component, value: offset, to: now) else { return nil }
+        return calendar.dateInterval(of: component, for: date)
+    }
+
+    private func matches(_ input: String, range: DateInterval?, captureDate: Date) -> Bool {
+        if let range { return captureDate >= range.start && captureDate < range.end }
         let pieces = input.replacingOccurrences(of: "/", with: "-").split(separator: "-", omittingEmptySubsequences: false)
         guard (1...3).contains(pieces.count), pieces.first?.count == 4 else { return false }
         let numbers = pieces.compactMap { Int($0) }

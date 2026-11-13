@@ -42,15 +42,25 @@ struct ScreenshotScope: Codable, Identifiable, Equatable {
     let path: String
     let bookmark: Data?
     var id: String { path }
-    var url: URL {
+    var accessibleURL: URL? {
+        let original = URL(fileURLWithPath: path, isDirectory: true)
+        let url: URL
         if let bookmark {
             var stale = false
-            if let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI],
-                                       relativeTo: nil, bookmarkDataIsStale: &stale) {
-                return resolved
-            }
+            guard let resolved = try? URL(resolvingBookmarkData: bookmark,
+                                          options: [.withSecurityScope, .withoutUI, .withoutMounting],
+                                          relativeTo: nil, bookmarkDataIsStale: &stale),
+                  !stale, resolved.standardizedFileURL.path == original.standardizedFileURL.path else { return nil }
+            url = resolved
+        } else {
+            url = original
         }
-        return URL(fileURLWithPath: path, isDirectory: true)
+
+        let started = url.startAccessingSecurityScopedResource()
+        defer { if started { url.stopAccessingSecurityScopedResource() } }
+        guard let directory = opendir(url.path) else { return nil }
+        closedir(directory)
+        return url
     }
 }
 
@@ -82,7 +92,12 @@ final class ScreenshotLibrary: ObservableObject {
     @Published private(set) var pinnedIDs: Set<String> {
         didSet { defaults.set(pinnedIDs.sorted(), forKey: "pinnedScreenshotPaths") }
     }
-    @Published var includeAll: Bool { didSet { defaults.set(includeAll, forKey: "screenshotIncludeAll") } }
+    @Published var includeAll: Bool {
+        didSet {
+            defaults.set(includeAll, forKey: "screenshotIncludeAll")
+            if pageActive, oldValue != includeAll { refresh() }
+        }
+    }
     @Published var recognizesText: Bool { didSet { defaults.set(recognizesText, forKey: "screenshotOCR") } }
     @Published var accurate: Bool { didSet { defaults.set(accurate, forKey: "screenshotOCRAccurate") } }
     @Published var allowCloudOCR: Bool { didSet { defaults.set(allowCloudOCR, forKey: "screenshotCloudOCR") } }
@@ -93,8 +108,13 @@ final class ScreenshotLibrary: ObservableObject {
     @Published private(set) var scanning = false
     @Published private(set) var searchingText = false
     @Published private(set) var inaccessibleFolders = 0
+    @Published private(set) var unavailableScopePaths: [String] = []
     @Published private(set) var skippedOCR = 0
 
+    private let watcher = FolderChangeWatcher()
+    private var pageActive = false
+    private var needsRefresh = false
+    private var scopeAccess: [URL] = []
     private var items: [ScreenshotMedia] = []
     private var query = ""
     private var scanTask: Task<Void, Never>?
@@ -120,25 +140,26 @@ final class ScreenshotLibrary: ObservableObject {
         }
     }
 
-    var folders: [URL] {
-        if !scopes.isEmpty { return scopes.map(\.url) }
+    var suggestedFolder: URL? { systemScreenshotFolder ?? desktopFolder }
+
+    private var desktopFolder: URL? {
+        FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+    }
+
+    private var systemScreenshotFolder: URL? {
         let systemPath = UserDefaults(suiteName: "com.apple.screencapture")?.string(forKey: "location")
         if let systemPath, !systemPath.isEmpty {
             let path = (systemPath as NSString).expandingTildeInPath
-            if path.hasPrefix("/") { return [URL(fileURLWithPath: path, isDirectory: true)] }
+            if path.hasPrefix("/") { return URL(fileURLWithPath: path, isDirectory: true) }
         }
-        return FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)
+        return nil
     }
 
-    var hasAuthorizedScope: Bool {
-        scopes.contains { scope in
-            let url = scope.url
-            let started = url.startAccessingSecurityScopedResource()
-            defer { if started { url.stopAccessingSecurityScopedResource() } }
-            var directory: ObjCBool = false
-            return FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
-                && FileManager.default.isReadableFile(atPath: url.path)
-        }
+    var hasAuthorizedScope: Bool { scopes.contains { $0.accessibleURL != nil } }
+
+    func checkFolders() {
+        let unavailable = scopes.filter { $0.accessibleURL == nil }.map(\.path)
+        if unavailableScopePaths != unavailable { unavailableScopePaths = unavailable }
     }
 
     var selected: ScreenshotMedia? {
@@ -157,55 +178,157 @@ final class ScreenshotLibrary: ObservableObject {
         enabled && !disabledCommands.contains(command.rawValue)
     }
 
-    func chooseFolders() {
+    func chooseFolders() { chooseFolders(in: nil) }
+
+    func chooseFolders(in window: NSWindow?) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.directoryURL = folders.first
+        panel.directoryURL = scopes.compactMap(\.accessibleURL).first ?? suggestedFolder ?? desktopFolder
+        panel.message = "选择要搜索的文件夹，例如 macOS 截图保存位置、桌面或 CleanShot X 的保存位置。"
         panel.prompt = "添加搜索文件夹"
-        guard panel.runModal() == .OK else { return }
-        for url in panel.urls.map(\.standardizedFileURL) where !scopes.contains(where: { $0.path == url.path }) {
-            let bookmark = try? url.bookmarkData(options: .withSecurityScope)
-            scopes.append(.init(path: url.path, bookmark: bookmark))
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .OK, let self, !self.addFolders(panel.urls).isEmpty else { return }
+            let alert = NSAlert()
+            alert.messageText = "无法添加部分搜索文件夹"
+            alert.informativeText = "请确认文件夹仍存在并允许 Keylane 访问，然后重新选择。"
+            if let window, window.isVisible { alert.beginSheetModal(for: window) }
+            else { alert.runModal() }
         }
-        saveScopes()
+        if let window, window.isVisible {
+            guard window.attachedSheet == nil else { return }
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(panel.runModal())
+        }
     }
 
-    func removeFolder(_ scope: ScreenshotScope) {
-        scopes.removeAll { $0.id == scope.id }
-        saveScopes()
+    @discardableResult
+    func addFolders(_ urls: [URL]) -> [URL] {
+        var updated = scopes
+        var rejected: [URL] = []
+        for url in urls.map(\.standardizedFileURL) {
+            if updated.contains(where: { $0.path == url.path && $0.accessibleURL != nil }) { continue }
+            let bookmark = try? url.bookmarkData(options: .withSecurityScope)
+            let scope = ScreenshotScope(path: url.path, bookmark: bookmark)
+            guard scope.accessibleURL != nil else { rejected.append(url); continue }
+            updated.removeAll { $0.path == scope.path }
+            updated.append(scope)
+        }
+        if updated != scopes { saveScopes(updated) }
+        return rejected
     }
 
-    private func saveScopes() {
-        if let data = try? JSONEncoder().encode(scopes) { defaults.set(data, forKey: "screenshotScopes") }
+    func removeFolder(at path: String) {
+        saveScopes(scopes.filter { $0.path != path })
+    }
+
+    private func saveScopes(_ updated: [ScreenshotScope]) {
+        guard updated != scopes, let data = try? JSONEncoder().encode(updated) else { return }
+        defaults.set(data, forKey: "screenshotScopes")
+        scopes = updated
+        checkFolders()
+        latestTask?.cancel()
+        latestTask = nil
+        if pageActive { refresh() }
+    }
+
+    func start() {
+        pageActive = true
+        watcher.changed = { [weak self] rebuild in
+            guard let self, self.pageActive else { return }
+            if rebuild { self.refresh() }
+            else if self.scanTask != nil { self.needsRefresh = true }
+            else { self.scan(self.scopes.compactMap(\.accessibleURL), showingProgress: false) }
+        }
+        refresh()
     }
 
     func refresh() {
-        guard enabled, !scopes.isEmpty else { return }
-        stop()
-        scanning = true
-        let folders = folders
+        guard enabled else { return }
+        scanTask?.cancel()
+        scanTask = nil
+        needsRefresh = false
+        checkFolders()
+        let folders = scopes.compactMap(\.accessibleURL)
+        if pageActive {
+            watcher.stop()
+            releaseScopeAccess()
+            scopeAccess = folders.filter { $0.startAccessingSecurityScopedResource() }
+            watcher.start(roots: folders.map(\.path))
+        }
+        // Drop old results from scopes the user just removed or can no longer read.
+        let paths = folders.map { $0.path == "/" ? "/" : $0.path + "/" }
+        let authorized: (ScreenshotMedia) -> Bool = { item in paths.contains { item.id.hasPrefix($0) } }
+        let previousCount = items.count
+        items.removeAll { !authorized($0) }
+        if items.count != previousCount {
+            cancelSearch()
+            searchingText = false
+            publish(results.filter(authorized))
+            applySearch(query, preservingResults: true)
+        }
+        scan(folders, showingProgress: true)
+    }
+
+    private func scan(_ folders: [URL], showingProgress: Bool) {
+        guard !folders.isEmpty else {
+            scanning = false
+            cancelSearch()
+            searchingText = false
+            inaccessibleFolders = 0
+            return
+        }
+        if showingProgress { scanning = true }
         let includeAll = includeAll
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             let snapshot = ScreenshotCatalog.scan(folders: folders, includeAllMedia: includeAll)
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard !Task.isCancelled, let self else { return }
+                self.scanTask = nil
                 self.scanning = false
-                self.items = snapshot.items
                 self.inaccessibleFolders = snapshot.inaccessibleFolders
-                self.search(self.query)
+                self.checkFolders()
+                if self.items != snapshot.items || showingProgress {
+                    let preferred = self.selectionAfterRename(in: snapshot.items)
+                    self.items = snapshot.items
+                    self.applySearch(self.query, preservingResults: true, preferred: preferred)
+                } else if self.results.isEmpty && self.searchingText == false {
+                    self.applySearch(self.query, preservingResults: true)
+                }
+                if self.needsRefresh {
+                    self.needsRefresh = false
+                    self.scan(self.scopes.compactMap(\.accessibleURL), showingProgress: false)
+                }
             }
         }
     }
 
+    private func selectionAfterRename(in updated: [ScreenshotMedia]) -> ResultGridSelection<String>? {
+        guard let selected, !updated.contains(where: { $0.id == selected.id }), let identity = selected.identity else { return nil }
+        let matches = updated.filter { $0.identity == identity }
+        guard matches.count == 1, let replacement = matches.first else { return nil }
+        if pinnedIDs.remove(selected.id) != nil { pinnedIDs.insert(replacement.id) }
+        return .init(sectionID: pinnedIDs.contains(replacement.id) ? Self.pinnedSection : Self.section, itemID: replacement.id)
+    }
+
     func stop() {
+        pageActive = false
+        watcher.stop()
+        releaseScopeAccess()
+        needsRefresh = false
         scanTask?.cancel()
         scanTask = nil
         cancelSearch()
         scanning = false
         searchingText = false
+    }
+
+    private func releaseScopeAccess() {
+        for folder in scopeAccess { folder.stopAccessingSecurityScopedResource() }
+        scopeAccess.removeAll()
     }
 
     private func cancelSearch() {
@@ -216,16 +339,21 @@ final class ScreenshotLibrary: ObservableObject {
     }
 
     func search(_ value: String) {
+        applySearch(value, preservingResults: false)
+    }
+
+    private func applySearch(_ value: String, preservingResults: Bool, preferred: ResultGridSelection<String>? = nil) {
         guard enabled else { return }
+        let previousSelection = selection
         query = value
         cancelSearch()
         searchingText = false
         skippedOCR = 0
         let criteria = ScreenshotQuery(value)
         let candidates = items.filter { filter.includes($0) && criteria.matchesMetadata($0) }
-        guard !criteria.text.isEmpty else { publish(candidates); return }
-        publish([])
-        guard recognizesText else { return }
+        guard !criteria.text.isEmpty else { publish(candidates, preferred: preferred); return }
+        guard recognizesText else { publish([]); return }
+        if !preservingResults { publish([]) }
         searchingText = true
         let accurate = accurate
         let allowCloud = allowCloudOCR
@@ -246,7 +374,7 @@ final class ScreenshotLibrary: ObservableObject {
                 guard !Task.isCancelled, let self else { return }
                 self.searchingText = false
                 self.skippedOCR = completed.skipped
-                self.publish(completed.matches)
+                self.publish(completed.matches, preferred: self.selection == previousSelection ? preferred : nil)
             }
         }
     }
@@ -284,16 +412,17 @@ final class ScreenshotLibrary: ObservableObject {
         ]
     }
 
-    private func publish(_ results: [ScreenshotMedia]) {
+    private func publish(_ results: [ScreenshotMedia], preferred: ResultGridSelection<String>? = nil) {
         if self.results != results { self.results = results }
-        let next = ResultGridSelection.retaining(selection, in: sections)
+        let next = ResultGridSelection.retaining(preferred ?? selection, in: sections)
         if selection != next { selection = next }
     }
 
     func latest(_ completion: @escaping (ScreenshotMedia?) -> Void) {
-        guard enabled, !scopes.isEmpty else { completion(nil); return }
         latestTask?.cancel()
-        let folders = folders
+        guard enabled else { completion(nil); return }
+        let folders = scopes.compactMap(\.accessibleURL)
+        guard !folders.isEmpty else { completion(nil); return }
         let includeAll = includeAll
         latestTask = Task.detached(priority: .userInitiated) {
             let latest = ScreenshotCatalog.scan(folders: folders, includeAllMedia: includeAll).items.first { $0.kind == .image }
@@ -365,9 +494,12 @@ final class ScreenshotLibrary: ObservableObject {
 
     func validate(_ item: ScreenshotMedia) throws {
         guard enabled else { throw CancellationError() }
-        let values = try item.url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey, .fileSizeKey])
+        let currentURL = URL(fileURLWithPath: item.url.path)
+        let values = try currentURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey,
+                                                            .fileSizeKey, .fileResourceIdentifierKey, .volumeIdentifierKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true,
-              values.contentModificationDate == item.modified, values.fileSize == item.size else {
+              values.contentModificationDate == item.modified, values.fileSize == item.size,
+              item.identity?.matches(values) ?? true else {
             throw CocoaError(.fileReadNoSuchFile)
         }
     }
@@ -378,7 +510,8 @@ final class ScreenshotLibrary: ObservableObject {
         try FileManager.default.trashItem(at: item.url, resultingItemURL: &destination)
         items.removeAll { $0.id == item.id }
         if pinnedIDs.contains(item.id) { pinnedIDs.remove(item.id) }
-        search(query)
+        applySearch(query, preservingResults: false)
+        if pageActive { refresh() }
         return destination as URL?
     }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import KeylaneCore
 
@@ -15,6 +16,7 @@ struct ScreenshotPreferences: View {
             ViewObservation.changes(library.$enabled),
             ViewObservation.changes(library.$columns),
             ViewObservation.changes(library.$scopes),
+            ViewObservation.changes(library.$unavailableScopePaths),
             ViewObservation.changes(library.$includeAll),
             ViewObservation.changes(library.$recognizesText),
             ViewObservation.changes(library.$accurate),
@@ -42,23 +44,13 @@ struct ScreenshotPreferences: View {
                     }
                 }
             }
-            SettingsCard(anchor: .screenshotScopes) {
-                HStack {
-                    SettingsCaption(title: "搜索范围", detail: "搜索这些文件夹及其子目录。")
-                    Spacer()
-                    SettingsIconButton("添加搜索文件夹", symbol: "plus") { library.chooseFolders() }
+            SettingsSearchScopeCard(paths: library.scopes.map(\.path), detail: "搜索已授权的文件夹及其子目录。",
+                                    anchor: .screenshotScopes, add: library.chooseFolders, remove: library.removeFolder(at:)) {
+                if library.scopes.isEmpty, let suggestedFolder = library.suggestedFolder {
+                    SettingsDescription("建议从 macOS 截图保存位置开始：\((suggestedFolder.path as NSString).abbreviatingWithTildeInPath)")
                 }
-                if library.scopes.isEmpty {
-                    SettingsCompactList(items: library.folders, id: \.path) { url in SettingsFolderRow(path: url.path) { EmptyView() } }
-                    SettingsDescription("正在使用 macOS 的截图保存位置。")
-                } else {
-                    SettingsCompactList(items: library.scopes, id: \.id) { scope in
-                        SettingsFolderRow(path: scope.url.path) {
-                            SettingsRemoveItemButton(label: "移除 \(scope.url.path)", help: "移除搜索范围", role: .destructive) {
-                                library.removeFolder(scope)
-                            }
-                        }
-                    }
+                ForEach(library.unavailableScopePaths, id: \.self) { path in
+                    SettingsDescription("无法访问 \((path as NSString).abbreviatingWithTildeInPath)。如果文件夹已移动，请添加新位置并移除此范围。")
                 }
             }
             SettingsCard {
@@ -88,6 +80,10 @@ struct ScreenshotPreferences: View {
                         SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.command(.init(rawValue: command.rawValue), settingsPage: "screenshots"))
                     }
             }.disabled(!library.enabled)
+        }
+        .onAppear(perform: library.checkFolders)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            library.checkFolders()
         }
     }
 
