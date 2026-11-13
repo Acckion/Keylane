@@ -453,10 +453,8 @@ async function renderView(renderPage, input, scope) {
   let root = renderRoot();
   const hasSearchBar = root?.type === "list" || root?.type === "grid";
   const searchChange = hasSearchBar && typeof query === "string" && typeof root.props.onSearchTextChange === "function";
-  const initialDropdown = hasSearchBar ? describeDropdown(root, children) : undefined;
-  const selectedValue = input.dropdownValue ?? (root?.props?.searchBarAccessory?.props?.value === undefined
-    ? restoredDropdownValue(initialDropdown, input.dropdownPreferences) : undefined);
-  const dropdownChange = hasSearchBar && selectedValue !== undefined;
+  const dropdownChange = hasSearchBar && (input.dropdownValue !== undefined ||
+    (root.props.searchBarAccessory?.props?.value === undefined && input.dropdownPreferences?.length > 0));
   const menuSearch = hasSearchBar && typeof input.dropdownQuery === "string";
   const previousReplay = replayingViewInput;
   replayingViewInput = previousReplay || searchChange || dropdownChange || menuSearch;
@@ -475,7 +473,7 @@ async function renderView(renderPage, input, scope) {
   async function settleEffects() {
     let effectPasses = 0;
     try {
-      while (effects.length) {
+      while (effects?.length) {
         if (effectPasses++ === 8) throw new Error("View effects did not settle");
         const pending = effects;
         effects = undefined;
@@ -490,17 +488,25 @@ async function renderView(renderPage, input, scope) {
   }
   try {
     if (dropdownChange) {
-      await searchDropdown(input.dropdownSelectionQuery);
-      const options = describeDropdown(root, children);
-      const candidate = options?.sections.flatMap(({ items }) => items).find(({ value }) => value === selectedValue);
-      if (await applyDropdownSelection(root, children, selectedValue, {
-        strict: Boolean(action || input.dropdownSelectionEvent),
-        previousValue: initialDropdown?.selected,
-      })) {
-        selectedItem = candidate;
-        effects = [];
-        root = renderRoot();
-      }
+      await routeReplay.run(true, () => withCurrentViewInput(async () => {
+        await settleEffects();
+        const initialDropdown = describeDropdown(root, children);
+        const selectedValue = input.dropdownValue ?? (root.props.searchBarAccessory?.props?.value === undefined
+          ? restoredDropdownValue(initialDropdown, input.dropdownPreferences) : undefined);
+        if (selectedValue === undefined) return;
+        await searchDropdown(input.dropdownSelectionQuery);
+        await settleEffects();
+        const options = describeDropdown(root, children);
+        const candidate = options?.sections.flatMap(({ items }) => items).find(({ value }) => value === selectedValue);
+        if (await applyDropdownSelection(root, children, selectedValue, {
+          strict: Boolean(action || input.dropdownSelectionEvent),
+          previousValue: initialDropdown?.selected,
+        })) {
+          selectedItem = candidate;
+          effects = [];
+          root = renderRoot();
+        }
+      }));
     }
     if (searchChange && typeof root.props.onSearchTextChange === "function") {
       await root.props.onSearchTextChange(query);

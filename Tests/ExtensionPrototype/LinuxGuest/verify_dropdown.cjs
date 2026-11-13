@@ -198,3 +198,46 @@ test("dropdown search callbacks cannot write the reviewed extension cache", asyn
   assert.equal(initial.dropdown.keepSectionOrder, true);
   await assert.rejects(render(command, { cache: [], dropdownQuery: "text" }), /Cache changes are unavailable/);
 });
+
+test("List and Grid await async dropdown options before selection validation and action", async () => {
+  const api = require("./view-api.cjs");
+  const { Action, ActionPanel, Grid, List, render, useState, Cache } = api;
+  const { usePromise } = require("./raycast-utils.cjs").utilitiesFor(() => api);
+  for (const View of [List, Grid]) {
+    const Dropdown = View.Dropdown;
+    let actionCalls = 0;
+    const command = () => {
+      const [query, search] = useState("");
+      const [selected, select] = useState("all");
+      const options = usePromise(async (text) => {
+        await new Promise(setImmediate);
+        assert.throws(() => new Cache().set("blocked", "write"), /unavailable/);
+        return text === "中文" ? ["zh"] : ["all", "default"];
+      }, [query]);
+      return View({ searchBarAccessory: Dropdown({
+        value: selected, onSearchTextChange: search, onChange: select,
+        children: options.data?.map((value) => Dropdown.Item({ value, title: value })),
+      }), children: View.Item({ title: selected, content: "★",
+        actions: ActionPanel({ children: [
+          Action({ title: "Run", onAction() { actionCalls++; return api.Clipboard.copy(selected); } }),
+          Action.Push({ title: "Details", target: api.Detail({ markdown: selected }) }),
+        ] }),
+      }) });
+    };
+    const searched = await render(command, { dropdownQuery: "中文", cache: {} });
+    assert.equal(searched.dropdown.sections[0].items[0].value, "zh");
+    const request = { dropdownValue: "zh", dropdownSelectionQuery: "中文", cache: {} };
+    const chosen = await render(command, { ...request, dropdownSelectionEvent: true });
+    assert.equal(chosen.dropdown.selected, "zh");
+    const action = { row: 0, id: 0 };
+    assert.deepEqual(await render(command, { ...request, action }), { kind: "copy", text: "zh" });
+    assert.equal((await render(command, { dropdownValue: "default", dropdownSelectionEvent: true, cache: {} })).dropdown.selected, "default");
+    await assert.rejects(render(command, { ...request, dropdownValue: "forged", action }), /Invalid dropdown selection/);
+    const child = await render(command, { cache: {}, viewRoute: [{
+      mode: "action", query: "", row: 0, id: 1, dropdownValue: "zh", dropdownSelectionQuery: "中文",
+    }] });
+    assert.equal(child.detail.markdown, "zh");
+    assert.equal(child.cache, undefined);
+    assert.equal(actionCalls, 1);
+  }
+});
