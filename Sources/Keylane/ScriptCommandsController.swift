@@ -507,13 +507,19 @@ final class ScriptCommandsController: ObservableObject {
             let lines = (succeeded ? value.standardOutput : value.output).split(whereSeparator: \.isNewline)
             if acceptsInlineOutput, value.status != .cancelled {
                 let line = succeeded ? lines.first : lines.last
-                let text = line.map(String.init) ?? (succeeded ? "" : "运行失败")
+                let text = value.status == .timedOut ? "运行超时" : (line.map(String.init) ?? (succeeded ? "" : "运行失败"))
                 if inlineOutput[script.id] != text { inlineOutput[script.id] = text }
             }
             guard !background else { return }
             result = value
             if mode == .compact || (mode == .silent && (!succeeded || !lines.isEmpty)) || (mode == .inline && !succeeded) {
-                let text = lines.last.map { ScriptOutputText.plain(String($0)) } ?? (succeeded ? "脚本运行完成" : "脚本未完成")
+                let text: String
+                switch value.status {
+                case .cancelled: text = "已取消脚本运行"
+                case .timedOut: text = "脚本运行超时"
+                default:
+                    text = lines.last.map { ScriptOutputText.plain(String($0)) } ?? (succeeded ? "脚本运行完成" : "脚本未完成")
+                }
                 toast?.show(text, style: succeeded ? .success : .failure)
             }
         case .failure(let failure):
