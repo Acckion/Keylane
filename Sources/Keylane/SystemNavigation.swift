@@ -36,6 +36,7 @@ struct NavigationItem: Identifiable {
     var keys: [String] = []
     var minimized = false
     var enabled = true
+    let identity = UUID()
 }
 
 struct NavigationScan {
@@ -197,10 +198,11 @@ final class SystemNavigation {
         if recent.count > 128 { recent.removeLast() }
     }
 
+    @discardableResult
     func scan(_ mode: NavigationMode, target: NSRunningApplication?,
+              request: NavigationScanRequest = .init(), windowApplications: [NSRunningApplication]? = nil,
               completion: @escaping (NavigationScan) -> Void) -> NavigationScanRequest {
-        let request = NavigationScanRequest()
-        let apps = mode == .windows ? NSWorkspace.shared.runningApplications.filter {
+        let apps = mode == .windows ? (windowApplications ?? NSWorkspace.shared.runningApplications).filter {
             $0.activationPolicy == .regular && !$0.isTerminated && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
         } : []
         queue.async {
@@ -216,6 +218,7 @@ final class SystemNavigation {
     }
 
     func perform(_ item: NavigationItem, mode: NavigationMode, request: NavigationScanRequest = .init(), completion: @escaping (String?) -> Void) {
+        guard !request.isCancelled else { return }
         let app = item.application
         guard AXIsProcessTrusted(), !app.isTerminated else {
             completion(NavigationText.label("目标应用已退出或辅助功能权限已关闭。", "The app quit or Accessibility access was turned off."))
@@ -250,6 +253,7 @@ final class SystemNavigation {
                     if self.value(item.element, kAXMinimizedAttribute) as? Bool == true {
                         AXUIElementSetAttributeValue(item.element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
                     }
+                    guard !request.isCancelled else { return }
                     let result = AXUIElementPerformAction(item.element, kAXRaiseAction as CFString)
                     if result == .success {
                         let application = self.applicationElement(app.processIdentifier)
@@ -270,7 +274,11 @@ final class SystemNavigation {
                         message = NavigationText.label("无法切换到该窗口，窗口可能已关闭。", "Could not switch to this window. It may have closed.")
                     }
                 case .menus:
-                    if self.value(item.element, kAXEnabledAttribute) as? Bool == false {
+                    let current = self.values(item.element, [kAXRoleAttribute, kAXTitleAttribute, kAXEnabledAttribute])
+                    guard !request.isCancelled else { return }
+                    if current[0] as? String != kAXMenuItemRole || current[1] as? String != item.title {
+                        message = NavigationText.label("该菜单项已变化，请刷新结果。", "This menu item changed. Refresh the results.")
+                    } else if current[2] as? Bool != true {
                         message = NavigationText.label("该菜单项当前不可用。", "This menu item is currently unavailable.")
                     } else if !app.isActive {
                         message = NavigationText.label("目标应用失去焦点，菜单操作已取消。", "The target app lost focus. The menu action was cancelled.")
