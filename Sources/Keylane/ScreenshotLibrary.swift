@@ -76,8 +76,6 @@ final class ScreenshotLibrary: ObservableObject {
                 stop()
                 latestTask?.cancel()
                 latestTask = nil
-                for work in copyWork.values { work.cancel() }
-                copyWork.removeAll()
                 ocrCache = ScreenshotTextCache()
                 items = []
                 query = ""
@@ -98,9 +96,27 @@ final class ScreenshotLibrary: ObservableObject {
             if pageActive, oldValue != includeAll { refresh() }
         }
     }
-    @Published var recognizesText: Bool { didSet { defaults.set(recognizesText, forKey: "screenshotOCR") } }
-    @Published var accurate: Bool { didSet { defaults.set(accurate, forKey: "screenshotOCRAccurate") } }
-    @Published var allowCloudOCR: Bool { didSet { defaults.set(allowCloudOCR, forKey: "screenshotCloudOCR") } }
+    @Published var recognizesText: Bool {
+        didSet {
+            defaults.set(recognizesText, forKey: "screenshotOCR")
+            if oldValue != recognizesText { updateTextSearch() }
+        }
+    }
+    @Published var accurate: Bool {
+        didSet {
+            defaults.set(accurate, forKey: "screenshotOCRAccurate")
+            if oldValue != accurate { updateTextSearch() }
+        }
+    }
+    @Published var allowCloudOCR: Bool {
+        didSet {
+            defaults.set(allowCloudOCR, forKey: "screenshotCloudOCR")
+            if oldValue != allowCloudOCR {
+                cancelImageTextCopies()
+                updateTextSearch()
+            }
+        }
+    }
     @Published private(set) var scopes: [ScreenshotScope] = []
     @Published var filter = ScreenshotFilter.all { didSet { if oldValue != filter { search(query) } } }
     @Published var selection: ResultGridSelection<String>?
@@ -228,6 +244,7 @@ final class ScreenshotLibrary: ObservableObject {
         guard updated != scopes, let data = try? JSONEncoder().encode(updated) else { return }
         defaults.set(data, forKey: "screenshotScopes")
         scopes = updated
+        cancelImageTextCopies()
         checkFolders()
         latestTask?.cancel()
         latestTask = nil
@@ -322,8 +339,19 @@ final class ScreenshotLibrary: ObservableObject {
         scanTask?.cancel()
         scanTask = nil
         cancelSearch()
+        cancelImageTextCopies()
         scanning = false
         searchingText = false
+        skippedOCR = 0
+    }
+
+    private func cancelImageTextCopies() {
+        for work in copyWork.values { work.cancel() }
+        copyWork.removeAll()
+    }
+
+    private func updateTextSearch() {
+        if pageActive, !ScreenshotQuery(query).text.isEmpty { applySearch(query, preservingResults: false) }
     }
 
     private func releaseScopeAccess() {
@@ -366,12 +394,18 @@ final class ScreenshotLibrary: ObservableObject {
             for item in candidates where item.kind == .image {
                 if Task.isCancelled { return }
                 guard allowCloud || !item.needsCloudAccess else { skipped += 1; continue }
-                guard let text = cache.read(item, accurate: accurate, work: work) else { skipped += 1; continue }
+                guard let text = cache.read(item, accurate: accurate, allowCloud: allowCloud, work: work) else {
+                    if work.cancelled { return }
+                    skipped += 1
+                    continue
+                }
                 if text.localizedStandardContains(criteria.text) { matches.append(item) }
             }
             let completed = (matches: matches, skipped: skipped)
             await MainActor.run { [weak self] in
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.searchOCR === work, !work.cancelled else { return }
+                self.searchTask = nil
+                self.searchOCR = nil
                 self.searchingText = false
                 self.skippedOCR = completed.skipped
                 self.publish(completed.matches, preferred: self.selection == previousSelection ? preferred : nil)
@@ -456,32 +490,47 @@ final class ScreenshotLibrary: ObservableObject {
 
     @MainActor func copyImageText(_ mode: ImageTextRecognition, from item: ScreenshotMedia,
                                   to board: NSPasteboard = .general) async throws -> Bool {
-        try validate(item)
+        try validateTextCopy(item)
         guard item.kind == .image else { throw ImageTextError.notImage }
-        guard allowCloudOCR || !item.needsCloudAccess else { throw ImageTextError.cloudDownloadDisabled }
         let changeCount = board.changeCount
         let accurate = accurate
+        let allowCloud = allowCloudOCR
         let work = ImageTextRecognitionWork()
         let id = UUID()
         copyWork[id] = work
         defer { copyWork.removeValue(forKey: id) }
         let outcome = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                Result { try mode.recognize(in: VNImageRequestHandler(url: item.url), accurate: accurate, work: work) }
+                Result {
+                    guard !work.cancelled else { throw CancellationError() }
+                    try ScreenshotFileVersion.check(item, allowCloud: allowCloud)
+                    return try mode.recognize(in: VNImageRequestHandler(url: item.url), accurate: accurate, work: work)
+                }
             }.value
         } onCancel: {
             work.cancel()
         }
-        guard !work.cancelled else { throw CancellationError() }
+        guard !Task.isCancelled, !work.cancelled else { throw CancellationError() }
         let text = try outcome.get()
+        try validateTextCopy(item)
         guard !text.isEmpty else { return false }
-        try validate(item)
         guard board.changeCount == changeCount else { throw ImageTextError.pasteboardChanged }
         try writeText(text, to: board)
         return true
     }
 
-    private enum ImageTextError: LocalizedError {
+    private func validateTextCopy(_ item: ScreenshotMedia) throws {
+        guard pageActive, enabled else { throw CancellationError() }
+        let parent = item.url.deletingLastPathComponent().standardizedFileURL.path
+        guard scopes.contains(where: { scope in
+            guard let folder = scope.accessibleURL else { return false }
+            let root = folder.standardizedFileURL.path
+            return root == "/" || parent == root || parent.hasPrefix(root + "/")
+        }) else { throw CocoaError(.fileReadNoPermission) }
+        try ScreenshotFileVersion.check(item, allowCloud: allowCloudOCR)
+    }
+
+    fileprivate enum ImageTextError: LocalizedError {
         case notImage, cloudDownloadDisabled, pasteboardChanged
 
         var errorDescription: String? {
@@ -500,14 +549,7 @@ final class ScreenshotLibrary: ObservableObject {
 
     func validate(_ item: ScreenshotMedia) throws {
         guard enabled else { throw CancellationError() }
-        let currentURL = URL(fileURLWithPath: item.url.path)
-        let values = try currentURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey,
-                                                            .fileSizeKey, .fileResourceIdentifierKey, .volumeIdentifierKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true,
-              values.contentModificationDate == item.modified, values.fileSize == item.size,
-              item.identity?.matches(values) ?? true else {
-            throw CocoaError(.fileReadNoSuchFile)
-        }
+        try ScreenshotFileVersion.check(item)
     }
 
     @discardableResult func moveToTrash(_ item: ScreenshotMedia) throws -> URL? {
@@ -522,28 +564,62 @@ final class ScreenshotLibrary: ObservableObject {
     }
 }
 
+private enum ScreenshotFileVersion {
+    static func check(_ item: ScreenshotMedia, allowCloud: Bool = true) throws {
+        let currentURL = URL(fileURLWithPath: item.url.path)
+        var keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey,
+                                         .fileSizeKey, .fileResourceIdentifierKey, .volumeIdentifierKey]
+        if !allowCloud {
+            keys.formUnion([.fileAllocatedSizeKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey])
+        }
+        let values = try currentURL.resourceValues(forKeys: keys)
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              values.contentModificationDate == item.modified, values.fileSize == item.size,
+              item.identity?.matches(values) ?? true else {
+            throw CocoaError(.fileReadNoSuchFile)
+        }
+        if !allowCloud, item.needsCloudAccess || ScreenshotCatalog.needsCloudAccess(currentURL, values: values) {
+            throw ScreenshotLibrary.ImageTextError.cloudDownloadDisabled
+        }
+    }
+}
+
 private final class ScreenshotTextCache: @unchecked Sendable {
-    private let cache: NSCache<NSString, NSString> = {
-        let value = NSCache<NSString, NSString>()
+    private struct Key: Hashable {
+        let url: URL
+        let modified: Date
+        let size: Int
+        let identity: ScreenshotMedia.Identity?
+        let accurate: Bool
+    }
+    private final class CacheKey: NSObject {
+        let value: Key
+        init(_ value: Key) { self.value = value }
+        override var hash: Int { value.hashValue }
+        override func isEqual(_ object: Any?) -> Bool { (object as? CacheKey)?.value == value }
+    }
+    private let cache: NSCache<CacheKey, NSString> = {
+        let value = NSCache<CacheKey, NSString>()
         value.countLimit = 2_000
         value.totalCostLimit = 16 * 1024 * 1024
         return value
     }()
 
-    func read(_ item: ScreenshotMedia, accurate: Bool, work: ImageTextRecognitionWork) -> String? {
-        let key = "\(item.url.absoluteString)|\(item.modified.timeIntervalSince1970)|\(item.size)|\(accurate)" as NSString
+    func read(_ item: ScreenshotMedia, accurate: Bool, allowCloud: Bool, work: ImageTextRecognitionWork) -> String? {
+        guard !work.cancelled else { return nil }
+        let key = CacheKey(.init(url: item.url, modified: item.modified, size: item.size, identity: item.identity, accurate: accurate))
         if let text = cache.object(forKey: key) { return text as String }
-        guard let source = CGImageSourceCreateWithURL(item.url as CFURL, nil),
+        guard (try? ScreenshotFileVersion.check(item, allowCloud: allowCloud)) != nil, !work.cancelled,
+              let source = CGImageSourceCreateWithURL(item.url as CFURL, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
                 kCGImageSourceCreateThumbnailWithTransform: true,
                 kCGImageSourceThumbnailMaxPixelSize: 2560
-              ] as CFDictionary) else { return nil }
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = accurate ? .accurate : .fast
-        request.automaticallyDetectsLanguage = true
-        guard (try? work.perform(request, in: VNImageRequestHandler(cgImage: image))) != nil, !work.cancelled else { return nil }
-        let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+              ] as CFDictionary),
+              !work.cancelled,
+              let text = try? ImageTextRecognition.ocr.recognize(in: VNImageRequestHandler(cgImage: image),
+                                                                 accurate: accurate, work: work),
+              !work.cancelled, (try? ScreenshotFileVersion.check(item, allowCloud: allowCloud)) != nil else { return nil }
         cache.setObject(text as NSString, forKey: key, cost: text.utf8.count)
         return text
     }

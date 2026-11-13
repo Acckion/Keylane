@@ -56,9 +56,7 @@ public enum ScreenshotCatalog {
                 guard seen.insert(url.standardizedFileURL.path).inserted else { continue }
                 if !includeAllMedia && !isSystemCapture(url) { continue }
                 let modified = values.contentModificationDate ?? .distantPast
-                let cloud = (values.isUbiquitousItem == true && values.ubiquitousItemDownloadingStatus != .current
-                              && values.ubiquitousItemDownloadingStatus != .downloaded)
-                    || (url.path.contains("/Library/CloudStorage/") && (values.fileAllocatedSize ?? 0) == 0)
+                let cloud = needsCloudAccess(url, values: values)
                 let identity: ScreenshotMedia.Identity?
                 if let volume = values.volumeIdentifier as? Data, let file = values.fileResourceIdentifier as? Data {
                     identity = .init(volume: volume, file: file)
@@ -72,6 +70,12 @@ public enum ScreenshotCatalog {
         return ScreenshotScan(items: items.sorted {
             $0.date == $1.date ? $0.id < $1.id : $0.date > $1.date
         }, inaccessibleFolders: unreadable.count)
+    }
+
+    public static func needsCloudAccess(_ url: URL, values: URLResourceValues) -> Bool {
+        (values.isUbiquitousItem == true && values.ubiquitousItemDownloadingStatus != .current
+         && values.ubiquitousItemDownloadingStatus != .downloaded)
+            || (url.path.contains("/Library/CloudStorage/") && (values.fileAllocatedSize ?? 0) == 0)
     }
 
     private static func mediaKind(_ url: URL) -> ScreenshotMedia.Kind? {
