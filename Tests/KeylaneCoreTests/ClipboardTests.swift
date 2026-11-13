@@ -5,6 +5,33 @@ import SQLite3
 final class ClipboardTests: XCTestCase {
     private func directory() -> URL { FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneClipboardTest-" + UUID().uuidString) }
 
+    func testReplayReordersHistoryWithoutChangingCopyDatesPinOrderOrRetention() throws {
+        let directory = directory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try ClipboardStore(directory: directory)
+        let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+        let old = now.addingTimeInterval(-3600)
+        let first = try store.capture(.text("最早的项目"), at: old)
+        let second = try store.capture(.text("新的项目"), at: now)
+        let pin1 = try store.capture(.text("第一个置顶"), at: now)
+        let pin2 = try store.capture(.text("第二个置顶"), at: now)
+        try store.setPinned(id: pin1, pinned: true)
+        try store.setPinned(id: pin2, pinned: true)
+        let replay = now.addingTimeInterval(5)
+        try store.recordReplay(id: first, at: replay)
+        try store.recordReplay(id: first, at: old)
+        try store.recordReplay(id: pin2, at: replay)
+        let reopened = try ClipboardStore(directory: directory)
+        XCTAssertEqual(try reopened.list().map(\.id), [pin1, pin2, first, second])
+        let item = try XCTUnwrap(reopened.detail(id: first)?.item)
+        XCTAssertEqual(item.copiedAt, old)
+        XCTAssertEqual(item.firstCopiedAt, old)
+        XCTAssertEqual(item.copyCount, 1)
+        XCTAssertEqual(item.lastUsedAt, replay)
+        try reopened.prune(now: old.addingTimeInterval(30 * 86400 + 1))
+        XCTAssertNil(try reopened.detail(id: first))
+    }
+
     func testImageFileOCRSearchPreservesPathsAndInvalidatesStaleResults() throws {
         let directory = directory()
         defer { try? FileManager.default.removeItem(at: directory) }
