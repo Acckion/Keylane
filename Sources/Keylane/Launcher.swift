@@ -173,7 +173,10 @@ struct Launcher: View {
             // Keep the search field interactive while the blur's full-window spacer is inert.
             if showsSearchBar { VStack(spacing: 0) {
                 searchBar
-                if compactSurface && model.compactFavorites && !model.favorites.isEmpty { compactFavoritesBar }
+                if compactSurface && model.compactFavorites {
+                    let favorites = model.compactFavoriteEntries
+                    if !favorites.isEmpty { compactFavoritesBar(favorites) }
+                }
                 Spacer(minLength: 0)
             } }
             if actions || appMenu || filterOpen { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
@@ -402,10 +405,10 @@ struct Launcher: View {
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
     }
 
-    private var compactFavoritesBar: some View {
+    private func compactFavoritesBar(_ favorites: [Entry]) -> some View {
         ScrollView(.horizontal) {
             HStack(spacing: 12) {
-                ForEach(model.commands.filter { model.favorites.contains($0.id) }) { row in
+                ForEach(favorites) { row in
                     Button { model.perform(row) } label: {
                         Group {
                             if let artwork = model.launcherModules?.artwork(for: row) { artwork }

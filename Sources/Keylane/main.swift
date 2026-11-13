@@ -33,7 +33,11 @@ final class Model: ObservableObject {
     var interfaceScale: CGFloat { interfaceSize == "small" ? 0.9 : interfaceSize == "large" ? 1.1 : 1 }
     var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded && footerFeedback.current == nil }
     @Published var presentedLauncherHeight: CGFloat = 470
-    var launcherHeight: CGFloat { isCompact ? (compactFavorites && !favorites.isEmpty ? 109 : 61) : 470 }
+    var launcherHeight: CGFloat { isCompact ? (compactFavorites && !compactFavoriteEntries.isEmpty ? 109 : 61) : 470 }
+    var compactFavoriteEntries: [Entry] {
+        guard !favorites.isEmpty else { return [] }
+        return commands.filter { favorites.contains($0.id) }
+    }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
     @Published var query = ""
     @Published var pageID = PageID.root
@@ -186,7 +190,8 @@ final class Model: ObservableObject {
     @Published private(set) var favoriteOrder = UserDefaults.standard.stringArray(forKey: "favoriteOrder") ?? []
 
     func favoriteOrderActions(for id: String) -> [LauncherAction] {
-        let order = orderedFavoriteIDs
+        guard favorites.contains(id) else { return [] }
+        let order = visibleFavoriteIDs
         guard let index = order.firstIndex(of: id) else { return [] }
         return [
             .init(id: "move-favorite-earlier", title: "向前移动收藏", icon: "arrow.up", group: 1, enabled: index > 0) { [weak self] in
@@ -203,10 +208,19 @@ final class Model: ObservableObject {
         return favoriteOrder.filter { remaining.remove($0) != nil } + remaining.sorted()
     }
 
+    private var visibleFavoriteIDs: [String] {
+        if pageID == .root, query.isEmpty { return compactFavoriteEntries.map(\.id) }
+        let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: aliases, favorites: favorites, usage: usage)
+        let visible = Set(launcherModules?.candidates(for: input).filter { !$0.isFallback }.map(\.id) ?? [])
+        return orderedFavoriteIDs.filter { visible.contains($0) }
+    }
+
     private func moveFavorite(_ id: String, by delta: Int) {
+        let visible = visibleFavoriteIDs
+        guard let index = visible.firstIndex(of: id), visible.indices.contains(index + delta) else { return }
         var order = orderedFavoriteIDs
-        guard let source = order.firstIndex(of: id), order.indices.contains(source + delta) else { return }
-        order.swapAt(source, source + delta)
+        guard let source = order.firstIndex(of: id), let destination = order.firstIndex(of: visible[index + delta]) else { return }
+        order.swapAt(source, destination)
         saveFavoriteOrder(order)
     }
 
@@ -252,6 +266,12 @@ final class Model: ObservableObject {
         commandSearch.invalidate()
         rootSearchUpdates.send()
         reloadCatalog()
+    }
+    func isApplicationCommandAvailable(at path: String) -> Bool {
+        let id = CommandID(rawValue: "app:" + path)
+        return applicationsEnabled && !excluded.contains(path) && !disabledCommands.contains(id.rawValue)
+            && launcherModules?.isCommandModuleEnabled(id) == true
+            && apps.contains(where: { $0.path == path }) && FileManager.default.fileExists(atPath: path)
     }
     func resetUsage(for key: String) {
         searchUsage.reset(id: key)
@@ -962,7 +982,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.footerFeedback.$current.map { $0 != nil }.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$compactFavorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.$favorites.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
+            model.$favorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            model.rootSearchUpdates.filter { [weak model] in model?.isCompact == true }.eraseToAnyPublisher()
         ])
         .debounce(for: .zero, scheduler: DispatchQueue.main)
         .sink { [weak self] _ in self?.updateLauncherGeometry() }
