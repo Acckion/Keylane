@@ -126,21 +126,30 @@ test("current selection and form input run cached queries without persisting res
 });
 
 test("current input cannot enable cached work when reconstructing an ancestor route", async () => {
-  const { useState } = api;
-  let calls = 0;
-  const command = () => {
-    const [value, update] = useState("");
-    const result = useCachedPromise(async (input) => { calls++; return input; }, [value], { execute: !!value });
-    return List({ onSelectionChange: update, children: List.Item({
-      id: "item", title: "Item", actions: ActionPanel({ children: Action.Push({
+  const { Grid, Form, useState } = api;
+  for (const View of [List, Grid, Form]) {
+    let calls = 0;
+    const command = () => {
+      const [value, update] = useState("");
+      const result = useCachedPromise(async (input) => { calls++; return input; }, [value], { execute: !!value });
+      const actions = ActionPanel({ children: Action.Push({
         title: "Open", target: Detail({ markdown: result.data ?? "cached query blocked" }),
-      }) }),
-    }) });
-  };
-  const reply = await render(command, {
-    cache: {}, viewRoute: [{ mode: "action", row: 0, id: 0, selectedItemId: "item", query: "" }],
-  });
-  assert.equal(reply.detail.markdown, "cached query blocked");
-  assert.equal(calls, 0);
-  assert.equal(reply.cache, undefined);
+      }) });
+      if (View === Form) {
+        return Form({ actions, children: Form.TextField({ id: "input", value, onChange: update }) });
+      }
+      return View({ onSelectionChange: update, children: View.Item({
+        id: "item", title: "Item", content: "📄", actions,
+      }) });
+    };
+    const ancestorInput = View === Form
+      ? { formEvents: [{ id: "input", kind: "change", value: "edited" }] }
+      : { selectedItemId: "item" };
+    const reply = await render(command, {
+      cache: {}, viewRoute: [{ mode: "action", row: 0, id: 0, query: "", ...ancestorInput }],
+    });
+    assert.equal(reply.detail.markdown, "cached query blocked");
+    assert.equal(calls, 0);
+    assert.equal(reply.cache, undefined);
+  }
 });

@@ -301,17 +301,43 @@ test("form replay settles async dropdown options before a following change", asy
   assert.deepEqual(calls, ["", "new", "write denied"]);
 });
 
-test("form replay uses one effect pass budget for all events", async () => {
+
+test("form replay settles async dependencies for all sixteen allowed changes", async () => {
+  const { usePromise } = require("./raycast-utils.cjs").utilitiesFor(() => require("./view-api.cjs"));
+  const calls = [];
+  const command = () => {
+    const [value, setValue] = useState("");
+    const first = usePromise(async (input) => ({ input, normalized: input.toUpperCase() }), [value]);
+    const second = usePromise(async (data) => {
+      calls.push(data.input);
+      return data.normalized;
+    }, [first.data], { execute: first.data?.input === value });
+    return Form({ navigationTitle: second.data, children: Form.TextField({ id: "name", value, onChange: setValue }) });
+  };
+  const formEvents = Array.from({ length: 16 }, (_, index) => ({
+    id: "name", kind: "change", value: `event-${index + 1}`,
+  }));
+  const { form } = await render(command, { formEvents });
+  assert.equal(form.navigationTitle, "EVENT-16");
+  assert.deepEqual(calls, ["", ...formEvents.map(({ value }) => value)]);
+  await assert.rejects(render(command, { formEvents: [...formEvents, formEvents[0]] }), /Invalid form event list/);
+});
+
+test("an effect loop triggered by a form event stops after eight passes", async () => {
   const { useEffect } = require("./view-api.cjs");
   let runs = 0;
   const command = () => {
     const [query, setQuery] = useState("");
-    useEffect(() => { runs++; }, [query]);
+    const [counter, setCounter] = useState(0);
+    useEffect(() => {
+      if (!query) return;
+      runs++;
+      setCounter(counter + 1);
+    }, [query, counter]);
     return Form({ children: Form.Dropdown({ id: "choice", onSearchTextChange: setQuery }) });
   };
-  const formEvents = Array.from({ length: 8 }, (_, index) => ({
-    id: "choice", kind: "search", value: String(index),
-  }));
-  await assert.rejects(render(command, { formEvents }), /View effects did not settle/);
+  await assert.rejects(render(command, {
+    formEvents: [{ id: "choice", kind: "search", value: "loop" }],
+  }), /View effects did not settle/);
   assert.equal(runs, 8);
 });

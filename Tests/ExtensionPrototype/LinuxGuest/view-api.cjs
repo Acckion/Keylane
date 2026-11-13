@@ -472,8 +472,8 @@ async function renderView(renderPage, input, scope) {
     effects = [];
     root = renderRoot();
   }
-  let effectPasses = 0;
   async function settleEffects() {
+    let effectPasses = 0;
     try {
       while (effects.length) {
         if (effectPasses++ === 8) throw new Error("View effects did not settle");
