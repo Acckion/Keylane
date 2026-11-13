@@ -459,6 +459,18 @@ public final class ClipboardStore {
         while true { let status = sqlite3_step(s); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW else { throw ClipboardError.database }; result.append(try item(s)) }
         return result
     }
+    /// Copy order for sequential paste, independent of pins and replay timestamps.
+    public func sequentialPasteIDs() throws -> [String] {
+        let query = try statement("SELECT id FROM clips ORDER BY copied DESC, id", [])
+        defer { sqlite3_finalize(query) }
+        var ids: [String] = []
+        while true {
+            let status = sqlite3_step(query)
+            if status == SQLITE_DONE { return ids }
+            guard status == SQLITE_ROW else { throw ClipboardError.database }
+            ids.append(string(query, 0))
+        }
+    }
     public func recentText(offset: Int, current: String?) throws -> String? {
         guard (1...5000).contains(offset) else { return nil }
         let skip: Int

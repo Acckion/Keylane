@@ -59,7 +59,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let calendarSelection = SettingsItem(id: "calendar-selection", page: "calendar-enabled", title: "已启用的日历", keywords: "日历 筛选 账户 calendar account filter")
     public static let clipboardCapture = SettingsItem(id: "capture", page: "clipboard", title: "记录剪贴板历史", keywords: "文字 图片 文件 保留 采集 置顶 OCR capture clipboard history")
     public static let clipboardReplay = SettingsItem(id: "clipboard-replay", page: "clipboard", title: "剪贴板历史命令",
-                                                         keywords: "回车 动作 纯文本 粘贴 复制 置顶 排序 预览 链接 图标 clipboard paste replay preview")
+                                                         keywords: "回车 动作 纯文本 粘贴 复制 置顶 排序 预览 链接 图标 顺序 重置 超时 换行 clipboard paste replay preview sequential timeout")
     public static let clipboardRetention = SettingsItem(id: "clipboard-retention", page: "clipboard", title: "剪贴板保留历史记录", keywords: "保留时间 clipboard retention")
     public static let clipboardRecognition = SettingsItem(id: "clipboard-recognition", page: "clipboard", title: "剪贴板文字识别", keywords: "图片 快速 准确 clipboard OCR recognition")
     public static let clipboardExclusions = SettingsItem(id: "clipboard-exclusions", page: "clipboard", title: "不记录这些应用", keywords: "剪贴板 排除 应用 clipboard disabled applications")

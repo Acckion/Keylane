@@ -646,3 +646,124 @@ universal.stopRuntime()
 print("PASS universal clipboard fixtures: opt-in, arrival parsing, deferred data, stale generations, polling fallback, text/link/image/file snapshots, sensitive filtering and cancellation")
 
 print("PASS named pasteboard: direct Chinese OCR search over historical images and Finder image files, background OCR of a new Finder image with the page closed, six categories, saved text edit and exact replay, QR decoding, color conversion, rich text/image/file replay, sensitive filtering, persistence and cleanup")
+func verifySequentialPaste() throws {
+    let suite = "org.keylane.clipboard.sequence." + UUID().uuidString
+    let directory = root.appendingPathComponent(suite)
+    let preferences = UserDefaults(suiteName: suite)!
+    let board = NSPasteboard(name: .init(suite))
+    defer {
+        board.releaseGlobally()
+        preferences.removePersistentDomain(forName: suite)
+    }
+    let store = try ClipboardStore(directory: directory)
+    let earlier = Date().addingTimeInterval(-30)
+    let old = try store.capture(.text("Old"), at: earlier)
+    let mid = try store.capture(.text("Middle"), at: earlier.addingTimeInterval(1))
+    let recentText = "最新"
+    let attributed = NSAttributedString(string: recentText, attributes: [.font: NSFont.boldSystemFont(ofSize: 18)])
+    let richText = try attributed.data(from: NSRange(location: 0, length: attributed.length),
+                                       documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])
+    let snapshot = ClipSnapshot(items: [ClipSnapshotItem([
+        .init(type: NSPasteboard.PasteboardType.string.rawValue, data: Data(recentText.utf8)),
+        .init(type: NSPasteboard.PasteboardType.rtf.rawValue, data: richText)
+    ])], plainText: recentText)
+    let new = try store.capture(.text(recentText), snapshot: snapshot, at: earlier.addingTimeInterval(2))
+    try store.setPinned(id: old, pinned: true)
+    try store.recordReplay(id: mid)
+    let ids = try store.sequentialPasteIDs()
+    precondition(ids == [new, mid, old])
+
+    let controller = ClipboardController(directory: directory, board: board, preferences: preferences, startTimer: false)
+    wait("load synthetic sequence history") { controller.total == 3 }
+    defer { controller.stopRuntime() }
+    precondition(controller.sequenceTimeout == 30 && !controller.sequenceAddsNewline)
+
+    let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 400, height: 180))
+    view.isRichText = true
+    let targetWindow = NSWindow(contentRect: view.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    targetWindow.contentView = view
+    targetWindow.makeFirstResponder(view)
+
+    func next(target: Int32 = 41, stillFocused: Bool = true) -> Result<ClipboardController.SequencePaste, SequenceFixtureError> {
+        var result: Result<ClipboardController.SequencePaste, SequenceFixtureError>?
+        controller.prepareSequentialPaste(target: target, isTargetCurrent: { stillFocused }, ready: { result = .success($0) },
+                                          failure: { result = .failure(.init(message: $0)) })
+        wait("prepare next synthetic paste") { result != nil }
+        return result!
+    }
+    func paste(_ text: String, target: Int32 = 41, expectsRichText: Bool = false) throws {
+        let step = try next(target: target).get()
+        precondition(step.isCurrent() && step.generation == board.changeCount && !step.isFile)
+        precondition(board.string(forType: .string) == text)
+        precondition((board.data(forType: .rtf) != nil) == expectsRichText)
+        view.setSelectedRange(NSRange(location: view.string.utf16.count, length: 0))
+        precondition(view.readSelection(from: board))
+        step.dispatched()
+        step.finish()
+    }
+
+    let denied = next(stillFocused: false)
+    precondition((try? denied.get()) == nil && board.string(forType: .string) == nil)
+    let cancelled = try next().get()
+    var overlappingCallback = false
+    controller.prepareSequentialPaste(target: 41, isTargetCurrent: { true }, ready: { _ in overlappingCallback = true },
+                                      failure: { _ in overlappingCallback = true })
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    precondition(!overlappingCallback)
+    controller.cancelPendingSequentialPaste()
+    cancelled.dispatched()
+    precondition(!cancelled.isCurrent())
+    try paste(recentText, expectsRichText: true)
+
+    controller.updatesHistoryAfterReplay = true
+    try store.setPinned(id: mid, pinned: true)
+    controller.sequenceAddsNewline = true
+    try paste("Middle\n")
+    try store.remove(id: old)
+    let deleted = next()
+    precondition((try? deleted.get()) == nil && board.string(forType: .string) == "Middle\n")
+    precondition((try? next().get()) == nil)
+    controller.sequenceAddsNewline = false
+    controller.prefersPlainText = true
+    controller.resetPasteSequence()
+    try paste(recentText)
+    try paste(recentText, target: 42)
+
+    var interrupted = false
+    controller.prepareSequentialPaste(target: 42, isTargetCurrent: {
+        board.clearContents()
+        board.setString("External", forType: .string)
+        return true
+    }, ready: { _ in preconditionFailure("External clipboard change was overwritten") },
+       failure: { _ in interrupted = true })
+    wait("protect new clipboard content before writing") { interrupted }
+    precondition(board.string(forType: .string) == "External")
+    let oldGeneration = try next(target: 42).get()
+    board.clearContents()
+    board.setString("External again", forType: .string)
+    precondition(board.changeCount != oldGeneration.generation)
+    oldGeneration.finish()
+    try paste(recentText, target: 42)
+    try paste("Middle", target: 42)
+    precondition((try? next(target: 42).get()) == nil)
+    precondition(view.string == recentText + "Middle\n" + recentText + recentText + recentText + "Middle")
+    targetWindow.orderOut(nil)
+
+    var sequence = ClipboardPasteSequence()
+    let first = sequence.begin(target: 1, generation: 10, now: 10, timeout: 30)!
+    sequence.remember(["new", "old"], for: first)
+    sequence.wroteClipboard(for: first, generation: 11)
+    sequence.dispatched(first, at: 11)
+    sequence.dispatched(first, at: 20)
+    let retry = sequence.begin(target: 1, generation: 11, now: 40, timeout: 30)!
+    precondition(retry.items == ["new", "old"] && retry.index == 1)
+    sequence.finish(retry)
+    let timedOut = sequence.begin(target: 1, generation: 11, now: 41, timeout: 30)!
+    precondition(timedOut.items == nil && timedOut.index == 0)
+    sequence.reset()
+    precondition(!sequence.contains(timedOut))
+    print("PASS sequential paste: fixed copy order, original and plain text, newline, isolated text target, focus, busy, cancel, deleted entry, target switch, external generation, timeout and reset")
+}
+
+struct SequenceFixtureError: Error { let message: String }
+try verifySequentialPaste()
