@@ -37,6 +37,8 @@ struct ResultTypeFilter: View {
     var navigation = "arrows"
     var width: CGFloat = 138
     var searchPlaceholder = "搜索类型…"
+    var emptyTitle = "没有匹配类型"
+    var shortcut: KeyEquivalent? = nil
     @State private var query = ""
     private var current: ResultFilterOption { options.first { $0.id == selection } ?? ResultFilterOption(id: "all", title: "全部类型", symbol: "list.bullet") }
     private var matches: [ResultFilterOption] { ResultFilterPanel.matches(options, query: query) }
@@ -44,11 +46,11 @@ struct ResultTypeFilter: View {
         ZStack(alignment: .topTrailing) {
             if open {
                 ResultFilterPanel(selection: selection, options: matches, query: $query,
-                                  searchPlaceholder: searchPlaceholder, navigation: navigation,
+                                  searchPlaceholder: searchPlaceholder, emptyTitle: emptyTitle, navigation: navigation,
                                   choose: { open = false; selection = $0.id }, dismiss: { open = false })
                     .transition(.opacity)
             } else {
-                NativeHoverButton(title: "筛选：\(current.title)", action: { query = ""; open = true }) {
+                NativeHoverButton(title: "筛选：\(current.title)", action: toggle) {
                     HStack(spacing: 9) {
                         Image(systemName: current.symbol)
                         Text(current.title).lineLimit(1)
@@ -64,6 +66,18 @@ struct ResultTypeFilter: View {
                height: open ? 62 + CGFloat(min(8, max(1, matches.count))) * 43 : VisualStyle.launcherControlDiameter,
                alignment: .topTrailing)
         .modifier(LauncherMenuSurface(open: open))
+        .background {
+            if let shortcut {
+                Button("", action: toggle)
+                    .keyboardShortcut(shortcut, modifiers: .command)
+                    .hidden().accessibilityHidden(true)
+            }
+        }
+    }
+
+    private func toggle() {
+        if !open { query = "" }
+        open.toggle()
     }
 }
 
