@@ -20,7 +20,6 @@ struct ScreenshotLibraryPage: View {
                     Text("文字搜索需要启用图片文字识别")
                     Button("启用文字识别") {
                         library.recognizesText = true
-                        library.search(query)
                     }.buttonStyle(ContentActionButtonStyle())
                 } else {
                     Image(systemName: "viewfinder").font(.system(size: 30))
