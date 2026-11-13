@@ -198,7 +198,8 @@ enum CalendarLauncherModule {
                 .init(id: "copy-event", title: "复制日程详情", icon: "doc.on.clipboard", keys: ["⇧", "⌘", "C"], group: 2, perform: {
                     let time = event.allDay ? "全天" : CalendarController.timeRange(event.start, event.end)
                     let lines = [event.title, event.start.formatted(date: .complete, time: .omitted) + " · " + time,
-                                 event.calendarTitle, event.location, event.meetingURL?.absoluteString ?? "", event.notes]
+                                 event.calendarTitle, event.location, event.eventURL?.absoluteString ?? "",
+                                 event.meetingURL == event.eventURL ? "" : event.meetingURL?.absoluteString ?? "", event.notes]
                     _ = UtilityActions.copy(lines.filter { !$0.isEmpty }.joined(separator: "\n"))
                 }),
                 .init(id: "copy-event-title", title: "复制日程标题", icon: "doc.on.clipboard", keys: ["⌥", "⌘", "C"], group: 2,

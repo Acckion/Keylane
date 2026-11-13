@@ -25,13 +25,18 @@ struct CalendarPage: View {
         let calendar = Calendar.current
         let firstDay = calendar.startOfDay(for: controller.selectedDate)
         let rows = controller.filteredEvents
-        let grouped = Dictionary(grouping: rows) { calendar.startOfDay(for: max(firstDay, $0.start)) }
+        let sectioned = rows.map { (AgendaPolicy.section(for: $0.start, from: firstDay, calendar: calendar), $0) }
+        let grouped = Dictionary(grouping: sectioned, by: { $0.0 })
+        var seen = Set<AgendaPolicy.Section>()
+        let sections = sectioned.map { $0.0 }.filter { seen.insert($0).inserted }
         return SelectableResultList(selection: controller.selectedID, query: controller.query,
                                     firstResult: rows.first?.id, revealAfterLoading: !controller.loading) {
-            if controller.query.isEmpty { summary(rows) }
-            ForEach(grouped.keys.sorted(), id: \.self) { day in
-                ResultListSection(title: dayLabel(day, calendar: calendar), isFirst: day == grouped.keys.min()) {
-                    ForEach(grouped[day] ?? []) { event in row(event) }
+            summary(rows)
+            ForEach(sections, id: \.self) { section in
+                ResultListSection(title: sectionLabel(section, calendar: calendar), isFirst: section == sections.first) {
+                    ForEach((grouped[section] ?? []).map { $0.1 }) { event in
+                        row(event, showsDate: section.showsDate)
+                    }
                 }
             }
             if rows.isEmpty && !controller.loading {
@@ -48,8 +53,13 @@ struct CalendarPage: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("我的日程").font(.title2.weight(.semibold))
                 Text("\(dayLabel(controller.selectedDate, calendar: .current)) · \(daysEvents.count) 项日程").foregroundStyle(.secondary)
-                DatePicker("起始日期", selection: $controller.selectedDate, displayedComponents: .date)
-                    .labelsHidden().controlSize(.small)
+                HStack(spacing: 6) {
+                    Button("前一天", systemImage: "chevron.left") { controller.shiftDay(-1) }
+                    DatePicker("起始日期", selection: $controller.selectedDate, displayedComponents: .date).labelsHidden()
+                    Button("后一天", systemImage: "chevron.right") { controller.shiftDay(1) }
+                }
+                .labelStyle(.iconOnly)
+                .controlSize(.small)
             }.frame(maxWidth: .infinity, alignment: .leading)
             if let next {
                 VStack(alignment: .leading, spacing: 8) {
@@ -61,7 +71,7 @@ struct CalendarPage: View {
         }.padding(10).accessibilityElement(children: .combine)
     }
 
-    private func row(_ event: AgendaEvent) -> some View {
+    private func row(_ event: AgendaEvent, showsDate: Bool) -> some View {
         let color = event.calendarColor.map { rgb in
             Color(red: Double((rgb >> 16) & 255) / 255, green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
         } ?? .accentColor
@@ -71,6 +81,11 @@ struct CalendarPage: View {
                     .frame(width: 21, height: 21)
             } content: {
                 HStack(spacing: 12) {
+                    if showsDate {
+                        Text(event.start.formatted(.dateTime.month().day()))
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                            .lineLimit(1).frame(width: 58, alignment: .leading)
+                    }
                     Text(event.allDay ? "全天" : CalendarController.timeRange(event.start, event.end))
                         .font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary)
                         .lineLimit(1).frame(width: 112, alignment: .leading)
@@ -81,6 +96,15 @@ struct CalendarPage: View {
                     if event.recurring { Image(systemName: "repeat").accessibilityLabel("重复日程") }
                 }
             }.opacity(event.end < Date() ? 0.58 : 1)
+        }
+    }
+
+    private func sectionLabel(_ section: AgendaPolicy.Section, calendar: Calendar) -> String {
+        switch section {
+        case .day(let date): dayLabel(date, calendar: calendar)
+        case .nextWeek: "下一周"
+        case .restOfMonth: "当月其余日程"
+        case .month(let date): date.formatted(.dateTime.year().month(.wide))
         }
     }
 
@@ -166,6 +190,9 @@ struct CalendarEventForm: View {
             }
             LauncherCreationField("地点") {
                 LauncherCreationControl { TextField("添加地点", text: $controller.draft.location).textFieldStyle(.plain) }
+            }
+            LauncherCreationField("URL") {
+                LauncherCreationControl { TextField("添加网页或会议链接", text: $controller.draft.urlText).textFieldStyle(.plain) }
             }
             LauncherCreationField("备注") {
                 LauncherCreationControl {
