@@ -406,6 +406,12 @@ final class ScreenshotLibrary: ObservableObject {
 
     var sections: [ResultGridSection<ScreenshotMedia>] {
         let title = filter == .all ? "图片与录屏" : filter.title
+        if pinnedIDs.isEmpty {
+            return [
+                .init(id: Self.pinnedSection, title: "已置顶", items: []),
+                .init(id: Self.section, title: title, items: results)
+            ]
+        }
         return [
             .init(id: Self.pinnedSection, title: "已置顶", items: results.filter { pinnedIDs.contains($0.id) }),
             .init(id: Self.section, title: title, items: results.filter { !pinnedIDs.contains($0.id) })
