@@ -74,6 +74,7 @@ struct ContactsPage: View {
     let permission: PermissionFeature
     let showSettings: () -> Void
     @State private var permissionEnabled = false
+    @State private var permissionStatus = SettingsPermissionStatus()
 
     var body: some View {
         ResultDetailLayout(hasResults: permissionEnabled && controller.canRead
@@ -84,7 +85,14 @@ struct ContactsPage: View {
                         ResultListRow(selected: contact.id == controller.selectedID) {
                             Image(systemName: "person.crop.circle.fill").font(.system(size: 23)).foregroundStyle(.blue)
                         } content: {
-                            HighlightedResultText(text: contact.name, query: controller.query).font(VisualStyle.rowText).lineLimit(1)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HighlightedResultText(text: contact.name, query: controller.query)
+                                    .font(VisualStyle.rowText).lineLimit(1)
+                                if !contact.listDetail.isEmpty {
+                                    HighlightedResultText(text: contact.listDetail, query: controller.query)
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                            }
                         }
                     }
                 }
@@ -109,7 +117,10 @@ struct ContactsPage: View {
         } emptyState: {
             if !permissionEnabled {
                 ContentUnavailableView {
-                    Label("联系人已关闭", systemImage: "person.crop.circle")
+                    Label(permissionStatus.message == nil ? "联系人已关闭" : "联系人访问不可用",
+                          systemImage: "person.crop.circle")
+                } description: {
+                    if let message = permissionStatus.message { Text(message) }
                 } actions: {
                     Button("联系人设置…", action: showSettings).buttonStyle(ContentActionButtonStyle())
                 }
@@ -128,6 +139,7 @@ struct ContactsPage: View {
             }
         }
         .onReceive(permission.$enabled) { permissionEnabled = $0 }
+        .onReceive(permission.settingsStatus) { permissionStatus = $0 }
     }
 
     private var connection: some View {
