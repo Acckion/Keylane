@@ -9,20 +9,24 @@ public struct SpotlightFile: Identifiable, Equatable, Sendable {
     public let modified: Date
     public let isDirectory: Bool
     public let contentType: UTType?
+    public let matchesContent: Bool
 
-    public init(url: URL, name: String, modified: Date, isDirectory: Bool = false, contentType: UTType? = nil) {
+    public init(url: URL, name: String, modified: Date, isDirectory: Bool = false, contentType: UTType? = nil,
+                matchesContent: Bool = false) {
         self.url = url
         self.name = name
         self.modified = modified
         self.isDirectory = isDirectory
         self.contentType = contentType
+        self.matchesContent = matchesContent
     }
 
     /// Resolve presentation metadata on the search worker after ranking limits the result set.
     public func readingResourceMetadata() -> Self {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentTypeKey])
         return Self(url: url, name: name, modified: modified, isDirectory: values?.isDirectory == true,
-                    contentType: values?.contentType ?? UTType(filenameExtension: url.pathExtension))
+                    contentType: values?.contentType ?? UTType(filenameExtension: url.pathExtension),
+                    matchesContent: matchesContent)
     }
 }
 

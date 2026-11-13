@@ -512,13 +512,16 @@ struct Launcher: View {
     private func fileResultRow(_ row: Entry, selected: Bool) -> some View {
         let url = URL(fileURLWithPath: row.id)
         let isFolder = row.isDirectory
-        return ResultListRow(selected: selected, height: isFolder ? 48 : 40) {
+        return ResultListRow(selected: selected, height: isFolder || row.subtitle != nil ? 48 : 40) {
             WorkspaceItemIcon(path: row.id, fallbackSymbol: isFolder ? "folder" : "doc")
         } content: {
             VStack(alignment: .leading, spacing: 3) {
                 HighlightedResultText(text: row.name, query: model.query)
                     .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                if let subtitle = row.subtitle {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
                 if isFolder {
                     Text((url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath)
                         .font(.system(size: 10)).foregroundStyle(.secondary)

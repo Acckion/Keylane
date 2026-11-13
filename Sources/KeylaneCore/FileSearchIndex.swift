@@ -79,7 +79,10 @@ public final class FileSearchIndex {
         while sqlite3_step(s) == SQLITE_ROW { volumes.append(text(s,0)) }; sqlite3_finalize(s)
         for volume in volumes where !FileManager.default.fileExists(atPath:volume) { try write("DELETE FROM files WHERE volume=?",[volume]) }
     }
-    public func clearBodies() throws { try exec("UPDATE files SET body='' WHERE body<>''") }
+    public func clearBodies() throws {
+        // Clearing a body invalidates its extraction state even if the file has not changed.
+        try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>''")
+    }
     public func clear() throws { try exec("DELETE FROM files; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
     public func stats() throws -> FileIndexStats {
         let s = try statement("SELECT count(*),coalesce(sum(directory=0 AND symlink=0),0),coalesce(sum(directory),0),coalesce(sum(symlink),0) FROM files"); defer { sqlite3_finalize(s) }
@@ -138,7 +141,8 @@ public final class FileSearchIndex {
             + " ORDER BY " + relevance + ",modified DESC,path LIMIT 2000"
         let s = try statement(sql, values)
         defer { sqlite3_finalize(s) }
-        var results: [SpotlightFile] = []
+        var results: [RankedFile] = []
+        let rank = FileSearchRules.ranker(for: query)
         let ignored = FileSearchRules.pathFilter(options.ignorePatterns)
         while true {
             let status = sqlite3_step(s); if status == SQLITE_DONE { break }; if isCancelled() { return [] }; guard status == SQLITE_ROW else { throw FileIndexError.database }
@@ -146,9 +150,13 @@ public final class FileSearchIndex {
             guard options.includeHidden || !path.split(separator:"/").contains(where: { $0.hasPrefix(".") }),
                   !excluded.contains(where: { path == $0 || path.hasPrefix($0 + "/") }),
                   !ignored(path,url.lastPathComponent) else { continue }
-            results.append(SpotlightFile(url:url,name:url.lastPathComponent,modified:Date(timeIntervalSince1970:sqlite3_column_double(s,1))))
+            let name = url.lastPathComponent
+            let score = rank(name)
+            let file = SpotlightFile(url: url, name: name, modified: Date(timeIntervalSince1970: sqlite3_column_double(s, 1)),
+                                     matchesContent: options.contentSearch && score == 0)
+            results.append(RankedFile(file: file, score: score))
         }
-        return RankedFile.top(results, query: query, limit: max(1, min(200, limit)))
+        return Array(results.sorted { $0.precedes($1) }.prefix(max(1, min(200, limit))))
     }
     public static func content(at url: URL) -> String {
         guard let values = try? url.resourceValues(forKeys:[.fileSizeKey,.isRegularFileKey,.isUbiquitousItemKey,.isSymbolicLinkKey]), values.isRegularFile == true, values.isSymbolicLink != true,
