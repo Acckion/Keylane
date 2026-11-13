@@ -86,6 +86,31 @@ final class LauncherTests: XCTestCase {
         XCTAssertEqual(presentation.update(page: notes, visible: true).activation, .enter)
     }
 
+    func testCancellingPasteReleasesLauncherFocusAndRejectsStaleCallbacks() throws {
+        var paste = LauncherPaste()
+        let clipboard = try XCTUnwrap(paste.begin(keepingLauncherOpen: true))
+        XCTAssertTrue(paste.keepsLauncherOpen)
+        XCTAssertNil(paste.begin(keepingLauncherOpen: false))
+
+        paste.cancel()
+        XCTAssertFalse(paste.isCurrent(clipboard))
+        XCTAssertFalse(paste.keepsLauncherOpen)
+        let file = try XCTUnwrap(paste.begin(keepingLauncherOpen: true))
+        paste.finish(clipboard)
+        XCTAssertTrue(paste.isCurrent(file))
+        XCTAssertTrue(paste.keepsLauncherOpen)
+
+        paste.cancel()
+        XCTAssertFalse(paste.isCurrent(file))
+        XCTAssertFalse(paste.keepsLauncherOpen)
+        let next = try XCTUnwrap(paste.begin(keepingLauncherOpen: false))
+        paste.finish(file)
+        XCTAssertTrue(paste.isCurrent(next))
+        XCTAssertFalse(paste.keepsLauncherOpen)
+        paste.finish(next)
+        XCTAssertFalse(paste.isPending)
+    }
+
     func testLauncherReturnDelayIncludesBoundaryAndNever() {
         XCTAssertTrue(LauncherReturnDelay.immediately.shouldReturn(hiddenFor: 0))
         XCTAssertFalse(LauncherReturnDelay.after90Seconds.shouldReturn(hiddenFor: 89.9))

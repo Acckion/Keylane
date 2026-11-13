@@ -1,3 +1,35 @@
+import Foundation
+
+/// A paste owns its window retention until it completes or the user cancels it.
+public struct LauncherPaste {
+    public struct Request {
+        fileprivate let id: UUID
+        public let keepsLauncherOpen: Bool
+    }
+
+    private var current: Request?
+
+    public init() {}
+
+    public var isPending: Bool { current != nil }
+    public var keepsLauncherOpen: Bool { current?.keepsLauncherOpen == true }
+
+    public mutating func begin(keepingLauncherOpen: Bool) -> Request? {
+        guard current == nil else { return nil }
+        let request = Request(id: UUID(), keepsLauncherOpen: keepingLauncherOpen)
+        current = request
+        return request
+    }
+
+    public func isCurrent(_ request: Request) -> Bool { current?.id == request.id }
+
+    public mutating func finish(_ request: Request) {
+        if isCurrent(request) { cancel() }
+    }
+
+    public mutating func cancel() { current = nil }
+}
+
 /// Selection survives a reordered result snapshot. A removed selection remains
 /// unresolved until the user selects another result or starts a new query.
 public struct LauncherResultSelection {

@@ -628,12 +628,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return previousApplication.icon
     }
 
-    private var retainedPasteID: UUID?
-    private var pendingFilePasteID: UUID?
-    private var pendingClipboardPasteID: UUID?
+    private var launcherPaste = LauncherPaste()
 
     func pasteClipboard(format: ClipboardReplayFormat = .preferred, keepOpen: Bool = false) {
-        guard retainedPasteID == nil, pendingFilePasteID == nil, pendingClipboardPasteID == nil else { return }
+        guard !launcherPaste.isPending else { return }
         let controller = model.clipboard
         let detail = controller.selectedDetail
         let format = controller.replayFormat(format, for: detail)
@@ -651,7 +649,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func pasteIntoPreviousApplication(keepOpen: Bool = false, isFile: Bool = false,
                                       placeCursor: (text: String, offset: Int)? = nil,
                                       clipboardGeneration: Int? = nil, didDispatch: (() -> Void)? = nil) {
-        guard retainedPasteID == nil, pendingFilePasteID == nil, pendingClipboardPasteID == nil else { return }
+        guard !launcherPaste.isPending else { return }
         guard model.crossAppPaste.available else {
             showLauncherFeedback("已复制，跨应用粘贴未启用", style: .failure, actionTitle: "粘贴设置…") { [weak self] in
                 self?.model.openSettings(page: "permissions")
@@ -660,41 +658,34 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard let target = previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
 
-        let pasteID = keepOpen && window.isVisible ? UUID() : nil
-        if let pasteID { retainedPasteID = pasteID }
-        else { hideLauncher() }
+        let keepsLauncherOpen = keepOpen && window.isVisible
+        if !keepsLauncherOpen { hideLauncher() }
+        guard let request = launcherPaste.begin(keepingLauncherOpen: keepsLauncherOpen) else { return }
         target.activate()
 
         if isFile {
-            pasteFileIntoApplication(target, retainedID: pasteID, didDispatch: didDispatch)
+            pasteFileIntoApplication(target, request: request, didDispatch: didDispatch)
             return
         }
 
-        let clipboardPasteID = clipboardGeneration.map { _ in UUID() }
-        if let clipboardPasteID { pendingClipboardPasteID = clipboardPasteID }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self else { return }
-            if let clipboardPasteID {
-                guard self.pendingClipboardPasteID == clipboardPasteID else { return }
-                self.pendingClipboardPasteID = nil
-            }
-            guard pasteID == nil || self.retainedPasteID == pasteID else { return }
+            guard let self, self.launcherPaste.isCurrent(request) else { return }
             guard self.pasteTargetIsFrontmost(target) else {
-                self.finishRetainedPaste(pasteID, target: target)
+                self.finishPaste(request, target: target)
                 self.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。")
                 return
             }
             if let clipboardGeneration {
                 guard self.model.crossAppPaste.available,
                       NSPasteboard.general.changeCount == clipboardGeneration else {
-                    self.finishRetainedPaste(pasteID, target: target)
+                    self.finishPaste(request, target: target)
                     self.showPasteFailure("剪贴板内容或粘贴权限已变化，已停止自动粘贴。")
                     return
                 }
             }
             let original = placeCursor == nil ? nil : SnippetTextTarget.position(in: target)
             guard self.postPasteShortcut() else {
-                self.finishRetainedPaste(pasteID, target: target)
+                self.finishPaste(request, target: target)
                 self.showPasteFailure("已复制，无法发送粘贴按键。")
                 return
             }
@@ -712,27 +703,20 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                                  in: current.element)
                 }
             }
-            if let pasteID {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                    self?.finishRetainedPaste(pasteID, target: target)
-                }
-            }
+            self.finishDispatchedPaste(request, target: target)
         }
     }
 
-    private func pasteFileIntoApplication(_ target: NSRunningApplication, retainedID: UUID?,
+    private func pasteFileIntoApplication(_ target: NSRunningApplication, request: LauncherPaste.Request,
                                           didDispatch: (() -> Void)?) {
-        let id = UUID()
-        pendingFilePasteID = id
         let generation = NSPasteboard.general.changeCount
         let isCurrent = { [weak self] in
-            guard let self, self.pendingFilePasteID == id,
-                  retainedID == nil || self.retainedPasteID == retainedID else { return false }
+            guard let self, self.launcherPaste.isCurrent(request) else { return false }
             return self.model.crossAppPaste.available && self.pasteTargetIsFrontmost(target)
                 && NSPasteboard.general.changeCount == generation
         }
         SystemNavigation.shared.pasteFile(in: target, isCurrent: isCurrent) { [weak self] result in
-            guard let self, self.pendingFilePasteID == id else { return }
+            guard let self, self.launcherPaste.isCurrent(request) else { return }
             let sent: Bool
             switch result {
             case .performed:
@@ -742,14 +726,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case .cancelled, .failed:
                 sent = false
             }
-            self.pendingFilePasteID = nil
-            if sent { didDispatch?() }
-            if sent, let retainedID {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                    self?.finishRetainedPaste(retainedID, target: target)
-                }
-            } else if !sent {
-                self.finishRetainedPaste(retainedID, target: target)
+            if sent {
+                didDispatch?()
+                self.finishDispatchedPaste(request, target: target)
+            } else {
+                self.finishPaste(request, target: target)
                 self.showPasteFailure("未能在目标应用中自动粘贴文件。")
             }
         }
@@ -770,15 +751,26 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         !target.isTerminated && NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier
     }
 
-    private func finishRetainedPaste(_ pasteID: UUID?, target: NSRunningApplication) {
-        guard let pasteID, retainedPasteID == pasteID else { return }
+    private func finishDispatchedPaste(_ request: LauncherPaste.Request, target: NSRunningApplication) {
+        if request.keepsLauncherOpen {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.finishPaste(request, target: target)
+            }
+        } else {
+            launcherPaste.finish(request)
+        }
+    }
+
+    private func finishPaste(_ request: LauncherPaste.Request, target: NSRunningApplication) {
+        guard launcherPaste.isCurrent(request) else { return }
+        defer { launcherPaste.finish(request) }
+        guard request.keepsLauncherOpen else { return }
         if pasteTargetIsFrontmost(target), window.isVisible {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         } else if !window.isKeyWindow {
             hideLauncher()
         }
-        retainedPasteID = nil
     }
 
     private func showPasteFailure(_ message: String) {
@@ -916,6 +908,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !window.isVisible {
             presentLauncher()
         } else {
+            launcherPaste.cancel()
             rememberPreviousApplication()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -925,7 +918,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if onboarding.isVisible { onboarding.bringToFront() }
         else if !window.isVisible { show() }
-        else { window.makeKeyAndOrderFront(nil); windowDiagnostics.record("reopen", launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus) }
+        else {
+            launcherPaste.cancel()
+            window.makeKeyAndOrderFront(nil)
+            windowDiagnostics.record("reopen", launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
+        }
         return false
     }
     func windowWillClose(_ notification: Notification) {
@@ -950,7 +947,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func windowDidResignKey(_ notification: Notification) {
         guard let resigned = notification.object as? NSWindow, resigned === window, window.attachedSheet == nil,
-              !FilePreview.shared.takesLauncherFocus, retainedPasteID == nil else { return }
+              !FilePreview.shared.takesLauncherFocus, !launcherPaste.keepsLauncherOpen else { return }
         hideLauncher(reason: "resignKey")
     }
     func applicationWillTerminate(_ notification: Notification) {
@@ -1017,11 +1014,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func hideLauncher(reason: String = "command") {
-        retainedPasteID = nil
-        if window.isVisible || reason == "outsideClick" {
-            pendingClipboardPasteID = nil
-            pendingFilePasteID = nil
-        }
+        if window.isVisible || reason == "outsideClick" { launcherPaste.cancel() }
         dragGuides?.cancel()
         guard window.isVisible else { return }
         resizeTimer?.invalidate()
@@ -1135,8 +1128,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     /// Present the current destination without applying the launcher's compact-mode reset.
     private func presentLauncher() {
-        pendingClipboardPasteID = nil
-        pendingFilePasteID = nil
+        launcherPaste.cancel()
         if let frame = restingLauncherFrame {
             restingLauncherFrame = nil
             window.setFrame(frame, display: false)
