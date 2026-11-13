@@ -209,23 +209,50 @@ enum UtilityLauncherModules {
     private static func shortcuts(_ model: Model) -> LauncherModule {
         let controller = model.systemShortcuts
         let pageID = "shortcuts"
+        let editPageID = PageID(rawValue: "ShortcutCommandEdit")
+        let editor = ApplicationCommandEdit()
         let search = SettingsSearchControls()
         let provider = LauncherModule.Provider(namespace: .prefix("shortcut:"), entries: { _ in
-            controller.entries.compactMap { shortcut in
+            return controller.entries.compactMap { shortcut in
                 guard !controller.disabledIDs.contains(shortcut.id) else { return nil }
                 return Entry(id: shortcut.commandID, commandID: .init(rawValue: shortcut.commandID),
-                             name: shortcut.name, detail: "Shortcut", symbol: "square.stack.3d.up")
+                             name: shortcut.name, detail: "Shortcut", symbol: "square.stack.3d.up",
+                             subtitle: controller.duplicateTitles.contains(shortcut.name) ? shortcut.identifierSuffix : nil)
             }
         }, resolve: { command, _ in
-            guard controller.runningID == nil,
-                  let shortcut = controller.entries.first(where: { $0.commandID == command.rawValue }),
+            guard let shortcut = controller.entries.first(where: { $0.commandID == command.rawValue }),
                   !controller.disabledIDs.contains(shortcut.id) else { return nil }
-            return { controller.run(shortcut.id) }
+            return {
+                controller.run(shortcut.id) { status in
+                    let message: String
+                    let style: ToastStyle
+                    switch status {
+                    case .started:
+                        message = "正在运行「\(shortcut.name)」…"
+                        style = .neutral
+                    case .completed:
+                        message = "「\(shortcut.name)」已完成。"
+                        style = .success
+                    default:
+                        message = status.message
+                        style = .failure
+                    }
+                    (NSApp.delegate as? Delegate)?.showLauncherFeedback(message, style: style)
+                }
+            }
         }, primaryTitle: { _ in
             controller.runningID == nil ? "运行" : "运行中"
         }, actions: { [weak model] row in
             guard let model else { return nil }
-            return shortcutActions(for: row, model: model)
+            return shortcutActions(for: row, model: model) { [weak model] in
+                guard let model else { return }
+                editor.prepare(row, model: model, isAvailable: {
+                    controller.entries.contains { shortcut in
+                        shortcut.commandID == row.commandID.rawValue && !controller.disabledIDs.contains(shortcut.id)
+                    }
+                })
+                model.openPage(editPageID, origin: .search)
+            }
         }, displayDetail: { _ in "快捷指令" }, artwork: { row in
             AnyView(ShortcutArtwork(image: controller.icon(forCommandID: row.id)))
         })
@@ -248,7 +275,17 @@ enum UtilityLauncherModules {
         var module = LauncherModule(id: .init(rawValue: "keylane.shortcuts"), commands: [
             command("system-shortcuts", "管理快捷指令", "别名、热键与启用状态", "square.stack.3d.up",
                     ["Shortcuts", "Apple Shortcuts", "快捷指令"], destination: .settings(pageID), settings: pageID)
-        ], providers: [provider], settings: [settings], services: [
+        ], providers: [provider], pages: [.init(
+            id: editPageID, placeholder: "", badge: ("配置快捷指令", "keyboard"), contentPlacement: .form,
+            content: { [weak model] in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(ApplicationCommandEditPage(editor: editor, model: model) { row in
+                    AnyView(ShortcutArtwork(image: controller.icon(forCommandID: row.id)))
+                })
+            }, submit: { [weak model] in
+                if let model { editor.save(model: model) }
+            }, primaryTitle: { "保存别名" }
+        )], settings: [settings], services: [
             .init(start: controller.start, stop: controller.stop)
         ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
             model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,
@@ -258,7 +295,8 @@ enum UtilityLauncherModules {
             },
             entry: { $0.commandSettingsEntry(model: $1, controller: controller) }
         ))
-        module.launcherShown = { controller.refresh() }
+        module.launcherShown = controller.launcherShown
+        module.launcherHidden = controller.launcherHidden
         module.presentationUpdates = [
             controller.$runningID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             controller.$icons.dropFirst().map { _ in () }.eraseToAnyPublisher()
@@ -266,11 +304,14 @@ enum UtilityLauncherModules {
         return module
     }
 
-    private static func shortcutActions(for row: Entry, model: Model) -> [LauncherAction] {
+    private static func shortcutActions(for row: Entry, model: Model,
+                                        configure: @escaping () -> Void) -> [LauncherAction] {
         return [
             LauncherAction(id: "shortcut-run", title: "运行快捷指令", icon: "play", perform: { [weak model] in
                 model?.runCommand(row.commandID, origin: .menu, usageKey: row.id)
             }),
+            LauncherAction(id: "shortcut-configure", title: "编辑别名与快捷键…", icon: "keyboard",
+                           group: 1, perform: configure),
             LauncherAction(id: "shortcut-settings", title: "快捷指令设置…", icon: "gearshape", perform: { [weak model] in
                 model?.runCommand(CommandID(rawValue: "system-shortcuts"), origin: .menu)
             })

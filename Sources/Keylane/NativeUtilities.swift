@@ -33,6 +33,7 @@ enum UtilityActions {
 
 final class SystemShortcutsController: ObservableObject {
     @Published private(set) var entries: [SystemShortcut] = []
+    private(set) var duplicateTitles: Set<String> = []
     @Published private(set) var loading = false
     @Published private(set) var runningID: String?
     @Published private(set) var message = ""
@@ -54,6 +55,8 @@ final class SystemShortcutsController: ObservableObject {
     private var runRequest: ExtensionProcessRequest?
     private var active: Bool
     private var lastRefresh = Date.distantPast
+    private var refreshWhenIdle = false
+    private var launcherRefresh: Timer?
     @Published private(set) var executionMessage = ""
 
     init(loadsIcons: Bool = true, active: Bool = true,
@@ -66,8 +69,26 @@ final class SystemShortcutsController: ObservableObject {
 
     func start() { active = true; refresh() }
 
+    func launcherShown() {
+        refresh(force: true, requestIconPermission: false)
+        guard launcherRefresh == nil else { return }
+        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in self?.refresh() }
+        RunLoop.main.add(timer, forMode: .common)
+        launcherRefresh = timer
+    }
+
+    func launcherHidden() {
+        launcherRefresh?.invalidate()
+        launcherRefresh = nil
+    }
+
+    deinit { launcherRefresh?.invalidate() }
+
     func stop() {
         active = false
+        launcherHidden()
+        refreshWhenIdle = false
+        duplicateTitles = []
         iconPermissionRequested = false
         catalogRequest?.cancel()
         catalogRequest = nil
@@ -86,9 +107,14 @@ final class SystemShortcutsController: ObservableObject {
         lastRefresh = .distantPast
     }
 
-    func refresh(force: Bool = false) {
-        if force && loadsIcons && active { iconPermissionRequested = true }
-        guard active, !loading, force || Date().timeIntervalSince(lastRefresh) > 15 else { return }
+    func refresh(force: Bool = false, requestIconPermission: Bool = true) {
+        guard active else { return }
+        if force && loadsIcons && requestIconPermission { iconPermissionRequested = true }
+        if loading {
+            refreshWhenIdle = refreshWhenIdle || force
+            return
+        }
+        guard force || Date().timeIntervalSince(lastRefresh) >= 15 else { return }
         lastRefresh = Date()
         loading = true
         let request = ExtensionProcessRequest()
@@ -101,12 +127,26 @@ final class SystemShortcutsController: ObservableObject {
                 self.catalogRequest = nil
                 self.loading = false
                 if let records {
-                    if self.entries != records { self.entries = records }
+                    let changed = self.entries != records
+                    if changed {
+                        self.duplicateTitles = Set(Dictionary(grouping: records, by: \.name)
+                            .filter { $0.value.count > 1 }.keys)
+                        self.entries = records
+                        let currentIDs = Set(records.map(\.id))
+                        if !Set(self.icons.keys).isSubset(of: currentIDs) {
+                            self.icons = self.icons.filter { currentIDs.contains($0.key) }
+                        }
+                    }
                     if !self.message.isEmpty { self.message = "" }
-                    self.refreshIcons(force: force)
+                    self.refreshIcons(force: changed || self.iconPermissionRequested)
                     UtilityVerification.record("shortcuts", count: records.count)
                 } else {
                     self.message = "暂时无法读取快捷指令，将自动重试。"
+                    self.refreshIcons(force: false)
+                }
+                if self.refreshWhenIdle {
+                    self.refreshWhenIdle = false
+                    self.refresh(force: true, requestIconPermission: false)
                 }
             }
         }
@@ -120,9 +160,9 @@ final class SystemShortcutsController: ObservableObject {
     private func refreshIcons(force: Bool) {
         guard active, loadsIcons, iconAccess != .loading, !entries.isEmpty else { return }
         let ids = entries.map(\.id)
-        guard force || iconPermissionRequested || iconAccess == .inactive ||
-                (iconAccess == .allowed && Set(ids) != Set(icons.keys)) else { return }
         let prompt = iconPermissionRequested
+        let previousAccess = iconAccess
+        let needsImages = force || prompt || previousAccess != .allowed || Set(ids) != Set(icons.keys)
         iconPermissionRequested = false
         iconAccess = .loading
         let ticket = iconGeneration
@@ -137,9 +177,16 @@ final class SystemShortcutsController: ObservableObject {
                 guard permission == noErr else {
                     DispatchQueue.main.async {
                         guard let self, self.iconGeneration == ticket else { return }
-                        self.icons = [:]
-                        self.iconAccess = permission == -1743 || permission == -1744 ? .denied : .unavailable
-                        if self.iconPermissionRequested { self.refreshIcons(force: true) }
+                        if !self.icons.isEmpty { self.icons = [:] }
+                        self.finishIconRefresh(permission == -1743 || permission == -1744 ? .denied : .unavailable,
+                                               ids: ids)
+                    }
+                    return
+                }
+                if !needsImages {
+                    DispatchQueue.main.async {
+                        guard let self, self.iconGeneration == ticket else { return }
+                        self.finishIconRefresh(.allowed, ids: ids)
                     }
                     return
                 }
@@ -156,17 +203,16 @@ final class SystemShortcutsController: ObservableObject {
                 let authorizationLost = denied
                 DispatchQueue.main.async {
                     guard let self, self.iconGeneration == ticket, self.active else { return }
-                    self.iconPermissionRequested = false
                     if authorizationLost {
                         self.icons = [:]
-                        self.iconAccess = .denied
+                        self.finishIconRefresh(.denied, ids: ids)
                         return
                     }
                     let currentIDs = Set(self.entries.map(\.id))
                     self.icons = result.filter { currentIDs.contains($0.key) }.mapValues {
                         NSImage(cgImage: $0, size: .zero)
                     }
-                    self.iconAccess = self.icons.isEmpty ? .unavailable : .allowed
+                    self.finishIconRefresh(self.icons.isEmpty ? .unavailable : .allowed, ids: ids)
                     UtilityVerification.record("shortcut-icons", count: self.icons.count)
                 }
             }
@@ -175,6 +221,9 @@ final class SystemShortcutsController: ObservableObject {
         let identifier = ShortcutIconReader.bundleIdentifier
         if !NSRunningApplication.runningApplications(withBundleIdentifier: identifier).isEmpty {
             load()
+        } else if !prompt && previousAccess != .inactive {
+            // A passive refresh must not launch Shortcuts just to check artwork.
+            iconAccess = previousAccess
         } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.activates = false
@@ -191,12 +240,34 @@ final class SystemShortcutsController: ObservableObject {
         }
     }
 
-    func run(_ id: String) {
-        guard active, UUID(uuidString: id) != nil, !disabledIDs.contains(id), runningID == nil else { return }
+    private func finishIconRefresh(_ access: IconAccess, ids: [String]) {
+        iconAccess = access
+        if iconPermissionRequested || ids != entries.map(\.id) { refreshIcons(force: true) }
+    }
+
+    enum RunStatus: Equatable {
+        case started, busy, completed, interrupted, failed(Int32), unavailable
+
+        var message: String {
+            switch self {
+            case .started: "正在运行…"
+            case .busy: "已有快捷指令正在运行，请等待它完成。"
+            case .completed: "快捷指令已完成。"
+            case .interrupted: "快捷指令进程已中断，无法确认结果。"
+            case .failed(let code): "系统快捷指令返回错误（退出码 \(code)）。"
+            case .unavailable: "无法启动系统快捷指令。"
+            }
+        }
+    }
+
+    func run(_ id: String, feedback: @escaping (RunStatus) -> Void = { _ in }) {
+        guard active, UUID(uuidString: id) != nil, !disabledIDs.contains(id) else { return }
+        guard runningID == nil else { feedback(.busy); return }
         runningID = id
-        executionMessage = "正在运行…"
+        executionMessage = RunStatus.started.message
         let request = ExtensionProcessRequest()
         runRequest = request
+        feedback(.started)
         runQueue.async { [weak self, executable] in
             let process = Process()
             process.executableURL = executable
@@ -204,27 +275,28 @@ final class SystemShortcutsController: ObservableObject {
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            let status: String
+            let status: RunStatus
             do {
                 try request.launch(process)
                 defer { request.finished() }
                 // Interactive shortcuts can wait for user input or a permission dialog.
                 process.waitUntilExit()
                 if process.terminationReason != .exit {
-                    status = "快捷指令进程已中断，无法确认结果。"
+                    status = .interrupted
                 } else if process.terminationStatus == 0 {
-                    status = "快捷指令已完成。"
+                    status = .completed
                 } else {
-                    status = "系统快捷指令返回错误（退出码 \(process.terminationStatus)）。"
+                    status = .failed(process.terminationStatus)
                 }
             } catch {
-                status = "无法启动系统快捷指令。"
+                status = .unavailable
             }
             DispatchQueue.main.async {
                 guard let self, self.runRequest === request else { return }
                 self.runRequest = nil
-                self.executionMessage = status
+                self.executionMessage = status.message
                 self.runningID = nil
+                feedback(status)
             }
         }
     }
