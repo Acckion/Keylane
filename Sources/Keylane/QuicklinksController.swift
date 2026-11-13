@@ -4,6 +4,9 @@ import KeylaneCore
 import UniformTypeIdentifiers
 
 final class QuicklinksController: ObservableObject {
+    static let editorPage = PageID(rawValue: "EditQuicklink")
+    private(set) var editorReturnPage = PageID.root
+
     @Published private(set) var links: [Quicklink] = []
     @Published private(set) var storageError: String?
     @Published var query = "" { didSet { if oldValue != query { selectedID = nil } } }
@@ -41,7 +44,8 @@ final class QuicklinksController: ObservableObject {
         }
     }
 
-    func edit(_ link: Quicklink? = nil) {
+    func edit(_ link: Quicklink? = nil, returningTo page: PageID = .root) {
+        editorReturnPage = page
         let draft = link?.preparedForEditing() ?? Quicklink(title: "", template: "")
         draftTags = draft.tags.joined(separator: ", ")
         self.draft = draft
@@ -60,7 +64,14 @@ final class QuicklinksController: ObservableObject {
         }
     }
 
-    func clearDraft() {
+    /// Hiding the launcher also ends this draft. Only restore the origin if
+    /// navigation is still on the editor so it cannot resume without a draft.
+    func leaveEditor(currentPage: PageID) -> PageID? {
+        clearDraft()
+        return currentPage == Self.editorPage ? editorReturnPage : nil
+    }
+
+    private func clearDraft() {
         draft = nil
         draftTags = ""
         draftError = nil

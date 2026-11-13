@@ -5,7 +5,7 @@ import SwiftUI
 
 enum QuicklinksModule {
     static let listID = PageID(rawValue: "Quicklinks")
-    static let editID = PageID(rawValue: "EditQuicklink")
+    private static let editID = QuicklinksController.editorPage
     private static let argumentsID = PageID(rawValue: "QuicklinkParameters")
     private static let guideURL = URL(string: "https://manual.raycast.com/dynamic-placeholders")!
 
@@ -53,12 +53,10 @@ enum QuicklinksModule {
         controller.templateContext = { [weak model] in model?.snippets.templateContext() ?? .init() }
         controller.feedback = { (NSApp.delegate as? Delegate)?.showLauncherFeedback($0, style: $1) }
 
-        var editReturn = PageID.root
         var argumentsReturn = PageID.root
         let startEdit: (Quicklink?) -> Void = { [weak model] link in
             guard let model else { return }
-            editReturn = model.pageID == listID ? listID : .root
-            controller.edit(link)
+            controller.edit(link, returningTo: model.pageID == listID ? listID : .root)
             model.openPage(editID, origin: .menu)
         }
         let create: () -> Void = { [weak model] in model?.runCommand(Command.create.id, origin: .menu) }
@@ -137,20 +135,26 @@ enum QuicklinksModule {
 
         let save: () -> Void = { [weak model] in
             guard let model, model.pageID == editID, !SearchField.isComposing, let id = controller.saveDraft() else { return }
-            if editReturn == listID {
+            let returnPage = controller.editorReturnPage
+            if returnPage == listID {
                 controller.query = ""
                 controller.tag = ""
                 controller.selectedID = id
             }
-            model.pageID = editReturn
+            model.pageID = returnPage
             controller.feedback("已保存快捷链接", .success)
         }
         let editPage = LauncherPage(
             id: editID, placeholder: "", badge: ("创建快捷链接", "link"), contentPlacement: .form,
             content: { [weak model] in
-                AnyView(QuicklinkLauncherEditor(controller: controller, guideURL: guideURL, back: { model?.pageID = editReturn }))
+                AnyView(QuicklinkLauncherEditor(controller: controller, guideURL: guideURL, back: { model?.pageID = controller.editorReturnPage }))
             },
-            leave: controller.clearDraft,
+            leave: { [weak model] in
+                guard let model else { return }
+                if let returnPage = controller.leaveEditor(currentPage: model.pageID) {
+                    model.pageID = returnPage
+                }
+            },
             submit: save, shortcutSubmit: save, primaryTitle: { "保存快捷链接" },
             badgeTitle: {
                 controller.links.contains { $0.id == controller.draft?.id } ? "编辑快捷链接" : "创建快捷链接"
@@ -189,8 +193,7 @@ enum QuicklinksModule {
                          execute: { [weak model] _ in
                 switch command {
                 case .create:
-                    editReturn = model?.pageID == listID ? listID : .root
-                    controller.edit()
+                    controller.edit(returningTo: model?.pageID == listID ? listID : .root)
                 case .importLinks: controller.importLinks()
                 case .exportLinks: controller.exportLinks()
                 case .search: break
