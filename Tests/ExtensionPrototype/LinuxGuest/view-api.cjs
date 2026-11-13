@@ -105,8 +105,17 @@ function useRef(initial) {
   return useState(() => ({ current: initial }))[0];
 }
 
-function useEffect(effect) {
-  if (!routeReplay.getStore() || replayingViewInput) effects?.push(effect);
+function useEffect(effect, dependencies) {
+  const [slot] = useState(() => ({ ran: false, dependencies: undefined }));
+  if (!effects || (routeReplay.getStore() && !replayingViewInput)) return;
+  if (slot.ran && (dependencies === undefined ||
+      (slot.dependencies?.length === dependencies.length &&
+       dependencies.every((value, index) => Object.is(value, slot.dependencies[index]))))) return;
+  effects.push(() => {
+    slot.ran = true;
+    slot.dependencies = dependencies;
+    return effect();
+  });
 }
 
 function component(name) {
@@ -483,13 +492,16 @@ async function renderView(renderPage, input, scope) {
       root = renderRoot();
     }
     if (menuSearch && input.dropdownQuery !== appliedQuery) await searchDropdown(input.dropdownQuery);
-    if (effects.length) {
-      const initial = effects;
+    for (let pass = 0; effects.length; pass++) {
+      if (pass === 8) throw new Error("View effects did not settle");
+      const pending = effects;
       effects = undefined;
-      for (const effect of initial) await effect();
+      for (const effect of pending) await effect();
       await new Promise(setImmediate);
+      effects = [];
       root = renderRoot();
     }
+    effects = undefined;
     if (formEvents.length) {
       replayingViewInput = true;
       for (const event of formEvents) {

@@ -122,3 +122,29 @@ test("usePromise mutations respect rollback and the revalidation option", async 
   };
   assert.deepEqual(await render(command, { action: submit }), { kind: "action" });
 });
+
+test("usePromise settles dependent operations in the same view", async () => {
+  const calls = [];
+  const command = () => {
+    const first = usePromise(async () => { calls.push("first"); return "ready"; }, []);
+    const second = usePromise(async (value) => { calls.push("second"); return value.toUpperCase(); },
+      [first.data], { execute: first.data !== undefined });
+    return Detail({ markdown: second.data, isLoading: first.isLoading || second.isLoading });
+  };
+  const { detail } = await render(command, {});
+  assert.equal(detail.markdown, "READY");
+  assert.equal(detail.isLoading, false);
+  assert.deepEqual(calls, ["first", "second"]);
+});
+
+test("an effect that continuously changes its dependencies stops at the pass limit", async () => {
+  const { useState, useEffect } = require("./view-api.cjs");
+  let calls = 0;
+  const command = () => {
+    const [value, setValue] = useState(0);
+    useEffect(() => { calls++; setValue(value + 1); }, [value]);
+    return Detail({ markdown: String(value) });
+  };
+  await assert.rejects(render(command, {}), /View effects did not settle/);
+  assert.equal(calls, 8);
+});

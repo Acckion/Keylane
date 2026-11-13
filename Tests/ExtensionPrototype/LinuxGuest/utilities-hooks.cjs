@@ -148,7 +148,7 @@ function utilitiesHooksFor(apiProvider, FormValidation) {
       }
     }
 
-    useEffect(() => willRun ? revalidate() : undefined);
+    useEffect(() => willRun ? revalidate() : undefined, [willRun, slot.generation]);
 
     async function mutate(update, mutationOptions = {}) {
       const { optimisticUpdate, rollbackOnError, shouldRevalidateAfter } = mutationOptions;
