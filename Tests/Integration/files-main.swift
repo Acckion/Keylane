@@ -177,6 +177,34 @@ controller.setDirectorySort(.modified)
 wait("Browse modification sort") { !controller.isSearching && results.map(\.id) == [newer.path, special.path] }
 let restoredPrefs = FileSearchController(directory: root.appendingPathComponent("unused-index"), preferences: prefs, startImmediately: false)
 precondition(restoredPrefs.directorySort == .modified)
+let capped = root.appendingPathComponent("capped", isDirectory: true)
+try FileManager.default.createDirectory(at: capped, withIntermediateDirectories: false)
+try Data("skip-*.txt\n".utf8).write(to: capped.appendingPathComponent(".rayignore"))
+try Data().write(to: capped.appendingPathComponent("skip-private.txt"))
+try FileManager.default.createSymbolicLink(at: capped.appendingPathComponent("0-outside.txt"), withDestinationURL: outside)
+let expected = try (0..<206).map { index -> URL in
+    let url = capped.appendingPathComponent(String(format: "z-%03d.txt", index))
+    try Data().write(to: url)
+    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: Double(20_000 + index))],
+                                          ofItemAtPath: url.path)
+    return url
+}
+var cappedOptions = FileSearchOptions(roots: [capped.path, scope.path])
+cappedOptions.ignorePatterns = ["*.tmp"]
+cappedOptions.excludedPaths = [expected[0].path, expected[205].path]
+var location = FileSearchLocation(options: cappedOptions, automaticExclusions: [])
+let allowed = Array(expected.dropFirst().dropLast())
+let byName = try location.children(of: capped, sortedBy: .name)
+let byModified = try location.children(of: capped, sortedBy: .modified)
+precondition(byName.map(\.id) == allowed.prefix(200).map(\.path))
+precondition(byModified.map(\.id) == allowed.reversed().prefix(200).map(\.path))
+precondition((byName + byModified).allSatisfy { $0.contentType?.conforms(to: .plainText) == true })
+var cancellationChecks = 0
+let cancelledBrowse = try location.children(of: capped, sortedBy: .name) {
+    cancellationChecks += 1
+    return cancellationChecks > 12
+}
+precondition(cancelledBrowse.isEmpty && cancellationChecks == 13)
 controller.search(special.path, standalone: false)
 wait("Exact special-character path") { !controller.isSearching && results.map(\.id) == [special.path] }
 controller.search(browse.path, showPathItself: true)
