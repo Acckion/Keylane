@@ -261,6 +261,52 @@ precondition(reloadedPreferences.primaryAction == .copy && reloadedPreferences.p
 precondition(reloadedPreferences.updatesHistoryAfterReplay && !reloadedPreferences.showsLinkVisuals)
 print("PASS selected RTF/HTML, TIFF-to-PNG, mixed payload, replay order and persisted preferences")
 controller.clear(includePinned:true); wait("cleanup final") { controller.total == 0 }
+// Format-only captures use display labels in the database, not in their pasteboard payload.
+let rtfd = try attributed.data(from: NSRange(location: 0, length: attributed.length),
+                               documentAttributes: [.documentType: NSAttributedString.DocumentType.rtfd])
+let pdfData = NSMutableData()
+let pdfConsumer = CGDataConsumer(data: pdfData as CFMutableData)!
+var pdfBounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+let pdf = CGContext(consumer: pdfConsumer, mediaBox: &pdfBounds, nil)!
+pdf.beginPDFPage(nil)
+pdf.fill(pdfBounds)
+pdf.endPDFPage()
+pdf.closePDF()
+
+for (type, data, label) in [(NSPasteboard.PasteboardType.rtfd, rtfd, "富文本内容"),
+                            (.pdf, pdfData as Data, "PDF剪贴板内容")] {
+    let item = NSPasteboardItem()
+    item.setData(data, forType: type)
+    board.clearContents()
+    precondition(board.writeObjects([item]))
+    controller.poll()
+    controller.search(label)
+    wait("format-only capture: " + label) {
+        controller.selectedDetail?.text == label && controller.selectedDetail?.snapshot?.plainText == ""
+    }
+    precondition(controller.availableReplayFormats.contains(.representation(type.rawValue)))
+    precondition(!controller.availableReplayFormats.contains(.plainText), "Display label offered as plain text: " + label)
+    let originalChangeCount = board.changeCount
+    precondition(!controller.copySelected(format: .plainText))
+    precondition(board.changeCount == originalChangeCount)
+    precondition(controller.copySelected(format: .preferred))
+    precondition(board.pasteboardItems?.first?.data(forType: type) == data)
+    precondition(board.pasteboardItems?.first?.types.contains(.string) == false)
+}
+
+let legacyText = "旧记录的真实纯文本"
+let legacyID = try restored.capture(.text(legacyText))
+controller.search(legacyText)
+wait("legacy text without snapshot") { controller.selectedDetail?.item.id == legacyID }
+precondition(controller.selectedDetail?.snapshot == nil && controller.availableReplayFormats.contains(.plainText))
+precondition(controller.copySelected(format: .preferred))
+precondition(board.string(forType: .string) == legacyText)
+precondition(controller.copySelected(format: .plainText))
+precondition(board.string(forType: .string) == legacyText)
+controller.clear(includePinned: true)
+wait("cleanup format-only fixtures") { controller.total == 0 }
+print("PASS RTFD/PDF labels excluded from plain-text replay; source formats and legacy text preserved")
+
 // Automatic monitor regression: no explicit poll calls, including while the app is inactive.
 let automaticSuite = suite + ".automatic"
 let automaticPrefs = UserDefaults(suiteName:automaticSuite)!

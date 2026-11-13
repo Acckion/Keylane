@@ -834,7 +834,8 @@ final class ClipboardController: ObservableObject {
 
     private func plainText(of detail: ClipDetail) -> String {
         if let text = detail.snapshot?.plainText, !text.isEmpty { return text }
-        if !detail.text.isEmpty { return detail.text }
+        // Snapshot-backed PDF and RTFD records may use a display label as their stored text.
+        if detail.snapshot == nil, !detail.text.isEmpty { return detail.text }
         if !detail.ocrText.isEmpty { return detail.ocrText }
         return detail.files.map(\.path).joined(separator: "\n")
     }
