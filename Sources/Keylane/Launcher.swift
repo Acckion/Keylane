@@ -11,6 +11,10 @@ struct Launcher: View {
     @State private var selectionQuery = ""
     @State private var pageRevision = 0
     @State private var presentation = LauncherPagePresentation()
+    @State private var presentedModuleActivation: LauncherModuleRegistry.Activation?
+    private var moduleActivation: LauncherModuleRegistry.Activation? {
+        model.launcherModules?.activation(forPage: model.pageID)
+    }
     @State private var surfaceMounted = false
     @State private var dispatchedQuery: String?
     private var launcherVisible: Bool { presentation.visible }
@@ -144,12 +148,14 @@ struct Launcher: View {
                 } else if model.pageID == .root {
                     commandList(results, selectedIndex: selectedIndex).frame(height: 470, alignment: .top)
                 } else if let page, let content = page.content {
-                    switch page.contentPlacement {
-                    case .underChrome: content()
-                    case .form: content().padding(.bottom, VisualStyle.launcherBottomInset)
-                    case .inset, .fileResults:
-                        content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
-                    }
+                    Group {
+                        switch page.contentPlacement {
+                        case .underChrome: content()
+                        case .form: content().padding(.bottom, VisualStyle.launcherBottomInset)
+                        case .inset, .fileResults:
+                            content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
+                        }
+                    }.id(moduleActivation?.id)
                 }
             }
             if !compactSurface { VStack(spacing: 0) {
@@ -240,6 +246,9 @@ struct Launcher: View {
         .onReceive(model.activePageUpdates) { _ in
             if launcherVisible { pageRevision &+= 1 }
         }
+        .onReceive(model.launcherModules?.registrationUpdates ?? Empty().eraseToAnyPublisher()) { _ in
+            if presentedModuleActivation != nil || moduleActivation != nil { pageRevision &+= 1 }
+        }
         .onReceive(model.rootSearchUpdates) { _ in
             if launcherVisible && model.pageID == .root { pageRevision &+= 1 }
         }
@@ -290,12 +299,16 @@ struct Launcher: View {
             if model.pageID == .root { resetResultSelection() }
         }
         .onChange(of: model.pageID) { _, _ in updatePresentation(visible: launcherVisible) }
+        .onChange(of: moduleActivation?.id) { _, _ in updatePresentation(visible: launcherVisible) }
     }
 
     private func updatePresentation(visible: Bool) {
         let wasVisible = launcherVisible
         let current = model.pageID
-        let change = presentation.update(page: current, visible: visible)
+        let activation = moduleActivation
+        let previousActivation = presentedModuleActivation
+        let change = presentation.update(page: current, visible: visible, activationID: activation?.id)
+        presentedModuleActivation = activation
         if wasVisible != visible {
             if visible {
                 surfaceMounted = true
@@ -312,6 +325,8 @@ struct Launcher: View {
             if previous == .root {
                 model.fileSearch.cancel()
                 FilePreview.shared.dismiss()
+            } else if let previousActivation {
+                model.leaveRegisteredPage(previous, activation: previousActivation)
             } else if let previousPage = model.launcherModules?.page(previous, includingInactive: true) {
                 previousPage.leave()
                 previousPage.releasePreview?()
@@ -333,6 +348,9 @@ struct Launcher: View {
             }
         }
 
+        if change.activation != nil, let page, let activation {
+            model.trackRegisteredPage(page, activation: activation)
+        }
         switch change.activation {
         case .enter:
             if let seed = page?.enter?(model.query) {
