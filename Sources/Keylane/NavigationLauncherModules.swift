@@ -150,7 +150,7 @@ enum NavigationLauncherModules {
                 library.chooseFolders()
                 complete(library.hasAuthorizedScope)
             },
-            guidance: "请通过启用开关选择可访问的截图文件夹。"
+            guidance: "截图搜索需要至少一个可访问的文件夹。请打开启用开关，选择或重新授权截图文件夹。"
         ), observeImmediately: false)
         var permissionChanges: AnyCancellable?
         let commands = ScreenshotCommand.allCases.map { command in
@@ -177,7 +177,8 @@ enum NavigationLauncherModules {
                               pages: [screenshotsPage(id, model: model)], settings: [settings], services: [.init(start: {
             permission.startObserving()
             library.enabled = permission.available
-            permissionChanges = Publishers.Merge(permission.updates, ViewObservation.changes(library.$scopes))
+            permissionChanges = Publishers.Merge3(permission.updates, ViewObservation.changes(library.$scopes),
+                                                    ViewObservation.changes(library.$unavailableScopePaths))
                 .receive(on: DispatchQueue.main).sink {
                     permission.recheck()
                     let enabled = permission.available
@@ -221,9 +222,8 @@ enum NavigationLauncherModules {
 
     private static func screenshotsPage(_ id: PageID, model: Model) -> LauncherPage {
         let library = model.screenshots
-        let chooseFolders: () -> Void = { [weak model] in
-            library.chooseFolders()
-            model?.runCommand(.init(rawValue: ScreenshotCommand.search.rawValue), origin: .menu)
+        let chooseFolders = {
+            library.chooseFolders(in: (NSApp.delegate as? Delegate)?.window)
         }
         var page = LauncherPage(id: id, placeholder: "按 name:、text: 或 date: 搜索截图…", badge: ("截图管理", "viewfinder"))
         page.contentPlacement = .underChrome
@@ -246,10 +246,10 @@ enum NavigationLauncherModules {
         }
         page.enter = { query in
             library.search(query)
-            library.refresh()
+            library.start()
             return nil
         }
-        page.resume = library.refresh
+        page.resume = library.start
         page.queryChanged = library.search
         page.leave = library.stop
         page.move = { library.move($0, vertical: true) }

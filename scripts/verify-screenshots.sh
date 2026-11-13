@@ -10,6 +10,6 @@ swiftc -target "$task_target" -emit-library -emit-module -module-name KeylaneCor
     Sources/KeylaneCore/{ScreenshotCatalog,SettingsCatalog}.swift -o "$task_directory/libKeylaneCore.dylib"
 swiftc -Xfrontend -disable-sandbox -target "$task_target" -I "$task_directory" -L "$task_directory" \
     -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" \
-    Sources/Keylane/{ScreenshotLibrary,ImageTextRecognition,ResultGrid,ResultList,VisualStyle}.swift \
+    Sources/Keylane/{ScreenshotLibrary,FolderChangeWatcher,ImageTextRecognition,ResultGrid,ResultList,VisualStyle}.swift \
     Tests/Integration/screenshot-library-main.swift -o "$task_directory/verify"
 "$task_directory/verify"

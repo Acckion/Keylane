@@ -24,18 +24,27 @@ struct ScreenshotLibraryPage: View {
                     }.buttonStyle(ContentActionButtonStyle())
                 } else {
                     Image(systemName: "viewfinder").font(.system(size: 30))
-                    Text(library.inaccessibleFolders > 0 ? "部分搜索文件夹不可访问" : "没有匹配的截图或录屏")
+                    Text(library.unavailableScopePaths.isEmpty && library.inaccessibleFolders == 0
+                         ? "没有匹配的截图或录屏" : "部分搜索位置不可访问")
+                    if !library.unavailableScopePaths.isEmpty {
+                        Text("请在截图设置中重新选择已移动或无法访问的文件夹。")
+                    }
                     Button("添加搜索文件夹…", action: chooseFolders).buttonStyle(ContentActionButtonStyle())
                 }
             }.foregroundStyle(.secondary).padding(.top, 68)
         }
         .overlay(alignment: .bottomLeading) {
-            if library.skippedOCR > 0 {
-                Text("跳过了 \(library.skippedOCR) 张无法读取或尚未下载的图片")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .padding(.horizontal, 13).padding(.bottom, 48)
-                    .allowsHitTesting(false)
+            VStack(alignment: .leading, spacing: 3) {
+                if !library.results.isEmpty && (!library.unavailableScopePaths.isEmpty || library.inaccessibleFolders > 0) {
+                    Text("部分搜索位置不可访问，可在截图设置中检查。")
+                }
+                if library.skippedOCR > 0 {
+                    Text("跳过了 \(library.skippedOCR) 张无法读取或尚未下载的图片")
+                }
             }
+            .font(.caption).foregroundStyle(.secondary)
+            .padding(.horizontal, 13).padding(.bottom, 48)
+            .allowsHitTesting(false)
         }
     }
 
