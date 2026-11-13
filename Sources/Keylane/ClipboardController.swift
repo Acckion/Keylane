@@ -83,6 +83,16 @@ final class ClipboardController: ObservableObject {
     @Published var showsLinkVisuals: Bool {
         didSet { preferences.set(showsLinkVisuals, forKey: "clipboardShowsLinkVisuals") }
     }
+    static let sequenceTimeouts = [10, 30, 60, 120, 300]
+    @Published var sequenceTimeout: Int {
+        didSet {
+            preferences.set(sequenceTimeout, forKey: "clipboardSequenceTimeout")
+            resetPasteSequence()
+        }
+    }
+    @Published var sequenceAddsNewline: Bool {
+        didSet { preferences.set(sequenceAddsNewline, forKey: "clipboardSequenceAddsNewline") }
+    }
     @Published var historyCommandEnabled: Bool { didSet { preferences.set(historyCommandEnabled, forKey: "clipboardHistoryCommandEnabled") } }
     @Published var retentionDays: Int { didSet { preferences.set(retentionDays, forKey: "clipboardRetentionDays"); updateLimits() } }
     @Published var maxItems: Int { didSet { preferences.set(maxItems, forKey: "clipboardMaxItems"); updateLimits() } }
@@ -102,6 +112,7 @@ final class ClipboardController: ObservableObject {
     @Published var showsHistorySettings = false
     @Published var kind: String = "all" { didSet { reload() } }
     @Published var pinnedOnly = false { didSet { reload() } }
+    private var pasteSequence = ClipboardPasteSequence()
     private let board: NSPasteboard
     private let preferences: UserDefaults
     private let worker = DispatchQueue(label: "org.keylane.clipboard.storage", qos: .utility)
@@ -159,6 +170,9 @@ final class ClipboardController: ObservableObject {
         prefersPlainText = preferences.bool(forKey: "clipboardPrefersPlainText")
         updatesHistoryAfterReplay = preferences.bool(forKey: "clipboardUpdatesHistoryAfterReplay")
         showsLinkVisuals = preferences.object(forKey: "clipboardShowsLinkVisuals") as? Bool ?? true
+        let storedTimeout = preferences.integer(forKey: "clipboardSequenceTimeout")
+        sequenceTimeout = Self.sequenceTimeouts.contains(storedTimeout) ? storedTimeout : 30
+        sequenceAddsNewline = preferences.bool(forKey: "clipboardSequenceAddsNewline")
         historyCommandEnabled = preferences.object(forKey: "clipboardHistoryCommandEnabled") as? Bool ?? true
         retentionDays = preferences.object(forKey: "clipboardRetentionDays") as? Int ?? 30
         maxItems = preferences.object(forKey: "clipboardMaxItems") as? Int ?? 500
@@ -193,6 +207,7 @@ final class ClipboardController: ObservableObject {
         guard let runtime else { return }
         runtime.cancel()
         self.runtime = nil
+        resetPasteSequence()
         stopMonitoring()
         generation += 1
         pendingSearch?.cancel(); pendingSearch = nil
@@ -817,13 +832,18 @@ final class ClipboardController: ObservableObject {
 
     func replayFormat(_ format: ClipboardReplayFormat, for detail: ClipDetail?) -> ClipboardReplayFormat {
         guard format == .preferred else { return format }
-        guard prefersPlainText, let detail, detail.item.kind == .text, !plainText(of: detail).isEmpty else { return .original }
+        guard prefersPlainText, let detail, supportsPlainTextReplay(detail) else { return .original }
+        return .plainText
+    }
+
+    private func supportsPlainTextReplay(_ detail: ClipDetail) -> Bool {
+        guard detail.item.kind == .text, !plainText(of: detail).isEmpty else { return false }
         if let snapshot = detail.snapshot {
             let textTypes: Set<String> = ["public.utf8-plain-text", "public.utf16-plain-text", "public.rtf",
                                           "com.apple.flat-rtfd", "public.html", "public.url"]
-            guard snapshot.items.count == 1, Set(snapshot.formats).isSubset(of: textTypes) else { return .original }
+            return snapshot.items.count == 1 && Set(snapshot.formats).isSubset(of: textTypes)
         }
-        return .plainText
+        return true
     }
 
     func recordReplay(of id: String?) {
@@ -862,7 +882,10 @@ final class ClipboardController: ObservableObject {
         guard runtime != nil else { return false }
         guard !searching, !loadingDetail else { status = "内容正在加载，请稍后重试。"; return false }
         guard let detail = selectedDetail else { status = "请先选择记录并等待内容加载。"; return false }
-        let format = replayFormat(requested, for: detail)
+        return copy(detail, format: replayFormat(requested, for: detail))
+    }
+
+    private func copy(_ detail: ClipDetail, format: ClipboardReplayFormat) -> Bool {
         if format == .plainText {
             let text = plainText(of: detail)
             guard !text.isEmpty else { status = "这条记录没有可复制的文字。"; return false }
@@ -925,6 +948,94 @@ final class ClipboardController: ObservableObject {
         }
         }
         return writeToPasteboard(objects, markLegacyReplay: detail.snapshot == nil)
+    }
+
+    struct SequencePaste {
+        let isFile: Bool
+        let generation: Int
+        let isCurrent: () -> Bool
+        let dispatched: () -> Void
+        let finish: () -> Void
+    }
+
+    var isSequencePastePending: Bool { pasteSequence.isPending }
+
+    func resetPasteSequence() { pasteSequence.reset() }
+    func cancelPendingSequentialPaste() { pasteSequence.cancelPending() }
+
+    func prepareSequentialPaste(target: Int32, isTargetCurrent: @escaping () -> Bool,
+                                ready: @escaping (SequencePaste) -> Void, failure: @escaping (String) -> Void) {
+        guard let runtime else { failure("剪贴板历史目前不可用。"); return }
+        guard !pasteSequence.isPending else { return }
+        let generation = board.changeCount
+        if captureEnabled, generation != lastChange || pendingClipboardRead != nil { poll() }
+        guard pendingClipboardRead?.generation != generation else {
+            failure("正在接收剪贴板内容，请稍后重试。")
+            return
+        }
+        guard let request = pasteSequence.begin(target: target, generation: generation,
+                                                now: ProcessInfo.processInfo.systemUptime,
+                                                timeout: TimeInterval(sequenceTimeout)) else { return }
+
+        worker.async { [weak self] in
+            guard let self, !runtime.cancelled else { return }
+            let result = Result { () -> (ids: [String], detail: ClipDetail?) in
+                guard let store = self.store else { throw ClipboardError.database }
+                let ids = try request.items ?? store.sequentialPasteIDs()
+                let detail = try ids.indices.contains(request.index) ? store.detail(id: ids[request.index]) : nil
+                return (ids, detail)
+            }
+            DispatchQueue.main.async { [self] in
+                guard !runtime.cancelled, self.pasteSequence.contains(request) else { return }
+                func stop(_ message: String) {
+                    self.pasteSequence.finish(request)
+                    failure(message)
+                }
+                let targetCurrent = isTargetCurrent()
+                guard self.board.changeCount == request.generation else {
+                    self.resetPasteSequence()
+                    failure("剪贴板已变化，顺序已重置，请再次触发。")
+                    return
+                }
+                guard targetCurrent else {
+                    stop("粘贴目标或权限已变化，当前记录尚未粘贴。")
+                    return
+                }
+                switch result {
+                case .failure(let error): stop(error.localizedDescription)
+                case .success(let selection):
+                    self.pasteSequence.remember(selection.ids, for: request)
+                    guard !selection.ids.isEmpty else { stop("没有可粘贴的历史记录。"); return }
+                    guard selection.ids.indices.contains(request.index) else {
+                        stop("已粘贴到历史末尾。可运行「重置粘贴顺序」重新开始。")
+                        return
+                    }
+                    guard let detail = selection.detail else {
+                        stop("当前历史记录已删除。请重置粘贴顺序后继续。")
+                        return
+                    }
+                    let format = self.replayFormat(.preferred, for: detail)
+                    let copied = self.sequenceAddsNewline && self.supportsPlainTextReplay(detail)
+                        ? self.copyText(self.plainText(of: detail) + "\n")
+                        : self.copy(detail, format: format)
+                    // An attempted replay may change the generation even if the write failed.
+                    let outputGeneration = self.board.changeCount
+                    self.pasteSequence.wroteClipboard(for: request, generation: outputGeneration)
+                    guard copied else { stop(self.status); return }
+                    ready(SequencePaste(
+                        isFile: format == .original && detail.item.kind == .files,
+                        generation: outputGeneration,
+                        isCurrent: { [weak self] in self?.pasteSequence.contains(request) == true },
+                        dispatched: { [weak self] in
+                            guard let self, self.pasteSequence.contains(request) else { return }
+                            self.pasteSequence.dispatched(request, at: ProcessInfo.processInfo.systemUptime)
+                            self.recordReplay(of: detail.item.id)
+                        },
+                        finish: { [weak self] in self?.pasteSequence.finish(request) }
+                    ))
+                }
+            }
+        }
     }
 
     private func copyRepresentations(_ format: ClipboardReplayFormat, from detail: ClipDetail) -> Bool {

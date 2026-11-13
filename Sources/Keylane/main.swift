@@ -653,6 +653,72 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     private var launcherPaste = LauncherPaste()
 
+    private var pasteCompletion: (() -> Void)?
+
+    private var canDispatchSequentialPaste: Bool {
+        model.crossAppPaste.available && !IsSecureEventInputEnabled()
+            && !model.disabledCommands.contains(ClipboardSequenceCommand.paste.rawValue)
+            && model.launcherModules?.isCommandModuleEnabled(.init(rawValue: ClipboardSequenceCommand.paste.rawValue)) == true
+    }
+
+    func pasteClipboardSequentially() {
+        let controller = model.clipboard
+        guard !launcherPaste.isPending, !controller.isSequencePastePending else {
+            showLauncherFeedback("正在处理上一次粘贴。", style: .neutral)
+            return
+        }
+        guard model.crossAppPaste.available else {
+            showLauncherFeedback("请先在设置中启用跨应用粘贴。", style: .failure,
+                                 actionTitle: "粘贴设置…") { [weak self] in
+                self?.model.openSettings(page: "permissions")
+            }
+            return
+        }
+        guard !IsSecureEventInputEnabled() else {
+            showLauncherFeedback("当前输入处于安全模式，已停止顺序粘贴。", style: .failure)
+            return
+        }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let target = frontmost?.processIdentifier == ownPID
+            ? (window.isVisible && window.isKeyWindow ? previousApplication : nil)
+            : frontmost
+        guard let target, !target.isTerminated, target.processIdentifier != ownPID else {
+            showLauncherFeedback("没有可粘贴的目标应用。", style: .failure)
+            return
+        }
+        let startedInLauncher = window.isVisible && window.isKeyWindow
+        let focused = SnippetTextTarget.focused(in: target)
+        let focusUnchanged = {
+            guard !IsSecureEventInputEnabled() else { return false }
+            guard let focused else { return true }
+            guard let current = SnippetTextTarget.focused(in: target) else { return false }
+            return CFEqual(focused, current)
+        }
+
+        controller.prepareSequentialPaste(target: target.processIdentifier, isTargetCurrent: { [weak self] in
+            guard let self, self.canDispatchSequentialPaste, !self.launcherPaste.isPending,
+                  !target.isTerminated else { return false }
+            if self.pasteTargetIsFrontmost(target) { return focusUnchanged() }
+            return startedInLauncher && self.window.isVisible && self.window.isKeyWindow
+                && NSWorkspace.shared.frontmostApplication?.processIdentifier == ownPID
+        }, ready: { [weak self] paste in
+            guard let self else { paste.finish(); return }
+            self.dispatchPaste(to: target, keepOpen: false, isFile: paste.isFile, placeCursor: nil,
+                               clipboardGeneration: paste.generation, validation: { [weak self] in
+                                   self?.canDispatchSequentialPaste == true && paste.isCurrent() && focusUnchanged()
+                               }, didDispatch: paste.dispatched, didFinish: paste.finish)
+        }, failure: { [weak self] message in
+            self?.showLauncherFeedback(message, style: .failure)
+        })
+    }
+
+    func resetClipboardPasteSequence() {
+        if pasteCompletion != nil { cancelLauncherPaste() }
+        model.clipboard.resetPasteSequence()
+        showLauncherFeedback("已重置粘贴顺序", style: .success)
+    }
+
     func pasteClipboard(format: ClipboardReplayFormat = .preferred, keepOpen: Bool = false) {
         guard !launcherPaste.isPending else { return }
         let controller = model.clipboard
@@ -681,13 +747,26 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard let target = previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
 
+        dispatchPaste(to: target, keepOpen: keepOpen, isFile: isFile, placeCursor: placeCursor,
+                      clipboardGeneration: clipboardGeneration, didDispatch: didDispatch)
+    }
+
+    private func dispatchPaste(to target: NSRunningApplication, keepOpen: Bool, isFile: Bool,
+                               placeCursor: (text: String, offset: Int)?, clipboardGeneration: Int?,
+                               validation: (() -> Bool)? = nil, didDispatch: (() -> Void)?,
+                               didFinish: (() -> Void)? = nil) {
         let keepsLauncherOpen = keepOpen && window.isVisible
-        if !keepsLauncherOpen { hideLauncher() }
-        guard let request = launcherPaste.begin(keepingLauncherOpen: keepsLauncherOpen) else { return }
+        if !keepsLauncherOpen {
+            if validation == nil { hideLauncher() }
+            else { hideLauncher(reason: "pasteDispatch") }
+        }
+        guard let request = launcherPaste.begin(keepingLauncherOpen: keepsLauncherOpen) else { didFinish?(); return }
+        pasteCompletion = didFinish
         target.activate()
 
         if isFile {
-            pasteFileIntoApplication(target, request: request, didDispatch: didDispatch)
+            pasteFileIntoApplication(target, request: request, clipboardGeneration: clipboardGeneration,
+                                     validation: validation, didDispatch: didDispatch)
             return
         }
 
@@ -698,13 +777,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.showPasteFailure("已复制。目标应用未获得焦点，已停止自动粘贴。")
                 return
             }
-            if let clipboardGeneration {
-                guard self.model.crossAppPaste.available,
-                      NSPasteboard.general.changeCount == clipboardGeneration else {
-                    self.finishPaste(request, target: target)
-                    self.showPasteFailure("剪贴板内容或粘贴权限已变化，已停止自动粘贴。")
-                    return
-                }
+            guard validation?() != false, self.pasteTargetIsFrontmost(target),
+                  clipboardGeneration.map({ self.model.crossAppPaste.available && NSPasteboard.general.changeCount == $0 }) != false else {
+                self.finishPaste(request, target: target)
+                self.showPasteFailure("剪贴板、目标焦点或粘贴权限已变化，已停止自动粘贴。")
+                return
             }
             let original = placeCursor == nil ? nil : SnippetTextTarget.position(in: target)
             guard self.postPasteShortcut() else {
@@ -731,11 +808,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private func pasteFileIntoApplication(_ target: NSRunningApplication, request: LauncherPaste.Request,
+                                          clipboardGeneration: Int?, validation: (() -> Bool)?,
                                           didDispatch: (() -> Void)?) {
-        let generation = NSPasteboard.general.changeCount
+        let generation = clipboardGeneration ?? NSPasteboard.general.changeCount
         let isCurrent = { [weak self] in
             guard let self, self.launcherPaste.isCurrent(request) else { return false }
-            return self.model.crossAppPaste.available && self.pasteTargetIsFrontmost(target)
+            return validation?() != false && self.model.crossAppPaste.available && self.pasteTargetIsFrontmost(target)
                 && NSPasteboard.general.changeCount == generation
         }
         SystemNavigation.shared.pasteFile(in: target, isCurrent: isCurrent) { [weak self] result in
@@ -780,13 +858,28 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.finishPaste(request, target: target)
             }
         } else {
-            launcherPaste.finish(request)
+            completeLauncherPaste(request)
         }
+    }
+
+    private func completeLauncherPaste(_ request: LauncherPaste.Request) {
+        guard launcherPaste.isCurrent(request) else { return }
+        launcherPaste.finish(request)
+        let completion = pasteCompletion
+        pasteCompletion = nil
+        completion?()
+    }
+
+    private func cancelLauncherPaste() {
+        launcherPaste.cancel()
+        let completion = pasteCompletion
+        pasteCompletion = nil
+        completion?()
     }
 
     private func finishPaste(_ request: LauncherPaste.Request, target: NSRunningApplication) {
         guard launcherPaste.isCurrent(request) else { return }
-        defer { launcherPaste.finish(request) }
+        defer { completeLauncherPaste(request) }
         guard request.keepsLauncherOpen else { return }
         if pasteTargetIsFrontmost(target), window.isVisible {
             window.makeKeyAndOrderFront(nil)
@@ -945,7 +1038,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if !window.isVisible {
             presentLauncher()
         } else {
-            launcherPaste.cancel()
+            cancelLauncherPaste()
+            model.clipboard.cancelPendingSequentialPaste()
             rememberPreviousApplication()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -956,7 +1050,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if onboarding.isVisible { onboarding.bringToFront() }
         else if !window.isVisible { show() }
         else {
-            launcherPaste.cancel()
+            cancelLauncherPaste()
+            model.clipboard.cancelPendingSequentialPaste()
             window.makeKeyAndOrderFront(nil)
             windowDiagnostics.record("reopen", launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
         }
@@ -1051,7 +1146,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func hideLauncher(reason: String = "command") {
-        if window.isVisible || reason == "outsideClick" { launcherPaste.cancel() }
+        if window.isVisible || reason == "outsideClick" {
+            cancelLauncherPaste()
+            if reason != "pasteDispatch" { model.clipboard.cancelPendingSequentialPaste() }
+        }
         dragGuides?.cancel()
         guard window.isVisible else { return }
         resizeTimer?.invalidate()
@@ -1165,7 +1263,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     /// Present the current destination without applying the launcher's compact-mode reset.
     private func presentLauncher() {
-        launcherPaste.cancel()
+        cancelLauncherPaste()
+        model.clipboard.cancelPendingSequentialPaste()
         if let frame = restingLauncherFrame {
             restingLauncherFrame = nil
             window.setFrame(frame, display: false)

@@ -232,8 +232,11 @@ struct ClipboardPreferences: View {
             ViewObservation.changes(controller.$showsLinkVisuals),
             ViewObservation.changes(controller.$retentionDays),
             ViewObservation.changes(controller.$excludedApps),
-            ViewObservation.changes(model.$aliases.map { $0["clipboard"] }),
-            ViewObservation.changes(model.$bindings.map { $0["clipboard"] })
+            ViewObservation.changes(controller.$sequenceTimeout),
+            ViewObservation.changes(controller.$sequenceAddsNewline),
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$bindings),
+            ViewObservation.changes(model.$disabledCommands)
         ]))
     }
 
@@ -290,16 +293,27 @@ struct ClipboardPreferences: View {
                 }
             }
             SettingsSectionTitle(title: "命令").settingsAnchor(.clipboardReplay)
-            CommandSettingsList(items: ["clipboard", "paste-sequentially", "reset-paste-sequence"], id: \.self) { id in
-                switch id {
-                case "clipboard":
+            CommandSettingsList(items: ["clipboard", ClipboardSequenceCommand.paste.rawValue,
+                                        ClipboardSequenceCommand.reset.rawValue], id: \.self) { id in
+                if let command = ClipboardSequenceCommand(rawValue: id) {
+                    sequenceCommandEntry(command)
+                } else {
                     historyCommandEntry { controller.showsHistorySettings = true }
-                case "paste-sequentially":
-                    unavailableCommand("顺序粘贴", symbol: "list.clipboard")
-                default:
-                    unavailableCommand("重置粘贴顺序", symbol: "arrow.counterclockwise")
                 }
             }
+            SettingsGroup {
+                SettingsPicker("顺序超时", detail: "超过所选间隔后，下次粘贴会从最新复制的记录开始。",
+                               selection: binding(\.sequenceTimeout)) {
+                    ForEach(ClipboardController.sequenceTimeouts, id: \.self) { seconds in
+                        Text(seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分钟").tag(seconds)
+                    }
+                }
+                Divider()
+                Toggle(isOn: binding(\.sequenceAddsNewline)) {
+                    SettingsRowLabel(title: "文字末尾追加换行", detail: "顺序粘贴单个文字项目时使用纯文本并追加一行。")
+                }
+            }
+            .disabled(model.disabledCommands.contains(ClipboardSequenceCommand.paste.rawValue))
             SettingsSectionTitle(title: "AI 扩展")
             CommandSettingsList(items: ["询问剪贴板"], id: \.self) { title in
                 unavailableCommand(title, symbol: "sparkles")
@@ -345,6 +359,19 @@ struct ClipboardPreferences: View {
         CommandSettingsEntry(title: "剪贴板历史", model: model, commandID: .init(rawValue: "clipboard"),
                              isEnabled: binding(\.historyCommandEnabled), perform: perform) {
             SettingsIcon(symbol: "clipboard", artwork: ModuleArtwork.settings("clipboard"))
+        }
+    }
+
+    private func sequenceCommandEntry(_ command: ClipboardSequenceCommand) -> CommandSettingsEntry<SettingsIcon> {
+        let id = CommandID(rawValue: command.rawValue)
+        return CommandSettingsEntry(title: command.title, model: model, commandID: id, isEnabled: Binding(
+            get: { !model.disabledCommands.contains(command.rawValue) },
+            set: { enabled in
+                if enabled { model.disabledCommands.remove(command.rawValue) }
+                else { model.disabledCommands.insert(command.rawValue) }
+            }
+        )) {
+            SettingsIcon(symbol: command.symbol)
         }
     }
 
