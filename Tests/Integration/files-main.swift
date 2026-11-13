@@ -14,6 +14,22 @@ NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = NSGraphicsCon
 ("PDF DOCUMENT NEEDLE" as NSString).draw(at:CGPoint(x:30,y:500),withAttributes:[.font:NSFont.systemFont(ofSize:18),.foregroundColor:NSColor.black])
 NSGraphicsContext.restoreGraphicsState(); pdf.endPDFPage(); pdf.closePDF()
 try Data("LOCAL CONTENT NEEDLE".utf8).write(to:scope.appendingPathComponent("报告 预算2026.txt"))
+let mixedContent = scope.appendingPathComponent("预算-fixture.md")
+let nameOnly = scope.appendingPathComponent("预算 季度材料.txt")
+let contentOnly = scope.appendingPathComponent("synopsis.txt")
+try Data("季度材料 and English body".utf8).write(to: mixedContent)
+try Data().write(to: nameOnly)
+try Data("预算和季度材料".utf8).write(to: contentOnly)
+try Data([0xff, 0xfe, 0x00] + Array("invalidbodyfixture".utf8)).write(to: scope.appendingPathComponent("invalid.txt"))
+try Data("unknownformatfixture".utf8).write(to: scope.appendingPathComponent("unknown.docx"))
+try Data("invalidpdffixture".utf8).write(to: scope.appendingPathComponent("invalid.pdf"))
+let limitText = "boundaryheadfixture" + String(repeating: "x", count: 100_000 - "boundaryheadfixture".count) + "boundarytailfixture"
+try Data(limitText.utf8).write(to: scope.appendingPathComponent("long-body.txt"))
+var maxSize = Data("bytelimitfixture".utf8)
+maxSize.append(Data(repeating: 0x78, count: 2_097_152 - maxSize.count))
+try maxSize.write(to: scope.appendingPathComponent("max-bytes.txt"))
+maxSize.append(0x78)
+try maxSize.write(to: scope.appendingPathComponent("oversized.txt"))
 try Data("*.log\n!keep.log\n".utf8).write(to:scope.appendingPathComponent(".gitignore"))
 try Data("ignored".utf8).write(to:scope.appendingPathComponent("skip.log"))
 try Data("kept".utf8).write(to:scope.appendingPathComponent("keep.log"))
@@ -83,6 +99,51 @@ wait("Same query restricted to file names") { !controller.isSearching && results
 precondition(controller.options.contentSearch && !controller.indexing)
 controller.search("PDF DOCUMENT NEEDLE")
 wait("Dedicated file search can still use indexed content") { results.first?.name == "作业-2.pdf" }
+controller.search("预算 季度材料")
+wait("Chinese name, body and mixed matches") { !controller.isSearching && results.count == 3 }
+precondition(results.first?.id == nameOnly.path)
+precondition(Set(results.filter(\.matchesContent).map(\.id)) == [mixedContent.path, contentOnly.path])
+controller.search("预算 季度材料", includeContents: false)
+wait("No content markers when searching names") { !controller.isSearching && results.map(\.id) == [nameOnly.path] }
+precondition(results.first?.matchesContent == false)
+controller.search("English body")
+controller.search("bytelimitfixture")
+wait("Latest query supersedes earlier content search") { !controller.isSearching && results.map(\.name) == ["max-bytes.txt"] }
+for query in ["boundarytailfixture", "invalidbodyfixture", "unknownformatfixture", "invalidpdffixture"] {
+    controller.search(query)
+    wait("Unsupported body: \(query)") { !controller.isSearching && results.isEmpty }
+}
+controller.search("boundaryheadfixture")
+wait("Text before the character cap") { !controller.isSearching && results.first?.name == "long-body.txt" }
+controller.search("oversized")
+wait("Oversized files retain searchable names") { !controller.isSearching && results.first?.name == "oversized.txt" }
+precondition(results.first?.matchesContent == false)
+controller.search("English body")
+controller.cancel()
+let cancelledQuery = controller.lastPublishedQuery
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(!controller.isSearching && controller.lastPublishedQuery == cancelledQuery)
+controller.search("English body")
+wait("Repeat a cancelled content query") { !controller.isSearching && results.first?.id == mixedContent.path }
+precondition(results.first?.matchesContent == true)
+controller.setIndexPaused(true)
+wait("Pause updates current result without editing query") { resultStatus.contains("已暂停") }
+controller.search("PDF DOCUMENT NEEDLE")
+wait("Paused index still finds PDF") { !controller.isSearching && results.first?.name == "作业-2.pdf" }
+precondition(resultStatus.contains("已暂停"), "Paused search must describe its coverage: " + resultStatus)
+controller.search("missing-content-fixture")
+wait("Paused index reports a miss") { !controller.isSearching && results.isEmpty }
+precondition(resultStatus.contains("已暂停"), "Paused misses must describe their coverage: " + resultStatus)
+controller.options.contentSearch = false
+controller.search("PDF DOCUMENT NEEDLE")
+wait("Content is disabled while index is paused") { !controller.isSearching && results.isEmpty }
+controller.options.contentSearch = true
+controller.setIndexPaused(false)
+wait("Resuming re-extracts bodies cleared while paused") {
+    !controller.indexing && !resultStatus.contains("已暂停") && results.first?.name == "作业-2.pdf"
+}
+precondition(results.first?.matchesContent == true)
+print("PASS body-only and mixed hits, UTF-8 and PDF boundaries, query cancellation, and body re-extraction after pause")
 controller.options.includeHidden = true
 wait("Hidden index scan") { !controller.indexing }
 controller.search("隐藏文件"); wait("Hidden name search") { results.first?.name == ".隐藏文件.txt" }
@@ -117,6 +178,7 @@ precondition(stats.entries > 0 && stats.files > 0 && stats.bytes > 0)
 let disconnected = root.appendingPathComponent("disconnected", isDirectory: true)
 try FileManager.default.moveItem(at: scope, to: disconnected)
 controller.options.enabled = false
+controller.options.useIgnoreFiles = true
 controller.options.roots = [scope.path, localScope.path]
 precondition(controller.hasAuthorizedScope, "The readable scope must allow re-enabling file search")
 controller.applyPermissionEnabled(true)
@@ -143,7 +205,11 @@ let blocked = FileSearchController(directory:root.appendingPathComponent("blocke
 // Restore a live synthetic scope so the low-space branch is reached.
 try FileManager.default.createDirectory(at:scope,withIntermediateDirectories:true)
 try Data("capacity check".utf8).write(to:scope.appendingPathComponent("capacity.txt"))
+var blockedStatus = ""
+blocked.updated = { _, status in blockedStatus = status }
+blocked.search("capacity check")
 blocked.startIndex(); wait("Low capacity blocks writes") { !blocked.indexing && blocked.indexStatus.contains("空间不足") }
+wait("Search reports the low-space index failure") { blockedStatus.contains("空间不足") }
 precondition(blocked.stats.entries == 0)
 UserDefaults(suiteName:suite+".blocked")!.removePersistentDomain(forName:suite+".blocked")
 controller.options.keepRemovedVolumes = true
