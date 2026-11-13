@@ -189,7 +189,8 @@ enum BuiltinLauncherModules {
 
     static func fileEntry(_ file: SpotlightFile) -> Entry {
         Entry(id: file.id, commandID: .init(rawValue: "file:" + file.id),
-              name: file.name, detail: "File", symbol: "doc", rankingKind: .file, isDirectory: file.isDirectory)
+              name: file.name, detail: "File", symbol: "doc", rankingKind: .file, isDirectory: file.isDirectory,
+              subtitle: file.matchesContent ? "正文匹配" : nil)
     }
 
     static let fileSearchPage = PageID(rawValue: "Files")

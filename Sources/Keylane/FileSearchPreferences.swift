@@ -33,7 +33,7 @@ struct FileSearchPreferences: View {
             ) { EmptyView() }
             ignoreRules
             SettingsGroup {
-                option("内容搜索","搜索文字和 PDF 的内容，不仅仅是文件名。仅在开启后读取正文并保存本地文本索引；不会下载 iCloud 占位文件。",\.contentSearch)
+                option("内容搜索","在本机索引受支持的 UTF-8 文本和含文字的 PDF。仅处理不超过 2 MiB 的文件，取前 10 万字符。跳过 iCloud 文件的正文。",\.contentSearch)
                 Divider(); option("包含隐藏文件","搜索名称以句点开头的文件；忽略规则仍然生效。",\.includeHidden)
                 Divider(); option("使用忽略文件","遵循 .gitignore、.ignore 和 .rayignore。",\.useIgnoreFiles)
                 Divider(); option("索引网络与可移除磁盘","包含搜索范围内的网络共享、外接磁盘和虚拟卷。",\.externalVolumes)

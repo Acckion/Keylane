@@ -49,6 +49,7 @@ final class FileSearchController: ObservableObject {
     private var recentlyRemoved = Set<String>()
     private var localQueryResolved = false
     private var didStart = false
+    private var indexFailure: String?
     private var grants: [String: Data]
     private var selectedScopePaths: Set<String>
     private var activeURLs: [URL] = []
@@ -95,6 +96,7 @@ final class FileSearchController: ObservableObject {
             if self.isSearching && !self.localQueryResolved && results.isEmpty { return }
             self.publish()
         }
+        if indexPaused { indexStatus = "本地索引已暂停，仍可搜索已有条目。" }
         if startImmediately { startRuntime() }
     }
 
@@ -118,7 +120,7 @@ final class FileSearchController: ObservableObject {
                 }
             } catch {
                 DispatchQueue.main.async {
-                    if !token.cancelled { self.indexStatus = error.localizedDescription; self.indexing = false }
+                    if !token.cancelled { self.reportIndexFailure(error) }
                 }
             }
         }
@@ -134,6 +136,7 @@ final class FileSearchController: ObservableObject {
         cancel()
         stopWatch()
         didStart = false
+        indexFailure = nil
         indexing = false
         inaccessible = []
         lastPublished = []
@@ -236,6 +239,7 @@ final class FileSearchController: ObservableObject {
             indexing = false
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
         } else { startIndex() }
+        if localQueryResolved { publish() }
     }
 
     func exclude(_ url: URL) throws -> String {
@@ -539,9 +543,20 @@ final class FileSearchController: ObservableObject {
                     let previousIDs = Set(self.lastPublished.map(\.id))
                     rows = self.lastPublished.compactMap { byID[$0.id] } + best.filter { !previousIDs.contains($0.id) }
                 }
-                let status = rows.isEmpty
-                    ? (self.indexing ? "正在建立索引，完成后自动更新结果。" : "没有匹配项。请检查搜索范围、忽略规则或文件夹授权。")
-                    : "\(rows.count)项\(truncated ? " · 请增加关键词" : "") · 文件索引"
+                let status: String
+                if !rows.isEmpty {
+                    let notice = self.indexPaused ? "本地索引已暂停" : self.indexFailure
+                    status = "\(rows.count)项\(truncated ? " · 请增加关键词" : "")"
+                        + (notice.map { " · " + $0 } ?? "")
+                } else if self.indexPaused {
+                    status = "本地索引已暂停。恢复索引后可搜索新增或更新的文件。"
+                } else if let failure = self.indexFailure {
+                    status = failure
+                } else if self.indexing {
+                    status = "正在建立索引，完成后自动更新结果。"
+                } else {
+                    status = "请检查搜索范围、忽略规则或文件夹授权。"
+                }
                 self.emit(rows, status)
                 if self.isSearching && self.localQueryResolved { self.isSearching = false }
             }
@@ -578,6 +593,7 @@ final class FileSearchController: ObservableObject {
         }
         didStart = true; cancellation.cancel(); let token = FileScanCancellation(); cancellation = token
         let config = authorizedOptions; let exclusions = config.excludedPaths + automaticExclusions.map(\.path); let restored = restored
+        indexFailure = nil
         indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []; startWatch()
         writer.async { [weak self] in
             guard let self, let db = self.writeDB, !token.cancelled else { return }
@@ -751,11 +767,19 @@ final class FileSearchController: ObservableObject {
                 }
             } catch { DispatchQueue.main.async {
                 guard self.cancellation === token else { return }
-                self.indexing = false; self.indexStatus = error.localizedDescription
+                self.reportIndexFailure(error)
                 self.scheduleRefresh()
             } }
         }
     }
+    private func reportIndexFailure(_ error: Error) {
+        indexing = false
+        let message = error.localizedDescription
+        indexFailure = message
+        indexStatus = message
+        if localQueryResolved { publish() }
+    }
+
     private static func isMissing(_ error: Error) -> Bool {
         let error = error as NSError
         return error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)
