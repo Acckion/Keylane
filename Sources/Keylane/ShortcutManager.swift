@@ -2,14 +2,29 @@ import AppKit
 import Carbon
 import KeylaneCore
 
+enum ShortcutRegistrationScope: Equatable {
+    case native
+    case unavailable
+    case extensionActivation(UUID)
+}
+
 final class ShortcutManager {
-    private var refs: [String:EventHotKeyRef] = [:]
-    private var specs: [String:Shortcut] = [:]
-    private var ids: [UInt32:String] = [:]
+    private struct Registration {
+        let id: UInt32
+        let reference: EventHotKeyRef
+        let shortcut: Shortcut
+        let scope: ShortcutRegistrationScope
+    }
+
+    private var registrations: [String: Registration] = [:]
+    private var specs: [String: Shortcut] = [:]
+    private var ids: [UInt32: String] = [:]
     private var handler: EventHandlerRef?
     private var nextID: UInt32 = 1
     var fired: ((String) -> Void)?
-    var suspended = false
+    var scopeForAction: (String) -> ShortcutRegistrationScope = { _ in .native }
+    private var suspended = false
+
     init() {
         var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
@@ -17,65 +32,113 @@ final class ShortcutManager {
             let owner = Unmanaged<ShortcutManager>.fromOpaque(context).takeUnretainedValue()
             var id = EventHotKeyID()
             guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr,
-                  id.signature == 0x4B4C414E, let action = owner.ids[id.id] else { return OSStatus(eventNotHandledErr) }
-            DispatchQueue.main.async { owner.fired?(action) }; return noErr
+                  id.signature == 0x4B4C414E, owner.enqueue(id: id.id) else { return OSStatus(eventNotHandledErr) }
+            return noErr
         }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &handler)
     }
+
     deinit { stop() }
+
+    func enqueue(id: UInt32) -> Bool {
+        guard ids[id] != nil else { return false }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let action = self.ids[id], let registration = self.registrations[action],
+                  registration.id == id, registration.scope == self.scopeForAction(action) else { return }
+            self.fired?(action)
+        }
+        return true
+    }
+
     /// Register replacements before removing existing shortcuts, retaining the old set on failure.
-    func apply(_ proposed: [String:Shortcut]) throws {
+    func apply(_ proposed: [String: Shortcut]) throws {
         if let reason = ShortcutValidation.conflict(in: proposed) { throw Failure(reason) }
         if suspended { specs = proposed; return }
-        var additions: [String:EventHotKeyRef] = [:]
-        var newIDs: [UInt32:String] = [:]
+        var additions: [String: Registration] = [:]
         do {
             for action in proposed.keys.sorted() {
-                guard let spec = proposed[action], specs[action] != spec else { continue }
-                let registration = try register(spec)
-                additions[action] = registration.reference
-                newIDs[registration.id] = action
+                guard let shortcut = proposed[action], specs[action] != shortcut else { continue }
+                let scope = scopeForAction(action)
+                if scope != .unavailable { additions[action] = try register(shortcut, scope: scope) }
             }
-        } catch { for reference in additions.values { UnregisterEventHotKey(reference) }; throw error }
-        for (action, reference) in refs where proposed[action] != specs[action] { UnregisterEventHotKey(reference); refs.removeValue(forKey: action); ids = ids.filter { $0.value != action } }
-        refs.merge(additions) { _, new in new }; ids.merge(newIDs) { _, new in new }; specs = proposed
+        } catch {
+            additions.values.forEach { UnregisterEventHotKey($0.reference) }
+            throw error
+        }
+        for action in Array(registrations.keys) where proposed[action] != specs[action] { unregister(action) }
+        additions.forEach { track($0.value, for: $0.key) }
+        specs = proposed
     }
+
     /// Restore independent bindings even when one is invalid or reserved by another app.
     func restore(_ saved: [String: Shortcut]) throws {
         suspend()
         suspended = false
         specs = saved
-        var registered = Set<Shortcut>()
+        try registerMissing(saved)
+    }
+
+    /// Revoke old extension registrations before attempting to restore their saved bindings.
+    func refreshExtensions() throws {
+        guard !suspended else { return }
+        removeStaleRegistrations()
+        try registerMissing(specs.filter { action, _ in
+            if case .extensionActivation = scopeForAction(action) { return true }
+            return false
+        })
+    }
+
+    func removeStaleRegistrations() {
+        for (action, registration) in Array(registrations) where registration.scope != scopeForAction(action) {
+            unregister(action)
+        }
+    }
+
+    private func registerMissing(_ saved: [String: Shortcut]) throws {
+        var registered = Set(registrations.values.map(\.shortcut))
         var failures: [String] = []
         let actions = (saved["launcher"] == nil ? [] : ["launcher"]) + saved.keys.filter { $0 != "launcher" }.sorted()
         for action in actions {
-            guard let shortcut = saved[action] else { continue }
+            guard registrations[action] == nil, let shortcut = saved[action] else { continue }
+            let scope = scopeForAction(action)
+            guard scope != .unavailable else { continue }
             do {
                 if let reason = ShortcutValidation.conflict(in: [action: shortcut]) { throw Failure(reason) }
                 guard !registered.contains(shortcut) else { throw Failure("快捷键与已恢复的绑定重复。") }
-                let registration = try register(shortcut)
-                refs[action] = registration.reference
-                ids[registration.id] = action
+                track(try register(shortcut, scope: scope), for: action)
                 registered.insert(shortcut)
             } catch {
                 failures.append("\(action)：\(error.localizedDescription)")
             }
         }
-        if !failures.isEmpty {
-            throw Failure("部分快捷键未能恢复：\n" + failures.joined(separator: "\n"))
-        }
+        if !failures.isEmpty { throw Failure("部分快捷键未能恢复：\n" + failures.joined(separator: "\n")) }
     }
 
-    private func register(_ shortcut: Shortcut) throws -> (id: UInt32, reference: EventHotKeyRef) {
+    private func register(_ shortcut: Shortcut, scope: ShortcutRegistrationScope) throws -> Registration {
         var reference: EventHotKeyRef?
         let id = nextID
         nextID += 1
         let result = RegisterEventHotKey(shortcut.key, shortcut.modifiers, EventHotKeyID(signature: 0x4B4C414E, id: id),
                                          GetApplicationEventTarget(), 0, &reference)
         guard result == noErr, let reference else { throw Failure("快捷键已被系统或其他应用占用（\(result)）。") }
-        return (id, reference)
+        return Registration(id: id, reference: reference, shortcut: shortcut, scope: scope)
     }
 
-    func suspend() { for reference in refs.values { UnregisterEventHotKey(reference) }; refs = [:]; ids = [:]; suspended = true }
+    private func track(_ registration: Registration, for action: String) {
+        registrations[action] = registration
+        ids[registration.id] = action
+    }
+
+    private func unregister(_ action: String) {
+        guard let registration = registrations.removeValue(forKey: action) else { return }
+        ids.removeValue(forKey: registration.id)
+        UnregisterEventHotKey(registration.reference)
+    }
+
+    func suspend() {
+        for action in Array(registrations.keys) { unregister(action) }
+        suspended = true
+    }
+
     func resume() throws { try restore(specs) }
     func stop() { suspend(); if let handler { RemoveEventHandler(handler) }; handler = nil }
     struct Failure: LocalizedError { let errorDescription: String?; init(_ text: String) { errorDescription = text } }

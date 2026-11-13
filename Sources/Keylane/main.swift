@@ -39,7 +39,8 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let fileAI = FileAIController()
     private var moduleSearchChanges: AnyCancellable?
-    private var moduleRegistrationChanges: AnyCancellable?
+    private var moduleActivationRevocations: AnyCancellable?
+    private var registeredPageCleanup: (page: PageID, activation: LauncherModuleRegistry.Activation, leave: () -> Void)?
     let rootSearchUpdates = PassthroughSubject<Void, Never>()
     let clipboard = ClipboardController(startTimer: false, presentationActive: false, startStorage: false)
     let screenshots = ScreenshotLibrary()
@@ -157,6 +158,22 @@ final class Model: ObservableObject {
     }
 
     var activeLauncherPage: LauncherPage? { launcherModules?.page(pageID) }
+
+    func trackRegisteredPage(_ page: LauncherPage, activation: LauncherModuleRegistry.Activation) {
+        let owner = FilePresentationOwner.extensionActivation(activation.id)
+        registeredPageCleanup = (page.id, activation, {
+            page.leave()
+            page.releasePreview?()
+            FilePreview.shared.dismiss(owner: owner)
+            FileActionsWindow.shared.dismiss(owner: owner)
+        })
+    }
+
+    func leaveRegisteredPage(_ page: PageID, activation: LauncherModuleRegistry.Activation) {
+        guard let cleanup = registeredPageCleanup, cleanup.page == page, cleanup.activation == activation else { return }
+        registeredPageCleanup = nil
+        cleanup.leave()
+    }
     lazy var activePageUpdates: AnyPublisher<Void, Never> = {
         $pageID.removeDuplicates().map { [weak self] pageID in
             self?.launcherModules?.page(pageID)?.updates ?? Empty().eraseToAnyPublisher()
@@ -303,9 +320,12 @@ final class Model: ObservableObject {
             if self.fileSearchStatus != status { self.fileSearchStatus = status }
         }
         refreshLogin()
-        moduleRegistrationChanges = launcherModules?.registrationUpdates.sink { [weak self] in
-            guard let self, self.pageID != .root, self.activeLauncherPage == nil else { return }
-            self.pageID = .root
+        moduleActivationRevocations = launcherModules?.activationRevocations.sink { [weak self] module in
+            guard let self else { return }
+            if let cleanup = self.registeredPageCleanup, self.launcherModules?.module(forPage: cleanup.page) == module {
+                self.leaveRegisteredPage(cleanup.page, activation: cleanup.activation)
+            }
+            if self.launcherModules?.module(forPage: self.pageID) == module { self.pageID = .root }
         }
         moduleSearchChanges = launcherModules?.searchUpdates
             .receive(on: DispatchQueue.main)
@@ -761,6 +781,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let onboarding = OnboardingWindowController()
     var window: NSWindow!
     let shortcuts = ShortcutManager()
+    private var shortcutRegistrationChanges: Set<AnyCancellable> = []
     let modifiers = ModifierShortcuts()
     var outsideMonitor: Any?
     var localMonitor: Any?
@@ -849,6 +870,19 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             commands += [.init(title: "设置…", symbol: "gearshape", action: { self?.openLauncherSettings() }),
                          .separator, .init(title: "退出 Keylane", action: { NSApplication.shared.terminate(nil) })]
             return commands
+        }
+        shortcuts.scopeForAction = { [weak registry = model.launcherModules] action in
+            registry?.shortcutScope(for: CommandID(rawValue: action)) ?? .native
+        }
+        if let registry = model.launcherModules {
+            registry.activationRevocations.sink { [weak self] _ in
+                self?.shortcuts.removeStaleRegistrations()
+            }.store(in: &shortcutRegistrationChanges)
+            registry.registrationUpdates.sink { [weak self] in
+                guard let self else { return }
+                do { try self.shortcuts.refreshExtensions() }
+                catch { self.model.error = error.localizedDescription }
+            }.store(in: &shortcutRegistrationChanges)
         }
         shortcuts.fired = { [weak self] action in
             guard let self else { return }

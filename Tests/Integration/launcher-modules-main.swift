@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Combine
 import Foundation
 import SwiftUI
@@ -370,6 +371,7 @@ let queuedStatic = registered.resolve(registeredCommandID, origin: .menu, naviga
 let queuedDynamic = registered.resolve(dynamicCommandID, origin: .shortcut, navigate: { _ in })!
 precondition(registered.page(registeredLauncherPageID) != nil)
 moduleEnabled = false
+registrationChanged.send()
 precondition(registered.page(registeredLauncherPageID) == nil)
 registered.page(registeredLauncherPageID, includingInactive: true)?.leave()
 precondition(pageLeaves == 1)
@@ -378,6 +380,8 @@ queuedDynamic()
 precondition(executions.isEmpty && registered.candidates(for: registeredSearchInput).isEmpty)
 precondition(registered.shortcutCommandGroups.map(\.id) == [registeredModuleID])
 moduleEnabled = true
+registrationChanged.send()
+let currentDynamic = registered.resolve(dynamicCommandID, origin: .shortcut, navigate: { _ in })!
 disabledIDs = [registeredCommandID, dynamicCommandID]
 queuedStatic()
 queuedDynamic()
@@ -387,9 +391,11 @@ for origin in origins {
 precondition(executions.isEmpty && registered.candidates(for: registeredSearchInput).isEmpty)
 disabledIDs = []
 resolvedVersion = 1
-queuedDynamic()
+currentDynamic()
 precondition(executions == ["dynamic:1"])
 installationGeneration += 1
+registrationChanged.send()
+currentDynamic()
 queuedDynamic()
 queuedStatic()
 precondition(executions == ["dynamic:1"])
@@ -407,7 +413,7 @@ isPresent = false
 registrationChanged.send()
 RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 queuedDynamic()
-precondition(registrationUpdates == 2 && registered.settingsCatalog.pages.isEmpty)
+precondition(registrationUpdates == 5 && registered.settingsCatalog.pages.isEmpty)
 precondition(registered.shortcutCommandGroups.isEmpty && executions == ["dynamic:1", "preserve original text"])
 withExtendedLifetime(registrationObservation) {}
 print("PASS shared command admission, installed catalog visibility, and stale dispatch")
@@ -430,3 +436,162 @@ RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 precondition(pastePermission.available && permissionDefaults.bool(forKey: "crossAppPaste.enabled"))
 precondition(pastePermission.status == .init() && activationResults == [false])
 print("PASS cross-app paste activates on return after granting Accessibility access")
+
+
+let lifecycleModuleID = ModuleID(rawValue: "fixture.lifecycle")
+let lifecyclePageID = PageID(rawValue: "fixture.lifecycle.page")
+let lifecycleCommandID = CommandID(rawValue: "extension:fixture:lifecycle")
+let lifecycleEvents = PassthroughSubject<Void, Never>()
+var lifecyclePresent = false
+var lifecycleReady = false
+var lifecycleGeneration: UInt64 = 1
+var transitions: [String] = []
+let lifecycle = try LauncherModuleRegistry(modules: [
+    .init(id: lifecycleModuleID, origin: .installedExtension, commands: [
+        .init(declaration: .init(id: lifecycleCommandID, title: "Fixture", detail: "", symbol: "gear",
+                                 keywords: [], destination: .page(lifecyclePageID)))
+    ], pages: [
+        .init(id: lifecyclePageID, placeholder: "", leave: { transitions.append("leave") },
+              releasePreview: { transitions.append("release") })
+    ], services: [
+        .init(start: { transitions.append("start") }, stop: { transitions.append("stop") },
+              resume: { transitions.append("resume") })
+    ], registration: .init(isPresent: { lifecyclePresent }, updates: lifecycleEvents.eraseToAnyPublisher(),
+                           isEnabled: { lifecycleReady }, generation: { lifecycleGeneration }))
+], preferences: extensionPreferences)
+let revocation = lifecycle.activationRevocations.sink { id in
+    precondition(id == lifecycleModuleID && lifecycle.activation(forPage: lifecyclePageID) == nil)
+    precondition(lifecycle.shortcutScope(for: lifecycleCommandID) == .unavailable)
+    let departing = lifecycle.page(lifecyclePageID, includingInactive: true)
+    departing?.leave()
+    departing?.releasePreview?()
+}
+lifecycle.startServices()
+precondition(transitions.isEmpty)
+precondition(lifecycle.shortcutScope(for: lifecycleCommandID) == .unavailable)
+precondition(lifecycle.shortcutScope(for: .init(rawValue: "extension:fixture:removed")) == .unavailable)
+precondition(lifecycle.shortcutScope(for: .init(rawValue: "launcher")) == .native)
+
+lifecyclePresent = true
+lifecycleReady = true
+lifecycleEvents.send()
+let firstActivation = lifecycle.activation(forPage: lifecyclePageID)!
+let staleInvocation = lifecycle.resolve(lifecycleCommandID, origin: .shortcut, navigate: { _ in
+    preconditionFailure("Revoked command reopened an extension")
+})!
+precondition(transitions == ["start"])
+lifecycleEvents.send()
+precondition(lifecycle.activation(forPage: lifecyclePageID) == firstActivation && transitions == ["start"])
+
+// A replacement can publish a new generation with the same PageID and no intermediate snapshot.
+lifecycleGeneration += 1
+lifecycleEvents.send()
+let replacement = lifecycle.activation(forPage: lifecyclePageID)!
+precondition(replacement.generation == 2 && replacement.id != firstActivation.id)
+precondition(transitions == ["start", "leave", "release", "stop", "start"])
+staleInvocation()
+let beforeDisable = lifecycle.resolve(lifecycleCommandID, origin: .menu, navigate: { _ in
+    preconditionFailure("Disabling and resuming must revoke queued work for the same artifact")
+})!
+
+precondition(lifecycle.setModuleEnabled(lifecycleModuleID, false))
+precondition(transitions.suffix(3) == ["leave", "release", "stop"])
+precondition(lifecycle.setModuleEnabled(lifecycleModuleID, true))
+let resumed = lifecycle.activation(forPage: lifecyclePageID)!
+precondition(resumed.generation == replacement.generation && resumed.id != replacement.id)
+precondition(transitions.last == "resume")
+beforeDisable()
+var reopened = false
+precondition(lifecycle.invoke(lifecycleCommandID, origin: .shortcut, navigate: { destination in
+    reopened = destination == .page(lifecyclePageID)
+}) && reopened)
+lifecyclePresent = false
+lifecycleReady = false
+lifecycleEvents.send()
+precondition(transitions.suffix(3) == ["leave", "release", "stop"])
+let transitionCount = transitions.count
+lifecycle.stopServices()
+precondition(transitions.count == transitionCount)
+
+lifecyclePresent = true
+lifecycleReady = false
+lifecycleGeneration += 1
+lifecycleEvents.send()
+precondition(lifecycle.activation(forPage: lifecyclePageID) == nil)
+lifecycleReady = true
+lifecycleEvents.send()
+precondition(transitions.count == transitionCount)
+lifecycle.startServices()
+precondition(transitions.count == transitionCount + 1 && transitions.last == "start")
+lifecycle.stopServices()
+precondition(transitions.last == "stop")
+withExtendedLifetime(revocation) {}
+print("PASS installation, same-ID replacement, disable, uninstall and reinstall reconcile services and revoke old callbacks")
+
+
+if CommandLine.arguments.contains("--verify-system-shortcuts") {
+    _ = NSApplication.shared
+    let manager = ShortcutManager()
+    let nativeAction = "launcher"
+    let extensionAction = "extension:fixture:hotkey"
+    let nativeShortcut = Shortcut(key: UInt32(kVK_F17), modifiers: UInt32(controlKey | optionKey | shiftKey | cmdKey))
+    let extensionShortcut = Shortcut(key: UInt32(kVK_F18), modifiers: nativeShortcut.modifiers)
+    let saved = [nativeAction: nativeShortcut, extensionAction: extensionShortcut]
+    var scope = ShortcutRegistrationScope.extensionActivation(UUID())
+    manager.scopeForAction = { $0 == extensionAction ? scope : .native }
+    var fired: [String] = []
+    manager.fired = { fired.append($0) }
+
+    func sendHotkey(_ id: UInt32) -> OSStatus {
+        var event: EventRef?
+        precondition(CreateEvent(nil, OSType(kEventClassKeyboard), UInt32(kEventHotKeyPressed),
+                                 GetCurrentEventTime(), 0, &event) == noErr)
+        guard let event else { preconditionFailure("Unable to construct Carbon test event") }
+        defer { ReleaseEvent(event) }
+        var hotkey = EventHotKeyID(signature: 0x4B4C414E, id: id)
+        precondition(SetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                       MemoryLayout<EventHotKeyID>.size, &hotkey) == noErr)
+        return SendEventToEventTarget(event, GetApplicationEventTarget())
+    }
+
+    try manager.restore(saved)
+    // The manager registers the launcher first, then the extension.
+    precondition(sendHotkey(1) == noErr && sendHotkey(2) == noErr)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    precondition(fired == [nativeAction, extensionAction])
+    fired.removeAll()
+
+    precondition(sendHotkey(2) == noErr)
+    scope = .unavailable
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    precondition(fired.isEmpty, "Queued event must be rejected before registration refresh")
+
+    precondition(sendHotkey(2) == noErr)
+    manager.removeStaleRegistrations()
+    precondition(sendHotkey(2) != noErr)
+    var competing: EventHotKeyRef?
+    let claim = RegisterEventHotKey(extensionShortcut.key, extensionShortcut.modifiers,
+                                    EventHotKeyID(signature: 0x4B4C5453, id: 1),
+                                    GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &competing)
+    precondition(claim == noErr, "Revoked extension must release the system hotkey")
+    scope = .extensionActivation(UUID())
+    do {
+        try manager.refreshExtensions()
+        preconditionFailure("An exclusive hotkey should prevent restoration")
+    } catch is ShortcutManager.Failure {}
+    precondition(sendHotkey(1) == noErr)
+    if let competing { UnregisterEventHotKey(competing) }
+    try manager.refreshExtensions()
+    precondition(sendHotkey(2) != noErr)
+    precondition(sendHotkey(4) == noErr, "A saved extension shortcut must use a new registration ID")
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    precondition(fired == [nativeAction, extensionAction])
+
+    manager.suspend()
+    scope = .unavailable
+    try manager.refreshExtensions()
+    try manager.resume()
+    precondition(sendHotkey(4) != noErr && sendHotkey(5) == noErr)
+    manager.stop()
+    print("PASS Carbon registration, queued event revocation, slot release, conflict retry and recorder resume")
+}

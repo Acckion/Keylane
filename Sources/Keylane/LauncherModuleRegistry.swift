@@ -184,6 +184,8 @@ struct LauncherModule {
     /// Runtime-discovered modules expose their current presence from validated in-memory metadata.
     /// Built-in modules are always present; command and permission state are evaluated separately.
     struct Registration {
+        // Publish on the main thread after updating all three snapshot fields.
+        // Advance generation for each replacement, including replacement with the same IDs.
         let isPresent: () -> Bool
         let updates: AnyPublisher<Void, Never>
         var isEnabled: () -> Bool = { true }
@@ -252,6 +254,11 @@ final class LauncherModuleRegistry {
         case wrongPage(item: String, expected: String)
         case duplicateItem(String)
     }
+    struct Activation: Equatable {
+        let id = UUID()
+        let generation: UInt64
+    }
+
     private struct Owned<Value> {
         let module: ModuleID
         let value: Value
@@ -271,7 +278,14 @@ final class LauncherModuleRegistry {
     private let pages: [PageID: Owned<LauncherPage>]
     private let registeredSettings: [Owned<LauncherSettingsPage>]
     private let settingsOrigins: [String: LauncherModuleOrigin]
-    let registrationUpdates: AnyPublisher<Void, Never>
+    private let registrationChanges = PassthroughSubject<Void, Never>()
+    private let revokedActivations = PassthroughSubject<ModuleID, Never>()
+    var activationRevocations: AnyPublisher<ModuleID, Never> { revokedActivations.eraseToAnyPublisher() }
+    var registrationUpdates: AnyPublisher<Void, Never> { registrationChanges.eraseToAnyPublisher() }
+    private var registrationObservation: AnyCancellable?
+    private var activations: [ModuleID: Activation] = [:]
+    private var runningModules: Set<ModuleID> = []
+    private var reconcilingModules: Set<ModuleID> = []
     var settingsCatalog: SettingsWindowCatalog {
         SettingsWindowCatalog(pages: registeredSettings.compactMap { isModulePresent($0.module) ? $0.value : nil },
                               origins: settingsOrigins)
@@ -306,8 +320,6 @@ final class LauncherModuleRegistry {
         moduleRegistrations = Dictionary(uniqueKeysWithValues: modules.compactMap { module in
             module.registration.map { (module.id, $0) }
         })
-        registrationUpdates = Publishers.MergeMany(modules.compactMap { $0.registration?.updates })
-            .receive(on: DispatchQueue.main).eraseToAnyPublisher()
         registeredShortcutGroups = modules.compactMap { module in
             guard !module.commands.isEmpty || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
             else { return nil }
@@ -339,6 +351,18 @@ final class LauncherModuleRegistry {
         })
         registeredSettings = modules.flatMap { module in module.settings.map { Owned(module: module.id, value: $0) } }
             .sorted { $0.value.order < $1.value.order }
+        let registeredModules = modules.filter { $0.registration != nil }
+        for module in registeredModules {
+            if let generation = enabledGeneration(for: module.id) {
+                activations[module.id] = Activation(generation: generation)
+            }
+        }
+        registrationObservation = Publishers.MergeMany(registeredModules.compactMap { module in
+            module.registration?.updates.map { module }.eraseToAnyPublisher()
+        }).sink { [weak self] module in
+            precondition(Thread.isMainThread)
+            self?.registrationChanged(for: module)
+        }
     }
 
     private func updates(_ key: KeyPath<LauncherModule, [AnyPublisher<Void, Never>]>) -> AnyPublisher<Void, Never> {
@@ -367,16 +391,33 @@ final class LauncherModuleRegistry {
               enabled == disabledModules.contains(id) else { return false }
         if enabled { disabledModules.remove(id) } else { disabledModules.insert(id) }
         preferences.set(disabledModules.map(\.rawValue).sorted(), forKey: Self.disabledKey)
-        if servicesRunning {
-            if enabled {
-                module.services.forEach { ($0.resume ?? $0.start)() }
-                if launcherVisible { module.launcherShown?() }
-            } else {
-                module.services.reversed().forEach { $0.stop() }
-            }
+        if module.registration != nil {
+            registrationChanged(for: module, resuming: enabled)
+        } else if enabled {
+            start(module, resuming: true, notifyVisible: true)
+        } else {
+            stop(module)
         }
         availabilityChanges.send()
         return true
+    }
+
+    private func registrationChanged(for module: LauncherModule, resuming: Bool = false) {
+        let id = module.id
+        guard reconcilingModules.insert(id).inserted else { return }
+        while activations[id]?.generation != enabledGeneration(for: id) {
+            // Revoke the old activation before any cancellation callbacks run.
+            if activations.removeValue(forKey: id) != nil {
+                revokedActivations.send(id)
+            }
+            stop(module)
+            if let generation = enabledGeneration(for: id) {
+                activations[id] = Activation(generation: generation)
+                start(module, resuming: resuming, notifyVisible: true)
+            }
+        }
+        reconcilingModules.remove(id)
+        registrationChanges.send()
     }
 
     func shortcutSettingsUpdates() -> [AnyPublisher<Void, Never>] {
@@ -400,13 +441,26 @@ final class LauncherModuleRegistry {
     func startServices() {
         guard !servicesRunning else { return }
         servicesRunning = true
-        for module in modules where isModuleEnabled(module.id) { module.services.forEach { $0.start() } }
+        for module in modules { start(module) }
     }
     func stopServices() {
         guard servicesRunning else { return }
         servicesRunning = false
-        for module in modules.reversed() where isModuleEnabled(module.id) { module.services.reversed().forEach { $0.stop() } }
+        for module in modules.reversed() { stop(module) }
     }
+    private func start(_ module: LauncherModule, resuming: Bool = false, notifyVisible: Bool = false) {
+        guard servicesRunning, isModuleEnabled(module.id), runningModules.insert(module.id).inserted else { return }
+        for service in module.services {
+            (resuming ? service.resume ?? service.start : service.start)()
+        }
+        if notifyVisible && launcherVisible { module.launcherShown?() }
+    }
+
+    private func stop(_ module: LauncherModule) {
+        guard runningModules.remove(module.id) != nil else { return }
+        module.services.reversed().forEach { $0.stop() }
+    }
+
     /// Preserve a prior disable from the host when a module supplies its own command preference.
     func migrateDisabledCommands(_ disabled: Set<String>) -> Set<String> {
         var remaining = disabled
@@ -437,8 +491,31 @@ final class LauncherModuleRegistry {
     }
 
     func isModuleEnabled(_ id: ModuleID) -> Bool {
-        isModulePresent(id) && (moduleRegistrations[id]?.isEnabled() ?? true) &&
-            (!disableableModules.contains(id) || !disabledModules.contains(id))
+        guard moduleRegistrations[id] != nil else { return !disabledModules.contains(id) || !disableableModules.contains(id) }
+        return activation(for: id) != nil
+    }
+
+    private func enabledGeneration(for id: ModuleID) -> UInt64? {
+        guard let registration = moduleRegistrations[id], registration.isPresent(), registration.isEnabled(),
+              !disabledModules.contains(id) || !disableableModules.contains(id) else { return nil }
+        return registration.generation()
+    }
+
+    func activation(for id: ModuleID) -> Activation? {
+        guard let activation = activations[id], activation.generation == enabledGeneration(for: id) else { return nil }
+        return activation
+    }
+
+    func activation(forPage id: PageID) -> Activation? {
+        module(forPage: id).flatMap { activation(for: $0) }
+    }
+
+    func shortcutScope(for id: CommandID) -> ShortcutRegistrationScope {
+        if let owner = moduleOwningCommand(id), moduleRegistrations[owner] != nil {
+            return activation(for: owner).map { .extensionActivation($0.id) } ?? .unavailable
+        }
+        // A saved binding can outlive the module that provided it.
+        return id.rawValue.hasPrefix("extension:") ? .unavailable : .native
     }
 
     private func isCommandEnabled(_ id: CommandID, in module: ModuleID) -> Bool {
@@ -530,9 +607,9 @@ final class LauncherModuleRegistry {
                  navigate: @escaping (LauncherCommandDeclaration.Destination) -> Void) -> (() -> Void)? {
         guard let module = moduleOwningCommand(id),
               currentAction(for: id, origin: origin, arguments: []) != nil else { return nil }
-        let generation = moduleRegistrations[module]?.generation()
+        let activation = activation(for: module)
         return { [weak self] in
-            guard let self, self.moduleRegistrations[module]?.generation() == generation else { return }
+            guard let self, self.activation(for: module) == activation else { return }
             self.invoke(id, origin: origin, navigate: navigate)
         }
     }
