@@ -4,9 +4,11 @@ public struct CalculatorConversion {
     public let amount: Double
     public let source: String
     public let target: String
+    private let locale: Locale
 
-    public init?(_ query: String) {
-        let normalized = query.folding(options: .widthInsensitive, locale: nil)
+    public init?(_ query: String, locale: Locale = .current) {
+        guard query.utf16.count <= 512 else { return nil }
+        let normalized = Calculator.decimalInput(query.folding(options: .widthInsensitive, locale: locale), locale: locale)
         let pattern = #"^\s*=?\s*([+\-−]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([^\d\s][^\d]*?)\s*(?:\bto\b|\bin\b|换算成|换成|转换为|转为|转成|转|到|=|→)\s*([^\d]+?)\s*$"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
               let match = regex.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)),
@@ -15,6 +17,7 @@ public struct CalculatorConversion {
               let to = Range(match.range(at: 3), in: normalized),
               let amount = Double(normalized[number].replacingOccurrences(of: "−", with: "-")), amount.isFinite else { return nil }
         self.amount = amount
+        self.locale = locale
         self.source = normalized[from].trimmingCharacters(in: .whitespaces)
         self.target = normalized[to].trimmingCharacters(in: .whitespaces)
     }
@@ -24,7 +27,7 @@ public struct CalculatorConversion {
               type(of: from) == type(of: to) else { return nil }
         let value = Measurement(value: amount, unit: from).converted(to: to).value
         guard value.isFinite else { return nil }
-        return String(format: "%.12g", value) + " " + to.symbol
+        return Calculator.format(value, locale: locale) + " " + to.symbol
     }
 
     public var currencies: (source: String, target: String)? {

@@ -86,7 +86,9 @@ struct CalculatorResultCard: View {
     }
 
     private var resultInWords: String {
-        guard let number = Double(result), abs(number) < 1_000_000_000 else { return "结果" }
+        let decimal = Locale.current.decimalSeparator ?? "."
+        guard let number = Double(result.replacingOccurrences(of: decimal, with: ".")),
+              abs(number) < 1_000_000_000 else { return "结果" }
         let formatter = NumberFormatter()
         formatter.numberStyle = .spellOut
         let words = formatter.string(from: NSNumber(value: number)) ?? "结果"
