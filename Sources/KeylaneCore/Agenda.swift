@@ -56,6 +56,8 @@ public struct AgendaEvent: Identifiable, Equatable, Sendable {
     public let calendarColor: UInt32?
     public let accepted: Bool
     public let meetingURL: URL?
+    public let eventURL: URL?
+    public let attending: Bool
     public let editable: Bool
     public let recurring: Bool
     public let busy: Bool
@@ -69,10 +71,11 @@ public struct AgendaEvent: Identifiable, Equatable, Sendable {
     public init(id: String, calendarID: String, calendarTitle: String, title: String, start: Date, end: Date, allDay: Bool = false, location: String = "", notes: String = "", calendarColor: UInt32? = nil, accepted: Bool = false, meetingURL: URL? = nil, editable: Bool = false, recurring: Bool = false, busy: Bool = true,
                 nativeID: String = "", externalID: String? = nil, participants: [AgendaParticipant] = [],
                 canInvite: Bool = false, hasInvitation: Bool = false, reminderMinutes: Set<Int> = [],
-                hasOtherReminders: Bool = false) {
+                hasOtherReminders: Bool = false, eventURL: URL? = nil, attending: Bool = false) {
         self.id = id; self.calendarID = calendarID; self.calendarTitle = calendarTitle; self.title = title; self.start = start; self.end = end; self.allDay = allDay; self.location = location; self.notes = notes
         self.calendarColor = calendarColor; self.accepted = accepted
         self.meetingURL = meetingURL; self.editable = editable; self.recurring = recurring; self.busy = busy
+        self.eventURL = eventURL; self.attending = attending
         self.nativeID = nativeID
         self.externalID = externalID
         self.participants = participants
@@ -88,7 +91,66 @@ public enum AgendaMenuTiming: Int, CaseIterable, Sendable {
     case fiveMinutes = 5, twoMinutes = 2, atStart = 0, never = -3
 }
 
+public enum AgendaEventLink {
+    public enum ValidationError: LocalizedError {
+        case invalid
+        public var errorDescription: String? { "请输入完整的网页或受支持的会议链接。" }
+    }
+
+    public static func parse(_ text: String, existing: URL?) throws -> URL? {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { return nil }
+        if value == existing?.absoluteString { return existing }
+        guard !value.contains(where: \.isWhitespace),
+              let url = URL(string: value, encodingInvalidCharacters: false),
+              url.user == nil, url.password == nil else { throw ValidationError.invalid }
+        if let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
+           let host = url.host, !host.isEmpty { return url }
+        if AgendaMeetingLink.matches(url) { return url }
+        throw ValidationError.invalid
+    }
+}
+
 public enum AgendaPolicy {
+    public enum Section: Hashable, Sendable {
+        case day(Date), nextWeek, restOfMonth, month(Date)
+
+        public var showsDate: Bool {
+            if case .day = self { return false }
+            return true
+        }
+    }
+
+    public static func browseInterval(from date: Date, calendar: Calendar = .current) -> DateInterval? {
+        let start = calendar.startOfDay(for: date)
+        guard let end = calendar.date(byAdding: .day, value: 90, to: start) else { return nil }
+        return DateInterval(start: start, end: end)
+    }
+
+    public static func section(for eventDate: Date, from anchor: Date, calendar: Calendar = .current) -> Section {
+        let day = calendar.startOfDay(for: max(anchor, eventDate))
+        guard let week = calendar.dateInterval(of: .weekOfYear, for: anchor),
+              let nextWeek = calendar.dateInterval(of: .weekOfYear, for: week.end),
+              let month = calendar.dateInterval(of: .month, for: anchor) else { return .day(day) }
+        if day < week.end { return .day(day) }
+        if day < nextWeek.end { return .nextWeek }
+        if day < month.end { return .restOfMonth }
+        return .month(calendar.dateInterval(of: .month, for: day)?.start ?? day)
+    }
+
+    public static func canAutoJoin(_ event: AgendaEvent, now: Date) -> Bool {
+        !event.allDay && event.busy && event.attending && event.meetingURL != nil
+            && event.start <= now && event.end > now
+    }
+
+    public static func automaticMeeting(_ events: [AgendaEvent], now: Date, excluded: Set<String>,
+                                        occupiedUntil: Date?) -> AgendaEvent? {
+        guard occupiedUntil.map({ $0 <= now }) ?? true else { return nil }
+        return ordered(events.filter {
+            canAutoJoin($0, now: now) && now.timeIntervalSince($0.start) < 60 && !excluded.contains($0.id)
+        }).first
+    }
+
     public static func ordered(_ events: [AgendaEvent]) -> [AgendaEvent] {
         events.sorted { lhs, rhs in
             if lhs.allDay != rhs.allDay { return lhs.allDay }
