@@ -1,11 +1,40 @@
 import AppKit
 import KeylaneCore
+import UniformTypeIdentifiers
 
 enum ClipboardActions {
-    static func copy(_ controller: ClipboardController, plainText: Bool = false) {
-        let copied = controller.copySelected(plainText: plainText)
-        let message = copied ? (plainText ? "已复制纯文本" : "已复制到剪贴板") : controller.status
+    static func copy(_ controller: ClipboardController, format: ClipboardReplayFormat = .original) {
+        let id = controller.selectedID
+        let copied = controller.copySelected(format: format)
+        if copied { controller.recordReplay(of: id) }
+        let message = copied ? (format == .plainText ? "已复制纯文本" : "已复制到剪贴板") : controller.status
         (NSApp.delegate as? Delegate)?.showLauncherFeedback(message, style: copied ? .success : .failure)
+    }
+
+    static func submit(_ controller: ClipboardController, alternate: Bool = false) {
+        guard !SearchField.isComposing else { return }
+        let delegate = NSApp.delegate as? Delegate
+        if let delegate, delegate.pasteTargetName != nil, (controller.primaryAction == .paste) != alternate {
+            delegate.pasteClipboard()
+        } else {
+            copy(controller)
+        }
+    }
+
+    private static func formatTitle(_ format: ClipboardReplayFormat) -> String {
+        switch format {
+        case .original, .preferred: return "原始格式"
+        case .plainText: return "纯文本"
+        case .pngFromTIFF: return "PNG（从 TIFF 转换）"
+        case .representation(let type):
+            switch type {
+            case UTType.rtf.identifier: return "RTF"
+            case UTType.flatRTFD.identifier: return "RTFD"
+            case UTType.html.identifier: return "HTML"
+            case UTType.url.identifier: return "链接"
+            default: return UTType(type)?.preferredFilenameExtension?.uppercased() ?? type
+            }
+        }
     }
 
     static func items(_ model: Model) -> [LauncherAction] {
@@ -27,35 +56,49 @@ enum ClipboardActions {
         }
 
         var actions: [LauncherAction] = []
+        let pasteIsPrimary = targetName != nil && controller.primaryAction == .paste
+        let copyAction = LauncherAction(id: "copy-clip", title: "复制到剪贴板", icon: "clipboard",
+                                       keys: pasteIsPrimary ? ["⌘", "↩"] : ["↩"], perform: { copy(controller) })
+        if !pasteIsPrimary { actions.append(copyAction) }
         if let targetName {
             actions.append(.init(id: "paste-clip", title: "粘贴到 \(targetName)", icon: "doc.on.clipboard",
-                                 keys: ["↩"], artwork: targetIcon, perform: { delegate?.pasteClipboard() }))
+                                 keys: pasteIsPrimary ? ["↩"] : ["⌘", "↩"], artwork: targetIcon,
+                                 perform: { delegate?.pasteClipboard() }))
         }
-        actions.append(.init(id: "copy-clip", title: "复制到剪贴板", icon: "clipboard",
-                             keys: targetName == nil ? ["↩"] : ["⌘", "↩"], perform: { copy(controller) }))
+        if pasteIsPrimary { actions.append(copyAction) }
         if targetName != nil {
             actions.append(.init(id: "paste-keep-open-clip", title: "粘贴并保持窗口打开", icon: "doc.on.clipboard",
                                  keys: ["⌥", "↩"], artwork: targetIcon, perform: { delegate?.pasteClipboard(keepOpen: true) }))
         }
-        if canEdit {
-            let copyPlainText = LauncherAction(id: "copy-plain-clip", title: "复制为纯文本", icon: "text.alignleft",
-                                                perform: { copy(controller, plainText: true) })
-            if let targetName {
-                let pastePlainText = LauncherAction(id: "paste-plain-clip", title: "以纯文本粘贴到 \(targetName)",
-                                                    icon: "text.insert", keys: ["⌃", "⌘", "↩"], artwork: targetIcon,
-                                                    perform: { delegate?.pasteClipboard(plainText: true) })
-                if item.category == .text {
-                    actions.append(.init(id: "paste-as-clip", title: "粘贴为…", icon: "text.insert",
-                                         keys: ["⌥", "⌘", "↩"], artwork: targetIcon,
-                                         submenu: .init(title: "粘贴为…", items: [
-                                             .init(id: "paste-original-clip", title: "原始格式", icon: "clipboard",
-                                                   perform: { delegate?.pasteClipboard() }),
-                                             pastePlainText, copyPlainText
-                                         ])))
+        let formats = controller.availableReplayFormats
+        if !formats.isEmpty {
+            let choices = [.original] + formats
+            if targetName != nil {
+                let pasteFormats = choices.enumerated().map { index, format in
+                    LauncherAction(id: "paste-format-\(index)", title: formatTitle(format), icon: "clipboard") {
+                        delegate?.pasteClipboard(format: format)
+                    }
                 }
-                actions.append(pastePlainText)
+                actions.append(.init(id: "paste-as-clip", title: "粘贴为…", icon: "text.insert",
+                                     keys: ["⌥", "⌘", "↩"], artwork: targetIcon,
+                                     submenu: .init(title: "粘贴为…", items: pasteFormats)))
+            }
+            let copyFormats = choices.enumerated().map { index, format in
+                LauncherAction(id: "copy-format-\(index)", title: formatTitle(format), icon: "clipboard") {
+                    copy(controller, format: format)
+                }
+            }
+            actions.append(.init(id: "copy-as-clip", title: "复制为…", icon: "clipboard",
+                                 submenu: .init(title: "复制为…", items: copyFormats)))
+        }
+        if canEdit, formats.contains(.plainText) {
+            if let targetName {
+                actions.append(.init(id: "paste-plain-clip", title: "以纯文本粘贴到 \(targetName)", icon: "text.insert",
+                                     keys: ["⌃", "⌘", "↩"], artwork: targetIcon,
+                                     perform: { delegate?.pasteClipboard(format: .plainText) }))
             } else {
-                actions.append(copyPlainText)
+                actions.append(.init(id: "copy-plain-clip", title: "复制为纯文本", icon: "text.alignleft",
+                                     perform: { copy(controller, format: .plainText) }))
             }
         }
 

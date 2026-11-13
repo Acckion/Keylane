@@ -34,14 +34,22 @@ try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories
 defer { try? FileManager.default.removeItem(at: scratch) }
 let executable = scratch.appendingPathComponent("shortcuts-fixture")
 let pidFile = scratch.appendingPathComponent("pid")
+let catalog = scratch.appendingPathComponent("catalog")
+let exitCode = scratch.appendingPathComponent("exit-code")
+let secondIdentifier = UUID().uuidString
+try "Synthetic shortcut (\(identifier))\n".write(to: catalog, atomically: true, encoding: .utf8)
 try """
 #!/bin/sh
-if [ "$1" = list ]; then
-    printf 'Synthetic shortcut (\(identifier))\\n'
-else
+case "$1" in
+list)
+    /bin/cat '\(catalog.path)'
+    ;;
+run)
     printf '%s\\n' "$$" > '\(pidFile.path)'
-    exec /bin/sleep 30
-fi
+    if [ ! -e '\(exitCode.path)' ]; then exec /bin/sleep 30; fi
+    exit "$(/bin/cat '\(exitCode.path)')"
+    ;;
+esac
 """.write(to: executable, atomically: true, encoding: .utf8)
 try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
 let fixture = SystemShortcutsController(loadsIcons: false, active: false, executable: executable)
@@ -49,14 +57,39 @@ fixture.refresh(force: true)
 precondition(!fixture.loading && fixture.entries.isEmpty)
 fixture.start()
 wait("synthetic Shortcuts listing") { fixture.entries.count == 1 }
-fixture.run(identifier)
+try """
+Duplicate (\(identifier))
+Duplicate (\(secondIdentifier))
+""".write(to: catalog, atomically: true, encoding: .utf8)
+fixture.launcherShown()
+wait("catalog adds duplicate title with distinct IDs") { fixture.entries.count == 2 }
+precondition(fixture.duplicateTitles == ["Duplicate"])
+precondition(fixture.entries.map(\.id) == [identifier, secondIdentifier].sorted())
+let commandID = fixture.entries.first { $0.id == identifier }!.commandID
+try "Renamed (\(identifier))\n".write(to: catalog, atomically: true, encoding: .utf8)
+fixture.launcherShown()
+wait("catalog removes old shortcut and preserves renamed identity") { fixture.entries.map(\.name) == ["Renamed"] }
+precondition(fixture.entries.first?.commandID == commandID && fixture.duplicateTitles.isEmpty)
+fixture.launcherHidden()
+var feedback: [SystemShortcutsController.RunStatus] = []
+fixture.run(identifier) { feedback.append($0) }
 wait("synthetic workflow launch") { FileManager.default.fileExists(atPath: pidFile.path) }
 let pid = pid_t(try String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines))!
+fixture.run(identifier) { feedback.append($0) }
+precondition(feedback == [.started, .busy] && fixture.runningID == identifier)
 fixture.stop()
 wait("synthetic workflow termination") { kill(pid, 0) == -1 }
 precondition(fixture.entries.isEmpty && fixture.runningID == nil && fixture.executionMessage.isEmpty)
 fixture.start()
 wait("synthetic Shortcuts listing") { fixture.entries.count == 1 }
+let outcomes: [(Int, SystemShortcutsController.RunStatus)] = [(0, .completed), (7, .failed(7))]
+for (code, expected) in outcomes {
+    try String(code).write(to: exitCode, atomically: true, encoding: .utf8)
+    feedback = []
+    fixture.run(identifier) { feedback.append($0) }
+    wait("synthetic exit status \(code)") { fixture.runningID == nil }
+    precondition(feedback == [.started, expected])
+}
 fixture.stop()
-print("PASS Shortcuts process cancellation, catalog release, disabled startup and restart")
+print("PASS Shortcuts UUID across rename, duplicate names, add/remove, busy, completion, failure and lifecycle")
 print("PASS system Dictionary lookup and empty result, and contact field projection fixture")

@@ -31,6 +31,33 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(try reopened.records(kind: "link").isEmpty)
     }
 
+    func testBatchSaveKeepsExactlyOneSearchRowForRepeatedIDs() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("batch.sqlite")
+        let store = try Store(url: url)
+        let original = Record(id: "existing", kind: "snippet", title: "previous", body: "old")
+        let updated = Record(id: "existing", kind: "snippet", title: "current", body: "new")
+        let inserted = Record(id: "new", kind: "snippet", title: "initial", body: "new")
+        let replaced = Record(id: "new", kind: "snippet", title: "final", body: "new")
+        try store.save(original)
+        try store.save([inserted, updated, replaced])
+        XCTAssertEqual(Set(try store.records(kind: "snippet").map(\.title)), ["current", "final"])
+
+        var connection: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(url.path, &connection, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        defer { sqlite3_close(connection) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(connection, "SELECT id, title FROM records_fts ORDER BY id", -1, &statement, nil), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        for expected in [updated, replaced] {
+            guard sqlite3_step(statement) == SQLITE_ROW else { return XCTFail("Missing FTS row") }
+            XCTAssertEqual(String(cString: sqlite3_column_text(statement, 0)), expected.id)
+            XCTAssertEqual(String(cString: sqlite3_column_text(statement, 1)), expected.title)
+        }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+    }
+
     func testRemovingLegacyNotesPreservesOtherRecords() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

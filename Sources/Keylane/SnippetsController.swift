@@ -11,7 +11,12 @@ final class SnippetsController: ObservableObject {
         let trigger: SnippetExpansion.Trigger?
     }
 
-    @Published private(set) var entries: [Snippet] = []
+    @Published private(set) var entries: [Snippet] = [] {
+        didSet {
+            searchCatalog = nil
+            searchResults = nil
+        }
+    }
     @Published var query = "" { didSet { selectedID = visible.first?.id } }
     @Published var tag = "" { didSet { selectedID = visible.first?.id } }
     @Published var selectedID: String?
@@ -29,6 +34,14 @@ final class SnippetsController: ObservableObject {
     @Published var values: [String: String] = [:]
     @Published private(set) var inputError: String?
 
+    private struct SearchCatalog {
+        let ordered: [Snippet]
+        let searchable: [String]
+        let tags: [String]
+    }
+
+    private var searchCatalog: SearchCatalog?
+    private var searchResults: (query: String, tag: String, rows: [Snippet])?
     private let storageURL: URL
     private var store: Store?
     private let preferences: UserDefaults
@@ -50,16 +63,39 @@ final class SnippetsController: ObservableObject {
         expansion.failure = { [weak self] message in self?.feedback(message, style: .failure) }
     }
 
-    var tags: [String] { Snippet.normalizedTags(entries.flatMap(\.tags)).sorted { $0.localizedStandardCompare($1) == .orderedAscending } }
+    private func catalog() -> SearchCatalog {
+        if let searchCatalog { return searchCatalog }
+        let ordered = entries.filter(\.pinned) + entries.filter { !$0.pinned }
+        let catalog = SearchCatalog(
+            ordered: ordered,
+            searchable: ordered.map { ([$0.title, $0.keyword, $0.text] + $0.tags).joined(separator: "\n") },
+            tags: Snippet.normalizedTags(entries.flatMap(\.tags)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        )
+        searchCatalog = catalog
+        return catalog
+    }
+
+    var tags: [String] { entries.isEmpty ? [] : catalog().tags }
 
     var visible: [Snippet] {
-        let terms = query.split(whereSeparator: \.isWhitespace)
-        let matching = entries.filter { snippet in
-            guard tag.isEmpty || snippet.tags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }) else { return false }
-            let haystack = ([snippet.title, snippet.keyword, snippet.text] + snippet.tags).joined(separator: "\n")
-            return terms.allSatisfy { haystack.localizedStandardContains(String($0)) }
+        guard !entries.isEmpty else { return [] }
+        if let searchResults, searchResults.query == query, searchResults.tag == tag {
+            return searchResults.rows
         }
-        return matching.filter(\.pinned) + matching.filter { !$0.pinned }
+        let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
+        let catalog = catalog()
+        let rows: [Snippet]
+        if terms.isEmpty && tag.isEmpty {
+            rows = catalog.ordered
+        } else {
+            rows = zip(catalog.ordered, catalog.searchable).compactMap { snippet, text in
+                guard tag.isEmpty || snippet.tags.contains(where: { $0.caseInsensitiveCompare(tag) == .orderedSame }),
+                      terms.allSatisfy({ text.localizedStandardContains($0) }) else { return nil }
+                return snippet
+            }
+        }
+        searchResults = (query, tag, rows)
+        return rows
     }
 
     var selected: Snippet? {
@@ -110,7 +146,7 @@ final class SnippetsController: ObservableObject {
 
     func move(_ delta: Int) {
         let rows = visible
-        let index = rows.firstIndex { $0.id == selected?.id } ?? 0
+        let index = rows.firstIndex { $0.id == selectedID } ?? 0
         selectedID = rows.isEmpty ? nil : rows[NavigationBounds.move(index, by: delta, count: rows.count)].id
     }
 

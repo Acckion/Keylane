@@ -145,6 +145,23 @@ public struct FileSearchLocation {
         guard folder.isDirectory else { throw CocoaError(.fileReadUnknown) }
         let entries = try FileManager.default.contentsOfDirectory(at: folder.url, includingPropertiesForKeys: nil,
                                                                    options: options.includeHidden ? [] : [.skipsHiddenFiles])
+        let limit = 200
+        if isCancelled() { return [] }
+        if sort == .name, roots.allSatisfy({ $0.configured == $0.resolved }) {
+            // Canonical roots preserve the listed names and paths. Resolve and
+            // validate entries in display order until there are enough rows.
+            let ordered = entries.map { (url: $0, name: $0.lastPathComponent) }.sorted {
+                let order = $0.name.localizedStandardCompare($1.name)
+                return order == .orderedSame ? $0.url.path < $1.url.path : order == .orderedAscending
+            }
+            var results: [SpotlightFile] = []
+            for entry in ordered {
+                if isCancelled() { return [] }
+                if let file = try? item(at: entry.url) { results.append(file) }
+                if results.count == limit { break }
+            }
+            return results
+        }
         var items: [(file: SpotlightFile, created: Date)] = []
         for entry in entries {
             if isCancelled() { return [] }
@@ -156,6 +173,6 @@ public struct FileSearchLocation {
             let order = lhs.file.name.localizedStandardCompare(rhs.file.name)
             return order == .orderedSame ? lhs.file.id < rhs.file.id : order == .orderedAscending
         }
-        return items.prefix(200).map(\.file)
+        return items.prefix(limit).map(\.file)
     }
 }
