@@ -148,3 +148,32 @@ test("an effect that continuously changes its dependencies stops at the pass lim
   await assert.rejects(render(command, {}), /View effects did not settle/);
   assert.equal(calls, 8);
 });
+
+test("List and Grid resolve selection-driven promises within the replay grant", async () => {
+  const { Grid, LocalStorage, useState } = api;
+  for (const View of [List, Grid]) {
+    const calls = [];
+    const command = () => {
+      const [selected, select] = useState();
+      const { data, isLoading } = usePromise(async (item) => {
+        calls.push(item);
+        await assert.rejects(LocalStorage.setItem("denied", item), /LocalStorage writes are unavailable/);
+        return `Details for ${item}`;
+      }, [selected], { execute: selected !== undefined });
+      return View({ isShowingDetail: true, onSelectionChange: select, isLoading,
+        children: ["a", "b"].map((id) => View.Item({
+          id, title: data ?? id, content: "📄", detail: List.Item.Detail({ markdown: data }),
+        })),
+      });
+    };
+    const result = await render(command, { selectedItemId: "b", selectionEvent: true, storage: {} });
+    assert.deepEqual(calls, ["b"]);
+    if (View === List) {
+      assert.equal(result.rows[1].markdown, "Details for b");
+      assert.equal(result.isLoading, false);
+    } else {
+      assert.equal(result.grid.sections[0].items[1].title, "Details for b");
+      assert.equal(result.grid.isLoading, false);
+    }
+  }
+});

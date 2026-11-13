@@ -544,8 +544,10 @@ async function renderView(renderPage, input, scope) {
           if (typeof selected === "string") await handler(selected);
           else if (!visible.length) await handler(null);
           await new Promise(setImmediate);
+          effects = [];
+          root = renderRoot();
+          await settleEffects();
         }));
-        root = renderRoot();
         if (root?.type === "list" || root?.type === "grid") {
           visible = items();
           selectedRow = pick(visible, selected);
