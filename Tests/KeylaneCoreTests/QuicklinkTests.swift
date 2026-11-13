@@ -70,6 +70,73 @@ final class QuicklinkTests: XCTestCase {
         }
     }
 
+    func testLibrarySearchAndOrganizationPreserveExistingLinks() throws {
+        let existing = try JSONDecoder().decode(Quicklink.self, from: Data(
+            #"{"id":"quicklink:old","title":"文档","template":"https://example.com/docs"}"#.utf8
+        ))
+        XCTAssertEqual(existing.tags, [])
+        XCTAssertFalse(existing.pinned)
+        XCTAssertFalse(existing.hiddenFromRoot)
+
+        var pinned = Quicklink(id: "quicklink:pin", title: "项目文档", template: "https://example.com/projects")
+        pinned.tags = [" 工作 ", "Work", "ｗｏｒｋ", "", "工作"]
+        pinned.pinned = true
+        pinned.hiddenFromRoot = true
+        let library = QuicklinkLibrary(links: [existing, pinned])
+        XCTAssertEqual(pinned.tags, ["工作", "Work"])
+        XCTAssertEqual(Set(library.tags), ["工作", "Work"])
+        XCTAssertEqual(library.search("文档").map(\.id), [pinned.id, existing.id])
+        XCTAssertEqual(library.search("xiangmu", tag: Quicklink.tagKey("WORK")).map(\.id), [pinned.id])
+        XCTAssertEqual(library.search("manual", aliases: [existing.id: "manual"]).map(\.id), [existing.id])
+        XCTAssertTrue(library.search("", tag: "missing").isEmpty)
+
+        let copy = pinned.duplicate()
+        XCTAssertNotEqual(copy.id, pinned.id)
+        XCTAssertEqual(copy.tags, pinned.tags)
+        XCTAssertFalse(copy.pinned)
+        XCTAssertFalse(copy.hiddenFromRoot)
+    }
+
+    func testImportSkipsDuplicatesAcrossAndWithinBatches() throws {
+        let library = QuicklinkLibrary(links: [])
+        let data = Data("""
+        [
+          {"name":"文档","link":"https://example.com/docs","iconName":"book","openWith":"Safari"},
+          {"name":" 文档 ","link":"https://example.com/docs","tags":["后来的标签"]},
+          {"name":"文档","link":"https://example.com/other","tags":["工作"]}
+        ]
+        """.utf8)
+        let first = try library.importJSON(data)
+        XCTAssertEqual(first.duplicates, 1)
+        XCTAssertEqual(first.links.map(\.tags), [[], ["工作"]])
+        let saved = QuicklinkLibrary(links: first.links)
+        let repeatImport = try saved.importJSON(data)
+        XCTAssertTrue(repeatImport.links.isEmpty)
+        XCTAssertEqual(repeatImport.duplicates, 3)
+        XCTAssertThrowsError(try saved.importJSON(Data("""
+        [{"name":"安全","link":"https://example.com/"},{"name":"无效","link":"file:///tmp"}]
+        """.utf8)))
+        XCTAssertEqual(saved.links, first.links)
+    }
+
+    func testExchangePreservesLegacyParametersAndOrganization() throws {
+        var legacy = try JSONDecoder().decode(Quicklink.self, from: Data(
+            #"{"id":"quicklink:legacy","title":"旧链接","template":"https://example.com/{a}/{b}/{c}/{d}"}"#.utf8
+        ))
+        legacy.tags = ["公司, 文档"]
+        legacy.pinned = true
+        legacy.hiddenFromRoot = true
+        let json = try QuicklinkLibrary(links: [legacy]).exportJSON()
+        let restored = try XCTUnwrap(QuicklinkLibrary(links: []).importJSON(json).links.first)
+        XCTAssertNotEqual(restored.id, legacy.id)
+        XCTAssertEqual(restored.title, legacy.title)
+        XCTAssertEqual(restored.template, legacy.template)
+        XCTAssertEqual(restored.tags, legacy.tags)
+        XCTAssertTrue(restored.pinned)
+        XCTAssertTrue(restored.hiddenFromRoot)
+        XCTAssertEqual(try restored.duplicate().parsedTemplate().parameters.map(\.id), ["a", "b", "c", "d"])
+    }
+
     func testMigrationPreservesOriginalAndDoesNotRecreateDeletedLink() throws {
         let suite = "Keylane.QuicklinksTests." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
