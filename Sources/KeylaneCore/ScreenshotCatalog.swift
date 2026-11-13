@@ -107,6 +107,8 @@ public struct ScreenshotQuery: Sendable {
     private let calendar: Calendar
     private let dateRange: DateInterval?
     private let nameDateRange: DateInterval?
+    private let dateComponents: [Int]
+    private let nameDateComponents: [Int]
 
     public init(_ query: String, calendar: Calendar = .current, now: Date = Date()) {
         self.calendar = calendar
@@ -133,13 +135,14 @@ public struct ScreenshotQuery: Sendable {
         self.date = date.lowercased()
         dateRange = Self.relativeRange(self.date, calendar: calendar, now: now)
         nameDateRange = Self.relativeRange(self.name.lowercased(), calendar: calendar, now: now)
+        dateComponents = Self.parseAbsoluteDate(self.date)
+        nameDateComponents = Self.parseAbsoluteDate(self.name)
     }
 
     public func matchesMetadata(_ item: ScreenshotMedia) -> Bool {
-        let dateMatch = date.isEmpty || matches(date, range: dateRange, captureDate: item.date)
-        let nameMatch = name.isEmpty || item.name.localizedStandardContains(name)
-            || matches(name.lowercased(), range: nameDateRange, captureDate: item.date)
-        return dateMatch && nameMatch
+        guard date.isEmpty || matches(dateComponents, range: dateRange, captureDate: item.date) else { return false }
+        return name.isEmpty || item.name.localizedStandardContains(name)
+            || matches(nameDateComponents, range: nameDateRange, captureDate: item.date)
     }
 
     private static func relativeRange(_ input: String, calendar: Calendar, now: Date) -> DateInterval? {
@@ -160,13 +163,19 @@ public struct ScreenshotQuery: Sendable {
         return calendar.dateInterval(of: component, for: date)
     }
 
-    private func matches(_ input: String, range: DateInterval?, captureDate: Date) -> Bool {
-        if let range { return captureDate >= range.start && captureDate < range.end }
+    private static func parseAbsoluteDate(_ input: String) -> [Int] {
         let pieces = input.replacingOccurrences(of: "/", with: "-").split(separator: "-", omittingEmptySubsequences: false)
-        guard (1...3).contains(pieces.count), pieces.first?.count == 4 else { return false }
+        guard (1...3).contains(pieces.count), pieces.first?.count == 4 else { return [] }
         let numbers = pieces.compactMap { Int($0) }
-        guard numbers.count == pieces.count else { return false }
+        return numbers.count == pieces.count ? numbers : []
+    }
+
+    private func matches(_ numbers: [Int], range: DateInterval?, captureDate: Date) -> Bool {
+        if let range { return captureDate >= range.start && captureDate < range.end }
+        guard !numbers.isEmpty else { return false }
         let components = calendar.dateComponents([.year, .month, .day], from: captureDate)
-        return zip(numbers, [components.year, components.month, components.day]).allSatisfy { $0 == $1 }
+        return components.year == numbers[0]
+            && (numbers.count < 2 || components.month == numbers[1])
+            && (numbers.count < 3 || components.day == numbers[2])
     }
 }
