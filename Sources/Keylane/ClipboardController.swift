@@ -635,7 +635,7 @@ final class ClipboardController: ObservableObject {
         pendingClipboardRead = nil
     }
 
-    private func mutate(_ action: @escaping (ClipboardStore) throws -> Void) {
+    private func mutate(refreshOnFailure: Bool = false, _ action: @escaping (ClipboardStore) throws -> Void) {
         guard let runtime else { return }
         worker.async { [weak self] in
             guard let self, !runtime.cancelled, let store = self.store else { return }
@@ -643,14 +643,24 @@ final class ClipboardController: ObservableObject {
                 try action(store)
                 DispatchQueue.main.async { if !runtime.cancelled { self.reload() } }
             } catch {
-                DispatchQueue.main.async { if !runtime.cancelled { self.status = error.localizedDescription } }
+                DispatchQueue.main.async {
+                    guard !runtime.cancelled else { return }
+                    self.status = error.localizedDescription
+                    if refreshOnFailure { self.reload() }
+                }
             }
         }
     }
     private func updateLimits() { let limits = ClipboardLimits(maxItems: maxItems, retentionDays: retentionDays); mutate { $0.limits = limits; try $0.prune() } }
     func pinSelected() { guard let item = items.first(where: { $0.id == selectedID }) else { return }; mutate { try $0.setPinned(id: item.id, pinned: !item.pinned) } }
     func removeSelected() { guard let id = selectedID else { return }; mutate { try $0.remove(id: id) } }
-    func clear(includePinned: Bool) { mutate { try $0.clear(includePinned: includePinned); if includePinned { try $0.removeMigrationBackups() } } }
+    func clear(includePinned: Bool) {
+        status = ""
+        mutate(refreshOnFailure: true) {
+            try $0.clear(includePinned: includePinned)
+            if includePinned { try $0.removeMigrationBackups() }
+        }
+    }
     var selectedDetail: ClipDetail? { detail.flatMap { $0.item.id == selectedID ? $0 : nil } }
 
     func files(for detail: ClipDetail) -> ClipboardFiles {
@@ -809,19 +819,44 @@ final class ClipboardController: ObservableObject {
         }
     }
 
-    func confirmHistoryRemoval(recent: Bool) {
+    func confirmHistoryRemoval(recent: Bool, in window: NSWindow? = NSApp.keyWindow,
+                               now: @escaping () -> Date = { .now }) {
+        guard let runtime, let window, window.attachedSheet == nil else { return }
         let alert = NSAlert()
-        alert.messageText = recent ? "删除过去一小时内未置顶的记录？" : "删除全部剪贴板记录？"
-        alert.addButton(withTitle: "取消")
-        alert.addButton(withTitle: "删除").hasDestructiveAction = true
-        guard let window = NSApp.keyWindow else { return }
+        alert.messageText = recent ? "删除最近的剪贴板记录？" : "删除全部剪贴板记录？"
+        alert.informativeText = recent
+            ? "仅删除所选时间范围内未置顶的记录。此操作无法撤销。"
+            : "将删除所有剪贴板历史，包括置顶记录和升级前备份。此操作无法撤销。"
+        alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
+        let delete = alert.addButton(withTitle: "删除")
+        delete.hasDestructiveAction = true
+        delete.keyEquivalent = ""
+
+        let ranges = [
+            (title: "过去 5 分钟", minutes: 5),
+            (title: "过去 15 分钟", minutes: 15),
+            (title: "过去 30 分钟", minutes: 30),
+            (title: "过去 1 小时", minutes: 60),
+            (title: "过去 24 小时", minutes: 1440)
+        ]
+        let rangePicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 220, height: 26), pullsDown: false)
+        if recent {
+            rangePicker.addItems(withTitles: ranges.map(\.title))
+            rangePicker.selectItem(at: ranges.firstIndex { $0.minutes == 60 } ?? 0)
+            rangePicker.setAccessibilityLabel("删除时间范围")
+            alert.accessoryView = rangePicker
+        }
         alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertSecondButtonReturn else { return }
+            guard response == .alertSecondButtonReturn, let self, self.runtime === runtime else { return }
             if recent {
-                let cutoff = Date().addingTimeInterval(-3600)
-                self?.mutate { try $0.removeRecent(since: cutoff) }
+                let index = rangePicker.indexOfSelectedItem
+                guard ranges.indices.contains(index) else { return }
+                let end = now()
+                let cutoff = end.addingTimeInterval(-Double(ranges[index].minutes) * 60)
+                self.status = ""
+                self.mutate { try $0.removeRecent(since: cutoff, through: end) }
             } else {
-                self?.clear(includePinned: true)
+                self.clear(includePinned: true)
             }
         }
     }
