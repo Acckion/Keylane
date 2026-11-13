@@ -1,103 +1,4 @@
 import SwiftUI
-import ApplicationServices
-import KeylaneCore
-
-final class NavigationController: ObservableObject {
-    @Published private(set) var results: [NavigationItem] = []
-    @Published private(set) var targetName: String?
-    @Published private(set) var status: Status = .loading
-    @Published private(set) var incomplete = false
-    @Published private(set) var performing = false
-    @Published var selection = 0
-    private var items: [NavigationItem] = []
-    private var scanRequest: NavigationScanRequest?
-    private var actionRequest: NavigationScanRequest?
-
-    enum Status { case loading, permission, noApplication, ready }
-
-    var query = "" { didSet { if oldValue != query { filter() } } }
-    var selected: NavigationItem? { results.indices.contains(selection) ? results[selection] : nil }
-
-    func load(_ mode: NavigationMode, target: NSRunningApplication?) {
-        scanRequest?.cancel()
-        scanRequest = nil
-        items = []
-        results = []
-        selection = 0
-        incomplete = false
-        targetName = mode == .menus ? target?.localizedName : nil
-        guard AXIsProcessTrusted() else { status = .permission; return }
-        if mode == .menus && (target == nil || target?.isTerminated == true) {
-            status = .noApplication
-            return
-        }
-        status = .loading
-        scanRequest = SystemNavigation.shared.scan(mode, target: target) { [weak self] scan in
-            guard let self else { return }
-            self.scanRequest = nil
-            self.items = scan.items
-            self.incomplete = scan.incomplete
-            self.filter()
-            self.status = .ready
-        }
-    }
-
-    func permissionRequired() {
-        stop()
-        status = .permission
-    }
-
-    func stop() {
-        scanRequest?.cancel()
-        scanRequest = nil
-        items = []
-        if !results.isEmpty { results = [] }
-    }
-
-    func stopModule() {
-        stop()
-        actionRequest?.cancel()
-        actionRequest = nil
-        performing = false
-        targetName = nil
-        query = ""
-    }
-
-    func move(_ delta: Int) {
-        let next = NavigationBounds.move(selection, by: delta, count: results.count)
-        if next != selection { selection = next }
-    }
-
-    func perform(_ item: NavigationItem, mode: NavigationMode, completion: @escaping (String?) -> Void) {
-        guard !performing else { return }
-        performing = true
-        let request = NavigationScanRequest()
-        actionRequest = request
-        SystemNavigation.shared.perform(item, mode: mode, request: request) { [weak self] message in
-            guard let self, self.actionRequest === request else { return }
-            self.actionRequest = nil
-            self.performing = false
-            completion(message)
-        }
-    }
-
-    private func filter() {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if needle.isEmpty {
-            results = items
-        } else {
-            results = items.compactMap { item -> (NavigationItem, Int)? in
-                let title = SearchRanker.score(item.title, query: needle)
-                let path = SearchRanker.score(item.detail, query: needle).map { $0 - 250 }
-                let combined = SearchRanker.score(item.detail + " " + item.title, query: needle).map { $0 - 300 }
-                let shortcut = item.keys.joined() == needle ? 1100 : nil
-                guard let score = [title, path, combined, shortcut].compactMap({ $0 }).max() else { return nil }
-                return (item, score)
-            }.sorted { $0.1 > $1.1 }.map(\.0)
-        }
-        selection = 0
-    }
-}
 
 struct NavigationPage: View {
     @ObservedObject var controller: NavigationController
@@ -122,8 +23,7 @@ struct NavigationPage: View {
                 }
                 ForEach(Array(controller.results.enumerated()), id: \.element.id) { index, item in
                     ResultListButton(id: item.id, disabled: controller.performing, action: {
-                        controller.selection = index
-                        activate(item)
+                        if controller.select(item) { activate(item) }
                     }) {
                         row(item, selected: controller.selection == index)
                     }

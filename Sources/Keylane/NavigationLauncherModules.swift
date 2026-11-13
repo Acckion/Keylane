@@ -71,9 +71,10 @@ enum NavigationLauncherModules {
             controller.query = model.query
             controller.load(mode, target: (NSApp.delegate as? Delegate)?.previousApplication)
         }
-        let activate: (NavigationItem) -> Void = { item in
+        let activate: (NavigationItem) -> Void = { [weak model] item in
             guard permission.available, let delegate = NSApp.delegate as? Delegate else { return }
-            controller.perform(item, mode: mode) { [weak delegate] message in
+            controller.perform(item, mode: mode) { [weak delegate, weak model] message in
+                guard model?.pageID == id else { return }
                 if let message { delegate?.toast.show(message) }
                 else if item.application.isActive { delegate?.hideLauncher() }
             }
