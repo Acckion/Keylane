@@ -459,8 +459,10 @@ let lifecycle = try LauncherModuleRegistry(modules: [
     ], registration: .init(isPresent: { lifecyclePresent }, updates: lifecycleEvents.eraseToAnyPublisher(),
                            isEnabled: { lifecycleReady }, generation: { lifecycleGeneration }))
 ], preferences: extensionPreferences)
-let revocation = lifecycle.activationRevocations.sink { id in
-    precondition(id == lifecycleModuleID && lifecycle.activation(forPage: lifecyclePageID) == nil)
+var revoked: [LauncherModuleRegistry.Activation] = []
+let revocation = lifecycle.activationRevocations.sink { event in
+    precondition(event.module == lifecycleModuleID && lifecycle.activation(forPage: lifecyclePageID) == nil)
+    revoked.append(event.activation)
     precondition(lifecycle.shortcutScope(for: lifecycleCommandID) == .unavailable)
     let departing = lifecycle.page(lifecyclePageID, includingInactive: true)
     departing?.leave()
@@ -488,6 +490,7 @@ lifecycleGeneration += 1
 lifecycleEvents.send()
 let replacement = lifecycle.activation(forPage: lifecyclePageID)!
 precondition(replacement.generation == 2 && replacement.id != firstActivation.id)
+precondition(revoked == [firstActivation])
 precondition(transitions == ["start", "leave", "release", "stop", "start"])
 staleInvocation()
 let beforeDisable = lifecycle.resolve(lifecycleCommandID, origin: .menu, navigate: { _ in
@@ -499,7 +502,7 @@ precondition(transitions.suffix(3) == ["leave", "release", "stop"])
 precondition(lifecycle.setModuleEnabled(lifecycleModuleID, true))
 let resumed = lifecycle.activation(forPage: lifecyclePageID)!
 precondition(resumed.generation == replacement.generation && resumed.id != replacement.id)
-precondition(transitions.last == "resume")
+precondition(transitions.last == "resume" && revoked == [firstActivation, replacement])
 beforeDisable()
 var reopened = false
 precondition(lifecycle.invoke(lifecycleCommandID, origin: .shortcut, navigate: { destination in
@@ -509,6 +512,7 @@ lifecyclePresent = false
 lifecycleReady = false
 lifecycleEvents.send()
 precondition(transitions.suffix(3) == ["leave", "release", "stop"])
+precondition(revoked == [firstActivation, replacement, resumed])
 let transitionCount = transitions.count
 lifecycle.stopServices()
 precondition(transitions.count == transitionCount)

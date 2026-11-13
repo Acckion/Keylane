@@ -279,8 +279,10 @@ final class LauncherModuleRegistry {
     private let registeredSettings: [Owned<LauncherSettingsPage>]
     private let settingsOrigins: [String: LauncherModuleOrigin]
     private let registrationChanges = PassthroughSubject<Void, Never>()
-    private let revokedActivations = PassthroughSubject<ModuleID, Never>()
-    var activationRevocations: AnyPublisher<ModuleID, Never> { revokedActivations.eraseToAnyPublisher() }
+    private let revokedActivations = PassthroughSubject<(module: ModuleID, activation: Activation), Never>()
+    var activationRevocations: AnyPublisher<(module: ModuleID, activation: Activation), Never> {
+        revokedActivations.eraseToAnyPublisher()
+    }
     var registrationUpdates: AnyPublisher<Void, Never> { registrationChanges.eraseToAnyPublisher() }
     private var registrationObservation: AnyCancellable?
     private var activations: [ModuleID: Activation] = [:]
@@ -407,8 +409,8 @@ final class LauncherModuleRegistry {
         guard reconcilingModules.insert(id).inserted else { return }
         while activations[id]?.generation != enabledGeneration(for: id) {
             // Revoke the old activation before any cancellation callbacks run.
-            if activations.removeValue(forKey: id) != nil {
-                revokedActivations.send(id)
+            if let activation = activations.removeValue(forKey: id) {
+                revokedActivations.send((module: id, activation: activation))
             }
             stop(module)
             if let generation = enabledGeneration(for: id) {

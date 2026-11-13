@@ -165,7 +165,6 @@ final class Model: ObservableObject {
             page.leave()
             page.releasePreview?()
             FilePreview.shared.dismiss(owner: owner)
-            FileActionsWindow.shared.dismiss(owner: owner)
         })
     }
 
@@ -320,12 +319,16 @@ final class Model: ObservableObject {
             if self.fileSearchStatus != status { self.fileSearchStatus = status }
         }
         refreshLogin()
-        moduleActivationRevocations = launcherModules?.activationRevocations.sink { [weak self] module in
+        moduleActivationRevocations = launcherModules?.activationRevocations.sink { [weak self] revocation in
             guard let self else { return }
-            if let cleanup = self.registeredPageCleanup, self.launcherModules?.module(forPage: cleanup.page) == module {
-                self.leaveRegisteredPage(cleanup.page, activation: cleanup.activation)
+            if let cleanup = self.registeredPageCleanup {
+                self.leaveRegisteredPage(cleanup.page, activation: revocation.activation)
             }
-            if self.launcherModules?.module(forPage: self.pageID) == module { self.pageID = .root }
+            // File actions can take focus after the launcher page has already left.
+            let owner = FilePresentationOwner.extensionActivation(revocation.activation.id)
+            FilePreview.shared.dismiss(owner: owner)
+            FileActionsWindow.shared.dismiss(owner: owner)
+            if self.launcherModules?.module(forPage: self.pageID) == revocation.module { self.pageID = .root }
         }
         moduleSearchChanges = launcherModules?.searchUpdates
             .receive(on: DispatchQueue.main)
