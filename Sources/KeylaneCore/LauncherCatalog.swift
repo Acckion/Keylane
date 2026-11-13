@@ -13,7 +13,7 @@ public enum ApplicationCatalog {
         var found: [String:CatalogApplication] = [:]
         for root in roots {
             guard !isCancelled() else { return [] }
-            let rootURL = URL(fileURLWithPath: root).standardizedFileURL
+            let rootURL = URL(fileURLWithPath: root).standardizedFileURL.resolvingSymlinksInPath()
             let depth = defaultRoots.contains(root) ? nil : customDepth
             guard let iterator = FileManager.default.enumerator(at: rootURL, includingPropertiesForKeys: [.isAliasFileKey], options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
             while let url = iterator.nextObject() as? URL {
