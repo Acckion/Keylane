@@ -72,6 +72,62 @@ final class AgendaTests: XCTestCase {
                                             timing: .fifteenMinutes, hideAfterMinutes: 5, meetingsOnly: true))
     }
 
+    func testBrowseGroupsFollowLocalWeekAndMonthBoundaries() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/New_York"))
+        calendar.firstWeekday = 2
+        let anchor = date("2026-10-25T12:00:00Z")
+        let interval = try XCTUnwrap(AgendaPolicy.browseInterval(from: anchor, calendar: calendar))
+        XCTAssertEqual(interval.start, date("2026-10-25T04:00:00Z"))
+        XCTAssertEqual(interval.end, date("2027-01-23T05:00:00Z"))
+        XCTAssertEqual(AgendaPolicy.section(for: date("2026-10-24T00:00:00Z"), from: interval.start, calendar: calendar), .day(interval.start))
+        XCTAssertEqual(AgendaPolicy.section(for: date("2026-10-26T04:00:00Z"), from: interval.start, calendar: calendar), .nextWeek)
+        XCTAssertEqual(AgendaPolicy.section(for: date("2026-11-02T05:00:00Z"), from: interval.start, calendar: calendar),
+                       .month(date("2026-11-01T04:00:00Z")))
+        let earlierAnchor = date("2026-10-05T04:00:00Z")
+        XCTAssertEqual(AgendaPolicy.section(for: date("2026-10-19T04:00:00Z"), from: earlierAnchor, calendar: calendar), .restOfMonth)
+    }
+
+    func testAutomaticJoinKeepsExistingStartWindowAndSkipsOverlaps() {
+        let start = date("2026-11-11T23:59:30Z")
+        let end = date("2026-11-12T01:00:00Z")
+        func meeting(_ id: String, attending: Bool = true, busy: Bool = true, allDay: Bool = false) -> AgendaEvent {
+            .init(id: id, calendarID: "fixture", calendarTitle: "日历", title: id,
+                  start: start, end: end, allDay: allDay, meetingURL: URL(string: "https://meet.google.com/fixture"),
+                  busy: busy, attending: attending)
+        }
+        let events = [meeting("b"), meeting("a"), meeting("pending", attending: false),
+                      meeting("free", busy: false), meeting("all-day", allDay: true)]
+        func candidate(_ now: Date, excluding: Set<String> = [], joinedMeetings: [DateInterval] = []) -> String? {
+            AgendaPolicy.automaticMeeting(events, now: now, excluded: excluding, joinedMeetings: joinedMeetings)?.id
+        }
+        XCTAssertNil(candidate(start.addingTimeInterval(-1)))
+        XCTAssertEqual(candidate(start), "a")
+        let midnight = date("2026-11-12T00:00:00Z")
+        XCTAssertEqual(candidate(midnight, excluding: ["a"]), "b")
+        XCTAssertNil(candidate(midnight, excluding: ["a", "b"]))
+        let tomorrow = DateInterval(start: date("2026-11-12T12:00:00Z"), end: date("2026-11-12T13:00:00Z"))
+        XCTAssertEqual(candidate(start, excluding: ["a"], joinedMeetings: [tomorrow]), "b")
+        let adjacent = DateInterval(start: end, duration: 1800)
+        XCTAssertEqual(candidate(midnight, excluding: ["a"], joinedMeetings: [adjacent]), "b")
+        let overlapping = DateInterval(start: midnight, end: end)
+        XCTAssertNil(candidate(midnight, excluding: ["a"], joinedMeetings: [tomorrow, overlapping]))
+        XCTAssertNil(candidate(start.addingTimeInterval(60)))
+        XCTAssertFalse(AgendaPolicy.canAutoJoin(meeting("ended"), now: end))
+    }
+
+    func testEventURLSupportsRemovalAndPreservesExistingLegacyValues() throws {
+        let legacy = try XCTUnwrap(URL(string: "custom:existing"))
+        XCTAssertEqual(try AgendaEventLink.parse(legacy.absoluteString, existing: legacy), legacy)
+        XCTAssertNil(try AgendaEventLink.parse("  ", existing: legacy))
+        for value in [" https://example.invalid/details ", "http://example.invalid/", "facetime:user@example.invalid"] {
+            XCTAssertNotNil(try AgendaEventLink.parse(value, existing: nil))
+        }
+        for value in ["example.invalid", "https:///path", "https://u:p@example.invalid", "file:///tmp/example", "https://example.invalid/a b"] {
+            XCTAssertThrowsError(try AgendaEventLink.parse(value, existing: nil), value)
+        }
+    }
+
     func testMeetingLinksSupportNativeAndRegionalProviders() throws {
         for link in [
             "https://us02web.zoom.us/j/12345",

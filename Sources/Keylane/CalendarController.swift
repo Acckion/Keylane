@@ -59,7 +59,12 @@ final class CalendarController: ObservableObject {
     @Published var menuMeetingsOnly: Bool { didSet { preferences.set(menuMeetingsOnly, forKey: "calendar.menuMeetingsOnly"); updateMenuBar() } }
     @Published var calendarApplication: String { didSet { preferences.set(calendarApplication, forKey: "calendar.application") } }
     @Published var googleBrowser: String { didSet { preferences.set(googleBrowser, forKey: "calendar.googleBrowser") } }
-    @Published var autoJoin: Bool { didSet { preferences.set(autoJoin, forKey: "calendar.autoJoin") } }
+    @Published var autoJoin: Bool {
+        didSet {
+            preferences.set(autoJoin, forKey: "calendar.autoJoin")
+            if oldValue != autoJoin { autoJoinGeneration += 1 }
+        }
+    }
     @Published var confirmJoin: Bool { didSet { preferences.set(confirmJoin, forKey: "calendar.confirmJoin") } }
     @Published var previewBeforeJoining: Bool { didSet { preferences.set(previewBeforeJoining, forKey: "calendar.previewBeforeJoining") } }
     @Published var draft = CalendarEventDraft()
@@ -86,6 +91,7 @@ final class CalendarController: ObservableObject {
     var reportFailure: ((String) -> Void)?
     private let registry: MenuBarRegistry
     private let preferences: UserDefaults
+    private let readAccess: () -> CalendarAccess
     private let automationWorker = DispatchQueue(label: "org.keylane.calendar.automation", qos: .userInitiated)
     private let worker = DispatchQueue(label: "org.keylane.calendar", qos: .userInitiated)
     private var eventStore: EKEventStore?
@@ -101,9 +107,15 @@ final class CalendarController: ObservableObject {
     private var recentAndUpcoming: [AgendaEvent] = []
     private var handledMeetings: [String: Date] = [:]
     private var joinPromptVisible = false
+    private var joinedMeetings: [String: DateInterval] = [:]
+    private var awaitingFreshEvents = true
+    private var sleeping = false
+    private var autoJoinGeneration = 0
     init(registry: MenuBarRegistry, preferences: UserDefaults = .standard,
-         authorization: PermissionFeature.Authorization = .calendar) {
+         authorization: PermissionFeature.Authorization = .calendar,
+         readAccess: @escaping () -> CalendarAccess = { .current }) {
         self.registry = registry; self.preferences = preferences
+        self.readAccess = readAccess
         permission = PermissionFeature("calendar.enabled", authorization: authorization, defaults: preferences, observeImmediately: false)
         selectedCalendarIDs = preferences.stringArray(forKey: "calendar.selectedIDs").map(Set.init)
         searchWindowMinutes = preferences.object(forKey: "calendar.searchWindow") as? Int ?? 10
@@ -138,9 +150,16 @@ final class CalendarController: ObservableObject {
         for name in [Notification.Name.EKEventStoreChanged, .NSCalendarDayChanged, NSNotification.Name.NSSystemTimeZoneDidChange] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refresh() })
         }
-        for name in [NSWorkspace.didWakeNotification, NSWorkspace.sessionDidBecomeActiveNotification] {
-            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refresh() })
-        }
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.sleeping = true
+            self?.autoJoinGeneration += 1
+        })
+        workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.sleeping = false
+            self?.refresh()
+        })
+        workspaceObservers.append(workspace.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.refresh() })
         observers.append(center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.refresh() })
     }
     func stop() {
@@ -148,6 +167,8 @@ final class CalendarController: ObservableObject {
         permission.stopObserving()
         runtime?.cancel(); runtime = nil
         generation += 1; started = false; pending?.cancel(); pending = nil
+        autoJoinGeneration += 1
+        sleeping = false
         timer?.invalidate(); timer = nil
         loading = false; requesting = false; saving = false
         endPresentation()
@@ -173,6 +194,8 @@ final class CalendarController: ObservableObject {
             }
             self.timer = timer; RunLoop.main.add(timer, forMode: .common)
         } else {
+            autoJoinGeneration += 1
+            sleeping = false
             stopObserving()
             registry.unregister(owner: "calendar")
         }
@@ -219,7 +242,8 @@ final class CalendarController: ObservableObject {
         precondition(Thread.isMainThread)
         guard let runtime else { return }
         generation += 1; let ticket = generation; pending?.cancel()
-        access = .current
+        awaitingFreshEvents = true
+        access = readAccess()
         permission.recheck()
         guard enabled, access == .allowed else {
             events = []; upcoming = []; recentAndUpcoming = []; searchEvents = []; calendars = []; selectedID = nil; loading = false; lastUpdated = nil; updateMenuBar(); writeAcceptanceReport(); return
@@ -243,9 +267,8 @@ final class CalendarController: ObservableObject {
                                       writable: calendar.allowsContentModifications, color: Self.calendarColor(calendar))
             }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
             let targets = selected.map { ids in all.filter { ids.contains($0.calendarIdentifier) } } ?? all
-            let dayStart = calendar.startOfDay(for: date)
             let today = calendar.startOfDay(for: now)
-            guard let dayEnd = calendar.date(byAdding: .day, value: 14, to: dayStart),
+            guard let range = AgendaPolicy.browseInterval(from: date, calendar: calendar),
                   let weekEnd = calendar.date(byAdding: .day, value: 7, to: today) else {
                 DispatchQueue.main.async {
                     guard ticket == self.generation else { return }
@@ -261,7 +284,8 @@ final class CalendarController: ObservableObject {
                     Self.summary(event)
                 }
             }
-            let daily = includesDay ? fetch(dayStart, dayEnd).sorted {
+            let dayStart = range.start
+            let daily = includesDay ? fetch(dayStart, range.end).filter { $0.start < range.end }.sorted {
                 let lhs = calendar.startOfDay(for: max(dayStart, $0.start))
                 let rhs = calendar.startOfDay(for: max(dayStart, $1.start))
                 if lhs != rhs { return lhs < rhs }
@@ -273,11 +297,12 @@ final class CalendarController: ObservableObject {
             let future = AgendaPolicy.upcoming(summary, now: now)
             DispatchQueue.main.async {
                 guard ticket == self.generation, self.enabled else { return }
-                guard CalendarAccess.current == .allowed else { self.refresh(); return }
+                guard self.readAccess() == .allowed else { self.refresh(); return }
                 if self.calendars != choices { self.calendars = choices }
                 if self.events != daily { self.events = daily }
                 if self.upcoming != future { self.upcoming = future }
                 self.recentAndUpcoming = summary
+                self.awaitingFreshEvents = false
                 self.updateSearchEvents()
                 self.loading = false
                 self.lastUpdated = Date()
@@ -466,6 +491,7 @@ struct CalendarEventDraft {
     var blocking = false
     var location = ""
     var notes = ""
+    var urlText = ""
     var invitees = ""
     var reminderMinutes: Set<Int> = []
 
@@ -532,13 +558,19 @@ extension CalendarController {
             canInvite: calendar.allowsContentModifications && (organizer?.isCurrentUser ?? true),
             hasInvitation: currentUser != nil && organizer?.isCurrentUser == false,
             reminderMinutes: Set(alarms.compactMap(reminderMinutes)),
-            hasOtherReminders: alarms.contains { reminderMinutes($0) == nil }
+            hasOtherReminders: alarms.contains { reminderMinutes($0) == nil },
+            eventURL: event.url,
+            attending: event.status != .tentative && (organizer?.isCurrentUser == true
+                || currentUser?.participantStatus == .accepted || (organizer == nil && participants.isEmpty))
         )
     }
 
     func joinMeeting(_ event: AgendaEvent) {
         guard enabled, let url = event.meetingURL else { return }
         handledMeetings[event.id] = event.end
+        if event.end > event.start {
+            joinedMeetings[event.id] = DateInterval(start: event.start, end: event.end)
+        }
         error = ""
         if previewBeforeJoining { previewCamera?() }
         if url.host?.lowercased() == "meet.google.com",
@@ -552,19 +584,20 @@ extension CalendarController {
     }
 
     private func checkAutoJoin() {
-        guard enabled, autoJoin, !joinPromptVisible else { return }
+        guard enabled, autoJoin, !joinPromptVisible, !sleeping, !awaitingFreshEvents else { return }
         let now = Date()
         handledMeetings = handledMeetings.filter { $0.value > now }
-        guard let event = upcoming.first(where: {
-            !$0.allDay && $0.meetingURL != nil && $0.busy && $0.start <= now && $0.end > now
-                && now.timeIntervalSince($0.start) < 60 && handledMeetings[$0.id] == nil && dismissedUntil[$0.id] == nil
-        }) else { return }
+        joinedMeetings = joinedMeetings.filter { $0.value.end > now }
+        let excluded = Set(handledMeetings.keys).union(dismissedUntil.keys)
+        guard let event = AgendaPolicy.automaticMeeting(upcoming, now: now, excluded: excluded,
+                                                        joinedMeetings: Array(joinedMeetings.values)) else { return }
         handledMeetings[event.id] = event.end
         if !confirmJoin {
             joinMeeting(event)
             return
         }
         joinPromptVisible = true
+        let ticket = autoJoinGeneration
         let alert = NSAlert()
         alert.messageText = "加入「\(event.title)」？"
         alert.informativeText = "将在会议应用或浏览器中打开链接。"
@@ -573,7 +606,14 @@ extension CalendarController {
         let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self else { return }
             self.joinPromptVisible = false
-            if response == .alertFirstButtonReturn, self.autoJoin, event.end > Date() { self.joinMeeting(event) }
+            guard response == .alertFirstButtonReturn, self.enabled, self.autoJoin,
+                  ticket == self.autoJoinGeneration, !self.sleeping, !self.awaitingFreshEvents,
+                  self.dismissedUntil[event.id] == nil,
+                  let current = self.upcoming.first(where: { $0.id == event.id }),
+                  current.meetingURL == event.meetingURL,
+                  AgendaPolicy.canAutoJoin(current, now: Date()),
+                  !AgendaPolicy.overlapsJoinedMeeting(current, joinedMeetings: Array(self.joinedMeetings.values)) else { return }
+            self.joinMeeting(current)
         }
         if let window = NSApp.keyWindow, window.attachedSheet == nil {
             alert.beginSheetModal(for: window, completionHandler: finish)
@@ -594,7 +634,7 @@ extension CalendarController {
             draft = .init(title: event.title, calendarID: event.calendarID, start: event.start,
                           end: event.allDay ? max(event.start, event.end.addingTimeInterval(-1)) : event.end,
                           allDay: event.allDay, location: event.location, notes: event.notes,
-                          reminderMinutes: event.reminderMinutes)
+                          urlText: event.eventURL?.absoluteString ?? "", reminderMinutes: event.reminderMinutes)
         } else {
             let selectedStart = calendar.isDate(selectedDate, inSameDayAs: now)
                 ? start : calendar.date(bySettingHour: 9, minute: 0, second: 0, of: selectedDate) ?? selectedDate
@@ -606,6 +646,9 @@ extension CalendarController {
         guard canSave else { return }
         let draft = draft
         let editing = editingEvent
+        let eventURL: URL?
+        do { eventURL = try AgendaEventLink.parse(draft.urlText, existing: editing?.eventURL) }
+        catch { formError = error.localizedDescription; return }
         let addresses = draft.invitees.split { $0.isWhitespace || ",;，；".contains($0) }.map(String.init)
         guard addresses.allSatisfy({
             $0.range(of: #"^[^@<>]+@[^@<>]+\.[^@<>.]+$"#, options: .regularExpression) != nil
@@ -638,6 +681,7 @@ extension CalendarController {
                 || editing?.title != draft.title || editing?.start != start || editing?.end != end
                 || editing?.allDay != draft.allDay || editing?.location != draft.location
                 || editing?.notes != draft.notes || editing?.reminderMinutes != draft.reminderMinutes
+                || editing?.eventURL != eventURL
             guard changed else { return Self.summary(event) }
             if event.calendar?.calendarIdentifier != target.calendarIdentifier { event.calendar = target }
             if editing?.title != draft.title { event.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -649,6 +693,7 @@ extension CalendarController {
             if draft.blocking && target.supportedEventAvailabilities.contains(.busy) { event.availability = .busy }
             if editing?.location != draft.location { event.location = draft.location.isEmpty ? nil : draft.location }
             if editing?.notes != draft.notes { event.notes = draft.notes.isEmpty ? nil : draft.notes }
+            if editing?.eventURL != eventURL { event.url = eventURL }
             if draft.reminderMinutes != (editing?.reminderMinutes ?? []) {
                 for alarm in event.alarms ?? [] {
                     if let minutes = Self.reminderMinutes(alarm), !draft.reminderMinutes.contains(minutes) {
