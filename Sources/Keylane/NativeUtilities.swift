@@ -339,12 +339,20 @@ struct ContactSummary: Identifiable, Equatable, Sendable {
         organization = contact.organizationName
         let formatted = CNContactFormatter.string(from: contact, style: .fullName) ?? ""
         name = formatted.isEmpty ? (organization.isEmpty ? "未命名联系人" : organization) : formatted
-        phones = contact.phoneNumbers.map { $0.value.stringValue }
-        emails = contact.emailAddresses.map { String($0.value) }
+        phones = contact.phoneNumbers.map { $0.value.stringValue }.filter(Self.hasContent)
+        emails = contact.emailAddresses.map { String($0.value) }.filter(Self.hasContent)
         searchable = ([name, contact.nickname, organization] + phones + emails + phones.map { $0.filter(\.isNumber) }).joined(separator: " ")
     }
 
     var firstValue: String? { phones.first ?? emails.first }
+
+    var listDetail: String {
+        ([organization == name ? "" : organization, firstValue ?? ""]).filter(Self.hasContent).joined(separator: " · ")
+    }
+
+    private static func hasContent(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 final class ContactsController: ObservableObject {
@@ -360,13 +368,24 @@ final class ContactsController: ObservableObject {
     private var observation: NSObjectProtocol?
     private var generation = 0
     private var active = false
+    private let authorizationStatus: () -> CNAuthorizationStatus
+    private let loadContacts: () throws -> [ContactSummary]
+    private let notifications: NotificationCenter
+
+    init(authorizationStatus: @escaping () -> CNAuthorizationStatus = { CNContactStore.authorizationStatus(for: .contacts) },
+         loadContacts: @escaping () throws -> [ContactSummary] = ContactsController.readContacts,
+         notifications: NotificationCenter = .default) {
+        self.authorizationStatus = authorizationStatus
+        self.loadContacts = loadContacts
+        self.notifications = notifications
+    }
 
     var canRead: Bool { access == .authorized }
     var selected: ContactSummary? { visible.first { $0.id == selectedID } }
     func start() {
         active = true
         if observation == nil {
-            observation = NotificationCenter.default.addObserver(forName: .CNContactStoreDidChange, object: nil, queue: .main) { [weak self] _ in self?.refresh() }
+            observation = notifications.addObserver(forName: .CNContactStoreDidChange, object: nil, queue: .main) { [weak self] _ in self?.refresh() }
         }
         refresh()
     }
@@ -376,8 +395,9 @@ final class ContactsController: ObservableObject {
         generation += 1
         fetch?.cancel()
         fetch = nil
-        if let observation { NotificationCenter.default.removeObserver(observation) }
+        if let observation { notifications.removeObserver(observation) }
         observation = nil
+        error = ""
         contacts = []
         visible = []
         selectedID = nil
@@ -399,38 +419,32 @@ final class ContactsController: ObservableObject {
 
     func refresh() {
         guard active else { return }
-        access = CNContactStore.authorizationStatus(for: .contacts)
+        access = authorizationStatus()
         generation += 1
         let ticket = generation
         fetch?.cancel()
         fetch = nil
+        error = ""
         guard canRead else {
             contacts = []; updateResults(); loading = false
             return
         }
         loading = true
-        error = ""
-        fetch = Task.detached(priority: .userInitiated) { [weak self] in
+        fetch = Task.detached(priority: .userInitiated) { [weak self, loadContacts] in
             guard !Task.isCancelled else { return }
-            let keys: [CNKeyDescriptor] = [CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
-                CNContactNicknameKey as NSString, CNContactOrganizationNameKey as NSString,
-                CNContactPhoneNumbersKey as NSString, CNContactEmailAddressesKey as NSString]
-            let request = CNContactFetchRequest(keysToFetch: keys)
-            let result = Result { () -> [ContactSummary] in
-                var rows: [ContactSummary] = []
-                try CNContactStore().enumerateContacts(with: request) { contact, stop in
-                    if Task.isCancelled {
-                        stop.pointee = true
-                    } else {
-                        rows.append(ContactSummary(contact: contact))
-                    }
+            let result = Result {
+                try loadContacts().sorted { lhs, rhs in
+                    let order = lhs.name.localizedStandardCompare(rhs.name)
+                    return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
                 }
-                guard !Task.isCancelled else { return [] }
-                return rows.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
             }
             guard !Task.isCancelled else { return }
             DispatchQueue.main.async {
                 guard let self, self.generation == ticket else { return }
+                guard self.authorizationStatus() == .authorized else {
+                    self.refresh()
+                    return
+                }
                 self.fetch = nil
                 self.loading = false
                 switch result {
@@ -447,6 +461,29 @@ final class ContactsController: ObservableObject {
         }
     }
 
+    static func readContacts() throws -> [ContactSummary] {
+        let keys: [CNKeyDescriptor] = [CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
+            CNContactNicknameKey as NSString, CNContactOrganizationNameKey as NSString,
+            CNContactPhoneNumbersKey as NSString, CNContactEmailAddressesKey as NSString]
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        var rows: [ContactSummary] = []
+        try CNContactStore().enumerateContacts(with: request) { contact, stop in
+            if Task.isCancelled { stop.pointee = true }
+            else { rows.append(ContactSummary(contact: contact)) }
+        }
+        return rows
+    }
+
+    @discardableResult
+    func copy(_ value: String, for contactID: String, to pasteboard: NSPasteboard = .general) -> Bool {
+        guard active else { return false }
+        guard authorizationStatus() == .authorized else { refresh(); return false }
+        guard let contact = selected, contact.id == contactID,
+              contact.phones.contains(value) || contact.emails.contains(value) else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(value, forType: .string)
+    }
+
     private func updateResults() {
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
         let matches = Array(contacts.lazy.filter { entry in terms.allSatisfy { entry.searchable.localizedCaseInsensitiveContains($0) } }.prefix(200))
@@ -454,7 +491,9 @@ final class ContactsController: ObservableObject {
         if !matches.contains(where: { $0.id == selectedID }), selectedID != matches.first?.id { selectedID = matches.first?.id }
     }
 
-    func select(_ id: String) { if selectedID != id { selectedID = id } }
+    func select(_ id: String) {
+        if selectedID != id, visible.contains(where: { $0.id == id }) { selectedID = id }
+    }
     func move(_ delta: Int) {
         let index = visible.firstIndex { $0.id == selectedID } ?? 0
         let next = NavigationBounds.move(index, by: delta, count: visible.count)

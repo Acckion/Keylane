@@ -26,7 +26,9 @@ enum UtilityLauncherModules {
                                 leave: controller.stop,
                                 move: controller.move,
                                 submit: {
-                                    if let value = controller.selected?.firstValue { UtilityActions.copy(value) }
+                                    if let contact = controller.selected, let value = contact.firstValue {
+                                        controller.copy(value, for: contact.id)
+                                    }
                                     else { UtilityActions.openApplication("com.apple.AddressBook") }
                                 },
                                 primaryTitle: { controller.selected?.firstValue == nil ? "打开联系人" : "复制" },
@@ -66,11 +68,11 @@ enum UtilityLauncherModules {
         if let contact = controller.selected {
             actions += contact.phones.enumerated().map { index, value in
                 LauncherAction(id: "phone-\(index)", title: "复制电话 " + value, icon: "phone",
-                               perform: { UtilityActions.copy(value) })
+                               perform: { controller.copy(value, for: contact.id) })
             }
             actions += contact.emails.enumerated().map { index, value in
                 LauncherAction(id: "email-\(index)", title: "复制邮箱 " + value, icon: "envelope",
-                               perform: { UtilityActions.copy(value) })
+                               perform: { controller.copy(value, for: contact.id) })
             }
         }
         return actions

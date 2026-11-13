@@ -68,8 +68,119 @@ record.familyName = "测试"
 record.organizationName = "Fixture"
 record.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMobile, value: CNPhoneNumber(stringValue: "+1 555 0100"))]
 record.emailAddresses = [CNLabeledValue(label: CNLabelHome, value: "fixture@example.invalid" as NSString)]
+record.emailAddresses.insert(CNLabeledValue(label: CNLabelHome, value: " " as NSString), at: 0)
 let summary = ContactSummary(contact: record)
 precondition(summary.searchable.contains("15550100") && summary.emails == ["fixture@example.invalid"])
+let namesake = CNMutableContact()
+namesake.givenName = record.givenName
+namesake.familyName = record.familyName
+namesake.organizationName = "Namesake"
+let duplicate = ContactSummary(contact: namesake)
+let empty = ContactSummary(contact: CNMutableContact())
+precondition(summary.name == duplicate.name && summary.id != duplicate.id && summary.listDetail != duplicate.listDetail)
+precondition(empty.firstValue == nil && empty.listDetail.isEmpty)
+let contactBoard = NSPasteboard.withUniqueName()
+defer { contactBoard.releaseGlobally() }
+
+final class ContactFixture {
+    private let lock = NSLock()
+    private var response: () throws -> [ContactSummary] = { [] }
+    func set(_ response: @escaping () throws -> [ContactSummary]) {
+        lock.lock()
+        self.response = response
+        lock.unlock()
+    }
+    func load() throws -> [ContactSummary] {
+        lock.lock()
+        let response = self.response
+        lock.unlock()
+        return try response()
+    }
+}
+
+let fixtureContacts = ContactFixture()
+var contactAccess: CNAuthorizationStatus = .denied
+let notifications = NotificationCenter()
+let contacts = ContactsController(authorizationStatus: { contactAccess },
+                                  loadContacts: fixtureContacts.load, notifications: notifications)
+fixtureContacts.set { preconditionFailure("A denied request must not read contacts") }
+contacts.start()
+precondition(contacts.access == .denied && contacts.visible.isEmpty && !contacts.loading)
+contactAccess = .authorized
+fixtureContacts.set { [summary, duplicate, empty] }
+notifications.post(name: .CNContactStoreDidChange, object: nil)
+wait("Contact notification refreshes fixtures") { !contacts.loading && contacts.visible.count == 3 }
+contacts.query = "测试 fixture 5550100"
+precondition(contacts.selected?.id == summary.id)
+contacts.query = "FIXTURE@EXAMPLE.INVALID"
+precondition(contacts.selected?.id == summary.id)
+let phone = summary.phones[0]
+let email = summary.emails[0]
+precondition(contacts.copy(phone, for: summary.id, to: contactBoard))
+precondition(contactBoard.string(forType: .string) == phone)
+precondition(contacts.copy(email, for: summary.id, to: contactBoard))
+precondition(contactBoard.string(forType: .string) == email)
+contacts.query = "测试"
+precondition(contacts.visible.count == 2)
+contacts.select(duplicate.id)
+precondition(contacts.selected?.id == duplicate.id)
+precondition(!contacts.copy(email, for: summary.id, to: contactBoard))
+contacts.query = "fixture"
+contacts.select(duplicate.id)
+precondition(contacts.selected?.id == summary.id)
+let loadStarted = DispatchSemaphore(value: 0)
+let unblock = DispatchSemaphore(value: 0)
+fixtureContacts.set {
+    loadStarted.signal()
+    precondition(unblock.wait(timeout: .now() + 5) == .success)
+    return [summary]
+}
+contacts.refresh()
+precondition(loadStarted.wait(timeout: .now() + 5) == .success)
+fixtureContacts.set { [duplicate] }
+contacts.query = "Namesake"
+notifications.post(name: .CNContactStoreDidChange, object: nil)
+wait("Latest contact refresh wins") { !contacts.loading && contacts.selected?.id == duplicate.id }
+unblock.signal()
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(contacts.selected?.id == duplicate.id)
+
+fixtureContacts.set { throw CocoaError(.fileReadUnknown) }
+contacts.refresh()
+wait("Read failure clears contacts") { !contacts.loading && !contacts.error.isEmpty }
+precondition(contacts.visible.isEmpty && contacts.selected == nil)
+contacts.stop()
+precondition(contacts.error.isEmpty)
+fixtureContacts.set { [summary] }
+contacts.query = "fixture"
+contacts.start()
+wait("Contacts reopen") { !contacts.loading && contacts.selected?.id == summary.id }
+contactAccess = .denied
+precondition(!contacts.copy(email, for: summary.id, to: contactBoard))
+precondition(contacts.visible.isEmpty && contacts.selected == nil && contacts.access == .denied)
+precondition(contactBoard.string(forType: .string) == email)
+
+contactAccess = .authorized
+fixtureContacts.set {
+    loadStarted.signal()
+    precondition(unblock.wait(timeout: .now() + 5) == .success)
+    return [summary]
+}
+contacts.refresh()
+precondition(loadStarted.wait(timeout: .now() + 5) == .success)
+contactAccess = .restricted
+unblock.signal()
+wait("Revocation during load discards pending data") { !contacts.loading && contacts.access == .restricted }
+precondition(contacts.visible.isEmpty && contacts.selected == nil)
+
+contactAccess = .authorized
+contacts.refresh()
+precondition(loadStarted.wait(timeout: .now() + 5) == .success)
+contacts.stop()
+unblock.signal()
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(contacts.visible.isEmpty && contacts.selected == nil && !contacts.loading)
+print("PASS Contacts: multi-field queries, namesakes, blank fields, exact copy, refresh, failures, cancellation, reopen and revoked access")
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneShortcutsLifecycle-" + UUID().uuidString)
 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: scratch) }
@@ -133,4 +244,4 @@ for (code, expected) in outcomes {
 }
 fixture.stop()
 print("PASS Shortcuts UUID across rename, duplicate names, add/remove, busy, completion, failure and lifecycle")
-print("PASS system Dictionary lookup and empty result, and contact field projection fixture")
+print("PASS system Dictionary lookup and empty result")
