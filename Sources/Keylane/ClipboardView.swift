@@ -129,7 +129,8 @@ private struct ClipboardHistoryList: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(controller.$items),
             ViewObservation.changes(controller.$selectedID),
-            ViewObservation.changes(controller.$indexingImageText)
+            ViewObservation.changes(controller.$indexingImageText),
+            ViewObservation.changes(controller.$showsLinkVisuals)
         ]))
     }
 
@@ -146,7 +147,7 @@ private struct ClipboardHistoryList: View {
                     ForEach(groups[period, default: []]) { item in
                         ResultListButton(id: item.id, action: { controller.select(item.id) }) {
                             ResultListRow(selected: item.id == controller.selectedID) {
-                                ClipboardListIcon(item: item, controller: controller)
+                                ClipboardListIcon(item: item, controller: controller, showsLinkVisuals: controller.showsLinkVisuals)
                             } content: {
                                 HighlightedResultText(text: item.preview.replacingOccurrences(of: "\n", with: " "), query: query)
                                     .font(VisualStyle.rowText).lineLimit(1).truncationMode(.middle)
@@ -174,12 +175,12 @@ private enum ClipboardHistoryPeriod: String, CaseIterable {
 
     init(item: ClipItem, now: Date, calendar: Calendar) {
         if item.pinned { self = .pinned }
-        else if calendar.isDate(item.copiedAt, inSameDayAs: now) { self = .today }
+        else if calendar.isDate(item.lastUsedAt, inSameDayAs: now) { self = .today }
         else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
-                calendar.isDate(item.copiedAt, inSameDayAs: yesterday) { self = .yesterday }
-        else if calendar.isDate(item.copiedAt, equalTo: now, toGranularity: .weekOfYear) { self = .week }
-        else if calendar.isDate(item.copiedAt, equalTo: now, toGranularity: .month) { self = .month }
-        else if calendar.isDate(item.copiedAt, equalTo: now, toGranularity: .year) { self = .year }
+                calendar.isDate(item.lastUsedAt, inSameDayAs: yesterday) { self = .yesterday }
+        else if calendar.isDate(item.lastUsedAt, equalTo: now, toGranularity: .weekOfYear) { self = .week }
+        else if calendar.isDate(item.lastUsedAt, equalTo: now, toGranularity: .month) { self = .month }
+        else if calendar.isDate(item.lastUsedAt, equalTo: now, toGranularity: .year) { self = .year }
         else { self = .earlier }
     }
 }
@@ -193,13 +194,15 @@ private struct ClipboardHistoryDetail: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             controller.$detail.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             ViewObservation.changes(controller.$thumbnail),
-            ViewObservation.changes(controller.$loadingDetail)
+            ViewObservation.changes(controller.$loadingDetail),
+            ViewObservation.changes(controller.$showsLinkVisuals)
         ]))
     }
 
     var body: some View {
         if let detail = controller.detail {
-            ClipboardDetail(detail: detail, thumbnail: controller.thumbnail)
+            ClipboardDetail(detail: detail, thumbnail: controller.thumbnail,
+                            showsLinkVisuals: controller.showsLinkVisuals)
                 .id(detail.item.id)
         } else if controller.loadingDetail {
             Text("正在加载预览…").font(VisualStyle.rowText).foregroundStyle(.secondary)
@@ -223,6 +226,10 @@ struct ClipboardPreferences: View {
             ViewObservation.changes(controller.$accurateOCR),
             ViewObservation.changes(controller.$historyCommandEnabled),
             ViewObservation.changes(controller.$showsHistorySettings),
+            ViewObservation.changes(controller.$primaryAction),
+            ViewObservation.changes(controller.$prefersPlainText),
+            ViewObservation.changes(controller.$updatesHistoryAfterReplay),
+            ViewObservation.changes(controller.$showsLinkVisuals),
             ViewObservation.changes(controller.$retentionDays),
             ViewObservation.changes(controller.$excludedApps),
             ViewObservation.changes(model.$aliases.map { $0["clipboard"] }),
@@ -282,7 +289,7 @@ struct ClipboardPreferences: View {
                     }
                 }
             }
-            SettingsSectionTitle(title: "命令")
+            SettingsSectionTitle(title: "命令").settingsAnchor(.clipboardReplay)
             CommandSettingsList(items: ["clipboard", "paste-sequentially", "reset-paste-sequence"], id: \.self) { id in
                 switch id {
                 case "clipboard":
@@ -307,6 +314,24 @@ struct ClipboardPreferences: View {
         VStack(alignment: .leading, spacing: 16) {
             SettingsTitle("剪贴板历史")
             CommandSettingsList(items: ["clipboard"], id: \.self) { _ in historyCommandEntry() }
+            SettingsGroup {
+                SettingsPicker("回车动作", selection: binding(\.primaryAction)) {
+                    Text("粘贴到当前应用").tag(ClipboardPrimaryAction.paste)
+                    Text("复制到剪贴板").tag(ClipboardPrimaryAction.copy)
+                }
+                Divider()
+                Toggle(isOn: binding(\.prefersPlainText)) {
+                    SettingsRowLabel(title: "优先粘贴纯文本", detail: "默认粘贴时去除文字格式。图片、文件及多项目仍使用原始格式。")
+                }
+                Divider()
+                Toggle(isOn: binding(\.showsLinkVisuals)) {
+                    SettingsRowLabel(title: "显示链接预览和网站图标", detail: "开启后会向对应网站请求预览信息。")
+                }
+                Divider()
+                Toggle(isOn: binding(\.updatesHistoryAfterReplay)) {
+                    SettingsRowLabel(title: "复制或粘贴后移到顶部", detail: "更新列表顺序，保留原复制时间和置顶顺序。")
+                }
+            }
             ClipboardHistoryStatistics(controller: controller)
             Button("完成") { controller.showsHistorySettings = false }
                 .keyboardShortcut(.defaultAction)

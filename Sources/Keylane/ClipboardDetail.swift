@@ -7,9 +7,11 @@ import KeylaneCore
 struct ClipboardDetail: View {
     let detail: ClipDetail
     let thumbnail: NSImage?
+    let showsLinkVisuals: Bool
     @State private var fileAccess: ClipboardFiles?
     @State private var metrics: ClipboardDetailMetrics?
-    @State private var linkMetadata: ClipboardLinkMetadata?
+    @State private var fetchedLinkMetadata: ClipboardLinkMetadata?
+    private var linkMetadata: ClipboardLinkMetadata? { showsLinkVisuals ? fetchedLinkMetadata : nil }
     private var urls: [URL] { fileAccess?.urls ?? [] }
     private var previewAspectRatio: CGFloat? {
         if detail.item.webURL != nil { return linkMetadata?.aspectRatio ?? 2 }
@@ -37,14 +39,14 @@ struct ClipboardDetail: View {
                     .font(.system(size: 12))
             }
         }
-        .task(id: detail.item.webURL) {
-            linkMetadata = nil
-            guard let url = detail.item.webURL else { return }
+        .task(id: showsLinkVisuals ? detail.item.webURL : nil) {
+            fetchedLinkMetadata = nil
+            guard showsLinkVisuals, let url = detail.item.webURL else { return }
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
             let metadata = await ClipboardLinkPreviews.shared.preview(for: url)
             guard !Task.isCancelled else { return }
-            linkMetadata = metadata
+            fetchedLinkMetadata = metadata
         }
         .task(id: detail.files) {
             guard detail.item.webURL == nil else { return }
