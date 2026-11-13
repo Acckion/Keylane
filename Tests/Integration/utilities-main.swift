@@ -21,6 +21,47 @@ if ProcessInfo.processInfo.environment["KEYLANE_UTILITIES_FIXTURE_ONLY"] != "1" 
 }
 precondition(DictionaryController.definition(for: "apple")?.isEmpty == false)
 precondition(DictionaryController.definition(for: "zzzzkeylanenotawordqzx") == nil)
+let realDictionary = DictionaryController()
+for term in ["apple", "苹果"] {
+    realDictionary.search(term)
+    wait("system dictionary lookup") { !realDictionary.loading }
+    let matched = realDictionary.definition?.isEmpty == false
+    if term == "apple" { precondition(matched) }
+    print("Dictionary Services \(term): \(matched ? "matched" : "no match in active sources")")
+}
+let dictionary = DictionaryController { term in
+    if term == "first" { Thread.sleep(forTimeInterval: 0.30) }
+    return term == "missing" ? nil : "Definition for \(term)"
+}
+let dictionaryBoard = NSPasteboard.withUniqueName()
+defer { dictionaryBoard.releaseGlobally() }
+dictionary.search("first")
+RunLoop.current.run(until: Date().addingTimeInterval(0.20))
+dictionary.search("  中文  ")
+precondition(dictionary.loading && !dictionary.canSubmit)
+precondition(!dictionary.copyDefinition(for: "first", to: dictionaryBoard))
+wait("latest dictionary query") { !dictionary.loading }
+precondition(dictionary.term == "中文" && dictionary.definition == "Definition for 中文")
+precondition(dictionary.copyDefinition(for: "中文", to: dictionaryBoard))
+precondition(dictionaryBoard.string(forType: .string) == "Definition for 中文")
+dictionary.search("missing")
+wait("dictionary no match") { !dictionary.loading }
+precondition(dictionary.canSubmit && dictionary.definition == nil)
+dictionary.search(String(repeating: "词", count: 257))
+precondition(dictionary.termTooLong && !dictionary.canSubmit && dictionary.definition == nil)
+dictionary.search("first")
+dictionary.search(" \n ")
+precondition(dictionary.term.isEmpty && !dictionary.loading && dictionary.definition == nil)
+dictionary.search("reopen")
+wait("dictionary reopened") { !dictionary.loading }
+precondition(dictionary.definition == "Definition for reopen")
+precondition(!dictionary.copyDefinition(for: "中文", to: dictionaryBoard))
+precondition(dictionaryBoard.string(forType: .string) == "Definition for 中文")
+let termWithReservedCharacters = "中文 / café?#%"
+let dictionaryURL = DictionaryController.dictionaryURL(for: termWithReservedCharacters)!
+precondition(dictionaryURL.scheme == "dict" && dictionaryURL.query == nil && dictionaryURL.fragment == nil)
+precondition(URLComponents(url: dictionaryURL, resolvingAgainstBaseURL: false)?.path == termWithReservedCharacters)
+print("PASS Dictionary: latest query, cancel/reopen, missing and long input, encoded URL and isolated pasteboard")
 let record = CNMutableContact()
 record.givenName = "示例"
 record.familyName = "测试"

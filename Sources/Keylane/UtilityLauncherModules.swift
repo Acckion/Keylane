@@ -97,12 +97,19 @@ enum UtilityLauncherModules {
                                 queryChanged: controller.search,
                                 leave: { controller.search("") },
                                 submit: {
-                                    if let definition = controller.definition { UtilityActions.copy(definition) }
-                                    else { controller.openDictionary() }
+                                    guard controller.canSubmit else { return }
+                                    if controller.definition != nil { copyDefinition(controller, term: controller.term) }
+                                    else { openDictionary(controller) }
                                 },
-                                primaryTitle: { controller.definition == nil ? "打开词典" : "复制释义" },
+                                primaryTitle: {
+                                    if controller.loading { return "正在查询…" }
+                                    return controller.definition == nil ? "打开词典" : "复制释义"
+                                },
+                                primaryEnabled: { controller.canSubmit },
                                 actions: { dictionaryActions(controller) },
-                                updates: ViewObservation.changes(controller.$definition))
+                                updates: Publishers.Merge3(ViewObservation.changes(controller.$definition),
+                                                           ViewObservation.changes(controller.$loading),
+                                                           ViewObservation.changes(controller.$term)).eraseToAnyPublisher())
         page.loading = controller.$loading.eraseToAnyPublisher()
         page.enter = { _ in
             let term = controller.initialTerm
@@ -126,15 +133,30 @@ enum UtilityLauncherModules {
         let prefixes = ["define ", "词典 ", "查词 "]
         guard let prefix = prefixes.first(where: { trimmed.lowercased().hasPrefix($0) }) else { return nil }
         let term = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-        return term.isEmpty ? nil : term
+        return (1...DictionaryController.maximumTermLength).contains(term.utf16.count) ? term : nil
     }
 
     private static func dictionaryActions(_ controller: DictionaryController) -> [LauncherAction] {
+        guard !controller.termTooLong else { return [] }
         let open = LauncherAction(id: "dictionary-open", title: "打开系统词典", icon: "book.closed",
-                                  perform: controller.openDictionary)
-        guard let definition = controller.definition else { return [open] }
+                                  perform: { openDictionary(controller) })
+        guard controller.definition != nil else { return [open] }
+        let term = controller.term
         return [LauncherAction(id: "dictionary-copy", title: "复制释义", icon: "doc.on.doc",
-                               perform: { UtilityActions.copy(definition) }), open]
+                               perform: { copyDefinition(controller, term: term) }), open]
+    }
+
+    private static func copyDefinition(_ controller: DictionaryController, term: String) {
+        guard term == controller.term, !controller.loading, controller.definition != nil else { return }
+        let copied = controller.copyDefinition(for: term)
+        (NSApp.delegate as? Delegate)?.showLauncherFeedback(copied ? "已复制释义" : "无法复制释义",
+                                                            style: copied ? .success : .failure)
+    }
+
+    private static func openDictionary(_ controller: DictionaryController) {
+        controller.openDictionary {
+            (NSApp.delegate as? Delegate)?.showLauncherFeedback("无法打开系统词典。", style: .failure)
+        }
     }
 
     private static func emoji(_ model: Model) -> LauncherModule {
