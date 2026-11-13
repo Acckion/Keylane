@@ -122,10 +122,12 @@ final class NavigationController: ObservableObject {
         if needle.isEmpty {
             results = items
         } else {
+            let preparedQuery = SearchRanker.Query(needle)
             results = items.compactMap { item -> (NavigationItem, Int)? in
-                let title = SearchRanker.score(item.title, query: needle)
-                let path = SearchRanker.score(item.detail, query: needle).map { $0 - 250 }
-                let combined = SearchRanker.score(item.detail + " " + item.title, query: needle).map { $0 - 300 }
+                let title = SearchRanker.score(SearchRanker.prepareName(item.title), query: preparedQuery)
+                let path = SearchRanker.score(SearchRanker.prepareName(item.detail), query: preparedQuery).map { $0 - 250 }
+                let combined = SearchRanker.score(SearchRanker.prepareName(item.detail + " " + item.title),
+                                                query: preparedQuery).map { $0 - 300 }
                 let shortcut = item.keys.joined() == needle ? 1100 : nil
                 guard let score = [title, path, combined, shortcut].compactMap({ $0 }).max() else { return nil }
                 return (item, score)
