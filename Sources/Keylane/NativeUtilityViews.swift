@@ -160,7 +160,9 @@ struct DictionaryPage: View {
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
                 }
             } else if controller.loading { Text("正在查询…").foregroundStyle(.secondary) }
-            else if controller.term.isEmpty {
+            else if controller.termTooLong {
+                ContentUnavailableView("查询内容太长", systemImage: "book.closed", description: Text("请输入较短的词语或短语。"))
+            } else if controller.term.isEmpty {
                 ContentUnavailableView("输入要查找的词语", systemImage: "book.closed")
             } else {
                 ContentUnavailableView("没有找到释义", systemImage: "book.closed", description: Text("试试其他拼写，或检查系统词典中已启用的词库。"))

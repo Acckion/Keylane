@@ -467,14 +467,23 @@ final class DictionaryController: ObservableObject {
     @Published private(set) var definition: String?
     @Published private(set) var loading = false
     var initialTerm = ""
+    static let maximumTermLength = 256
     private let worker = DispatchQueue(label: "org.keylane.dictionary", qos: .userInitiated)
+    private let lookup: (String) -> String?
     private var pending: DispatchWorkItem?
     private var generation = 0
+
+    init(lookup: @escaping (String) -> String? = DictionaryController.definition(for:)) {
+        self.lookup = lookup
+    }
+
+    var termTooLong: Bool { term.utf16.count > Self.maximumTermLength }
+    var canSubmit: Bool { !loading && !termTooLong }
 
     static func definition(for term: String) -> String? {
         let text = term.trimmingCharacters(in: .whitespacesAndNewlines)
         let length = text.utf16.count
-        guard (1...256).contains(length) else { return nil }
+        guard (1...maximumTermLength).contains(length) else { return nil }
         return DCSCopyTextDefinition(nil, text as CFString, CFRange(location: 0, length: length))?.takeRetainedValue() as String?
     }
 
@@ -485,11 +494,11 @@ final class DictionaryController: ObservableObject {
         pending = nil
         term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         definition = nil
-        loading = !term.isEmpty && term.utf16.count <= 256
+        loading = !term.isEmpty && !termTooLong
         guard loading else { return }
         let text = term
-        let job = DispatchWorkItem { [weak self] in
-            let result = Self.definition(for: text)
+        let job = DispatchWorkItem { [weak self, lookup] in
+            let result = lookup(text)
             DispatchQueue.main.async {
                 guard let self, self.generation == ticket else { return }
                 self.pending = nil
@@ -501,11 +510,33 @@ final class DictionaryController: ObservableObject {
         worker.asyncAfter(deadline: .now() + 0.12, execute: job)
     }
 
-    func openDictionary() {
-        guard !term.isEmpty else { UtilityActions.openApplication("com.apple.Dictionary"); return }
+    func copyDefinition(for expectedTerm: String, to pasteboard: NSPasteboard = .general) -> Bool {
+        guard expectedTerm == term, !loading, let definition else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(definition, forType: .string)
+    }
+
+    static func dictionaryURL(for term: String) -> URL? {
         var components = URLComponents()
         components.scheme = "dict"
         components.path = term
-        if let url = components.url { NSWorkspace.shared.open(url) }
+        return components.url
+    }
+
+    func openDictionary(onFailure reportFailure: @escaping () -> Void) {
+        guard !termTooLong else { return }
+        let workspace = NSWorkspace.shared
+        guard let application = workspace.urlForApplication(withBundleIdentifier: "com.apple.Dictionary") else {
+            reportFailure()
+            return
+        }
+        let completion: (NSRunningApplication?, Error?) -> Void = { _, error in
+            if error != nil { DispatchQueue.main.async { reportFailure() } }
+        }
+        if term.isEmpty {
+            workspace.openApplication(at: application, configuration: .init(), completionHandler: completion)
+        } else if let url = Self.dictionaryURL(for: term) {
+            workspace.open([url], withApplicationAt: application, configuration: .init(), completionHandler: completion)
+        }
     }
 }
