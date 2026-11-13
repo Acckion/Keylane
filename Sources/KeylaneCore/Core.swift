@@ -256,9 +256,13 @@ public final class Store {
         try execute("BEGIN IMMEDIATE")
         do {
             for record in records {
-                try write("INSERT OR REPLACE INTO records VALUES(?,?,?,?,?)",
-                          [record.id, record.kind, record.title, record.body, String(record.updated)])
-                try write("DELETE FROM records_fts WHERE id=?", [record.id])
+                let values = [record.id, record.kind, record.title, record.body, String(record.updated)]
+                try write("INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING", values)
+                if sqlite3_changes(db) == 0 {
+                    try write("INSERT OR REPLACE INTO records VALUES(?,?,?,?,?)", values)
+                    // The FTS id is unindexed. Only scan it when replacing an existing row.
+                    try write("DELETE FROM records_fts WHERE id=?", [record.id])
+                }
                 try write("INSERT INTO records_fts VALUES(?,?,?)", [record.id, record.title, record.body])
             }
             try execute("COMMIT")

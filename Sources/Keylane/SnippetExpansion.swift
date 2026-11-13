@@ -66,7 +66,7 @@ final class SnippetExpansion {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var pending: DispatchWorkItem?
-    private var snippets: [Snippet] = []
+    private var keywordIndex = SnippetKeywordIndex([])
     private var systemKeywords: Set<String> = []
     private var options = SnippetExpansionOptions()
     private var typed = ""
@@ -77,8 +77,9 @@ final class SnippetExpansion {
     func configure(_ entries: [Snippet], options: SnippetExpansionOptions) -> Bool {
         stop()
         self.options = options
-        snippets = entries.filter { !$0.keyword.isEmpty }.sorted { $0.keyword.count > $1.keyword.count }
-        guard !snippets.isEmpty, AXIsProcessTrusted() else { return false }
+        guard AXIsProcessTrusted() else { return false }
+        keywordIndex = SnippetKeywordIndex(entries)
+        guard !keywordIndex.isEmpty else { return false }
         systemKeywords = Set(NSSpellChecker.shared.userReplacementsDictionary.keys.map { $0.lowercased() })
         monitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self else { return }
@@ -115,7 +116,8 @@ final class SnippetExpansion {
         if let source { CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes) }
         tap = nil
         source = nil
-        snippets = []
+        keywordIndex = SnippetKeywordIndex([])
+        systemKeywords.removeAll()
     }
 
     func resetInput() {
@@ -130,7 +132,7 @@ final class SnippetExpansion {
         let waiting = pending != nil
         pending?.cancel()
         pending = nil
-        guard !snippets.isEmpty, !event.isARepeat,
+        guard !keywordIndex.isEmpty, !event.isARepeat,
               event.modifierFlags.intersection([.command, .control, .option, .function]).isEmpty,
               !IsSecureEventInputEnabled(), Self.asciiInput,
               let characters = event.characters, characters.count == 1, let key = characters.first,
@@ -142,11 +144,9 @@ final class SnippetExpansion {
         typed = Snippet.validKeyword(characters) ? String((typed + characters).suffix(40)) : ""
         let mode = options.mode
         let onDelimiter = isDelimiter && (mode != .immediately || waiting ||
-            (beforeDelivery && snippets.contains { prior.hasSuffix($0.keyword) && isSystemKeyword($0.keyword) }))
+            (beforeDelivery && keywordIndex.matching(prior, where: isSystemKeyword) != nil))
         func matchingSnippet(in input: String) -> Snippet? {
-            snippets.first {
-                input.hasSuffix($0.keyword) && (options.overrideSystem || !isSystemKeyword($0.keyword))
-            }
+            keywordIndex.matching(input) { options.overrideSystem || !isSystemKeyword($0) }
         }
         let delimited = onDelimiter ? matchingSnippet(in: prior) : nil
         guard let (snippet, usesDelimiter) = mode.keywordMatch(in: typed, delimited: delimited, matching: matchingSnippet) else {
@@ -274,5 +274,26 @@ final class SnippetExpansion {
         guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
               let value = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsASCIICapable) else { return false }
         return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(value).takeUnretainedValue())
+    }
+}
+
+/// Searches the bounded typed suffix from longest to shortest without scanning the snippet library.
+struct SnippetKeywordIndex {
+    private let snippets: [Substring: Snippet]
+
+    init(_ entries: [Snippet]) {
+        snippets = Dictionary(entries.lazy.filter { !$0.keyword.isEmpty }.map { ($0.keyword[...], $0) },
+                              uniquingKeysWith: { first, _ in first })
+    }
+
+    var isEmpty: Bool { snippets.isEmpty }
+
+    func matching(_ typed: String, where allowed: (String) -> Bool) -> Snippet? {
+        var start = typed.startIndex
+        while start < typed.endIndex {
+            if let snippet = snippets[typed[start...]], allowed(snippet.keyword) { return snippet }
+            typed.formIndex(after: &start)
+        }
+        return nil
     }
 }

@@ -57,7 +57,8 @@ struct SystemShortcutsPreferences: View {
 extension SystemShortcut {
     func commandSettingsEntry(model: Model, controller: SystemShortcutsController) -> CommandSettingsEntry<ShortcutArtwork> {
         CommandSettingsEntry(
-            title: name, model: model, commandID: .init(rawValue: commandID),
+            title: controller.duplicateTitles.contains(name) ? "\(name) · \(identifierSuffix)" : name,
+            model: model, commandID: .init(rawValue: commandID),
             isEnabled: Binding(get: { !controller.disabledIDs.contains(id) }, set: { enabled in
                 if enabled { controller.disabledIDs.remove(id) }
                 else { controller.disabledIDs.insert(id) }
