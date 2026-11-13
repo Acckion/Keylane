@@ -99,10 +99,9 @@ enum BuiltinLauncherModules {
             guard let model, model.applicationsEnabled else { return [] }
             return model.applicationSearchEntries()
         }, resolve: { [weak model] id, origin in
-            guard id.rawValue.hasPrefix("app:"), let model, model.applicationsEnabled else { return nil }
+            guard id.rawValue.hasPrefix("app:"), let model else { return nil }
             let path = String(id.rawValue.dropFirst("app:".count))
-            guard !model.excluded.contains(path), model.apps.contains(where: { $0.path == path }),
-                  FileManager.default.fileExists(atPath: path) else { return nil }
+            guard model.isApplicationCommandAvailable(at: path) else { return nil }
             let url = URL(fileURLWithPath: path)
             return { [weak model] in
                 if origin == .shortcut { model?.launchFromHotkey(url) }
