@@ -6,6 +6,48 @@ public struct Quicklink: Codable, Equatable, Identifiable {
     public var template: String
     public var usesDynamicPlaceholders: Bool?
 
+    private enum CodingKeys: String, CodingKey {
+        case id, title, template, usesDynamicPlaceholders
+        case storedTags = "tags", storedPinned = "pinned", storedHiddenFromRoot = "hiddenFromRoot"
+    }
+
+    private var storedTags: [String]?
+    private var storedPinned: Bool?
+    private var storedHiddenFromRoot: Bool?
+
+    public var tags: [String] {
+        get { storedTags ?? [] }
+        set { storedTags = Self.normalizedTags(newValue) }
+    }
+    public var pinned: Bool {
+        get { storedPinned ?? false }
+        set { storedPinned = newValue }
+    }
+    public var hiddenFromRoot: Bool {
+        get { storedHiddenFromRoot ?? false }
+        set { storedHiddenFromRoot = newValue }
+    }
+
+    public func duplicate() -> Self {
+        var copy = Quicklink(title: title, template: template)
+        copy.tags = tags
+        copy.usesDynamicPlaceholders = usesDynamicPlaceholders
+        return copy
+    }
+
+    static func normalizedTags(_ input: [String]) -> [String] {
+        var seen: Set<String> = []
+        return input.compactMap {
+            let value = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !value.isEmpty && seen.insert(tagKey(value)).inserted ? value : nil
+        }
+    }
+
+    public static func tagKey(_ value: String) -> String {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
+                      locale: Locale(identifier: "en_US_POSIX"))
+    }
+
     public func preparedForEditing() -> Self {
         guard usesDynamicPlaceholders != true else { return self }
         let migrated = DynamicTemplate(template, usage: .quicklink, legacyQuicklinkOnly: true).legacySyntaxMigration
@@ -98,6 +140,27 @@ public struct QuicklinkLibrary: Codable, Equatable {
 
     public init(links: [Quicklink]) { self.links = links }
 
+    public var tags: [String] {
+        Quicklink.normalizedTags(links.flatMap(\.tags)).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    public func search(_ text: String, tag: String = "", aliases: [String: String] = [:]) -> [Quicklink] {
+        let query = SearchRanker.Query(text)
+        let matches = links.compactMap { link -> (link: Quicklink, score: Int)? in
+            guard tag.isEmpty || link.tags.contains(where: { Quicklink.tagKey($0) == tag }) else { return nil }
+            guard !query.isEmpty else { return (link, 0) }
+            let names = [link.title, link.template] + link.tags + (aliases[link.id].map { [$0] } ?? [])
+            return names.compactMap { SearchRanker.score(SearchRanker.prepareName($0), query: query) }.max()
+                .map { (link, $0) }
+        }
+        return matches.sorted { lhs, rhs in
+            if lhs.link.pinned != rhs.link.pinned { return lhs.link.pinned }
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            let title = lhs.link.title.localizedStandardCompare(rhs.link.title)
+            return title == .orderedSame ? lhs.link.id < rhs.link.id : title == .orderedAscending
+        }.map(\.link)
+    }
+
     public static func load(from defaults: UserDefaults) throws -> Self {
         if let stored = defaults.object(forKey: storageKey) {
             guard let data = stored as? Data else { throw CocoaError(.coderReadCorrupt) }
@@ -123,5 +186,65 @@ public struct QuicklinkLibrary: Codable, Equatable {
 
     public func save(to defaults: UserDefaults) throws {
         defaults.set(try JSONEncoder().encode(self), forKey: Self.storageKey)
+    }
+}
+
+/// Raycast-compatible name and link, with optional Keylane organization fields.
+private struct QuicklinkExchange: Codable {
+    let name: String
+    let link: String
+    let tags: [String]?
+    let pinned: Bool?
+    let hiddenFromRoot: Bool?
+    let legacyTemplate: Bool?
+
+    init(_ quicklink: Quicklink) {
+        name = quicklink.title
+        link = quicklink.template
+        tags = quicklink.tags.isEmpty ? nil : quicklink.tags
+        pinned = quicklink.pinned ? true : nil
+        hiddenFromRoot = quicklink.hiddenFromRoot ? true : nil
+        legacyTemplate = quicklink.usesDynamicPlaceholders == true ? nil : true
+    }
+}
+
+extension QuicklinkLibrary {
+    public struct Import {
+        public let links: [Quicklink]
+        public let duplicates: Int
+    }
+
+    public func importJSON(_ data: Data, context: DynamicTemplate.Context = .init()) throws -> Import {
+        struct Identity: Hashable {
+            let title: String
+            let template: String
+
+            init(_ title: String, _ template: String) {
+                self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.template = template.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        let records = try JSONDecoder().decode([QuicklinkExchange].self, from: data)
+        var seen = Set(links.map { Identity($0.title, $0.template) })
+        var added: [Quicklink] = []
+        for record in records {
+            let identity = Identity(record.name, record.link)
+            guard !identity.title.isEmpty else { throw CocoaError(.coderReadCorrupt) }
+            guard seen.insert(identity).inserted else { continue }
+            var link = Quicklink(title: identity.title, template: identity.template)
+            link.tags = record.tags ?? []
+            link.pinned = record.pinned ?? false
+            link.hiddenFromRoot = record.hiddenFromRoot ?? false
+            if record.legacyTemplate == true { link.usesDynamicPlaceholders = nil }
+            _ = try link.parsedTemplate(context: context)
+            added.append(link)
+        }
+        return Import(links: added, duplicates: records.count - added.count)
+    }
+
+    public func exportJSON() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(links.map(QuicklinkExchange.init))
     }
 }

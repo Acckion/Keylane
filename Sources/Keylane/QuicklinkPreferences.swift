@@ -23,30 +23,48 @@ struct QuicklinkPreferences: View {
             if let error = controller.storageError {
                 Text(error).foregroundStyle(.secondary)
             } else {
+                SettingsSectionTitle(title: "命令")
+                CommandSettingsList(items: QuicklinksModule.Command.allCases, id: \.rawValue) { command in
+                    CommandSettingsEntry(title: command.title, model: model, commandID: command.id,
+                                         isEnabled: Binding(get: { !model.disabledCommands.contains(command.rawValue) }, set: {
+                        if $0 { model.disabledCommands.remove(command.rawValue) }
+                        else { model.disabledCommands.insert(command.rawValue) }
+                    })) {
+                        SettingsIcon(symbol: command.symbol)
+                    }
+                }
+                SettingsSectionTitle(title: "快捷链接")
                 SettingsGroup {
                     HStack {
                         SettingsSearchField(text: $filter, placeholder: "查找快捷链接…")
-                        if let legacy = QuicklinkLibrary.legacyTemplate(from: .standard),
+                        if let legacy = controller.legacyTemplate,
                            !controller.links.contains(where: { $0.template == legacy }) {
                             Button("恢复旧链接…") {
-                                controller.draft = Quicklink(title: "原快捷链接", template: legacy)
+                                controller.settingsDraft = Quicklink(title: "原快捷链接", template: legacy)
                             }.buttonStyle(.bordered)
                         }
                         SettingsIconButton("添加快捷链接", symbol: "plus") {
-                            controller.draft = Quicklink(title: "", template: "")
+                            controller.settingsDraft = Quicklink(title: "", template: "")
                         }
                     }.padding(.vertical, 6)
                 }
                 CommandSettingsList(items: filtered, id: \.id, emptyMessage: "没有匹配的快捷链接") { link in
-                    link.commandSettingsEntry(model: model, perform: { controller.draft = link }, menu: [
-                        .init(title: "编辑快捷链接") { controller.draft = link },
+                    link.commandSettingsEntry(model: model, perform: { controller.settingsDraft = link }, menu: [
+                        .init(title: "编辑快捷链接") { controller.settingsDraft = link },
+                        .init(title: "复制为新链接") { controller.settingsDraft = link.duplicate() },
+                        .init(title: link.pinned ? "取消置顶" : "置顶链接") {
+                            controller.updateOrganization(id: link.id) { $0.pinned.toggle() }
+                        },
+                        .init(title: link.hiddenFromRoot ? "在主搜索显示" : "从主搜索隐藏") {
+                            controller.updateOrganization(id: link.id) { $0.hiddenFromRoot.toggle() }
+                        },
                         .init(title: "删除快捷链接…") { pendingRemoval = link }
                     ])
                 }
             }
         }
         .settingsAnchor(.quicklink)
-        .sheet(item: $controller.draft) { link in
+        .sheet(item: $controller.settingsDraft) { link in
             QuicklinkEditor(link: link.preparedForEditing(), save: controller.save)
         }
         .confirmationDialog("删除快捷链接？", isPresented: Binding(
@@ -54,12 +72,7 @@ struct QuicklinkPreferences: View {
         ), presenting: pendingRemoval) { link in
             Button("删除", role: .destructive) {
                 do {
-                    try controller.remove(link)
-                    model.setShortcut(link.id, value: nil)
-                    if model.favorites.contains(link.id) { model.toggleFavorite(link.id) }
-                    model.disabledCommands.remove(link.id)
-                    model.setAlias(link.id, value: "")
-                    model.resetUsage(for: link.id)
+                    try QuicklinksModule.remove(link, model: model)
                 } catch { failure = error.localizedDescription }
             }
         } message: { link in Text(link.title) }
@@ -69,20 +82,22 @@ struct QuicklinkPreferences: View {
     }
 
     private var filtered: [Quicklink] {
-        guard !filter.isEmpty else { return controller.links }
-        return controller.links.filter {
-            $0.title.localizedCaseInsensitiveContains(filter) ||
-                $0.template.localizedCaseInsensitiveContains(filter) ||
-                model.aliases[$0.id]?.localizedCaseInsensitiveContains(filter) == true
-        }
+        controller.library.search(filter, aliases: model.aliases)
     }
 }
 
 private struct QuicklinkEditor: View {
     @Environment(\.dismiss) private var dismiss
-    @State var link: Quicklink
+    @State private var link: Quicklink
+    @State private var tags: String
     let save: (Quicklink) throws -> Void
     @State private var error: String?
+
+    init(link: Quicklink, save: @escaping (Quicklink) throws -> Void) {
+        _link = State(initialValue: link)
+        _tags = State(initialValue: link.tags.joined(separator: ", "))
+        self.save = save
+    }
 
     var body: some View {
         Form {
@@ -94,6 +109,7 @@ private struct QuicklinkEditor: View {
                 Link("动态占位符指南", destination: URL(string: "https://manual.raycast.com/dynamic-placeholders")!)
                     .font(.caption)
             }
+            TextField("标签（用逗号分隔）", text: $tags)
             if let error { Text(error).foregroundStyle(.red) }
             HStack {
                 Spacer()
@@ -106,9 +122,8 @@ private struct QuicklinkEditor: View {
     }
 
     private func submit() {
-        link.title = link.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        link.template = link.template.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !link.title.isEmpty else { error = "请输入名称。"; return }
+        guard !SearchField.isComposing else { return }
+        link.applyTagField(tags)
         do { try save(link); dismiss() }
         catch { self.error = error.localizedDescription }
     }

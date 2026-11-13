@@ -66,7 +66,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let snippetSearchCommand = SettingsItem(id: "snippet-search-command", page: "snippets-search-command",
                                                           title: "搜索文字片段的主要操作", keywords: "search snippets primary action paste copy 片段 粘贴 复制")
     public static let snippetExpansion = SettingsItem(id: "snippet-expansion", page: "snippets", title: "文字片段与缩写", keywords: "snippets expansion 片段 缩写 展开")
-    public static let quicklink = SettingsItem(id: "quicklink", page: "links", title: "快捷链接", keywords: "网址 参数 别名 热键 url quicklink")
+    public static let quicklink = SettingsItem(id: "quicklink", page: "links", title: "快捷链接", keywords: "网址 参数 别名 热键 标签 置顶 隐藏 导入 导出 url quicklink")
     public static let windowActivation = SettingsItem(id: "advanced-window-activation", page: "advanced", title: "窗口激活行为", keywords: "空间 窗口 window activation behavior spaces")
     public static let faviconProvider = SettingsItem(id: "advanced-favicon", page: "advanced", title: "网站图标提供方", keywords: "网页 图标 favicon provider")
     public static let exportPassphrase = SettingsItem(id: "advanced-export-passphrase", page: "advanced", title: "导出口令", keywords: "加密 备份 export passphrase encryption")
