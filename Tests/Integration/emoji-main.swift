@@ -25,6 +25,22 @@ struct EmojiCheck {
         controller.move(1, vertical: true)
         precondition(controller.selected?.glyph == "😜")
 
+        if CommandLine.arguments.contains("-AppleLanguages") {
+            precondition(EmojiCatalog.usesChinese, "Expected Chinese UI for bilingual symbol regression")
+        }
+        for query in ["lambda", "LAMBDA", "lamda", "兰姆达"] {
+            try await search(query)
+            let items = controller.sections.flatMap(\.items)
+            precondition(Set(items.map(\.glyph)).isSuperset(of: ["λ", "Λ"]), "Missing Greek lambda variants for: \(query)")
+        }
+        try await search("small lambda")
+        precondition(controller.selected?.glyph == "λ")
+        if EmojiCatalog.usesChinese {
+            precondition(controller.selected?.title == "希腊小写字母兰姆达")
+        }
+        try await search("capital lambda")
+        precondition(controller.selected?.glyph == "Λ")
+
         try await search("grinning cat")
         precondition(controller.selected?.glyph == "😺")
         try await search("大笑的猫")

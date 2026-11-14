@@ -3814,7 +3814,7 @@ greek	Η	Greek Capital Letter Eta
 greek	Θ	Greek Capital Letter Theta
 greek	Ι	Greek Capital Letter Iota
 greek	Κ	Greek Capital Letter Kappa
-greek	Λ	Greek Capital Letter Lamda
+greek	Λ	Greek Capital Letter Lamda	希腊大写字母兰姆达	lambda
 greek	Μ	Greek Capital Letter Mu
 greek	Ν	Greek Capital Letter Nu
 greek	Ξ	Greek Capital Letter Xi
@@ -3845,7 +3845,7 @@ greek	η	Greek Small Letter Eta
 greek	θ	Greek Small Letter Theta
 greek	ι	Greek Small Letter Iota
 greek	κ	Greek Small Letter Kappa
-greek	λ	Greek Small Letter Lamda	希腊小写字母兰姆达
+greek	λ	Greek Small Letter Lamda	希腊小写字母兰姆达	lambda
 greek	μ	Greek Small Letter Mu
 greek	ν	Greek Small Letter Nu
 greek	ξ	Greek Small Letter Xi
