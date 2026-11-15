@@ -4,7 +4,7 @@ public struct FileResultOperations {
     public struct Target {
         public let url: URL
         fileprivate let identity: NSObject
-        fileprivate let canonicalPath: String
+        let canonicalPath: String
     }
 
     public enum Failure: LocalizedError {
