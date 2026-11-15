@@ -23,9 +23,25 @@ final class QuicklinkTests: XCTestCase {
     }
 
     func testRejectsUnsafeOrMalformedTemplates() {
-        for value in ["file:///tmp", "https://{host}/", "https://user:secret@example.com",
+        for value in ["file://remote/tmp", "https://{host}/", "https://user:secret@example.com",
                       "https://example.com/{}", "https://example.com/{a", "https://example.com/{a={b}}",
                       "https://example.com/{q=one}/{q=two}"] {
+            XCTAssertThrowsError(try QuicklinkTemplate(value), value)
+        }
+    }
+
+    func testLocalPathsRoundTripWithoutExpandingLiteralCharacters() throws {
+        let path = "/tmp/中文 {clipboard} 100% #?.txt"
+        let parsed = try QuicklinkTemplate(path, context: .init())
+        XCTAssertTrue(parsed.parameters.isEmpty)
+        XCTAssertEqual(try parsed.url().path, path)
+        XCTAssertEqual(parsed.localURL?.absoluteString, "file:///tmp/%E4%B8%AD%E6%96%87%20%7Bclipboard%7D%20100%25%20%23%3F.txt")
+        XCTAssertEqual(try QuicklinkTemplate(parsed.url().absoluteString).url().path, path)
+        XCTAssertEqual(try QuicklinkTemplate("FILE://localhost/tmp/fixture/").url().path, "/tmp/fixture")
+        for value in ["file:relative", "file://", "file://remote/tmp/a", "file://me@localhost/tmp/a",
+                      "file://localhost:123/tmp/a", "file:///tmp/a?x=1", "file:///tmp/a#frag",
+                      "file:///tmp/{selection}", "file:///tmp/embedded%00null", "file:///tmp/encoded%2Fslash",
+                      "//network/share", "smb://server/folder", "custom://some-action", "relative.txt"] {
             XCTAssertThrowsError(try QuicklinkTemplate(value), value)
         }
     }
@@ -114,7 +130,7 @@ final class QuicklinkTests: XCTestCase {
         XCTAssertTrue(repeatImport.links.isEmpty)
         XCTAssertEqual(repeatImport.duplicates, 3)
         XCTAssertThrowsError(try saved.importJSON(Data("""
-        [{"name":"安全","link":"https://example.com/"},{"name":"无效","link":"file:///tmp"}]
+        [{"name":"安全","link":"https://example.com/"},{"name":"无效","link":"file://remote/tmp"}]
         """.utf8)))
         XCTAssertEqual(saved.links, first.links)
     }
