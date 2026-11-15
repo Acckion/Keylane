@@ -409,6 +409,18 @@ struct ScreenshotLibraryCheck {
         try require(FileManager.default.fileExists(atPath: expired.path), "Unlimited removed a file")
         guard let pinnedItem = initial.results.first(where: { $0.name == pinned.lastPathComponent }) else { throw CheckError.failure("Missing pin fixture") }
         try initial.togglePin(pinnedItem)
+        guard let oldIdentity = pinnedItem.identity else { throw CheckError.failure("Missing pin identity") }
+        let replacement = try fixture("replacement.png", in: root)
+        try FileManager.default.moveItem(at: pinned, to: root.appendingPathComponent("original.png"))
+        try FileManager.default.moveItem(at: replacement, to: pinned)
+        initial.refresh()
+        try await wait("pinned path replacement indexed") {
+            !initial.scanning && initial.results.contains {
+                $0.id == pinnedItem.id && $0.identity != nil && $0.identity != oldIdentity
+            }
+        }
+        try require(initial.sections.first?.items.contains { $0.id == pinnedItem.id } == true,
+                    "Replacement at a pinned path should appear in the pinned section")
         initial.enabled = false
         let renamed = scope.appendingPathComponent("Screenshot pinned renamed.png")
         try FileManager.default.moveItem(at: pinned, to: renamed)
@@ -430,6 +442,10 @@ struct ScreenshotLibraryCheck {
         }
         try require(library.pinnedIDs.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
                     == [renamed.resolvingSymlinksInPath().path], "Renamed pin must survive restart and cleanup")
+        library.start()
+        try await wait("renamed pin visible after cleanup") {
+            !library.scanning && library.sections.first?.items.map(\.name) == [renamed.lastPathComponent]
+        }
         try require(ScreenshotLibrary(defaults: defaults).retention == .week, "Retention must persist")
         library.enabled = false
         let disabled = try fixture("Screenshot while disabled.png")

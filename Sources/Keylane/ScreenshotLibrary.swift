@@ -376,7 +376,8 @@ final class ScreenshotLibrary: ObservableObject {
         var updated = pinIdentities
         for path in pinnedIDs {
             if let item = byPath[path] {
-                if updated[path] == nil { updated[path] = item.identity }
+                // The visible pin applies to the current file at this path.
+                updated[path] = item.identity
             } else if let identity = updated[path], let matches = byIdentity[identity], matches.count == 1 {
                 paths.remove(path)
                 paths.insert(matches[0].1)
