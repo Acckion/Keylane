@@ -88,6 +88,7 @@ final class FileSearchController: ObservableObject {
                 preferences.set(try? JSONEncoder().encode(options),forKey:"fileSearchOptions")
             }
         }
+        restored = Set(preferences.stringArray(forKey: "fileSearchRestoredPaths") ?? [])
         automaticExclusions = preferences.data(forKey: "fileSearchAutomaticExclusions").flatMap { try? JSONDecoder().decode([AutomaticFileExclusion].self, from: $0) } ?? []
         if let data = preferences.data(forKey: "fileSearchLastStats"), let value = try? JSONDecoder().decode(FileIndexStats.self, from:data) { stats = value }
         spotlight.updated = { [weak self] results, _ in
@@ -336,7 +337,13 @@ final class FileSearchController: ObservableObject {
         options.roots.removeAll { $0 == path }
         resolveGrants()
     }
-    func restore(_ path: String) { restored.insert(path); automaticExclusions.removeAll { $0.path == path }; saveAutomatic(); startIndex() }
+    func restore(_ path: String) {
+        restored.insert(path)
+        preferences.set(restored.sorted(), forKey: "fileSearchRestoredPaths")
+        automaticExclusions.removeAll { $0.path == path }
+        saveAutomatic()
+        startIndex()
+    }
     private func saveAutomatic() { preferences.set(try? JSONEncoder().encode(automaticExclusions), forKey: "fileSearchAutomaticExclusions") }
     func reset() {
         grants.removeAll()
@@ -345,6 +352,9 @@ final class FileSearchController: ObservableObject {
         preferences.removeObject(forKey: "fileSearchSelectedScopes")
         resolveGrants()
         automaticExclusions = []
+        restored.removeAll()
+        churn.removeAll()
+        preferences.removeObject(forKey: "fileSearchRestoredPaths")
         saveAutomatic()
         recentPaths = []
         preferences.removeObject(forKey: "fileSearchRecentPaths")
@@ -644,7 +654,7 @@ final class FileSearchController: ObservableObject {
                             if parent.path != root {
                                 if excluded(parent, directory: true, rules: inheritedRules)
                                     || (parent.path == homeLibrary && root != homeLibrary) || parent.pathExtension == "app"
-                                    || ([".build", "DerivedData", "node_modules"].contains(parent.lastPathComponent)
+                                    || (FileIndexExclusionPolicy.isKnownCache(parent)
                                         && !restored.contains(parent.path)) {
                                     blocked = true; break
                                 }
@@ -722,7 +732,7 @@ final class FileSearchController: ObservableObject {
                                             guard !excluded(url, directory: isDir, rules: rules) else { continue }
                                             if !config.externalVolumes && (value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false) { continue }
                                             if isDir && path == homeLibrary && root != homeLibrary { continue } // iCloud is a separate explicit scope.
-                                            if isDir && [".build","DerivedData","node_modules"].contains(url.lastPathComponent) && !restored.contains(path) {
+                                            if isDir && FileIndexExclusionPolicy.isKnownCache(url) && !restored.contains(path) {
                                                 auto.append(.init(path: path, reason: "构建输出或依赖缓存", events: 0)); continue
                                             }
                                             let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
@@ -811,24 +821,30 @@ final class FileSearchController: ObservableObject {
         var exclusions = automaticExclusions
         var newExclusions: Set<String> = []
         var changedPaths: [String] = []
+        let now = Date()
+        let scopes = authorizedRoots
+        churn = churn.filter { now.timeIntervalSince($0.value.0) < 60 }
         for path in paths {
             if let i = exclusions.firstIndex(where: { path == $0.path || path.hasPrefix($0.path + "/") }) {
                 exclusions[i].events += 1
                 continue
             }
             changedPaths.append(path)
-            let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
-            guard ["build", "output", "dist", "cache", "target"].contains(directory.lastPathComponent.lowercased()),
-                  !restored.contains(directory.path) else { continue }
-            let now = Date()
-            let previous = churn[directory.path] ?? (now, 0)
+            guard !requiresFullScan,
+                  let directory = FileIndexExclusionPolicy.changeCandidate(
+                      for: path, scopes: scopes, restored: restored, includeHidden: options.includeHidden
+                  ),
+                  !options.excludedPaths.contains(where: { FileSearchLocation.contains(path, in: $0) }),
+                  !options.ignorePatterns.contains(where: { FileSearchRules.glob($0, matches: path) })
+            else { continue }
+            let previous = churn[directory] ?? (now, 0)
             let value = now.timeIntervalSince(previous.0) < 60 ? (previous.0, previous.1 + 1) : (now, 1)
             if value.1 >= 120 {
-                exclusions.append(.init(path: directory.path, reason: "一分钟内持续变化的构建或缓存目录", events: 0))
-                newExclusions.insert(directory.path)
-                churn.removeValue(forKey: directory.path)
+                exclusions.append(.init(path: directory, reason: "一分钟内持续变化的构建或缓存目录", events: 0))
+                newExclusions.insert(directory)
+                churn.removeValue(forKey: directory)
             } else {
-                churn[directory.path] = value
+                churn[directory] = value
             }
         }
         if exclusions != automaticExclusions {

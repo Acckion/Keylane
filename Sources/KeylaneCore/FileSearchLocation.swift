@@ -92,7 +92,7 @@ public struct FileSearchLocation {
             if (!options.includeHidden && name.hasPrefix(".")) || ignored(item.path, name)
                 || FileSearchRules.ignored(item, directory: folder, patterns: [], rules: inherited)
                 || (folder && item.path == homeLibrary)
-                || (folder && [".build", "DerivedData", "node_modules"].contains(name) && !restored.contains(item.path))
+                || (folder && FileIndexExclusionPolicy.isKnownCache(item) && !restored.contains(item.path))
                 || (folder && item.pathExtension.lowercased() == "app" && item.path != path) {
                 throw Failure.excluded
             }
