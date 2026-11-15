@@ -123,7 +123,7 @@ enum BuiltinLauncherModules {
                          command("manage-auto-quit", "管理自动退出", "为应用配置离开前台后的退出时间", "app.badge.clock",
                                  ["Manage Auto Quit", "闲置退出"], destination: .settings(SettingsItem.applicationAutoQuit.page),
                                  settings: "applications", available: { [weak model] in model?.applicationsEnabled ?? false }),
-                         command("uninstall-application", "卸载应用程序", "选择应用并移到废纸篓", "trash",
+                         command("uninstall-application", "卸载应用程序", "卸载应用并选择要清理的关联文件", "trash",
                                  ["Uninstall Application", "移除应用"], destination: .page(uninstallPage), settings: "applications",
                                  available: { [weak model] in model?.applicationsEnabled ?? false })
                      ], providers: [provider], pages: [.init(
