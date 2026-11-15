@@ -11,4 +11,4 @@ swiftc -swift-version 5 -D DEBUG -target "$target" -I "$task_directory" -L "$tas
     -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" \
     Sources/Keylane/{EmojiSearch,ResultGrid,ResultList,ResultTypeFilter,VisualStyle,ContentActionButtonStyle,NativeHoverButton,SearchField}.swift \
     Tests/Integration/emoji-main.swift -o "$task_directory/verify"
-"$task_directory/verify"
+"$task_directory/verify" -AppleLanguages "(zh-Hans)"

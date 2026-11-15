@@ -23,7 +23,8 @@ BLOCKS = {
                  (0x23CE, 0x23CE), (0x21E7, 0x21E7), (0x238B, 0x238B)],
 }
 COMMON_NAMES = {
-    "β": "希腊小写字母贝塔", "λ": "希腊小写字母兰姆达", "α": "希腊小写字母阿尔法",
+    "β": "希腊小写字母贝塔", "λ": "希腊小写字母兰姆达", "Λ": "希腊大写字母兰姆达",
+    "α": "希腊小写字母阿尔法",
     "π": "希腊小写字母派", "Ω": "希腊大写字母欧米伽", "∞": "无穷大 无限",
     "√": "平方根 根号", "∑": "求和 总和", "∫": "积分", "≈": "约等于",
     "≠": "不等于", "≤": "小于等于", "≥": "大于等于",
@@ -32,6 +33,11 @@ COMMON_NAMES = {
     "⌘": "Command 命令键", "⌥": "Option 选项键", "⌃": "Control 控制键",
     "⇧": "Shift 大写键", "⎋": "Escape 退出键", "⏎": "Return 回车键",
     "⌫": "Delete 删除键", "…": "省略号", "—": "破折号", "、": "顿号", "。": "句号",
+}
+# Unicode spells the formal Greek character names “Lamda”.
+SYMBOL_KEYWORDS = {
+    "Λ": "lambda",
+    "λ": "lambda",
 }
 EXTRA = {
     "currency": [0x24, 0xA2, 0xA3, 0xA5],
@@ -82,7 +88,7 @@ def catalog(source):
             glyph = chr(code)
             if code in ucd and glyph not in seen:
                 seen.add(glyph)
-                yield (group, glyph, ucd[code], COMMON_NAMES.get(glyph, ""), "")
+                yield (group, glyph, ucd[code], COMMON_NAMES.get(glyph, ""), SYMBOL_KEYWORDS.get(glyph, ""))
 
 
 def main():
