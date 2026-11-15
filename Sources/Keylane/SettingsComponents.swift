@@ -92,6 +92,22 @@ extension SettingsRow where Label == SettingsRowLabel {
     }
 }
 
+/// Keeps dependent controls with their parent as one row in a settings group.
+struct SettingsRowWithSuboptions<Row: View, Suboptions: View>: View {
+    @ViewBuilder let row: () -> Row
+    @ViewBuilder let suboptions: () -> Suboptions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            row()
+            VStack(alignment: .leading, spacing: 6, content: suboptions)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
 /// Settings pages choose a role; the shared component owns typography.
 struct SettingsTitle: View {
     enum Role { case row, section }
