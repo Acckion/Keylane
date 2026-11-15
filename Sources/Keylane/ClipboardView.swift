@@ -243,11 +243,13 @@ struct ClipboardPreferences: View {
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                SettingsPicker("保留历史记录", selection: binding(\.retentionDays)) {
+                SettingsPicker("保留历史记录", detail: "选择「无限」后不按时间清理，条数和容量限制仍适用。",
+                               selection: binding(\.retentionDays)) {
                     Text("7 天").tag(7)
                     Text("30 天").tag(30)
                     Text("3 个月").tag(90)
                     Text("1 年").tag(365)
+                    Text("无限").tag(ClipboardLimits.unlimitedRetentionDays)
                 }
             }.settingsAnchor(.clipboardRetention)
             SettingsGroup {
