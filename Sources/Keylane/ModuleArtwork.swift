@@ -7,7 +7,8 @@ enum ModuleArtwork {
     private static let settingsNames = [
         "general": "general", "launcher": "launcher", "keyboard": "keyboard", "hotkeys": "hotkeys",
         "menu-bar": "menu-bar", "permissions": "permissions", "advanced": "advanced", "about": "about",
-        "applications": "applications", "files": "file-search", "screenshots": "screenshots",
+        "applications": "applications", SettingsItem.applicationAutoQuit.page: "auto-quit",
+        "files": "file-search", "screenshots": "screenshots",
         "clipboard": "clipboard-history", "calendar": "calendar", "shortcuts": "shortcuts",
         "links": "quicklinks", "script-commands": "script-commands",
         "keylane.calculator": "calculator", "keylane.system-tools": "system-actions",
@@ -71,13 +72,12 @@ enum ModuleArtwork {
                 .appendingPathComponent("Resources/ModuleArtwork/\(name).png")
         }
         #endif
-        // Artwork is displayed at up to 36 points. Decode at Retina size
-        // rather than retaining a 256×256 bitmap for each module.
+        // Decode near display size rather than retaining a 256×256 bitmap for each module.
         guard let url,
               let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 96,
+                kCGImageSourceThumbnailMaxPixelSize: name == "auto-quit" ? 120 : 96,
                 kCGImageSourceShouldCacheImmediately: true
               ] as CFDictionary) else { return nil }
         let artwork = NSImage(cgImage: image, size: .zero)

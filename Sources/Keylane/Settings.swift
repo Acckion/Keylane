@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var history = ["applications"]
     @State private var historyIndex = 0
     private var page: LauncherSettingsPage? { state.catalog.page(selected) ?? state.catalog.pages.first }
+    private var showsPageHeader: Bool { page?.parentID == nil || page?.centeredHeader == true }
 
     private var loading: AnyPublisher<Bool, Never>? {
         let work = page?.loading
@@ -31,15 +32,19 @@ struct SettingsView: View {
         } detail: {
             detailPage
         }.toggleStyle(SettingsSwitchStyle())
-        .navigationTitle(headerScrolledAway || page?.parentID != nil ? (page?.title ?? "设置") : "")
+        .navigationTitle(headerScrolledAway || !showsPageHeader ? (page?.title ?? "设置") : "")
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .preferredColorScheme(state.colorScheme)
         .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
         .onAppear {
             selected = state.catalog.page(state.page)?.id ?? state.catalog.pages.first?.id ?? "applications"
-            history = [selected]
-            historyIndex = 0
+            if let parent = state.catalog.page(selected)?.parentID, state.catalog.page(parent) != nil {
+                history = [parent, selected]
+            } else {
+                history = [selected]
+            }
+            historyIndex = history.count - 1
             if state.page != selected { state.select(selected) }
         }
         .onChange(of: state.catalog.pages.map(\.id)) { _, pages in
@@ -69,11 +74,21 @@ struct SettingsView: View {
             query = ""
             target = nil
         }
-        .toolbar { prioritizedHistoryToolbar }
+        .toolbar {
+            prioritizedHistoryToolbar
+            if let page, let action = page.toolbarAction {
+                ToolbarSpacer(.flexible, placement: .automatic)
+                ToolbarItem(placement: .automatic) {
+                    action()
+                        .id(page.id)
+                        .disabled(state.extensionEnabled(for: page.parentID ?? page.id)?.wrappedValue == false)
+                }
+            }
+        }
     }
 
     private var detailPage: some View {
-        SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, showsHeader: page?.parentID == nil, headerScrolledAway: $headerScrolledAway) {
+        SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, showsHeader: showsPageHeader, centeredHeader: page?.centeredHeader == true, headerScrolledAway: $headerScrolledAway) {
             let owner = page?.parentID ?? selected
             let activation = state.titlebar(for: owner)
             if let page, let activation, activation.permissionStatus != nil {

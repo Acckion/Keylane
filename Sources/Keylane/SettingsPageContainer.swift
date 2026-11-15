@@ -11,17 +11,20 @@ struct SettingsPageContainer<Content: View>: View {
     let subtitle: String
     let target: String?
     let showsHeader: Bool
+    let centeredHeader: Bool
     @ViewBuilder let content: () -> Content
     @Binding var headerScrolledAway: Bool
     @Environment(\.colorScheme) private var scheme
 
-    init(pageID: String, title: String, symbol: String, subtitle: String, target: String?, showsHeader: Bool = true, headerScrolledAway: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) {
+    init(pageID: String, title: String, symbol: String, subtitle: String, target: String?, showsHeader: Bool = true, centeredHeader: Bool = false,
+         headerScrolledAway: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) {
         self.pageID = pageID
         self.title = title
         self.symbol = symbol
         self.subtitle = subtitle
         self.target = target
         self.showsHeader = showsHeader
+        self.centeredHeader = centeredHeader
         self._headerScrolledAway = headerScrolledAway
         self.content = content
     }
@@ -33,7 +36,7 @@ struct SettingsPageContainer<Content: View>: View {
                     Color.clear.frame(height: 0).accessibilityHidden(true).id(Anchor.top)
                     VStack(spacing: 16) {
                         if showsHeader {
-                            SettingsPageHeader(pageID: pageID, title: title, symbol: symbol, subtitle: subtitle)
+                            SettingsPageHeader(pageID: pageID, title: title, symbol: symbol, subtitle: subtitle, centered: centeredHeader)
                                 .onGeometryChange(for: Bool.self) {
                                     $0.frame(in: .scrollView).maxY <= 0
                                 } action: { headerScrolledAway = $0 }

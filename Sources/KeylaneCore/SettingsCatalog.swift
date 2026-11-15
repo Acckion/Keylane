@@ -13,7 +13,7 @@ public struct SettingsItem: Identifiable, Equatable {
     }
 
     public static let iPhoneApplications = SettingsItem(id: "iphone-applications", page: "applications", title: "iPhone 应用（实验性）", keywords: "手机 镜像 Xcode device iPhone")
-    public static let applicationAutoQuit = SettingsItem(id: "application-auto-quit", page: "applications", title: "自动退出", keywords: "闲置 退出 auto quit idle")
+    public static let applicationAutoQuit = SettingsItem(id: "application-auto-quit", page: "applications-auto-quit", title: "自动退出", keywords: "应用程序 闲置 退出 默认 时长 auto quit idle duration")
     public static let applicationScopes = SettingsItem(id: "scopes", page: "applications", title: "应用搜索范围", keywords: "应用 文件夹 applications folders scope")
     public static let applicationFavorites = SettingsItem(id: "favorites", page: "applications", title: "收藏", keywords: "排序 favorite pin")
     public static let screenshotColumns = SettingsItem(id: "screenshot-columns", page: "screenshots", title: "截图列数", keywords: "screenshots grid columns 截屏 缩略图")
