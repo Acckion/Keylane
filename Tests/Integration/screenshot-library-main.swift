@@ -143,6 +143,7 @@ struct ScreenshotLibraryCheck {
 
         try await verifyLiveChanges(library, folder: folder, image: qr, movie: movie)
         try await verifyOCRLifecycle(in: folder, defaults: defaults)
+        try await verifyRetention()
         print("Screenshot scope, live changes, mixed media, latest image, Quick Look thumbnail, OCR and QR, file copy, pinning, grid zoom, and trash passed")
     }
 
@@ -364,6 +365,78 @@ struct ScreenshotLibraryCheck {
         let image = code.composited(over: CIImage(color: .white)).cropped(to: canvas)
         try CIContext().writePNGRepresentation(of: image, to: url, format: .RGBA8,
                                                colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+    }
+
+    @MainActor private static func verifyRetention() async throws {
+        let id = "org.keylane.test.retention." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: id)!
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(id)
+        let scope = root.appendingPathComponent("screenshots", isDirectory: true)
+        let trash = root.appendingPathComponent("test-trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: false)
+        defer {
+            defaults.removePersistentDomain(forName: id)
+            try? FileManager.default.removeItem(at: root)
+        }
+        defaults.set(try JSONEncoder().encode([ScreenshotScope(path: scope.path, bookmark: nil)]), forKey: "screenshotScopes")
+        let old = Calendar.current.date(byAdding: .day, value: -10, to: Date())!
+        func fixture(_ name: String, in directory: URL = scope, time: Date = old) throws -> URL {
+            let url = directory.appendingPathComponent(name)
+            try Data("fixture".utf8).write(to: url)
+            try FileManager.default.setAttributes([.creationDate: time, .modificationDate: time], ofItemAtPath: url.path)
+            return url
+        }
+
+        let expired = try fixture("Screenshot expired.png")
+        let movie = try fixture("Screen Recording expired.mov")
+        let pinned = try fixture("Screenshot pinned.png")
+        let recent = try fixture("Screenshot recent.png", time: Date())
+        let other = try fixture("Family photo.png")
+        let outside = try fixture("Screenshot outside.png", in: root)
+        let failing = try fixture("Screenshot trash failure.png")
+        try FileManager.default.createSymbolicLink(at: scope.appendingPathComponent("Screenshot symlink.png"), withDestinationURL: outside)
+        let moveFixture: (URL) throws -> Void = { url in
+            if url.lastPathComponent == failing.lastPathComponent { throw CocoaError(.fileWriteNoPermission) }
+            try FileManager.default.moveItem(at: url, to: trash.appendingPathComponent(url.lastPathComponent))
+        }
+
+        let initial = ScreenshotLibrary(defaults: defaults, trashExpiredItem: moveFixture)
+        try require(initial.retention == .unlimited, "Existing installs must default to unlimited")
+        initial.enabled = true
+        initial.start()
+        try await wait("retention fixture scan") { !initial.scanning && !initial.results.isEmpty }
+        try require(FileManager.default.fileExists(atPath: expired.path), "Unlimited removed a file")
+        guard let pinnedItem = initial.results.first(where: { $0.name == pinned.lastPathComponent }) else { throw CheckError.failure("Missing pin fixture") }
+        try initial.togglePin(pinnedItem)
+        initial.enabled = false
+        let renamed = scope.appendingPathComponent("Screenshot pinned renamed.png")
+        try FileManager.default.moveItem(at: pinned, to: renamed)
+
+        let library = ScreenshotLibrary(defaults: defaults, trashExpiredItem: moveFixture)
+        library.includeAll = true
+        library.enabled = true
+        library.retention = .week
+        library.retention = .unlimited
+        try await Task.sleep(for: .milliseconds(200))
+        try require(FileManager.default.fileExists(atPath: expired.path), "Switching to unlimited must cancel pending cleanup")
+        library.retention = .week
+        try await wait("background retention with page closed") { library.retentionFailures == 1 }
+        try require(FileManager.default.fileExists(atPath: trash.appendingPathComponent(expired.lastPathComponent).path)
+                    && FileManager.default.fileExists(atPath: trash.appendingPathComponent(movie.lastPathComponent).path),
+                    "Expired screenshot and movie must go to Trash")
+        for protected in [renamed, recent, other, outside, failing] {
+            try require(FileManager.default.fileExists(atPath: protected.path), "Unexpected removal: \(protected.lastPathComponent)")
+        }
+        try require(library.pinnedIDs.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+                    == [renamed.resolvingSymlinksInPath().path], "Renamed pin must survive restart and cleanup")
+        try require(ScreenshotLibrary(defaults: defaults).retention == .week, "Retention must persist")
+        library.enabled = false
+        let disabled = try fixture("Screenshot while disabled.png")
+        library.retention = .day
+        try await Task.sleep(for: .milliseconds(200))
+        try require(FileManager.default.fileExists(atPath: disabled.path), "Disabled extension started cleanup")
+        print("PASS screenshot retention: unlimited, cancellation, background trash, pin rename, ordinary media, scope, and permission failure")
     }
 
     @MainActor private static func wait(_ label: String = "", _ condition: () -> Bool) async throws {
