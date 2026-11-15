@@ -27,9 +27,44 @@ final class QuicklinksController: ObservableObject {
     private let openURL: (URL) -> Bool
     private var pendingTemplate: QuicklinkTemplate?
 
-    init(preferences: UserDefaults = .standard, openURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) }) {
+    private let defaultHandler: (URL) -> URL?
+    private let applicationURL: (String) -> URL?
+    private let openWithApplication: (URL, URL, @escaping (Error?) -> Void) -> Void
+
+    init(preferences: UserDefaults = .standard,
+         openURL: @escaping (URL) -> Bool = { NSWorkspace.shared.open($0) },
+         defaultHandler: @escaping (URL) -> URL? = { NSWorkspace.shared.urlForApplication(toOpen: $0) },
+         applicationURL: @escaping (String) -> URL? = { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) },
+         openWithApplication: @escaping (URL, URL, @escaping (Error?) -> Void) -> Void = { url, application, completion in
+             NSWorkspace.shared.open([url], withApplicationAt: application, configuration: .init()) { _, error in completion(error) }
+         }) {
         self.preferences = preferences
         self.openURL = openURL
+        self.defaultHandler = defaultHandler
+        self.applicationURL = applicationURL
+        self.openWithApplication = openWithApplication
+    }
+
+    static func applicationName(for identifier: String?) -> String {
+        guard let identifier else { return "系统默认" }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) else {
+            return "应用不可用（\(identifier)）"
+        }
+        return FileManager.default.displayName(atPath: url.path)
+    }
+
+    static func chooseApplication(_ completion: @escaping (String) -> Void) {
+        guard var window = NSApp.keyWindow else { return }
+        while let sheet = window.attachedSheet { window = sheet }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        panel.prompt = "选择应用"
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url,
+                  let identifier = Bundle(url: url)?.bundleIdentifier else { return }
+            completion(identifier)
+        }
     }
 
     var library: QuicklinkLibrary { .init(links: links) }
@@ -128,7 +163,7 @@ final class QuicklinksController: ObservableObject {
         do {
             let template = try link.parsedTemplate(context: templateContext())
             if template.parameters.isEmpty {
-                try open(template.url())
+                try open(template.url(), applicationID: link.openingApplicationID)
                 return true
             }
             pendingTemplate = template
@@ -144,7 +179,7 @@ final class QuicklinksController: ObservableObject {
     func submit() -> Bool {
         guard let pendingTemplate else { return false }
         do {
-            try open(pendingTemplate.url(values: values))
+            try open(pendingTemplate.url(values: values), applicationID: argumentLink?.openingApplicationID)
             clearInput()
             return true
         } catch {
@@ -172,9 +207,9 @@ final class QuicklinksController: ObservableObject {
         selectedID = nil
     }
 
-    private func open(_ url: URL) throws {
+    private func open(_ url: URL, applicationID: String?) throws {
+        let target = url.isFileURL ? url.resolvingSymlinksInPath() : url
         if url.isFileURL {
-            let target = url.resolvingSymlinksInPath()
             let values: URLResourceValues
             do {
                 values = try target.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isApplicationKey, .isAliasFileKey, .isReadableKey])
@@ -190,10 +225,23 @@ final class QuicklinksController: ObservableObject {
                       && target.pathExtension.lowercased() != "command") else {
                 throw Message("请选择普通文件或文件夹。")
             }
-            guard openURL(target) else { throw Message("无法打开本地文件或文件夹。") }
-            return
         }
-        guard openURL(url) else { throw Message("无法打开快捷链接。") }
+        if let applicationID {
+            guard let application = applicationURL(applicationID) else {
+                throw Message("指定的打开应用不可用（\(applicationID)）。请重新选择应用。")
+            }
+            openWithApplication(target, application) { [weak self] error in
+                guard let error else { return }
+                DispatchQueue.main.async { self?.feedback("指定应用无法打开此链接：\(error.localizedDescription)", .failure) }
+            }
+        } else {
+            if QuicklinkTemplate.isApplicationLink(target), defaultHandler(target) == nil {
+                throw Message("没有应用可以打开 \(target.scheme ?? "") 链接。")
+            }
+            guard openURL(target) else {
+                throw Message(url.isFileURL ? "无法打开本地文件或文件夹。" : "无法打开快捷链接。")
+            }
+        }
     }
 
     func importLinks() {

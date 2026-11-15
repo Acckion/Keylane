@@ -62,6 +62,7 @@ struct Launcher: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$pageID),
             ViewObservation.changes(model.$query),
+            ViewObservation.changes(model.scripts.$rootArgumentScript),
             ViewObservation.changes(model.$appearance),
             ViewObservation.changes(model.$interfaceSize),
             ViewObservation.changes(model.$windowMode),
@@ -95,6 +96,10 @@ struct Launcher: View {
         presentation.page == model.pageID && selectionQuery == model.query
     }
 
+    private var rootScriptArguments: ScriptCommand? {
+        model.pageID == .root ? model.scripts.rootArgumentScript : nil
+    }
+
     private func selectionIndex(in results: [Entry]) -> Int? {
         guard selectionIsCurrent else { return nil }
         return selection.index(in: results, identifiedBy: \.commandID)
@@ -114,6 +119,7 @@ struct Launcher: View {
 
     private func activateResult(_ id: CommandID, selectOnly: Bool = false) {
         guard selectionIsCurrent, let row = rows.first(where: { $0.commandID == id }) else { return }
+        if rootScriptArguments != nil { model.scripts.cancelRootArguments() }
         selection.id = id
         if !selectOnly { model.perform(row) }
     }
@@ -200,8 +206,10 @@ struct Launcher: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: actions)
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: appMenu)
         .background {
-            Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
-            Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
+            if rootScriptArguments == nil {
+                Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
+                Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
+            }
             if let shortcutSubmit = page?.shortcutSubmit {
                 Button("") { if page?.optionSubmit != nil { closeMenus() }; shortcutSubmit() }
                     .keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
@@ -209,9 +217,11 @@ struct Launcher: View {
             if let optionSubmit = page?.optionSubmit {
                 Button("") { closeMenus(); optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
             }
-            pageMenuShortcuts
-            ForEach(0..<min(10, results.count), id: \.self) { index in
-                Button("") { activateResult(results[index].commandID) }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
+            if rootScriptArguments == nil {
+                pageMenuShortcuts
+                ForEach(0..<min(10, results.count), id: \.self) { index in
+                    Button("") { activateResult(results[index].commandID) }.keyboardShortcut(KeyEquivalent(Character(String((index + 1) % 10))), modifiers: .command).hidden().accessibilityHidden(true)
+                }
             }
         }
         .onChange(of: firstSelectable(results), initial: true) { _, first in
@@ -268,6 +278,7 @@ struct Launcher: View {
             mainSearchExpanded = false
             if presentation.page == .root { resetResultSelection() }
             dismissArgumentEditor()
+            cancelRootScriptArguments()
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
             updatePresentation(visible: false)
@@ -283,6 +294,7 @@ struct Launcher: View {
         }
         .onChange(of: model.query) { _, _ in
             guard presentation.page == model.pageID else { return }
+            if rootScriptArguments != nil { cancelRootScriptArguments() }
             if showsFileResults && FileSearchLocation.typedURL(model.query) != nil { fileType = "all" }
             if launcherVisible { refreshActiveQuery() }
             if selectionQuery != model.query { resetResultSelection() }
@@ -302,12 +314,14 @@ struct Launcher: View {
             if model.pageID == .root { resetResultSelection() }
         }
         .onChange(of: model.pageID) { _, _ in updatePresentation(visible: launcherVisible) }
+        .onChange(of: rootScriptArguments) { _, _ in closeMenus() }
         .onChange(of: moduleActivation?.id) { _, _ in updatePresentation(visible: launcherVisible) }
     }
 
     private func updatePresentation(visible: Bool) {
         let wasVisible = launcherVisible
         let current = model.pageID
+        if !visible || current != .root { cancelRootScriptArguments() }
         let activation = moduleActivation
         let previousActivation = presentedModuleActivation
         let change = presentation.update(page: current, visible: visible, activationID: activation?.id)
@@ -399,6 +413,7 @@ struct Launcher: View {
     }
     private func escape() {
         if submenu != nil { dismissSubmenu(); return }
+        if rootScriptArguments != nil { cancelRootScriptArguments(); return }
         if argumentTarget != nil { dismissArgumentEditor(); focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
         else if model.pageID != .root && model.launcherEscapeBehavior == .backOrClose { model.pageID = .root }
@@ -424,17 +439,24 @@ struct Launcher: View {
 
     private var searchBar: some View {
         HStack(spacing: 12) {
-            if model.pageID != .root { backButton { model.pageID = .root } }
-            if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
-            SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
-                        back: page?.moveHorizontal.map { move in { move(-1) } },
-                        forward: page?.moveHorizontal.map { move in { move(1) } },
-                        navigateWhileTyping: page?.navigateWhileTyping ?? false)
-                .frame(height: 30)
-            if let accessory = page?.searchAccessory { accessory() }
-            else if showsTypeFilter {
-                Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
-                    .accessibilityHidden(true)
+            if let script = rootScriptArguments {
+                backButton(cancelRootScriptArguments)
+                RootScriptArgumentBar(script: script, controller: model.scripts, submit: run)
+                    .id(script.id)
+            } else {
+                if model.pageID != .root { backButton { model.pageID = .root } }
+                if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
+                SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
+                            back: page?.moveHorizontal.map { move in { move(-1) } },
+                            forward: page?.moveHorizontal.map { move in { move(1) } },
+                            navigateWhileTyping: page?.navigateWhileTyping ?? false,
+                            spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil)
+                    .frame(height: 30)
+                if let accessory = page?.searchAccessory { accessory() }
+                else if showsTypeFilter {
+                    Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
+                        .accessibilityHidden(true)
+                }
             }
         }.padding(.horizontal, model.pageID == .root ? 19 : VisualStyle.launcherEdgeInset)
             .frame(height: model.pageID == .root ? 61 : VisualStyle.launcherControlDiameter + 2 * VisualStyle.launcherEdgeInset)
@@ -626,7 +648,7 @@ struct Launcher: View {
         let feedback = application ? model.footerFeedback.current : nil
         let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
             ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
-        let showsActions = page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty
+        let showsActions = rootScriptArguments == nil && (page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty)
         let primaryLabel = LauncherFooterButtonLabel(title: primaryTitle,
             keys: page?.contentPlacement == .form && page?.shortcutSubmit != nil ? ["⌘", "↩"] : ["↩"])
         let actionsLabel = LauncherFooterButtonLabel(title: "操作", keys: ["⌘", "K"])
@@ -863,6 +885,10 @@ struct Launcher: View {
         }.frame(width: Self.footerMenuWidth)
     }
     private func toggleMenu(application: Bool) {
+        if rootScriptArguments != nil {
+            guard application else { return }
+            cancelRootScriptArguments()
+        }
         if !application, page?.contentPlacement == .form, menuItems(applicationMenu: false).isEmpty { return }
         model.compactExpanded = true
         let target: Menu = application ? .application : .actions
@@ -882,6 +908,7 @@ struct Launcher: View {
     private var primaryActionEnabled: Bool {
         guard presentation.page == model.pageID else { return false }
         if argumentTarget != nil { return true }
+        if rootScriptArguments != nil { return true }
         if model.pageID == .root || showsFileResults {
             guard let row = selectedEntry else { return false }
             return row.detail != "File" || !model.fileSearch.isSearching
@@ -891,6 +918,7 @@ struct Launcher: View {
 
     private var primaryTitle: String {
         if argumentTarget != nil { return "启动新实例" }
+        if rootScriptArguments != nil { return "运行脚本" }
         if let title = page?.primaryTitle?() { return title }
         if let row = selectedEntry {
             if let title = model.launcherModules?.primaryTitle(for: row) { return title }
@@ -902,6 +930,12 @@ struct Launcher: View {
         argumentTarget = nil
         argumentText = ""
         argumentsFocused = false
+    }
+
+    private func cancelRootScriptArguments() {
+        guard model.scripts.rootArgumentScript != nil else { return }
+        model.scripts.cancelRootArguments()
+        focusToken += 1
     }
 
     private func argumentEditor(_ target: LauncherAction.ArgumentForm) -> some View {
@@ -939,6 +973,11 @@ struct Launcher: View {
     }
     private func run() {
         guard presentation.page == model.pageID else { return }
+        if rootScriptArguments != nil {
+            guard !SearchField.isComposing else { return }
+            ScriptCommandsModule.runRootArguments(model)
+            return
+        }
         if let target = argumentTarget {
             do { target.submit(try ArgumentParser.parse(argumentText)) }
             catch { model.error = "参数引号或转义未完成。" }
