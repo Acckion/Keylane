@@ -1,6 +1,9 @@
 name: 问题反馈或功能建议
 description: 报告 Keylane 的问题，或提出改进建议
 body:
+  - type: markdown
+    attributes:
+      value: "Issue 公开可见。请勿在此报告安全漏洞或上传密钥、完整设置导出、剪贴板历史等个人数据；漏洞请按 SECURITY.md 私密报告。中文或 English 均可。"
   - type: dropdown
     id: category
     attributes:
