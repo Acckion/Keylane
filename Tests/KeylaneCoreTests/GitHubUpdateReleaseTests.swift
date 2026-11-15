@@ -47,4 +47,24 @@ final class GitHubUpdateReleaseTests: XCTestCase {
         XCTAssertFalse(release.isNewer(build: 27, than: "1.0.3", build: 26))
         XCTAssertFalse(release.isNewer(build: 25, than: "1.0.1", build: 26))
     }
+
+    func testHistoryIncludesPublishedNotesWithoutInstallerAssets() throws {
+        let data = Data("""
+        [
+          {"tag_name":"v1.0.0-alpha","draft":false,"prerelease":true,"assets":[]},
+          {"tag_name":"v1.0.2-beta.1","draft":false,"prerelease":true,"assets":[],
+           "name":"Beta 1","body":"- New search","published_at":"2026-11-13T14:30:57Z"},
+          {"tag_name":"v1.0.3","draft":true,"prerelease":false,"assets":[]}
+        ]
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let releases = try decoder.decode([GitHubUpdateRelease].self, from: data)
+        let history = GitHubUpdateRelease.history(in: releases)
+        XCTAssertEqual(history.map(\.tag), ["v1.0.2-beta.1", "v1.0.0-alpha"])
+        XCTAssertEqual(history.first?.title, "Beta 1")
+        XCTAssertEqual(history.first?.notes, "- New search")
+        XCTAssertNotNil(history.first?.publishedAt)
+        XCTAssertNil(GitHubUpdateRelease.latest(in: releases, includePrereleases: true))
+    }
 }
