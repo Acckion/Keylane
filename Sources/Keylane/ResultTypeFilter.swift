@@ -7,6 +7,8 @@ struct ResultFilterOption: Identifiable {
     let title: String
     let symbol: String
     var help: String? = nil
+    var iconPath: String? = nil
+    var subtitle: String? = nil
     static let clipboard: [Self] = [
         .init(id: "all", title: "全部类型", symbol: "list.bullet"),
         .init(id: "text", title: "仅文字", symbol: "textformat"),
@@ -89,6 +91,7 @@ struct ResultFilterPanel: View {
     var emptyTitle = "没有匹配类型"
     var navigation = "arrows"
     var width: CGFloat = 220
+    var maximumVisibleRows = 8
     let choose: (ResultFilterOption) -> Void
     let dismiss: () -> Void
     @State private var highlighted = 0
@@ -116,18 +119,29 @@ struct ResultFilterPanel: View {
                     }
                 Divider()
                 ScrollView {
-                    VStack(spacing: 3) {
+                    LazyVStack(spacing: 3) {
                         ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
                             LauncherMenuRow(title: option.title, symbol: option.symbol, selected: highlighted == index,
-                                            style: .filter, activate: { choose(option) }, highlight: { highlighted = index }) {
+                                            style: .filter, iconPath: option.iconPath,
+                                            activate: { choose(option) }, highlight: { highlighted = index }) {
                                 if let help = option.help {
                                     Image(systemName: "info.circle").help(help).accessibilityLabel(help)
+                                } else if let subtitle = option.subtitle {
+                                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                                        .lineLimit(1).truncationMode(.middle)
+                                        .frame(maxWidth: width / 2, alignment: .trailing)
                                 } else if selection == option.id { Image(systemName: "checkmark").font(.caption) }
                             }.id(option.id)
                         }
                         if options.isEmpty { Text(emptyTitle).foregroundStyle(.secondary).padding(14) }
                     }.padding(8)
-                }.frame(height: CGFloat(min(8, max(1, options.count))) * 43 + 16)
+                }.frame(height: CGFloat(min(maximumVisibleRows, max(1, options.count))) * 43 + 16)
+                    .onAppear {
+                        if let index = options.firstIndex(where: { $0.id == selection }) {
+                            highlighted = index
+                            proxy.scrollTo(selection)
+                        }
+                    }
             }.frame(width: width, alignment: .top)
         }
     }
@@ -163,6 +177,7 @@ struct LauncherMenuRow<Trailing: View>: View {
     var enabled = true
     var destructive = false
     var artwork: NSImage? = nil
+    var iconPath: String? = nil
     let activate: () -> Void
     let highlight: () -> Void
     @ViewBuilder let trailing: () -> Trailing
@@ -171,9 +186,10 @@ struct LauncherMenuRow<Trailing: View>: View {
     var body: some View {
         Button(action: activate) {
             HStack(spacing: style == .action ? VisualStyle.actionSpacing : 11) {
-                if artwork != nil || !symbol.isEmpty {
+                if artwork != nil || iconPath != nil || !symbol.isEmpty {
                     Group {
-                        if let artwork { Image(nsImage: artwork).resizable().scaledToFit().frame(width: 18, height: 18) }
+                        if let iconPath { WorkspaceItemIcon(path: iconPath).frame(width: 18, height: 18) }
+                        else if let artwork { Image(nsImage: artwork).resizable().scaledToFit().frame(width: 18, height: 18) }
                         else { Image(systemName: symbol).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome) }
                     }
                     .frame(width: style == .action ? VisualStyle.actionIconWidth : 20, height: 20)

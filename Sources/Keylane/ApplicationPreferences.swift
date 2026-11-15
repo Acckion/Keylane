@@ -59,27 +59,17 @@ struct ApplicationPreferences: View {
         let visibleApplications = filteredApplications ?? catalog.items
         return SettingsPageSections {
             SettingsGroup {
-                SettingsRow("自动退出", detail: "在下方应用列表的操作菜单中为应用开启。再次切到前台会重置计时。") {
-                    Text(autoQuit.rules.isEmpty ? "未开启" : "已配置 \(autoQuit.rules.count) 个应用")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                SettingsPicker("默认退出时长", detail: "只应用于已开启自动退出且使用默认时长的应用。",
-                               selection: Binding(get: { autoQuit.defaultMinutes }, set: autoQuit.setDefaultMinutes)) {
-                    ForEach(ApplicationAutoQuit.intervals, id: \.self) { minutes in
-                        Text("\(minutes) 分钟").tag(minutes)
+                Button {
+                    model.settingsPage = SettingsItem.applicationAutoQuit.page
+                } label: {
+                    SettingsRow(SettingsItem.applicationAutoQuit.title, detail: ApplicationAutoQuitPreferences.summary) {
+                        Image(systemName: "chevron.forward").imageScale(.small).foregroundStyle(.secondary)
                     }
+                    .contentShape(Rectangle())
                 }
-                ForEach(autoQuit.rules.keys.sorted(), id: \.self) { path in
-                    let url = URL(fileURLWithPath: path)
-                    if autoQuit.minutes(for: url) != 0 {
-                        autoQuitPicker(model.appName(url), detail: path, url: url)
-                    } else {
-                        SettingsRow(model.appName(url), detail: "原应用已移动、删除或替换。") {
-                            Button("移除规则") { autoQuit.removeRule(at: path) }
-                        }
-                    }
-                }
-            }.settingsAnchor(.applicationAutoQuit).disabled(!model.applicationsEnabled)
+                .buttonStyle(.plain)
+                .help("打开自动退出设置")
+            }.disabled(!model.applicationsEnabled)
             SettingsGroup {
                 SettingsPicker("快捷键行为", detail: "触发应用快捷键时执行的操作。",
                                selection: Binding(get: { model.applicationHotkeyAction }, set: { model.applicationHotkeyAction = $0 })) {
