@@ -204,6 +204,53 @@ let copyText = ScriptOutputText.plain(controller.result!.output)
 precondition(pasteboard.setString(copyText, forType: .string))
 precondition(pasteboard.string(forType: .string) == limited)
 print("PASS relative working directory, inherited LANG, default TERM, timeout, cancel, and truncated output on a named pasteboard")
+try write("root-arguments.sh", """
+#!/bin/sh
+# @raycast.schemaVersion 1
+# @raycast.title Root Arguments
+# @raycast.mode fullOutput
+# @raycast.needsConfirmation true
+# @raycast.argument1 {"placeholder":"查询","percentEncoded":true}
+# @raycast.argument2 {"type":"password","placeholder":"口令","optional":true}
+# @raycast.argument3 {"type":"dropdown","placeholder":"模式","data":[{"title":"查询模式","value":"lookup"}]}
+printf '%s|%s|%s|%s' "$#" "$1" "${#2}" "$3"
+""")
+precondition(wait(5) { controller.entries.contains { $0.title == "Root Arguments" } })
+let rootCommand = controller.entries.first { $0.title == "Root Arguments" }!
+precondition(controller.beginRootArguments(rootCommand))
+let firstSession = controller.rootArgumentSession
+controller.rootArgumentValues = ["", "fixture-secret", "lookup"]
+precondition(!controller.validateRootArguments() && controller.rootArgumentError.contains("查询"))
+precondition(controller.rootArgumentValues[1].isEmpty)
+controller.rootArgumentValues = ["a +/%中", "fixture-secret", "not-a-choice"]
+controller.submitRootArguments(confirmed: true) { _ in preconditionFailure("Invalid dropdown must not launch") }
+precondition(controller.rootArgumentError.contains("有效选项") && controller.rootArgumentValues[1].isEmpty)
+controller.rootArgumentValues = ["a +/%中", "fixture-secret", "lookup"]
+controller.submitRootArguments { _ in preconditionFailure("Confirmation is required") }
+precondition(!controller.running)
+controller.cancelRootArguments()
+precondition(controller.rootArgumentValues.isEmpty && controller.rootArgumentSession == nil)
+precondition(controller.beginRootArguments(rootCommand))
+precondition(firstSession != controller.rootArgumentSession && controller.rootArgumentValues == ["", "", ""])
+controller.rootArgumentValues = ["a +/%中", "", "lookup"]
+var startedRootRun = false
+controller.submitRootArguments(confirmed: true) {
+    precondition($0 == rootCommand && controller.rootArgumentValues.isEmpty)
+    startedRootRun = true
+}
+precondition(startedRootRun && wait(5) { controller.result?.output == "3|a%20%2B%2F%25%E4%B8%AD|0|lookup" })
+precondition(controller.beginRootArguments(rootCommand))
+controller.rootArgumentValues = ["two", "fixture", "lookup"]
+controller.submitRootArguments(confirmed: true) { _ in
+    precondition(controller.rootArgumentValues.isEmpty && controller.argumentValues[1].isEmpty)
+}
+precondition(wait(5) { controller.result?.output == "3|two|7|lookup" })
+controller.setLauncherVisible(true)
+precondition(controller.beginRootArguments(rootCommand))
+controller.rootArgumentValues[1] = "fixture-secret"
+controller.setLauncherVisible(false)
+precondition(controller.rootArgumentScript == nil && controller.rootArgumentValues.isEmpty)
+print("PASS root arguments, confirmation, required fields, dropdowns, percent encoding, and clearing passwords")
 // Modify and rename a nested command while the watcher is running.
 let nested = root.appendingPathComponent("nested", isDirectory: true)
 try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: false)
