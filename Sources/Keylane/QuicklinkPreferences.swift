@@ -103,11 +103,18 @@ private struct QuicklinkEditor: View {
         Form {
             TextField("名称", text: $link.title)
             TextField("链接", text: $link.template, prompt: Text("https://example.com/?q={关键词}"))
-            Text("可输入网页、邮件、本地绝对路径或 file:// 链接。网页链接可使用 {名称} 或 {名称=默认值}。")
+            Text("可输入网页、邮件、应用深链接或本地路径。支持参数的链接可使用 {名称} 或 {名称=默认值}。")
                 .font(.caption).foregroundStyle(.secondary)
             if link.usesDynamicPlaceholders == true {
                 Link("动态占位符指南", destination: URL(string: "https://manual.raycast.com/dynamic-placeholders")!)
                     .font(.caption)
+            }
+            LabeledContent("打开方式") {
+                QuicklinkOpeningApplicationMenu(identifier: link.openingApplicationID) {
+                    QuicklinksController.chooseApplication { link.openingApplicationID = $0 }
+                } reset: {
+                    link.openingApplicationID = nil
+                }
             }
             TextField("标签（用逗号分隔）", text: $tags)
             if let error { Text(error).foregroundStyle(.red) }

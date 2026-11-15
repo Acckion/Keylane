@@ -84,6 +84,7 @@ func verify() throws {
     }
     try verifyEditorNavigation()
     try verifyLocalLinks()
+    try verifyApplicationLinks()
     print("QUICKLINKS_INTEGRATION_OK editor_hide=true editor_cancel=true legacy=4 cancel=true retry=true import=true duplicate=true reload=true corrupt_protected=true")
 }
 
@@ -211,6 +212,73 @@ func verifyLocalLinks() throws {
     controller.load()
     precondition(controller.links.map(\.id).contains(stored.id))
     print("PASS local quicklinks: cancel, Chinese and literal URL characters, save/edit/open, permissions, missing targets, import without launch, and reload")
+}
+
+func verifyApplicationLinks() throws {
+    let suite = "org.keylane.quicklinks.apps." + UUID().uuidString
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    try QuicklinkLibrary(links: []).save(to: preferences)
+    let application = URL(fileURLWithPath: "/Applications/Fixture.app", isDirectory: true)
+    var appAvailable = true
+    var handlerAvailable = true
+    var defaultOpened: [URL] = []
+    var explicitOpened: [(URL, URL)] = []
+    var finishOpen: ((Error?) -> Void)?
+    var error = ""
+    let controller = QuicklinksController(preferences: preferences, openURL: {
+        defaultOpened.append($0)
+        return true
+    }, defaultHandler: { _ in handlerAvailable ? application : nil },
+       applicationURL: { id in appAvailable && id == "org.keylane.fixture" ? application : nil },
+       openWithApplication: { url, app, completion in
+           explicitOpened.append((url, app))
+           finishOpen = completion
+       })
+    controller.feedback = { message, _ in error = message }
+    controller.load()
+    let deepLink = Quicklink(title: "Fixture", template: "fixture://open?item=Note")
+    precondition(controller.launch(deepLink) {})
+    precondition(defaultOpened.map(\.absoluteString) == [deepLink.template])
+    handlerAvailable = false
+    precondition(!controller.launch(deepLink) {} && error.contains("没有应用"))
+    precondition(defaultOpened.count == 1)
+
+    controller.edit(deepLink)
+    controller.draft?.openingApplicationID = "org.keylane.fixture"
+    _ = controller.leaveEditor(currentPage: QuicklinksController.editorPage)
+    precondition(controller.links.isEmpty)
+    controller.edit(deepLink)
+    precondition(controller.draft?.openingApplicationID == nil)
+    controller.draft?.openingApplicationID = "org.keylane.fixture"
+    controller.draft?.template = "fixture://open?item={item}"
+    precondition(controller.saveDraft() == deepLink.id)
+    _ = controller.leaveEditor(currentPage: QuicklinksController.editorPage)
+    controller.stop()
+    controller.load()
+    let configured = controller.links[0]
+    var presented = false
+    precondition(!controller.launch(configured) { presented = true } && presented)
+    controller.clearInput()
+    precondition(!controller.submit() && explicitOpened.isEmpty)
+
+    precondition(!controller.launch(configured) {})
+    controller.values["item"] = "中文 /#"
+    appAvailable = false
+    precondition(!controller.submit() && controller.inputError?.contains("指定") == true)
+    precondition(explicitOpened.isEmpty && defaultOpened.count == 1)
+    appAvailable = true
+    precondition(controller.submit())
+    precondition(explicitOpened.count == 1 && explicitOpened[0].1 == application)
+    precondition(explicitOpened[0].0.absoluteString == "fixture://open?item=%E4%B8%AD%E6%96%87%20%2F%23")
+    finishOpen?(CocoaError(.fileReadUnknown))
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+    precondition(error.contains("指定应用无法打开") && defaultOpened.count == 1)
+
+    controller.edit(configured)
+    controller.draft?.openingApplicationID = nil
+    precondition(controller.saveDraft() == configured.id && controller.links[0].openingApplicationID == nil)
+    print("PASS Quicklink application links: default route, no handler, explicit route, missing app, failure, encoding and editor cancellation")
 }
 
 try verify()
