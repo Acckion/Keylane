@@ -20,6 +20,9 @@ struct Launcher: View {
     private var launcherVisible: Bool { presentation.visible }
     private var page: LauncherPage? { model.activeLauncherPage }
     private var showsFileResults: Bool { page?.contentPlacement == .fileResults }
+    private var showsRecentFiles: Bool {
+        showsFileResults && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     private var loading: AnyPublisher<Bool, Never>? {
         if model.pageID == .root {
             return model.searchesFilesHere ? model.fileSearch.$isSearching.eraseToAnyPublisher() : nil
@@ -140,14 +143,18 @@ struct Launcher: View {
                         FileSearchDetail(url: selectedIndex.map { URL(fileURLWithPath: results[$0].id) })
                     } emptyState: {
                         if model.fileSearch.isSearching {
-                            Text("正在搜索文件…").font(VisualStyle.rowText).foregroundStyle(.secondary)
+                            Text(showsRecentFiles ? "正在载入最近使用的文件…" : "正在搜索文件…")
+                                .font(VisualStyle.rowText).foregroundStyle(.secondary)
                         } else {
                             VStack(spacing: 12) {
-                                ResultDetailEmptyState(title: model.query.isEmpty ? "搜索文件" : "没有匹配结果",
-                                                       message: model.fileSearchStatus)
-                                Button("选择搜索文件夹…", systemImage: "folder") {
-                                    model.chooseFileSearchFolder(returnToLauncher: true)
-                                }.buttonStyle(ContentActionButtonStyle())
+                                let filtered = fileType != "all" && !model.fileResults.isEmpty
+                                ResultDetailEmptyState(title: showsRecentFiles ? "最近使用" : "没有匹配结果",
+                                                       message: filtered ? "没有符合当前类型的文件。" : model.fileSearchStatus)
+                                if !filtered {
+                                    Button("选择搜索文件夹…", systemImage: "folder") {
+                                        model.chooseFileSearchFolder(returnToLauncher: true)
+                                    }.buttonStyle(ContentActionButtonStyle())
+                                }
                             }
                         }
                     }
@@ -226,6 +233,11 @@ struct Launcher: View {
         }
         .onChange(of: firstSelectable(results), initial: true) { _, first in
             if selectionIsCurrent { selection.selectDefault(first) }
+        }
+        .onChange(of: showsRecentFiles ? results.map(\.commandID) : []) { _, ids in
+            if showsRecentFiles, selectionIsCurrent, let selected = selection.id, !ids.contains(selected) {
+                selection.id = firstSelectable(results)
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: VisualStyle.launcherCornerRadius, style: .continuous))
         .preferredColorScheme(model.colorScheme)
