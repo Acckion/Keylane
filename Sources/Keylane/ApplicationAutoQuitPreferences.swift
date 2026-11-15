@@ -95,12 +95,8 @@ struct ApplicationAutoQuitAddButton: View {
                 open = true
             }
         } label: {
-            Image(systemName: "plus").font(.system(size: 17)).frame(width: 24, height: 26)
+            Label("添加自动退出应用", systemImage: "plus").labelStyle(.iconOnly)
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .controlSize(.large)
-        .accessibilityLabel("添加自动退出应用")
         .help("添加自动退出应用")
         .disabled(!model.applicationsEnabled)
         .popover(isPresented: $open, arrowEdge: .bottom) {
@@ -160,7 +156,9 @@ private struct AutoQuitDurationPicker: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "clock")
-                Text(title(for: minutes, compact: true))
+                if minutes != ApplicationAutoQuit.useDefault {
+                    Text(title(for: minutes))
+                }
                 Image(systemName: open ? "chevron.up" : "chevron.down")
                     .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
             }
@@ -180,10 +178,9 @@ private struct AutoQuitDurationPicker: View {
         }
     }
 
-    private func title(for duration: Int, compact: Bool = false) -> String {
+    private func title(for duration: Int) -> String {
         if duration == ApplicationAutoQuit.useDefault, let defaultMinutes {
-            let title = compact ? "默认" : "使用默认时长"
-            return "\(title)（\(defaultMinutes) 分钟）"
+            return "使用默认时长（\(defaultMinutes) 分钟）"
         }
         return "\(duration) 分钟"
     }

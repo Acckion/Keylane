@@ -106,7 +106,7 @@ struct LauncherSettingsPage: Identifiable {
     var parentID: String? = nil
     var titlebar: SettingsTitlebarContribution?
     var trailingToolbar: (() -> AnyView)?
-    var trailingToolbarWidth: CGFloat = 214
+    var toolbarAction: (() -> AnyView)?
     var centeredHeader = false
     var guideURL: URL? = nil
     var loading: AnyPublisher<Bool, Never>?

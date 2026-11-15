@@ -74,7 +74,17 @@ struct SettingsView: View {
             query = ""
             target = nil
         }
-        .toolbar { prioritizedHistoryToolbar }
+        .toolbar {
+            prioritizedHistoryToolbar
+            if let page, let action = page.toolbarAction {
+                ToolbarSpacer(.flexible, placement: .automatic)
+                ToolbarItem(placement: .automatic) {
+                    action()
+                        .id(page.id)
+                        .disabled(state.extensionEnabled(for: page.parentID ?? page.id)?.wrappedValue == false)
+                }
+            }
+        }
     }
 
     private var detailPage: some View {
