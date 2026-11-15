@@ -104,7 +104,31 @@ struct ApplicationAutoQuitChecks {
             controller.stop()
             releaseProbe.signal()
         }
+        guard controller.defaultMinutes == 3, controller.minutes(for: fixture) == 0 else {
+            throw CheckFailure("The fixture was opted in by default")
+        }
+        controller.setMinutes(ApplicationAutoQuit.useDefault, for: fixture)
+        controller.setDefaultMinutes(5)
+        var loaded = ApplicationAutoQuit(defaults: defaults)
+        guard loaded.defaultMinutes == 5, loaded.minutes(for: fixture) == ApplicationAutoQuit.useDefault else {
+            throw CheckFailure("The default-backed rule did not persist")
+        }
         controller.setMinutes(1, for: fixture)
+        controller.setDefaultMinutes(10)
+        loaded = ApplicationAutoQuit(defaults: defaults)
+        guard loaded.defaultMinutes == 10, loaded.minutes(for: fixture) == 1 else {
+            throw CheckFailure("Changing the global default overwrote the application override")
+        }
+        controller.removeRule(at: fixture.path)
+        guard ApplicationAutoQuit(defaults: defaults).minutes(for: fixture) == 0 else {
+            throw CheckFailure("The removed rule was restored from preferences")
+        }
+        controller.setMinutes(ApplicationAutoQuit.useDefault, for: fixture)
+        guard ApplicationAutoQuit(defaults: defaults).minutes(for: fixture) == ApplicationAutoQuit.useDefault else {
+            throw CheckFailure("The application could not be added again with the default")
+        }
+        controller.setMinutes(1, for: fixture)
+        print("PASS opt-in, persisted default, independent override, removal, and re-add")
         guard controller.rules.count == 1 else { throw CheckFailure("The fixture must be the only auto-quit rule") }
 
         controller.start { true }
