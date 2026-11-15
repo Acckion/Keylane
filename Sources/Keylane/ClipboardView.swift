@@ -215,6 +215,7 @@ struct ClipboardPreferences: View {
     let controller: ClipboardController
     let model: Model
     @StateObject private var observation: ViewObservation
+    @State private var showsSequenceSettings = false
     @State private var excludedApplications: [String: URL] = [:]
 
     init(controller: ClipboardController, model: Model) {
@@ -294,28 +295,17 @@ struct ClipboardPreferences: View {
                     }
                 }
             }
-            SettingsSectionTitle(title: "命令").settingsAnchor(.clipboardReplay)
+            SettingsSectionTitle(title: "命令")
             CommandSettingsList(items: ["clipboard", ClipboardSequenceCommand.paste.rawValue,
-                                        ClipboardSequenceCommand.reset.rawValue], id: \.self) { id in
+                                        ClipboardSequenceCommand.reset.rawValue], id: \.self,
+                                disclosure: commandDisclosure) { id in
                 if let command = ClipboardSequenceCommand(rawValue: id) {
                     sequenceCommandEntry(command)
                 } else {
-                    historyCommandEntry { controller.showsHistorySettings = true }
+                    historyCommandEntry()
                 }
             }
-            SettingsGroup {
-                SettingsPicker("顺序超时", detail: "超过所选间隔后，下次粘贴会从最新复制的记录开始。",
-                               selection: binding(\.sequenceTimeout)) {
-                    ForEach(ClipboardController.sequenceTimeouts, id: \.self) { seconds in
-                        Text(seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分钟").tag(seconds)
-                    }
-                }
-                Divider()
-                Toggle(isOn: binding(\.sequenceAddsNewline)) {
-                    SettingsRowLabel(title: "文字末尾追加换行", detail: "顺序粘贴单个文字项目时使用纯文本并追加一行。")
-                }
-            }
-            .disabled(model.disabledCommands.contains(ClipboardSequenceCommand.paste.rawValue))
+            ClipboardHistoryStatistics(controller: controller)
             SettingsSectionTitle(title: "AI 扩展")
             CommandSettingsList(items: ["询问剪贴板"], id: \.self) { title in
                 unavailableCommand(title, symbol: "sparkles")
@@ -323,43 +313,61 @@ struct ClipboardPreferences: View {
         }
         .onAppear { updateExcludedApplications() }
         .onChange(of: controller.excludedApps) { _, _ in updateExcludedApplications() }
-        .sheet(isPresented: binding(\.showsHistorySettings)) { historySettings }
+    }
+
+    private func commandDisclosure(_ id: String) -> CommandSettingsDisclosure? {
+        switch id {
+        case "clipboard":
+            CommandSettingsDisclosure(isExpanded: binding(\.showsHistorySettings), revealItem: .clipboardReplay) { AnyView(historySettings) }
+        case ClipboardSequenceCommand.paste.rawValue:
+            CommandSettingsDisclosure(isExpanded: $showsSequenceSettings, revealItem: .clipboardSequence) { AnyView(sequenceSettings) }
+        default:
+            nil
+        }
+    }
+
+    private var sequenceSettings: some View {
+        SettingsRowsLayout {
+            SettingsPicker("顺序超时", detail: "超过所选间隔后，下次粘贴会从最新复制的记录开始。",
+                           selection: binding(\.sequenceTimeout)) {
+                ForEach(ClipboardController.sequenceTimeouts, id: \.self) { seconds in
+                    Text(seconds < 60 ? "\(seconds) 秒" : "\(seconds / 60) 分钟").tag(seconds)
+                }
+            }
+            Divider().opacity(0.4)
+            commandToggle("文字末尾追加换行", detail: "顺序粘贴单个文字项目时使用纯文本并追加一行。",
+                          value: binding(\.sequenceAddsNewline))
+        }
+        .disabled(model.disabledCommands.contains(ClipboardSequenceCommand.paste.rawValue))
     }
 
     private var historySettings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            SettingsTitle("剪贴板历史")
-            CommandSettingsList(items: ["clipboard"], id: \.self) { _ in historyCommandEntry() }
-            SettingsGroup {
-                SettingsPicker("回车动作", selection: binding(\.primaryAction)) {
-                    Text("粘贴到当前应用").tag(ClipboardPrimaryAction.paste)
-                    Text("复制到剪贴板").tag(ClipboardPrimaryAction.copy)
-                }
-                Divider()
-                Toggle(isOn: binding(\.prefersPlainText)) {
-                    SettingsRowLabel(title: "优先粘贴纯文本", detail: "默认粘贴时去除文字格式。图片、文件及多项目仍使用原始格式。")
-                }
-                Divider()
-                Toggle(isOn: binding(\.showsLinkVisuals)) {
-                    SettingsRowLabel(title: "显示链接预览和网站图标", detail: "开启后会向对应网站请求预览信息。")
-                }
-                Divider()
-                Toggle(isOn: binding(\.updatesHistoryAfterReplay)) {
-                    SettingsRowLabel(title: "复制或粘贴后移到顶部", detail: "更新列表顺序，保留原复制时间和置顶顺序。")
-                }
+        SettingsRowsLayout {
+            SettingsPicker("主要操作", selection: binding(\.primaryAction)) {
+                Text("粘贴到当前应用").tag(ClipboardPrimaryAction.paste)
+                Text("复制到剪贴板").tag(ClipboardPrimaryAction.copy)
             }
-            ClipboardHistoryStatistics(controller: controller)
-            Button("完成") { controller.showsHistorySettings = false }
-                .keyboardShortcut(.defaultAction)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+            Divider().opacity(0.4)
+            commandToggle("优先粘贴纯文本", detail: "默认粘贴时去除文字格式。图片、文件及多项目仍使用原始格式。",
+                          value: binding(\.prefersPlainText))
+            Divider().opacity(0.4)
+            commandToggle("显示链接预览和网站图标", detail: "开启后会向对应网站请求预览信息。",
+                          value: binding(\.showsLinkVisuals))
+            Divider().opacity(0.4)
+            commandToggle("复制或粘贴后移到顶部", detail: "更新列表顺序，保留原复制时间和置顶顺序。",
+                          value: binding(\.updatesHistoryAfterReplay))
         }
-        .padding(20).frame(width: 480)
-        .environment(\.isEnabled, true)
     }
 
-    private func historyCommandEntry(perform: (() -> Void)? = nil) -> CommandSettingsEntry<SettingsIcon> {
+    private func commandToggle(_ title: String, detail: String, value: Binding<Bool>) -> some View {
+        SettingsRow(title, detail: detail) {
+            Toggle(title, isOn: value).labelsHidden().toggleStyle(.switch).controlSize(.small)
+        }
+    }
+
+    private func historyCommandEntry() -> CommandSettingsEntry<SettingsIcon> {
         CommandSettingsEntry(title: "剪贴板历史", model: model, commandID: .init(rawValue: "clipboard"),
-                             isEnabled: binding(\.historyCommandEnabled), perform: perform) {
+                             isEnabled: binding(\.historyCommandEnabled)) {
             SettingsIcon(symbol: "clipboard", artwork: ModuleArtwork.settings("clipboard"))
         }
     }

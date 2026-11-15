@@ -10,16 +10,7 @@ struct ResultListScrollView<Content: View>: View {
                 .padding(.bottom, VisualStyle.launcherEdgeInset)
         }
         .launcherScrollInsets()
-        .scrollEdgeEffectHidden(for: .top)
-        .mask {
-            VStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                    .frame(height: VisualStyle.launcherTopInset)
-                Color.black
-                LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                    .frame(height: VisualStyle.launcherBottomInset + 22)
-            }
-        }
+        .launcherScrollEdgeFade()
     }
 }
 
@@ -72,6 +63,20 @@ struct SelectableResultList<ID: Hashable, Content: View>: View {
 }
 
 extension View {
+    func launcherScrollEdgeFade(top: CGFloat = VisualStyle.launcherTopInset,
+                                bottom: CGFloat = VisualStyle.launcherBottomInset + 22) -> some View {
+        scrollEdgeEffectHidden(for: .top)
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: top)
+                    Color.black
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: bottom)
+                }
+            }
+    }
+
     func launcherScrollInsets(top: Bool = true, bottom: Bool = true) -> some View {
         let topInset = top ? VisualStyle.launcherTopInset : 0
         let bottomInset = bottom ? VisualStyle.launcherBottomInset : 0

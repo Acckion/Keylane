@@ -51,3 +51,5 @@
 
 - 二级页面通过 `LauncherPage.ContentPlacement` 声明内容与浮动栏的位置。列表中的可激活结果用 `ResultListButton` 保持点击动作和滚动目标的 ID 一致。宿主只观察会改变页头、主按钮或操作菜单的状态，列表、详情和便笺编辑器各自观察自己的内容。
 - 创建类命令使用 `LauncherPage.ContentPlacement.form`，由 `LauncherCreationForm` 提供返回按钮、可选顶部操作区域和滚动表单。字段用 `LauncherCreationField` 对齐，输入控件可用 `LauncherCreationControl` 统一描边。命令负责绑定、校验和提交，底栏继续由启动器宿主管理。
+- 创建表单的可搜索选项使用 `LauncherCreationPicker`，悬浮在原窗口的表单上方，展开时下方字段保持原位，复用 `ResultFilterPanel` 的搜索和键盘导航。验收时打开「创建脚本命令」，分别点击模板和模式的搜索框、用鼠标选值，再用方向键和回车选值。按 Esc 应先收起选择器并留在表单。重新展开后搜索为空，当前值仍在。关闭启动器后重新进入创建命令，两个选择器均应收起。
+- 命令子项的设置搜索使用 `CommandSettingsDisclosure.revealItem` 登记定位锚点。验收时先折叠「搜索文字片段」，从另一个设置页搜索并选择「搜索文字片段的主要操作」，检查命令行定位后立即显示「主要操作」。在同页手动折叠，再通过键盘选择同一个搜索结果，检查子项再次展开。剪贴板的「超时」和「换行」搜索也应展开「顺序粘贴」。
