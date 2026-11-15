@@ -277,7 +277,7 @@ enum LauncherSettingsContent {
             if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String {
                 LabeledContent("构建号", value: build)
             }
-            LabeledContent("许可", value: "PolyForm Noncommercial 1.0.0")
+            LabeledContent("许可", value: "GPL-3.0-or-later")
             Text("独立实现，非 SuperCmd 或 Raycast 官方产品。").foregroundStyle(.secondary)
         }.settingsAnchor(.version)
         UpdatePreferences(updates: model.updates).settingsAnchor(.softwareUpdates)

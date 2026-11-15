@@ -48,7 +48,7 @@ else
 - Updating may require granting system permissions again.
 - Automated tests and package checks passed; this does not certify every real-world interaction.
 - See the release pull request for validated changes and known limitations.
-- Source available under PolyForm Noncommercial 1.0.0; commercial use requires separate authorization.
+- Free and open-source under GNU GPL v3.0 or later (GPL-3.0-or-later), including commercial use subject to its terms.
 
 Open the DMG and drag Keylane into Applications. The app includes its license, and the release includes a SHA-256 checksum.
 NOTES

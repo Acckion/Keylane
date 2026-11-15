@@ -22,10 +22,10 @@ def verify_app(app, image, version, distribution):
         'Contents/Resources/Keylane.icns',
         'Contents/_CodeSignature/CodeResources',
     }
-    for name in ('LICENSE', 'EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
+    for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
         relative = f'Contents/Resources/{name}'
         expected.add(relative)
-        source = ROOT / 'LICENSE' if name == 'LICENSE' else ROOT / 'Resources' / name
+        source = ROOT / name if name in ('LICENSE', 'THIRD_PARTY_NOTICES.md') else ROOT / 'Resources' / name
         if (app / relative).read_bytes() != source.read_bytes():
             raise SystemExit(f'Incorrect resource: {name}')
     artwork = sorted((ROOT / 'Resources/ModuleArtwork').glob('*.png'))
