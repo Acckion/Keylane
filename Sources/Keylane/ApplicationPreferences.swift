@@ -93,6 +93,7 @@ struct ApplicationPreferences: View {
                     Text("全部子目录").tag(0)
                     Text("最多三层").tag(3)
                 }
+                .padding(.bottom, 8)
             }
 
             SettingsSectionTitle(title: "命令")
