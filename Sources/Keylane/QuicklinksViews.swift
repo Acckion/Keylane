@@ -53,6 +53,7 @@ struct QuicklinksList: View {
                 } information: {
                     DetailInformationSection(rows: [
                         .init(title: "名称", value: link.title),
+                        .init(title: "打开方式", value: QuicklinksController.applicationName(for: link.openingApplicationID)),
                         .init(title: "标签", value: link.tags.isEmpty ? "无" : link.tags.joined(separator: "、"))
                     ])
                 }
@@ -103,11 +104,22 @@ struct QuicklinkLauncherEditor: View {
                         .focused($focused, equals: .title).onSubmit { if !SearchField.isComposing { focused = .link } }
                 }
             }
-            LauncherCreationField("链接", detail: "支持网页、邮件、本地绝对路径或 file:// 链接。") {
+            LauncherCreationField("链接", detail: "支持网页、邮件、应用深链接和本地路径。") {
                 LauncherCreationControl(focused: focused == .link) {
                     TextField("https://example.com/?q={关键词}", text: field(\.template)).textFieldStyle(.plain)
                         .focused($focused, equals: .link).onSubmit { if !SearchField.isComposing { focused = .tags } }
                         .autocorrectionDisabled()
+                }
+            }
+            LauncherCreationField("打开方式") {
+                QuicklinkOpeningApplicationMenu(identifier: controller.draft?.openingApplicationID) {
+                    let draftID = controller.draft?.id
+                    QuicklinksController.chooseApplication { chosen in
+                        guard controller.draft?.id == draftID else { return }
+                        controller.draft?.openingApplicationID = chosen
+                    }
+                } reset: {
+                    controller.draft?.openingApplicationID = nil
                 }
             }
             LauncherCreationField("标签", detail: "用逗号分隔多个标签。") {
@@ -130,6 +142,22 @@ struct QuicklinkLauncherEditor: View {
     private func field(_ key: WritableKeyPath<Quicklink, String>) -> Binding<String> {
         Binding(get: { controller.draft?[keyPath: key] ?? "" },
                 set: { controller.draft?[keyPath: key] = $0 })
+    }
+}
+
+struct QuicklinkOpeningApplicationMenu: View {
+    let identifier: String?
+    let choose: () -> Void
+    let reset: () -> Void
+
+    var body: some View {
+        Menu {
+            Button("系统默认", action: reset)
+            Button("选择应用…", action: choose)
+        } label: {
+            Text(QuicklinksController.applicationName(for: identifier))
+                .lineLimit(1)
+        }
     }
 }
 
