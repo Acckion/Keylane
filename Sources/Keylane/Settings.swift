@@ -8,7 +8,7 @@ struct SettingsView: View {
     @State private var selected = "applications"
     @State private var headerScrolledAway = false
     @State private var query = ""
-    @State private var target: String?
+    @State private var target: SettingsRevealRequest?
     @State private var searchSelection: String?
     @State private var history = ["applications"]
     @State private var historyIndex = 0
@@ -212,7 +212,7 @@ struct SettingsView: View {
     private func reveal(_ item: SettingsItem) {
         selected = item.page; target = nil; searchSelection = nil; query = ""
         if state.extensionEnabled(for: item.page) != nil || state.catalog.page(item.page)?.titlebar?.searchItem?.id != item.id {
-            DispatchQueue.main.async { target = item.id }
+            DispatchQueue.main.async { target = SettingsRevealRequest(itemID: item.id) }
         }
     }
 }

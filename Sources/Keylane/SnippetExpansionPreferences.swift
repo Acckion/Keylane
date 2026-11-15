@@ -91,6 +91,7 @@ struct SnippetPreferences: View {
     let model: Model
     @ObservedObject var controller: SnippetsController
     let expansionPermission: PermissionFeature
+    @State private var showsSearchSettings = false
     @StateObject private var commandObservation: ViewObservation
 
     init(model: Model, controller: SnippetsController, expansionPermission: PermissionFeature) {
@@ -118,21 +119,31 @@ struct SnippetPreferences: View {
                 }
             }
 
+            excludedApplications
+
             SettingsSectionTitle(title: "命令")
-            CommandSettingsList(items: SnippetsModule.Command.allCases, id: \.rawValue) { command in
-                var entry = CommandSettingsEntry(title: command.title, model: model, commandID: command.id,
-                                                 isEnabled: Binding(get: { !model.disabledCommands.contains(command.rawValue) }, set: {
+            CommandSettingsList(items: SnippetsModule.Command.allCases, id: \.rawValue,
+                                disclosure: commandDisclosure) { command in
+                CommandSettingsEntry(title: command.title, model: model, commandID: command.id,
+                                     isEnabled: Binding(get: { !model.disabledCommands.contains(command.rawValue) }, set: {
                     if $0 { model.disabledCommands.remove(command.rawValue) }
                     else { model.disabledCommands.insert(command.rawValue) }
-                }), perform: {
-                    if command == .search { model.settingsPage = SnippetsModule.searchSettingsID }
-                    else { model.runCommand(command.id, origin: .menu) }
-                }) {
+                }), perform: command == .search ? nil : { model.runCommand(command.id, origin: .menu) }) {
                     SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.settings("snippets"))
                 }
-                entry.showsDisclosure = command == .search
-                return entry
             }
+        }
+    }
+
+    private func commandDisclosure(_ command: SnippetsModule.Command) -> CommandSettingsDisclosure? {
+        guard command == .search else { return nil }
+        return CommandSettingsDisclosure(isExpanded: $showsSearchSettings, revealItem: .snippetSearchCommand) {
+            AnyView(SettingsRowsLayout {
+                SettingsPicker("主要操作", selection: $controller.options.primary) {
+                    Text("粘贴到当前应用").tag(SnippetExpansionOptions.PrimaryAction.paste)
+                    Text("复制到剪贴板").tag(SnippetExpansionOptions.PrimaryAction.copy)
+                }
+            })
         }
     }
 
@@ -173,19 +184,22 @@ struct SnippetPreferences: View {
                            title: { $0.isEmpty ? "无" : $0 }, choose: { name in
             if !name.isEmpty { NSSound(named: name)?.play() }
         })
-        Divider().opacity(0.4)
-        SettingsRow("禁用的应用", detail: "在这些应用里暂停关键词展开。") {
+    }
+
+    private var excludedApplications: some View {
+        SettingsListCard(title: "禁用的应用", detail: "在这些应用里暂停关键词展开。") {
             SettingsIconButton("添加应用", symbol: "plus", action: addApplication)
-        }
-        if !controller.options.excluded.isEmpty {
-            SettingsCompactList(items: controller.options.excluded, id: \.id) { app in
-                SettingsCompactItemRow(title: app.name, symbol: "app") {
-                    SettingsRemoveItemButton(label: "移除应用", help: app.name) {
+        } content: {
+            if controller.options.excluded.isEmpty {
+                SettingsListEmptyState(title: "没有禁用的应用")
+            } else {
+                SettingsCompactList(items: controller.options.excluded, id: \.id) { app in
+                    SettingsExcludedApplicationRow(id: app.id, name: app.name) {
                         controller.options.excluded.removeAll { $0.id == app.id }
                     }
                 }
+                .padding(.bottom, 8)
             }
-            .padding(.bottom, 8)
         }
     }
 
@@ -200,22 +214,6 @@ struct SnippetPreferences: View {
                   !controller.options.excludes(identifier) else { continue }
             let name = FileManager.default.displayName(atPath: url.path)
             controller.options.excluded.append(.init(id: identifier, name: name))
-        }
-    }
-}
-
-struct SnippetSearchPreferences: View {
-    @ObservedObject var controller: SnippetsController
-
-    var body: some View {
-        SettingsPageSections {
-            SettingsGroup {
-                SettingsPicker("主要操作", selection: $controller.options.primary) {
-                    Text("粘贴到当前应用").tag(SnippetExpansionOptions.PrimaryAction.paste)
-                    Text("复制到剪贴板").tag(SnippetExpansionOptions.PrimaryAction.copy)
-                }
-            }
-            .settingsAnchor(.snippetSearchCommand)
         }
     }
 }

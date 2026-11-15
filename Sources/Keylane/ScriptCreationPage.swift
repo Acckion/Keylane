@@ -4,25 +4,24 @@ import SwiftUI
 struct ScriptCreationPage: View {
     @ObservedObject var controller: ScriptCommandsController
     let back: () -> Void
+    private enum PickerField { case template, mode }
+    @State private var openPicker: PickerField?
     @FocusState private var focus: String?
 
     var body: some View {
         LauncherCreationForm(back: back, spacing: 16) { EmptyView() } fields: {
             LauncherCreationField("模板", detail: runtimeRequirement) {
-                LauncherCreationControl {
-                    Picker("模板", selection: $controller.template) {
-                        ForEach(ScriptTemplate.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }.labelsHidden().pickerStyle(.menu)
-                }
+                LauncherCreationPicker(label: "模板", selection: $controller.template, values: ScriptTemplate.allCases, open: pickerBinding(.template), title: \.title)
             }
             LauncherCreationField("模式") {
-                LauncherCreationControl {
-                    Picker("模式", selection: $controller.draft.mode) {
-                        Text("静默 · Silent").tag(ScriptMetadata.Mode.silent)
-                        Text("精简 · Compact").tag(ScriptMetadata.Mode.compact)
-                        Text("完整输出 · Full Output").tag(ScriptMetadata.Mode.fullOutput)
-                        Text("行内 · Inline").tag(ScriptMetadata.Mode.inline)
-                    }.labelsHidden().pickerStyle(.menu)
+                LauncherCreationPicker(label: "模式", selection: $controller.draft.mode, values: ScriptMetadata.Mode.allCases,
+                                       open: pickerBinding(.mode)) { mode in
+                    switch mode {
+                    case .silent: "静默 · Silent"
+                    case .compact: "精简 · Compact"
+                    case .fullOutput: "完整输出 · Full Output"
+                    case .inline: "行内 · Inline"
+                    }
                 }
             }
             field("标题", "命令标题", $controller.draft.title)
@@ -92,7 +91,19 @@ struct ScriptCreationPage: View {
         .onChange(of: controller.draft.mode) { _, mode in
             if mode == .inline { controller.includeArgument = false }
         }
-        .onExitCommand(perform: back)
+        .onExitCommand {
+            guard !SearchField.isComposing else { return }
+            if openPicker != nil { openPicker = nil }
+            else { back() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in openPicker = nil }
+    }
+
+    private func pickerBinding(_ field: PickerField) -> Binding<Bool> {
+        Binding(get: { openPicker == field }, set: { showing in
+            if showing { openPicker = field }
+            else if openPicker == field { openPicker = nil }
+        })
     }
 
     private var runtimeRequirement: String? {

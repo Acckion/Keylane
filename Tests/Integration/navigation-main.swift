@@ -31,6 +31,7 @@ struct NavigationChecks {
         print("Shortcut display and scan cancellation passed")
 
         try checkController()
+        try checkMenuExclusions()
 
         guard AXIsProcessTrusted() else {
             print("SKIP native window and menu actions: test runner has no Accessibility access")
@@ -179,6 +180,34 @@ struct NavigationChecks {
         controller.load(.windows, target: nil)
         try require(controller.status == .permission && scans.count == 3, "An unauthorized scan was started")
         print("PASS isolated navigation controller: query, target, selection, cancel, reopen, permission and stale completion")
+    }
+
+    private static func checkMenuExclusions() throws {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first,
+              let identifier = app.bundleIdentifier else {
+            print("SKIP menu exclusion check: Finder is not running")
+            return
+        }
+        let suite = "keylane-navigation-test-" + UUID().uuidString
+        guard let preferences = UserDefaults(suiteName: suite) else { throw CheckError.failed("Cannot isolate preferences") }
+        defer { preferences.removePersistentDomain(forName: suite) }
+
+        let settings = NavigationController(trusted: { true }, preferences: preferences)
+        settings.excludedMenuApplications[identifier.uppercased()] = "Finder"
+
+        var modes: [NavigationMode] = []
+        let controller = NavigationController(trusted: { true }, scan: { mode, _, _, completion in
+            modes.append(mode)
+            completion(.init(items: []))
+        }, preferences: preferences)
+        controller.load(.menus, target: app)
+        try require(controller.status == .excludedApplication && modes.isEmpty, "Excluded menu scan was started")
+        controller.load(.windows, target: app)
+        try require(modes == [.windows], "Menu exclusions also affected window search")
+        controller.excludedMenuApplications.removeAll()
+        controller.load(.menus, target: app)
+        try require(modes == [.windows, .menus], "Removing the exclusion did not restore menu search")
+        print("PASS persisted menu exclusions, case-insensitive matching, and window search independence")
     }
 
     private enum CheckError: Error { case failed(String) }

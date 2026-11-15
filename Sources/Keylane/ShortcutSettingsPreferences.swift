@@ -300,11 +300,14 @@ struct ShortcutSettingsPreferences: View {
 struct ExtensionCommandPreferences: View {
     let model: Model
     let commands: [LauncherModule.Command]
+    let disclosure: ((LauncherModule.Command) -> CommandSettingsDisclosure?)?
     @StateObject private var observation: ViewObservation
 
-    init(model: Model, commands: [LauncherModule.Command]) {
+    init(model: Model, commands: [LauncherModule.Command],
+         disclosure: ((LauncherModule.Command) -> CommandSettingsDisclosure?)? = nil) {
         self.model = model
         self.commands = commands
+        self.disclosure = disclosure
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
@@ -316,7 +319,8 @@ struct ExtensionCommandPreferences: View {
 
     var body: some View {
         CommandSettingsList(items: commands, id: \.declaration.id, showsColumns: true,
-                            usesFixedRowHeights: !commands.contains { $0.settingsEnabled != nil && $0.permission != nil }) {
+                            usesFixedRowHeights: !commands.contains { $0.settingsEnabled != nil && $0.permission != nil },
+                            disclosure: disclosure) {
             $0.commandSettingsEntry(model: model)
         }
     }
