@@ -62,8 +62,8 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let clipboardReplay = SettingsItem(id: "clipboard-replay", page: "clipboard", title: "剪贴板历史命令",
                                                          keywords: "回车 动作 纯文本 粘贴 复制 置顶 排序 预览 链接 图标 clipboard paste replay preview")
     public static let clipboardSequence = SettingsItem(id: "clipboard-sequence", page: "clipboard", title: "顺序粘贴设置",
-                                                         keywords: "超时 换行 sequential paste timeout newline")
-    public static let clipboardRetention = SettingsItem(id: "clipboard-retention", page: "clipboard", title: "剪贴板保留历史记录", keywords: "保留时间 clipboard retention")
+                                                         keywords: "超时 换行 重置 sequential paste timeout newline reset")
+    public static let clipboardRetention = SettingsItem(id: "clipboard-retention", page: "clipboard", title: "剪贴板保留历史记录", keywords: "保留时间 无限 clipboard retention unlimited")
     public static let clipboardRecognition = SettingsItem(id: "clipboard-recognition", page: "clipboard", title: "剪贴板文字识别", keywords: "图片 快速 准确 clipboard OCR recognition")
     public static let clipboardExclusions = SettingsItem(id: "clipboard-exclusions", page: "clipboard", title: "不记录这些应用", keywords: "剪贴板 排除 应用 clipboard disabled applications")
     public static let snippetSearchCommand = SettingsItem(id: "snippet-search-command", page: "snippets",
