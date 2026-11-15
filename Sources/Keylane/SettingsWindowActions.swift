@@ -18,7 +18,9 @@ struct SettingsWindowActions: View {
     @ObservedObject var state: SettingsWindowState
 
     static func width(for page: LauncherSettingsPage?, hasExtensionSwitch: Bool) -> CGFloat {
-        if page?.trailingToolbar != nil { return hasExtensionSwitch ? 226 : 214 }
+        if let page, page.trailingToolbar != nil {
+            return page.trailingToolbarWidth + (hasExtensionSwitch ? 12 : 0)
+        }
         if page?.guideURL != nil { return hasExtensionSwitch ? 100 : 52 }
         if hasExtensionSwitch { return 64 }
         return page?.titlebar == nil ? 0 : 64

@@ -38,20 +38,35 @@ struct SettingsPageHeader: View {
     let title: String
     let symbol: String
     let subtitle: String
+    var centered = false
 
+    @ViewBuilder
     var body: some View {
-        HStack(spacing: 12) {
-            SettingsIcon(symbol: symbol, size: 36, artwork: ModuleArtwork.settings(pageID))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 21, weight: .semibold))
+        if centered {
+            VStack(spacing: 12) {
+                SettingsIcon(symbol: symbol, size: 60, artwork: ModuleArtwork.settings(pageID))
+                Text(title).font(.system(size: 27, weight: .semibold))
                     .accessibilityAddTraits(.isHeader)
-                Text(subtitle).font(.system(size: 13)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(subtitle).font(VisualStyle.rowText).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 18)
+            .padding(.top, 23).padding(.bottom, 52)
+        } else {
+            HStack(spacing: 12) {
+                SettingsIcon(symbol: symbol, size: 36, artwork: ModuleArtwork.settings(pageID))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title).font(.system(size: 21, weight: .semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    Text(subtitle).font(.system(size: 13)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 5)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 5)
     }
 }
 
