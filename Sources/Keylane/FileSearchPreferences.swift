@@ -43,7 +43,7 @@ struct FileSearchPreferences: View {
                 SettingsActionRow(title: "恢复默认设置", detail: "恢复搜索范围、忽略规则和各项开关；不会删除原文件。", actionTitle: "重置…") { resets = true }
             }
             SettingsSectionTitle(title: "命令")
-            CommandSettingsList(items: ["file-search", "toggle-file-index", "rebuild-file-index"], id: \.self) { id in
+            CommandSettingsList(items: ["file-search"], id: \.self) { id in
                 let commandID = CommandID(rawValue: id)
                 let declaration = model.launcherModules?.declaration(commandID)
                 return CommandSettingsEntry(title: declaration?.title ?? id, model: model, commandID: commandID,

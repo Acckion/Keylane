@@ -92,11 +92,18 @@ public struct FileSearchLocation {
             if (!options.includeHidden && name.hasPrefix(".")) || ignored(item.path, name)
                 || FileSearchRules.ignored(item, directory: folder, patterns: [], rules: inherited)
                 || (folder && item.path == homeLibrary)
-                || (folder && [".build", "DerivedData", "node_modules"].contains(name) && !restored.contains(item.path))
+                || (folder && FileIndexExclusionPolicy.isKnownCache(item) && !restored.contains(item.path))
                 || (folder && item.pathExtension.lowercased() == "app" && item.path != path) {
                 throw Failure.excluded
             }
         }
+    }
+
+    /// Event paths can disappear before the batch arrives, so check the rules without opening the item.
+    public mutating func includesIndexChange(at path: String, directory: Bool) -> Bool {
+        let path = Self.normalizedPath(path)
+        guard let scope = roots.first(where: { Self.contains(path, in: $0.configured) }) else { return false }
+        return (try? check(URL(fileURLWithPath: path), directory: directory, root: scope.configured)) != nil
     }
 
     private mutating func rules(in directory: URL, root: String) -> [FileSearchRules.IgnoreRule] {
