@@ -50,7 +50,16 @@ try FileManager.default.createDirectory(at: localScope, withIntermediateDirector
 prefs.set([scope.path, localScope.path], forKey: "fileSearchSelectedScopes")
 defer { prefs.removePersistentDomain(forName:suite) }
 var config = FileSearchOptions(roots:[scope.path]); config.ignorePatterns = ["*.tmp"]
-let controller = FileSearchController(directory:root.appendingPathComponent("index"),preferences:prefs,defaultOptions:config,watchChanges:true)
+var systemRecents: [RecentlyUsedFile] = []
+var deferredRecents: (([RecentlyUsedFile]) -> Void)?
+var deferRecents = false
+var recentQueryScopes: [[String]] = []
+let controller = FileSearchController(directory: root.appendingPathComponent("index"), preferences: prefs, defaultOptions: config,
+                                      recentSpotlightSearch: { roots, completion in
+    recentQueryScopes.append(roots)
+    if deferRecents { deferredRecents = completion }
+    else { completion(systemRecents) }
+})
 var results: [SpotlightFile] = []
 var resultStatus = ""
 var recordsRefresh = false; var emptyFrames = 0; var repeatedRefreshes = 0
@@ -298,6 +307,49 @@ precondition(storedExclusions == [special.path])
 controller.undoExclusion(excludedPath)
 controller.undoExclusion(excludedPath)
 wait("Undo restores the recent file") { !controller.isSearching && results.map(\.id) == [special.path, newer.path] }
+let usedElsewhere = browse.appendingPathComponent("external-use-fixture.txt")
+let hiddenRecent = browse.appendingPathComponent(".hidden-recent.txt")
+try Data().write(to: usedElsewhere)
+try Data().write(to: hiddenRecent)
+let systemDate = Date().addingTimeInterval(10)
+systemRecents = [
+    RecentlyUsedFile(path: special.path, date: systemDate.addingTimeInterval(-100)),
+    RecentlyUsedFile(path: usedElsewhere.path, date: systemDate),
+    RecentlyUsedFile(path: outside.path, date: systemDate),
+    RecentlyUsedFile(path: alias.path, date: systemDate),
+    RecentlyUsedFile(path: hiddenRecent.path, date: systemDate),
+    RecentlyUsedFile(path: browse.appendingPathComponent("skip-private.txt").path, date: systemDate),
+    RecentlyUsedFile(path: browse.path, date: systemDate),
+    RecentlyUsedFile(path: mixedContent.path, date: systemDate)
+]
+controller.search("  ")
+wait("System recents merge in time order and respect file, scope and ignore rules") {
+    !controller.isSearching && results.map(\.id) == [usedElsewhere.path, special.path, newer.path]
+}
+precondition(resultStatus == "最近使用" && recentQueryScopes.last == [scope.path, localScope.path])
+precondition(prefs.stringArray(forKey: "fileSearchRecentPaths") == [special.path, newer.path],
+             "System recents should not be copied into saved local history")
+controller.cancel()
+results = []
+controller.search("  ")
+wait("Reopening the page republishes recents even when unchanged") {
+    !controller.isSearching && results.map(\.id) == [usedElsewhere.path, special.path, newer.path]
+}
+let beforeRoot = recentQueryScopes.count
+controller.search("", standalone: false)
+wait("Empty root search does not show recents") { !controller.isSearching && results.isEmpty }
+precondition(recentQueryScopes.count == beforeRoot)
+deferRecents = true
+controller.search("")
+let finishOldRecents = deferredRecents!
+controller.search("external-use-fixture")
+finishOldRecents(systemRecents)
+wait("A late recent result cannot replace a typed query") {
+    !controller.isSearching && results.contains { $0.id == usedElsewhere.path } && resultStatus != "最近使用"
+}
+deferRecents = false
+deferredRecents = nil
+systemRecents = []
 controller.startIndex(force: true)
 controller.search("预算")
 wait("Rebuild indexes newly created files") { !controller.indexing && results.contains { $0.id == special.path } }
