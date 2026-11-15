@@ -121,9 +121,8 @@ enum BuiltinLauncherModules {
         }
         return .init(id: .init(rawValue: "keylane.applications"), commands: [
                          command("manage-auto-quit", "管理自动退出", "为应用配置离开前台后的退出时间", "app.badge.clock",
-                                 ["Manage Auto Quit", "闲置退出"], settings: "applications",
-                                 available: { [weak model] in model?.applicationsEnabled ?? false },
-                                 execute: { [weak model] _ in model?.openSettings(page: "applications") }),
+                                 ["Manage Auto Quit", "闲置退出"], destination: .settings(SettingsItem.applicationAutoQuit.page),
+                                 settings: "applications", available: { [weak model] in model?.applicationsEnabled ?? false }),
                          command("uninstall-application", "卸载应用程序", "选择应用并移到废纸篓", "trash",
                                  ["Uninstall Application", "移除应用"], destination: .page(uninstallPage), settings: "applications",
                                  available: { [weak model] in model?.applicationsEnabled ?? false })
@@ -162,7 +161,19 @@ enum BuiltinLauncherModules {
                          enabled: Binding(get: { [weak model] in model?.applicationsEnabled ?? false },
                                           set: { [weak model] in model?.applicationsEnabled = $0 }),
                          updates: model.$applicationsEnabled.removeDuplicates().eraseToAnyPublisher()
-                     ), content: LauncherSettingsContent.applications)],
+                     ), content: LauncherSettingsContent.applications), .init(
+                         id: SettingsItem.applicationAutoQuit.page, title: SettingsItem.applicationAutoQuit.title,
+                         symbol: "app.badge.clock", subtitle: ApplicationAutoQuitPreferences.summary, order: 11,
+                         items: [.applicationAutoQuit], parentID: "applications",
+                         toolbarAction: { [weak model] in
+                             guard let model else { return AnyView(EmptyView()) }
+                             return AnyView(ApplicationAutoQuitAddButton(model: model))
+                         }, centeredHeader: true,
+                         content: { [weak model] in
+                             guard let model else { return AnyView(EmptyView()) }
+                             return AnyView(ApplicationAutoQuitPreferences(model: model))
+                         }
+                     )],
                      services: [.init(start: { [weak model] in
                          model?.startApplicationDiscovery()
                          model?.applicationAutoQuit.start { [weak model] in model?.applicationsEnabled ?? false }
