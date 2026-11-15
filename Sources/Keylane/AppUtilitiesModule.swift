@@ -16,9 +16,11 @@ enum AppUtilitiesModule {
             command("export-settings", "导出 Keylane 设置", "square.and.arrow.up",
                     ["Export Settings", "设置备份"]) { presentSettingsExport() },
             command("view-release-notes", "查看 Keylane 更新日志", "doc.text",
-                    ["Changelog", "Release Notes", "版本记录"]) {
-                NSWorkspace.shared.open(KeylaneReleaseCheck.releasesURL)
-                (NSApp.delegate as? Delegate)?.hideLauncher()
+                    ["Changelog", "Release Notes", "版本记录"]) { [weak model] in
+                guard let model, let delegate = NSApp.delegate as? Delegate else { return }
+                delegate.hideLauncher()
+                model.openSettings(page: "about")
+                model.updates.showsReleaseNotes = true
             },
             command("check-for-updates", "检查 Keylane 更新", "arrow.clockwise",
                     ["Check for Updates", "检查更新"]) { [weak model] in
