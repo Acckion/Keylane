@@ -67,7 +67,7 @@ enum NavigationLauncherModules {
             subtitle: "管理窗口切换和菜单搜索。", order: 130, items: [settingsItem], titlebar: titlebar
         ) { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
-            return AnyView(NavigationCommandPreferences(model: model, commands: commands).settingsAnchor(settingsItem))
+            return AnyView(NavigationCommandPreferences(model: model, commands: commands, exclusionsItem: settingsItem))
         }
         return LauncherModule(id: .init(rawValue: "keylane.navigation"), title: settingsItem.title, symbol: "macwindow",
                               commands: commands, pages: [
@@ -300,12 +300,13 @@ enum NavigationLauncherModules {
 private struct NavigationCommandPreferences: View {
     let model: Model
     let commands: [LauncherModule.Command]
+    let exclusionsItem: SettingsItem
     @State private var showsExclusions = false
 
     var body: some View {
         ExtensionCommandPreferences(model: model, commands: commands) { command in
             guard command.declaration.id.rawValue == "search-menu-items" else { return nil }
-            return CommandSettingsDisclosure(isExpanded: $showsExclusions) {
+            return CommandSettingsDisclosure(isExpanded: $showsExclusions, revealItem: exclusionsItem) {
                 AnyView(MenuSearchExclusions(controller: model.systemNavigation))
             }
         }
