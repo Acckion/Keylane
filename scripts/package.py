@@ -23,7 +23,8 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     executable.chmod(0o755)
     resources = app / 'Contents/Resources'
     resources.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(root / 'LICENSE', resources / 'LICENSE')
+    for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
+        shutil.copyfile(root / name, resources / name)
     for name in ('EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
         shutil.copyfile(root / 'Resources' / name, resources / name)
     shutil.copytree(root / 'Resources/ModuleArtwork', resources / 'ModuleArtwork')
