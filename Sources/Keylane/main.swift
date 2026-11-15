@@ -129,6 +129,7 @@ final class Model: ObservableObject {
     @Published var loginStatus = ""
     @Published var loginEnabled = false
     let discovery = ApplicationDiscovery()
+    let iPhoneApplications: IPhoneApplications
     let applicationResultActions = ApplicationResultActions()
     let finderAutomation = PermissionFeature("finderAutomation.enabled", authorization: .automation("com.apple.finder", appName: "Finder"))
     let crossAppPaste = PermissionFeature("crossAppPaste.enabled", authorization: .postEvent)
@@ -310,7 +311,8 @@ final class Model: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
 
-    init() {
+    init(iPhoneApplications: IPhoneApplications = IPhoneApplications()) {
+        self.iPhoneApplications = iPhoneApplications
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: "notes")
         if aliases.removeValue(forKey: "notes") != nil { defaults.set(aliases, forKey: "aliases") }
@@ -360,6 +362,7 @@ final class Model: ObservableObject {
     func startApplicationDiscovery() {
         guard workspaceObservers.isEmpty else { return }
         applicationSettingsCatalog.start()
+        if iPhoneApplications.enabled { iPhoneApplications.refresh() }
         reloadCatalog()
         refreshRunningApps()
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
@@ -370,6 +373,7 @@ final class Model: ObservableObject {
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         workspaceObservers.removeAll()
         discovery.stop()
+        iPhoneApplications.stop()
     }
     func releaseApplicationCatalog() {
         applicationSettingsCatalog.stop()

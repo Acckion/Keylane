@@ -30,7 +30,8 @@ public enum ApplicationCatalog {
                 iterator.skipDescendants()
                 let canonical = target.resolvingSymlinksInPath().standardizedFileURL
                 guard !excluded.contains(url.path), !excluded.contains(canonical.path), found[canonical.path] == nil,
-                      Bundle(url: canonical)?.bundleIdentifier != nil else { continue }
+                      Bundle(url: canonical)?.bundleIdentifier != nil,
+                      Bundle(url: canonical)?.infoDictionary?["NSiPhoneMirroringLaunchPayload"] == nil else { continue }
                 found[canonical.path] = CatalogApplication(url: canonical, identity: ApplicationIdentity(url: canonical, preferredLanguages: languages))
             }
         }

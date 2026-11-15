@@ -58,6 +58,7 @@ struct ApplicationPreferences: View {
     private var allApplications: some View {
         let visibleApplications = filteredApplications ?? catalog.items
         return SettingsPageSections {
+            IPhoneApplicationPreferences(model: model, phone: model.iPhoneApplications)
             SettingsGroup {
                 SettingsRow("自动退出", detail: "在下方应用列表的操作菜单中为应用开启。再次切到前台会重置计时。") {
                     Text(autoQuit.rules.isEmpty ? "未开启" : "已配置 \(autoQuit.rules.count) 个应用")

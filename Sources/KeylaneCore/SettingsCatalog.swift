@@ -12,6 +12,7 @@ public struct SettingsItem: Identifiable, Equatable {
         self.keywords = keywords
     }
 
+    public static let iPhoneApplications = SettingsItem(id: "iphone-applications", page: "applications", title: "iPhone 应用（实验性）", keywords: "手机 镜像 Xcode device iPhone")
     public static let applicationAutoQuit = SettingsItem(id: "application-auto-quit", page: "applications", title: "自动退出", keywords: "闲置 退出 auto quit idle")
     public static let applicationScopes = SettingsItem(id: "scopes", page: "applications", title: "应用搜索范围", keywords: "应用 文件夹 applications folders scope")
     public static let applicationFavorites = SettingsItem(id: "favorites", page: "applications", title: "收藏", keywords: "排序 favorite pin")
@@ -102,6 +103,7 @@ public struct SettingsItem: Identifiable, Equatable {
         login,
         glass,
         applicationScopes,
+        iPhoneApplications,
         applicationAutoQuit,
         fileSearchScope,
         fileSearchInline,

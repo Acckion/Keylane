@@ -127,7 +127,7 @@ enum BuiltinLauncherModules {
                          command("uninstall-application", "卸载应用程序", "选择应用并移到废纸篓", "trash",
                                  ["Uninstall Application", "移除应用"], destination: .page(uninstallPage), settings: "applications",
                                  available: { [weak model] in model?.applicationsEnabled ?? false })
-                     ], providers: [provider], pages: [.init(
+                     ], providers: [provider, model.iPhoneApplications.provider(model: model)], pages: [.init(
                         id: uninstallPage, placeholder: "查找要卸载的应用…", badge: ("卸载应用程序", "trash"),
                         contentPlacement: .underChrome,
                         content: {
@@ -172,8 +172,8 @@ enum BuiltinLauncherModules {
                          model?.applicationAutoQuit.stop()
                          model?.releaseApplicationCatalog()
                      })],
-                     searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)],
-                     dynamicCommandSettings: .init(
+                     searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled), model.iPhoneApplications.updates],
+                     dynamicCommandSettings: model.iPhoneApplications.includingSettings(.init(
                          model: model, items: { [weak model] in model?.applicationSettingsCatalog.items ?? [] },
                          title: \.title, commandID: \.commandID, aliasKey: \.id,
                          updates: { [weak model] in
@@ -183,7 +183,7 @@ enum BuiltinLauncherModules {
                                      ViewObservation.changes(model.$favorites)]
                          },
                          entry: { $0.commandSettingsEntry(model: $1) }
-                     ))
+                     ), model: model))
     }
 
     static func fileEntry(_ file: SpotlightFile) -> Entry {
