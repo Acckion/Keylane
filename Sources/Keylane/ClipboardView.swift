@@ -293,7 +293,7 @@ struct ClipboardPreferences: View {
                     }
                 }
             }
-            SettingsSectionTitle(title: "命令").settingsAnchor(.clipboardReplay)
+            SettingsSectionTitle(title: "命令")
             CommandSettingsList(items: ["clipboard", ClipboardSequenceCommand.paste.rawValue,
                                         ClipboardSequenceCommand.reset.rawValue], id: \.self,
                                 disclosure: commandDisclosure) { id in
@@ -316,9 +316,9 @@ struct ClipboardPreferences: View {
     private func commandDisclosure(_ id: String) -> CommandSettingsDisclosure? {
         switch id {
         case "clipboard":
-            CommandSettingsDisclosure(isExpanded: binding(\.showsHistorySettings)) { AnyView(historySettings) }
+            CommandSettingsDisclosure(isExpanded: binding(\.showsHistorySettings), revealItem: .clipboardReplay) { AnyView(historySettings) }
         case ClipboardSequenceCommand.paste.rawValue:
-            CommandSettingsDisclosure(isExpanded: $showsSequenceSettings) { AnyView(sequenceSettings) }
+            CommandSettingsDisclosure(isExpanded: $showsSequenceSettings, revealItem: .clipboardSequence) { AnyView(sequenceSettings) }
         default:
             nil
         }

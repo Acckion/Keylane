@@ -11,10 +11,10 @@ struct ScriptCreationPage: View {
     var body: some View {
         LauncherCreationForm(back: back, spacing: 16) { EmptyView() } fields: {
             LauncherCreationField("模板", detail: runtimeRequirement) {
-                LauncherCreationPicker(selection: $controller.template, values: ScriptTemplate.allCases, open: pickerBinding(.template), title: \.title)
+                LauncherCreationPicker(label: "模板", selection: $controller.template, values: ScriptTemplate.allCases, open: pickerBinding(.template), title: \.title)
             }
             LauncherCreationField("模式") {
-                LauncherCreationPicker(selection: $controller.draft.mode, values: ScriptMetadata.Mode.allCases,
+                LauncherCreationPicker(label: "模式", selection: $controller.draft.mode, values: ScriptMetadata.Mode.allCases,
                                        open: pickerBinding(.mode)) { mode in
                     switch mode {
                     case .silent: "静默 · Silent"
