@@ -148,7 +148,10 @@ struct LauncherCreationPicker<Value: Hashable>: View {
     var body: some View {
         Button {
             if open { dismiss() }
-            else { open = true }
+            else {
+                triggerFocused = false
+                open = true
+            }
         } label: {
             LauncherCreationControl(focused: open || triggerFocused) {
                 HStack {
@@ -202,6 +205,11 @@ private struct CreationPickerOptions<Value: Hashable>: View {
             selection = values[index]
             dismiss()
         }, dismiss: dismiss)
+        .onKeyPress(.escape) {
+            guard !SearchField.isComposing else { return .ignored }
+            dismiss()
+            return .handled
+        }
         .modifier(LauncherMenuSurface(open: true))
     }
 }
