@@ -133,7 +133,7 @@ struct Launcher: View {
         let showsSearchBar = argumentTarget == nil && page?.contentPlacement != .form
         let compactSurface = model.isCompact && model.presentedLauncherHeight <= model.launcherHeight + 0.5
         return ZStack(alignment: .top) {
-            if let target = argumentTarget { argumentEditor(target).padding(.bottom, VisualStyle.launcherBottomInset) }
+            if let target = argumentTarget { argumentEditor(target) }
             else if compactSurface { Color.clear }
             else {
                 if showsFileResults {
@@ -164,7 +164,7 @@ struct Launcher: View {
                     Group {
                         switch page.contentPlacement {
                         case .underChrome: content()
-                        case .form: content().padding(.bottom, VisualStyle.launcherBottomInset)
+                        case .form: content()
                         case .inset, .fileResults:
                             content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
                         }
@@ -1037,7 +1037,7 @@ private struct LauncherFooterButtonLabel: View {
 }
 
 /// Samples the scrolling content in this window, rather than the desktop behind it.
-private struct ChromeBlur: NSViewRepresentable {
+struct ChromeBlur: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.blendingMode = .withinWindow

@@ -10,6 +10,11 @@ final class NavigationController: ObservableObject {
     @Published private(set) var incomplete = false
     @Published private(set) var performing = false
     @Published var selection = 0
+    @Published var excludedMenuApplications: [String: String] {
+        didSet { preferences.set(excludedMenuApplications, forKey: Self.exclusionsKey) }
+    }
+    private static let exclusionsKey = "navigation.excludedMenuApplications"
+    private let preferences: UserDefaults
     private var items: [NavigationItem] = []
     private var scanRequest: NavigationScanRequest?
     private var actionRequest: NavigationScanRequest?
@@ -24,13 +29,15 @@ final class NavigationController: ObservableObject {
          },
          runAction: @escaping (NavigationItem, NavigationMode, NavigationScanRequest, @escaping (String?) -> Void) -> Void = {
              SystemNavigation.shared.perform($0, mode: $1, request: $2, completion: $3)
-         }) {
+         }, preferences: UserDefaults = .standard) {
+        self.preferences = preferences
+        excludedMenuApplications = preferences.dictionary(forKey: Self.exclusionsKey) as? [String: String] ?? [:]
         self.trusted = trusted
         self.scan = scan
         self.runAction = runAction
     }
 
-    enum Status { case loading, permission, noApplication, ready }
+    enum Status { case loading, permission, noApplication, excludedApplication, ready }
 
     var query = "" { didSet { if oldValue != query { filter() } } }
     var selected: NavigationItem? { results.indices.contains(selection) ? results[selection] : nil }
@@ -43,6 +50,11 @@ final class NavigationController: ObservableObject {
         guard trusted() else { status = .permission; return }
         if mode == .menus && (target == nil || target?.isTerminated == true) {
             status = .noApplication
+            return
+        }
+        if mode == .menus, let identifier = target?.bundleIdentifier,
+           excludedMenuApplications.keys.contains(where: { $0.caseInsensitiveCompare(identifier) == .orderedSame }) {
+            status = .excludedApplication
             return
         }
         status = .loading
