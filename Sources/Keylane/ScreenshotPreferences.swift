@@ -6,6 +6,7 @@ struct ScreenshotPreferences: View {
     let library: ScreenshotLibrary
     let model: Model
     @StateObject private var observation: ViewObservation
+    @State private var pendingRetention: ScreenshotRetention?
 
     init(library: ScreenshotLibrary, model: Model) {
         self.library = library
@@ -21,6 +22,8 @@ struct ScreenshotPreferences: View {
             ViewObservation.changes(library.$recognizesText),
             ViewObservation.changes(library.$accurate),
             ViewObservation.changes(library.$allowCloudOCR),
+            ViewObservation.changes(library.$retention),
+            ViewObservation.changes(library.$retentionFailures),
             ViewObservation.changes(library.$disabledCommands)
         ]))
     }
@@ -72,6 +75,19 @@ struct ScreenshotPreferences: View {
                     SettingsCaption(title: "允许识别云端文件", detail: "识别尚未下载的图片时，云盘可能会下载原文件。")
                 }.disabled(!library.recognizesText)
             }
+            SettingsCard(anchor: .screenshotRetention) {
+                SettingsPicker("保留期限", detail: "按创建时间将搜索范围内过期的截图和录屏移到废纸篓。已置顶的项目会保留。",
+                               selection: Binding(get: { library.retention }, set: { choice in
+                    guard choice != library.retention else { return }
+                    if choice == .unlimited { library.retention = choice }
+                    else { pendingRetention = choice }
+                })) {
+                    ForEach(ScreenshotRetention.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                if library.retentionFailures > 0 {
+                    SettingsDescription("有 \(library.retentionFailures) 项无法移到废纸篓，将在下次检查时重试。")
+                }
+            }.disabled(!library.enabled)
             SettingsSectionTitle(title: "命令")
             CommandSettingsList(items: ScreenshotCommand.allCases, id: \.rawValue) { command in
                 CommandSettingsEntry(title: command.title,
@@ -80,6 +96,17 @@ struct ScreenshotPreferences: View {
                         SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.command(.init(rawValue: command.rawValue), settingsPage: "screenshots"))
                     }
             }.disabled(!library.enabled)
+        }
+        .confirmationDialog("启用截图自动清理？", isPresented: Binding(
+            get: { pendingRetention != nil }, set: { if !$0 { pendingRetention = nil } }
+        ), presenting: pendingRetention) { choice in
+            Button("设为保留 " + choice.title, role: .destructive) {
+                guard library.enabled else { return }
+                library.retention = choice
+            }
+            Button("取消", role: .cancel) {}
+        } message: { choice in
+            Text("现有超过 \(choice.title) 的未置顶截图和录屏也会移到废纸篓。")
         }
         .onAppear(perform: library.checkFolders)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in

@@ -38,6 +38,34 @@ enum ScreenshotFilter: String, CaseIterable, Identifiable {
     }
 }
 
+enum ScreenshotRetention: String, CaseIterable {
+    case day, week, month, threeMonths, sixMonths, year, unlimited
+
+    var title: String {
+        switch self {
+        case .day: "1 天"
+        case .week: "1 周"
+        case .month: "1 个月"
+        case .threeMonths: "3 个月"
+        case .sixMonths: "6 个月"
+        case .year: "1 年"
+        case .unlimited: "无限期"
+        }
+    }
+
+    func cutoff(at now: Date, calendar: Calendar = .current) -> Date? {
+        switch self {
+        case .day: calendar.date(byAdding: .day, value: -1, to: now)
+        case .week: calendar.date(byAdding: .day, value: -7, to: now)
+        case .month: calendar.date(byAdding: .month, value: -1, to: now)
+        case .threeMonths: calendar.date(byAdding: .month, value: -3, to: now)
+        case .sixMonths: calendar.date(byAdding: .month, value: -6, to: now)
+        case .year: calendar.date(byAdding: .year, value: -1, to: now)
+        case .unlimited: nil
+        }
+    }
+}
+
 struct ScreenshotScope: Codable, Identifiable, Equatable {
     let path: String
     let bookmark: Data?
@@ -72,6 +100,8 @@ final class ScreenshotLibrary: ObservableObject {
     private let defaults: UserDefaults
     @Published var enabled: Bool {
         didSet {
+            guard oldValue != enabled else { return }
+            configureRetention()
             if !enabled {
                 stop()
                 latestTask?.cancel()
@@ -90,6 +120,14 @@ final class ScreenshotLibrary: ObservableObject {
     @Published private(set) var pinnedIDs: Set<String> {
         didSet { defaults.set(pinnedIDs.sorted(), forKey: "pinnedScreenshotPaths") }
     }
+    @Published var retention: ScreenshotRetention {
+        didSet {
+            guard oldValue != retention else { return }
+            defaults.set(retention.rawValue, forKey: "screenshotRetention")
+            configureRetention()
+        }
+    }
+    @Published private(set) var retentionFailures = 0
     @Published var includeAll: Bool {
         didSet {
             defaults.set(includeAll, forKey: "screenshotIncludeAll")
@@ -136,12 +174,23 @@ final class ScreenshotLibrary: ObservableObject {
     private var scanTask: Task<Void, Never>?
     private var searchTask: Task<Void, Never>?
     private var latestTask: Task<Void, Never>?
+    private var retentionTask: Task<Void, Never>?
+    private var retentionTimer: Timer?
+    private var pinIdentities: [String: ScreenshotMedia.Identity]
+    private let trashExpiredItem: (URL) throws -> Void
     private var ocrCache = ScreenshotTextCache()
     private var searchOCR: ImageTextRecognitionWork?
     private var copyWork: [UUID: ImageTextRecognitionWork] = [:]
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, trashExpiredItem: @escaping (URL) throws -> Void = {
+        try FileManager.default.trashItem(at: $0, resultingItemURL: nil)
+    }) {
         self.defaults = defaults
+        self.trashExpiredItem = trashExpiredItem
+        retention = defaults.string(forKey: "screenshotRetention").flatMap(ScreenshotRetention.init(rawValue:)) ?? .unlimited
+        pinIdentities = defaults.data(forKey: "pinnedScreenshotIdentities").flatMap {
+            try? JSONDecoder().decode([String: ScreenshotMedia.Identity].self, from: $0)
+        } ?? [:]
         enabled = false
         disabledCommands = Set(defaults.stringArray(forKey: "disabledScreenshotCommands") ?? [])
         let savedColumns = defaults.object(forKey: "screenshotColumns") as? Int ?? Self.defaultColumnCount
@@ -154,6 +203,11 @@ final class ScreenshotLibrary: ObservableObject {
         if let data = defaults.data(forKey: "screenshotScopes") {
             scopes = (try? JSONDecoder().decode([ScreenshotScope].self, from: data)) ?? []
         }
+    }
+
+    deinit {
+        retentionTimer?.invalidate()
+        retentionTask?.cancel()
     }
 
     var suggestedFolder: URL? { systemScreenshotFolder ?? desktopFolder }
@@ -244,11 +298,100 @@ final class ScreenshotLibrary: ObservableObject {
         guard updated != scopes, let data = try? JSONEncoder().encode(updated) else { return }
         defaults.set(data, forKey: "screenshotScopes")
         scopes = updated
+        configureRetention()
         cancelImageTextCopies()
         checkFolders()
         latestTask?.cancel()
         latestTask = nil
         if pageActive { refresh() }
+    }
+
+    private func configureRetention() {
+        retentionTask?.cancel()
+        retentionTask = nil
+        retentionTimer?.invalidate()
+        retentionTimer = nil
+        retentionFailures = 0
+        guard enabled, retention != .unlimited, !scopes.isEmpty else { return }
+        cleanExpiredCaptures()
+        retentionTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in
+            self?.cleanExpiredCaptures()
+        }
+        retentionTimer?.tolerance = 60
+    }
+
+    private func cleanExpiredCaptures() {
+        guard enabled, retentionTask == nil, let cutoff = retention.cutoff(at: Date()) else { return }
+        let scopes = scopes
+        retentionTask = Task.detached(priority: .utility) { [weak self] in
+            let folders = scopes.compactMap(\.accessibleURL).map { ($0, $0.resolvingSymlinksInPath().path) }
+            let snapshot = ScreenshotCatalog.scan(folders: folders.map(\.0), includeAllMedia: false)
+            guard !Task.isCancelled else { return }
+            await self?.trashExpiredCaptures(snapshot.items, cutoff: cutoff, folders: folders)
+        }
+    }
+
+    @MainActor private func trashExpiredCaptures(_ captures: [ScreenshotMedia], cutoff: Date, folders: [(URL, String)]) async {
+        guard !Task.isCancelled else { return }
+        reconcilePins(in: captures)
+        var removed: Set<String> = []
+        var failures = 0
+        let access = folders.map(\.0).filter { $0.startAccessingSecurityScopedResource() }
+        defer { access.forEach { $0.stopAccessingSecurityScopedResource() } }
+        for item in captures where item.date < cutoff && item.date != .distantPast && !item.needsCloudAccess {
+            // Let settings, pinning and scope changes take effect between moves.
+            await Task.yield()
+            guard !Task.isCancelled else { break }
+            guard !pinnedIDs.contains(item.id),
+                  let identity = item.identity, !pinIdentities.values.contains(identity),
+                  folders.contains(where: { folder, root in
+                      let prefix = root == "/" ? "/" : root + "/"
+                      return folder.resolvingSymlinksInPath().path == root && item.url.resolvingSymlinksInPath().path.hasPrefix(prefix)
+                  }),
+                  (try? ScreenshotFileVersion.check(item, allowCloud: false, checkCreationDate: true)) != nil else { continue }
+            do {
+                try trashExpiredItem(item.url)
+                removed.insert(item.id)
+            } catch {
+                failures += 1
+            }
+        }
+        if !removed.isEmpty {
+            items.removeAll { removed.contains($0.id) }
+            publish(results.filter { !removed.contains($0.id) })
+            if pageActive { refresh() }
+        }
+        guard !Task.isCancelled else { return }
+        retentionFailures = failures
+        retentionTask = nil
+    }
+
+    private func reconcilePins(in snapshot: [ScreenshotMedia]) {
+        guard !pinnedIDs.isEmpty else { return }
+        let byPath = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.id, $0) })
+        let byIdentity = Dictionary(grouping: snapshot.compactMap { item in
+            item.identity.map { ($0, item.id) }
+        }, by: { $0.0 })
+        var paths = pinnedIDs
+        var updated = pinIdentities
+        for path in pinnedIDs {
+            if let item = byPath[path] {
+                // The visible pin applies to the current file at this path.
+                updated[path] = item.identity
+            } else if let identity = updated[path], let matches = byIdentity[identity], matches.count == 1 {
+                paths.remove(path)
+                paths.insert(matches[0].1)
+                updated.removeValue(forKey: path)
+                updated[matches[0].1] = identity
+            }
+        }
+        if updated != pinIdentities { savePinIdentities(updated) }
+        if paths != pinnedIDs { pinnedIDs = paths }
+    }
+
+    private func savePinIdentities(_ updated: [String: ScreenshotMedia.Identity]) {
+        pinIdentities = updated
+        defaults.set(try? JSONEncoder().encode(updated), forKey: "pinnedScreenshotIdentities")
     }
 
     func start() {
@@ -308,6 +451,7 @@ final class ScreenshotLibrary: ObservableObject {
                 self.scanning = false
                 self.inaccessibleFolders = snapshot.inaccessibleFolders
                 self.checkFolders()
+                self.reconcilePins(in: snapshot.items)
                 if self.items != snapshot.items || showingProgress {
                     let preferred = self.selectionAfterRename(in: snapshot.items)
                     self.items = snapshot.items
@@ -327,7 +471,13 @@ final class ScreenshotLibrary: ObservableObject {
         guard let selected, !updated.contains(where: { $0.id == selected.id }), let identity = selected.identity else { return nil }
         let matches = updated.filter { $0.identity == identity }
         guard matches.count == 1, let replacement = matches.first else { return nil }
-        if pinnedIDs.remove(selected.id) != nil { pinnedIDs.insert(replacement.id) }
+        if pinnedIDs.remove(selected.id) != nil {
+            pinnedIDs.insert(replacement.id)
+            var updated = pinIdentities
+            updated.removeValue(forKey: selected.id)
+            updated[replacement.id] = replacement.identity
+            savePinIdentities(updated)
+        }
         return .init(sectionID: pinnedIDs.contains(replacement.id) ? Self.pinnedSection : Self.section, itemID: replacement.id)
     }
 
@@ -433,6 +583,9 @@ final class ScreenshotLibrary: ObservableObject {
         let pinned = pinnedIDs.contains(item.id)
         if pinned { pinnedIDs.remove(item.id) }
         else { pinnedIDs.insert(item.id) }
+        var updated = pinIdentities
+        updated[item.id] = pinned ? nil : item.identity
+        savePinIdentities(updated)
         if selection?.itemID == item.id {
             selection = .init(sectionID: pinned ? Self.section : Self.pinnedSection, itemID: item.id)
         }
@@ -557,7 +710,11 @@ final class ScreenshotLibrary: ObservableObject {
         var destination: NSURL?
         try FileManager.default.trashItem(at: item.url, resultingItemURL: &destination)
         items.removeAll { $0.id == item.id }
-        if pinnedIDs.contains(item.id) { pinnedIDs.remove(item.id) }
+        if pinnedIDs.remove(item.id) != nil {
+            var updated = pinIdentities
+            updated.removeValue(forKey: item.id)
+            savePinIdentities(updated)
+        }
         applySearch(query, preservingResults: false)
         if pageActive { refresh() }
         return destination as URL?
@@ -565,16 +722,18 @@ final class ScreenshotLibrary: ObservableObject {
 }
 
 private enum ScreenshotFileVersion {
-    static func check(_ item: ScreenshotMedia, allowCloud: Bool = true) throws {
+    static func check(_ item: ScreenshotMedia, allowCloud: Bool = true, checkCreationDate: Bool = false) throws {
         let currentURL = URL(fileURLWithPath: item.url.path)
         var keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey,
                                          .fileSizeKey, .fileResourceIdentifierKey, .volumeIdentifierKey]
         if !allowCloud {
             keys.formUnion([.fileAllocatedSizeKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey])
         }
+        if checkCreationDate { keys.insert(.creationDateKey) }
         let values = try currentURL.resourceValues(forKeys: keys)
         guard values.isRegularFile == true, values.isSymbolicLink != true,
               values.contentModificationDate == item.modified, values.fileSize == item.size,
+              !checkCreationDate || (values.creationDate ?? values.contentModificationDate) == item.date,
               item.identity?.matches(values) ?? true else {
             throw CocoaError(.fileReadNoSuchFile)
         }

@@ -10,7 +10,7 @@ public struct ScreenshotMedia: Identifiable, Hashable, Sendable {
     public let size: Int
     public let kind: Kind
     public let needsCloudAccess: Bool
-    public struct Identity: Hashable, Sendable {
+    public struct Identity: Codable, Hashable, Sendable {
         fileprivate let volume: Data
         fileprivate let file: Data
 

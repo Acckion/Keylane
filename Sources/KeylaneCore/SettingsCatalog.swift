@@ -17,6 +17,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let applicationFavorites = SettingsItem(id: "favorites", page: "applications", title: "收藏", keywords: "排序 favorite pin")
     public static let screenshotColumns = SettingsItem(id: "screenshot-columns", page: "screenshots", title: "截图列数", keywords: "screenshots grid columns 截屏 缩略图")
     public static let screenshotScopes = SettingsItem(id: "screenshot-scopes", page: "screenshots", title: "截图搜索范围", keywords: "screenshots folders scope 截屏 录屏")
+    public static let screenshotRetention = SettingsItem(id: "screenshot-retention", page: "screenshots", title: "截图保留期限", keywords: "screenshots storage duration retention cleanup 自动清理 废纸篓")
     public static let screenshotText = SettingsItem(id: "screenshot-text", page: "screenshots", title: "截图文字识别", keywords: "screenshots OCR text cloud 图片内容 云端")
 
     public static let appearance = SettingsItem(id: "appearance", page: "general", title: "外观", keywords: "主题 深色 浅色 系统 界面 大小 appearance theme dark light size")
@@ -108,6 +109,7 @@ public struct SettingsItem: Identifiable, Equatable {
         screenshotColumns,
         screenshotScopes,
         screenshotText,
+        screenshotRetention,
         applicationFavorites,
         menuBar,
         systemShortcuts,
