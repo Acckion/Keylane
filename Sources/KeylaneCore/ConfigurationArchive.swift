@@ -81,7 +81,7 @@ public struct ConfigurationArchive: Codable {
     }
 
     /// Merge-only restoration: missing categories/keys never delete existing configuration.
-    public func plan(current: [String: Any], overwrite: Bool) throws -> Plan {
+    public func plan(current: [String: Any], overwrite: Bool, excludingCommandStates: Set<String> = []) throws -> Plan {
         guard disabledCommands == nil || commandEnabled == nil else { throw ConfigurationError("命令状态包含两种不兼容的表示。") }
         var changes: [String: Any] = [:], messages: [String] = []
         var conflicts = 0, omitted = 0
@@ -103,13 +103,16 @@ public struct ConfigurationArchive: Codable {
             choose(key, value.object)
         }
         if let disabledCommands {
-            guard Set(disabledCommands).count == disabledCommands.count, disabledCommands.allSatisfy({ !$0.isEmpty && $0.count < 1024 }) else { throw ConfigurationError("命令启用状态无效。") }
-            choose("disabledLauncherCommands", disabledCommands.sorted())
+            guard !disabledCommands.contains("settings"), Set(disabledCommands).count == disabledCommands.count, disabledCommands.allSatisfy({ !$0.isEmpty && $0.count < 1024 }) else { throw ConfigurationError("命令启用状态无效。") }
+            omitted += disabledCommands.filter { excludingCommandStates.contains($0) }.count
+            let retained = (current["disabledLauncherCommands"] as? [String] ?? []).filter { excludingCommandStates.contains($0) }
+            choose("disabledLauncherCommands", Set(disabledCommands.filter { !excludingCommandStates.contains($0) } + retained).sorted())
         }
         if let commandEnabled {
             var disabled = Set(current["disabledLauncherCommands"] as? [String] ?? [])
             for (id, enabled) in commandEnabled {
-                guard !id.isEmpty, id.count < 1024 else { throw ConfigurationError("命令状态记录无效。") }
+                guard !id.isEmpty, id.count < 1024, id != "settings" || enabled else { throw ConfigurationError("命令状态记录无效。") }
+                if excludingCommandStates.contains(id) { omitted += 1; continue }
                 let wasEnabled = !disabled.contains(id)
                 if wasEnabled != enabled { conflicts += 1; if !overwrite { continue } }
                 if enabled { disabled.remove(id) } else { disabled.insert(id) }

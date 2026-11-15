@@ -465,6 +465,11 @@ final class LauncherModuleRegistry {
         module.services.reversed().forEach { $0.stop() }
     }
 
+    /// Importing a legacy host disable for these commands would mutate a separate preference.
+    var independentlyEnabledCommandIDs: Set<String> {
+        Set(byID.compactMap { $0.value.value.settingsEnabled == nil ? nil : $0.key.rawValue })
+    }
+
     /// Preserve a prior disable from the host when a module supplies its own command preference.
     func migrateDisabledCommands(_ disabled: Set<String>) -> Set<String> {
         var remaining = disabled

@@ -27,6 +27,10 @@ final class ConfigurationArchiveTests: XCTestCase {
         XCTAssertEqual(plan.changes["appearance"] as? String, "dark"); XCTAssertNil(plan.changes["hyperkey"])
         var invalid = ConfigurationArchive(); invalid.preferences["appearance"] = .integer(1)
         XCTAssertThrowsError(try invalid.plan(current: [:], overwrite: true))
+        invalid = ConfigurationArchive(); invalid.disabledCommands = ["settings"]
+        XCTAssertThrowsError(try invalid.plan(current: [:], overwrite: true))
+        invalid = ConfigurationArchive(); invalid.commandEnabled = ["settings": false]
+        XCTAssertThrowsError(try invalid.plan(current: [:], overwrite: true))
     }
     func testMergeConflictAndIdempotency() throws {
         var archive = ConfigurationArchive(); archive.preferences["appearance"] = .string("dark")
@@ -115,6 +119,11 @@ final class ConfigurationArchiveTests: XCTestCase {
         archive.commandEnabled = ["clipboard": true]
         let reenable = try archive.plan(current: ["disabledLauncherCommands": ["clipboard", "unrelated"]], overwrite: true)
         XCTAssertEqual(reenable.changes["disabledLauncherCommands"] as? [String], ["unrelated"])
+        let excluded = try archive.plan(current: [:], overwrite: true, excludingCommandStates: ["clipboard"])
+        XCTAssertTrue(excluded.changes.isEmpty); XCTAssertEqual(excluded.omitted, 1)
+        archive.commandEnabled = nil; archive.disabledCommands = ["clipboard", "other"]
+        let legacy = try archive.plan(current: [:], overwrite: true, excludingCommandStates: ["clipboard"])
+        XCTAssertEqual(legacy.changes["disabledLauncherCommands"] as? [String], ["other"])
     }
     func testScryptAgainstRFC7914AndIndependentPythonVector() throws {
         let rfc = try RaycastScrypt.derive(password: Data(), salt: Data(), n: 16, r: 1, p: 1, length: 64)
