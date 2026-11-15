@@ -118,6 +118,8 @@ struct SnippetPreferences: View {
                 }
             }
 
+            excludedApplications
+
             SettingsSectionTitle(title: "命令")
             CommandSettingsList(items: SnippetsModule.Command.allCases, id: \.rawValue) { command in
                 var entry = CommandSettingsEntry(title: command.title, model: model, commandID: command.id,
@@ -173,19 +175,35 @@ struct SnippetPreferences: View {
                            title: { $0.isEmpty ? "无" : $0 }, choose: { name in
             if !name.isEmpty { NSSound(named: name)?.play() }
         })
-        Divider().opacity(0.4)
-        SettingsRow("禁用的应用", detail: "在这些应用里暂停关键词展开。") {
+    }
+
+    private var excludedApplications: some View {
+        SettingsListCard(title: "禁用的应用", detail: "在这些应用里暂停关键词展开。") {
             SettingsIconButton("添加应用", symbol: "plus", action: addApplication)
-        }
-        if !controller.options.excluded.isEmpty {
-            SettingsCompactList(items: controller.options.excluded, id: \.id) { app in
-                SettingsCompactItemRow(title: app.name, symbol: "app") {
-                    SettingsRemoveItemButton(label: "移除应用", help: app.name) {
-                        controller.options.excluded.removeAll { $0.id == app.id }
+        } content: {
+            if controller.options.excluded.isEmpty {
+                SettingsListEmptyState(title: "没有禁用的应用")
+            } else {
+                SettingsCompactList(items: controller.options.excluded, id: \.id) { app in
+                    SettingsRow {
+                        Label {
+                            Text(app.name).font(.system(size: 12)).foregroundStyle(.secondary)
+                        } icon: {
+                            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id) {
+                                WorkspaceItemIcon(path: url.path).scaledToFit().frame(width: 16, height: 16)
+                            } else {
+                                Image(nsImage: NSWorkspace.shared.icon(for: .applicationBundle))
+                                    .resizable().scaledToFit().frame(width: 16, height: 16)
+                            }
+                        }
+                    } control: {
+                        SettingsRemoveItemButton(label: "移除应用", help: app.name) {
+                            controller.options.excluded.removeAll { $0.id == app.id }
+                        }
                     }
                 }
+                .padding(.bottom, 8)
             }
-            .padding(.bottom, 8)
         }
     }
 
