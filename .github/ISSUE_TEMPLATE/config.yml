@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerabilities / 安全漏洞
+    url: https://github.com/Acckion/Keylane/blob/dev/SECURITY.md
+    about: Do not disclose vulnerabilities publicly. Follow the private reporting instructions. / 勿公开漏洞，请遵循私密报告指引。
+  - name: Contribution guide / 贡献指南
+    url: https://github.com/Acckion/Keylane/blob/dev/CONTRIBUTING.md
+    about: Branches, checks, licensing, and contribution workflow / 分支、检查、许可及贡献流程
