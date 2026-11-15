@@ -189,12 +189,24 @@ let pidFile = scratch.appendingPathComponent("pid")
 let catalog = scratch.appendingPathComponent("catalog")
 let exitCode = scratch.appendingPathComponent("exit-code")
 let secondIdentifier = UUID().uuidString
+let firstFolder = UUID().uuidString
+let secondFolder = UUID().uuidString
+let folderList = scratch.appendingPathComponent("folders")
+let firstMembers = scratch.appendingPathComponent(firstFolder)
+let secondMembers = scratch.appendingPathComponent(secondFolder)
+try "Work (\(firstFolder))\nPersonal (\(secondFolder))\n".write(to: folderList, atomically: true, encoding: .utf8)
+try "Synthetic shortcut (\(identifier))\n".write(to: firstMembers, atomically: true, encoding: .utf8)
+try "".write(to: secondMembers, atomically: true, encoding: .utf8)
 try "Synthetic shortcut (\(identifier))\n".write(to: catalog, atomically: true, encoding: .utf8)
 try """
 #!/bin/sh
 case "$1" in
 list)
-    /bin/cat '\(catalog.path)'
+    case "$2" in
+        --folders) /bin/cat '\(folderList.path)' ;;
+        --folder-name) /bin/cat '\(scratch.path)'/"$3" ;;
+        *) /bin/cat '\(catalog.path)' ;;
+    esac
     ;;
 run)
     printf '%s\\n' "$$" > '\(pidFile.path)'
@@ -218,6 +230,26 @@ wait("catalog adds duplicate title with distinct IDs") { fixture.entries.count =
 precondition(fixture.duplicateTitles == ["Duplicate"])
 precondition(fixture.entries.map(\.id) == [identifier, secondIdentifier].sorted())
 let commandID = fixture.entries.first { $0.id == identifier }!.commandID
+precondition(fixture.folders == nil, "Launcher refreshes should not query folder membership")
+fixture.refreshFolders()
+wait("synthetic Shortcuts folders") { fixture.folders != nil }
+let grouped = SystemShortcutFolder.sections(fixture.folders!, shortcuts: fixture.entries)
+precondition(grouped.map(\.name) == ["Work", "未分类"])
+precondition(grouped.map { $0.shortcuts.map(\.id) } == [[identifier], [secondIdentifier]])
+
+try "Work (\(firstFolder))\nRenamed Folder (\(secondFolder))\n".write(to: folderList, atomically: true, encoding: .utf8)
+try "".write(to: firstMembers, atomically: true, encoding: .utf8)
+try "Duplicate (\(identifier))\n".write(to: secondMembers, atomically: true, encoding: .utf8)
+fixture.refreshFolders()
+wait("folder renamed and membership changed") { fixture.folders?.first?.name == "Renamed Folder" }
+let moved = SystemShortcutFolder.sections(fixture.folders!, shortcuts: fixture.entries)
+precondition(moved.first?.id == secondFolder && moved.first?.shortcuts.map(\.commandID) == [commandID])
+
+try FileManager.default.removeItem(at: firstMembers)
+fixture.refreshFolders()
+wait("unavailable folder listing leaves shortcuts available") { fixture.folders == nil }
+precondition(fixture.entries.count == 2)
+
 try "Renamed (\(identifier))\n".write(to: catalog, atomically: true, encoding: .utf8)
 fixture.launcherShown()
 wait("catalog removes old shortcut and preserves renamed identity") { fixture.entries.map(\.name) == ["Renamed"] }
@@ -243,5 +275,5 @@ for (code, expected) in outcomes {
     precondition(feedback == [.started, expected])
 }
 fixture.stop()
-print("PASS Shortcuts UUID across rename, duplicate names, add/remove, busy, completion, failure and lifecycle")
+print("PASS Shortcuts UUID across rename, folder grouping and moves, unfiled shortcuts, failure fallback, and execution lifecycle")
 print("PASS system Dictionary lookup and empty result")
