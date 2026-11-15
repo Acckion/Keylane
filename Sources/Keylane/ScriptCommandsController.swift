@@ -10,6 +10,7 @@ final class ScriptCommandsController: ObservableObject {
             guard enabled != oldValue else { return }
             if enabled, serviceRunning { restartDiscovery() }
             else {
+                cancelRootArguments()
                 stopDiscovery()
                 inlineDue.removeAll()
                 if !inlineOutput.isEmpty { inlineOutput.removeAll() }
@@ -40,6 +41,10 @@ final class ScriptCommandsController: ObservableObject {
     @Published private(set) var error = ""
     @Published var arguments = ""
     @Published var argumentValues: [String] = []
+    @Published private(set) var rootArgumentScript: ScriptCommand?
+    @Published var rootArgumentValues: [String] = []
+    @Published private(set) var rootArgumentError = ""
+    private(set) var rootArgumentSession: UUID?
     @Published private(set) var liveOutput = ""
     @Published private(set) var inlineOutput: [String: String] = [:]
     @Published var draft = ScriptMetadata()
@@ -94,6 +99,8 @@ final class ScriptCommandsController: ObservableObject {
             scheduleInlineRefresh()
         } else {
             suspendInlineRefresh()
+            cancelRootArguments()
+            Self.clearPasswords(in: selected?.metadata?.arguments ?? [], values: &argumentValues)
         }
     }
 
@@ -308,6 +315,73 @@ final class ScriptCommandsController: ObservableObject {
 
     func command(withID id: String) -> ScriptCommand? { entriesByID[id] }
 
+    func isAvailable(_ script: ScriptCommand) -> Bool {
+        canRun(script) && command(withID: script.id) == script && FileManager.default.fileExists(atPath: script.url.path)
+    }
+
+    @discardableResult
+    func beginRootArguments(_ script: ScriptCommand) -> Bool {
+        guard !running, isAvailable(script), let fields = script.metadata?.arguments, !fields.isEmpty else { return false }
+        rootArgumentValues = Array(repeating: "", count: fields.count)
+        rootArgumentError = ""
+        rootArgumentSession = UUID()
+        rootArgumentScript = script
+        return true
+    }
+
+    func cancelRootArguments() {
+        guard rootArgumentScript != nil else { return }
+        rootArgumentSession = nil
+        rootArgumentScript = nil
+        rootArgumentValues = []
+        rootArgumentError = ""
+    }
+
+    func validateRootArguments() -> Bool {
+        guard let script = rootArgumentScript, let fields = script.metadata?.arguments else { return false }
+        do {
+            if running { rootArgumentError = "已有脚本正在运行。" }
+            else if !isAvailable(script) { rootArgumentError = "此脚本已更改或不可用，请重新选择。" }
+            else {
+                _ = try validatedArguments(fields, values: rootArgumentValues)
+                rootArgumentError = ""
+                return true
+            }
+        } catch {
+            rootArgumentError = error.localizedDescription
+        }
+        Self.clearPasswords(in: fields, values: &rootArgumentValues)
+        return false
+    }
+
+    func submitRootArguments(confirmed: Bool = false, beforeExecution: (ScriptCommand) -> Void) {
+        guard validateRootArguments(), let script = rootArgumentScript, let metadata = script.metadata,
+              !metadata.needsConfirmation || confirmed else { return }
+        select(script)
+        argumentValues = rootArgumentValues
+        defer { Self.clearPasswords(in: metadata.arguments, values: &argumentValues) }
+        run(alreadyConfirmed: confirmed, beforeExecution: {
+            self.cancelRootArguments()
+            beforeExecution(script)
+        })
+        if rootArgumentScript != nil {
+            Self.clearPasswords(in: metadata.arguments, values: &rootArgumentValues)
+            rootArgumentError = error
+        }
+    }
+
+    private func validatedArguments(_ fields: [ScriptMetadata.Argument], values: [String]) throws -> [String] {
+        try fields.enumerated().map { index, argument in
+            try argument.value(values.indices.contains(index) ? values[index] : "")
+        }
+    }
+
+    private static func clearPasswords(in fields: [ScriptMetadata.Argument], values: inout [String]) {
+        for index in fields.indices where fields[index].kind == .password && values.indices.contains(index) {
+            values[index] = ""
+        }
+    }
+
     private func acceptsFallbackInput(_ script: ScriptCommand) -> Bool {
         guard let args = script.metadata?.arguments else { return false }
         return args.first?.kind == .text && args.dropFirst().allSatisfy { $0.optional == true }
@@ -333,6 +407,10 @@ final class ScriptCommandsController: ObservableObject {
     }
 
     func run() {
+        run(alreadyConfirmed: false, beforeExecution: {})
+    }
+
+    private func run(alreadyConfirmed: Bool, beforeExecution: () -> Void) {
         guard !running, let selected else { return }
         result = nil
         error = ""
@@ -341,9 +419,7 @@ final class ScriptCommandsController: ObservableObject {
         let args: [String]
         do {
             if let metadata = selected.metadata {
-                args = try metadata.arguments.enumerated().map { index, argument in
-                    try argument.value(argumentValues.indices.contains(index) ? argumentValues[index] : "")
-                }
+                args = try validatedArguments(metadata.arguments, values: argumentValues)
             } else {
                 args = try ArgumentParser.parse(arguments)
             }
@@ -368,7 +444,7 @@ final class ScriptCommandsController: ObservableObject {
             }
             return
         }
-        if selected.metadata?.needsConfirmation == true {
+        if selected.metadata?.needsConfirmation == true, !alreadyConfirmed {
             let alert = NSAlert()
             alert.messageText = "运行「\(selected.title)」？"
             alert.informativeText = selected.metadata?.description ?? ""
@@ -377,9 +453,8 @@ final class ScriptCommandsController: ObservableObject {
             NSApp?.activate(ignoringOtherApps: true)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
-        for index in argumentValues.indices where selected.metadata?.arguments[index].kind == .password {
-            argumentValues[index] = ""
-        }
+        Self.clearPasswords(in: selected.metadata?.arguments ?? [], values: &argumentValues)
+        beforeExecution()
         let mode = selected.metadata?.effectiveMode ?? .fullOutput
         if mode == .silent { (NSApp?.delegate as? Delegate)?.hideLauncher() }
         execute(selected, arguments: args, directory: URL(fileURLWithPath: path, isDirectory: true),
@@ -387,6 +462,7 @@ final class ScriptCommandsController: ObservableObject {
     }
 
     func stop() {
+        cancelRootArguments()
         serviceRunning = false
         launcherVisible = false
         stopDiscovery()

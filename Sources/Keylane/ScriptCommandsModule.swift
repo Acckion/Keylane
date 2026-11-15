@@ -8,6 +8,7 @@ enum ScriptCommandsModule {
     private static let pageID = PageID(rawValue: "RunScript")
     private static let createPageID = PageID(rawValue: "CreateScript")
     private static let searchPageID = PageID(rawValue: "SearchScripts")
+    private static let configurePageID = PageID(rawValue: "ConfigureScriptCommand")
     private static let symbol = "terminal"
 
     enum Action: String, CaseIterable {
@@ -45,6 +46,38 @@ enum ScriptCommandsModule {
 
     static func selectedIndex(_ model: Model, count: Int) -> Int {
         NavigationBounds.move(model.scripts.searchSelection, by: 0, count: count)
+    }
+
+    static func focusArguments(forAlias alias: String, model: Model) -> Bool {
+        guard model.pageID == .root, !alias.isEmpty, let row = model.commands.first,
+              let saved = model.aliases[row.id],
+              alias.compare(saved, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) == .orderedSame,
+              let script = model.scripts.command(withID: row.id) else { return false }
+        return model.scripts.beginRootArguments(script)
+    }
+
+    static func runRootArguments(_ model: Model, in window: NSWindow? = NSApp?.keyWindow) {
+        let controller = model.scripts
+        guard let script = controller.rootArgumentScript, let metadata = script.metadata,
+              let session = controller.rootArgumentSession else { return }
+        let submit: (Bool) -> Void = { [weak model] confirmed in
+            guard let model, model.pageID == .root, controller.rootArgumentSession == session else { return }
+            controller.submitRootArguments(confirmed: confirmed) { script in
+                if script.metadata?.effectiveMode == .fullOutput { model.openPage(pageID, origin: .search) }
+            }
+        }
+        guard metadata.needsConfirmation else { submit(false); return }
+        guard let window, window.attachedSheet == nil, controller.validateRootArguments() else { return }
+        let alert = NSAlert()
+        alert.messageText = "运行「\(script.title)」？"
+        alert.informativeText = metadata.description
+        alert.addButton(withTitle: "运行")
+        alert.addButton(withTitle: "取消").keyEquivalent = "\u{1b}"
+        alert.beginSheetModal(for: window) { response in
+            guard controller.rootArgumentSession == session else { return }
+            if response == .alertFirstButtonReturn { submit(true) }
+            else { controller.cancelRootArguments() }
+        }
     }
 
     private static func searchPage(_ model: Model) -> LauncherPage {
@@ -103,6 +136,7 @@ enum ScriptCommandsModule {
 
     static func make(model: Model) -> LauncherModule {
         let controller = model.scripts
+        let editor = ApplicationCommandEdit()
         let provider = LauncherModule.Provider(namespace: .prefix(ScriptCommand.namespace), entries: { _ in
             controller.entries.filter(controller.canRun).map { script in
                 Entry(id: script.id, commandID: .init(rawValue: script.id), name: script.title,
@@ -120,6 +154,14 @@ enum ScriptCommandsModule {
                     model.error = "已有脚本正在运行。"
                     return
                 }
+                if model.pageID == .root, origin == .search, !controller.running, script.metadata?.arguments.isEmpty == false {
+                    if !controller.beginRootArguments(script) {
+                        model.error = "此脚本已更改或不可用，请重新选择。"
+                    } else if model.isCompact {
+                        model.compactExpanded = true
+                    }
+                    return
+                }
                 if controller.selected != script || script.metadata != nil { controller.select(script) }
                 if let metadata = script.metadata, metadata.arguments.isEmpty {
                     if metadata.effectiveMode == .fullOutput { model.openPage(pageID, origin: origin) }
@@ -128,15 +170,18 @@ enum ScriptCommandsModule {
                     model.openPage(pageID, origin: origin)
                 }
             }
-        }, primaryTitle: { _ in "运行脚本" }, actions: { [weak model] row in
+        }, primaryTitle: { row in
+            controller.command(withID: row.id)?.metadata?.arguments.isEmpty == false ? "填写参数" : "运行脚本"
+        }, actions: { [weak model] row in
             guard let model, let script = controller.command(withID: row.id) else { return nil }
             if controller.runningScript?.id == script.id {
                 return [.init(id: "cancel-script", title: "取消运行", icon: "stop.circle", perform: controller.cancel),
                         model.favoriteAction(for: row)]
             }
             return [
-                .init(id: "script-run", title: "运行脚本", icon: "play", keys: ["↩"], perform: {
-                    model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
+                .init(id: "script-run", title: script.metadata?.arguments.isEmpty == false ? "填写参数" : "运行脚本",
+                      icon: "play", keys: ["↩"], perform: {
+                    model.runCommand(row.commandID, origin: model.pageID == .root ? .search : .menu, usageKey: row.id)
                 }),
                 .init(id: "script-configure-run", title: "设置参数并运行", icon: "slider.horizontal.3", perform: {
                     guard !controller.running else { return }
@@ -158,6 +203,17 @@ enum ScriptCommandsModule {
                 }),
                 .init(id: "script-settings", title: "脚本命令设置…", icon: "gearshape", group: 2, perform: {
                     model.openSettings(page: settingsID)
+                }),
+                .init(id: "script-edit-command", title: "编辑别名与快捷键…", icon: "keyboard", group: 2, perform: {
+                    guard controller.isAvailable(script), !model.disabledCommands.contains(row.commandID.rawValue),
+                          model.launcherModules?.isCommandModuleEnabled(row.commandID) == true else { return }
+                    editor.prepare(row, model: model, isAvailable: { [weak model = model] in
+                        guard let model, !model.disabledCommands.contains(row.commandID.rawValue),
+                              model.launcherModules?.isCommandModuleEnabled(row.commandID) == true,
+                              let current = controller.command(withID: script.id) else { return false }
+                        return controller.isAvailable(current)
+                    })
+                    model.openPage(configurePageID, origin: .search)
                 }),
                 model.favoriteAction(for: row)
             ]
@@ -241,12 +297,25 @@ enum ScriptCommandsModule {
                 ViewObservation.changes(controller.$enabled)
             ).eraseToAnyPublisher()
         )
+        let configure = LauncherPage(
+            id: configurePageID, placeholder: "", badge: ("编辑脚本命令", "keyboard"),
+            contentPlacement: .form,
+            content: { [weak model] in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(ApplicationCommandEditPage(editor: editor, model: model, icon: { row in
+                    if let script = controller.command(withID: row.id) { return AnyView(ScriptArtwork(script: script)) }
+                    return AnyView(Image(systemName: symbol))
+                }))
+            },
+            submit: { [weak model] in if let model { editor.save(model: model) } },
+            primaryTitle: { "保存别名" }
+        )
         return .init(id: .init(rawValue: "keylane.script-commands"), commands: [
             .init(declaration: .init(id: .init(rawValue: "manage-script-commands"), title: "管理脚本命令",
                                     detail: "添加脚本文件夹和热键", symbol: symbol,
                                     keywords: ["Script Commands", "脚本", "Shell", "Python", "Node"],
                                     destination: .settings(settingsID), settingsPage: settingsID))
-        ] + actionCommands(controller), providers: [provider, cancellation, fallback], pages: [searchPage(model), page, create], settings: [settings],
+        ] + actionCommands(controller), providers: [provider, cancellation, fallback], pages: [searchPage(model), page, create, configure], settings: [settings],
         services: [.init(start: controller.start, stop: controller.stop)],
         searchUpdates: [
             ViewObservation.changes(controller.$folders),
@@ -263,6 +332,87 @@ enum ScriptCommandsModule {
             updates: { [ViewObservation.changes(controller.$entries), ViewObservation.changes(controller.$disabled)] },
             entry: { $0.commandSettingsEntry(model: $1, controller: controller) }
         ))
+    }
+}
+
+struct RootScriptArgumentBar: View {
+    let script: ScriptCommand
+    @ObservedObject var controller: ScriptCommandsController
+    let submit: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                ScriptArtwork(script: script).frame(width: 20, height: 20).accessibilityHidden(true)
+                Text(script.title)
+                    .font(.system(size: 14, weight: .medium))
+                    .lineLimit(1)
+                    .frame(maxWidth: 180, alignment: .leading)
+                ForEach(Array((script.metadata?.arguments ?? []).enumerated()), id: \.offset) { index, argument in
+                    ScriptArgumentInput(argument: argument, value: ScriptArgumentInput.value($controller.rootArgumentValues, at: index),
+                                        inSearchBar: true, focusOnAppear: index == 0)
+                }
+            }
+            if !controller.rootArgumentError.isEmpty {
+                Text(controller.rootArgumentError)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onSubmit { if !SearchField.isComposing { submit() } }
+    }
+}
+
+private struct ScriptArgumentInput: View {
+    let argument: ScriptMetadata.Argument
+    @Binding var value: String
+    var inSearchBar = false
+    var focusOnAppear = false
+    @FocusState private var focused: Bool
+
+    static func value(_ values: Binding<[String]>, at index: Int) -> Binding<String> {
+        Binding(get: { values.wrappedValue.indices.contains(index) ? values.wrappedValue[index] : "" },
+                set: { if values.wrappedValue.indices.contains(index) { values.wrappedValue[index] = $0 } })
+    }
+
+    var body: some View {
+        Group {
+            if inSearchBar {
+                LauncherCreationControl(focused: focused) { field.textFieldStyle(.plain) }
+                    .frame(maxWidth: .infinity)
+            } else {
+                field
+            }
+        }
+        .accessibilityLabel(argument.placeholder)
+        .task {
+            guard focusOnAppear else { return }
+            await Task.yield()
+            if !Task.isCancelled { focused = true }
+        }
+    }
+
+    @ViewBuilder private var field: some View {
+        switch argument.kind {
+        case .text:
+            TextField(argument.placeholder, text: $value).focused($focused)
+        case .password:
+            SecureField(argument.placeholder, text: $value).focused($focused)
+        case .dropdown:
+            Picker(argument.placeholder, selection: $value) {
+                Text(emptyChoice).tag("")
+                ForEach(Array((argument.data ?? []).enumerated()), id: \.offset) { _, choice in
+                    Text(choice.title).tag(choice.value)
+                }
+            }.labelsHidden().focused($focused)
+        }
+    }
+
+    private var emptyChoice: String {
+        if inSearchBar {
+            return argument.optional == true ? "\(argument.placeholder)（可选）" : argument.placeholder
+        }
+        return argument.optional == true ? "无" : "请选择"
     }
 }
 
@@ -435,7 +585,7 @@ private struct ScriptCommandRunView: View {
                         ForEach(Array(metadata.arguments.enumerated()), id: \.offset) { index, argument in
                             GridRow {
                                 Text(argument.placeholder)
-                                input(argument, at: index)
+                                ScriptArgumentInput(argument: argument, value: ScriptArgumentInput.value($controller.argumentValues, at: index))
                             }
                         }
                     } else {
@@ -491,24 +641,6 @@ private struct ScriptCommandRunView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .launcherScrollInsets()
-    }
-
-    @ViewBuilder private func input(_ argument: ScriptMetadata.Argument, at index: Int) -> some View {
-        let value = Binding(
-            get: { controller.argumentValues.indices.contains(index) ? controller.argumentValues[index] : "" },
-            set: { if controller.argumentValues.indices.contains(index) { controller.argumentValues[index] = $0 } }
-        )
-        switch argument.kind {
-        case .text: TextField(argument.placeholder, text: value)
-        case .password: SecureField(argument.placeholder, text: value)
-        case .dropdown:
-            Picker(argument.placeholder, selection: value) {
-                Text(argument.optional == true ? "无" : "请选择").tag("")
-                ForEach(Array((argument.data ?? []).enumerated()), id: \.offset) { _, choice in
-                    Text(choice.title).tag(choice.value)
-                }
-            }.labelsHidden()
-        }
     }
 
     private func status(_ status: ScriptRunner.Result.Status) -> String {
