@@ -25,8 +25,7 @@ struct ApplicationPreferences: View {
             ViewObservation.changes(model.$disabledCommands),
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(model.$excluded),
-            ViewObservation.changes(model.$favorites),
-            ViewObservation.changes(model.$scanStatus)
+            ViewObservation.changes(model.$favorites)
         ]))
     }
 
@@ -120,11 +119,7 @@ struct ApplicationPreferences: View {
             CommandSettingsList(items: visibleApplications, id: \.id, emptyMessage: "没有匹配的应用") { item in
                 item.commandSettingsEntry(model: model)
             }.settingsAnchor(.applicationFavorites)
-            HStack {
-                Text(model.scanStatus).font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("刷新", systemImage: "arrow.clockwise") { model.discovery.refresh() }.buttonStyle(.plain).font(.caption).foregroundStyle(.secondary)
-            }.padding(.horizontal, 14)
+
         }.font(.system(size: 15))
             .onChange(of: catalog.items) { _, _ in updateFilter(filter) }
             .onChange(of: filter) { _, value in updateFilter(value) }
