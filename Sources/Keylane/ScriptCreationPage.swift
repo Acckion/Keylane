@@ -4,15 +4,18 @@ import SwiftUI
 struct ScriptCreationPage: View {
     @ObservedObject var controller: ScriptCommandsController
     let back: () -> Void
+    private enum PickerField { case template, mode }
+    @State private var openPicker: PickerField?
     @FocusState private var focus: String?
 
     var body: some View {
         LauncherCreationForm(back: back, spacing: 16) { EmptyView() } fields: {
             LauncherCreationField("模板", detail: runtimeRequirement) {
-                LauncherCreationPicker(selection: $controller.template, values: ScriptTemplate.allCases, title: \.title)
+                LauncherCreationPicker(selection: $controller.template, values: ScriptTemplate.allCases, open: pickerBinding(.template), title: \.title)
             }
             LauncherCreationField("模式") {
-                LauncherCreationPicker(selection: $controller.draft.mode, values: ScriptMetadata.Mode.allCases) { mode in
+                LauncherCreationPicker(selection: $controller.draft.mode, values: ScriptMetadata.Mode.allCases,
+                                       open: pickerBinding(.mode)) { mode in
                     switch mode {
                     case .silent: "静默 · Silent"
                     case .compact: "精简 · Compact"
@@ -88,7 +91,19 @@ struct ScriptCreationPage: View {
         .onChange(of: controller.draft.mode) { _, mode in
             if mode == .inline { controller.includeArgument = false }
         }
-        .onExitCommand(perform: back)
+        .onExitCommand {
+            guard !SearchField.isComposing else { return }
+            if openPicker != nil { openPicker = nil }
+            else { back() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in openPicker = nil }
+    }
+
+    private func pickerBinding(_ field: PickerField) -> Binding<Bool> {
+        Binding(get: { openPicker == field }, set: { showing in
+            if showing { openPicker = field }
+            else if openPicker == field { openPicker = nil }
+        })
     }
 
     private var runtimeRequirement: String? {

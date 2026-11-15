@@ -132,13 +132,12 @@ struct SnippetPreferences: View {
                     SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.settings("snippets"))
                 }
             }
-            .settingsAnchor(.snippetSearchCommand)
         }
     }
 
     private func commandDisclosure(_ command: SnippetsModule.Command) -> CommandSettingsDisclosure? {
         guard command == .search else { return nil }
-        return CommandSettingsDisclosure(isExpanded: $showsSearchSettings) {
+        return CommandSettingsDisclosure(isExpanded: $showsSearchSettings, revealItem: .snippetSearchCommand) {
             AnyView(SettingsRowsLayout {
                 SettingsPicker("主要操作", selection: $controller.options.primary) {
                     Text("粘贴到当前应用").tag(SnippetExpansionOptions.PrimaryAction.paste)

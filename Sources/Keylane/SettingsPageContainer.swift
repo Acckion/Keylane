@@ -1,5 +1,14 @@
 import SwiftUI
 
+struct SettingsRevealRequest: Equatable {
+    let itemID: String
+    private let occurrence = UUID()
+}
+
+extension EnvironmentValues {
+    @Entry var settingsRevealRequest: SettingsRevealRequest? = nil
+}
+
 /// Owns the scrolling and navigation chrome for every settings destination.
 /// The settings window applies toolbar styling outside the scrolling content.
 struct SettingsPageContainer<Content: View>: View {
@@ -9,14 +18,14 @@ struct SettingsPageContainer<Content: View>: View {
     let title: String
     let symbol: String
     let subtitle: String
-    let target: String?
+    let target: SettingsRevealRequest?
     let showsHeader: Bool
     let centeredHeader: Bool
     @ViewBuilder let content: () -> Content
     @Binding var headerScrolledAway: Bool
     @Environment(\.colorScheme) private var scheme
 
-    init(pageID: String, title: String, symbol: String, subtitle: String, target: String?, showsHeader: Bool = true, centeredHeader: Bool = false,
+    init(pageID: String, title: String, symbol: String, subtitle: String, target: SettingsRevealRequest?, showsHeader: Bool = true, centeredHeader: Bool = false,
          headerScrolledAway: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) {
         self.pageID = pageID
         self.title = title
@@ -41,7 +50,7 @@ struct SettingsPageContainer<Content: View>: View {
                                     $0.frame(in: .scrollView).maxY <= 0
                                 } action: { headerScrolledAway = $0 }
                         }
-                        content().id(pageID)
+                        content().environment(\.settingsRevealRequest, target).id(pageID)
                     }
                     .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 30)
                     .frame(maxWidth: 820).frame(maxWidth: .infinity)
@@ -50,8 +59,8 @@ struct SettingsPageContainer<Content: View>: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(scheme == .dark ? Color(white: 0.065) : Color(white: 0.965))
             .onChange(of: pageID) { _, _ in proxy.scrollTo(Anchor.top, anchor: .top) }
-            .onChange(of: target) { _, value in
-                if let value { proxy.scrollTo(value, anchor: .center) }
+            .onChange(of: target, initial: true) { _, value in
+                if let value { proxy.scrollTo(value.itemID, anchor: .center) }
             }
         }
     }

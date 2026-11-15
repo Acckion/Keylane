@@ -20,6 +20,7 @@ struct CommandSettingsEntry<Icon: View> {
 
 struct CommandSettingsDisclosure {
     let isExpanded: Binding<Bool>
+    var revealItem: SettingsItem? = nil
     let content: () -> AnyView
 }
 
@@ -164,7 +165,8 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
     @ViewBuilder private func row(_ item: Item, lastID: ID?) -> some View {
         let identity = item[keyPath: id]
         let row = CommandSettingsListRow(entry: entry(item), commandIdentity: AnyHashable(identity), showsDivider: identity != lastID, disclosure: disclosure?(item))
-        if disclosure == nil, row.entry.renderRevision != nil { row.equatable() }
+        if let item = row.disclosure?.revealItem { row.settingsAnchor(item) }
+        else if disclosure == nil, row.entry.renderRevision != nil { row.equatable() }
         else { row }
     }
 }
@@ -227,6 +229,7 @@ private struct CommandSettingsListRow<Icon: View>: View, Equatable {
     let entry: CommandSettingsEntry<Icon>
     let commandIdentity: AnyHashable
     let showsDivider: Bool
+    @Environment(\.settingsRevealRequest) private var revealRequest
     let disclosure: CommandSettingsDisclosure?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -257,6 +260,11 @@ private struct CommandSettingsListRow<Icon: View>: View, Equatable {
                     .padding(.bottom, 8)
             }
             if showsDivider { CommandSettingsListDivider() }
+        }
+        .onChange(of: revealRequest, initial: true) { _, request in
+            if let disclosure, let item = disclosure.revealItem, request?.itemID == item.id {
+                disclosure.isExpanded.wrappedValue = true
+            }
         }
     }
 }
