@@ -80,8 +80,7 @@ private struct ReleaseNotesSheet: View {
                         if let publishedAt = release.publishedAt {
                             Text(publishedAt, style: .date).foregroundStyle(.secondary)
                         }
-                        Text(notes(for: release))
-                            .textSelection(.enabled)
+                        ReleaseNotesBody(notes: release.notes)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -111,10 +110,4 @@ private struct ReleaseNotesSheet: View {
         })
     }
 
-    private func notes(for release: GitHubUpdateRelease) -> AttributedString {
-        let body = release.notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !body.isEmpty else { return AttributedString("此版本未附更新说明。") }
-        return (try? AttributedString(markdown: body, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(body)
-    }
 }

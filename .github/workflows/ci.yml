@@ -45,6 +45,9 @@ jobs:
           else
             python3 scripts/check-version.py
           fi
+          if [[ "$GITHUB_BASE_REF" == main || "$GITHUB_REF" == refs/heads/main ]]; then
+            python3 scripts/check-release-notes.py "$(sed -n 's/^tag=//p' "$GITHUB_OUTPUT" | tail -1)"
+          fi
       - name: Validate scripts and release safeguards
         run: |
           git diff --check

@@ -416,7 +416,9 @@ struct Launcher: View {
         if rootScriptArguments != nil { cancelRootScriptArguments(); return }
         if argumentTarget != nil { dismissArgumentEditor(); focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
-        else if model.pageID != .root && model.launcherEscapeBehavior == .backOrClose { model.pageID = .root }
+        else if model.pageID != .root && model.launcherEscapeBehavior == .backOrClose {
+            if let back = page?.back { back() } else { model.pageID = .root }
+        }
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
     }
 
