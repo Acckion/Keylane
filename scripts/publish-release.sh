@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.."
 python3 scripts/check-version.py --base-ref HEAD^ --require-bump --release-policy
 task_version="$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from versioning import load_version; print(load_version()["version"])')"
 task_tag="v$task_version"
+python3 scripts/check-release-notes.py "$task_tag"
 task_archive="Keylane-$task_version-macos-arm64.dmg"
 (cd dist && sha256sum --check "$task_archive.sha256")
 task_release_state="$(mktemp)"
@@ -35,7 +36,11 @@ PY
   fi
 else
   task_notes="$(mktemp)"
-  cat > "$task_notes" <<'NOTES'
+  task_source="docs/releases/$task_tag.md"
+  task_title="$(head -n 1 "$task_source")"
+  cat "$task_source" > "$task_notes"
+  printf '\n\n' >> "$task_notes"
+  cat >> "$task_notes" <<'NOTES'
 ## Build information
 
 - Apple Silicon (arm64); macOS 26 or newer.
@@ -48,7 +53,7 @@ else
 Open the DMG and drag Keylane into Applications. The app includes its license, and the release includes a SHA-256 checksum.
 NOTES
   gh release create "$task_tag" "dist/$task_archive" "dist/$task_archive.sha256" \
-    --target "$GITHUB_SHA" --title "Keylane $task_tag" --draft --generate-notes --notes-file "$task_notes"
+    --target "$GITHUB_SHA" --title "Keylane $task_tag · ${task_title#\# }" --draft --notes-file "$task_notes"
   rm -f "$task_notes"
 fi
 # Publish only once the complete, verified assets have been uploaded to the draft.
