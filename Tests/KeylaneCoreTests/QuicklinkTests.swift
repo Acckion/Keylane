@@ -41,9 +41,37 @@ final class QuicklinkTests: XCTestCase {
         for value in ["file:relative", "file://", "file://remote/tmp/a", "file://me@localhost/tmp/a",
                       "file://localhost:123/tmp/a", "file:///tmp/a?x=1", "file:///tmp/a#frag",
                       "file:///tmp/{selection}", "file:///tmp/embedded%00null", "file:///tmp/encoded%2Fslash",
-                      "//network/share", "smb://server/folder", "custom://some-action", "relative.txt"] {
+                      "//network/share", "smb://server/folder", "relative.txt"] {
             XCTAssertThrowsError(try QuicklinkTemplate(value), value)
         }
+    }
+
+    func testDeepLinkParametersAndValidation() throws {
+        let template = try QuicklinkTemplate("obsidian://open?vault=Work&file={Path}")
+        let resolved = try template.url(values: ["Path": "中文 #/A&B"])
+        XCTAssertEqual(resolved.absoluteString, "obsidian://open?vault=Work&file=%E4%B8%AD%E6%96%87%20%23%2FA%26B")
+        XCTAssertEqual(try QuicklinkTemplate("dict:hello").url().absoluteString, "dict:hello")
+        for input in ["{scheme}://open/path", "obsidian://{destination}/note", "obsidian://user:secret@open/path",
+                      "obsidian://", "javascript:alert(1)", "data:text/plain,test", "mailto:bad"] {
+            XCTAssertThrowsError(try QuicklinkTemplate(input), input)
+        }
+    }
+
+    func testOpeningApplicationSurvivesEditingStorageAndJSON() throws {
+        let suite = "quicklink-target-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = Quicklink(title: "Note", template: "obsidian://open?file=Note")
+        var explicit = original.duplicate()
+        explicit.openingApplicationID = "md.obsidian"
+        XCTAssertEqual(explicit.duplicate().openingApplicationID, "md.obsidian")
+        XCTAssertEqual(explicit.preparedForEditing().openingApplicationID, "md.obsidian")
+        let library = QuicklinkLibrary(links: [original, explicit])
+        try library.save(to: defaults)
+        XCTAssertEqual(try QuicklinkLibrary.load(from: defaults), library)
+        let data = try library.exportJSON()
+        XCTAssertEqual(try QuicklinkLibrary(links: []).importJSON(data).links.map(\.openingApplicationID), [nil, "md.obsidian"])
+        XCTAssertEqual(try library.importJSON(data).duplicates, 2)
     }
 
     func testLegacyFourParameterQuicklinkCanBeRenamedSavedAndResolved() throws {

@@ -5,9 +5,10 @@ public struct Quicklink: Codable, Equatable, Identifiable {
     public var title: String
     public var template: String
     public var usesDynamicPlaceholders: Bool?
+    public var openingApplicationID: String?
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, template, usesDynamicPlaceholders
+        case id, title, template, usesDynamicPlaceholders, openingApplicationID
         case storedTags = "tags", storedPinned = "pinned", storedHiddenFromRoot = "hiddenFromRoot"
     }
 
@@ -32,6 +33,7 @@ public struct Quicklink: Codable, Equatable, Identifiable {
         var copy = Quicklink(title: title, template: template)
         copy.tags = tags
         copy.usesDynamicPlaceholders = usesDynamicPlaceholders
+        copy.openingApplicationID = openingApplicationID
         return copy
     }
 
@@ -83,7 +85,7 @@ public struct QuicklinkTemplate {
 
         public var errorDescription: String? {
             switch self {
-            case .invalidURL: "请输入网页、邮件链接或本地文件的绝对路径。"
+            case .invalidURL: "请输入有效的网页、邮件、应用深链接或本地绝对路径。"
             case .invalidLocalURL: "请输入本机 file:// 链接或绝对路径。文件链接不支持参数、查询或片段。"
             case .invalidParameter: "请在路径、查询或片段中输入有效的动态占位符或 {名称} 参数。"
             case let .conflictingDefaults(name): "参数「\(name)」定义了不同的默认值。"
@@ -93,7 +95,15 @@ public struct QuicklinkTemplate {
     }
 
     public let parameters: [Parameter]
-    private enum Target { case local(URL), template(DynamicTemplate.Plan) }
+    private enum Target { case local(URL), template(DynamicTemplate.Plan, scheme: String) }
+    // These schemes describe resources or inline content, rather than app destinations.
+    private static let unsupportedSchemes: Set<String> = ["file", "smb", "afp", "nfs", "ftp", "ftps", "ssh",
+                                                           "javascript", "data", "blob", "about", "telnet"]
+
+    public static func isApplicationLink(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return !["http", "https", "mailto", "file"].contains(scheme)
+    }
     private let target: Target
 
     public var localURL: URL? {
@@ -116,27 +126,34 @@ public struct QuicklinkTemplate {
         }
         let sample = probe as String
         guard !sample.contains("{"), !sample.contains("}") else { throw ValidationError.invalidParameter }
-        let authority = input.range(of: "://").map { input[$0.upperBound...].prefix { !"/?#".contains($0) } }
-        guard authority?.contains("{") != true else { throw ValidationError.invalidParameter }
-        _ = try Self.url(sample, hasPlaceholders: !template.placeholderRanges.isEmpty)
+        guard let schemeEnd = input.firstIndex(of: ":") else { throw ValidationError.invalidURL }
+        guard !input[..<schemeEnd].contains("{") else { throw ValidationError.invalidParameter }
+        let remainder = input[input.index(after: schemeEnd)...]
+        if remainder.hasPrefix("//"), remainder.dropFirst(2).prefix(while: { !"/?#".contains($0) }).contains("{") {
+            throw ValidationError.invalidParameter
+        }
+        let sampleURL = try Self.url(sample, hasPlaceholders: !template.placeholderRanges.isEmpty)
 
         let planned: DynamicTemplate.Plan
         do { planned = try template.plan(context: context, allowMoreLegacyArguments: legacy) }
         catch DynamicTemplate.Failure.conflictingArgument(let name) { throw ValidationError.conflictingDefaults(name) }
-        target = .template(planned)
+        target = .template(planned, scheme: sampleURL.scheme?.lowercased() ?? "")
         parameters = planned.arguments
     }
 
     public func url(values: [String: String] = [:]) throws -> URL {
         let plan: DynamicTemplate.Plan
+        let scheme: String
         switch target {
         case .local(let url): return url
-        case .template(let value): plan = value
+        case .template(let value, let fixedScheme): (plan, scheme) = (value, fixedScheme)
         }
         let output: DynamicTemplate.Rendered
         do { output = try plan.resolve(values) }
         catch DynamicTemplate.Failure.missingArgument(let name) { throw ValidationError.missingValue(name) }
-        return try Self.url(output.text, hasPlaceholders: !output.replacements.isEmpty)
+        let resolved = try Self.url(output.text, hasPlaceholders: !output.replacements.isEmpty)
+        guard resolved.scheme?.lowercased() == scheme else { throw ValidationError.invalidURL }
+        return resolved
     }
 
     fileprivate static func isLocalInput(_ input: String) -> Bool {
@@ -174,9 +191,15 @@ public struct QuicklinkTemplate {
         if scheme == "mailto", !hasPlaceholders, components.host == nil,
            components.query == nil, components.fragment == nil,
            let url = ClipboardCategory.emailURL(in: components.path) { return url }
-        guard scheme == "https" || scheme == "http",
-              let host = components.host, !host.isEmpty, components.user == nil, components.password == nil,
+        guard components.user == nil, components.password == nil,
               let url = components.url else { throw ValidationError.invalidURL }
+        if scheme == "https" || scheme == "http" {
+            guard components.host?.isEmpty == false else { throw ValidationError.invalidURL }
+        } else {
+            guard scheme != "mailto", !unsupportedSchemes.contains(scheme),
+                  components.host?.isEmpty == false || !components.path.isEmpty || components.query?.isEmpty == false
+            else { throw ValidationError.invalidURL }
+        }
         return url
     }
 }
@@ -246,6 +269,7 @@ private struct QuicklinkExchange: Codable {
     let pinned: Bool?
     let hiddenFromRoot: Bool?
     let legacyTemplate: Bool?
+    let openingApplicationID: String?
 
     init(_ quicklink: Quicklink) {
         name = quicklink.title
@@ -254,6 +278,7 @@ private struct QuicklinkExchange: Codable {
         pinned = quicklink.pinned ? true : nil
         hiddenFromRoot = quicklink.hiddenFromRoot ? true : nil
         legacyTemplate = quicklink.usesDynamicPlaceholders == true ? nil : true
+        openingApplicationID = quicklink.openingApplicationID
     }
 }
 
@@ -267,8 +292,10 @@ extension QuicklinkLibrary {
         struct Identity: Hashable {
             let title: String
             let template: String
+            let openingApplicationID: String?
 
-            init(_ title: String, _ template: String) {
+            init(_ title: String, _ template: String, _ openingApplicationID: String?) {
+                self.openingApplicationID = openingApplicationID
                 self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
                 if QuicklinkTemplate.isLocalInput(trimmed) {
@@ -279,13 +306,14 @@ extension QuicklinkLibrary {
             }
         }
         let records = try JSONDecoder().decode([QuicklinkExchange].self, from: data)
-        var seen = Set(links.map { Identity($0.title, $0.template) })
+        var seen = Set(links.map { Identity($0.title, $0.template, $0.openingApplicationID) })
         var added: [Quicklink] = []
         for record in records {
-            let identity = Identity(record.name, record.link)
+            let identity = Identity(record.name, record.link, record.openingApplicationID)
             guard !identity.title.isEmpty else { throw CocoaError(.coderReadCorrupt) }
             guard seen.insert(identity).inserted else { continue }
             var link = Quicklink(title: identity.title, template: identity.template)
+            link.openingApplicationID = record.openingApplicationID
             link.tags = record.tags ?? []
             link.pinned = record.pinned ?? false
             link.hiddenFromRoot = record.hiddenFromRoot ?? false
