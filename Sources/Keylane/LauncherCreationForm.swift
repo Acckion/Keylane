@@ -8,7 +8,22 @@ struct LauncherCreationForm<Accessory: View, Fields: View>: View {
     @ViewBuilder let fields: () -> Fields
 
     var body: some View {
-        VStack(spacing: 0) {
+        ZStack(alignment: .top) {
+            ScrollView {
+                VStack(spacing: spacing, content: fields)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+            }
+            .launcherScrollInsets()
+            .launcherScrollEdgeFade()
+
+            ChromeBlur()
+                .frame(height: VisualStyle.launcherTopInset)
+                .mask(LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.7), .clear],
+                                     startPoint: .top, endPoint: .bottom))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
             HStack {
                 Button(action: back) {
                     Image(systemName: "chevron.backward")
@@ -25,20 +40,14 @@ struct LauncherCreationForm<Accessory: View, Fields: View>: View {
                 accessory()
             }
             .padding(VisualStyle.launcherEdgeInset)
-
-            ScrollView {
-                VStack(spacing: spacing, content: fields)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlayPreferenceValue(CreationPickerMenuPreference.self) { menu in
             if let menu {
                 GeometryReader { geometry in
                     let trigger = geometry[menu.anchor]
-                    let below = geometry.size.height - trigger.maxY - 12
-                    let above = trigger.minY - 12
+                    let below = geometry.size.height - VisualStyle.launcherBottomInset - trigger.maxY - 12
+                    let above = trigger.minY - VisualStyle.launcherTopInset - 12
                     let opensAbove = below < 230 && above > below
                     let availableHeight = opensAbove ? above : below
                     let rows = min(8, max(1, Int((availableHeight - 66) / 43)))
@@ -47,7 +56,7 @@ struct LauncherCreationForm<Accessory: View, Fields: View>: View {
                         .fixedSize()
                         .frame(width: trigger.width, height: max(0, availableHeight),
                                alignment: opensAbove ? .bottom : .top)
-                        .offset(x: trigger.minX, y: opensAbove ? 6 : trigger.maxY + 6)
+                        .offset(x: trigger.minX, y: opensAbove ? VisualStyle.launcherTopInset + 6 : trigger.maxY + 6)
                 }
             }
         }
