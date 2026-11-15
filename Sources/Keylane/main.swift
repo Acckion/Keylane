@@ -1315,6 +1315,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in guard let self else { return }; self.windowDiagnostics.record("shownSettled", launcher: self.window, settings: self.settingsWindow, hotkeyStatus: self.hotkeyStatus) }
     }
 }
+ConfigurationTransfer.finishPending()
 let delegate = Delegate()
 NSApplication.shared.delegate = delegate
 NSApplication.shared.run()

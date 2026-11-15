@@ -58,14 +58,30 @@ struct AdvancedPreferences: View {
                                   actionTitle: "待实现") {}
                     .disabled(true).settingsAnchor(.scheduledExport)
                 Divider()
-                SettingsActionRow(title: "导出设置", detail: "将启动器、外观和键盘偏好保存为 JSON。",
+                SettingsActionRow(title: "导出设置", detail: "将基本偏好及命令热键保存为版本化 JSON；可选包含别名和 Quicklinks。",
                                   actionTitle: "导出…") {
-                    model.runCommand(.init(rawValue: "export-settings"), origin: .menu)
+                    ConfigurationTransfer.export()
                 }.settingsAnchor(.exportPreferences)
                 Divider()
                 SettingsActionRow(title: "导出本地资料", detail: "将本地链接和片段记录导出为 JSON。",
                                   actionTitle: "导出…", action: model.exportData)
                     .settingsAnchor(.exportLocalRecords)
+            }
+
+            SettingsSectionTitle(title: "恢复与迁移")
+            SettingsGroup {
+                SettingsActionRow(title: "导入 Keylane 配置", detail: "校验版本、预览冲突并保存本地恢复备份；完全退出后重新打开生效。",
+                                  actionTitle: "选择文件…") { ConfigurationTransfer.restore() }
+                    .settingsAnchor(.importPreferences)
+                Divider()
+                SettingsActionRow(title: "从 Raycast 迁移", detail: "先从 Raycast 导出 .rayconfig 或 Quicklinks JSON。仅迁移可对应的偏好、部分热键和链接，不含扩展设置及凭据。",
+                                  actionTitle: "选择导出文件…") { ConfigurationTransfer.restore(raycast: true) }.settingsAnchor(.raycastMigration)
+                Divider()
+                SettingsActionRow(title: "取消待处理导入", detail: "重启前可取消。当前会话不改写配置。",
+                                  actionTitle: "取消导入") { ConfigurationTransfer.cancel() }.settingsAnchor(.cancelConfigurationImport)
+                Divider()
+                SettingsActionRow(title: "撤销上次导入", detail: "使用本地备份恢复受影响配置；若此后已修改相关配置，将停止自动撤销。",
+                                  actionTitle: "撤销…") { ConfigurationTransfer.undo() }.settingsAnchor(.undoConfigurationImport)
             }
 
             SettingsSectionTitle(title: "连接")

@@ -1,0 +1,62 @@
+# 配置备份、恢复与 Raycast 迁移
+
+## 存储范围
+
+配置并不是一个可直接复制的文件。主模型的行为偏好、命令别名、热键和禁用命令在应用 UserDefaults 域；Quicklinks 在同域 `quicklinkLibrary.v1` 的 JSON Data。文件索引、剪贴板和片段等在 Application Support 内的独立存储；文件访问书签、系统权限、钥匙串及扩展原型有不同生命周期，不能随偏好直接恢复。
+
+此功能提供明确范围的可迁移配置，不是整个应用或用户资料的全盘备份：
+
+| 范围 | 导出及恢复 |
+| --- | --- |
+| 外观、位置、窗口模式、搜索灵敏度、返回延迟、导航/Escape 行为、紧凑收藏、应用启用及热键行为 | 支持固定允许列表与值校验 |
+| 命令热键、命令禁用状态 | 默认包含；命令标识可能包含本地路径；校验物理键码、修饰键及冲突 |
+| 别名、Quicklinks 内容与组织信息 | 导出时显式选择；普通 JSON 可能含私人路径或 URL 中自行填入的秘密 |
+| Hyper Key、双击修饰键、系统授权、目录授权书签、登录启动 | 不恢复，避免自动改变权限或启用监听 |
+| 文件/应用搜索目录、自动退出、截图清理、文件索引参数 | 此版本不包含；不触碰并行开发模块 |
+| 片段、笔记、历史、收藏、菜单栏、扩展设置及扩展可执行包 | 此版本不包含；现有本地资料导出功能保持独立 |
+| 密码、API 密钥、令牌、Keychain、AI 提供方及任意未知偏好 | 不导出也不恢复 |
+
+格式是 `format: keylane.configuration`、`schemaVersion: 2` 的 JSON，单值偏好使用字符串、布尔或整数。快捷键保留 Keylane 的 macOS 物理键码及 Carbon 修饰键；非 macOS 或不同键盘布局仍需检查。也接受原有仅含 `schemaVersion: 1` 与 `preferences` 的基础设置文件；其中监听相关开关被跳过。未来版本与错误格式拒绝导入。未知偏好跳过并计数。缺失类别保持原样，空数组不意味着删除全部资料。
+
+## 恢复流程与安全边界
+
+设置 → 高级 → 导入配置，或从 Raycast 迁移。文件最多 16 MiB。先全部解析并验证，显示类别数、冲突数、不支持项，再选择保留现有冲突项或覆盖同名配置，最后显示将更改的存储分组数量并确认。
+
+覆盖按文件提供的项目合并，不删除缺失项目。命令禁用状态是单个配置列表，覆盖时替换该列表。不同命令占用同一热键时，冲突项跳过；系统或其他进程占用热键不能离线保证，需重启后检查。别名重复时跳过。Quicklinks 按 ID 更新；不同 ID 但相同名称、链接和打开应用的项目去重。不猜测应用、脚本或扩展的命令身份。
+
+确认导入后只在 `Application Support/Keylane/ConfigurationRecovery` 写入私有事务文件。目录权限 0700，文件 0600，只包含受影响的原值与新值，不备份整个偏好域。原值先保存到 `last-import.plist`，随后保存 `pending.plist`。运行中的控制器继续使用原配置，需用户完全退出后重新打开。重启前可取消。
+
+下次启动在 `Delegate/Model` 和服务创建前处理事务：检查当前值与预览前快照一致，合并非相关的最新偏好，将整个域一次提交给 UserDefaults，并同步、核对受影响值。失败时回写原域，保留事务供重试或取消；退出中断后可重放已完成的事务。受影响值已变化则停止，不覆盖。该方案依赖 macOS 偏好域提交，不是跨数据库事务；本轮因此不恢复任何独立数据库。
+
+「撤销上次导入」使用最近一次本地备份，恢复受影响键的原值，原先不存在的键会移除。只有这些值仍等于上次导入结果时才接受撤销，避免抹掉后续编辑。撤销同样重启后生效。最近一次导入覆盖上次恢复记录；这不是备份历史管理器。请在重要操作前另行导出。
+
+## Raycast 格式与研究来源
+
+- [Raycast 官方 Settings 手册](https://manual.raycast.com/settings) 说明通过 Export & Import Settings 迁移配置；用户需先在 Raycast 导出文件，本功能不扫描其私有数据库或读取 Keychain 密码。
+- 核对 [SuperCMD V1 原始迁移实现](https://github.com/SuperCmdLabs/SuperCmd/blob/2da7b9e5dec0199a972a59cece402c85f729d5d7/src/main/raycast-config-import.ts) 与同提交 [MIT 许可](https://github.com/SuperCmdLabs/SuperCmd/blob/2da7b9e5dec0199a972a59cece402c85f729d5d7/LICENSE)。只研究公开的交换字段、加密包装与边界，未复制其实现、资源或分发产物，亦未读取闭源 V2 代码。
+- 当前 Raycast `RAYCFG3\n`：8 字节 magic、u32LE gzip 头长度、gzip JSON 头、AES-256-GCM 密文及末尾 16 字节认证标签。头版本为 3，IV/salt 为十六进制编码的各 16 字节；scrypt 固定 N=16384、r=8、p=1、dkLen=32，无 AAD。先认证再解压 payload。头与解压头上限均 64 KiB；解压 payload 上限 16 MiB，较大的历史备份会明确拒绝，建议只导出 Quicklinks。
+- 容器事实由本任务提供的脱敏结构说明与[公开格式文档](https://github.com/abue-ammar/tinycast/blob/main/docs/features/raycast-import.md)交叉核对。后者项目为 AGPL，未读取或复用其解码器源码；本实现独立编写，scrypt 使用 RFC 7914 算法与公开测试向量，并对照 Python hashlib.scrypt。
+- 兼容 SuperCMD V1 所述旧 CBC/gzip 包装与旧 `builtin_package_*` JSON，使用 CommonCrypto/CryptoKit/zlib 本地处理。旧 CBC 没有认证保障，应仅使用可信文件。密码只在内存中使用，不作为进程参数，不写临时明文、日志或导入备份。Swift 运行时无法保证所有密码副本立即清零。
+
+| Raycast 来源 | 当前映射范围 |
+| --- | --- |
+| Quicklinks JSON | 使用现有 `name`/`link` 交换格式；仅链接 |
+| 旧版 JSON/CBC | 窗口模式、macos/vim 导航、支持的返回延迟、全局热键，以及四个明确内置 ID 的热键；`name`/`url` Quicklinks |
+| RAYCFG3 类别 JSON | 验证类别版本；`settings.commands` 中可靠对应的四个内置 ID 的别名/禁用状态/可识别物理热键；`quicklinks.quicklinks` 中可识别链接 |
+| 其他数据 | 预览显示类别计数并跳过，包括扩展清单及 storedValues、片段、笔记、AI、剪贴板、固定项、脚本、权限与未识别设置 |
+
+四个内置 ID 是 clipboardHistory、searchEmoji、lockScreen、openCamera 的旧 `builtin_command_*` 精确 ID；不按名称模糊匹配。现代版本若改变 ID、类别 schemaVersion、链接字段或热键结构，将跳过并显示限制，不冒充全量兼容。Quicklinks 从原 ID 或内容产生稳定 SHA-256 身份，使重复导入可去重。链接参数与打开应用的跨版本差异仍需要安装版验收。
+
+## 自动化验证与未验收项
+
+测试只使用合成记录、随机独立 UserDefaults 域、临时目录及自行生成的认证容器；仓库不含真实用户导出、口令或私人字段值。覆盖版本/类型错误、空文件、压缩边界、scrypt RFC 与 Python 向量、错误密码、GCM 篡改/截断、重复导入、热键冲突、私人内容默认排除、事务取消、写入失败回滚、受影响值变更阻止恢复、备份权限及撤销。
+
+完整安装版的文件对话框、搜索定位、深浅色、键盘操作、重启恢复、真实 Raycast 文件字段映射、系统热键注册与撤销流程仍待验收。未安装覆盖现有 Keylane、未修改真实配置、未合并或发布。最终测试和构建结果见本任务 PR。
+
+本任务本地验证（2026-11-15，Apple Silicon / Swift 6.4.2）：
+
+- 版本检查通过：1.0.2 / build 27；未提升发行版本。
+- Python ReleaseTests：6 项通过；脚本 Python 编译、shell 语法和 diff 空白检查通过。
+- Swift 全量：168 项通过，0 失败。首次受沙箱限制的粘贴板失败经允许访问隔离粘贴板后通过；新增设置搜索项同步更新了准确的期望结果。
+- `verify-quicklinks.sh` 与 `verify-launcher-modules.sh` 通过，均为隔离合成集成验证。
+- 临时签名 DMG 构建与 `verify-package.py` 通过，未公证；最终代码的重复构建及校验结果另记录于 PR。
