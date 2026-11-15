@@ -18,6 +18,11 @@ struct CommandSettingsEntry<Icon: View> {
     var permission: PermissionFeature? = nil
 }
 
+struct CommandSettingsDisclosure {
+    let isExpanded: Binding<Bool>
+    let content: () -> AnyView
+}
+
 struct CommandSettingsAction: Identifiable {
     var id: String { title }
     let title: String
@@ -33,6 +38,7 @@ private enum CommandSettingsColumns {
 private struct CommandSettingsRow<Icon: View>: View {
     let entry: CommandSettingsEntry<Icon>
     let commandIdentity: AnyHashable
+    let disclosure: CommandSettingsDisclosure?
     @FocusState private var aliasFocused: Bool
     @State private var aliasHovered = false
 
@@ -40,7 +46,23 @@ private struct CommandSettingsRow<Icon: View>: View {
         HStack(spacing: CommandSettingsColumns.spacing) {
             entry.icon().frame(width: 24, height: 24).accessibilityHidden(true)
             Group {
-                if let perform = entry.perform {
+                if let disclosure {
+                    Button {
+                        disclosure.isExpanded.wrappedValue.toggle()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text(entry.title)
+                            Image(systemName: disclosure.isExpanded.wrappedValue ? "chevron.down" : "chevron.forward")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
+                        .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityValue(disclosure.isExpanded.wrappedValue ? "已展开" : "已折叠")
+                } else if let perform = entry.perform {
                     Button(action: perform) {
                         HStack(spacing: 6) {
                             Text(entry.title)
@@ -104,6 +126,7 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
     var showsColumns = false
     var showsBackground = true
     var usesFixedRowHeights = true
+    var disclosure: ((Item) -> CommandSettingsDisclosure?)? = nil
     let entry: (Item) -> CommandSettingsEntry<Icon>
     @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
 
@@ -128,7 +151,7 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
             if items.isEmpty {
                 CommandSettingsEmptyState(message: emptyMessage)
             }
-            if usesFixedRowHeights, items.count > 64, !voiceOverEnabled {
+            if disclosure == nil, usesFixedRowHeights, items.count > 64, !voiceOverEnabled {
                 CommandSettingsViewport(items: items) { item in
                     row(item, lastID: lastID)
                 }
@@ -140,8 +163,8 @@ struct CommandSettingsList<Item, ID: Hashable, Icon: View>: View {
 
     @ViewBuilder private func row(_ item: Item, lastID: ID?) -> some View {
         let identity = item[keyPath: id]
-        let row = CommandSettingsListRow(entry: entry(item), commandIdentity: AnyHashable(identity), showsDivider: identity != lastID)
-        if row.entry.renderRevision != nil { row.equatable() }
+        let row = CommandSettingsListRow(entry: entry(item), commandIdentity: AnyHashable(identity), showsDivider: identity != lastID, disclosure: disclosure?(item))
+        if disclosure == nil, row.entry.renderRevision != nil { row.equatable() }
         else { row }
     }
 }
@@ -204,6 +227,7 @@ private struct CommandSettingsListRow<Icon: View>: View, Equatable {
     let entry: CommandSettingsEntry<Icon>
     let commandIdentity: AnyHashable
     let showsDivider: Bool
+    let disclosure: CommandSettingsDisclosure?
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         guard let revision = lhs.entry.renderRevision else { return false }
@@ -212,7 +236,7 @@ private struct CommandSettingsListRow<Icon: View>: View, Equatable {
 
     var body: some View {
         VStack(spacing: 0) {
-            CommandSettingsRow(entry: entry, commandIdentity: commandIdentity)
+            CommandSettingsRow(entry: entry, commandIdentity: commandIdentity, disclosure: disclosure)
                 .padding(.horizontal, 14)
                 .help(entry.help ?? "")
                 .contextMenu {
@@ -222,6 +246,12 @@ private struct CommandSettingsListRow<Icon: View>: View, Equatable {
                 SettingsPermissionFeedback(status: permission.status,
                                            openPrivacySettings: permission.canOpenPrivacySettings ? permission.openPrivacySettings : nil)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 48)
+                    .padding(.trailing, 14)
+                    .padding(.bottom, 8)
+            }
+            if let disclosure, disclosure.isExpanded.wrappedValue {
+                disclosure.content()
                     .padding(.leading, 48)
                     .padding(.trailing, 14)
                     .padding(.bottom, 8)
