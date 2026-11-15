@@ -175,31 +175,110 @@ final class ApplicationResultActions {
             feedback("请先退出「\(name)」，然后重新卸载。")
             return
         }
-        guard uninstalling.insert(candidate.url.path).inserted else { return }
+        let operation = candidate.identifier.lowercased()
+        guard uninstalling.insert(operation).inserted else { return }
+        let page = model.pageID
+        let knownApps = knownCopies(of: candidate, in: model)
+        let window = (NSApp.delegate as? Delegate)?.window
+        let launchedFromVisibleWindow = window?.isVisible == true
+        uninstallQueue.async { [weak model, weak window] in
+            let shared = self.hasOtherCopy(of: candidate, knownApps: knownApps)
+            let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library", isDirectory: true)
+            let leftovers = shared ? [] : ApplicationLeftovers.find(bundleIdentifier: candidate.identifier, in: library)
+            DispatchQueue.main.async { [weak model, weak window] in
+                guard let model, model.pageID == page,
+                      !launchedFromVisibleWindow || window?.isVisible == true,
+                      !keepLauncher || window?.attachedSheet == nil else {
+                    self.uninstalling.remove(operation)
+                    return
+                }
+                self.confirmUninstall(url, candidate: candidate, operation: operation, name: name,
+                                      leftovers: leftovers, shared: shared, model: model,
+                                      window: keepLauncher && launchedFromVisibleWindow ? window : nil)
+            }
+        }
+    }
 
+    private struct UninstallCandidate {
+        let url: URL
+        let identity: NSObject
+        let identifier: String
+    }
+
+    private func knownCopies(of candidate: UninstallCandidate, in model: Model) -> [URL] {
+        model.apps.filter {
+            model.discoveredIdentity(for: $0)?.bundleIdentifier?.lowercased() == candidate.identifier.lowercased()
+        }
+    }
+
+    private func hasOtherCopy(of candidate: UninstallCandidate, knownApps: [URL]) -> Bool {
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: candidate.identifier)
+        if running.contains(where: { !$0.isTerminated && $0.bundleURL?.resolvingSymlinksInPath().path != candidate.url.path }) {
+            return true
+        }
+        let registered = workspace.urlsForApplications(withBundleIdentifier: candidate.identifier)
+        return (registered + knownApps).contains { url in
+            let resolved = url.resolvingSymlinksInPath()
+            return resolved.path != candidate.url.path &&
+                Bundle(url: resolved)?.bundleIdentifier?.lowercased() == candidate.identifier.lowercased() &&
+                FileManager.default.fileExists(atPath: resolved.path)
+        }
+    }
+
+    private func confirmUninstall(_ url: URL, candidate: UninstallCandidate, operation: String, name: String,
+                                  leftovers: [ApplicationLeftovers.Item], shared: Bool, model: Model, window: NSWindow?) {
         let alert = NSAlert()
         alert.messageText = "卸载「\(name)」？"
-        alert.informativeText = "将应用程序移到废纸篓。应用的文档、设置和其他支持文件会保留。\n\n\(candidate.url.path)"
+        let detail: String
+        if shared {
+            detail = "检测到同一应用的其他副本。将保留可能共用的文件。"
+        } else if leftovers.isEmpty {
+            detail = "在常见位置没有找到与此应用标识匹配的文件。"
+        } else {
+            detail = "可以同时移除下列关联文件，其中可能包含设置或应用数据。请勾选要一并移到废纸篓的项目。"
+        }
+        alert.informativeText = "将应用程序移到废纸篓。\n\n\(candidate.url.path)\n\n\(detail)"
         alert.alertStyle = .warning
         alert.addButton(withTitle: "取消")
         alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true
+        let checkboxes = leftovers.map { item in
+            let path = (item.url.path as NSString).abbreviatingWithTildeInPath
+            let checkbox = NSButton(checkboxWithTitle: path, target: nil, action: nil)
+            checkbox.state = .off
+            checkbox.toolTip = item.url.path
+            checkbox.lineBreakMode = .byTruncatingMiddle
+            return checkbox
+        }
+        if !checkboxes.isEmpty {
+            let width: CGFloat = 380
+            let rowHeight: CGFloat = 24
+            let contentHeight = CGFloat(checkboxes.count) * rowHeight
+            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: min(contentHeight, 168)))
+            scroll.hasVerticalScroller = contentHeight > 168
+            scroll.drawsBackground = false
+            let document = NSView(frame: NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: contentHeight))
+            for (index, checkbox) in checkboxes.enumerated() {
+                let y = contentHeight - CGFloat(index + 1) * rowHeight
+                checkbox.frame = NSRect(x: 0, y: y, width: document.bounds.width - 4, height: rowHeight)
+                document.addSubview(checkbox)
+            }
+            scroll.documentView = document
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, contentHeight - scroll.contentSize.height)))
+            scroll.reflectScrolledClipView(scroll.contentView)
+            alert.accessoryView = scroll
+        }
         let confirm: (NSApplication.ModalResponse) -> Void = { [weak model] response in
             guard response == .alertSecondButtonReturn else {
-                self.uninstalling.remove(candidate.url.path)
+                self.uninstalling.remove(operation)
                 return
             }
-            guard self.instances(at: candidate.url.path).isEmpty else {
-                self.uninstalling.remove(candidate.url.path)
-                self.feedback("请先退出「\(name)」，然后重新卸载。")
-                return
+            let selected = zip(leftovers, checkboxes).compactMap { item, checkbox in
+                checkbox.state == .on ? item : nil
             }
-            self.trashApplication(url, candidate: candidate, name: name, model: model)
+            self.trashApplication(url, candidate: candidate, operation: operation, name: name,
+                                  leftovers: selected, model: model)
         }
-        if keepLauncher, let window = (NSApp.delegate as? Delegate)?.window, window.isVisible {
-            guard window.attachedSheet == nil else {
-                uninstalling.remove(candidate.url.path)
-                return
-            }
+        if let window {
             alert.beginSheetModal(for: window, completionHandler: confirm)
         } else {
             (NSApp.delegate as? Delegate)?.hideLauncher()
@@ -208,23 +287,48 @@ final class ApplicationResultActions {
         }
     }
 
-    private func trashApplication(_ url: URL, candidate: (url: URL, identity: NSObject), name: String, model: Model?) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak model] in
+    private func trashApplication(_ url: URL, candidate: UninstallCandidate, operation: String, name: String,
+                                  leftovers: [ApplicationLeftovers.Item], model: Model?) {
+        let knownApps = model.map { knownCopies(of: candidate, in: $0) } ?? []
+        uninstallQueue.async { [weak model] in
             let outcome = Result {
+                guard self.instances(at: candidate.url.path).isEmpty else {
+                    throw UninstallFailure.running
+                }
                 guard let current = Self.uninstallCandidate(url),
-                      current.url == candidate.url, current.identity == candidate.identity else {
+                      current.url == candidate.url, current.identity == candidate.identity,
+                      current.identifier == candidate.identifier else {
                     throw CocoaError(.fileNoSuchFile)
                 }
+                let shared = !leftovers.isEmpty && self.hasOtherCopy(of: candidate, knownApps: knownApps)
                 try FileManager.default.trashItem(at: candidate.url, resultingItemURL: nil)
+                return leftovers.compactMap { item -> (URL, Error)? in
+                    do {
+                        guard !shared else {
+                            throw UninstallFailure.shared
+                        }
+                        try ApplicationLeftovers.trash(item)
+                        return nil
+                    } catch {
+                        return (item.url, error)
+                    }
+                }
             }
             DispatchQueue.main.async { [weak model] in
-                self.uninstalling.remove(candidate.url.path)
+                self.uninstalling.remove(operation)
                 switch outcome {
-                case .success:
+                case .success(let failures):
                     self.uninstallSelection.remove(candidate.url.path)
                     model?.applicationAutoQuit.removeRule(at: candidate.url.path)
                     model?.discovery.refresh()
-                    self.feedback("已将「\(name)」移到废纸篓。", style: .success)
+                    if let (path, error) = failures.first {
+                        let shortPath = path.deletingLastPathComponent().lastPathComponent + "/" + path.lastPathComponent
+                        self.feedback("已卸载「\(name)」。\(failures.count) 项关联文件未移除（\(shortPath)：\(error.localizedDescription)）")
+                    } else if leftovers.isEmpty {
+                        self.feedback("已将「\(name)」移到废纸篓。", style: .success)
+                    } else {
+                        self.feedback("已将「\(name)」和 \(leftovers.count) 项关联文件移到废纸篓。", style: .success)
+                    }
                 case .failure(let error):
                     self.feedback("无法卸载「\(name)」：\(error.localizedDescription)")
                 }
@@ -232,7 +336,17 @@ final class ApplicationResultActions {
         }
     }
 
-    private static func uninstallCandidate(_ url: URL) -> (url: URL, identity: NSObject)? {
+    private enum UninstallFailure: LocalizedError {
+        case running, shared
+        var errorDescription: String? {
+            switch self {
+            case .running: "应用正在运行，请先退出再重试。"
+            case .shared: "检测到同一应用的其他副本，已保留可能共用的文件。"
+            }
+        }
+    }
+
+    private static func uninstallCandidate(_ url: URL) -> UninstallCandidate? {
         guard url.isFileURL, url.pathExtension.lowercased() == "app",
               let original = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]), original.isSymbolicLink == false else { return nil }
         let target = URL(fileURLWithPath: url.path).resolvingSymlinksInPath()
@@ -242,7 +356,7 @@ final class ApplicationResultActions {
               identifier != Bundle.main.bundleIdentifier,
               let values = try? target.resourceValues(forKeys: [.isApplicationKey, .fileResourceIdentifierKey]),
               values.isApplication == true, let identity = values.fileResourceIdentifier as? NSObject else { return nil }
-        return (target, identity)
+        return UninstallCandidate(url: target, identity: identity, identifier: identifier)
     }
 
     private func reveal(_ url: URL) {
