@@ -9,20 +9,16 @@ struct ScriptCreationPage: View {
     var body: some View {
         LauncherCreationForm(back: back, spacing: 16) { EmptyView() } fields: {
             LauncherCreationField("模板", detail: runtimeRequirement) {
-                LauncherCreationControl {
-                    Picker("模板", selection: $controller.template) {
-                        ForEach(ScriptTemplate.allCases, id: \.self) { Text($0.title).tag($0) }
-                    }.labelsHidden().pickerStyle(.menu)
-                }
+                LauncherCreationPicker(selection: $controller.template, values: ScriptTemplate.allCases, title: \.title)
             }
             LauncherCreationField("模式") {
-                LauncherCreationControl {
-                    Picker("模式", selection: $controller.draft.mode) {
-                        Text("静默 · Silent").tag(ScriptMetadata.Mode.silent)
-                        Text("精简 · Compact").tag(ScriptMetadata.Mode.compact)
-                        Text("完整输出 · Full Output").tag(ScriptMetadata.Mode.fullOutput)
-                        Text("行内 · Inline").tag(ScriptMetadata.Mode.inline)
-                    }.labelsHidden().pickerStyle(.menu)
+                LauncherCreationPicker(selection: $controller.draft.mode, values: ScriptMetadata.Mode.allCases) { mode in
+                    switch mode {
+                    case .silent: "静默 · Silent"
+                    case .compact: "精简 · Compact"
+                    case .fullOutput: "完整输出 · Full Output"
+                    case .inline: "行内 · Inline"
+                    }
                 }
             }
             field("标题", "命令标题", $controller.draft.title)

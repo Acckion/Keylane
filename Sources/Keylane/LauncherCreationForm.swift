@@ -94,3 +94,48 @@ struct LauncherCreationControl<Content: View>: View {
             }
     }
 }
+
+/// A full-width form control that uses the launcher's searchable option list.
+struct LauncherCreationPicker<Value: Hashable>: View {
+    @Binding var selection: Value
+    let values: [Value]
+    let title: (Value) -> String
+    @State private var open = false
+    @State private var query = ""
+
+    var body: some View {
+        Button {
+            query = ""
+            open.toggle()
+        } label: {
+            LauncherCreationControl(focused: open) {
+                HStack {
+                    Text(title(selection))
+                    Spacer()
+                    Image(systemName: open ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(title(selection))
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            let options = values.indices.map { index in
+                ResultFilterOption(id: String(index), title: title(values[index]), symbol: "")
+            }
+            ResultFilterPanel(selection: values.firstIndex(of: selection).map(String.init) ?? "",
+                              options: ResultFilterPanel.matches(options, query: query),
+                              query: $query, searchPlaceholder: "搜索…", emptyTitle: "没有匹配选项",
+                              width: width, choose: { option in
+                guard let index = Int(option.id), values.indices.contains(index) else { return }
+                selection = values[index]
+                open = false
+            }, dismiss: { open = false })
+        }
+    }
+
+    @State private var width: CGFloat = 366
+}
