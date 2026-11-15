@@ -77,6 +77,12 @@ struct NavigationPage: View {
             ContentUnavailableView(NavigationText.label("找不到之前的应用", "Previous App Unavailable"),
                                    systemImage: mode.symbol,
                                    description: Text(NavigationText.label("请从要搜索菜单的应用中重新唤起 Keylane。", "Reopen Keylane from the app whose menu you want to search.")))
+        case .excludedApplication:
+            ContentUnavailableView(
+                NavigationText.label("已排除此应用", "App Excluded"), systemImage: mode.symbol,
+                description: Text(NavigationText.label("可在「窗口与菜单」设置中恢复搜索此应用的菜单。",
+                                                      "You can restore menu search for this app in Window & Menu Settings."))
+            )
         case .ready:
             let title = controller.incomplete
                 ? NavigationText.label("部分结果暂不可用", "Some Results Unavailable")

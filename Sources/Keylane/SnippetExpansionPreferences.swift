@@ -195,21 +195,8 @@ struct SnippetPreferences: View {
                 SettingsListEmptyState(title: "没有禁用的应用")
             } else {
                 SettingsCompactList(items: controller.options.excluded, id: \.id) { app in
-                    SettingsRow {
-                        Label {
-                            Text(app.name).font(.system(size: 12)).foregroundStyle(.secondary)
-                        } icon: {
-                            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app.id) {
-                                WorkspaceItemIcon(path: url.path).scaledToFit().frame(width: 16, height: 16)
-                            } else {
-                                Image(nsImage: NSWorkspace.shared.icon(for: .applicationBundle))
-                                    .resizable().scaledToFit().frame(width: 16, height: 16)
-                            }
-                        }
-                    } control: {
-                        SettingsRemoveItemButton(label: "移除应用", help: app.name) {
-                            controller.options.excluded.removeAll { $0.id == app.id }
-                        }
+                    SettingsExcludedApplicationRow(id: app.id, name: app.name) {
+                        controller.options.excluded.removeAll { $0.id == app.id }
                     }
                 }
                 .padding(.bottom, 8)
