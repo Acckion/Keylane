@@ -99,6 +99,13 @@ public struct FileSearchLocation {
         }
     }
 
+    /// Event paths can disappear before the batch arrives, so check the rules without opening the item.
+    public mutating func includesIndexChange(at path: String, directory: Bool) -> Bool {
+        let path = Self.normalizedPath(path)
+        guard let scope = roots.first(where: { Self.contains(path, in: $0.configured) }) else { return false }
+        return (try? check(URL(fileURLWithPath: path), directory: directory, root: scope.configured)) != nil
+    }
+
     private mutating func rules(in directory: URL, root: String) -> [FileSearchRules.IgnoreRule] {
         let key = root + "\0" + directory.path
         if let cached = rulesByParent[key] { return cached }

@@ -805,7 +805,10 @@ final class FileSearchController: ObservableObject {
             let owner = Unmanaged<FileSearchController>.fromOpaque(context).takeUnretainedValue()
             let paths = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue() as! [String]
             let recovery = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
-            owner.changed(Array(paths.prefix(count)), requiresFullScan: (0..<count).contains { flags[$0] & recovery != 0 })
+            let directories = Set((0..<count).compactMap { index in
+                flags[index] & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0 ? paths[index] : nil
+            })
+            owner.changed(Array(paths.prefix(count)), directories: directories, requiresFullScan: (0..<count).contains { flags[$0] & recovery != 0 })
         }, &context, roots as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 2, FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
         if let watch {
             FSEventStreamSetDispatchQueue(watch, .main)
@@ -817,12 +820,13 @@ final class FileSearchController: ObservableObject {
         }
     }
     private var churn: [String:(Date,Int)] = [:]
-    private func changed(_ paths: [String], requiresFullScan: Bool) {
+    private func changed(_ paths: [String], directories: Set<String>, requiresFullScan: Bool) {
         var exclusions = automaticExclusions
         var newExclusions: Set<String> = []
         var changedPaths: [String] = []
         let now = Date()
         let scopes = authorizedRoots
+        var indexLocations: FileSearchLocation?
         churn = churn.filter { now.timeIntervalSince($0.value.0) < 60 }
         for path in paths {
             if let i = exclusions.firstIndex(where: { path == $0.path || path.hasPrefix($0.path + "/") }) {
@@ -833,10 +837,13 @@ final class FileSearchController: ObservableObject {
             guard !requiresFullScan,
                   let directory = FileIndexExclusionPolicy.changeCandidate(
                       for: path, scopes: scopes, restored: restored, includeHidden: options.includeHidden
-                  ),
-                  !options.excludedPaths.contains(where: { FileSearchLocation.contains(path, in: $0) }),
-                  !options.ignorePatterns.contains(where: { FileSearchRules.glob($0, matches: path) })
+                  )
             else { continue }
+            if indexLocations == nil {
+                indexLocations = FileSearchLocation(options: authorizedOptions,
+                                                    automaticExclusions: [], restored: restored)
+            }
+            guard indexLocations?.includesIndexChange(at: path, directory: directories.contains(path)) == true else { continue }
             let previous = churn[directory] ?? (now, 0)
             let value = now.timeIntervalSince(previous.0) < 60 ? (previous.0, previous.1 + 1) : (now, 1)
             if value.1 >= 120 {

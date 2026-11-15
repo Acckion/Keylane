@@ -20,6 +20,24 @@ final class FileIndexExclusionPolicyTests: XCTestCase {
         ))
     }
 
+    func testIgnoredAncestorsDoNotContributeToIndexChanges() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let output = root.appendingPathComponent("output")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("ignored/\n".utf8).write(to: output.appendingPathComponent(".rayignore"))
+        var options = FileSearchOptions(roots: [root.path])
+        options.ignorePatterns = ["generated"]
+        options.useIgnoreFiles = true
+        var locations = FileSearchLocation(options: options, automaticExclusions: [])
+        XCTAssertFalse(locations.includesIndexChange(at: output.appendingPathComponent("generated/raw/data").path, directory: false))
+        XCTAssertFalse(locations.includesIndexChange(at: output.appendingPathComponent("ignored/raw/data").path, directory: false))
+        XCTAssertTrue(locations.includesIndexChange(at: output.appendingPathComponent("reports/data").path, directory: false))
+        options.useIgnoreFiles = false
+        var withoutIgnoreFiles = FileSearchLocation(options: options, automaticExclusions: [])
+        XCTAssertTrue(withoutIgnoreFiles.includesIndexChange(at: output.appendingPathComponent("ignored/raw/data").path, directory: false))
+    }
+
     func testKnownCachesDoNotMatchUnrelatedDirectories() {
         for path in ["/project/.venv", "/project/__pycache__", "/home/.cargo/global-cache"] {
             XCTAssertTrue(FileIndexExclusionPolicy.isKnownCache(URL(fileURLWithPath: path)))
