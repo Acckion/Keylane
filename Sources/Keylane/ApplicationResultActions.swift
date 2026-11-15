@@ -24,7 +24,8 @@ final class ApplicationResultActions {
     func shortcutActions(for entry: Entry, model: Model) -> [LauncherAction] {
         Self.directShortcuts.map { id, keys in
             LauncherAction(id: id, title: "", icon: "", keys: keys) { [weak model] in
-                guard let model, let action = self.actions(for: entry, model: model).first(where: { $0.id == id }),
+                guard let model, model.isApplicationCommandAvailable(at: entry.id),
+                      let action = self.actions(for: entry, model: model).first(where: { $0.id == id }),
                       action.enabled else { return }
                 action.perform()
             }
@@ -69,8 +70,10 @@ final class ApplicationResultActions {
                 if let bundleID { UtilityActions.copy(bundleID, feedback: "已复制 Bundle Identifier") }
             },
             .init(id: "edit-app-command", title: "编辑别名与快捷键…", icon: "keyboard", keys: keys("edit-app-command"), group: 3) { [weak model] in
-                guard let model else { return }
-                self.commandEditor.prepare(entry, model: model)
+                guard let model, model.isApplicationCommandAvailable(at: entry.id) else { return }
+                self.commandEditor.prepare(entry, model: model, isAvailable: { [weak model] in
+                    model?.isApplicationCommandAvailable(at: entry.id) == true
+                })
                 model.openPage(ApplicationCommandEdit.pageID, origin: .search)
             },
             .init(id: "command-settings", title: "命令设置", icon: "gearshape", group: 3) { [weak model] in
