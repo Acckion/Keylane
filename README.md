@@ -76,10 +76,10 @@ Keylane 采用 **GNU General Public License v3.0 or later（GPL-3.0-or-later）*
 
 贡献应为你有权提交的内容，不得包含第三方私有代码、品牌素材或个人数据。你提交的项目原创贡献应可按 GPL-3.0-or-later 分发；第三方内容必须注明来源并保留其原有许可。提交补丁不代表转让版权。
 
-## 开发与自动发布
+## 开发与发布
 
-协作规范见 [AGENTS.md](AGENTS.md)。新任务从 `dev` 创建功能分支，完成检查后通过 PR 合入 `dev`；一批功能完成必要验证后，再通过 `dev → main` 的发布 PR 合入发布分支。
+协作规范见 [AGENTS.md](AGENTS.md)。新任务从 `dev` 创建功能分支，通过 PR 合入 `dev`；完成必要验证后通过同仓库 `dev → main` PR 同步稳定快照。普通同步不要求 release 标题或版本递增，也不会创建 tag 或 Release。
 
-[version.json](version.json) 统一管理版本和构建号。每次合入 `main` 必须同时提升二者，发布 PR 标题为 `release: vX.Y.Z`，并使用 Squash 合并形成一个发布提交。
+[CI](.github/workflows/ci.yml) 保留 `Checks`，对 PR 和 dev/main push 检查版本、脚本并编译测试。改动打包相关文件时额外构建并验证临时签名 DMG；也可手动运行 CI 并勾选 `validate_installer`。测试包未经 Apple 公证。
 
-[GitHub Actions](.github/workflows/ci.yml) 会对 `dev` / `main` 的 PR 和提交执行版本检查与 Swift 测试。普通 `dev` PR 在合入前完成检查，改动打包相关文件时也构建并验证 DMG。`dev` / `main` 的提交、指向 `main` 的 PR 和手动运行会执行完整打包流程。`main` 检查通过且 DMG 完成 Developer ID 签名与 Apple 公证后，自动创建 `vX.Y.Z` 标签和 GitHub Release，附带 Apple Silicon DMG 和 SHA-256 校验文件。PR 构建的测试 DMG 使用临时签名。配置发行凭据后，`dev` 构建也会执行签名和公证，供 Alpha／Beta 发布使用。
+正式发布使用独立 [Release](.github/workflows/release.yml) 手动入口：选择 `main` 并输入该提交的完整 `target_sha`。候选版本来自 [version.json](version.json)，版本须超过之前正式版，构建号须超过所有已公开版本，并提供 `docs/releases/vX.Y.Z.md` 发布说明。工作流固定该提交，重新测试、构建、Developer ID 签名、公证并验证 DMG 后，才创建对应 tag 和 GitHub Release，附带 DMG 与 SHA-256。发行 secrets 缺失会失败；普通 CI 不访问这些 secrets。详见 [工作流操作与验收](docs/CI-RELEASE.md)。
