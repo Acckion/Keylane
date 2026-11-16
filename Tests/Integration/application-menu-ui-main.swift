@@ -89,30 +89,22 @@ if CommandLine.arguments.contains("--interactive") {
     print("Interactive production UI fixture; no deletion handler or background services. Home: \(probeHome.path)")
     NSApp.run()
 } else {
-    func nodes(_ element: Any) -> [NSObject] {
-        guard let node = element as? NSObject else { return [] }
-        let selector = NSSelectorFromString("accessibilityChildren")
-        let children = node.responds(to: selector) ? node.perform(selector)?.takeUnretainedValue() as? [Any] ?? [] : []
-        return [node] + children.flatMap(nodes)
-    }
-    func label(_ node: NSObject) -> String? {
-        let selector = NSSelectorFromString("accessibilityLabel")
-        return node.responds(to: selector) ? node.perform(selector)?.takeUnretainedValue() as? String : nil
-    }
-    func press(_ node: NSObject) -> Bool {
-        let selector = NSSelectorFromString("accessibilityPerformPress")
-        guard node.responds(to: selector) else { return false }
-        typealias Action = @convention(c) (AnyObject, Selector) -> Bool
-        return unsafeBitCast(node.method(for: selector), to: Action.self)(node, selector)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+    func nativeButtons(_ view: NSView) -> [NSButton] {
+        ((view as? NSButton).map { [$0] } ?? []) + view.subviews.flatMap(nativeButtons)
     }
     func openPicker() {
-        let roots: [Any] = (testWindow.toolbar?.items.compactMap(\.view) ?? []) + [testWindow]
-        let buttons = roots.flatMap(nodes).filter { label($0) == "添加自动退出应用" }
-        expect(buttons.contains(where: press), "open production toolbar popover")
+        let views = testWindow.toolbar?.items.compactMap(\.view) ?? []
+        guard let button = views.flatMap(nativeButtons).first(where: { $0.toolTip == "添加自动退出应用" }) else {
+            preconditionFailure("Production toolbar button unavailable")
+        }
+        button.performClick(nil)
         drain(0.3)
+        expect(popoverEditor() != nil, "production popover opens")
+        expect(popoverEditor()?.window?.isKeyWindow == true, "popover is key for real keyboard dispatch")
     }
     func popoverEditor() -> NSTextView? {
-        NSApp.windows.compactMap { $0.firstResponder as? NSTextView }.first { $0.window !== testWindow }
+        NSApp.windows.filter(\.isVisible).compactMap { $0.firstResponder as? NSTextView }.first { $0.window !== testWindow }
     }
     func typeKey(_ chars: String, code: UInt16) {
         guard let editor = popoverEditor(), let window = editor.window else { preconditionFailure("Popover lost editor") }
@@ -120,7 +112,7 @@ if CommandLine.arguments.contains("--interactive") {
         let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                                     windowNumber: window.windowNumber, context: nil, characters: chars,
                                     charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
-        window.sendEvent(event)
+        NSApp.sendEvent(event)
         drain()
     }
     openPicker()
@@ -154,8 +146,9 @@ if CommandLine.arguments.contains("--interactive") {
     typeKey("\r", code: 36)
     expect(popoverEditor()?.string == "z", "Return with no results keeps the picker open")
     typeKey("\u{1b}", code: 53)
-    let duration = nodes(testWindow).first { label($0) == "默认自动退出时长" }
-    expect(duration.map(press) == true, "open duration popover")
+    let duration = nativeButtons(testWindow.contentView!).first { $0.toolTip == "默认自动退出时长" }
+    expect(duration != nil, "duration control is present")
+    duration?.performClick(nil)
     drain(0.3)
     typeKey("1", code: 18)
     typeKey("0", code: 29)
@@ -166,4 +159,7 @@ if CommandLine.arguments.contains("--interactive") {
     testWindow.orderOut(nil)
     model.applicationSettingsCatalog.stop()
     print("PASS application menu UI regression checks (synthetic native composition; physical IME still requires manual acceptance)")
+    exit(0)
+    }
+    NSApp.run()
 }

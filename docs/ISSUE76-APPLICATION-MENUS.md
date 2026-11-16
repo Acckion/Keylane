@@ -4,9 +4,11 @@
 
 ## 根因与修复
 
-`ApplicationAutoQuitAddButton` 原来将 `open`、`query`、`options` 与错误提示一起保存在工具栏按钮视图中。搜索文字更新会使 SwiftUI 重新构建 AppKit 工具栏宿主，连带撤下仍在输入的 popover。此前隔离 macOS 夹具使用原生产按钮与搜索组件、内存演示目录：重新打开有 Demo Alpha/Beta 列表的弹窗后，实体键 `d` 立即使其消失。安装版只检查到空列表输入 `a` 保持打开；不能将该次观察描述为安装版完整复现。
+`ApplicationAutoQuitAddButton` 原来将 `open`、`query`、`options` 与错误提示一起保存在 SwiftUI 工具栏弹窗宿主。工具栏更新与弹窗的输入状态耦合；AppKit 弹窗的焦点归属也需要按实际事件窗口处理，不能只用 `NSApp.keyWindow` 判断。该属性在 popover 已为 key 的情况下仍可能返回父窗口。
 
-现在工具栏按钮只管理弹窗开关，目录观察、搜索、选项与错误状态由独立弹窗内容视图持有。时长菜单也将搜索状态移入内容，重新打开时从空搜索开始。继续使用已有 `SearchField`、原生 field editor 与 IME 生命周期；没有增加全局按键监听或吞掉普通文字。
+现在两个设置选择器使用原生 NSButton/NSPopover 管理展示、关闭及显示完成后的焦点，目录观察、搜索、选项与错误状态由弹窗内容持有。关闭释放内容，重新打开时搜索为空。保留既有 `SearchField`；IME 检测优先读取当前事件窗口的 field editor，避免误读父窗口。未增加全局按键监听或吞掉普通文字。
+
+证据边界：早期隔离夹具通过 CUA `pressKey("d")` 复现菜单关闭，但该通道在修改后仍将文字送入父搜索框，因而不能独自证明代码根因或实际键盘修复成功。最终夹具通过 LaunchServices 启动，在 NSApplication 主事件循环中确认 popover 自身为 key，并通过应用级原生事件断言。CUA `typeText("demo")` 确认弹窗保持打开并正确筛选；实体键盘与真正输入法仍需维护者验收。
 
 ## Keylane 卸载预览
 
@@ -26,11 +28,11 @@
 - 最终代码 `swift test --scratch-path .build-current --disable-sandbox`：161 项通过，0 失败。
 - `python3 scripts/check-version.py`、18 项 `Tests/ReleaseTests`、脚本 `bash -n`、`git diff --check`：通过。
 - `scripts/verify-application-menu-ui.sh`：在临时 home、独立 bundle ID 和假应用中编译生产代码，只替换程序入口。未启动 Delegate 服务；卸载预览的确认/取消使用记录回调，绝不调用真实删除处理。状态断言覆盖默认选择、筛选保持隐藏勾选、键盘定位后切换、取消应用后的提交禁止、选择快照、重复提交禁止与取消幂等。
-- 同一夹具的原生 AppKit 窗口断言通过：普通字母、退格、原生 marked text、中文提交、ESC、重新打开清空搜索、下/上/下/回车只选中对应假应用、选择后关闭、无结果回车不关闭、时长搜索与选择后关闭。仅向夹具自己的窗口派发事件，不向系统事件流注入。完整通过输出见 [native-ui-regression.txt](evidence/issue-76/native-ui-regression.txt)。
+- 同一夹具的原生 AppKit 窗口断言通过：普通字母、退格、原生 marked text、中文提交、ESC、重新打开清空搜索、下/上/下/回车只选中对应假应用、选择后关闭、无结果回车不关闭、时长搜索与选择后关闭。事件经过夹具自身 NSApplication 分发，不向系统事件流注入；同时检查可见 popover 自身的 key 状态。完整通过输出见 [native-ui-regression.txt](evidence/issue-76/native-ui-regression.txt)。
 - `KEYLANE_ALLOW_ADHOC=1 bash scripts/package.sh` 与 `python3 scripts/verify-package.py`：最终生产代码的 Apple Silicon DMG 构建、内容清单、元数据、许可证、架构与签名校验通过。临时签名、未公证；没有安装或发布。
 
-夹具使用方式：默认参数运行断言并清理临时目录；`--prepare` 只构建并打印 app/home 路径；`--interactive` 保留临时目录并运行演示。使用 `--prepare` 的产物时，必须以打印的 `CFFIXED_USER_HOME` 启动，隔离前置条件会校验 home 和 bundle ID。交互演示中的「演示确认」仅记录选择，不删除文件；不要将其当作真实卸载成功证明。
+夹具使用方式：默认参数运行断言并清理临时目录；`--prepare` 只构建并打印 app/home 路径；`--interactive` 保留临时目录并运行演示。使用 `--prepare` 的产物时，必须通过 `open -n --env CFFIXED_USER_HOME=<打印的home> <app>` 正常启动，隔离前置条件会校验 home 和 bundle ID。交互演示中的「演示确认」仅记录选择，不删除文件；不要将其当作真实卸载成功证明。
 
 ## 尚待验收
 
-修复后实体键盘、实际中文输入法候选/组字/提交、点击外部关闭、安装版菜单与卸载页完整导航、深浅色和 VoiceOver 仍未完成。CUA 多次返回 `Transport closed`，包括只读窗口清单；没有将合成 marked text 当作实际中文输入法验收。未操作真实应用卸载、清理真实用户文件、修改系统权限或覆盖安装。macOS 26 兼容性也未在本次设备上复测。Issue #76 应保持打开。
+CUA 实机检查通过文字输入筛选、点击外部关闭、预览逐项勾选、计数及筛选保留隐藏选择，并查看了深色演示布局。应用级 `pressKey("d")` 仍关闭菜单并把文字送入父搜索框，原因未定；与正常事件循环的自动断言存在差异，不能宣称实体键盘已验收。实际中文输入法候选/组字/提交、安装版完整导航、深浅色完整对照与 VoiceOver 仍未完成。此前 CUA 多次 `Transport closed`；没有将合成 marked text 当作实际中文输入法验收。未操作真实应用卸载、清理真实用户文件、修改系统权限或覆盖安装。macOS 26 兼容性也未在本次设备上复测。Issue #76 应保持打开。

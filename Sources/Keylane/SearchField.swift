@@ -58,7 +58,12 @@ struct SearchField: View {
                 focused = wantsFocus
             }
     }
-    static var isComposing: Bool { (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false }
+    static var isComposing: Bool {
+        // AppKit can report the owner as NSApp.keyWindow even when a popover
+        // is key. The event's window owns the editor handling this keystroke.
+        let window = NSApp.currentEvent?.window ?? NSApp.keyWindow
+        return (window?.firstResponder as? NSTextView)?.hasMarkedText() ?? false
+    }
 }
 extension Notification.Name {
     static let launcherShown = Notification.Name("Keylane.launcherShown")

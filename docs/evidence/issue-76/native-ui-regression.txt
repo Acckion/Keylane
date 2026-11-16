@@ -7,20 +7,23 @@ PASS confirmation snapshots selection exactly once
 PASS completed confirmation is not cancelled twice
 PASS cancel invalidates stale confirmation exactly once
 PASS review and cancellation preserve fixture files
-PASS open production toolbar popover
+PASS production popover opens
+PASS popover is key for real keyboard dispatch
 PASS popover receives native field-editor focus
 PASS ordinary letter stays in open popover
 PASS backspace edits without dismissing
 PASS native marked-text composition keeps the popover open
 PASS committed Chinese text remains searchable
 PASS Escape dismisses popover
-PASS open production toolbar popover
+PASS production popover opens
+PASS popover is key for real keyboard dispatch
 PASS reopening resets the query
 PASS Down Up Down Return chooses only the highlighted fake application
 PASS choosing an application dismisses the popover
-PASS open production toolbar popover
+PASS production popover opens
+PASS popover is key for real keyboard dispatch
 PASS Return with no results keeps the picker open
-PASS open duration popover
+PASS duration control is present
 PASS duration search stays open
 PASS duration Return selects and dismisses
 PASS UI checks did not delete data

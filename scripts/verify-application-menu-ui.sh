@@ -28,7 +28,18 @@ swift build --package-path "$source_directory" --scratch-path "$task_directory/b
 cp "$task_directory/build/debug/Keylane" "$app/Contents/MacOS/verify"
 printf 'Fixture: %s\n' "$app"
 if [[ "${1:-}" != "--prepare" ]]; then
-    CFFIXED_USER_HOME="$task_directory/home" "$app/Contents/MacOS/verify" "${1:-}"
+    /usr/bin/open -n -W --env "CFFIXED_USER_HOME=$task_directory/home" \
+        --stdout "$task_directory/results.log" --stderr "$task_directory/errors.log" "$app" --args "${1:-}"
+    cat "$task_directory/results.log"
+    if [[ "${1:-}" != "--interactive" ]]; then
+        python3 - "$task_directory/results.log" <<'PYTEST'
+from pathlib import Path
+import sys
+expected = "PASS application menu UI regression checks (synthetic native composition; physical IME still requires manual acceptance)"
+if expected not in Path(sys.argv[1]).read_text().splitlines():
+    raise SystemExit("UI assertions did not finish successfully; see the preceding output")
+PYTEST
+    fi
 else
     printf 'Home: %s\n' "$task_directory/home"
 fi

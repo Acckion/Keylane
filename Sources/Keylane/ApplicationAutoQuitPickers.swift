@@ -1,20 +1,13 @@
 import SwiftUI
+import AppKit
 import KeylaneCore
 
-/// Keep the toolbar item's state independent of edits inside its popover.
-/// Updating toolbar-owned search state rebuilds the AppKit toolbar item and dismisses its popover.
+/// The AppKit popover owns its lifetime independently of toolbar SwiftUI updates.
 struct ApplicationAutoQuitAddButton: View {
     let model: Model
-    @State private var open = false
-
     var body: some View {
-        Button { open.toggle() } label: {
-            Label("添加自动退出应用", systemImage: "plus").labelStyle(.iconOnly)
-        }
-        .help("添加自动退出应用")
-        .disabled(!model.applicationsEnabled)
-        .popover(isPresented: $open, arrowEdge: .bottom) {
-            ApplicationAutoQuitPicker(model: model, dismiss: { open = false })
+        SettingsPopoverButton(title: "", symbol: "plus", label: "添加自动退出应用", enabled: model.applicationsEnabled) { dismiss in
+            AnyView(ApplicationAutoQuitPicker(model: model, dismiss: dismiss))
         }
     }
 }
@@ -82,28 +75,15 @@ struct AutoQuitDurationPicker: View {
     let defaultMinutes: Int?
     let navigation: String
     let select: (Int) -> Void
-    @State private var open = false
 
     var body: some View {
-        Button {
-            open.toggle()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "clock")
-                if minutes != ApplicationAutoQuit.useDefault {
-                    Text(title(for: minutes))
-                }
-                Image(systemName: open ? "chevron.up" : "chevron.down")
-                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-            }
-        }
-        .accessibilityLabel(label)
-        .accessibilityValue(title(for: minutes))
-        .popover(isPresented: $open, arrowEdge: .bottom) {
-            AutoQuitDurationOptions(minutes: minutes, defaultMinutes: defaultMinutes, navigation: navigation, title: title) { value in
-                open = false
+        SettingsPopoverButton(title: minutes == ApplicationAutoQuit.useDefault ? "" : title(for: minutes),
+                              symbol: "clock", label: label, value: title(for: minutes)) { dismiss in
+            AnyView(AutoQuitDurationOptions(minutes: minutes, defaultMinutes: defaultMinutes,
+                                           navigation: navigation, title: title, select: { value in
+                dismiss()
                 select(value)
-            } dismiss: { open = false }
+            }, dismiss: dismiss))
         }
     }
 
@@ -132,5 +112,68 @@ private struct AutoQuitDurationOptions: View {
                           navigation: navigation, maximumVisibleRows: 5, choose: { option in
             if let value = Int(option.id) { select(value) }
         }, dismiss: dismiss)
+    }
+}
+
+/// Native presentation gives the search editor a real key window. A SwiftUI
+/// toolbar popover can focus an editor while leaving its owner as the key window.
+private struct SettingsPopoverButton: NSViewRepresentable {
+    let title: String
+    let symbol: String
+    let label: String
+    var value: String? = nil
+    var enabled = true
+    let content: (@escaping () -> Void) -> AnyView
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(title: title, target: context.coordinator, action: #selector(Coordinator.toggle(_:)))
+        button.bezelStyle = .texturedRounded
+        configure(button)
+        return button
+    }
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.parent = self
+        configure(button)
+        if !enabled { context.coordinator.close() }
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? {
+        nsView.fittingSize
+    }
+    private func configure(_ button: NSButton) {
+        button.title = title.isEmpty ? label : title
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
+        button.isEnabled = enabled
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
+        button.setAccessibilityValue(value)
+    }
+    static func dismantleNSView(_ view: NSButton, coordinator: Coordinator) { coordinator.close() }
+
+    final class Coordinator: NSObject, NSPopoverDelegate {
+        var parent: SettingsPopoverButton
+        private var popover: NSPopover?
+        init(_ parent: SettingsPopoverButton) { self.parent = parent }
+        @objc func toggle(_ sender: NSButton) {
+            if popover?.isShown == true { close(); return }
+            guard parent.enabled, sender.window != nil else { return }
+            let popover = NSPopover()
+            popover.behavior = .transient
+            popover.animates = false
+            popover.delegate = self
+            popover.contentViewController = NSHostingController(rootView: parent.content { [weak self] in self?.close() })
+            self.popover = popover
+            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
+        }
+        func popoverDidShow(_ notification: Notification) {
+            popover?.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
+        }
+        func close() { popover?.performClose(nil) }
+        func popoverDidClose(_ notification: Notification) {
+            popover?.contentViewController = nil
+            popover = nil
+        }
     }
 }
