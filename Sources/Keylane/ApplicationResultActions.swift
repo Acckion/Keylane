@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 final class ApplicationResultActions {
     let commandEditor = ApplicationCommandEdit()
     let uninstallSelection = ApplicationUninstallSelection()
+    let uninstallReview = ApplicationUninstallReview()
     private let workspace = NSWorkspace.shared
     private var restarting = Set<String>()
     private var uninstalling = Set<String>()
@@ -193,8 +194,7 @@ final class ApplicationResultActions {
                     return
                 }
                 self.confirmUninstall(url, candidate: candidate, operation: operation, name: name,
-                                      leftovers: leftovers, shared: shared, model: model,
-                                      window: keepLauncher && launchedFromVisibleWindow ? window : nil)
+                                      leftovers: leftovers, shared: shared, model: model)
             }
         }
     }
@@ -226,65 +226,27 @@ final class ApplicationResultActions {
     }
 
     private func confirmUninstall(_ url: URL, candidate: UninstallCandidate, operation: String, name: String,
-                                  leftovers: [ApplicationLeftovers.Item], shared: Bool, model: Model, window: NSWindow?) {
-        let alert = NSAlert()
-        alert.messageText = "卸载「\(name)」？"
+                                  leftovers: [ApplicationLeftovers.Item], shared: Bool, model: Model) {
+        guard model.applicationsEnabled, model.launcherModules?.page(ApplicationUninstallReview.pageID) != nil else {
+            uninstalling.remove(operation)
+            return
+        }
         let detail: String
         if shared {
-            detail = "检测到同一应用的其他副本。将保留可能共用的文件。"
+            detail = "检测到同一应用的其他副本，将保留可能共用的文件。"
         } else if leftovers.isEmpty {
             detail = "在常见位置没有找到与此应用标识匹配的文件。"
         } else {
-            detail = "可以同时移除下列关联文件，其中可能包含设置或应用数据。请勾选要一并移到废纸篓的项目。"
+            detail = "关联文件默认保留，请勾选需要一并移除的项目。"
         }
-        alert.informativeText = "将应用程序移到废纸篓。\n\n\(candidate.url.path)\n\n\(detail)"
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "取消")
-        alert.addButton(withTitle: "移到废纸篓").hasDestructiveAction = true
-        let checkboxes = leftovers.map { item in
-            let path = (item.url.path as NSString).abbreviatingWithTildeInPath
-            let checkbox = NSButton(checkboxWithTitle: path, target: nil, action: nil)
-            checkbox.state = .off
-            checkbox.toolTip = item.url.path
-            checkbox.lineBreakMode = .byTruncatingMiddle
-            return checkbox
-        }
-        if !checkboxes.isEmpty {
-            let width: CGFloat = 380
-            let rowHeight: CGFloat = 24
-            let contentHeight = CGFloat(checkboxes.count) * rowHeight
-            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: min(contentHeight, 168)))
-            scroll.hasVerticalScroller = contentHeight > 168
-            scroll.drawsBackground = false
-            let document = NSView(frame: NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: contentHeight))
-            for (index, checkbox) in checkboxes.enumerated() {
-                let y = contentHeight - CGFloat(index + 1) * rowHeight
-                checkbox.frame = NSRect(x: 0, y: y, width: document.bounds.width - 4, height: rowHeight)
-                document.addSubview(checkbox)
-            }
-            scroll.documentView = document
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, contentHeight - scroll.contentSize.height)))
-            scroll.reflectScrolledClipView(scroll.contentView)
-            alert.accessoryView = scroll
-        }
-        let confirm: (NSApplication.ModalResponse) -> Void = { [weak model] response in
-            guard response == .alertSecondButtonReturn else {
-                self.uninstalling.remove(operation)
-                return
-            }
-            let selected = zip(leftovers, checkboxes).compactMap { item, checkbox in
-                checkbox.state == .on ? item : nil
-            }
+        uninstallReview.prepare(name: name, detail: detail,
+                                items: [.init(url: candidate.url, isApplication: true)] + leftovers.map { .init(url: $0.url) },
+                                confirm: { [weak self, weak model] selected in
+            guard let self else { return }
             self.trashApplication(url, candidate: candidate, operation: operation, name: name,
-                                  leftovers: selected, model: model)
-        }
-        if let window {
-            alert.beginSheetModal(for: window, completionHandler: confirm)
-        } else {
-            (NSApp.delegate as? Delegate)?.hideLauncher()
-            NSApp.activate()
-            confirm(alert.runModal())
-        }
+                                  leftovers: leftovers.filter { selected.contains($0.url.path) }, model: model)
+        }, cancel: { [weak self] in self?.uninstalling.remove(operation) })
+        model.openPage(ApplicationUninstallReview.pageID, origin: .menu)
     }
 
     private func trashApplication(_ url: URL, candidate: UninstallCandidate, operation: String, name: String,
@@ -316,6 +278,12 @@ final class ApplicationResultActions {
             }
             DispatchQueue.main.async { [weak model] in
                 self.uninstalling.remove(operation)
+                if self.uninstallReview.items.first?.id == candidate.url.path {
+                    self.uninstallReview.clear()
+                    if model?.pageID == ApplicationUninstallReview.pageID {
+                        model?.pageID = PageID(rawValue: "ApplicationUninstall")
+                    }
+                }
                 switch outcome {
                 case .success(let failures):
                     self.uninstallSelection.remove(candidate.url.path)
