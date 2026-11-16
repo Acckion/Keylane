@@ -67,9 +67,14 @@ class ReleaseEntryTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('requires workflow_dispatch', result.stderr)
 
-    def test_ci_has_no_publish_permissions_or_secrets(self):
+    def test_ci_keeps_preview_secrets_out_of_checks(self):
         ci = (ROOT / '.github/workflows/ci.yml').read_text()
-        for forbidden in ['secrets.', 'contents: write', 'publish-release.sh', 'workflow_run', 'import-release-certificate', 'notarize-dmg']:
+        checks, preview = ci.split('  sign-preview:\n', 1)
+        self.assertNotIn('secrets.', checks)
+        self.assertIn("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.sign_preview", preview)
+        self.assertIn('environment: preview-signing', preview)
+        self.assertIn('needs: checks', preview)
+        for forbidden in ['contents: write', 'publish-release.sh', 'workflow_run', 'notarize-dmg']:
             self.assertNotIn(forbidden, ci)
         self.assertIn('name: Checks', ci)
         self.assertIn('check-version.py --sync-policy', ci)

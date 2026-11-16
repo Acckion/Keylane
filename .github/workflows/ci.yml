@@ -11,6 +11,10 @@ on:
         description: Build and verify a test DMG
         type: boolean
         default: false
+      sign_preview:
+        description: Build an Apple Development signed preview DMG from dev
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -70,6 +74,42 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: Keylane-${{ steps.version.outputs.version }}-${{ github.sha }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  sign-preview:
+    name: Sign preview DMG
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.sign_preview
+    needs: checks
+    runs-on: macos-26
+    timeout-minutes: 30
+    environment: preview-signing
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Import Apple Development signing identity
+        env:
+          CERTIFICATE: ${{ secrets.KEYLANE_PREVIEW_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.KEYLANE_PREVIEW_P12_PASSWORD }}
+        run: bash scripts/import-release-certificate.sh --preview
+      - name: Build and verify signed DMG
+        run: |
+          bash scripts/package.sh
+          python3 scripts/verify-package.py dist/Keylane-*.dmg
+          echo 'Apple Development signed preview DMG; without Apple notarization' >> "$GITHUB_STEP_SUMMARY"
+          cd dist
+          for image in Keylane-*.dmg; do
+            shasum -a 256 "$image" > "$image.sha256"
+          done
+      - name: Upload verified preview package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Keylane-preview-${{ github.sha }}
           path: |
             dist/*.dmg
             dist/*.sha256
