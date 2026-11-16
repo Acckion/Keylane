@@ -132,6 +132,11 @@ enum NavigationLauncherModules {
     }
 
     private static func systemSettings(_ model: Model) -> LauncherModule {
+        let pageID = "keylane.system-settings"
+        let title = "系统设置"
+        let symbol = "gear"
+        let search = SettingsSearchControls()
+        let item = SettingsItem(id: pageID, page: pageID, title: title, keywords: "System Settings 系統設定 系统设置直达")
         let provider = LauncherModule.Provider(namespace: .prefix("system-setting:"), entries: { input in
             let hasQuery = !SystemSettingsCatalog.pageQuery(input.query).isEmpty
             return SystemSettingsCatalog.pages.compactMap { page in
@@ -152,7 +157,20 @@ enum NavigationLauncherModules {
                 }
             }
         })
-        return LauncherModule(id: .init(rawValue: "keylane.system-settings"), title: "系统设置", symbol: "gear", providers: [provider])
+        let settings = LauncherSettingsPage(
+            id: pageID, title: title, symbol: symbol, subtitle: "配置直达 macOS 系统设置各页面的命令。",
+            order: 134, items: [item], trailingToolbar: {
+                AnyView(SettingsToolbarSearch(title: "搜索系统设置命令", selection: search))
+            }, content: { [weak model] in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(SystemSettingsCommandPreferences(model: model, search: search).settingsAnchor(item))
+            }
+        )
+        return LauncherModule(id: .init(rawValue: pageID), title: title, symbol: symbol,
+                              providers: [provider], settings: [settings], dynamicCommandSettings: .init(
+            model: model, items: { SystemSettingsCatalog.pages }, title: \.commandTitle, commandID: \.id,
+            updates: { [] }, entry: { $0.commandSettingsEntry(model: $1) }
+        ))
     }
 
     private static func screenshots(_ model: Model) -> LauncherModule {
@@ -294,6 +312,47 @@ enum NavigationLauncherModules {
             ViewObservation.changes(selectedMedia)
         ]).eraseToAnyPublisher()
         return page
+    }
+}
+
+private struct SystemSettingsCommandPreferences: View {
+    let model: Model
+    @ObservedObject var search: SettingsSearchControls
+    @StateObject private var observation: ViewObservation
+
+    init(model: Model, search: SettingsSearchControls) {
+        self.model = model
+        self.search = search
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$aliases),
+            ViewObservation.changes(model.$bindings),
+            ViewObservation.changes(model.$disabledCommands)
+        ]))
+    }
+
+    var body: some View {
+        let query = search.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pages = SystemSettingsCatalog.pages.filter { page in
+            query.isEmpty || page.searchNames.contains { $0.localizedCaseInsensitiveContains(query) }
+                || model.aliases[page.id]?.localizedCaseInsensitiveContains(query) == true
+        }
+        CommandSettingsList(items: pages, id: \.id, emptyMessage: "没有匹配的系统设置命令", showsColumns: true) {
+            $0.commandSettingsEntry(model: model)
+        }
+    }
+}
+
+private extension SystemSettingsPage {
+    var commandTitle: String { title() }
+
+    func commandSettingsEntry(model: Model) -> CommandSettingsEntry<SettingsIcon> {
+        CommandSettingsEntry(title: commandTitle, model: model, commandID: .init(rawValue: id),
+                             isEnabled: Binding(get: { !model.disabledCommands.contains(id) }, set: { enabled in
+            if enabled { model.disabledCommands.remove(id) }
+            else { model.disabledCommands.insert(id) }
+        })) {
+            SettingsIcon(symbol: symbol)
+        }
     }
 }
 
