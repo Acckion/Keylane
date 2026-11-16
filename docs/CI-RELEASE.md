@@ -9,7 +9,7 @@ DMG 验证覆盖 workflows、scripts、Resources、Package.swift/Package.resolve
 1. 在 dev 准备候选：版本大于已有正式版，构建号大于所有公开版本（包括 Alpha/Beta），填写 `docs/releases/vX.Y.Z.md` 并完成必要实机验收。通过 dev → main PR 同步，确认最终 main SHA 的 `Checks` 成功。
 2. 在 Actions 选择 **Release → Run workflow → main**，输入同一 main 提交的完整 40 位 `target_sha`。运行开始后若 main 移动，应核对该运行的固定 SHA；输入与运行 SHA 不同将失败。仅输入 SHA 不会切换到其他提交。
 3. 工作流重新校验元数据、公开 tag 版本/构建号、发布说明、脚本、Swift 测试；必须配置 Developer ID 证书与 Apple 公证 secrets。完成签名、公证、staple 及 distribution 验证后上传固定 SHA 的制品。
-4. publish job 仅在上述全部成功后获取 `contents: write`，从同一运行下载制品，核对提交标记及 SHA-256，再创建草稿并上传完整资产，最后发布。不同提交已有 tag 将失败；已发布资产不覆盖。同提交的未发布草稿可以重试补全。
+4. publish job 仅在上述全部成功后获取 `contents: write`，从同一运行下载制品，核对提交标记及 SHA-256，再创建草稿并上传完整资产，最后发布。不同提交已有 tag 将失败；已发布资产不覆盖。同提交的未发布草稿可以重试补全。远端 tag 尚不存在时，草稿 `targetCommitish` 必须是与构建一致的完整 SHA；其他 SHA、分支名或缺失目标均在上传或编辑前拒绝。已有 tag 时仍核对其实际提交，绝不改写 tag。
 
 没有 push 或 workflow_run 发布入口。普通 main 同步无须先发布或删除 Release。当前 dev 的版本与 Beta 可能共用构建号；这不会阻止普通同步，但必须在下一次公开发布前递增。
 

@@ -21,13 +21,23 @@ if [[ -n "$task_remote_tag" ]]; then
   git fetch origin "refs/tags/$task_tag:refs/tags/$task_tag"
   test "$(git rev-parse "$task_tag^{commit}")" = "$GITHUB_SHA"
 fi
-if gh release view "$task_tag" --json isDraft,assets > "$task_release_state"; then
+if gh release view "$task_tag" --json isDraft,assets,targetCommitish > "$task_release_state"; then
   if python3 - "$task_release_state" <<'PY'
 import json, sys
 state = json.load(open(sys.argv[1]))
 sys.exit(0 if state['isDraft'] else 1)
 PY
   then
+    # Without a tag GitHub resolves targetCommitish when publishing the draft.
+    # Require the exact immutable SHA; a branch name can move after validation.
+    if [[ -z "$task_remote_tag" ]]; then
+      python3 - "$task_release_state" "$GITHUB_SHA" <<'PYGUARD'
+import json, sys
+state = json.load(open(sys.argv[1]))
+if state.get('targetCommitish') != sys.argv[2]:
+    raise SystemExit('Untagged draft targetCommitish must equal the checked release SHA; refusing asset upload or publication')
+PYGUARD
+    fi
     # Retrying an unpublished draft may replace incomplete assets.
     gh release upload "$task_tag" "dist/$task_archive" "dist/$task_archive.sha256" --clobber
   else

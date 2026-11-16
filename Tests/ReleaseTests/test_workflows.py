@@ -126,3 +126,87 @@ class ArtifactGuardTests(unittest.TestCase):
                     self.assertIn("Release notes for v1.1.0: OK", result.stdout)
                     self.assertIn("FAILED", result.stdout)
                 self.assertFalse(called.exists(), result.stdout + result.stderr)
+
+class DraftRetryTests(unittest.TestCase):
+    def run_draft_retry(self, target, remote_tag=None):
+        """Run the actual publisher in a local fixture; all gh calls are simulated."""
+        import hashlib
+        import shutil
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for directory in ['scripts', 'docs/releases', 'dist', 'bin']:
+                (root / directory).mkdir(parents=True)
+            for name in ['publish-release.sh', 'check-version.py', 'versioning.py', 'check-release-notes.py']:
+                shutil.copyfile(ROOT / 'scripts' / name, root / 'scripts' / name)
+            (root / 'version.json').write_text('{"version":"1.1.0","build":23}')
+            (root / 'docs/releases/v1.1.0.md').write_text('# Draft fixture\n## 修复\n- **CI**：固定制品\n## 验证\n- 合成验证\n## 兼容性与已知限制\n- 测试夹具\n')
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            subprocess.run(['git', '-C', str(root), 'add', 'scripts', 'docs', 'version.json'], check=True)
+            subprocess.run(['git', '-C', str(root), '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture'], check=True)
+            sha = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+            (root / 'event.json').write_text(json.dumps({'inputs': {'target_sha': sha}}))
+            (root / 'dist/commit.txt').write_text(sha)
+            archive = 'Keylane-1.1.0-macos-arm64.dmg'
+            data = b'synthetic test image'
+            (root / 'dist' / archive).write_bytes(data)
+            (root / 'dist' / (archive + '.sha256')).write_text(hashlib.sha256(data).hexdigest() + '  ' + archive + '\n')
+            state = {'isDraft': True, 'assets': [], 'targetCommitish': sha if target == 'matching' else target}
+            (root / 'draft.json').write_text(json.dumps(state))
+            gh = root / 'bin/gh'
+            gh.write_text('''#!/bin/sh
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+case "$1 $2" in
+  "api "*)
+    test -n "$GH_REMOTE_SHA" || exit 1
+    printf '%s\n' "$GH_REMOTE_SHA" ;;
+  "release view") cat "$GH_DRAFT_STATE" ;;
+  "release upload"|"release edit") exit 0 ;;
+  *) exit 99 ;;
+esac
+''')
+            gh.chmod(0o755)
+            # Simulate existing remote tags without creating or modifying any tag.
+            git = root / 'bin/git'
+            git.write_text("""#!/bin/sh
+case "$1 $2" in
+  "fetch origin") exit 0 ;;
+  "rev-parse v1.1.0^{commit}") printf '%s\\n' "$GH_REMOTE_SHA" ;;
+  *) exec """ + shutil.which('git') + ' "$@" ;;\nesac\n')
+            git.chmod(0o755)
+            checksum = root / 'bin/sha256sum'
+            checksum.write_text('#!/bin/sh\nexec shasum -a 256 "$@"\n')
+            checksum.chmod(0o755)
+            environment = {**os.environ, 'PATH': str(root / 'bin') + os.pathsep + os.environ['PATH'], 'GH_CALL_LOG': str(root / 'calls'), 'GH_REMOTE_SHA': sha if remote_tag == 'matching' else (remote_tag or ''), 'GH_DRAFT_STATE': str(root / 'draft.json'), 'GITHUB_EVENT_PATH': str(root / 'event.json'), 'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_REF': 'refs/heads/main', 'GITHUB_SHA': sha, 'GH_REPO': 'Acckion/Keylane'}
+            result = subprocess.run(['bash', 'scripts/publish-release.sh'], cwd=root, env=environment, capture_output=True, text=True)
+            return result, (root / 'calls').read_text()
+
+    def test_untagged_draft_with_wrong_or_mutable_target_rejects_before_writes(self):
+        for target in ['b' * 40, 'main', '', None]:
+            with self.subTest(target=target):
+                result, calls = self.run_draft_retry(target)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Untagged draft targetCommitish must equal', result.stderr)
+                self.assertIn('release view v1.1.0 --json isDraft,assets,targetCommitish', calls)
+                for operation in ['release upload', 'release edit', 'release create']:
+                    self.assertNotIn(operation, calls)
+
+    def test_untagged_draft_with_exact_sha_can_retry_in_order(self):
+        result, calls = self.run_draft_retry('matching')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertLess(calls.index('release view'), calls.index('release upload'))
+        self.assertLess(calls.index('release upload'), calls.index('release edit'))
+        self.assertNotIn('release create', calls)
+        self.assertEqual(calls.count('release upload'), 1)
+        self.assertEqual(calls.count('release edit'), 1)
+
+    def test_existing_matching_tag_controls_draft_retry_target(self):
+        result, calls = self.run_draft_retry('main', remote_tag='matching')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('release upload', calls)
+        self.assertIn('release edit', calls)
+
+    def test_existing_mismatched_tag_rejects_before_draft_writes(self):
+        result, calls = self.run_draft_retry('matching', remote_tag='b' * 40)
+        self.assertNotEqual(result.returncode, 0)
+        for operation in ['release view', 'release upload', 'release edit', 'release create']:
+            self.assertNotIn(operation, calls)
