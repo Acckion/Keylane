@@ -82,6 +82,26 @@ final class ConfigurationMappingTests: XCTestCase {
         XCTAssertTrue(try archive.plan(current: current.merging(plan.changes) { _, new in new }, overwrite: true).changes.isEmpty)
     }
 
+    func testSameIDUpdatesPrecedeDeduplicationRegardlessOfArchiveOrder() throws {
+        let old = Quicklink(id: "quicklink:a", title: "Synthetic", template: "https://example.com/x")
+        let incoming = Quicklink(id: "quicklink:b", title: old.title, template: old.template)
+        let updated = Quicklink(id: old.id, title: old.title, template: "https://example.com/y")
+        let current: [String: Any] = [QuicklinkLibrary.storageKey: try JSONEncoder().encode(QuicklinkLibrary(links: [old])),
+                                     "shortcuts": try JSONEncoder().encode([String: Shortcut]())]
+        for links in [[incoming, updated], [updated, incoming]] {
+            var archive = ConfigurationArchive(); archive.quicklinks = links
+            archive.aliases = [incoming.id: "synthetic"]; archive.shortcuts = [incoming.id: q]
+            let plan = try archive.plan(current: current, overwrite: true)
+            XCTAssertEqual(try JSONDecoder().decode(QuicklinkLibrary.self, from: XCTUnwrap(plan.changes[QuicklinkLibrary.storageKey] as? Data)).links, [updated, incoming])
+            XCTAssertEqual(plan.changes["aliases"] as? [String: String], [incoming.id: "synthetic"])
+            XCTAssertEqual(try JSONDecoder().decode([String: Shortcut].self, from: XCTUnwrap(plan.changes["shortcuts"] as? Data)), [incoming.id: q])
+            XCTAssertTrue(try archive.plan(current: current.merging(plan.changes) { _, new in new }, overwrite: true).changes.isEmpty)
+            let preserve = try archive.plan(current: current, overwrite: false)
+            XCTAssertNil(preserve.changes[QuicklinkLibrary.storageKey])
+            XCTAssertEqual(preserve.changes["aliases"] as? [String: String], [old.id: "synthetic"])
+        }
+    }
+
     func testOverwriteHotkeySwapAndThreeWayCycleAreFinalStateValidAndIdempotent() throws {
         let old = ["a": q, "b": w, "c": e]
         for incoming in [["a": w, "b": q], ["a": w, "b": e, "c": q]] {

@@ -39,6 +39,17 @@ public struct ConfigurationArchive: Codable {
 
     public static func capture(_ defaults: UserDefaults, includePersonalContent: Bool = false) throws -> Self {
         var archive = Self()
+        // Match Model's effective fallback values, even if never persisted.
+        archive.preferences = [
+            "appearance": .string("system"), "placement": .string("activeScreen"),
+            "rootSearchSensitivity": .string("low"), "interfaceSize": .string("medium"),
+            "windowMode": .string("expanded"), "applicationHotkeyAction": .string("toggle"),
+            "navigation": .string("arrows"), "windowActivationBehavior": .string("systemDefault"),
+            "launcherEscapeBehavior": .string("backOrClose"), "pageNavigationKeys": .string("brackets"),
+            "rootFileContentSearch": .bool(true), "compactFavorites": .bool(true),
+            "applicationsEnabled": .bool(true), "escapeClosesUtilityWindows": .bool(true),
+            "replaceHyperKeycaps": .bool(false), "launcherReturnDelay": .integer(90)
+        ]
         for key in enums.keys { if let value = defaults.string(forKey: key) { archive.preferences[key] = .string(value) } }
         for key in flags { if let value = defaults.object(forKey: key) as? Bool { archive.preferences[key] = .bool(value) } }
         if let value = defaults.object(forKey: "launcherReturnDelay") as? Int { archive.preferences["launcherReturnDelay"] = .integer(value) }
@@ -111,13 +122,19 @@ public struct ConfigurationArchive: Codable {
                 existing = try JSONDecoder().decode(QuicklinkLibrary.self, from: data).links
             }
             var seen: Set<String> = []
+            // Validate all input and apply same-ID replacements first. A new
+            // link must never deduplicate against content replaced later.
             for link in quicklinks {
                 guard (link.id == QuicklinkLibrary.legacyID || link.id.hasPrefix("quicklink:")),
                       seen.insert(link.id).inserted, !link.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ConfigurationError("Quicklinks 标识或名称无效。") }
                 _ = try link.parsedTemplate(context: templateContext)
                 if let index = existing.firstIndex(where: { $0.id == link.id }) {
                     if existing[index] != link { conflicts += 1; if overwrite { existing[index] = link } }
-                } else if let canonical = existing.first(where: { $0.title == link.title && $0.template == link.template && $0.openingApplicationID == link.openingApplicationID }) {
+                }
+            }
+            let retainedIDs = Set(existing.map(\.id))
+            for link in quicklinks where !retainedIDs.contains(link.id) {
+                if let canonical = existing.first(where: { $0.title == link.title && $0.template == link.template && $0.openingApplicationID == link.openingApplicationID }) {
                     canonicalIDs[link.id] = canonical.id
                     omitted += 1
                 } else { existing.append(link) }

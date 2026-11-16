@@ -19,6 +19,29 @@ final class ConfigurationArchiveTests: XCTestCase {
         XCTAssertFalse(text.contains("hyperkey")); XCTAssertFalse(text.contains("/private/path"))
         XCTAssertEqual(try ConfigurationArchive.decode(data).preferences["appearance"], .string("dark"))
     }
+    func testCaptureRestoresUntouchedEffectiveDefaultsWithoutChangingSparseImports() throws {
+        let suite = "Keylane.ConfigurationTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let archive = try ConfigurationArchive.capture(defaults)
+        XCTAssertEqual(archive.preferences.count, ConfigurationArchive.enums.count + ConfigurationArchive.flags.count + 1)
+        XCTAssertEqual(archive.preferences["appearance"], .string("system"))
+        XCTAssertEqual(archive.preferences["navigation"], .string("arrows"))
+        XCTAssertEqual(archive.preferences["launcherReturnDelay"], .integer(90))
+        XCTAssertEqual(archive.preferences["replaceHyperKeycaps"], .bool(false))
+        let destination: [String: Any] = ["appearance": "dark", "navigation": "vim", "launcherReturnDelay": 300]
+        let plan = try ConfigurationArchive.decode(archive.data()).plan(current: destination, overwrite: true)
+        XCTAssertEqual(plan.changes["appearance"] as? String, "system")
+        XCTAssertEqual(plan.changes["navigation"] as? String, "arrows")
+        XCTAssertEqual(plan.changes["launcherReturnDelay"] as? Int, 90)
+        XCTAssertNil(try archive.plan(current: destination, overwrite: false).changes["appearance"])
+        defaults.set("light", forKey: "appearance"); defaults.set(false, forKey: "compactFavorites")
+        let modified = try ConfigurationArchive.capture(defaults)
+        XCTAssertEqual(modified.preferences["appearance"], .string("light"))
+        XCTAssertEqual(modified.preferences["compactFavorites"], .bool(false))
+        var sparse = ConfigurationArchive(); sparse.preferences = ["appearance": .string("system")]
+        XCTAssertNil(try sparse.plan(current: destination, overwrite: true).changes["navigation"])
+    }
     func testVersionValidationAndLegacy() throws {
         XCTAssertThrowsError(try ConfigurationArchive.decode(Data("{}".utf8)))
         XCTAssertThrowsError(try ConfigurationArchive.decode(Data("{\"format\":\"keylane.configuration\",\"schemaVersion\":999,\"preferences\":{}}".utf8)))
