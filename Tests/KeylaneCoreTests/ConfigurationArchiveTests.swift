@@ -67,7 +67,7 @@ final class ConfigurationArchiveTests: XCTestCase {
         let before: [String: Any] = ["appearance": "light", "syntheticToken": "keep"]
         defaults.setPersistentDomain(before, forName: suite)
         try ConfigurationTransaction.stage(changes: ["appearance": "dark"], current: before, directory: directory)
-        try ConfigurationTransaction.cancel(directory: directory)
+        try ConfigurationTransaction.cancel(directory: directory, current: defaults.persistentDomain(forName: suite) ?? [:])
         XCTAssertFalse(try ConfigurationTransaction.finish(defaults: defaults, domain: suite, directory: directory))
         try ConfigurationTransaction.stage(changes: ["appearance": "dark"], current: before, directory: directory)
         XCTAssertThrowsError(try ConfigurationTransaction.finish(defaults: defaults, domain: suite, directory: directory, persist: { value in
@@ -124,6 +124,40 @@ final class ConfigurationArchiveTests: XCTestCase {
         archive.commandEnabled = nil; archive.disabledCommands = ["clipboard", "other"]
         let legacy = try archive.plan(current: [:], overwrite: true, excludingCommandStates: ["clipboard"])
         XCTAssertEqual(legacy.changes["disabledLauncherCommands"] as? [String], ["other"])
+    }
+    func testCancellingNextImportKeepsLastSuccessfulUndo() throws {
+        let suite = "Keylane.ConfigurationTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        defaults.setPersistentDomain(["appearance": "light"], forName: suite)
+        try ConfigurationTransaction.stage(changes: ["appearance": "dark"], current: ["appearance": "light"], directory: directory)
+        XCTAssertTrue(try ConfigurationTransaction.finish(defaults: defaults, domain: suite, directory: directory))
+        let receipt = try Data(contentsOf: directory.appendingPathComponent("last-import.plist"))
+        try ConfigurationTransaction.stage(changes: ["appearance": "system"], current: ["appearance": "dark"], directory: directory)
+        try ConfigurationTransaction.cancel(directory: directory, current: ["appearance": "dark"])
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("last-import.plist")), receipt)
+        try ConfigurationTransaction.stageUndo(current: ["appearance": "dark"], directory: directory)
+        XCTAssertTrue(try ConfigurationTransaction.finish(defaults: defaults, domain: suite, directory: directory))
+        XCTAssertEqual(defaults.persistentDomain(forName: suite)?["appearance"] as? String, "light")
+        XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("last-import.plist")), receipt)
+    }
+    func testCancellingAppliedPendingRetainsRecoveryReceipt() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try ConfigurationTransaction.stage(changes: ["appearance": "dark"], current: ["appearance": "light"], directory: directory)
+        try ConfigurationTransaction.cancel(directory: directory, current: ["appearance": "dark"])
+        try ConfigurationTransaction.stageUndo(current: ["appearance": "dark"], directory: directory)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("pending.plist").path))
+    }
+    func testOversizedRecoveryRecordIsRejectedBeforeStaging() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let old = ["aliases": ["synthetic": String(repeating: "a", count: 9 * 1024 * 1024)]]
+        let proposed = ["aliases": ["synthetic": String(repeating: "b", count: 9 * 1024 * 1024)]]
+        XCTAssertThrowsError(try ConfigurationTransaction.stage(changes: proposed, current: old, directory: directory))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("pending.plist").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("last-import.plist").path))
     }
     func testScryptAgainstRFC7914AndIndependentPythonVector() throws {
         let rfc = try RaycastScrypt.derive(password: Data(), salt: Data(), n: 16, r: 1, p: 1, length: 64)

@@ -15,7 +15,7 @@
 
 ## Checklist / 检查清单
 
-- [ ] Targets `dev` from a focused branch (release PRs follow AGENTS.md).
+- [ ] Targets `dev` from a focused branch (dev → main sync PRs follow AGENTS.md).
 - [ ] Read the relevant AGENTS.md and module documentation.
 - [ ] Added/updated relevant tests and documentation, or explained why not needed.
 - [ ] No secrets, personal data, build artifacts, or unlicensed third-party material.

@@ -6,11 +6,16 @@ on:
   push:
     branches: [dev, main]
   workflow_dispatch:
+    inputs:
+      validate_installer:
+        description: Build and verify a test DMG
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# Cancel stale PR runs only. Each dev/main push retains its own package run.
+# Cancel stale PR runs only; preserve each branch push validation.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -20,9 +25,6 @@ jobs:
     name: Checks
     runs-on: macos-26
     timeout-minutes: 40
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      notarized: ${{ steps.package.outputs.notarized }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -33,21 +35,9 @@ jobs:
           sw_vers
           swift --version
           test "$(uname -m)" = arm64
-      - name: Validate version and release policy
+      - name: Validate version and branch policy
         id: version
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == pull_request && "$GITHUB_BASE_REF" == main ]]; then
-            python3 scripts/check-version.py --base-ref "$PR_BASE_SHA" --require-bump --release-policy
-          elif [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != pull_request ]]; then
-            python3 scripts/check-version.py --base-ref HEAD^ --require-bump --release-policy
-          else
-            python3 scripts/check-version.py
-          fi
-          if [[ "$GITHUB_BASE_REF" == main || "$GITHUB_REF" == refs/heads/main ]]; then
-            python3 scripts/check-release-notes.py "$(sed -n 's/^tag=//p' "$GITHUB_OUTPUT" | tail -1)"
-          fi
+        run: python3 scripts/check-version.py --sync-policy
       - name: Validate scripts and release safeguards
         run: |
           git diff --check
@@ -57,53 +47,20 @@ jobs:
       - name: Determine whether to validate the installer
         id: installer
         env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if [[ "$GITHUB_EVENT_NAME" == pull_request && "$GITHUB_BASE_REF" == dev ]]; then
-            changed="$(git diff --name-only "$PR_BASE_SHA" HEAD -- \
-              .github/workflows scripts Resources Package.swift Package.resolved .swiftpm LICENSE version.json)"
-            if [[ -z "$changed" ]]; then
-              echo 'required=false' >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          echo 'required=true' >> "$GITHUB_OUTPUT"
+          VALIDATE_INSTALLER: ${{ inputs.validate_installer }}
+        run: python3 scripts/check-installer-scope.py
       - name: Core tests
         run: swift test --scratch-path .build-current --disable-sandbox
-      - name: Configure distribution signing
-        id: signing
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')
-        env:
-          CERTIFICATE: ${{ secrets.KEYLANE_DEVELOPER_ID_P12 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.KEYLANE_DEVELOPER_ID_PASSWORD }}
-          APPLE_ID: ${{ secrets.KEYLANE_NOTARY_APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.KEYLANE_NOTARY_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.KEYLANE_NOTARY_APP_PASSWORD }}
-        run: bash scripts/import-release-certificate.sh
       - name: Build drag-to-Applications DMG
         if: steps.installer.outputs.required == 'true'
         env:
           KEYLANE_ALLOW_ADHOC: '1'
         run: bash scripts/package.sh
-      - name: Notarize and staple DMG
-        if: steps.signing.outputs.enabled == 'true'
-        env:
-          APPLE_ID: ${{ secrets.KEYLANE_NOTARY_APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.KEYLANE_NOTARY_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.KEYLANE_NOTARY_APP_PASSWORD }}
-        run: bash scripts/notarize-dmg.sh dist/Keylane-*.dmg
       - name: Verify DMG and generate checksum
         if: steps.installer.outputs.required == 'true'
-        id: package
         run: |
-          if [[ "${KEYLANE_DISTRIBUTION:-}" == 1 ]]; then
-            python3 scripts/verify-package.py --distribution dist/Keylane-*.dmg
-            echo 'notarized=true' >> "$GITHUB_OUTPUT"
-            echo 'Developer ID signed and Apple-notarized DMG' >> "$GITHUB_STEP_SUMMARY"
-          else
-            python3 scripts/verify-package.py dist/Keylane-*.dmg
-            echo 'Ad hoc signed DMG for testing, without Apple notarization' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          python3 scripts/verify-package.py dist/Keylane-*.dmg
+          echo 'Ad hoc signed test DMG; without Apple notarization' >> "$GITHUB_STEP_SUMMARY"
           cd dist
           for image in Keylane-*.dmg; do
             shasum -a 256 "$image" > "$image.sha256"
@@ -119,26 +76,3 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
-
-  release:
-    name: Publish release
-    needs: checks
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.checks.outputs.notarized == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: Keylane-${{ needs.checks.outputs.version }}-${{ github.sha }}
-          path: dist
-      - name: Publish verified build
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: bash scripts/publish-release.sh

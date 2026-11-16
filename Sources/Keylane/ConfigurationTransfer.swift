@@ -94,7 +94,7 @@ enum ConfigurationTransfer {
         catch { show(error) }
     }
     static func cancel() {
-        do { try ConfigurationTransaction.cancel(directory: directory); notice("已取消待处理导入", "当前配置未修改。") }
+        do { try ConfigurationTransaction.cancel(directory: directory, current: current); notice("已处理待处理记录", "未改写当前配置。若导入此前已应用，取消不会撤销它；可使用“撤销上次导入”恢复。") }
         catch { show(error) }
     }
     static func finishPending() {
