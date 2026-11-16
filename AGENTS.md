@@ -64,7 +64,7 @@ Alpha 和 Beta 是同一个开发里程碑的两个阶段。需要公开试用�
 - 预发布前确认对应 `dev` 提交的 CI 已通过，使用同一提交的 Apple Development 签名 DMG 和 SHA-256 文件。发布说明列出对应提交、主要改动、测试范围、已知问题、系统要求及签名／公证状态。
 - 每次正式版和预发布在候选提交中保存 `docs/releases/<标签>.md`，参照 [发布说明模板](docs/releases/TEMPLATE.md)。首行用具体发布主题，正文在「新增」「改进」「修复」中按模块逐条写入口、行为或修复场景，省略无内容的分类，并写明「兼容性与已知限制」和「验证」。逐项核对上一个公开版本之后已合入的用户可见改动，注明未验收项。
 - 发布前运行 `python3 scripts/check-release-notes.py <标签>`。正式版 CI 会校验并使用该文件生成 Release 正文；手动预发布也从文件生成正文，并补充实际构建提交、平台、签名／公证状态和工件说明。应用内更新日志读取同一份 GitHub Release 正文。
-- 普通 CI 的 Checks 不使用签名 secrets。需要本地验证或内部测试包时可手动运行 CI 并勾选 `validate_installer`，生成临时签名 DMG。公开 Alpha 和 Beta 从 `dev` 手动运行 CI 并勾选 `sign_preview`，使用 `preview-signing` 环境中的 `KEYLANE_PREVIEW_P12`（Base64 编码的 Apple Development .p12，含私钥）和 `KEYLANE_PREVIEW_P12_PASSWORD`。该环境只允许 `dev`。签名任务生成未公证的 DMG，维护者核对制品后单独创建 GitHub Pre-release。
+- 普通 CI 的 Checks 不使用签名 secrets。需要验证安装包时，同仓库 PR 和 dev/main push 在 Checks 成功后自动用 Apple Development 签名打包，dev/main 也可手动勾选 `validate_installer`。外部 fork 和 Dependabot PR 运行 Checks，合入后从目标分支生成签名包。签名任务使用 `preview-signing` 环境中的 `KEYLANE_PREVIEW_P12`（Base64 编码的 Apple Development .p12，含私钥）和 `KEYLANE_PREVIEW_P12_PASSWORD`，缺少凭据时失败。产物为未公证的 DMG，维护者核对制品后单独创建 GitHub Pre-release。
 
 ## 检查与交付
 
@@ -85,5 +85,5 @@ python3 scripts/verify-package.py
 - README 与开发记录应区分已实现、自动化验证、实机验收和未完成项。
 - 发布前检查仓库只包含允许公开的代码与资料；产物包含许可证，且无第三方研究素材或用户数据。
 - Actions 的 `Checks` 必须通过。失败时定位并修复，不得以删测试、跳过检查或放宽发布条件掩盖问题。
-- CI 保留分支保护所需 `Checks` 名称，对所有 PR 和 dev/main push 运行版本、脚本检查及 Swift 编译测试。main PR 只允许同仓库 dev 来源；普通同步不强制 release 标题、版本递增或发布说明。改动 workflows、scripts、Resources、Swift 包配置、许可证/第三方声明或 version.json 时验证临时签名 DMG；未知 push 基线保守执行打包。手动 CI 可勾选打包。CI 无发布权限，签名 secrets 仅供手动预发布打包任务使用。
+- CI 保留分支保护所需 `Checks` 名称，对所有 PR 和 dev/main push 运行版本、脚本检查及 Swift 编译测试。main PR 只允许同仓库 dev 来源；普通同步不强制 release 标题、版本递增或发布说明。改动 workflows、scripts、Resources、Swift 包配置、许可证/第三方声明或 version.json 时按上述规则验证 Apple Development 签名 DMG；未知 push 基线保守执行打包。手动 CI 可勾选打包。CI 无发布权限，签名 secrets 仅供签名打包任务使用。
 - 正式发布仅手动运行 `.github/workflows/release.yml`，固定 main 提交，重新执行版本/构建号、发布说明、脚本、Swift 测试、Developer ID 签名、公证和票据验证。只有全部成功后 publish job 才获得 contents:write；不可覆盖其他提交的 tag 或已发布资产。不得使用普通 push 或 workflow_run 自动发布。未完成验证前，不得宣称支持 Intel 或通用二进制。

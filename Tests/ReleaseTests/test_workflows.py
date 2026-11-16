@@ -71,7 +71,10 @@ class ReleaseEntryTests(unittest.TestCase):
         ci = (ROOT / '.github/workflows/ci.yml').read_text()
         checks, preview = ci.split('  sign-preview:\n', 1)
         self.assertNotIn('secrets.', checks)
-        self.assertIn("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.sign_preview", preview)
+        self.assertIn("needs.checks.outputs.installer_required == 'true'", preview)
+        self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', preview)
+        self.assertIn("github.actor != 'dependabot[bot]'", preview)
+        self.assertNotIn('KEYLANE_ALLOW_ADHOC', ci)
         self.assertIn('environment: preview-signing', preview)
         self.assertIn('needs: checks', preview)
         for forbidden in ['contents: write', 'publish-release.sh', 'workflow_run', 'notarize-dmg']:
