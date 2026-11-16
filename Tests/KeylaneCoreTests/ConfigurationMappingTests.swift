@@ -51,6 +51,20 @@ final class ConfigurationMappingTests: XCTestCase {
         XCTAssertTrue(try shortcuts(incoming, over: actual).0.changes.isEmpty)
     }
 
+    func testLongBlockedChainDoesNotDependOnCommandSortingOrder() throws {
+        var old: [String: Shortcut] = ["retained": Shortcut(key: 120, modifiers: 2048)]
+        var incoming: [String: Shortcut] = ["independent": Shortcut(key: 125, modifiers: 2048)]
+        for i in 0..<64 {
+            old["command\(i)"] = Shortcut(key: UInt32(i), modifiers: 2048)
+            incoming["command\(i)"] = Shortcut(key: i == 63 ? 120 : UInt32(i + 1), modifiers: 2048)
+        }
+        let (plan, actual) = try shortcuts(incoming, over: old)
+        XCTAssertEqual(actual, old.merging(["independent": Shortcut(key: 125, modifiers: 2048)]) { _, new in new })
+        XCTAssertEqual(plan.omitted, 64)
+        XCTAssertNil(ShortcutValidation.conflict(in: actual))
+        XCTAssertTrue(try shortcuts(incoming, over: actual).0.changes.isEmpty)
+    }
+
     func testPreserveHotkeyPolicyKeepsOldBindingsAndTheirReservations() throws {
         let old = ["a": q, "b": w]
         let (swap, swapped) = try shortcuts(["a": w, "b": q], over: old, overwrite: false)

@@ -210,13 +210,25 @@ public struct ConfigurationArchive: Codable {
             if proposed.values.contains(where: { collides($0, value) }) { omitted += 1 }
             else { proposed[key] = value }
         }
-        while !proposed.isEmpty {
-            let retained = current.filter { proposed[$0.key] == nil }
-            let rejected = proposed.keys.filter { key in
-                retained.values.contains { collides($0, proposed[key]!) }
+        // Build original-owner dependencies once. Rejection restores an owner's
+        // old value, so propagate to its dependents rather than rescanning every
+        // retained value on every step of a long collision chain.
+        var dependents: [String: [String]] = [:]
+        var blocked: Set<String> = []
+        for (key, value) in proposed {
+            for (owner, old) in current where owner != key && collides(old, value) {
+                dependents[owner, default: []].append(key)
+                if proposed[owner] == nil { blocked.insert(key) }
             }
-            guard !rejected.isEmpty else { break }
-            for key in rejected { proposed.removeValue(forKey: key); omitted += 1 }
+        }
+        var rejected = blocked.sorted(), index = 0
+        while index < rejected.count {
+            let key = rejected[index]; index += 1
+            guard proposed.removeValue(forKey: key) != nil else { continue }
+            omitted += 1
+            for dependent in dependents[key] ?? [] where proposed[dependent] != nil {
+                rejected.append(dependent)
+            }
         }
         var merged = current
         for (key, value) in proposed { merged[key] = value }
