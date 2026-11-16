@@ -97,6 +97,12 @@ struct SettingsTitlebarContribution {
     var recheckPermission: (() -> Void)?
 }
 
+struct SettingsToolbarMenu {
+    let title: String
+    let symbol: String
+    let content: (_ dismiss: @escaping () -> Void) -> AnyView
+}
+
 struct LauncherSettingsPage: Identifiable {
     let id: String
     let title: String
@@ -107,7 +113,7 @@ struct LauncherSettingsPage: Identifiable {
     var parentID: String? = nil
     var titlebar: SettingsTitlebarContribution?
     var trailingToolbar: (() -> AnyView)?
-    var toolbarAction: (() -> AnyView)?
+    var toolbarMenu: SettingsToolbarMenu?
     var centeredHeader = false
     var guideURL: URL? = nil
     var loading: AnyPublisher<Bool, Never>?

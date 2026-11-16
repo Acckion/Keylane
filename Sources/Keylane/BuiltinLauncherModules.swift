@@ -165,9 +165,9 @@ enum BuiltinLauncherModules {
                          id: SettingsItem.applicationAutoQuit.page, title: SettingsItem.applicationAutoQuit.title,
                          symbol: "app.badge.clock", subtitle: ApplicationAutoQuitPreferences.summary, order: 11,
                          items: [.applicationAutoQuit], parentID: "applications",
-                         toolbarAction: { [weak model] in
+                         toolbarMenu: .init(title: "添加自动退出应用", symbol: "plus") { [weak model] dismiss in
                              guard let model else { return AnyView(EmptyView()) }
-                             return AnyView(ApplicationAutoQuitAddButton(model: model))
+                             return AnyView(ApplicationAutoQuitAddMenu(model: model, dismiss: dismiss))
                          }, centeredHeader: true,
                          content: { [weak model] in
                              guard let model else { return AnyView(EmptyView()) }

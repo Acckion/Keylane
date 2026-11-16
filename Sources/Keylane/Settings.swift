@@ -7,12 +7,17 @@ struct SettingsView: View {
     @ObservedObject var state: SettingsWindowState
     @State private var selected = "applications"
     @State private var headerScrolledAway = false
+    @State private var toolbarMenuOpen = false
     @State private var query = ""
     @State private var target: SettingsRevealRequest?
     @State private var searchSelection: String?
     @State private var history = ["applications"]
     @State private var historyIndex = 0
     private var page: LauncherSettingsPage? { state.catalog.page(selected) ?? state.catalog.pages.first }
+    private var toolbarMenuEnabled: Bool {
+        guard let page, page.toolbarMenu != nil else { return false }
+        return state.extensionEnabled(for: page.parentID ?? page.id)?.wrappedValue != false
+    }
     private var showsPageHeader: Bool { page?.parentID == nil || page?.centeredHeader == true }
 
     private var loading: AnyPublisher<Bool, Never>? {
@@ -31,7 +36,20 @@ struct SettingsView: View {
             sidebar(matches: matches)
         } detail: {
             detailPage
-        }.toggleStyle(SettingsSwitchStyle())
+        }
+        .overlay(alignment: .topTrailing) {
+            if toolbarMenuOpen, toolbarMenuEnabled, let menu = page?.toolbarMenu {
+                ZStack(alignment: .topTrailing) {
+                    Color.clear.contentShape(Rectangle()).onTapGesture(perform: dismissToolbarMenu)
+                        .accessibilityHidden(true)
+                    menu.content(dismissToolbarMenu)
+                        .modifier(LauncherMenuSurface(open: true))
+                        .padding(.top, 8)
+                        .padding(.trailing, 12)
+                }
+            }
+        }
+        .toggleStyle(SettingsSwitchStyle())
         .navigationTitle(headerScrolledAway || !showsPageHeader ? (page?.title ?? "设置") : "")
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
@@ -65,6 +83,7 @@ struct SettingsView: View {
             }
         }
         .onChange(of: selected) { _, page in
+            dismissToolbarMenu()
             if history[historyIndex] != page { history = Array(history.prefix(historyIndex + 1)); history.append(page); historyIndex = history.count - 1 }
             if state.page != page { state.select(page) }
         }
@@ -74,18 +93,28 @@ struct SettingsView: View {
             query = ""
             target = nil
         }
+        .onChange(of: toolbarMenuEnabled) { _, enabled in
+            if !enabled { dismissToolbarMenu() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            dismissToolbarMenu()
+        }
         .toolbar {
             prioritizedHistoryToolbar
-            if let page, let action = page.toolbarAction {
+            if let menu = page?.toolbarMenu {
                 ToolbarSpacer(.flexible, placement: .automatic)
                 ToolbarItem(placement: .automatic) {
-                    action()
-                        .id(page.id)
-                        .disabled(state.extensionEnabled(for: page.parentID ?? page.id)?.wrappedValue == false)
+                    Button { toolbarMenuOpen.toggle() } label: {
+                        Label(menu.title, systemImage: menu.symbol).labelStyle(.iconOnly)
+                    }
+                    .help(menu.title)
+                    .disabled(!toolbarMenuEnabled)
                 }
             }
         }
     }
+
+    private func dismissToolbarMenu() { toolbarMenuOpen = false }
 
     private var detailPage: some View {
         SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, showsHeader: showsPageHeader, centeredHeader: page?.centeredHeader == true, headerScrolledAway: $headerScrolledAway) {
