@@ -1,46 +1,95 @@
-<p align="center"><img src="website/assets/icon.png" width="88" alt="Keylane 图标"></p>
 <h1 align="center">Keylane</h1>
-<p align="center">想到，即刻开始。面向 macOS 的原生键盘启动器。</p>
+<p align="center">想到，即刻开始。完全免费，开源可改。</p>
+<p align="center">面向 macOS 的原生键盘启动器，把应用、文件和日常工具放进一个搜索窗口。</p>
 <p align="center"><b>简体中文</b> · <a href="README.en.md">English</a></p>
-<p align="center"><a href="https://acckion.github.io/Keylane/">产品官网（Pages 配置后上线）</a> · <a href="https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1">下载 Beta 1</a> · <a href="docs/TODO.md">开发计划</a></p>
+<p align="center"><a href="https://acckion.github.io/Keylane/">官网</a> · <a href="https://github.com/Acckion/Keylane/releases">下载</a> · <a href="https://github.com/Acckion/Keylane/issues">反馈与建议</a></p>
 
-![真实 Beta 1 计算器界面，演示输入 128 * 24，结果为 3072](website/assets/calculator.png)
+![Keylane 主搜索：在同一个窗口中查找应用和文件](docs/images/launcher.png)
 
-通过 **Option + Space** 打开搜索窗口，输入应用、文件或命令名称。方向键选择，Return 打开，Escape 返回或隐藏。使用 Swift、SwiftUI 和 AppKit 构建。
+按下 **Option + Space**，输入你要找的应用、文件或命令。用方向键选择，按 **Return** 打开，按 **Escape** 返回或收起窗口。不必在多个应用之间来回切换，常用操作从键盘开始。
 
-## 先了解 Beta 1
+## 一个入口，处理日常小事
 
-公开下载为 **1.0.2 Beta 1 · build 27 · `891ab2c`**，要求 **macOS 26+、Apple Silicon**。Intel 和通用二进制尚未验证。此包使用 **ad-hoc 临时签名，未经 Apple 公证，需手动安装**。
+### 找到应用，也找到文件
 
-1. 从 [Beta 1 发布页](https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1) 下载 DMG 与 SHA-256 文件，并核对校验和。
-2. 打开 DMG，将 Keylane 拖到“应用程序”，再从“应用程序”打开。
-3. macOS 可能阻止首次打开，请阅读 [Apple 安全说明](https://support.apple.com/en-us/102445)。应用内自动安装要求已公证的 Developer ID 产物，本包需要手动安装。
+支持应用名称、拼音与模糊搜索，常用应用可以收藏。文件搜索结合 Spotlight 与本地索引，支持按类型筛选、查看内容预览和文件信息，并通过操作菜单继续处理文件。
 
-默认安全设置下首次打开、从 Alpha 升级、隔离启动/退出/重复启动和合成配置升级仍待验收。Navigation 本轮真实焦点复验未通过；安装版键盘与权限流程、多屏、全屏、Spaces 和真实目标应用仍有验证缺口。CI 或隔离测试通过不等于这些流程已验收。
+![Keylane 文件搜索：左侧筛选结果，右侧查看文件预览与信息](docs/images/file-search.png)
 
-> **许可分清版本：** 当前 dev 源码为 GPL-3.0-or-later，允许依条款商业使用。Beta 1（`891ab2c`）及同步前的 main 快照（`877ca22`）仍为其版本附带的 PolyForm Noncommercial 许可。GPL 迁移不追溯旧标签或安装包。
+### 复制过的内容，随时找回来
 
-## 日常能力
+集中查看文字、图片和文件的剪贴板历史，搜索、筛选、预览或置顶常用内容。选中条目后复制，或粘贴到正在使用的应用；历史保留时间和持久化方式由你设置。
 
-| 入口 | 已发布 Beta 的能力 | 使用边界 |
-| --- | --- | --- |
-| 应用 | 名称、拼音与模糊搜索、收藏 | 部分输入法、多屏交互待验收 |
-| 文件 | Spotlight、本地补充索引、目录与内容搜索 | 需目录授权，依赖索引状态 |
-| 剪贴板 | 文字、图片、文件历史，搜索、置顶、保留策略 | 按需启用，自动粘贴需权限与目标应用验证 |
-| 工具 | 计算器、Emoji 与符号、快捷链接、脚本命令、文字片段 | 系统交互按场景验证 |
-| 系统集成 | 快捷指令、日历、联系人、截图搜索与 OCR | 依赖用户授权与实际数据源，仍有验收缺口 |
+![Keylane 剪贴板历史：搜索复制记录，查看内容和来源](docs/images/clipboard.png)
 
-![真实 Beta 1 Emoji 与符号页面，使用内置字符库搜索“星”](website/assets/emoji.png)
+### 常用工具，不用另开一个应用
 
-截图来自真实 Beta 1 应用副本，使用固定演示输入，应用界面为中文。来源与隔离边界见 [网站验证记录](docs/WEBSITE.md)。
+- **随手计算**：直接输入算式，查看并复制结果。
+- **查词与符号**：查询系统词典，搜索 Emoji 和符号。
+- **系统与窗口**：搜索系统设置、执行常用系统操作、切换窗口和调整布局。
+- **本机资料**：查看日历、搜索联系人、查找截图与 OCR 文字，连接 Apple 备忘录。
+- **自己的工作流**：运行 Apple 快捷指令和脚本，使用快捷链接与文字片段，为命令设置别名和快捷键。
+- **配置迁移**：备份与恢复 Keylane 设置，导入 Raycast 配置中支持的基本偏好、命令映射和快捷链接。导入前可预览，不支持项会跳过。
 
-**开发中，未随 Beta 提供：** Raycast 扩展兼容、配置迁移和 iPhone 应用启动。开发分支或草稿 PR 不代表已发布。详细状态见 [待办](docs/TODO.md)、[功能清单](docs/FEATURES.csv)。
+## 完全免费，开源可改
 
-开发中的配置导出、恢复和部分 Raycast 迁移见[迁移范围与验证](docs/CONFIGURATION-MIGRATION.md)。
+**Keylane 完全免费，没有订阅，也没有付费解锁。** 当前源码采用 [GPL-3.0-or-later](LICENSE)，你可以查看、修改和自行构建，也可以遵循许可证进行商业使用和再分发。自行连接的第三方 AI 服务可能另行收费。
+
+### 与 Raycast、SuperCmd V2 相比
+
+| | Keylane | Raycast 2 | SuperCmd V2 |
+| --- | --- | --- | --- |
+| 界面与架构 | Swift + SwiftUI / AppKit 原生界面 | Swift / AppKit 宿主 + WKWebView 中的 React / TypeScript 界面，Node.js 后台与 Rust 核心 | Swift 原生界面，使用 AppKit / SwiftUI |
+| 费用 | 完全免费，无订阅或付费功能分级 | 基础功能免费，Pro 等高级功能需订阅 | 一次性付费，提供 7 天试用 |
+| 开源 | 当前源码以 GPL-3.0-or-later 开源 | 主应用为专有软件；扩展库开源 | V2 源码不公开；免费开源的是 V1 |
+| 日常工具 | 应用与文件搜索、剪贴板、计算器、窗口操作等 | 基础版包含常用启动器工具及扩展 | 原生 Swift 启动器，包含常用工具与 AI 集成 |
+| Raycast 扩展 | 暂不提供完整兼容 | 官方扩展生态 | 官方称支持多数扩展，部分认证方式不支持 |
+
+**原生界面，专注轻量体验。** Keylane 的启动器使用 SwiftUI 与 AppKit 直接构建，不以 WebView 承载主界面，减少主界面对网页运行环境的依赖。SuperCmd V2 同样采用 Swift 原生路线；Raycast 2 则采用原生宿主与 Web 界面的混合架构，并非 Electron。Raycast 1 的核心界面原本也是 Swift / AppKit，不能与新版混为一谈。参见 [Raycast 官方架构介绍](https://www.raycast.com/blog/a-technical-deep-dive-into-the-new-raycast)。
+
+技术路线不等于性能排名。实际启动速度、搜索延迟和内存占用取决于版本、数据量与启用功能；这里不宣称未经同条件测试的倍数优势。
+
+Keylane 更适合希望免费使用日常工具，并能查看和修改应用源码的用户；它不是 Raycast 全部功能与扩展的等价替代品。
+
+对比依据：[Raycast 定价](https://www.raycast.com/pricing)、[软件条款](https://www.raycast.com/terms-of-service)、[开源扩展库](https://github.com/raycast/extensions)及 [SuperCmd 官网](https://supercmd.sh/)（2026-11-16）。具体套餐与功能以各产品当前说明为准。
+
+## 从 Raycast 迁移
+
+Keylane 支持读取 Raycast 导出的 **`.rayconfig` 配置文件**和 **Quicklinks JSON**，把支持的数据迁移过来。
+
+1. 在 Raycast 中[导出配置](https://manual.raycast.com/settings)。
+2. 打开 Keylane 的 **设置 → 高级 → 从 Raycast 迁移**，选择文件；加密备份按提示输入密码。
+3. 查看迁移预览和冲突提示，选择保留现有配置或覆盖冲突项，确认后完全退出并重新打开 Keylane。
+
+| 可以迁移 | 范围 |
+| --- | --- |
+| 快捷链接 | Quicklinks 的名称和链接；不支持的占位符或目标会跳过 |
+| 基本偏好 | 支持的外观、窗口模式、导航、返回延迟等设置，以及启动器快捷键 |
+| 命令配置 | 可准确对应的内置命令、已发现应用的别名、启用状态和支持的快捷键 |
+
+## 接下来
+
+Keylane 将继续完善日常体验，并逐步加入 Raycast、SuperCmd 中更多实用功能。扩展兼容、更多 AI 工具及工作流能力属于后续规划，不代表当前已支持，也不承诺与其他产品完全兼容。具体方向见 [开发计划](docs/TODO.md)。
+
+## 安装
+
+要求 **macOS 26 或更新版本**。目前提供 Apple Silicon 安装包，Intel 和通用二进制暂未验证。
+
+1. 前往 [Releases](https://github.com/Acckion/Keylane/releases) 下载 DMG 和 SHA-256 校验文件。
+2. 核对校验和，打开 DMG，将 Keylane 拖入“应用程序”。
+3. 打开 Keylane，按 **Option + Space** 开始使用。需要时再为相应功能授予权限。
+
+当前公开安装包为 **1.0.2 Beta 1**，采用临时签名，未经 Apple 公证，需要手动安装。首次打开可能受到 macOS 安全机制限制，请参阅 [Apple 的安全说明](https://support.apple.com/en-us/102445)，并仅在确认下载来源可信后继续。
+
+## 数据与权限
+
+- **本地保存**：设置与历史数据保存在 Mac 上，没有内置遥测或云同步。剪贴板可能包含敏感内容，可按需调整持久化与保留策略。
+- **按需授权**：文件搜索使用你选择的目录；自动粘贴、窗口操作等功能可能需要辅助功能权限，部分系统集成需要自动化或对应资料的访问权限。
+- **AI 由你决定**：使用文件 AI 时，只有主动提交才会把问题和所选上下文发送至你配置的服务商；上下文可能包含文件名、路径或内容。服务商的数据政策和费用适用，密钥保存在 macOS 钥匙串中。
 
 ## 从源码构建
 
-需要 macOS 26+、Swift 6 工具链（通常由 Xcode 提供）、Python 3。SQLite 使用系统库。
+Keylane 使用 **Swift、SwiftUI 和 AppKit** 构建。需要 macOS 26+、Swift 6 工具链和 Python 3；SQLite 使用系统库。
 
 ```sh
 git clone https://github.com/Acckion/Keylane.git
@@ -51,57 +100,26 @@ swift build -c release
 bash scripts/package.sh
 ```
 
-打包默认使用本机配置的签名身份。无证书时，仅本地试用可选择：
+打包默认使用本机配置的签名身份。没有开发证书时，本地试用可使用临时签名：
 
 ```sh
 KEYLANE_ALLOW_ADHOC=1 bash scripts/package.sh
 ```
 
-临时签名升级可能需要重新授权，不代表 Developer ID 签名或公证。见 [签名与升级授权](docs/SIGNING.md)。
-
-## 数据与权限
-
-- 数据保存在本机的 Application Support/Keylane 及系统偏好设置中；剪贴板历史可能包含敏感内容，请按需开启持久化和保留策略。
-- 文件访问范围由用户选择；自动粘贴等功能可能需要辅助功能权限，读取 Finder 选中项可能需要自动化权限。拒绝权限会影响对应功能。
-- 没有内置遥测或云同步。文件 AI 会在用户主动提交时向所配置的服务发送问题及所选上下文，可能包含文件名、路径或内容；服务商可能计费，适用其数据政策。
-- AI 密钥通过 macOS 钥匙串保存。不要提交密钥、签名证书、用户数据库或个人文件。
-
-## 项目结构
-
-```text
-Sources/Keylane/          应用界面、系统集成及控制器
-Sources/KeylaneCore/      检索、数据存储及核心逻辑
-Tests/KeylaneCoreTests/   核心自动化测试
-Tests/Integration/       隔离集成验证入口
-scripts/                 打包、签名及验证脚本
-website/                 中英静态 GitHub Pages 官网
-docs/                    设计、开发记录、验证证据及待办
-```
-
-`docs/` 中的版本记录描述各轮当时的状态，不代表当前所有功能均已完成验收。自动化或隔离验证不能代替真实账号、真实目标应用及完整安装版交互验收。研究目录、第三方分发产物、构建缓存和本机签名配置不属于本仓库发布内容。
-
-## 设计启发与致谢
-
-Keylane 的功能构想与交互设计受到 [SuperCMD V1](https://supercmd.sh/en/v1) 和 [Raycast](https://www.raycast.com/) 的启发。开发过程中还参考了 SuperCMD V1 的公开源码，以及 Raycast 已分发程序中可观察到的剪贴板数据组织、持久化和处理机制，并据此编写 Keylane 的实现。
-
-## 开源许可证
-
-Keylane 采用 **GNU General Public License v3.0 or later（GPL-3.0-or-later）**，完整条款见 [LICENSE](LICENSE)。你可以在 GPL 条款下使用（包括商业使用）、修改及再分发本项目；分发原版或修改版时须遵守相应的许可证、源代码及版权声明义务。商业使用不再要求单独取得本项目的商业授权。
-
-本许可声明适用于包含本次许可变更的代码版本，不追溯改写旧标签或已发布安装包的许可。第三方组件、数据和系统框架仍适用各自条款，相关声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；本项目许可不授予第三方品牌或素材的使用权。
+临时签名不等于 Apple 公证，升级后可能需要重新授权。详见 [签名与升级授权](docs/SIGNING.md)。
 
 ## 参与贡献
 
-欢迎提交问题或改进建议。提交问题时请提供系统版本、复现步骤和经脱敏的错误信息。提交代码前运行 `swift test`，涉及系统能力时请区分自动化验证与实际交互结果。
+欢迎提交问题与改进建议。报告问题时，请附上系统版本、复现步骤和脱敏后的错误信息。
 
-贡献应为你有权提交的内容，不得包含第三方私有代码、品牌素材或个人数据。你提交的项目原创贡献应可按 GPL-3.0-or-later 分发；第三方内容必须注明来源并保留其原有许可。提交补丁不代表转让版权。
+开发前请阅读 [贡献指南](CONTRIBUTING.md)、[协作规范](AGENTS.md)、[行为准则](CODE_OF_CONDUCT.md) 和 [安全政策](SECURITY.md)。功能分支通过 PR 合入 `dev`，稳定快照再同步至 `main`。开发计划见 [TODO](docs/TODO.md)。
 
-## 贡献与开发流程
+## 致谢
 
-请先阅读 [贡献指南](CONTRIBUTING.md)、[行为准则](CODE_OF_CONDUCT.md)、[安全政策](SECURITY.md) 与 [协作规范](AGENTS.md)。新任务从 dev 创建功能分支，通过 PR 合入 dev；完成必要验证后通过同仓库 dev → main PR 同步稳定快照。普通同步不要求 release 标题或版本递增，也不会创建 tag 或 Release。
+Keylane 的功能构想与交互设计受到 [SuperCMD V1](https://supercmd.sh/en/v1) 和 [Raycast](https://www.raycast.com/) 的启发。开发过程中还参考了 SuperCMD V1 的公开源码，以及 Raycast 已分发程序中可观察到的剪贴板数据组织、持久化和处理机制，并据此编写 Keylane 的实现。
 
-[CI](.github/workflows/ci.yml) 保留 Checks，对 PR 和 dev/main push 检查版本、脚本并编译测试。改动打包相关文件时额外构建并验证临时签名 DMG；也可手动运行 CI 并勾选 `validate_installer`。测试包未经 Apple 公证。普通 CI 不使用发行 secrets，不发布软件。
+## 许可证
 
-正式发布使用独立 [Release](.github/workflows/release.yml) 手动入口：选择 main 并输入该提交的完整 `target_sha`。候选版本来自 [version.json](version.json)，版本须超过之前正式版，构建号须超过所有已公开版本，并提供 `docs/releases/vX.Y.Z.md` 发布说明。工作流固定该提交，重新测试、构建、Developer ID 签名、公证并验证 DMG 后，才创建对应 tag 和 GitHub Release，附带 DMG 与 SHA-256。发行 secrets 缺失会失败。详见 [工作流操作与验收](docs/CI-RELEASE.md)。
+当前源码采用 **[GPL-3.0-or-later](LICENSE)**，允许依照许可证条款使用、修改和再分发，包括商业使用。第三方组件及数据适用各自条款，见 [第三方声明](THIRD_PARTY_NOTICES.md)。
 
-官网为静态 GitHub Pages，部署流程独立于应用 CI/发布，只在 main 部署网页，不创建软件标签、Release 或应用发行资产。配置与验证边界见 [官网维护说明](docs/WEBSITE.md)。
+历史标签与安装包仍适用随附的许可证，包括 1.0.2 Beta 1 的 PolyForm Noncommercial 许可；当前许可不追溯变更旧版本。

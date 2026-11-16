@@ -1,46 +1,95 @@
-<p align="center"><img src="website/assets/icon.png" width="88" alt="Keylane icon"></p>
 <h1 align="center">Keylane</h1>
-<p align="center">From thought to action. A native keyboard launcher for macOS.</p>
+<p align="center">From thought to action. Completely free and open source.</p>
+<p align="center">A native keyboard launcher for macOS. Your apps, files, and everyday tools in one search window.</p>
 <p align="center"><a href="README.md">简体中文</a> · <b>English</b></p>
-<p align="center"><a href="https://acckion.github.io/Keylane/en/">Website (available after Pages setup)</a> · <a href="https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1">Download Beta 1</a> · <a href="docs/TODO.md">Roadmap</a></p>
+<p align="center"><a href="https://acckion.github.io/Keylane/en/">Website</a> · <a href="https://github.com/Acckion/Keylane/releases">Download</a> · <a href="https://github.com/Acckion/Keylane/issues">Feedback</a></p>
 
-![Actual Beta 1 calculator interface showing the demo input 128 * 24 and result 3072](website/assets/calculator.png)
+![Keylane launcher showing apps and files in a single search](docs/images/launcher.png)
 
-Press **Option + Space** to open the search window. Type an app, file, or command name, select with the arrow keys, and press Return to open. Escape goes back or hides the window. Built with Swift, SwiftUI, and AppKit.
+Press **Option + Space** and type an app, file, or command name. Use the arrow keys to select, **Return** to open, and **Escape** to go back or hide the window. Start everyday tasks from the keyboard instead of switching between apps.
 
-## Before you install Beta 1
+## One place for everyday tasks
 
-The public download is **1.0.2 Beta 1 · build 27 · `891ab2c`**, requiring **macOS 26+ and Apple Silicon**. Intel and universal builds are unverified. This installer is **ad-hoc signed, not Apple notarized, and requires manual installation**.
+### Find your apps and files
 
-1. Download the DMG and SHA-256 file from the [Beta 1 release page](https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1) and verify the checksum.
-2. Open the DMG, drag Keylane to Applications, and open it from there.
-3. macOS may block first launch. Read [Apple’s safety guidance](https://support.apple.com/en-us/102445). Automatic installation requires notarized Developer ID artifacts; install this release manually.
+Search apps by name, Pinyin, or fuzzy matching, and keep favorites close at hand. File search combines Spotlight with local indexing. Filter by file type, preview contents and details, then open the action menu to work with your files.
 
-First launch under default security settings, upgrading from Alpha, isolated launch/quit/relaunch, and synthetic configuration upgrades remain unverified. The latest real-focus Navigation recheck did not pass. Installed keyboard and permission flows, multiple displays, full screen, Spaces, and real target apps still have validation gaps. Passing CI or isolated tests does not complete that acceptance.
+![Keylane file search with results on the left and a preview and file details on the right](docs/images/file-search.png)
 
-> **Licensing depends on the version:** current dev source uses GPL-3.0-or-later, permitting commercial use under its terms. Beta 1 (`891ab2c`) and the pre-sync main snapshot (`877ca22`) retain their shipped PolyForm Noncommercial license. The GPL migration does not retroactively relicense old tags or installers.
+### Find what you copied
 
-## Everyday capabilities
+Browse text, images, and files from your clipboard history. Search, filter, preview, and pin useful items, then copy them again or paste into the app you are using. Choose how long to keep your history and whether to save it between sessions.
 
-| Entry point | Available in the released Beta | Boundaries |
-| --- | --- | --- |
-| Apps | Name, Pinyin and fuzzy search; favorites | Some input method and display interactions await acceptance |
-| Files | Spotlight, supplemental local indexing, folder and content search | Requires folder access and depends on indexing state |
-| Clipboard | Text, image and file history; search, pinning and retention | Opt in; automatic paste needs permissions and target-app testing |
-| Tools | Calculator, Emoji and symbols, Quicklinks, script commands and snippets | System interactions require scenario-specific validation |
-| System integrations | Shortcuts, calendar, contacts, screenshot search and OCR | Depend on authorization and actual data sources; acceptance gaps remain |
+![Keylane clipboard history with content previews and source information](docs/images/clipboard.png)
 
-![Actual Beta 1 Emoji and symbols interface searching “星”, the Chinese word for star](website/assets/emoji.png)
+### Small tools, fewer interruptions
 
-Screenshots show an actual Beta 1 app copy with fixed demo inputs. The app UI is Chinese. See [website evidence and isolation boundaries](docs/WEBSITE.md).
+- **Quick calculations**: type an expression, view the result, and copy it.
+- **Words and symbols**: look up words in system dictionaries and search Emoji and symbols.
+- **System and windows**: find system settings, run common system actions, switch windows, and arrange layouts.
+- **Local information**: view calendars, search contacts, find screenshots and OCR text, and connect Apple Notes.
+- **Your workflows**: run Apple Shortcuts and scripts, use Quicklinks and snippets, and assign command aliases and shortcuts.
+- **Configuration migration**: back up and restore Keylane settings, or import supported preferences, command mappings, and Quicklinks from Raycast. Preview changes before importing; unsupported items are skipped.
 
-**In development, outside this Beta:** Raycast extension compatibility, configuration migration, and iPhone app launching. Development branches and draft PRs do not imply released features. See the [roadmap](docs/TODO.md) and [feature inventory](docs/FEATURES.csv).
+## Completely free. Open source.
 
-See the [configuration migration scope and validation](docs/CONFIGURATION-MIGRATION.md) for the development version.
+**Keylane is completely free, with no subscription or paid feature tiers.** Current source is available under [GPL-3.0-or-later](LICENSE): inspect it, modify it, build it yourself, and use or redistribute it commercially under the license terms. Third-party AI services you connect may charge separately.
+
+### Compared with Raycast and SuperCmd V2
+
+| | Keylane | Raycast 2 | SuperCmd V2 |
+| --- | --- | --- | --- |
+| UI and architecture | Native Swift + SwiftUI / AppKit UI | Swift / AppKit host, React / TypeScript in WKWebView, Node.js backend, and Rust core | Native Swift UI with AppKit / SwiftUI |
+| Pricing | Completely free; no subscription or paid tiers | Free core features; subscriptions for Pro and other premium features | One-time purchase with a 7-day trial |
+| Open source | Current source: GPL-3.0-or-later | Proprietary main app; open-source extension repository | V2 source is not public; V1 is the free, open-source version |
+| Everyday tools | App and file search, clipboard, calculator, window actions, and more | Free core launcher tools and extensions | Native Swift launcher with everyday tools and AI integrations |
+| Raycast extensions | Full compatibility is not currently offered | Official extension ecosystem | Most extensions supported, according to its website; some authentication methods are unsupported |
+
+**Native UI, built for a lightweight experience.** Keylane builds its launcher directly with SwiftUI and AppKit rather than hosting its main interface in a WebView, reducing the main UI’s dependence on a web runtime. SuperCmd V2 also takes a native Swift approach. Raycast 2 uses a native host with a web-based UI, not Electron. Raycast 1 originally used Swift / AppKit for its core interface; the versions should not be conflated. See [Raycast’s architecture overview](https://www.raycast.com/blog/a-technical-deep-dive-into-the-new-raycast).
+
+Architecture alone does not establish a performance ranking. Launch speed, search latency, and memory use depend on versions, data, and enabled features. No unmeasured speed or memory multiplier is claimed here.
+
+Keylane is for people who want free everyday tools and access to the application's source code. It is not a feature-for-feature replacement for all of Raycast and its extensions.
+
+Sources: [Raycast pricing](https://www.raycast.com/pricing), [software terms](https://www.raycast.com/terms-of-service), [open-source extensions](https://github.com/raycast/extensions), and the [SuperCmd website](https://supercmd.sh/) (November 16, 2026). Refer to each product's current documentation for plans and features.
+
+## Move from Raycast
+
+Keylane can import **`.rayconfig` exports** and **Quicklinks JSON** from Raycast.
+
+1. [Export your configuration](https://manual.raycast.com/settings) from Raycast.
+2. In Keylane, open **Settings → Advanced → Migrate from Raycast** and select the file. Enter the backup password when prompted for an encrypted export.
+3. Review the import preview and conflicts, choose whether to keep existing settings or replace conflicting items, then confirm and fully quit and reopen Keylane.
+
+| Supported data | Scope |
+| --- | --- |
+| Quicklinks | Names and links; unsupported placeholders or targets are skipped |
+| Basic preferences | Supported appearance, window mode, navigation, return delay, and related settings, plus the launcher hotkey |
+| Command settings | Aliases, enabled states, and supported hotkeys for precisely matched built-in commands and discovered apps |
+
+## What’s next
+
+Keylane will continue improving everyday workflows and gradually add more useful features found in Raycast and SuperCmd. Extension compatibility, additional AI tools, and workflow capabilities are planned areas of development, not features available today or a promise of full compatibility. See the [roadmap](docs/TODO.md) for direction.
+
+## Installation
+
+Requires **macOS 26 or later**. Current installers target Apple Silicon; Intel and universal binaries have not been verified.
+
+1. Download the DMG and SHA-256 checksum file from [Releases](https://github.com/Acckion/Keylane/releases).
+2. Verify the checksum, open the DMG, and drag Keylane into Applications.
+3. Open Keylane and press **Option + Space**. Grant access to individual features when you need them.
+
+The current public installer is **1.0.2 Beta 1**. It is ad-hoc signed, not Apple notarized, and requires manual installation. macOS may block the first launch. Read [Apple’s safety guidance](https://support.apple.com/en-us/102445) and proceed only if you trust the download source.
+
+## Data and permissions
+
+- **Stored locally**: settings and history stay on your Mac. There is no built-in telemetry or cloud sync. Clipboard history can contain sensitive information; choose persistence and retention settings accordingly.
+- **Access when needed**: file search uses folders you select. Automatic paste and window actions may require Accessibility access; some integrations require Automation or access to the relevant data.
+- **AI is your choice**: File AI sends your question and selected context to your configured provider only when you submit it. Context may include file names, paths, or contents. The provider’s fees and data policies apply. API keys are stored in macOS Keychain.
 
 ## Build from source
 
-Requires macOS 26+, a Swift 6 toolchain (usually supplied by Xcode), and Python 3. SQLite uses the system library.
+Keylane is built with **Swift, SwiftUI, and AppKit**. You need macOS 26+, a Swift 6 toolchain, and Python 3. SQLite uses the system library.
 
 ```sh
 git clone https://github.com/Acckion/Keylane.git
@@ -51,55 +100,26 @@ swift build -c release
 bash scripts/package.sh
 ```
 
-Packaging uses your configured signing identity. Without a certificate, local testing can explicitly use:
+Packaging uses your configured signing identity. For local testing without a developer certificate, use ad-hoc signing:
 
 ```sh
 KEYLANE_ALLOW_ADHOC=1 bash scripts/package.sh
 ```
 
-An ad-hoc update may require permissions to be granted again. It is not Developer ID signing or notarization. See [signing and upgrade permissions](docs/SIGNING.md).
+Ad-hoc signing is not Apple notarization, and updates may require permissions to be granted again. See [signing and upgrade permissions](docs/SIGNING.md).
 
-## Data and permissions
+## Contributing
 
-- Data lives in local Application Support/Keylane and preferences. Clipboard history may contain sensitive data; choose persistence and retention deliberately.
-- File access is limited to selected scopes. Automatic paste may require Accessibility; reading Finder selections may require Automation. Denying access affects the corresponding feature.
-- There is no built-in telemetry or cloud sync. File AI sends your question and selected context to your configured provider only when you submit it. Context may include file names, paths or contents. Provider fees and data policies apply.
-- AI keys are stored in macOS Keychain. Never commit keys, certificates, user databases or personal files.
+Issues and suggestions are welcome. Please include your macOS version, reproduction steps, and sanitized error information.
 
-## Project structure
+Before contributing, read the [contribution guide](CONTRIBUTING.md), [project guidelines](AGENTS.md), [code of conduct](CODE_OF_CONDUCT.md), and [security policy](SECURITY.md). Feature branches target `dev`; stable snapshots then move to `main`. See the [roadmap](docs/TODO.md) for development plans.
 
-```text
-Sources/Keylane/          UI, system integration and controllers
-Sources/KeylaneCore/      Search, storage and core logic
-Tests/KeylaneCoreTests/   Automated core tests
-Tests/Integration/       Isolated integration entry points
-scripts/                 Packaging, signing and verification
-website/                 Bilingual static GitHub Pages site
-docs/                    Design, evidence and roadmap
-```
+## Acknowledgments
 
-Historical records in docs describe their state at the time. Automated or isolated verification does not replace actual accounts, target apps, or complete installer acceptance. Research material, third-party distributions, build caches and local signing configuration are excluded from the repository’s releases.
-
-## Inspiration and acknowledgments
-
-Keylane’s concepts and interaction design were inspired by [SuperCMD V1](https://supercmd.sh/en/v1) and [Raycast](https://www.raycast.com/). Development also referenced SuperCMD V1 public source and observable clipboard data organization, persistence and processing behavior in the distributed Raycast app when implementing Keylane.
+Keylane’s concepts and interaction design were inspired by [SuperCMD V1](https://supercmd.sh/en/v1) and [Raycast](https://www.raycast.com/). Development also referenced SuperCMD V1 public source and observable clipboard data organization, persistence, and processing behavior in the distributed Raycast app when implementing Keylane.
 
 ## License
 
-Current source uses **GNU General Public License v3.0 or later (GPL-3.0-or-later)**; see [LICENSE](LICENSE). It permits use, including commercial use, modification and redistribution under its terms. Distribution of original or modified versions requires compliance with applicable license, source and copyright notice obligations. A separate project commercial license is no longer required for these GPL versions.
+Current source is licensed under **[GPL-3.0-or-later](LICENSE)**, permitting use, modification, and redistribution, including commercial use, under its terms. Third-party components and data retain their own terms; see [third-party notices](THIRD_PARTY_NOTICES.md).
 
-This applies to code versions containing the license change, not old tags or previously released installers. Third-party components, data and system frameworks retain their own terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The project license grants no rights to third-party brands or artwork.
-
-## Contributing and development
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), [SECURITY.md](SECURITY.md), and [AGENTS.md](AGENTS.md). Report your system version, reproduction steps and sanitized errors. Run swift test before contributing and distinguish automated checks from actual interaction results.
-
-Contribute only material you have rights to submit, without private third-party code, brand assets, or personal data. Original contributions must be distributable under GPL-3.0-or-later; preserve third-party licenses and attribution. Submitting a patch does not transfer copyright.
-
-Feature branches target dev. After validation, synchronize a stable snapshot through a same-repository dev → main PR. Ordinary synchronization needs neither a release title nor a version/build bump and creates no tag or Release.
-
-[CI](.github/workflows/ci.yml) retains Checks and validates version policy, scripts and Swift tests on PRs and dev/main pushes. Packaging-related changes also build and verify an ad-hoc signed, non-notarized test DMG. A manual CI run can request this with `validate_installer`. Ordinary CI uses no distribution secrets and does not publish software.
-
-Software publication uses the separate [Release](.github/workflows/release.yml) manual entry: select main and provide that commit’s full `target_sha`. The candidate in [version.json](version.json) must exceed previous stable versions and all public build numbers, with release notes in `docs/releases/vX.Y.Z.md`. The workflow fixes that commit, reruns checks, builds, signs with Developer ID, notarizes and verifies the DMG before creating the tag and GitHub Release with the DMG and SHA-256. Missing distribution secrets fail closed. See [CI and release operations](docs/CI-RELEASE.md).
-
-The static Pages workflow is independent of application CI/release, deploys website content only from main, and creates no software tags, Releases or application release assets. See [website maintenance and verification](docs/WEBSITE.md).
+Historical tags and installers retain their bundled licenses, including the PolyForm Noncommercial license shipped with 1.0.2 Beta 1. The current license does not retroactively change older versions.
