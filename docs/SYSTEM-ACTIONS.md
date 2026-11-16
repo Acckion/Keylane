@@ -24,3 +24,18 @@
 - 在设置关闭权限后确认相应命令不可执行。启用权限后，验证媒体快捷键、Finder 和控制中心的实际行为。
 - 验证音量页可读出当前音量，提交后以 macOS 音量为准。使用固定音量设备时检查反馈。
 - 注销、重启、关机、清空废纸篓、清除通知和推出磁盘需要在合适的设备和会话中实测。
+
+## 安全自动检查
+
+不启动 Keylane，也不执行系统动作：
+
+```sh
+python3 -m unittest discover -s Tests/SystemActionsTests -v
+python3 scripts/verify-system-actions-safe.py
+# 可选：只读查询默认输出设备和音量（不写入）
+python3 scripts/verify-system-actions-safe.py --read-audio
+```
+
+第一项检查 37 个命令的声明结构（32 个固定 ID 和 5 个音量预设）、双语关键词、权限映射、确认和取消的源码顺序及表单提交边界。它不是搜索界面或权限服务验收。
+第二项提取生产音频实现，用假 CoreAudio 接口验证数值边界、舍入、预设、静音、不支持和读写失败分支；所有写调用均到假接口。另对五个生产 AppleScript 调用 `compileAndReturnError`，从不执行。编译依赖本机应用字典，受限沙箱可能无法解析 Finder/System Events；应报告环境错误，不能当作脚本通过或生产缺陷。
+可选只读路径在生成代码中移除了音量 setter，查询结果仅表示当时的设备状态。以上均不能证明真实音量、媒体、控制中心、磁盘或电源动作成功。
