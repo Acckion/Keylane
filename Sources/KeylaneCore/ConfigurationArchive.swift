@@ -134,7 +134,7 @@ public struct ConfigurationArchive: Codable {
             }
             let retainedIDs = Set(existing.map(\.id))
             for link in quicklinks where !retainedIDs.contains(link.id) {
-                if let canonical = existing.first(where: { $0.title == link.title && $0.template == link.template && $0.openingApplicationID == link.openingApplicationID }) {
+                if let canonical = existing.first(where: { $0.title == link.title && $0.template == link.template && $0.openingApplicationID == link.openingApplicationID && ($0.usesDynamicPlaceholders == true) == (link.usesDynamicPlaceholders == true) }) {
                     canonicalIDs[link.id] = canonical.id
                     omitted += 1
                 } else { existing.append(link) }

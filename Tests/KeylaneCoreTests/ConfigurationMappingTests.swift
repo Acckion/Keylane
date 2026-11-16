@@ -102,6 +102,31 @@ final class ConfigurationMappingTests: XCTestCase {
         }
     }
 
+    func testQuicklinkIdentityPreservesEffectiveTemplateInterpretationMode() throws {
+        for (oldMode, newMode, equivalent) in [(true as Bool?, nil as Bool?, false), (true, false, false),
+                                               (nil, true, false), (false, nil, true), (nil, false, true)] {
+            var old = Quicklink(id: "quicklink:existing", title: "Synthetic", template: "https://example.com/?q={clipboard}")
+            var incoming = Quicklink(id: "quicklink:incoming", title: old.title, template: old.template)
+            old.usesDynamicPlaceholders = oldMode; incoming.usesDynamicPlaceholders = newMode
+            XCTAssertEqual(try old.parsedTemplate().parameters.count, oldMode == true ? 0 : 1)
+            XCTAssertEqual(try incoming.parsedTemplate().parameters.count, newMode == true ? 0 : 1)
+            let initial: [String: Any] = [QuicklinkLibrary.storageKey: try JSONEncoder().encode(QuicklinkLibrary(links: [old])),
+                                         "shortcuts": try JSONEncoder().encode([String: Shortcut]())]
+            var archive = ConfigurationArchive(); archive.quicklinks = [incoming]
+            archive.aliases = [incoming.id: "synthetic"]; archive.shortcuts = [incoming.id: q]
+            for overwrite in [false, true] {
+                let plan = try archive.plan(current: initial, overwrite: overwrite)
+                let applied = initial.merging(plan.changes) { _, new in new }
+                let links = try JSONDecoder().decode(QuicklinkLibrary.self, from: XCTUnwrap(applied[QuicklinkLibrary.storageKey] as? Data)).links
+                XCTAssertEqual(links, equivalent ? [old] : [old, incoming])
+                let target = equivalent ? old.id : incoming.id
+                XCTAssertEqual(plan.changes["aliases"] as? [String: String], [target: "synthetic"])
+                XCTAssertEqual(try JSONDecoder().decode([String: Shortcut].self, from: XCTUnwrap(plan.changes["shortcuts"] as? Data)), [target: q])
+                XCTAssertTrue(try archive.plan(current: applied, overwrite: overwrite).changes.isEmpty)
+            }
+        }
+    }
+
     func testOverwriteHotkeySwapAndThreeWayCycleAreFinalStateValidAndIdempotent() throws {
         let old = ["a": q, "b": w, "c": e]
         for incoming in [["a": w, "b": q], ["a": w, "b": e, "c": q]] {
