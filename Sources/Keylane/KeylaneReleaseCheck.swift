@@ -30,6 +30,22 @@ final class KeylaneReleaseCheck: ObservableObject {
     @Published private(set) var busy = false
     @Published private(set) var available: Update?
     @Published private(set) var ready = false
+    @Published private(set) var lastCheckedAt: Date?
+    @Published var showsReleaseNotes = false
+    @Published private(set) var releaseHistory: [GitHubUpdateRelease]?
+    @Published private(set) var releaseHistoryError = false
+
+    @MainActor
+    func loadReleaseHistory() async {
+        releaseHistoryError = false
+        do {
+            let releases = try await Self.fetchReleases()
+            try Task.checkCancellation()
+            releaseHistory = GitHubUpdateRelease.history(in: releases)
+        } catch {
+            if !Task.isCancelled { releaseHistoryError = true }
+        }
+    }
     private var task: Task<Void, Never>?
     private var timer: Timer?
     private var prepared: PreparedKeylaneUpdate?
@@ -55,8 +71,12 @@ final class KeylaneReleaseCheck: ObservableObject {
         let allowPrereleases = includePrereleases
         task = Task { @MainActor in
             do {
-                let result = try await Self.latest(includePrereleases: allowPrereleases)
+                let releases = try await Self.fetchReleases()
                 try Task.checkCancellation()
+                releaseHistory = GitHubUpdateRelease.history(in: releases)
+                let result = try await Self.latest(in: releases, includePrereleases: allowPrereleases)
+                try Task.checkCancellation()
+                lastCheckedAt = Date()
                 guard let result else {
                     status = allowPrereleases ? "暂无可用的 GitHub 更新。" : "暂无可用的正式版。"
                     busy = false
@@ -129,6 +149,7 @@ final class KeylaneReleaseCheck: ObservableObject {
         available = nil
         busy = false
         ready = false
+        lastCheckedAt = nil
         status = "可以从 GitHub 检查更新。"
         if automatic { checkAutomatically() }
     }
@@ -143,7 +164,7 @@ final class KeylaneReleaseCheck: ObservableObject {
         let build: Int
     }
 
-    private static func latest(includePrereleases: Bool) async throws -> Update? {
+    private static func fetchReleases() async throws -> [GitHubUpdateRelease] {
         var releases: [GitHubUpdateRelease] = []
         var page = 1
         while true {
@@ -153,6 +174,10 @@ final class KeylaneReleaseCheck: ObservableObject {
             if batch.count < 100 { break }
             page += 1
         }
+        return releases
+    }
+
+    private static func latest(in releases: [GitHubUpdateRelease], includePrereleases: Bool) async throws -> Update? {
         guard let release = GitHubUpdateRelease.latest(in: releases, includePrereleases: includePrereleases) else {
             return nil
         }
@@ -166,6 +191,8 @@ final class KeylaneReleaseCheck: ObservableObject {
         let request = URLRequest(url: url, cachePolicy: .reloadRevalidatingCacheData, timeoutInterval: 20)
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-        return try JSONDecoder().decode(Value.self, from: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(Value.self, from: data)
     }
 }

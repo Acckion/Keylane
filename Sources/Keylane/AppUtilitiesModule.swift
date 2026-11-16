@@ -6,6 +6,7 @@ import KeylaneCore
 
 enum AppUtilitiesModule {
     static func make(model: Model) -> LauncherModule {
+        let releaseNotes = ReleaseNotesLauncher(model: model)
         let capture = PermissionFeature("screenCapture.enabled", authorization: .screenCapture, observeImmediately: false)
         let camera = CameraPreviewWindow()
         let cameraPermission = PermissionFeature("cameraPreview.enabled", authorization: .camera, observeImmediately: false)
@@ -15,11 +16,10 @@ enum AppUtilitiesModule {
                               symbol: "wrench.and.screwdriver", commands: [
             command("export-settings", "导出 Keylane 设置", "square.and.arrow.up",
                     ["Export Settings", "设置备份"]) { ConfigurationTransfer.export() },
-            command("view-release-notes", "查看 Keylane 更新日志", "doc.text",
-                    ["Changelog", "Release Notes", "版本记录"]) {
-                NSWorkspace.shared.open(KeylaneReleaseCheck.releasesURL)
-                (NSApp.delegate as? Delegate)?.hideLauncher()
-            },
+            .init(declaration: .init(id: .init(rawValue: "view-release-notes"), title: "查看 Keylane 更新日志",
+                                     detail: "浏览版本记录", symbol: "doc.text",
+                                     keywords: ["Changelog", "Release Notes", "版本记录"],
+                                     destination: .page(ReleaseNotesLauncher.listID))),
             command("check-for-updates", "检查 Keylane 更新", "arrow.clockwise",
                     ["Check for Updates", "检查更新"]) { [weak model] in
                 guard let model, let delegate = NSApp.delegate as? Delegate else { return }
@@ -49,7 +49,7 @@ enum AppUtilitiesModule {
                   permission: cameraPermission, execute: { [weak model] _ in
                       camera.show(activation: model?.windowActivationBehavior ?? .systemDefault)
                   })
-        ], services: [.init(start: {
+        ], pages: releaseNotes.pages, services: [.init(start: {
             capture.startObserving()
             cameraPermission.startObserving()
             cameraChanges = cameraPermission.updates.receive(on: DispatchQueue.main).sink {

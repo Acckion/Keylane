@@ -47,6 +47,16 @@ public struct RankedFile: Sendable {
     }
 }
 
+public struct RecentlyUsedFile: Sendable {
+    public let path: String
+    public let date: Date
+
+    public init(path: String, date: Date) {
+        self.path = path
+        self.date = date
+    }
+}
+
 /// Searches the existing Spotlight index. Own and call this service on the main thread.
 public final class SpotlightSearch {
     public var updated: (([RankedFile], String) -> Void)?
@@ -76,6 +86,51 @@ public final class SpotlightSearch {
             .replacingOccurrences(of: "*", with: "\\*").replacingOccurrences(of: "?", with: "\\?")
         return "kMDItemFSName == \"*" + escaped + "*\"cd"
     }
+
+    public func recentlyUsed(in roots: [String], completion: @escaping ([RecentlyUsedFile]) -> Void) {
+        cancel()
+        let expression = """
+        kMDItemLastUsedDate >= $time.today(-30) && kMDItemContentTypeTree != "public.folder" && kMDItemContentTypeTree != "com.apple.application"
+        """
+        guard !roots.isEmpty,
+              let query = MDQueryCreate(nil, expression as CFString, nil, [kMDItemLastUsedDate] as CFArray),
+              MDQuerySetSortOptionFlagsForAttribute(query, kMDItemLastUsedDate, UInt32(kMDQueryReverseSortOrderFlag.rawValue)) else {
+            completion([])
+            return
+        }
+        MDQuerySetSearchScope(query, roots as CFArray, 0)
+        MDQuerySetDispatchQueue(query, .main)
+        MDQuerySetMaxCount(query, 500)
+        self.query = query
+        let version = generation
+        let finish: () -> Void = { [weak self] in
+            guard let self, self.generation == version else { return }
+            MDQueryDisableUpdates(query)
+            let files = (0..<min(MDQueryGetResultCount(query), 500)).compactMap { index -> RecentlyUsedFile? in
+                guard let raw = MDQueryGetResultAtIndex(query, index) else { return nil }
+                let item = Unmanaged<MDItem>.fromOpaque(raw).takeUnretainedValue()
+                guard let path = MDItemCopyAttribute(item, kMDItemPath) as? String,
+                      let date = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date else { return nil }
+                return RecentlyUsedFile(path: path, date: date)
+            }
+            MDQueryEnableUpdates(query)
+            self.cancel()
+            completion(files)
+        }
+        let name = Notification.Name(rawValue: kMDQueryDidFinishNotification as String)
+        observers.append(NotificationCenter.default.addObserver(forName: name, object: query, queue: .main) { _ in finish() })
+        guard MDQueryExecute(query, 0) else {
+            cancel()
+            completion([])
+            return
+        }
+        // Keep the blank state responsive when an indexed volume is slow or unavailable.
+        guard generation == version else { return }
+        let timeout = DispatchWorkItem(block: finish)
+        pending = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: timeout)
+    }
+
     public func search(_ text: String, homeOnly: Bool = false, root: URL? = nil) {
         cancel()
         self.homeOnly = homeOnly

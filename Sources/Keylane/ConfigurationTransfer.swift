@@ -51,7 +51,8 @@ enum ConfigurationTransfer {
                     guard prompt.runModal() == .alertFirstButtonReturn else { return }
                     password = field.stringValue; field.stringValue = ""
                 }
-                let preview = try RaycastConfiguration.decode(data, password: password)
+                let paths = Set((NSApp.delegate as? Delegate)?.model.apps.map(\.path) ?? [])
+                let preview = try RaycastConfiguration.decode(data, password: password, applicationPaths: paths)
                 password = ""; archive = preview.archive; warnings = preview.warnings
             } else { archive = try ConfigurationArchive.decode(data) }
             guard let registry = (NSApp.delegate as? Delegate)?.model.launcherModules else {

@@ -34,7 +34,7 @@
 
 - [Raycast 官方 Settings 手册](https://manual.raycast.com/settings) 说明通过 Export & Import Settings 迁移配置；用户需先在 Raycast 导出文件，本功能不扫描其私有数据库或读取 Keychain 密码。
 - 核对 [SuperCMD V1 原始迁移实现](https://github.com/SuperCmdLabs/SuperCmd/blob/2da7b9e5dec0199a972a59cece402c85f729d5d7/src/main/raycast-config-import.ts) 与同提交 [MIT 许可](https://github.com/SuperCmdLabs/SuperCmd/blob/2da7b9e5dec0199a972a59cece402c85f729d5d7/LICENSE)。只研究公开的交换字段、加密包装与边界，未复制其实现、资源或分发产物，亦未读取闭源 V2 代码。
-- 当前 Raycast `RAYCFG3\n`：8 字节 magic、u32LE gzip 头长度、gzip JSON 头、AES-256-GCM 密文及末尾 16 字节认证标签。头版本为 3，IV/salt 为十六进制编码的各 16 字节；scrypt 固定 N=16384、r=8、p=1、dkLen=32，无 AAD。先认证再解压 payload。头与解压头上限均 64 KiB；解压 payload 上限 16 MiB，较大的历史备份会明确拒绝，建议只导出 Quicklinks。
+- 当前 Raycast `RAYCFG3\n`：8 字节 magic、u32LE gzip 头长度、gzip JSON 头、AES-256-GCM 密文及末尾 16 字节认证标签。头版本为 3，`encryption.iv`/`encryption.salt` 为十六进制编码的各 16 字节；scrypt 固定 N=16384、r=8、p=1、dkLen=32，无 AAD。先认证再解压 payload。头与解压头上限均 64 KiB；解压 payload 上限 64 MiB，较大的历史备份会明确拒绝，建议只导出 Quicklinks。
 - 容器事实由本任务提供的脱敏结构说明与[公开格式文档](https://github.com/abue-ammar/tinycast/blob/main/docs/features/raycast-import.md)交叉核对。后者项目为 AGPL，未读取或复用其解码器源码；本实现独立编写，scrypt 使用 RFC 7914 算法与公开测试向量，并对照 Python hashlib.scrypt。
 - 兼容 SuperCMD V1 所述旧 CBC/gzip 包装与旧 `builtin_package_*` JSON，使用 CommonCrypto/CryptoKit/zlib 本地处理。旧 CBC 没有认证保障，应仅使用可信文件。密码只在内存中使用，不作为进程参数，不写临时明文、日志或导入备份。Swift 运行时无法保证所有密码副本立即清零。
 
@@ -42,10 +42,10 @@
 | --- | --- |
 | Quicklinks JSON | 使用现有 `name`/`link` 交换格式；仅链接 |
 | 旧版 JSON/CBC | 窗口模式、macos/vim 导航、支持的返回延迟、全局热键，以及四个明确内置 ID 的热键；`name`/`url` Quicklinks |
-| RAYCFG3 类别 JSON | 验证类别版本；`settings.commands` 中可靠对应的四个内置 ID 的别名/禁用状态/可识别物理热键；`quicklinks.quicklinks` 中可识别链接 |
+| RAYCFG3 类别 JSON | 验证类别版本；`settings.general` 的允许范围基本偏好和启动热键；`settings.commands` 中精确内置 ID、已发现应用路径对应的别名/禁用状态/可识别物理热键；`quicklinks.quicklinks` 的 `name`/`link` 链接 |
 | 其他数据 | 预览显示类别计数并跳过，包括扩展清单及 storedValues、片段、笔记、AI、剪贴板、固定项、脚本、权限与未识别设置 |
 
-四个内置 ID 是 clipboardHistory、searchEmoji、lockScreen、openCamera 的旧 `builtin_command_*` 精确 ID；不按名称模糊匹配。现代版本若改变 ID、类别 schemaVersion、链接字段或热键结构，将跳过并显示限制，不冒充全量兼容。Quicklinks 从原 ID 或内容产生稳定 SHA-256 身份，使重复导入可去重。链接参数与打开应用的跨版本差异仍需要安装版验收。
+内置 ID 保留 clipboardHistory、searchEmoji、lockScreen、openCamera 的旧 `builtin_command_*` 精确映射，并支持当前 `c:r:…::-::…` 中对应的剪贴板历史、顺序粘贴、Emoji、锁屏和相机命令。应用仅在命令 ID 的 `::=::` 路径与 Keylane 已发现的应用路径完全一致时映射，不按名称模糊匹配，不迁移缺失应用。热键只接受 Global、SingleStep、LayoutIndependent 形式及已支持的修饰键，Fn 或未知类型跳过。现代版本若改变 ID、类别 schemaVersion、链接字段或热键结构，将跳过并显示限制，不冒充全量兼容。Quicklinks 从原 ID 或内容产生稳定 SHA-256 身份，使重复导入可去重。链接参数与打开应用的跨版本差异仍需要安装版验收。
 
 ## 自动化验证与未验收项
 

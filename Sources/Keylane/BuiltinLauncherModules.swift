@@ -123,7 +123,7 @@ enum BuiltinLauncherModules {
                          command("manage-auto-quit", "管理自动退出", "为应用配置离开前台后的退出时间", "app.badge.clock",
                                  ["Manage Auto Quit", "闲置退出"], destination: .settings(SettingsItem.applicationAutoQuit.page),
                                  settings: "applications", available: { [weak model] in model?.applicationsEnabled ?? false }),
-                         command("uninstall-application", "卸载应用程序", "选择应用并移到废纸篓", "trash",
+                         command("uninstall-application", "卸载应用程序", "卸载应用并选择要清理的关联文件", "trash",
                                  ["Uninstall Application", "移除应用"], destination: .page(uninstallPage), settings: "applications",
                                  available: { [weak model] in model?.applicationsEnabled ?? false })
                      ], providers: [provider], pages: [.init(
@@ -270,20 +270,6 @@ enum BuiltinLauncherModules {
             command("file-search", "搜索文件", "Spotlight", "doc.text.magnifyingglass",
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
                     permission: permission),
-            command("rebuild-file-index", "重建文件索引", "重新检查已授权范围并更新索引", "arrow.clockwise",
-                    ["Rebuild File Index", "Reindex Files"], settings: "files",
-                    available: { controller.options.enabled && !controller.indexPaused }, execute: { [weak model] _ in
-                        controller.startIndex(force: true)
-                        model?.fileActionFeedback("正在重建文件索引", style: .neutral)
-                    }),
-            command("toggle-file-index", "暂停或恢复文件索引", "继续使用已建立的索引", "pause.circle",
-                    ["Pause File Index", "Resume File Index"], settings: "files",
-                    available: { controller.options.enabled },
-                    dynamicDetail: { controller.indexPaused ? "当前已暂停" : "当前已启用" },
-                    execute: { [weak model] _ in
-                        controller.setIndexPaused(!controller.indexPaused)
-                        model?.fileActionFeedback(controller.indexPaused ? "已暂停文件索引" : "已恢复文件索引", style: .neutral)
-                    }),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
                     available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"), execute: { [weak model] origin in
@@ -327,8 +313,7 @@ enum BuiltinLauncherModules {
            })],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
-                           updates(model.fileAI.$commandsEnabled), model.finderAutomation.updates,
-                           updates(controller.$indexPaused)],
+                           updates(model.fileAI.$commandsEnabled), model.finderAutomation.updates],
            shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
 

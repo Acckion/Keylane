@@ -10,7 +10,7 @@ public enum RaycastConfiguration {
         public var archive: ConfigurationArchive
         public let warnings: [String]
     }
-    public static func decode(_ data: Data, password: String = "") throws -> Preview {
+    public static func decode(_ data: Data, password: String = "", applicationPaths: Set<String> = []) throws -> Preview {
         guard !data.isEmpty, data.count <= 16 * 1024 * 1024 else { throw ConfigurationError("Raycast 文件为空或超过 16 MB。") }
         var plain = data
         if (try? JSONSerialization.jsonObject(with: data)) == nil {
@@ -25,7 +25,7 @@ public enum RaycastConfiguration {
         guard let root = try JSONSerialization.jsonObject(with: plain) as? [String: Any] else {
             throw ConfigurationError("Raycast 数据格式无效。")
         }
-        if root["settings"] != nil || root["quicklinks"] != nil { return try modern(root) }
+        if root["settings"] != nil || root["quicklinks"] != nil { return try modern(root, applicationPaths: applicationPaths) }
         guard root["raycast_version"] is String else {
             throw ConfigurationError("无法识别 Raycast 备份格式。请从 Raycast 导出 .rayconfig 或 Quicklinks JSON。")
         }
@@ -84,31 +84,50 @@ public enum RaycastConfiguration {
         warnings.append("仅映射窗口模式、导航方式、支持的返回延迟、启动器及四个内置命令热键和 Quicklinks。其余偏好与命令映射不支持；不安装或执行任何扩展。")
         return Preview(archive: archive, warnings: warnings)
     }
-    private static func modern(_ root: [String: Any]) throws -> Preview {
+    private static func modern(_ root: [String: Any], applicationPaths: Set<String>) throws -> Preview {
         var archive = ConfigurationArchive(), warnings: [String] = []
         var links: [Quicklink] = [], aliases: [String: String] = [:], shortcuts: [String: Shortcut] = [:], enabledCommands: [String: Bool] = [:]
         var skipped = 0
         // Deliberately small allowlist: no fuzzy name matching or extension namespace guessing.
         let commandIDs = ["builtin_command_clipboardHistory": "clipboard", "builtin_command_searchEmoji": "emoji-symbols",
-                          "builtin_command_lockScreen": "lock-screen", "builtin_command_openCamera": "show-camera"]
+                          "builtin_command_lockScreen": "lock-screen", "builtin_command_openCamera": "show-camera",
+                          "c:r:clipboard-history::-::history": "clipboard", "c:r:clipboard-history::-::pasteSequential": "paste-sequentially",
+                          "c:r:emoji-picker::-::searchEmoji": "emoji-symbols", "c:r:system::-::lockScreen": "lock-screen",
+                          "c:r:raycast-core::-::openCamera": "show-camera"]
         for (name, raw) in root {
             guard let category = raw as? [String: Any], let version = category["schemaVersion"] as? Int else {
                 warnings.append("有一个无法识别版本的数据类别，已跳过。"); continue
             }
             if name == "settings" {
                 guard version == 1, let commands = category["commands"] as? [[String: Any]] else { warnings.append("设置类别版本或结构不支持，已跳过。"); continue }
-                warnings.append("检测到命令配置 \(commands.count) 项。仅迁移可靠对应的内置命令；其余命令跳过。")
+                if let general = category["general"] as? [String: Any] {
+                    let scalarKeys = ["appearance": "appearance", "windowMode": "windowMode", "navigationBindings": "navigation",
+                                      "escapeKeyBehavior": "launcherEscapeBehavior", "pageNavigationKeys": "pageNavigationKeys",
+                                      "rootSearchSensitivity": "rootSearchSensitivity", "windowActivationBehavior": "windowActivationBehavior"]
+                    for (source, destination) in scalarKeys {
+                        if let value = general[source] as? String {
+                            if ConfigurationArchive.enums[destination]?.contains(value) == true { archive.preferences[destination] = .string(value) }
+                            else { skipped += 1 }
+                        }
+                    }
+                    for (source, destination) in ["escapeKeyClosesWindow": "escapeClosesUtilityWindows", "showFavoritesInCompactMode": "compactFavorites"] {
+                        if let value = general[source] as? Bool { archive.preferences[destination] = .bool(value) }
+                    }
+                    if let n = general["popToRootTimeout"] as? Int, [-1, 0, 30, 90, 300].contains(n) { archive.preferences["launcherReturnDelay"] = .integer(n) }
+                    if let raw = general["globalHotkey"] as? [String: Any] {
+                        if let value = modernHotkey(raw) { shortcuts["launcher"] = value } else { skipped += 1 }
+                    }
+                }
+                warnings.append("检测到命令配置 \(commands.count) 项。仅迁移可靠对应的内置命令和已发现的应用；其余命令跳过。")
                 for command in commands {
-                    guard let sourceID = command["id"] as? String, let id = commandIDs[sourceID] else { skipped += 1; continue }
+                    guard let sourceID = command["id"] as? String else { skipped += 1; continue }
+                    let appPath = sourceID.components(separatedBy: "::=::").dropFirst().joined(separator: "::=::")
+                    let knownApp = appPath.hasPrefix("/") && appPath.hasSuffix(".app") && applicationPaths.contains(appPath) ? appPath : nil
+                    guard let id = commandIDs[sourceID] ?? knownApp else { skipped += 1; continue }
                     if let alias = command["alias"] as? String, !alias.isEmpty { aliases[id] = alias }
                     if let enabled = command["enabled"] as? Bool { enabledCommands[id] = enabled }
                     if let rawHotkey = command["macosHotkey"] as? [String: Any] {
-                        let kind = rawHotkey["kind"] as? [String: Any]
-                        if rawHotkey["locality"] as? String == "global",
-                           let shortcut = kind?["shortcut"] as? [String: Any],
-                           let modifiers = shortcut["modifiers"] as? [String], let key = shortcut["key"] as? Int, key >= 0, key < 128,
-                           let value = hotkey((modifiers + [String(key)]).joined(separator: "-")),
-                           !shortcuts.values.contains(value) { shortcuts[id] = value }
+                        if let value = modernHotkey(rawHotkey), !shortcuts.values.contains(value) { shortcuts[id] = value }
                         else { skipped += 1 }
                     }
                 }
@@ -116,7 +135,7 @@ public enum RaycastConfiguration {
                 guard version == 1, let records = category["quicklinks"] as? [[String: Any]] else { warnings.append("Quicklinks 类别版本或结构不支持，已跳过。"); continue }
                 warnings.append("检测到 Quicklinks \(records.count) 条。")
                 for record in records {
-                    guard let title = record["name"] as? String, let url = record["url"] as? String, !title.isEmpty else { skipped += 1; continue }
+                    guard let title = record["name"] as? String, let url = (record["link"] ?? record["url"]) as? String, !title.isEmpty else { skipped += 1; continue }
                     let identity = (record["id"] as? String) ?? (record["uuid"] as? String) ?? (title + "\u{0}" + url)
                     let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
                     var link = Quicklink(id: "quicklink:raycast:" + digest, title: title, template: url)
@@ -133,13 +152,33 @@ public enum RaycastConfiguration {
         if !aliases.isEmpty { archive.aliases = aliases }
         if !shortcuts.isEmpty { archive.shortcuts = shortcuts }
         if !enabledCommands.isEmpty { archive.commandEnabled = enabledCommands }
-        warnings.append("跳过不能可靠对应或不支持的记录 \(skipped) 项。现代 Raycast 的外观、全局启动器设置、扩展及 storedValues、片段、笔记、历史、脚本和权限均不迁移。")
+        warnings.append("跳过不能可靠对应或不支持的记录 \(skipped) 项。其他现代偏好、扩展及 storedValues、片段、笔记、历史、脚本和权限均不迁移。")
         return Preview(archive: archive, warnings: warnings)
+    }
+    private static func modernHotkey(_ raw: [String: Any]) -> Shortcut? {
+        guard (raw["locality"] as? String)?.lowercased() == "global", let kind = raw["kind"] as? [String: Any],
+              let shortcut = kind["shortcut"] as? [String: Any] else { return nil }
+        if let type = kind["type"] as? String, !["shortcut", "SingleStep"].contains(type) { return nil }
+        let key: Int?
+        if let object = shortcut["key"] as? [String: Any] {
+            guard ["code", "LayoutIndependent"].contains(object["type"] as? String ?? "") else { return nil }
+            key = object["code"] as? Int
+        }
+        else { key = shortcut["key"] as? Int }
+        guard let key, key >= 0, key < 128 else { return nil }
+        let modifiers: [String]
+        if let records = shortcut["modifiers"] as? [[String: Any]] {
+            let parsed = records.compactMap { $0["modifier"] as? String }
+            guard parsed.count == records.count else { return nil }
+            modifiers = parsed
+        } else if let strings = shortcut["modifiers"] as? [String] { modifiers = strings }
+        else { return nil }
+        return hotkey((modifiers + [String(key)]).joined(separator: "-"))
     }
     static func hotkey(_ raw: String) -> Shortcut? {
         let parts = raw.lowercased().split(separator: "-").map(String.init)
         guard let last = parts.last, let key = UInt32(last), key < 128 else { return nil }
-        let map: [String: UInt32] = ["command": 256, "cmd": 256, "shift": 512, "option": 2048, "alt": 2048, "control": 4096, "ctrl": 4096]
+        let map: [String: UInt32] = ["command": 256, "cmd": 256, "meta": 256, "shift": 512, "option": 2048, "alt": 2048, "control": 4096, "ctrl": 4096]
         var modifiers: UInt32 = 0
         for part in parts.dropLast() { guard let flag = map[part] else { return nil }; modifiers |= flag }
         let result = Shortcut(key: key, modifiers: modifiers)
@@ -189,8 +228,9 @@ public enum RaycastConfiguration {
         let headerData = try gunzip(input.subdata(in: 12..<(12 + count)), maximumBytes: 64 * 1024)
         guard let header = try JSONSerialization.jsonObject(with: headerData) as? [String: Any],
               header["schemaVersion"] as? Int == 3,
-              let saltString = header["salt"] as? String, let salt = hex(saltString), salt.count == 16,
-              let ivString = header["iv"] as? String, let iv = hex(ivString), iv.count == 16 else {
+              let encryption = header["encryption"] as? [String: Any],
+              let saltString = encryption["salt"] as? String, let salt = hex(saltString), salt.count == 16,
+              let ivString = encryption["iv"] as? String, let iv = hex(ivString), iv.count == 16 else {
             throw ConfigurationError("Raycast 加密参数不受支持。")
         }
         let key = try RaycastScrypt.derive(password: Data(password.utf8), salt: salt)
@@ -200,7 +240,7 @@ public enum RaycastConfiguration {
         catch { throw ConfigurationError("Raycast 备份认证失败：密码错误或文件已损坏。") }
         return try gunzip(compressed)
     }
-    static func gunzip(_ input: Data, maximumBytes: Int = 16 * 1024 * 1024) throws -> Data {
+    static func gunzip(_ input: Data, maximumBytes: Int = 64 * 1024 * 1024) throws -> Data {
         var stream = z_stream()
         guard inflateInit2_(&stream, 31, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { throw ConfigurationError("无法解压备份。") }
         defer { inflateEnd(&stream) }
@@ -214,7 +254,7 @@ public enum RaycastConfiguration {
                     status = inflate(&stream, Z_NO_FLUSH)
                     return 32768 - Int(stream.avail_out)
                 }
-                guard status == Z_OK || status == Z_STREAM_END, result.count + produced <= maximumBytes, produced > 0 || status == Z_STREAM_END else { throw ConfigurationError("备份损坏或解压后超过 16 MB。") }
+                guard status == Z_OK || status == Z_STREAM_END, result.count + produced <= maximumBytes, produced > 0 || status == Z_STREAM_END else { throw ConfigurationError("备份损坏或超过允许的解压大小。") }
                 result.append(contentsOf: buffer.prefix(produced))
             } while status != Z_STREAM_END
             return result

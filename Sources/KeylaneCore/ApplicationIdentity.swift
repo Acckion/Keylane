@@ -4,12 +4,14 @@ import CoreFoundation
 /// Resolve the target bundle's language independently of the launcher's own localization.
 /// Uses Apple's public localization API, including system .loctable resources.
 public struct ApplicationIdentity {
+    public let bundleIdentifier: String?
     public let displayName: String
     public let aliases: [String]
     public init(url: URL, preferredLanguages: [String] = Locale.preferredLanguages) {
         let filename = url.deletingPathExtension().lastPathComponent
         let bundle = Bundle(url: url)
         let info = bundle?.infoDictionary ?? [:]
+        bundleIdentifier = info["CFBundleIdentifier"] as? String
         let missing = "__KEYLANE_MISSING_LOCALIZED_BUNDLE_NAME__"
         let cf = CFBundleCreate(nil, url as CFURL)
         func localized(_ key: String, languages: [String]) -> String? {
