@@ -86,6 +86,12 @@ final class ApplicationUninstallReview: ObservableObject {
         cancel = nil
         confirm(selected)
     }
+    /// Hiding the launcher cancels the snapshot but preserves its page ID.
+    /// Resume must leave an invalidated review, never recreate deletion consent.
+    func resume(returnToSelection: () -> Void) {
+        guard items.isEmpty else { return }
+        returnToSelection()
+    }
     func clear() {
         let cancel = self.cancel
         self.cancel = nil

@@ -23,3 +23,7 @@ Complete installed-app entry, Back/dismiss/reopen integration, dark/light appear
 ## Reference screenshots
 
 Compared against the two owner-provided screenshots on 2026-11-16. The extracted view keeps checkbox/name/path/size/icon rows, search filtering and a top-right sort control. Names and paths now share a row; the sort picker is supplied through the existing search-bar accessory. Selection summary reports the known size and explicitly marks unmeasured directories instead of fabricating a total. Associated files remain opt-in (unlike the all-selected reference) to preserve the existing safety contract. No recursive directory scan was added. Existing application-list styling and launcher chrome are retained, not pixel-matched or rewritten. The test window is an isolated component harness, not the production launcher shell.
+
+## Review follow-up
+
+Fixed the lifecycle finding where hiding cancelled the snapshot but retained the preview page ID. Its registered resume callback now returns an empty review to application selection; it does not reconstruct the snapshot or restore deletion consent. The isolated regression exercises the same leave/resume hooks, active-snapshot preservation, repeated resume and submit-after-cancellation. Full native Launcher focus/dismiss integration remains a separate acceptance item.

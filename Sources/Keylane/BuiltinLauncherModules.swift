@@ -162,7 +162,12 @@ enum BuiltinLauncherModules {
                             }]
                         },
                         updates: applicationActions.uninstallReview.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
-                        searchAccessory: { AnyView(ApplicationUninstallSortPicker(review: applicationActions.uninstallReview)) }
+                        searchAccessory: { AnyView(ApplicationUninstallSortPicker(review: applicationActions.uninstallReview)) },
+                        resume: { [weak model] in
+                            applicationActions.uninstallReview.resume {
+                                model?.pageID = uninstallPage
+                            }
+                        }
                      ), .init(
                         id: ApplicationCommandEdit.pageID, placeholder: "", badge: ("编辑应用命令", "keyboard"),
                         contentPlacement: .form,

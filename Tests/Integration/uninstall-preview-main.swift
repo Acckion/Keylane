@@ -66,6 +66,24 @@ review.prepare(name: "New", detail: "No leftovers", items: [.init(url: beta, isA
 expect(review.selected == [beta.path] && review.query.isEmpty && review.sort == .path, "replacement resets query sorting and selection")
 review.clear()
 expect(!review.canSubmit && review.visible.isEmpty, "leaving review disables submission")
+// Exercise the same leave/resume hooks used by the registered page, without Model services.
+var resumedPage = ApplicationUninstallReview.pageID
+let uninstallSelection = PageID(rawValue: "ApplicationUninstall")
+let lifecyclePage = LauncherPage(id: ApplicationUninstallReview.pageID, placeholder: "",
+    leave: review.clear, resume: { review.resume { resumedPage = uninstallSelection } })
+prepareReview()
+lifecyclePage.resume?()
+expect(resumedPage == ApplicationUninstallReview.pageID && review.canSubmit, "active snapshot is not redirected")
+let beforeHideSubmissions = submissions.count
+let beforeHideCancellations = cancellations
+lifecyclePage.leave()
+lifecyclePage.resume?()
+review.submit()
+expect(resumedPage == uninstallSelection, "hide then resume returns to application selection")
+expect(review.items.isEmpty && review.selected.isEmpty && !review.canSubmit && submissions.count == beforeHideSubmissions,
+       "resume never restores cancelled deletion consent")
+lifecyclePage.resume?()
+expect(cancellations == beforeHideCancellations + 1, "repeated resume does not repeat cancellation")
 print("PASS uninstall preview state regression (recording callbacks; no real uninstall)")
 if !CommandLine.arguments.contains("--interactive") { exit(0) }
 prepareReview()
