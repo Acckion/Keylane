@@ -1,44 +1,61 @@
-# Keylane
+<p align="center"><img src="website/assets/icon.png" width="88" alt="Keylane 图标"></p>
+<h1 align="center">Keylane</h1>
+<p align="center">想到，即刻开始。面向 macOS 的原生键盘启动器。</p>
+<p align="center"><b>简体中文</b> · <a href="README.en.md">English</a></p>
+<p align="center"><a href="https://acckion.github.io/Keylane/">产品官网（Pages 配置后上线）</a> · <a href="https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1">下载 Beta 1</a> · <a href="docs/TODO.md">开发计划</a></p>
 
-面向 macOS 的原生键盘启动器，使用 Swift、SwiftUI 和 AppKit 构建。通过一个搜索窗口打开应用、查找文件、查看剪贴板历史，并调用常用系统工具。
+![真实 Beta 1 计算器界面，演示输入 128 * 24，结果为 3072](website/assets/calculator.png)
 
-## 功能与进度
+通过 **Option + Space** 打开搜索窗口，输入应用、文件或命令名称。方向键选择，Return 打开，Escape 返回或隐藏。使用 Swift、SwiftUI 和 AppKit 构建。
 
-| 模块 | 当前能力 | 边界 |
+## 先了解 Beta 1
+
+公开下载为 **1.0.2 Beta 1 · build 27 · `891ab2c`**，要求 **macOS 26+、Apple Silicon**。Intel 和通用二进制尚未验证。此包使用 **ad-hoc 临时签名，未经 Apple 公证，需手动安装**。
+
+1. 从 [Beta 1 发布页](https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1) 下载 DMG 与 SHA-256 文件，并核对校验和。
+2. 打开 DMG，将 Keylane 拖到“应用程序”，再从“应用程序”打开。
+3. macOS 可能阻止首次打开，请阅读 [Apple 安全说明](https://support.apple.com/en-us/102445)。应用内自动安装要求已公证的 Developer ID 产物，本包需要手动安装。
+
+默认安全设置下首次打开、从 Alpha 升级、隔离启动/退出/重复启动和合成配置升级仍待验收。Navigation 本轮真实焦点复验未通过；安装版键盘与权限流程、多屏、全屏、Spaces 和真实目标应用仍有验证缺口。CI 或隔离测试通过不等于这些流程已验收。
+
+> **许可分清版本：** 当前 dev 源码为 GPL-3.0-or-later，允许依条款商业使用。Beta 1（`891ab2c`）及同步前的 main 快照（`877ca22`）仍为其版本附带的 PolyForm Noncommercial 许可。GPL 迁移不追溯旧标签或安装包。
+
+## 日常能力
+
+| 入口 | 已发布 Beta 的能力 | 使用边界 |
 | --- | --- | --- |
-| 应用启动 | 应用发现、本地化名称、拼音及模糊搜索、收藏 | 部分多屏和输入法交互仍待验证 |
-| 文件搜索 | Spotlight 与本地补充索引、多目录、忽略规则、内容搜索 | 依赖目录授权和索引状态 |
-| 文件操作 | 打开、打开方式、Finder 定位、Quick Look、路径复制、系统分享入口 | 完整安装版流程及分享服务结果仍待验收 |
-| 剪贴板 | 文字、图片、文件历史，可选持久化、搜索、置顶与清理 | 自动粘贴和真实目标应用仍需实机验证 |
-| 文件 AI | 自行配置 OpenAI 兼容接口，选择是否附带路径或内容 | 真实服务商、费用和权限流程尚未完整验收 |
-| 系统工具 | 基础四则运算、截图至剪贴板、取色、系统朗读 | 各项系统权限和交互需按场景验证 |
-| 设置 | 独立设置窗口、外观、快捷键、搜索范围 | Hyperkey、登录启动等仍有待验收项 |
+| 应用 | 名称、拼音与模糊搜索、收藏 | 部分输入法、多屏交互待验收 |
+| 文件 | Spotlight、本地补充索引、目录与内容搜索 | 需目录授权，依赖索引状态 |
+| 剪贴板 | 文字、图片、文件历史，搜索、置顶、保留策略 | 按需启用，自动粘贴需权限与目标应用验证 |
+| 工具 | 计算器、Emoji 与符号、快捷链接、脚本命令、文字片段 | 系统交互按场景验证 |
+| 系统集成 | 快捷指令、日历、联系人、截图搜索与 OCR | 依赖用户授权与实际数据源，仍有验收缺口 |
 
-支持搜索和快速新建 Apple 备忘录，并在原生独立窗口编辑。文字片段、完整扩展系统、同步、窗口管理及完整 AI 代理尚未完成。详细计划见 [后续待办](docs/TODO.md) 和 [功能清单](docs/FEATURES.csv)。
+![真实 Beta 1 Emoji 与符号页面，使用内置字符库搜索“星”](website/assets/emoji.png)
 
-## 构建与运行
+截图来自真实 Beta 1 应用副本，使用固定演示输入，应用界面为中文。来源与隔离边界见 [网站验证记录](docs/WEBSITE.md)。
 
-你可以直接从 [Release](https://github.com/Acckion/Keylane/releases) 中下载发布版本，也可以从源码构建。
+**开发中，未随 Beta 提供：** Raycast 扩展兼容、配置迁移和 iPhone 应用启动。开发分支或草稿 PR 不代表已发布。详细状态见 [待办](docs/TODO.md)、[功能清单](docs/FEATURES.csv)。
 
-要求 **macOS 26 或更新版本、Swift 6 工具链、Python 3**。可使用 Xcode 提供的工具链；项目没有第三方 Swift 包依赖，SQLite 使用系统库。
+## 从源码构建
+
+需要 macOS 26+、Swift 6 工具链（通常由 Xcode 提供）、Python 3。SQLite 使用系统库。
 
 ```sh
 git clone https://github.com/Acckion/Keylane.git
 cd Keylane
+git switch dev
 swift test
 swift build -c release
 bash scripts/package.sh
 ```
 
-打开 `dist/Keylane-<版本号>-macos-<架构>.dmg`，把 `Keylane.app` 拖到窗口内的“应用程序”（Applications），再从“应用程序”打开。默认使用 **Option + Space** 唤起，也可从菜单栏打开；按 **Escape** 隐藏。
-
-打包脚本默认使用本机 Apple Development 证书并固定签名身份。无证书时，仅用于本地试用可显式选择临时签名：
+打包默认使用本机配置的签名身份。无证书时，仅本地试用可选择：
 
 ```sh
 KEYLANE_ALLOW_ADHOC=1 bash scripts/package.sh
 ```
 
-临时签名更新后可能需要重新授权。已发布的早期 Alpha 使用临时签名，尚未公证。当前主要在 Apple Silicon 上开发，Intel 及通用二进制发行尚未验证。签名配置见 [签名与升级授权](docs/SIGNING.md)。
+临时签名升级可能需要重新授权，不代表 Developer ID 签名或公证。见 [签名与升级授权](docs/SIGNING.md)。
 
 ## 数据与权限
 
@@ -55,6 +72,7 @@ Sources/KeylaneCore/      检索、数据存储及核心逻辑
 Tests/KeylaneCoreTests/   核心自动化测试
 Tests/Integration/       隔离集成验证入口
 scripts/                 打包、签名及验证脚本
+website/                 中英静态 GitHub Pages 官网
 docs/                    设计、开发记录、验证证据及待办
 ```
 
@@ -76,10 +94,12 @@ Keylane 采用 **GNU General Public License v3.0 or later（GPL-3.0-or-later）*
 
 贡献应为你有权提交的内容，不得包含第三方私有代码、品牌素材或个人数据。你提交的项目原创贡献应可按 GPL-3.0-or-later 分发；第三方内容必须注明来源并保留其原有许可。提交补丁不代表转让版权。
 
-## 开发与发布
+## 贡献与开发流程
 
-协作规范见 [AGENTS.md](AGENTS.md)。新任务从 `dev` 创建功能分支，通过 PR 合入 `dev`；完成必要验证后通过同仓库 `dev → main` PR 同步稳定快照。普通同步不要求 release 标题或版本递增，也不会创建 tag 或 Release。
+请先阅读 [贡献指南](CONTRIBUTING.md)、[行为准则](CODE_OF_CONDUCT.md)、[安全政策](SECURITY.md) 与 [协作规范](AGENTS.md)。新任务从 dev 创建功能分支，通过 PR 合入 dev；完成必要验证后通过同仓库 dev → main PR 同步稳定快照。普通同步不要求 release 标题或版本递增，也不会创建 tag 或 Release。
 
-[CI](.github/workflows/ci.yml) 保留 `Checks`，对 PR 和 dev/main push 检查版本、脚本并编译测试。改动打包相关文件时额外构建并验证临时签名 DMG；也可手动运行 CI 并勾选 `validate_installer`。测试包未经 Apple 公证。
+[CI](.github/workflows/ci.yml) 保留 Checks，对 PR 和 dev/main push 检查版本、脚本并编译测试。改动打包相关文件时额外构建并验证临时签名 DMG；也可手动运行 CI 并勾选 `validate_installer`。测试包未经 Apple 公证。普通 CI 不使用发行 secrets，不发布软件。
 
-正式发布使用独立 [Release](.github/workflows/release.yml) 手动入口：选择 `main` 并输入该提交的完整 `target_sha`。候选版本来自 [version.json](version.json)，版本须超过之前正式版，构建号须超过所有已公开版本，并提供 `docs/releases/vX.Y.Z.md` 发布说明。工作流固定该提交，重新测试、构建、Developer ID 签名、公证并验证 DMG 后，才创建对应 tag 和 GitHub Release，附带 DMG 与 SHA-256。发行 secrets 缺失会失败；普通 CI 不访问这些 secrets。详见 [工作流操作与验收](docs/CI-RELEASE.md)。
+正式发布使用独立 [Release](.github/workflows/release.yml) 手动入口：选择 main 并输入该提交的完整 `target_sha`。候选版本来自 [version.json](version.json)，版本须超过之前正式版，构建号须超过所有已公开版本，并提供 `docs/releases/vX.Y.Z.md` 发布说明。工作流固定该提交，重新测试、构建、Developer ID 签名、公证并验证 DMG 后，才创建对应 tag 和 GitHub Release，附带 DMG 与 SHA-256。发行 secrets 缺失会失败。详见 [工作流操作与验收](docs/CI-RELEASE.md)。
+
+官网为静态 GitHub Pages，部署流程独立于应用 CI/发布，只在 main 部署网页，不创建软件标签、Release 或应用发行资产。配置与验证边界见 [官网维护说明](docs/WEBSITE.md)。
