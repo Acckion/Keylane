@@ -34,23 +34,34 @@ public enum ConfigurationTransaction {
     }
     public static func finish(defaults: UserDefaults, domain: String, directory: URL,
                               persist: (([String: Any]) -> Bool)? = nil) throws -> Bool {
+        let write: ([String: Any]) -> Bool = { value in
+            defaults.setPersistentDomain(value, forName: domain)
+            return defaults.synchronize()
+        }
+        return try finish(directory: directory,
+                          read: { defaults.persistentDomain(forName: domain) ?? [:] },
+                          persist: persist ?? write, restore: write)
+    }
+    /// The same transaction engine with an explicit preferences backend. This
+    /// allows contained process tests without contacting the user's cfprefsd.
+    public static func finish(directory: URL, read: () -> [String: Any],
+                              persist: ([String: Any]) -> Bool,
+                              restore: ([String: Any]) -> Bool) throws -> Bool {
         let pending = directory.appendingPathComponent("pending.plist")
         guard FileManager.default.fileExists(atPath: pending.path) else { return false }
         let intent = try readIntent(pending)
-        let current = defaults.persistentDomain(forName: domain) ?? [:]
+        let current = read()
         if !matches(current, intent.after, intent.keys) {
             guard matches(current, intent.before, intent.keys) else { throw ConfigurationError("待导入的配置已变化，已停止恢复，原配置未覆盖。") }
             var updated = current
             for key in intent.keys { updated[key] = intent.after[key] }
-            let write = persist ?? { value in defaults.setPersistentDomain(value, forName: domain); return defaults.synchronize() }
-            guard write(updated), matches(defaults.persistentDomain(forName: domain) ?? [:], intent.after, intent.keys) else {
-                defaults.setPersistentDomain(current, forName: domain)
-                guard defaults.synchronize() else { throw ConfigurationError("配置写入及恢复失败。保留了本地备份，请勿删除 ConfigurationRecovery 目录。") }
+            guard persist(updated), matches(read(), intent.after, intent.keys) else {
+                guard restore(current) else { throw ConfigurationError("配置写入及恢复失败。保留了本地备份，请勿删除 ConfigurationRecovery 目录。") }
                 throw ConfigurationError("配置写入失败，已恢复导入前配置。下次启动会重试；可取消待处理导入。")
             }
         }
         if !intent.isUndo {
-            try privateWrite(try read(pending), to: directory.appendingPathComponent("last-import.plist"))
+            try privateWrite(try Self.read(pending), to: directory.appendingPathComponent("last-import.plist"))
         }
         try FileManager.default.removeItem(at: pending)
         return true
