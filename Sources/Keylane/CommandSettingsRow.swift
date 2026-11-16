@@ -59,7 +59,7 @@ private struct CommandSettingsRow<Icon: View>: View {
                         }
                         .padding(.horizontal, 6)
                         .padding(.vertical, 4)
-                        .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+                        .background(.primary.opacity(disclosure.isExpanded.wrappedValue ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
                     .accessibilityValue(disclosure.isExpanded.wrappedValue ? "已展开" : "已折叠")

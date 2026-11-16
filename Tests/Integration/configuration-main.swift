@@ -85,6 +85,16 @@ case "seed":
     let exportedAgain = try ConfigurationArchive.decode(Data(contentsOf: root.appendingPathComponent("export.json")))
     precondition(exportedAgain.preferences["appearance"] == .string("light"))
     print("CONFIGURATION_SYNTHETIC_EXPORT_OK")
+case "no-pending":
+    precondition(ConfigurationStartupProbe.modelsCreated == 0)
+    ConfigurationTransfer.finishPending(defaults: defaults, domain: suite, directory: recovery)
+    precondition(NSApp.modalWindow == nil)
+    precondition(defaults.string(forKey: "appearance") == "light")
+    ConfigurationStartupProbe.restoreHandled = true
+    let delegate = Delegate()
+    app.delegate = delegate
+    precondition(ConfigurationStartupProbe.modelsCreated == 1)
+    print("CONFIGURATION_NATIVE_STARTUP_WITHOUT_PENDING_OK")
 case "stage":
     let archive = try ConfigurationArchive.decode(Data(contentsOf: fixture))
     let plan = try archive.plan(current: current(), overwrite: true)
@@ -156,16 +166,19 @@ case "undo":
     precondition(restored == baseline.shortcuts)
     precondition(defaults.dictionary(forKey: "aliases") as? [String: String] == ["keep": "synthetic-existing"])
     print("CONFIGURATION_NEW_PROCESS_UNDO_OK")
-case "preview-ui":
+case "preview-ui-light", "preview-ui-dark":
     let text = (0..<100).map { "Synthetic preview row \($0): supported category and conflict count" }.joined(separator: "\n")
     let alert = NSAlert()
     alert.messageText = "Synthetic Configuration Preview"
+    let appearance: NSAppearance.Name = phase == "preview-ui-dark" ? .darkAqua : .aqua
+    alert.window.appearance = NSAppearance(named: appearance)
     alert.accessoryView = ConfigurationTransfer.previewText(text)
     alert.addButton(withTitle: "Close")
     withAutoClosedDialog(check: { _ in
         guard let scroll = alert.accessoryView as? NSScrollView,
               let view = scroll.documentView as? NSTextView,
               let manager = view.layoutManager, let container = view.textContainer else { fatalError("Preview structure missing") }
+        precondition(alert.window.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == appearance)
         precondition(!view.isEditable && view.isSelectable && scroll.hasVerticalScroller)
         manager.ensureLayout(for: container)
         let needed = manager.usedRect(for: container).height + view.textContainerInset.height * 2
@@ -173,7 +186,7 @@ case "preview-ui":
         precondition(view.frame.height >= needed - 1)
         precondition(view.string == text)
     }, operation: { _ = alert.runModal() })
-    print("CONFIGURATION_NATIVE_SCROLL_PREVIEW_OK")
+    print("CONFIGURATION_NATIVE_SCROLL_PREVIEW_OK appearance=\(appearance.rawValue)")
 case "startup-failure":
     precondition(ConfigurationStartupProbe.modelsCreated == 0)
     try ConfigurationTransaction.stage(changes: ["appearance": "dark"], current: current(), directory: recovery)
