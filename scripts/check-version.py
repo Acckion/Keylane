@@ -65,6 +65,8 @@ def main():
                     raise ValueError(tag + ' already belongs to a different release')
                 continue  # immutable completed/draft retry of the exact commit
             previous = previous_version(existing)
+            if tuple(map(int, current['version'].split('.'))) < tuple(map(int, previous['version'].split('.'))):
+                raise ValueError('release version must not precede a public prerelease')
             if current['build'] <= previous['build']:
                 raise ValueError('release build must exceed every previous public build')
             if '-' not in existing:

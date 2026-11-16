@@ -74,6 +74,8 @@ class ReleasePolicyTests(unittest.TestCase):
         for options in [dict(current={'version': '1.0.0', 'build': 23}), dict(current={'version': '1.1.0', 'build': 22})]:
             with self.subTest(options=options), self.assertRaises(ValueError):
                 self.run_policy(tags={'v1.0.0': 'b' * 40}, **options)
+        with self.assertRaises(ValueError):
+            self.run_policy(tags={'v1.2.0-beta.1': 'b' * 40}, previous={'version': '1.2.0', 'build': 22})
         for tag in ['v1.1.0-beta.1', 'v1.1.0-alpha']:
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 self.run_policy(tags={tag: 'b' * 40}, previous={'version': '1.1.0', 'build': 23})
