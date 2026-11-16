@@ -94,4 +94,10 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md
 
 Contribute only material you have rights to submit, without private third-party code, brand assets, or personal data. Original contributions must be distributable under GPL-3.0-or-later; preserve third-party licenses and attribution. Submitting a patch does not transfer copyright.
 
-Feature branches target dev. A verified dev → main release is coordinated separately. The static Pages workflow is independent of application CI and release, and creates no software tags, Releases or application assets. See [website maintenance and verification](docs/WEBSITE.md).
+Feature branches target dev. After validation, synchronize a stable snapshot through a same-repository dev → main PR. Ordinary synchronization needs neither a release title nor a version/build bump and creates no tag or Release.
+
+[CI](.github/workflows/ci.yml) retains Checks and validates version policy, scripts and Swift tests on PRs and dev/main pushes. Packaging-related changes also build and verify an ad-hoc signed, non-notarized test DMG. A manual CI run can request this with `validate_installer`. Ordinary CI uses no distribution secrets and does not publish software.
+
+Software publication uses the separate [Release](.github/workflows/release.yml) manual entry: select main and provide that commit’s full `target_sha`. The candidate in [version.json](version.json) must exceed previous stable versions and all public build numbers, with release notes in `docs/releases/vX.Y.Z.md`. The workflow fixes that commit, reruns checks, builds, signs with Developer ID, notarizes and verifies the DMG before creating the tag and GitHub Release with the DMG and SHA-256. Missing distribution secrets fail closed. See [CI and release operations](docs/CI-RELEASE.md).
+
+The static Pages workflow is independent of application CI/release, deploys website content only from main, and creates no software tags, Releases or application release assets. See [website maintenance and verification](docs/WEBSITE.md).

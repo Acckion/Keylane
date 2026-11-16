@@ -4,11 +4,11 @@
 
 Buildless HTML/CSS in `website/`, Chinese at `/Keylane/`, English at `/Keylane/en/`. Assets and language links are relative so project Pages subpaths work. No third-party scripts, analytics, fonts, runtime dependencies, or copied competitor assets. Visual references: [SuperCmd](https://supercmd.sh/) and [Raycast](https://www.raycast.com/), consulted for product-led presentation, not copied UI or claims.
 
-The independent `.github/workflows/pages.yml` validates PRs targeting dev/main, and deploys **only main**, after validation. Manual runs from other branches only validate. It uploads the static website artifact, never an app installer, tag, or GitHub Release. Existing `ci.yml` and `check-version.py` are unchanged. The parallel CI/release split needs no interface beyond preserving this main-only Pages workflow; a docs-only main sync must follow the coordinator's approved no-software-release process before merging, rather than triggering the current application release workflow inadvertently.
+The independent `.github/workflows/pages.yml` validates PRs targeting dev/main, and deploys **only main**, after validation. Manual runs from other branches only validate. It uploads the static website artifact, never an app installer, tag, or GitHub Release. This branch preserves the `ci.yml`, `release.yml`, `check-installer-scope.py` and `check-version.py` supplied by dev #137 without modification. Ordinary application CI on PR/push has read-only repository permission and no distribution secrets. Software publication is a separate manual Release run on main with an exact `target_sha`; Pages never invokes it. The installer scope checker conservatively includes `.github/workflows/` and `scripts/`, so this PR can build a temporary CI test DMG, which is not a public software release. Ordinary main synchronization does not require a version/build bump.
 
 ### Pages setup still required
 
-1. Merge the draft into dev after review; coordinate the separately authorized safe dev → main sync. This PR does not merge main or change the application release workflow.
+1. Merge this PR into dev after review; coordinate the separately authorized dev → main snapshot sync. This PR does not merge main or invoke the manual software Release workflow.
 2. In GitHub repository Settings → Pages, choose **GitHub Actions** as Source. Confirm Actions policy permits the pinned official Pages actions and `pages: write` / OIDC. Configure the `github-pages` environment deployment rule for main only.
 3. Run Website on main or let a matching main push trigger it. Verify the deployed Chinese and English URLs before removing the README's “after Pages setup” wording.
 4. Expected URLs: `https://acckion.github.io/Keylane/` and `/Keylane/en/`. They are intended destinations, not a claim of deployment. The Pages API returned HTTP 404 during this task; this may mean no configured Pages site or insufficient access. No settings were changed.
@@ -17,7 +17,7 @@ The independent `.github/workflows/pages.yml` validates PRs targeting dev/main, 
 
 Release facts were checked against the GitHub [Beta 1 release](https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1): tag `v1.0.2-beta.1`, build 27, commit `891ab2cca019a60750b7b90321014ef0a06c84df`, macOS 26+, Apple Silicon, ad-hoc signature, no notarization, manual installation. All download links target that release, never `releases/latest`.
 
-Current dev baseline `f7f5903` includes GPL migration #134 and community standards #135. Current main `877ca22` and Beta 1 retain their PolyForm Noncommercial license. Recheck these branch snapshots whenever updating the site; GPL does not retroactively change old installers. Raycast compatibility, migration, and iPhone app launching are explicitly outside the released Beta. Website and both READMEs repeat the first-launch/upgrade and Navigation focus validation gaps from the release.
+Current synchronized dev baseline `69d203ff6eb179c02bece1bf7d33159d69f9bf39` includes GPL migration #134, community standards #135, system actions #136 and the validation/manual release split #137. Current main `877ca22` and Beta 1 retain their PolyForm Noncommercial license. Recheck these branch snapshots whenever updating the site; GPL does not retroactively change old installers. Raycast compatibility, migration, and iPhone app launching are explicitly outside the released Beta. Website and both READMEs repeat the first-launch/upgrade and Navigation focus validation gaps from the release.
 
 ## Asset provenance and privacy
 
@@ -40,7 +40,7 @@ Current dev baseline `f7f5903` includes GPL migration #134 and community standar
 - Swift tests: compiled with temporary module caches; 161 tests ran, two `ExtensionClipboardContentTests` cases produced 8 assertion failures when named pasteboard access returned nil/false in the restricted environment. Other tests passed. Automatic approval review rejected an unsandboxed full-suite rerun, citing risk of system clipboard access. It was not executed or bypassed. The two observed cases use UUID-named NSPasteboard instances, but the complete suite was not audited for external system effects, so a full unsandboxed pass is **not claimed**.
 - Local packaging was attempted with `KEYLANE_ALLOW_ADHOC=1`; the release build failed at `dsymutil` with Operation not permitted. Package verification could not run without a produced DMG. No installer was published. Application code and packaging scripts are unchanged.
 
-## Follow-up investigation: local restrictions versus PR changes
+## Historical follow-up: local restrictions versus PR changes
 
 The completed [application CI run 43789875017](https://github.com/Acckion/Keylane/actions/runs/43789875017), associated with PR head `d272bcb10ef23e0ad9e4290c44f0b4391096dfc4`, checked out GitHub's synthetic merge `7b12bd4b7ed10429ac2e3682aa89e86ff00d70b3` (that head merged into dev `f7f5903`). Its log confirms:
 
@@ -62,7 +62,7 @@ The Pages API was rechecked and still returned HTTP 404; no settings or deployme
 
 ## Not verified
 
-No live Pages deployment, production smoke test, VoiceOver session, automated axe audit, real phone hardware, or complete first-launch/upgrade acceptance was performed. Existing Beta app acceptance gaps remain. GitHub Actions results on the draft are reported separately; local checks do not stand in for CI.
+No live Pages deployment, production smoke test, VoiceOver session, automated axe audit, real phone hardware, or complete first-launch/upgrade acceptance was performed. Existing Beta app acceptance gaps remain. GitHub Actions results on this PR are reported separately; historical green runs above apply to their recorded SHAs and do not stand in for current-head CI.
 
 ## Local preview
 
@@ -74,3 +74,17 @@ python3 -m http.server 8765 --bind 127.0.0.1 --directory /path/to/preview-parent
 ```
 
 Keep both language pages and READMEs aligned when changing release or license information. Re-run the checker and browser checks after modifying the layout or relative URLs.
+
+## Synchronization with dev #137
+
+Synchronized dev `69d203ff6eb179c02bece1bf7d33159d69f9bf39` into the existing website branch with a normal merge, preserving published history. The worktree was clean before the merge; no parallel website branch owner or duplicate worktree was found in the active task/worktree inventory. The only conflict was README's development/release section. The resolution keeps the product presentation and adopts #137's validation/manual-release contract in both languages. No application source, CI/release safeguards, version metadata or screenshots were edited by the resolution.
+
+Rechecks after resolving the conflict:
+
+- Website checker, version `--sync-policy`, `git diff --check`, and **18 ReleaseTests** passed. These include automatic-event rejection, read-only CI/no-secrets rules, manual release entry and release artifact guards.
+- Inherited `ci.yml`, `release.yml`, `check-installer-scope.py` and `check-version.py` are byte-identical to synchronized dev. Pages has no contents-write permission, distribution secrets, release invocation or tag commands. It deploys website content only on main; ordinary PR/push cannot invoke the software Release workflow. No workflow was manually dispatched for this task.
+- Both READMEs' local links exist and consistently describe `target_sha`, `validate_installer`, no-release ordinary synchronization, Beta 1, system requirements, current GPL source and historical PolyForm versions. Existing screenshots are byte-identical to the previously reviewed captures; they show only the fixed calculation and built-in Emoji query, with no private contents.
+- Browser recheck at `/Keylane/` and `/Keylane/en/`: 390px Chinese, 320px English and 1280px desktop renders reviewed, images loaded and no horizontal overflow. Tab/Return skip navigation, visible focus, Enter details toggle and language round trip passed. New preview captures are retained outside the repository in `../work/website-evidence/synced-mobile-{zh,en}.png`.
+- GitHub main was rechecked as `877ca22df5cea229b41256fdc70e79cd1780a766`; Beta 1 still identifies build 27 at `891ab2c`, ad-hoc signing, no notarization, manual installation and the recorded focus/first-launch gaps. Pages API still returns 404. The intended Pages URL remains explicitly pending setup, not claimed live.
+
+Current-head GitHub checks are reported on PR #138. Historical local pasteboard/build-service restrictions and the unperformed real-device/production checks above remain disclosed; no rejected operation was retried as part of this synchronization.

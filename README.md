@@ -72,6 +72,7 @@ Sources/KeylaneCore/      检索、数据存储及核心逻辑
 Tests/KeylaneCoreTests/   核心自动化测试
 Tests/Integration/       隔离集成验证入口
 scripts/                 打包、签名及验证脚本
+website/                 中英静态 GitHub Pages 官网
 docs/                    设计、开发记录、验证证据及待办
 ```
 
@@ -95,6 +96,10 @@ Keylane 采用 **GNU General Public License v3.0 or later（GPL-3.0-or-later）*
 
 ## 贡献与开发流程
 
-请先阅读 [贡献指南](CONTRIBUTING.md)、[行为准则](CODE_OF_CONDUCT.md)、[安全政策](SECURITY.md) 与 [协作规范](AGENTS.md)。功能分支通过 PR 合入 dev；正式发布由统筹完成经过验证的 dev → main 发布流程。
+请先阅读 [贡献指南](CONTRIBUTING.md)、[行为准则](CODE_OF_CONDUCT.md)、[安全政策](SECURITY.md) 与 [协作规范](AGENTS.md)。新任务从 dev 创建功能分支，通过 PR 合入 dev；完成必要验证后通过同仓库 dev → main PR 同步稳定快照。普通同步不要求 release 标题或版本递增，也不会创建 tag 或 Release。
 
-官网为静态 GitHub Pages，部署流程独立于应用 CI/发布，不创建软件标签、Release 或应用资产。配置与验证边界见 [官网维护说明](docs/WEBSITE.md)。
+[CI](.github/workflows/ci.yml) 保留 Checks，对 PR 和 dev/main push 检查版本、脚本并编译测试。改动打包相关文件时额外构建并验证临时签名 DMG；也可手动运行 CI 并勾选 `validate_installer`。测试包未经 Apple 公证。普通 CI 不使用发行 secrets，不发布软件。
+
+正式发布使用独立 [Release](.github/workflows/release.yml) 手动入口：选择 main 并输入该提交的完整 `target_sha`。候选版本来自 [version.json](version.json)，版本须超过之前正式版，构建号须超过所有已公开版本，并提供 `docs/releases/vX.Y.Z.md` 发布说明。工作流固定该提交，重新测试、构建、Developer ID 签名、公证并验证 DMG 后，才创建对应 tag 和 GitHub Release，附带 DMG 与 SHA-256。发行 secrets 缺失会失败。详见 [工作流操作与验收](docs/CI-RELEASE.md)。
+
+官网为静态 GitHub Pages，部署流程独立于应用 CI/发布，只在 main 部署网页，不创建软件标签、Release 或应用发行资产。配置与验证边界见 [官网维护说明](docs/WEBSITE.md)。

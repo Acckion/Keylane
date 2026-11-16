@@ -95,7 +95,10 @@ struct PermissionsPreferences: View {
                 SettingsGroup("按功能授权") {
                     SettingsPermissionToggle(contribution: model.crossAppPaste.titlebar("跨应用粘贴"), detail: "允许 Keylane 把已复制的内容粘贴到上一个应用。")
                     SettingsPermissionToggle(contribution: model.lockScreenPermission.titlebar("锁定屏幕"), detail: "允许 Keylane 发送锁屏快捷键。")
-                    SettingsPermissionToggle(contribution: model.finderAutomation.titlebar("Finder 自动化"), detail: "显示应用的 Finder 信息，或读取 Finder 选中的文件。")
+                    SettingsPermissionToggle(contribution: model.systemKeyboardPermission.titlebar("系统快捷键"), detail: "控制媒体播放、显示桌面和切换 Finder 隐藏文件。")
+                    SettingsPermissionToggle(contribution: model.systemControlsPermission.titlebar("控制中心与通知"), detail: "切换蓝牙和台前调度，清除通知。")
+                    SettingsPermissionToggle(contribution: model.systemEventsPermission.titlebar("系统事件自动化"), detail: "切换系统外观，或请求注销、重启与关机。")
+                    SettingsPermissionToggle(contribution: model.finderAutomation.titlebar("Finder 自动化"), detail: "读取 Finder 信息或所选文件，或在确认后清空废纸篓。")
                     SettingsPermissionToggle(contribution: model.clipboardSpeech.titlebar("朗读剪贴板"), detail: "允许从系统命令中朗读剪贴板文本。")
                 }
                 SettingsGroup("文件与文件夹") {
