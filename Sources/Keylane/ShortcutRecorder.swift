@@ -3,64 +3,67 @@ import AppKit
 import KeylaneCore
 
 struct ShortcutRecorder: View {
+    enum Presentation {
+        case popover, inline
+    }
+
     let shortcut: Shortcut?
-    var compact = false
     var title = "快捷键"
-    var icon: AnyView = AnyView(Image(systemName: "keyboard"))
+    var icon: () -> AnyView = { AnyView(Image(systemName: "keyboard")) }
+    var presentation: Presentation = .popover
     let changed: (Shortcut?) -> Void
     @State private var recording = false
     @State private var hovering = false
-    @State private var clearHovered = false
     @State private var monitor: Any?
+    @State private var resignObserver: NSObjectProtocol?
     @State private var draft: Shortcut?
     @State private var liveModifiers: [String] = []
     @State private var keyHeld = false
     var body: some View {
-        HStack(spacing: 4) {
-            if compact {
-                Button { start() } label: {
-                    recorderLabel.font(.system(size: 12))
-                        .frame(minHeight: 28)
-                        .contentShape(Rectangle())
+        Group {
+            switch presentation {
+            case .popover:
+                recorderButton.popover(isPresented: $recording, arrowEdge: .bottom) {
+                    recordingPanel
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(recording || shortcut != nil ? .primary : .tertiary)
-                .help("录制快捷键，Escape 取消")
-            } else {
-                Button { start() } label: { recorderLabel }.buttonStyle(.glass)
-            }
-
-            if shortcut != nil && !recording {
-                Button { clearHovered = false; changed(nil) } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .medium))
-                        .frame(width: 18, height: 24)
-                        .contentShape(Rectangle())
+            case .inline:
+                VStack(alignment: .leading, spacing: 8) {
+                    recorderButton
+                    if recording {
+                        recordingPanel.background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                    }
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(clearHovered ? Color.primary : Color.secondary)
-                .onHover { clearHovered = $0 }
-                .opacity(hovering ? 1 : 0)
-                .allowsHitTesting(hovering)
-                .accessibilityLabel("清除快捷键")
-                .help("清除快捷键")
+                .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in finish() }
             }
-        }
-        .padding(.horizontal, 7)
-        .padding(.vertical, compact ? 0 : 3)
-        .background(.primary.opacity(hovering || recording ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 8))
-        .contentShape(RoundedRectangle(cornerRadius: 8))
-        .onHover { hovering = $0; if !$0 { clearHovered = false } }
-        .popover(isPresented: $recording, arrowEdge: .bottom) {
-            recordingPanel
         }
         .onChange(of: recording) { _, active in if !active { finish() } }
         .onDisappear { finish() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in finish() }
+    }
+
+    private var recorderButton: some View {
+        HStack(spacing: 4) {
+            Button { start() } label: {
+                recorderLabel.font(.system(size: 12))
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .accessibilityLabel(title)
+            .help("录制快捷键，Escape 取消")
+
+            if shortcut != nil && !recording {
+                SettingsIconButton("清除快捷键", symbol: "xmark", compact: true) { changed(nil) }
+            }
+        }
+        .padding(.horizontal, 7)
+        .background(.primary.opacity(hovering || recording ? 0.13 : 0.08), in: RoundedRectangle(cornerRadius: 8))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onHover { hovering = $0 }
     }
     @ViewBuilder private var recorderLabel: some View {
         if let shortcut { Keycaps(keys: shortcut.keycaps) }
-        else { Text(compact ? "添加快捷键" : "录制快捷键") }
+        else { Text("添加快捷键") }
     }
 
     private var recordingPanel: some View {
@@ -70,11 +73,11 @@ struct ShortcutRecorder: View {
                     .font(.system(size: 14, weight: .medium)).foregroundStyle(.secondary)
                 if !liveModifiers.isEmpty && draft == nil {
                     Keycaps(keys: liveModifiers).padding(10)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 8))
+                        .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                 }
                 if let draft {
                     Keycaps(keys: liveModifiers.isEmpty ? draft.keycaps : liveModifiers).padding(10)
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 8))
+                        .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                         .help("直接按键可重新录制；下方可调整修饰键")
                     HStack(spacing: 8) {
                         ForEach([UInt32(4096), 2048, 512, 256], id: \.self) { mask in
@@ -83,7 +86,7 @@ struct ShortcutRecorder: View {
                             } label: {
                                 Text(mask == 4096 ? "⌃" : mask == 2048 ? "⌥" : mask == 512 ? "⇧" : "⌘")
                                     .foregroundStyle(draft.modifiers & mask != 0 ? Color.primary : Color.secondary)
-                            }.buttonStyle(.glass)
+                            }.buttonStyle(ContentActionButtonStyle())
                         }
                     }
                 } else if liveModifiers.isEmpty {
@@ -93,12 +96,12 @@ struct ShortcutRecorder: View {
             }.frame(maxWidth: .infinity).padding(28)
             Divider()
             HStack {
-                icon.frame(width: 20, height: 20).accessibilityHidden(true)
+                icon().frame(width: 20, height: 20).accessibilityHidden(true)
                 Text(title).font(.system(size: 13, weight: .medium)).lineLimit(1)
                 Spacer()
                 Button("取消") { finish() }.buttonStyle(.plain)
                 Keycap(text: "Esc")
-                Button("完成") { changed(draft); finish() }.buttonStyle(.plain)
+                Button("完成", action: commitDraft).buttonStyle(.plain)
                 Keycap(text: "↩")
             }.padding(16)
         }
@@ -110,6 +113,8 @@ struct ShortcutRecorder: View {
         draft = shortcut
         liveModifiers = []; keyHeld = false
         (NSApp.delegate as? Delegate)?.shortcuts.suspend(); recording = true
+        resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.willResignActiveNotification,
+                                                                 object: NSApp, queue: .main) { _ in finish() }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { event in
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
             if event.type == .flagsChanged {
@@ -124,16 +129,28 @@ struct ShortcutRecorder: View {
             liveModifiers = []
             if modifiers.isEmpty {
                 if event.keyCode == 53 { finish(); return nil }
-                if event.keyCode == 36 { changed(draft); finish(); return nil }
+                if event.keyCode == 36 { commitDraft(); return nil }
                 if event.keyCode == 51 || event.keyCode == 117 { draft = nil; return nil }
             }
             draft = Shortcut(event: event)
             return nil
         }
     }
+    private func commitDraft() {
+        let value = draft
+        finish()
+        changed(value)
+    }
+
     private func finish() {
+        guard recording || monitor != nil || resignObserver != nil else { return }
+        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+        resignObserver = nil
+        draft = nil
         liveModifiers = []; keyHeld = false
         if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
-        if recording { recording = false; do { try (NSApp.delegate as? Delegate)?.shortcuts.resume() } catch { (NSApp.delegate as? Delegate)?.model.error = error.localizedDescription } }
+        recording = false
+        do { try (NSApp.delegate as? Delegate)?.shortcuts.resume() }
+        catch { (NSApp.delegate as? Delegate)?.model.error = error.localizedDescription }
     }
 }

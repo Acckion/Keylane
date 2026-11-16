@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+    inputs:
+      validate_installer:
+        description: Build and verify a test DMG
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Cancel stale PR runs only; preserve each branch push validation.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          sw_vers
+          swift --version
+          test "$(uname -m)" = arm64
+      - name: Validate version and branch policy
+        id: version
+        run: python3 scripts/check-version.py --sync-policy
+      - name: Validate scripts and release safeguards
+        run: |
+          git diff --check
+          python3 -m compileall -q scripts
+          for script in scripts/*.sh; do bash -n "$script"; done
+          python3 -m unittest discover -s Tests/ReleaseTests -p 'test_*.py'
+      - name: Determine whether to validate the installer
+        id: installer
+        env:
+          VALIDATE_INSTALLER: ${{ inputs.validate_installer }}
+        run: python3 scripts/check-installer-scope.py
+      - name: Core tests
+        run: swift test --scratch-path .build-current --disable-sandbox
+      - name: Build drag-to-Applications DMG
+        if: steps.installer.outputs.required == 'true'
+        env:
+          KEYLANE_ALLOW_ADHOC: '1'
+        run: bash scripts/package.sh
+      - name: Verify DMG and generate checksum
+        if: steps.installer.outputs.required == 'true'
+        run: |
+          python3 scripts/verify-package.py dist/Keylane-*.dmg
+          echo 'Ad hoc signed test DMG; without Apple notarization' >> "$GITHUB_STEP_SUMMARY"
+          cd dist
+          for image in Keylane-*.dmg; do
+            shasum -a 256 "$image" > "$image.sha256"
+          done
+      - name: Upload verified package
+        if: steps.installer.outputs.required == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Keylane-${{ steps.version.outputs.version }}-${{ github.sha }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

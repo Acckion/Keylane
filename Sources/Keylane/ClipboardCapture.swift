@@ -1,8 +1,75 @@
 import AppKit
 import ImageIO
 import KeylaneCore
+import OSLog
 
 struct ClipboardCapture {
+    static let remoteType = "com.apple.is-remote-clipboard"
+    static let universalSource = "通用剪贴板"
+
+    private static let diagnostics = ProcessInfo.processInfo.environment["KEYLANE_CLIPBOARD_DIAGNOSTICS"] == "1"
+    private static let logger = Logger(subsystem: "org.keylane.launcher", category: "clipboard-file-capture")
+
+    /// Build the snapshot from the file URLs delivered by AppKit.
+    static func readUniversalFileURLs(from board: NSPasteboard, items: [NSPasteboardItem]) -> [URL]? {
+        let fileItems = items.filter { $0.types.contains(.fileURL) }
+        let values = fileItems.compactMap { $0.string(forType: .fileURL) }
+        let itemURLs = values.compactMap { value in
+            URL(string: value.trimmingCharacters(in: CharacterSet(charactersIn: "\0")))
+        }
+        let direct = itemURLs.compactMap(reachableFileURL)
+        if !direct.isEmpty, direct.count == fileItems.count { return direct }
+
+        let objects = readFileURLs(from: board)
+        let resolved = objects.compactMap(reachableFileURL)
+        if diagnostics {
+            logger.notice("Remote file read: expected \(fileItems.count), strings \(values.count), URLs \(itemURLs.count), file URLs \(itemURLs.filter(\.isFileURL).count), reachable \(direct.count), objects \(objects.count), resolved \(resolved.count)")
+        }
+        guard !resolved.isEmpty, resolved.count <= 128, resolved.count == objects.count,
+              fileItems.isEmpty || resolved.count == fileItems.count else { return nil }
+        return resolved
+    }
+
+    static func readFileURLs(from board: NSPasteboard) -> [URL] {
+        board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
+
+    private static func reachableFileURL(_ url: URL) -> URL? {
+        guard url.isFileURL else { return nil }
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let localURL = (url as NSURL).filePathURL ?? url
+        do {
+            return try localURL.checkResourceIsReachable() ? localURL : nil
+        } catch {
+            if ClipboardStore.isFileReadDenied(error) { return localURL }
+            if diagnostics {
+                let error = error as NSError
+                logger.notice("Remote file reachability failed: \(error.domain, privacy: .public) \(error.code), file reference \((url as NSURL).isFileReferenceURL())")
+            }
+            return nil
+        }
+    }
+
+    /// Remote text and images keep one representation of each supported kind.
+    /// A nil result means a supported representation is advertised but still unavailable.
+    static func readUniversalItem(_ item: NSPasteboardItem) -> [ClipRepresentation]? {
+        let advertised = Set(item.types.map(\.rawValue))
+        let textTypes = [NSPasteboard.PasteboardType.URL.rawValue, NSPasteboard.PasteboardType.string.rawValue,
+                         "public.utf16-plain-text"]
+        var representations: [ClipRepresentation] = []
+        for formats in [imageFormats.map { $0.0 }, textTypes] {
+            let available = formats.filter(advertised.contains)
+            guard !available.isEmpty else { continue }
+            guard let representation = available.lazy.compactMap({ type -> ClipRepresentation? in
+                guard let data = item.data(forType: .init(type)), !data.isEmpty else { return nil }
+                return ClipRepresentation(type: type, data: data)
+            }).first else { return nil }
+            representations.append(representation)
+        }
+        return representations
+    }
+
     static let imageFormats: [(String,ClipImageFormat)] = [("com.compuserve.gif",.gif),("public.png",.png),("public.jpeg",.jpg),("public.heic",.heic),("org.webmproject.webp",.webp),("public.tiff",.tiff)]
     static func string(_ data: Data, type: String) -> String? {
         String(data:data,encoding:type == "public.utf16-plain-text" ? .utf16 : .utf8)?.trimmingCharacters(in:CharacterSet(charactersIn:"\0"))

@@ -1,24 +1,68 @@
-import pathlib, plistlib, shutil, subprocess, sys, tempfile, zipfile
+import os
+import pathlib
+import plistlib
+import shutil
+import subprocess
+import sys
+import tempfile
 from signing import signing_identity
-identity = signing_identity()
+from versioning import load_version
+root = pathlib.Path(__file__).resolve().parent.parent
+version = load_version()
+distribution = os.environ.get('KEYLANE_DISTRIBUTION') == '1'
+identity = signing_identity(require_developer_id=distribution)
 binary = pathlib.Path(sys.argv[1])
 output = pathlib.Path(sys.argv[2]).resolve()
 output.parent.mkdir(parents=True, exist_ok=True)
 with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as directory:
-    app = pathlib.Path(directory) / 'Keylane.app'
+    image_contents = pathlib.Path(directory) / 'image'
+    app = image_contents / 'Keylane.app'
     executable = app / 'Contents/MacOS/Keylane'
     executable.parent.mkdir(parents=True)
     shutil.copyfile(binary, executable)
     executable.chmod(0o755)
     resources = app / 'Contents/Resources'
     resources.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(pathlib.Path(__file__).resolve().parent.parent / 'LICENSE', resources / 'LICENSE')
-    metadata = dict(CFBundleExecutable='Keylane', CFBundleIdentifier='org.keylane.launcher', CFBundleName='Keylane', CFBundlePackageType='APPL', CFBundleShortVersionString='0.10.0', CFBundleVersion='22', LSMinimumSystemVersion='26.0', LSUIElement=True, NSAppleEventsUsageDescription='读取你在 Finder 中选择的文件，用于你主动打开的询问文件功能。')
+    for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
+        shutil.copyfile(root / name, resources / name)
+    for name in ('EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
+        shutil.copyfile(root / 'Resources' / name, resources / name)
+    shutil.copytree(root / 'Resources/ModuleArtwork', resources / 'ModuleArtwork')
+    metadata = dict(CFBundleExecutable='Keylane', CFBundleIdentifier='org.keylane.launcher', CFBundleName='Keylane', CFBundlePackageType='APPL', CFBundleShortVersionString=version['version'], CFBundleVersion=str(version['build']), LSMinimumSystemVersion='26.0', LSUIElement=True,
+                    NSCameraUsageDescription="在你打开相机预览时显示实时画面。",
+                    NSContactsUsageDescription='在 Keylane 中查找联系人并复制电话号码和邮箱。',
+                    NSCalendarsFullAccessUsageDescription='读取系统日历，并按你的操作保存日程和提醒。', NSAppleEventsUsageDescription='读取 Finder 信息和快捷指令图标，搜索、新建和打开 Apple 备忘录，定位日程及添加受邀人，或执行你选择的废纸篓、系统外观及电源操作。')
+    icon_metadata = pathlib.Path(directory) / 'IconInfo.plist'
+    subprocess.run([
+        'xcrun', 'actool', '--compile', str(resources), '--platform', 'macosx',
+        '--minimum-deployment-target', metadata['LSMinimumSystemVersion'],
+        '--app-icon', 'Keylane', '--output-partial-info-plist', str(icon_metadata),
+        str(root / 'Resources/Keylane.icon'),
+    ], check=True)
+    with icon_metadata.open('rb') as file:
+        metadata.update(plistlib.load(file))
     with (app/'Contents/Info.plist').open('wb') as file:
         plistlib.dump(metadata, file)
-    subprocess.run(['codesign','--force','--sign',identity,'--timestamp=none',str(app)],check=True)
-    subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
-    with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as archive:
-        for path in app.rglob('*'):
-            if path.is_file(): archive.write(path,path.relative_to(app.parent))
+    signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--timestamp=none']
+    entitlements = root / 'Resources/Keylane.entitlements'
+    if not distribution:
+        test_entitlements = plistlib.loads(entitlements.read_bytes())
+        del test_entitlements['com.apple.security.automation.apple-events']
+        entitlements = pathlib.Path(directory) / 'Keylane.entitlements'
+        entitlements.write_bytes(plistlib.dumps(test_entitlements))
+    subprocess.run(['codesign', '--force', '--sign', identity, *signing_options,
+                    '--entitlements', str(entitlements), str(app)], check=True)
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+    (image_contents / 'Applications').symlink_to('/Applications', target_is_directory=True)
+    image = pathlib.Path(directory) / 'Keylane.dmg'
+    subprocess.run([
+        'hdiutil', 'create', '-srcfolder', str(image_contents), '-volname', 'Keylane',
+        '-fs', 'HFS+', '-format', 'UDZO', str(image),
+    ], check=True)
+    if distribution:
+        subprocess.run([
+            'codesign', '--sign', identity, '--timestamp',
+            '--identifier', 'org.keylane.launcher.dmg', str(image),
+        ], check=True)
+    shutil.move(image, output)
 print(output)

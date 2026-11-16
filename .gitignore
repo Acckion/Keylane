@@ -8,7 +8,7 @@ dist/
 # Local certificate selector only; private keys remain in Keychain.
 .signing-identity
 .signing-identity.tmp
-scripts/__pycache__/
+__pycache__/
 
 # Local credentials and developer settings
 .env

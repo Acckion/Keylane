@@ -4,12 +4,14 @@ import CoreFoundation
 /// Resolve the target bundle's language independently of the launcher's own localization.
 /// Uses Apple's public localization API, including system .loctable resources.
 public struct ApplicationIdentity {
+    public let bundleIdentifier: String?
     public let displayName: String
     public let aliases: [String]
     public init(url: URL, preferredLanguages: [String] = Locale.preferredLanguages) {
         let filename = url.deletingPathExtension().lastPathComponent
         let bundle = Bundle(url: url)
         let info = bundle?.infoDictionary ?? [:]
+        bundleIdentifier = info["CFBundleIdentifier"] as? String
         let missing = "__KEYLANE_MISSING_LOCALIZED_BUNDLE_NAME__"
         let cf = CFBundleCreate(nil, url as CFURL)
         func localized(_ key: String, languages: [String]) -> String? {
@@ -25,9 +27,11 @@ public struct ApplicationIdentity {
             ?? localized("CFBundleName", languages: preferredLanguages)
             ?? (fallback.isEmpty ? nil : fallback) ?? rawDisplay ?? rawName ?? filename
         let alternatives = info["CFBundleAlternateNames"] as? [String] ?? []
+        let keywords = (info["MDItemKeywords"] as? [String] ?? [])
+            + (bundle?.localizedInfoDictionary?["MDItemKeywords"] as? [String] ?? [])
         let candidates = [filename, rawDisplay, rawName,
                           localized("CFBundleDisplayName", languages: ["en"]),
-                          localized("CFBundleName", languages: ["en"])].compactMap { $0 } + alternatives
+                          localized("CFBundleName", languages: ["en"])].compactMap { $0 } + alternatives + keywords
         let shownName = displayName
         var seen = Set<String>()
         aliases = candidates.filter { !$0.isEmpty && $0 != shownName && seen.insert($0.lowercased()).inserted }

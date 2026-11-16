@@ -1,22 +1,74 @@
 import Foundation
 import CoreServices
+import UniformTypeIdentifiers
 
-public struct SpotlightFile: Identifiable, Equatable {
+public struct SpotlightFile: Identifiable, Equatable, Sendable {
     public var id: String { url.path }
     public let url: URL
     public let name: String
     public let modified: Date
-    public init(url: URL, name: String, modified: Date) { self.url = url; self.name = name; self.modified = modified }
+    public let isDirectory: Bool
+    public let contentType: UTType?
+    public let matchesContent: Bool
+
+    public init(url: URL, name: String, modified: Date, isDirectory: Bool = false, contentType: UTType? = nil,
+                matchesContent: Bool = false) {
+        self.url = url
+        self.name = name
+        self.modified = modified
+        self.isDirectory = isDirectory
+        self.contentType = contentType
+        self.matchesContent = matchesContent
+    }
+
+    /// Resolve presentation metadata on the search worker after ranking limits the result set.
+    public func readingResourceMetadata() -> Self {
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentTypeKey])
+        return Self(url: url, name: name, modified: modified, isDirectory: values?.isDirectory == true,
+                    contentType: values?.contentType ?? UTType(filenameExtension: url.pathExtension),
+                    matchesContent: matchesContent)
+    }
+}
+
+/// A candidate scored for the current query. Both search sources share the ordering.
+public struct RankedFile: Sendable {
+    public let file: SpotlightFile
+    public let score: Int
+
+    public func precedes(_ other: RankedFile) -> Bool {
+        if score != other.score { return score > other.score }
+        if file.modified != other.file.modified { return file.modified > other.file.modified }
+        return file.id < other.file.id
+    }
+
+    static func top(_ files: [SpotlightFile], query: String, limit: Int = 200) -> [RankedFile] {
+        let rank = FileSearchRules.ranker(for: query)
+        return Array(files.map { RankedFile(file: $0, score: rank($0.name)) }.sorted { $0.precedes($1) }.prefix(limit))
+    }
+}
+
+public struct RecentlyUsedFile: Sendable {
+    public let path: String
+    public let date: Date
+
+    public init(path: String, date: Date) {
+        self.path = path
+        self.date = date
+    }
 }
 
 /// Searches the existing Spotlight index. Own and call this service on the main thread.
 public final class SpotlightSearch {
-    public var updated: (([SpotlightFile], String) -> Void)?
+    public var updated: (([RankedFile], String) -> Void)?
     private var query: MDQuery?
     private var observers: [NSObjectProtocol] = []
     private var compatibilityProcess: Process?
+    private var compatibilitySnapshot: Int?
     private var pending: DispatchWorkItem?
     private var generation = 0
+    private var snapshotVersion = 0
+    private var pendingRanking: DispatchWorkItem?
+    private let rankQueue = DispatchQueue(label: "org.keylane.spotlight-ranking", qos: .userInitiated)
     private var homeOnly = false
     private var root: URL?
     public init() {}
@@ -34,6 +86,51 @@ public final class SpotlightSearch {
             .replacingOccurrences(of: "*", with: "\\*").replacingOccurrences(of: "?", with: "\\?")
         return "kMDItemFSName == \"*" + escaped + "*\"cd"
     }
+
+    public func recentlyUsed(in roots: [String], completion: @escaping ([RecentlyUsedFile]) -> Void) {
+        cancel()
+        let expression = """
+        kMDItemLastUsedDate >= $time.today(-30) && kMDItemContentTypeTree != "public.folder" && kMDItemContentTypeTree != "com.apple.application"
+        """
+        guard !roots.isEmpty,
+              let query = MDQueryCreate(nil, expression as CFString, nil, [kMDItemLastUsedDate] as CFArray),
+              MDQuerySetSortOptionFlagsForAttribute(query, kMDItemLastUsedDate, UInt32(kMDQueryReverseSortOrderFlag.rawValue)) else {
+            completion([])
+            return
+        }
+        MDQuerySetSearchScope(query, roots as CFArray, 0)
+        MDQuerySetDispatchQueue(query, .main)
+        MDQuerySetMaxCount(query, 500)
+        self.query = query
+        let version = generation
+        let finish: () -> Void = { [weak self] in
+            guard let self, self.generation == version else { return }
+            MDQueryDisableUpdates(query)
+            let files = (0..<min(MDQueryGetResultCount(query), 500)).compactMap { index -> RecentlyUsedFile? in
+                guard let raw = MDQueryGetResultAtIndex(query, index) else { return nil }
+                let item = Unmanaged<MDItem>.fromOpaque(raw).takeUnretainedValue()
+                guard let path = MDItemCopyAttribute(item, kMDItemPath) as? String,
+                      let date = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date else { return nil }
+                return RecentlyUsedFile(path: path, date: date)
+            }
+            MDQueryEnableUpdates(query)
+            self.cancel()
+            completion(files)
+        }
+        let name = Notification.Name(rawValue: kMDQueryDidFinishNotification as String)
+        observers.append(NotificationCenter.default.addObserver(forName: name, object: query, queue: .main) { _ in finish() })
+        guard MDQueryExecute(query, 0) else {
+            cancel()
+            completion([])
+            return
+        }
+        // Keep the blank state responsive when an indexed volume is slow or unavailable.
+        guard generation == version else { return }
+        let timeout = DispatchWorkItem(block: finish)
+        pending = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: timeout)
+    }
+
     public func search(_ text: String, homeOnly: Bool = false, root: URL? = nil) {
         cancel()
         self.homeOnly = homeOnly
@@ -86,25 +183,31 @@ public final class SpotlightSearch {
             files.append(SpotlightFile(url: url, name: name, modified: MDItemCopyAttribute(item, kMDItemFSContentChangeDate) as? Date ?? .distantPast))
         }
         MDQueryEnableUpdates(query)
-        files.sort {
-            let a = SearchRanker.score($0.name, query: text) ?? 0
-            let b = SearchRanker.score($1.name, query: text) ?? 0
-            if a != b { return a > b }
-            if $0.modified != $1.modified { return $0.modified > $1.modified }
-            return $0.id < $1.id
-        }
-        let truncated = files.count > 200 || count >= 1000
-        let results = Array(files.prefix(200))
-        if results.isEmpty && finished {
-            compatibilitySearch(text)
+        pendingRanking?.cancel()
+        snapshotVersion += 1
+        let snapshot = snapshotVersion
+        let version = generation
+        let candidates = files
+        let truncated = candidates.count > 200 || count >= 1000
+        if candidates.isEmpty && finished {
+            compatibilitySearch(text, snapshot: snapshot)
             return
         }
-        let status: String
-        if results.isEmpty { status = finished ? "没有匹配项。Spotlight未索引或隐私排除的文件不会出现。" : "正在收集Spotlight结果…" }
-        else { status = truncated ? "显示\(results.count)项（候选较多）；请增加关键词缩小范围。" : "\(results.count)项 · Spotlight\(finished ? "" : " · 正在收集")" }
-        updated?(results, status)
+        let task = DispatchWorkItem { [weak self] in
+            let results = RankedFile.top(candidates, query: text)
+            let status: String
+            if results.isEmpty { status = "正在收集Spotlight结果…" }
+            else { status = truncated ? "显示\(results.count)项（候选较多）；请增加关键词缩小范围。" : "\(results.count)项 · Spotlight\(finished ? "" : " · 正在收集")" }
+            DispatchQueue.main.async {
+                guard let self, self.generation == version, self.snapshotVersion == snapshot else { return }
+                self.updated?(results, status)
+            }
+        }
+        pendingRanking = task
+        rankQueue.async(execute: task)
     }
-    private func compatibilitySearch(_ text: String) {
+    private func compatibilitySearch(_ text: String, snapshot: Int) {
+        compatibilitySnapshot = snapshot
         guard compatibilityProcess == nil, let expression = Self.expression(for: text) else { return }
         let version = generation
         let process = Process()
@@ -125,23 +228,21 @@ public final class SpotlightSearch {
             }
             process.waitUntilExit()
             let paths = data.split(separator: 0).compactMap { String(data: Data($0), encoding: .utf8) }
+            let predicate = Self.predicate(for: text)
+            let files = paths.prefix(1000).compactMap { path -> SpotlightFile? in
+                let url = URL(fileURLWithPath: path)
+                guard url.pathExtension.lowercased() != "app", !url.lastPathComponent.hasPrefix("."),
+                      predicate?.evaluate(with: [NSMetadataItemFSNameKey: url.lastPathComponent]) == true else { return nil }
+                return SpotlightFile(url: url, name: url.lastPathComponent, modified: .distantPast)
+            }
+            let results = RankedFile.top(files, query: text)
+            let failed = process.terminationStatus != 0 && !limited
+            let suffix = limited || paths.count > 200 ? " · 请缩小关键词" : ""
             DispatchQueue.main.async {
                 guard let self, self.generation == version else { return }
                 self.compatibilityProcess = nil
-                if process.terminationStatus != 0 && !limited { self.updated?([], "系统Spotlight查询失败，请检查索引与文件访问权限。"); return }
-                let predicate = Self.predicate(for: text)
-                let files = paths.prefix(1000).compactMap { path -> SpotlightFile? in
-                    let url = URL(fileURLWithPath: path)
-                    guard url.pathExtension.lowercased() != "app", !url.lastPathComponent.hasPrefix("."),
-                          predicate?.evaluate(with: [NSMetadataItemFSNameKey: url.lastPathComponent]) == true else { return nil }
-                    return SpotlightFile(url: url, name: url.lastPathComponent, modified: .distantPast)
-                }.sorted { a, b in
-                    let lhs = SearchRanker.score(a.name, query: text) ?? 0
-                    let rhs = SearchRanker.score(b.name, query: text) ?? 0
-                    return lhs == rhs ? a.id < b.id : lhs > rhs
-                }
-                let results = Array(files.prefix(200))
-                let suffix = limited || paths.count > 200 ? " · 请缩小关键词" : ""
+                guard self.snapshotVersion == self.compatibilitySnapshot else { return }
+                if failed { self.updated?([], "系统Spotlight查询失败，请检查索引与文件访问权限。"); return }
                 self.updated?(results, results.isEmpty ? "没有匹配项。系统未索引或隐私排除的文件不会出现。" : "\(results.count)项 · Spotlight兼容查询\(suffix)")
             }
         }
@@ -149,6 +250,7 @@ public final class SpotlightSearch {
     public func cancel() {
         generation += 1
         pending?.cancel(); pending = nil
+        pendingRanking?.cancel(); pendingRanking = nil
         if let process = compatibilityProcess, process.isRunning { process.terminate() }; compatibilityProcess = nil
         if let query { MDQueryStop(query) }; query = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }; observers.removeAll()

@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 import PDFKit
 
-public struct FileIndexStats: Codable {
+public struct FileIndexStats: Codable, Equatable {
     public var entries = 0, files = 0, directories = 0, symlinks = 0, invalid = 0, bytes = 0
     public var seconds: Double = 0
     public init() {}
@@ -35,6 +35,7 @@ public final class FileSearchIndex {
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,name TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',root TEXT NOT NULL,volume TEXT NOT NULL,modified REAL NOT NULL,directory INTEGER NOT NULL,symlink INTEGER NOT NULL,external INTEGER NOT NULL DEFAULT 0,epoch TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS files_root ON files(root);
+                CREATE INDEX IF NOT EXISTS files_name_search ON files(root,name,modified,path,external);
                 CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(name,body,content='files',content_rowid='rowid',tokenize='trigram');
                 CREATE TRIGGER IF NOT EXISTS file_ai AFTER INSERT ON files BEGIN INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_ad AFTER DELETE ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); END;
@@ -45,6 +46,7 @@ public final class FileSearchIndex {
         } catch { sqlite3_close(db); db = nil; throw error }
     }
     deinit { sqlite3_close(db) }
+    public func releaseCachedPages() { sqlite3_db_release_memory(db) }
     private func exec(_ sql: String) throws { guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw FileIndexError.database } }
     private func statement(_ sql: String, _ values: [String] = []) throws -> OpaquePointer {
         var s: OpaquePointer?
@@ -64,13 +66,23 @@ public final class FileSearchIndex {
     }
     public func transaction(_ body: () throws -> Void) throws { try exec("BEGIN IMMEDIATE"); do { try body(); try exec("COMMIT") } catch { try? exec("ROLLBACK"); throw error } }
     public func removeUnseen(root: String, epoch: String) throws { try write("DELETE FROM files WHERE root=? AND epoch<>?",[root,epoch]) }
+    /// Limit reconciliation to the changed entry and its descendants.
+    public func removeUnseen(root: String, subtree: String, epoch: String) throws {
+        let lower = subtree + "/"
+        let upper = subtree + "0" // The next byte after the slash, under SQLite's binary collation.
+        try write("DELETE FROM files WHERE root=? AND epoch<>? AND path IN (SELECT path FROM files WHERE path=? UNION ALL SELECT path FROM files WHERE path>=? AND path<?)",
+                  [root, epoch, subtree, lower, upper])
+    }
     public func removeScope(_ root: String) throws { try write("DELETE FROM files WHERE root=?",[root]) }
     public func removeUnavailableVolumes() throws {
         let s = try statement("SELECT DISTINCT volume FROM files"); var volumes: [String] = []
         while sqlite3_step(s) == SQLITE_ROW { volumes.append(text(s,0)) }; sqlite3_finalize(s)
         for volume in volumes where !FileManager.default.fileExists(atPath:volume) { try write("DELETE FROM files WHERE volume=?",[volume]) }
     }
-    public func clearBodies() throws { try exec("UPDATE files SET body='' WHERE body<>''") }
+    public func clearBodies() throws {
+        // Clearing a body invalidates its extraction state even if the file has not changed.
+        try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>''")
+    }
     public func clear() throws { try exec("DELETE FROM files; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
     public func stats() throws -> FileIndexStats {
         let s = try statement("SELECT count(*),coalesce(sum(directory=0 AND symlink=0),0),coalesce(sum(directory),0),coalesce(sum(symlink),0) FROM files"); defer { sqlite3_finalize(s) }
@@ -80,6 +92,9 @@ public final class FileSearchIndex {
         return result
     }
     public func search(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, isCancelled: @escaping () -> Bool = { false }) throws -> [SpotlightFile] {
+        try searchRanked(query, options: options, excluded: excluded, limit: limit, isCancelled: isCancelled).map(\.file)
+    }
+    public func searchRanked(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, isCancelled: @escaping () -> Bool = { false }) throws -> [RankedFile] {
         guard !isCancelled() else { return [] }
         let cancellation = QueryCancellation(isCancelled)
         sqlite3_progress_handler(db, 1000, { raw in
@@ -96,16 +111,38 @@ public final class FileSearchIndex {
                 conditions.append("rowid IN (SELECT rowid FROM file_fts WHERE file_fts MATCH ?)")
                 values.append(options.contentSearch ? phrase : "name : " + phrase)
             } else {
-                let literal = "%" + word.replacingOccurrences(of:"\\",with:"\\\\").replacingOccurrences(of:"%",with:"\\%").replacingOccurrences(of:"_",with:"\\_") + "%"
-                conditions.append(options.contentSearch ? "(name LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')" : "name LIKE ? ESCAPE '\\'")
-                values.append(literal); if options.contentSearch { values.append(literal) }
+                // Names are already folded. Match the literal substring directly.
+                if options.contentSearch {
+                    let literal = "%" + word.replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "%", with: "\\%")
+                        .replacingOccurrences(of: "_", with: "\\_") + "%"
+                    conditions.append("(instr(name, ?) > 0 OR body LIKE ? ESCAPE '\\')")
+                    values += [word, literal]
+                } else {
+                    conditions.append("instr(name, ?) > 0")
+                    values.append(word)
+                }
             }
         }
         if !options.externalVolumes { conditions.append("external=0") }
         // Root ownership is stored separately from the path: no user text becomes SQL.
         conditions.append("root IN (" + options.roots.map { _ in "?" }.joined(separator: ",") + ")"); values += options.roots
-        let s = try statement("SELECT path,modified FROM files WHERE " + conditions.joined(separator:" AND ") + " ORDER BY modified DESC,path LIMIT 2000",values); defer { sqlite3_finalize(s) }
-        var results: [SpotlightFile] = []
+        // Names are already folded in storage. Apply relevance before the candidate cap
+        // so an older exact hit cannot be excluded by newer substring or body matches.
+        let phrase = FileSearchRules.fold(query.trimmingCharacters(in: .whitespacesAndNewlines))
+        let allNameWords = words.map { _ in "instr(name, ?) > 0" }.joined(separator: " AND ")
+        let relevance = "CASE WHEN name=? THEN 0 WHEN instr(name,?)=1 THEN 1 WHEN instr(name,?)>0 THEN 2 WHEN (" + allNameWords + ") THEN 3 ELSE 4 END"
+        values += [phrase, phrase, phrase] + words
+        // Use the covering index only when a name scan is unavoidable. FTS
+        // queries should intersect their row IDs with the root index.
+        let shortNameScan = !options.contentSearch && words.allSatisfy { $0.count < 3 }
+        let searchIndex = shortNameScan ? "files_name_search" : "files_root"
+        let sql = "SELECT path,modified FROM files INDEXED BY " + searchIndex + " WHERE " + conditions.joined(separator: " AND ")
+            + " ORDER BY " + relevance + ",modified DESC,path LIMIT 2000"
+        let s = try statement(sql, values)
+        defer { sqlite3_finalize(s) }
+        var results: [RankedFile] = []
+        let rank = FileSearchRules.ranker(for: query)
         let ignored = FileSearchRules.pathFilter(options.ignorePatterns)
         while true {
             let status = sqlite3_step(s); if status == SQLITE_DONE { break }; if isCancelled() { return [] }; guard status == SQLITE_ROW else { throw FileIndexError.database }
@@ -113,10 +150,13 @@ public final class FileSearchIndex {
             guard options.includeHidden || !path.split(separator:"/").contains(where: { $0.hasPrefix(".") }),
                   !excluded.contains(where: { path == $0 || path.hasPrefix($0 + "/") }),
                   !ignored(path,url.lastPathComponent) else { continue }
-            results.append(SpotlightFile(url:url,name:url.lastPathComponent,modified:Date(timeIntervalSince1970:sqlite3_column_double(s,1))))
+            let name = url.lastPathComponent
+            let score = rank(name)
+            let file = SpotlightFile(url: url, name: name, modified: Date(timeIntervalSince1970: sqlite3_column_double(s, 1)),
+                                     matchesContent: options.contentSearch && score == 0)
+            results.append(RankedFile(file: file, score: score))
         }
-        let ranked = results.map { (file: $0, score: FileSearchRules.rank($0.name, query: query)) }
-        return Array(ranked.sorted { a,b in a.score == b.score ? (a.file.modified == b.file.modified ? a.file.id < b.file.id : a.file.modified > b.file.modified) : a.score > b.score }.prefix(max(1,min(200,limit)))).map(\.file)
+        return Array(results.sorted { $0.precedes($1) }.prefix(max(1, min(200, limit))))
     }
     public static func content(at url: URL) -> String {
         guard let values = try? url.resourceValues(forKeys:[.fileSizeKey,.isRegularFileKey,.isUbiquitousItemKey,.isSymbolicLinkKey]), values.isRegularFile == true, values.isSymbolicLink != true,

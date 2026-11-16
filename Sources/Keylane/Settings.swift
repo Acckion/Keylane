@@ -1,112 +1,334 @@
 import SwiftUI
+import Combine
 import AppKit
 import KeylaneCore
-import ServiceManagement
 
 struct SettingsView: View {
-    @ObservedObject var model: Model
+    @ObservedObject var state: SettingsWindowState
     @State private var selected = "applications"
     @State private var headerScrolledAway = false
+    @State private var toolbarMenuOpen = false
     @State private var query = ""
-    @State private var target: String?
+    @State private var target: SettingsRevealRequest?
     @State private var searchSelection: String?
     @State private var history = ["applications"]
     @State private var historyIndex = 0
-    @Environment(\.colorScheme) private var scheme
-    private let pages: [(String,String,String)] = [("general","通用","slider.horizontal.3"),("applications","应用程序","square.grid.2x2.fill"),("files","文件搜索","doc.text.magnifyingglass"),("clipboard","剪贴板历史","clipboard.fill"),("notes","便笺","note.text"),("links","快捷链接","link"),("advanced","高级","wrench.and.screwdriver"),("about","关于 Keylane","info.circle")]
-    private var page: (String,String,String) { pages.first { $0.0 == selected } ?? pages[0] }
+    private var page: LauncherSettingsPage? { state.catalog.page(selected) ?? state.catalog.pages.first }
+    private var toolbarMenuEnabled: Bool {
+        guard let page, page.toolbarMenu != nil else { return false }
+        return state.extensionEnabled(for: page.parentID ?? page.id)?.wrappedValue != false
+    }
+    private var showsPageHeader: Bool { page?.parentID == nil || page?.centeredHeader == true }
+
+    private var loading: AnyPublisher<Bool, Never>? {
+        let work = page?.loading
+        let permission = page?.titlebar?.permissionStatus?.map(\.requesting)
+        if let work, let permission {
+            return work.combineLatest(permission).map { $0 || $1 }
+                .removeDuplicates().eraseToAnyPublisher()
+        }
+        return work ?? permission?.removeDuplicates().eraseToAnyPublisher()
+    }
+
     var body: some View {
-        NavigationSplitView {
-            ZStack(alignment: .top) {
-                Group {
-                if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    List(selection: $searchSelection) {
-                        searchClearance
-                        ForEach(SettingsItem.search(query)) { item in
-                            VStack(alignment: .leading, spacing: 3) { Text(item.title); Text(pages.first { $0.0 == item.page }?.1 ?? "").font(.caption).foregroundStyle(.secondary) }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4).tag(item.id)
-                        }
-                    }.onChange(of: searchSelection) { _, id in if let item = SettingsItem.all.first(where: { $0.id == id }) { reveal(item) } }
-                    .overlay { if SettingsItem.search(query).isEmpty { ContentUnavailableView.search(text: query) } }
-                } else {
-                List(selection: $selected) { searchClearance; ForEach(pages, id: \.0) { item in
-                    Label { Text(item.1).font(VisualStyle.rowText) } icon: { SettingsIcon(symbol: item.2) }.padding(.vertical, 5).tag(item.0)
-                } }.listStyle(.sidebar)
-                }
-                }.scrollIndicators(.hidden)
-                SettingsSearchField(text: $query, floating: true, submit: { if let item = SettingsItem.search(query).first { reveal(item) } })
-                    .padding(.horizontal, 8).frame(height: 36)
-                    .glassEffect(.regular, in: Capsule()).padding(.horizontal, 12).padding(.top, 12)
-            }.navigationSplitViewColumnWidth(min: 230, ideal: 230, max: 230)
+        let matches = SettingsItem.search(query, in: state.catalog.items)
+        return NavigationSplitView {
+            sidebar(matches: matches)
         } detail: {
-            SettingsPageContainer(title: page.1, symbol: page.2, subtitle: subtitle, target: target, headerScrolledAway: $headerScrolledAway) {
-                if !model.error.isEmpty {
-                    HStack {
-                        Text(model.error).foregroundStyle(.red)
-                        Spacer()
-                        Button { model.error = "" } label: { Image(systemName: "xmark.circle") }.buttonStyle(.plain)
-                    }.padding(12).background(.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+            detailPage
+        }
+        .overlay(alignment: .topTrailing) {
+            if toolbarMenuOpen, toolbarMenuEnabled, let menu = page?.toolbarMenu {
+                ZStack(alignment: .topTrailing) {
+                    Color.clear.contentShape(Rectangle()).onTapGesture(perform: dismissToolbarMenu)
+                        .accessibilityHidden(true)
+                    menu.content(dismissToolbarMenu)
+                        .modifier(LauncherMenuSurface(open: true))
+                        .padding(.top, 8)
+                        .padding(.trailing, 12)
                 }
-                settingsContent
             }
-            .id(selected)
-        }.toggleStyle(SettingsSwitchStyle())
-        .navigationTitle(headerScrolledAway ? page.1 : "")
+        }
+        .toggleStyle(SettingsSwitchStyle())
+        .navigationTitle(headerScrolledAway || !showsPageHeader ? (page?.title ?? "设置") : "")
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
-        .preferredColorScheme(model.colorScheme)
-        .onAppear { selected = model.settingsPage; history = [selected]; historyIndex = 0 }
-        .onChange(of: selected) { _, page in
-            if history[historyIndex] != page { history = Array(history.prefix(historyIndex + 1)); history.append(page); historyIndex = history.count - 1 }
-            if model.settingsPage != page { model.settingsPage = page }
-        }
-        .onChange(of: model.settingsPage) { _, page in selected = page; query = ""; target = nil }
-        .toolbar {
-
-            ToolbarItemGroup(placement: .navigation) {
-                ControlGroup {
-                    Button { historyIndex -= 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.backward") }.disabled(historyIndex == 0).help("后退")
-                    Button { historyIndex += 1; selected = history[historyIndex] } label: { Image(systemName: "chevron.forward") }.disabled(historyIndex == history.count - 1).help("前进")
-                }.controlGroupStyle(.navigation)
+        .preferredColorScheme(state.colorScheme)
+        .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
+        .onAppear {
+            selected = state.catalog.page(state.page)?.id ?? state.catalog.pages.first?.id ?? "applications"
+            if let parent = state.catalog.page(selected)?.parentID, state.catalog.page(parent) != nil {
+                history = [parent, selected]
+            } else {
+                history = [selected]
             }
-
+            historyIndex = history.count - 1
+            if state.page != selected { state.select(selected) }
+        }
+        .onChange(of: state.catalog.pages.map(\.id)) { _, pages in
+            guard pages.contains(selected) else {
+                selected = pages.first ?? "applications"
+                history = [selected]
+                historyIndex = 0
+                target = nil
+                return
+            }
+            let visited = history.prefix(historyIndex + 1).filter(pages.contains)
+            history = history.filter(pages.contains)
+            if visited.isEmpty || history.isEmpty {
+                history = [selected]
+                historyIndex = 0
+            } else {
+                historyIndex = visited.count - 1
+            }
+        }
+        .onChange(of: selected) { _, page in
+            dismissToolbarMenu()
+            if history[historyIndex] != page { history = Array(history.prefix(historyIndex + 1)); history.append(page); historyIndex = history.count - 1 }
+            if state.page != page { state.select(page) }
+        }
+        .onChange(of: state.page) { _, page in
+            guard selected != page else { return }
+            selected = page
+            query = ""
+            target = nil
+        }
+        .onChange(of: toolbarMenuEnabled) { _, enabled in
+            if !enabled { dismissToolbarMenu() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            dismissToolbarMenu()
+        }
+        .toolbar {
+            prioritizedHistoryToolbar
+            if let menu = page?.toolbarMenu {
+                ToolbarSpacer(.flexible, placement: .automatic)
+                ToolbarItem(placement: .automatic) {
+                    Button { toolbarMenuOpen.toggle() } label: {
+                        Label(menu.title, systemImage: menu.symbol).labelStyle(.iconOnly)
+                    }
+                    .help(menu.title)
+                    .disabled(!toolbarMenuEnabled)
+                }
+            }
         }
     }
+
+    private func dismissToolbarMenu() { toolbarMenuOpen = false }
+
+    private var detailPage: some View {
+        SettingsPageContainer(pageID: selected, title: page?.title ?? "设置", symbol: page?.symbol ?? "gearshape", subtitle: page?.subtitle ?? "", target: target, showsHeader: showsPageHeader, centeredHeader: page?.centeredHeader == true, headerScrolledAway: $headerScrolledAway) {
+            let owner = page?.parentID ?? selected
+            let activation = state.titlebar(for: owner)
+            if let page, let activation, activation.permissionStatus != nil {
+                PermissionSettingsContent(contribution: activation, content: page.content)
+                    .id(activation.searchItem?.id ?? page.id)
+            } else if state.extensionEnabled(for: owner)?.wrappedValue == false {
+                SettingsGroup {
+                    SettingsRow("扩展已关闭", detail: "后台活动已停止，数据与快捷键已保留。") { EmptyView() }
+                }
+            } else if let page {
+                page.content()
+            }
+        }
+        .overlay(alignment: .top) {
+            if let loading { WindowLoadingIndicator(loading: loading).id(selected) }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var prioritizedHistoryToolbar: some ToolbarContent {
+        #if compiler(>=6.4)
+        if #available(macOS 26.1, *) {
+            historyToolbar.visibilityPriority(.high)
+        } else {
+            historyToolbar
+        }
+        #else
+        historyToolbar
+        #endif
+    }
+
+    private var historyToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            ControlGroup {
+                Button {
+                    historyIndex -= 1
+                    selected = history[historyIndex]
+                } label: {
+                    Image(systemName: "chevron.backward")
+                }
+                .keyboardShortcut(state.navigationKeys.back, modifiers: .command)
+                .disabled(historyIndex == 0)
+                .help("后退")
+                Button {
+                    historyIndex += 1
+                    selected = history[historyIndex]
+                } label: {
+                    Image(systemName: "chevron.forward")
+                }
+                .keyboardShortcut(state.navigationKeys.forward, modifiers: .command)
+                .disabled(historyIndex == history.count - 1)
+                .help("前进")
+            }.controlGroupStyle(.navigation)
+        }
+    }
+
+    private func sidebar(matches: [SettingsItem]) -> some View {
+        ZStack(alignment: .top) {
+            Group {
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    settingsPages
+                } else {
+                    searchResults(matches)
+                }
+            }.scrollIndicators(.hidden)
+            SettingsSearchField(text: $query, floating: true, submit: {
+                if let item = matches.first { reveal(item) }
+            })
+            .padding(.horizontal, 8).frame(height: 36)
+            .glassEffect(.regular, in: Capsule()).padding(.horizontal, 12).padding(.top, 12)
+        }.navigationSplitViewColumnWidth(min: 230, ideal: 230, max: 230)
+    }
+
+    private var settingsPages: some View {
+        List(selection: Binding(get: { page?.parentID ?? selected }, set: { selected = $0 })) {
+            searchClearance
+            ForEach(state.catalog.sidebarGroups) { group in
+                Section {
+                    ForEach(group.pages, content: settingsSidebarRow)
+                } header: {
+                    if let title = group.id.settingsSectionTitle { Text(title) }
+                }
+            }
+        }.listStyle(.sidebar)
+    }
+
+    private func settingsSidebarRow(_ item: LauncherSettingsPage) -> some View {
+        Label { Text(item.title).font(VisualStyle.rowText) } icon: {
+            SettingsIcon(symbol: item.symbol, artwork: ModuleArtwork.settings(item.id))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 5)
+        .overlay { SettingsRowMouseDown { selected = item.id } }
+        .tag(item.id)
+    }
+
+    private func searchResults(_ matches: [SettingsItem]) -> some View {
+        List(selection: $searchSelection) {
+            searchClearance
+            ForEach(matches) { item in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title)
+                    Text(state.catalog.page(item.page)?.title ?? "")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+                .overlay { SettingsRowMouseDown { reveal(item) } }
+                .tag(item.id)
+            }
+        }
+        .onChange(of: searchSelection) { _, id in
+            if let id, let item = state.catalog.item(id) { reveal(item) }
+        }
+        .overlay { if matches.isEmpty { ContentUnavailableView.search(text: query) } }
+    }
+
     private var searchClearance: some View {
         Color.clear.frame(height: 52).listRowInsets(EdgeInsets()).listRowSeparator(.hidden).listRowBackground(Color.clear).disabled(true).accessibilityHidden(true)
     }
     private func reveal(_ item: SettingsItem) {
         selected = item.page; target = nil; searchSelection = nil; query = ""
-        DispatchQueue.main.async { target = item.id }
-    }
-    private var subtitle: String { switch selected { case "applications": return "快速查找并启动已安装的应用程序。"; case "files": return "搜索电脑上的文件与文件夹。"; case "general": return "管理外观、快捷键和启动方式。"; case "links": return "设置常用链接，快速打开。"; case "advanced": return "管理本地资料与隐私设置。"; case "clipboard": return "查找本地保存的文字、图片和文件引用。"; case "notes": return "保存你的想法，随时继续。"; case "about": return "独立、原生、以键盘为中心。"; default: return "按照你的习惯使用 Keylane。" } }
-    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View { VStack(alignment: .leading, spacing: 14, content: content).padding(18).frame(maxWidth: .infinity, alignment: .leading).modifier(SettingsSurface()) }
-    @ViewBuilder private var settingsContent: some View {
-        switch selected {
-        case "general":
-            card {
-                Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
-                Text(model.loginStatus).font(.caption).foregroundStyle(.secondary)
-                Button("打开系统登录项设置") { SMAppService.openSystemSettingsLoginItems() }.buttonStyle(.glass)
-            }.id("login")
-            LauncherAppearancePreferences(model: model)
-            card { SettingsPicker("窗口位置", selection: $model.placement) { Text("当前屏幕居中").tag("activeScreen"); Text("记住上次位置").tag("remember") } }.id("position")
-            card { KeyboardPreferences(model: model) }.id("keyboard")
-        case "applications":
-            ApplicationPreferences(model: model)
-        case "files":
-            FileSearchPreferences(controller: model.fileSearch, model: model)
-        case "clipboard":
-            ClipboardPreferences(controller: model.clipboard, model: model)
-        case "notes":
-            card { LabeledContent("已保存便笺", value: String(model.savedNotes.count)); Text("使用本机 SQLite 自动保存。").foregroundStyle(.secondary); Button("导出便笺…") { model.exportData() }.buttonStyle(.glass) }.id("export")
-        case "links":
-            card { Text("默认快捷链接").font(.headline); TextField("https://example.com", text: $model.link).textFieldStyle(.roundedBorder); Text("当前支持一个默认链接。链接集合与参数化功能尚未实现。").foregroundStyle(.secondary) }.id("quicklink")
-        case "advanced":
-            card { Text("资料目录").font(.headline); Text("Application Support/Keylane").foregroundStyle(.secondary); Button("在 Finder 中显示") { let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane"); NSWorkspace.shared.open(url) }.buttonStyle(.glass) }.id("directory")
-            card { Text("无遥测").font(.headline); Text("默认无遥测。文件 AI 仅在你主动发送时连接所配置的服务；云同步与扩展模块尚未接入。").foregroundStyle(.secondary) }.id("privacy")
-        default:
-            card { LabeledContent("版本", value: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "开发版")); LabeledContent("许可", value: "PolyForm Noncommercial 1.0.0"); Text("独立实现，非 SuperCmd 或 Raycast 官方产品。").foregroundStyle(.secondary) }.id("version")
-            card { Text("开发状态").font(.headline); Text("当前支持应用搜索、计算器、多便笺、持久化剪贴板、快捷链接和部分系统工具。窗口管理、AI、扩展、同步等主要模块尚未完成。").foregroundStyle(.secondary) }.id("status")
+        if state.extensionEnabled(for: item.page) != nil || state.catalog.page(item.page)?.titlebar?.searchItem?.id != item.id {
+            DispatchQueue.main.async { target = SettingsRevealRequest(itemID: item.id) }
         }
+    }
+}
+
+/// Handles the physical press while List still owns selection for keyboard and VoiceOver.
+private struct SettingsRowMouseDown: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> PressView { PressView() }
+
+    func updateNSView(_ view: PressView, context: Context) {
+        view.action = action
+    }
+
+    final class PressView: NSView {
+        var action: (() -> Void)?
+
+        override var mouseDownCanMoveWindow: Bool { false }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            // AppKit normally focuses the table as part of handling its own click.
+            var ancestor = superview
+            while let view = ancestor {
+                if let table = view as? NSTableView {
+                    window?.makeFirstResponder(table)
+                    break
+                }
+                ancestor = view.superview
+            }
+            action?()
+        }
+    }
+}
+
+enum LauncherSettingsContent {
+    @ViewBuilder static func general(_ model: Model) -> some View {
+        LoginPreferences(model: model)
+        LauncherAppearancePreferences(model: model)
+    }
+
+    @ViewBuilder static func applications(_ model: Model) -> some View {
+        ApplicationPreferences(model: model)
+    }
+
+    @ViewBuilder static func files(_ model: Model) -> some View {
+        FileSearchPreferences(controller: model.fileSearch, model: model)
+    }
+
+    @ViewBuilder static func clipboard(_ model: Model) -> some View {
+        ClipboardPreferences(controller: model.clipboard, model: model)
+    }
+
+
+    @ViewBuilder static func advanced(_ model: Model) -> some View {
+        AdvancedPreferences(model: model)
+    }
+
+    @ViewBuilder static func about(_ model: Model) -> some View {
+        SettingsGroup {
+            LabeledContent("版本", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "开发版")
+            if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String {
+                LabeledContent("构建号", value: build)
+            }
+            LabeledContent("许可", value: "GPL-3.0-or-later")
+            Text("独立实现，非 SuperCmd 或 Raycast 官方产品。").foregroundStyle(.secondary)
+        }.settingsAnchor(.version)
+        UpdatePreferences(updates: model.updates).settingsAnchor(.softwareUpdates)
+        SettingsGroup { Text("开发状态").font(.headline); Text("当前支持应用搜索、计算器、持久化剪贴板、快捷链接和部分系统工具。窗口管理、AI、扩展、同步等主要模块尚未完成。").foregroundStyle(.secondary) }.settingsAnchor(.developmentStatus)
+    }
+}
+
+
+private struct LoginPreferences: View {
+    let model: Model
+    @StateObject private var observation: ViewObservation
+
+    init(model: Model) {
+        self.model = model
+        _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.$loginEnabled)
+        ]))
+    }
+
+    var body: some View {
+        SettingsGroup("启动") {
+            Toggle("登录时启动", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
+        }.settingsAnchor(.login)
     }
 }

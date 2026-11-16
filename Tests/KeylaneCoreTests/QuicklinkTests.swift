@@ -1,0 +1,203 @@
+import Foundation
+import XCTest
+import KeylaneCore
+
+final class QuicklinkTests: XCTestCase {
+    func testAcceptsClipboardEmailAsQuicklink() throws {
+        let address = try XCTUnwrap(ClipboardCategory.emailURL(in: "  design?test+work@example.com  "))
+        XCTAssertEqual(try QuicklinkTemplate(address.absoluteString).url(), address)
+        XCTAssertNil(URLComponents(url: address, resolvingAgainstBaseURL: false)?.query)
+        XCTAssertThrowsError(try QuicklinkTemplate("mailto:design@example.com?body=Test"))
+        XCTAssertThrowsError(try QuicklinkTemplate("mailto:invalid"))
+    }
+
+    func testEncodesParametersAndAppliesDefaults() throws {
+        let template = try QuicklinkTemplate("https://example.com/{名称}?q={搜索=默认}&again={名称}")
+        XCTAssertEqual(template.parameters.map(\.id), ["名称", "搜索"])
+        let url = try template.url(values: ["名称": "中文 /?&=#%+"])
+        XCTAssertEqual(url.absoluteString,
+                       "https://example.com/%E4%B8%AD%E6%96%87%20%2F%3F%26%3D%23%25%2B?q=%E9%BB%98%E8%AE%A4&again=%E4%B8%AD%E6%96%87%20%2F%3F%26%3D%23%25%2B")
+        XCTAssertThrowsError(try template.url()) {
+            XCTAssertEqual($0 as? QuicklinkTemplate.ValidationError, .missingValue("名称"))
+        }
+    }
+
+    func testRejectsUnsafeOrMalformedTemplates() {
+        for value in ["file://remote/tmp", "https://{host}/", "https://user:secret@example.com",
+                      "https://example.com/{}", "https://example.com/{a", "https://example.com/{a={b}}",
+                      "https://example.com/{q=one}/{q=two}"] {
+            XCTAssertThrowsError(try QuicklinkTemplate(value), value)
+        }
+    }
+
+    func testLocalPathsRoundTripWithoutExpandingLiteralCharacters() throws {
+        let path = "/tmp/中文 {clipboard} 100% #?.txt"
+        let parsed = try QuicklinkTemplate(path, context: .init())
+        XCTAssertTrue(parsed.parameters.isEmpty)
+        XCTAssertEqual(try parsed.url().path, path)
+        XCTAssertEqual(parsed.localURL?.absoluteString, "file:///tmp/%E4%B8%AD%E6%96%87%20%7Bclipboard%7D%20100%25%20%23%3F.txt")
+        XCTAssertEqual(try QuicklinkTemplate(parsed.url().absoluteString).url().path, path)
+        XCTAssertEqual(try QuicklinkTemplate("FILE://localhost/tmp/fixture/").url().path, "/tmp/fixture")
+        for value in ["file:relative", "file://", "file://remote/tmp/a", "file://me@localhost/tmp/a",
+                      "file://localhost:123/tmp/a", "file:///tmp/a?x=1", "file:///tmp/a#frag",
+                      "file:///tmp/{selection}", "file:///tmp/embedded%00null", "file:///tmp/encoded%2Fslash",
+                      "//network/share", "smb://server/folder", "relative.txt"] {
+            XCTAssertThrowsError(try QuicklinkTemplate(value), value)
+        }
+    }
+
+    func testDeepLinkParametersAndValidation() throws {
+        let template = try QuicklinkTemplate("obsidian://open?vault=Work&file={Path}")
+        let resolved = try template.url(values: ["Path": "中文 #/A&B"])
+        XCTAssertEqual(resolved.absoluteString, "obsidian://open?vault=Work&file=%E4%B8%AD%E6%96%87%20%23%2FA%26B")
+        XCTAssertEqual(try QuicklinkTemplate("dict:hello").url().absoluteString, "dict:hello")
+        for input in ["{scheme}://open/path", "obsidian://{destination}/note", "obsidian://user:secret@open/path",
+                      "obsidian://", "javascript:alert(1)", "data:text/plain,test", "mailto:bad"] {
+            XCTAssertThrowsError(try QuicklinkTemplate(input), input)
+        }
+    }
+
+    func testOpeningApplicationSurvivesEditingStorageAndJSON() throws {
+        let suite = "quicklink-target-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = Quicklink(title: "Note", template: "obsidian://open?file=Note")
+        var explicit = original.duplicate()
+        explicit.openingApplicationID = "md.obsidian"
+        XCTAssertEqual(explicit.duplicate().openingApplicationID, "md.obsidian")
+        XCTAssertEqual(explicit.preparedForEditing().openingApplicationID, "md.obsidian")
+        let library = QuicklinkLibrary(links: [original, explicit])
+        try library.save(to: defaults)
+        XCTAssertEqual(try QuicklinkLibrary.load(from: defaults), library)
+        let data = try library.exportJSON()
+        XCTAssertEqual(try QuicklinkLibrary(links: []).importJSON(data).links.map(\.openingApplicationID), [nil, "md.obsidian"])
+        XCTAssertEqual(try library.importJSON(data).duplicates, 2)
+    }
+
+    func testLegacyFourParameterQuicklinkCanBeRenamedSavedAndResolved() throws {
+        let suite = "Keylane.QuicklinksTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let stored = Data(#"{"links":[{"id":"quicklink:legacy","title":"旧链接","template":"https://example.com/{a}/{b}/{c}/{d}"}]}"#.utf8)
+        defaults.set(stored, forKey: QuicklinkLibrary.storageKey)
+        let original = try XCTUnwrap(QuicklinkLibrary.load(from: defaults).links.first)
+
+        var draft = original.preparedForEditing()
+        draft.title = "新标题"
+        XCTAssertNoThrow(try draft.parsedTemplate())
+        try QuicklinkLibrary(links: [draft]).save(to: defaults)
+
+        let saved = try XCTUnwrap(QuicklinkLibrary.load(from: defaults).links.first)
+        XCTAssertEqual(saved.title, "新标题")
+        XCTAssertEqual(saved.id, original.id)
+        XCTAssertEqual(saved.template, original.template)
+        XCTAssertNil(saved.usesDynamicPlaceholders)
+        let template = try saved.parsedTemplate()
+        XCTAssertEqual(template.parameters.map(\.id), ["a", "b", "c", "d"])
+        let url = try template.url(values: ["a": "one", "b": "two", "c": "three", "d": "four/five"])
+        XCTAssertEqual(url.absoluteString, "https://example.com/one/two/three/four%2Ffive")
+    }
+
+    func testLegacyDraftMigratesWithinDynamicArgumentLimit() throws {
+        let stored = Data(#"{"id":"quicklink:legacy","title":"旧链接","template":"https://example.com/{date}/{q=旧值}"}"#.utf8)
+        let draft = try JSONDecoder().decode(Quicklink.self, from: stored).preparedForEditing()
+        XCTAssertEqual(draft.usesDynamicPlaceholders, true)
+        XCTAssertEqual(draft.template, #"https://example.com/{argument name="date"}/{argument name="q" default="旧值"}"#)
+        let template = try draft.parsedTemplate()
+        XCTAssertEqual(template.parameters.map(\.id), ["date", "q"])
+        XCTAssertEqual(try template.url(values: ["date": "explicit"]).absoluteString,
+                       "https://example.com/explicit/%E6%97%A7%E5%80%BC")
+
+        let newLink = Quicklink(title: "新链接", template: "https://example.com/{argument}/{argument}/{argument}/{argument}")
+        XCTAssertThrowsError(try newLink.preparedForEditing().parsedTemplate()) {
+            XCTAssertEqual($0 as? DynamicTemplate.Failure, .tooManyArguments)
+        }
+    }
+
+    func testLibrarySearchAndOrganizationPreserveExistingLinks() throws {
+        let existing = try JSONDecoder().decode(Quicklink.self, from: Data(
+            #"{"id":"quicklink:old","title":"文档","template":"https://example.com/docs"}"#.utf8
+        ))
+        XCTAssertEqual(existing.tags, [])
+        XCTAssertFalse(existing.pinned)
+        XCTAssertFalse(existing.hiddenFromRoot)
+
+        var pinned = Quicklink(id: "quicklink:pin", title: "项目文档", template: "https://example.com/projects")
+        pinned.tags = [" 工作 ", "Work", "ｗｏｒｋ", "", "工作"]
+        pinned.pinned = true
+        pinned.hiddenFromRoot = true
+        let library = QuicklinkLibrary(links: [existing, pinned])
+        XCTAssertEqual(pinned.tags, ["工作", "Work"])
+        XCTAssertEqual(Set(library.tags), ["工作", "Work"])
+        XCTAssertEqual(library.search("文档").map(\.id), [pinned.id, existing.id])
+        XCTAssertEqual(library.search("xiangmu", tag: Quicklink.tagKey("WORK")).map(\.id), [pinned.id])
+        XCTAssertEqual(library.search("manual", aliases: [existing.id: "manual"]).map(\.id), [existing.id])
+        XCTAssertTrue(library.search("", tag: "missing").isEmpty)
+
+        let copy = pinned.duplicate()
+        XCTAssertNotEqual(copy.id, pinned.id)
+        XCTAssertEqual(copy.tags, pinned.tags)
+        XCTAssertFalse(copy.pinned)
+        XCTAssertFalse(copy.hiddenFromRoot)
+    }
+
+    func testImportSkipsDuplicatesAcrossAndWithinBatches() throws {
+        let library = QuicklinkLibrary(links: [])
+        let data = Data("""
+        [
+          {"name":"文档","link":"https://example.com/docs","iconName":"book","openWith":"Safari"},
+          {"name":" 文档 ","link":"https://example.com/docs","tags":["后来的标签"]},
+          {"name":"文档","link":"https://example.com/other","tags":["工作"]}
+        ]
+        """.utf8)
+        let first = try library.importJSON(data)
+        XCTAssertEqual(first.duplicates, 1)
+        XCTAssertEqual(first.links.map(\.tags), [[], ["工作"]])
+        let saved = QuicklinkLibrary(links: first.links)
+        let repeatImport = try saved.importJSON(data)
+        XCTAssertTrue(repeatImport.links.isEmpty)
+        XCTAssertEqual(repeatImport.duplicates, 3)
+        XCTAssertThrowsError(try saved.importJSON(Data("""
+        [{"name":"安全","link":"https://example.com/"},{"name":"无效","link":"file://remote/tmp"}]
+        """.utf8)))
+        XCTAssertEqual(saved.links, first.links)
+    }
+
+    func testExchangePreservesLegacyParametersAndOrganization() throws {
+        var legacy = try JSONDecoder().decode(Quicklink.self, from: Data(
+            #"{"id":"quicklink:legacy","title":"旧链接","template":"https://example.com/{a}/{b}/{c}/{d}"}"#.utf8
+        ))
+        legacy.tags = ["公司, 文档"]
+        legacy.pinned = true
+        legacy.hiddenFromRoot = true
+        let json = try QuicklinkLibrary(links: [legacy]).exportJSON()
+        let restored = try XCTUnwrap(QuicklinkLibrary(links: []).importJSON(json).links.first)
+        XCTAssertNotEqual(restored.id, legacy.id)
+        XCTAssertEqual(restored.title, legacy.title)
+        XCTAssertEqual(restored.template, legacy.template)
+        XCTAssertEqual(restored.tags, legacy.tags)
+        XCTAssertTrue(restored.pinned)
+        XCTAssertTrue(restored.hiddenFromRoot)
+        XCTAssertEqual(try restored.duplicate().parsedTemplate().parameters.map(\.id), ["a", "b", "c", "d"])
+    }
+
+    func testMigrationPreservesOriginalAndDoesNotRecreateDeletedLink() throws {
+        let suite = "Keylane.QuicklinksTests." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let original = "https://example.com/?q={old}"
+        defaults.set(original, forKey: QuicklinkLibrary.legacyKey)
+        let migrated = try QuicklinkLibrary.load(from: defaults)
+        XCTAssertEqual(migrated.links.map(\.id), [QuicklinkLibrary.legacyID])
+        XCTAssertEqual(migrated.links.first?.template, "https://example.com/?q=%7Bold%7D")
+        XCTAssertEqual(defaults.string(forKey: QuicklinkLibrary.legacyKey), original)
+        XCTAssertEqual(try QuicklinkLibrary.load(from: defaults), migrated)
+
+        let empty = QuicklinkLibrary(links: [])
+        try empty.save(to: defaults)
+        XCTAssertEqual(try QuicklinkLibrary.load(from: defaults), empty)
+        defaults.set(Data([0]), forKey: QuicklinkLibrary.storageKey)
+        XCTAssertThrowsError(try QuicklinkLibrary.load(from: defaults))
+        XCTAssertEqual(defaults.data(forKey: QuicklinkLibrary.storageKey), Data([0]))
+    }
+}

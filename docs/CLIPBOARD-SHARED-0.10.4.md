@@ -1,0 +1,9 @@
+# 0.10.4 剪贴板统一共享界面
+
+文件搜索与剪贴板共用ResultListScrollView和ResultListRow：一致的边距、40pt基础行高、图标区域、选中背景、安全区及渐隐。右侧继续复用ResultDetailPane、DetailInformationSection和ResultFilePreview。剪贴板只提供记录及对应内容，左侧不再添加采集状态、置顶筛选、数量统计、来源副标题或时间区。
+
+类型筛选只使用Launcher右上角现有ResultTypeFilter，直接绑定ClipboardController.kind；未再构造第二套选择器。保留当前工作区新增的筛选交互和Quick Look生命周期修复（shouldCloseWithWindow、dismantle时只释放previewItem）。
+
+32项核心测试通过；独立命名剪贴板验证新增全部/文字/图片/文件四种筛选，包括过滤生效期间继续自动采集文件。四类内容在深浅色完成组件渲染检查，完整主窗口交互仍待人工验收。6项分发工具测试及安装包校验通过。
+
+开发及构建在fix/clipboard-detail-preview独立工作区进行；验证后以限定六个UI文件的补丁合回当前工程，保留并行修改、设置页面及既有右上角筛选。没有暂存、提交或发布其他开发任务的改动。已安装0.10.4（build26），签名及安装二进制和包一致性通过。

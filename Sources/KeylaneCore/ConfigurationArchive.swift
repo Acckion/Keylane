@@ -1,0 +1,282 @@
+import Foundation
+import CoreFoundation
+
+/// Portable settings, deliberately separate from permissions, caches and private databases.
+public struct ConfigurationArchive: Codable {
+    public var format = "keylane.configuration"
+    public var schemaVersion = 2
+    public var preferences: [String: Value] = [:]
+    public var aliases: [String: String]?
+    public var shortcuts: [String: Shortcut]?
+    public var quicklinks: [Quicklink]?
+    public var disabledCommands: [String]?
+    public var commandEnabled: [String: Bool]?
+
+    public enum Value: Codable, Equatable {
+        case string(String), bool(Bool), integer(Int)
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            if let b = try? c.decode(Bool.self) { self = .bool(b) }
+            else if let n = try? c.decode(Int.self) { self = .integer(n) }
+            else { self = .string(try c.decode(String.self)) }
+        }
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.singleValueContainer()
+            switch self { case .string(let x): try c.encode(x); case .bool(let x): try c.encode(x); case .integer(let x): try c.encode(x) }
+        }
+        var object: Any { switch self { case .string(let x): x; case .bool(let x): x; case .integer(let x): x } }
+    }
+
+    static let enums: [String: Set<String>] = [
+        "appearance": ["system", "light", "dark"], "placement": ["activeScreen", "primaryDisplay", "remember"],
+        "rootSearchSensitivity": ["low", "medium", "high"], "interfaceSize": ["small", "medium", "large"],
+        "windowMode": ["compact", "expanded"], "applicationHotkeyAction": ["toggle", "activate"],
+        "navigation": ["arrows", "vim", "emacs"], "windowActivationBehavior": ["systemDefault", "activeSpace"],
+        "launcherEscapeBehavior": ["backOrClose", "closeWindow"], "pageNavigationKeys": ["brackets", "arrows"]
+    ]
+    static let flags: Set<String> = ["rootFileContentSearch", "compactFavorites", "applicationsEnabled", "escapeClosesUtilityWindows", "replaceHyperKeycaps"]
+    public init() {}
+
+    public static func capture(_ defaults: UserDefaults, includePersonalContent: Bool = false) throws -> Self {
+        var archive = Self()
+        // Match Model's effective fallback values, even if never persisted.
+        archive.preferences = [
+            "appearance": .string("system"), "placement": .string("activeScreen"),
+            "rootSearchSensitivity": .string("low"), "interfaceSize": .string("medium"),
+            "windowMode": .string("expanded"), "applicationHotkeyAction": .string("toggle"),
+            "navigation": .string("arrows"), "windowActivationBehavior": .string("systemDefault"),
+            "launcherEscapeBehavior": .string("backOrClose"), "pageNavigationKeys": .string("brackets"),
+            "rootFileContentSearch": .bool(true), "compactFavorites": .bool(true),
+            "applicationsEnabled": .bool(true), "escapeClosesUtilityWindows": .bool(true),
+            "replaceHyperKeycaps": .bool(false), "launcherReturnDelay": .integer(90)
+        ]
+        for key in enums.keys { if let value = defaults.string(forKey: key) { archive.preferences[key] = .string(value) } }
+        for key in flags { if let value = defaults.object(forKey: key) as? Bool { archive.preferences[key] = .bool(value) } }
+        if let value = defaults.object(forKey: "launcherReturnDelay") as? Int { archive.preferences["launcherReturnDelay"] = .integer(value) }
+        if let data = defaults.data(forKey: "shortcuts") { archive.shortcuts = try JSONDecoder().decode([String: Shortcut].self, from: data) }
+        else { archive.shortcuts = ["launcher": .launcher] }
+        archive.disabledCommands = defaults.stringArray(forKey: "disabledLauncherCommands") ?? []
+        if includePersonalContent {
+            archive.aliases = defaults.dictionary(forKey: "aliases") as? [String: String] ?? [:]
+            if let data = defaults.data(forKey: QuicklinkLibrary.storageKey) {
+                archive.quicklinks = try JSONDecoder().decode(QuicklinkLibrary.self, from: data).links
+            } else { archive.quicklinks = [] }
+        }
+        return archive
+    }
+
+    public func data() throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return try encoder.encode(self)
+    }
+    public static func decode(_ data: Data) throws -> Self {
+        guard data.count <= 16 * 1024 * 1024 else { throw ConfigurationError("文件超过 16 MB。") }
+        if let root = try JSONSerialization.jsonObject(with: data) as? [String: Any], root["schemaVersion"] as? Int == 1, root["format"] == nil,
+           let preferences = root["preferences"] {
+            var legacy = Self()
+            legacy.preferences = try JSONDecoder().decode([String: Value].self, from: JSONSerialization.data(withJSONObject: preferences))
+            return legacy
+        }
+        let value = try JSONDecoder().decode(Self.self, from: data)
+        guard value.format == "keylane.configuration", value.schemaVersion == 2 else {
+            throw ConfigurationError("不支持此配置格式或版本；请使用兼容版本的 Keylane。")
+        }
+        return value
+    }
+
+    public struct Plan {
+        public let changes: [String: Any]
+        public let messages: [String]
+        public let conflicts: Int
+        public let omitted: Int
+    }
+
+    /// Merge-only restoration: missing categories/keys never delete existing configuration.
+    public func plan(current: [String: Any], overwrite: Bool, excludingCommandStates: Set<String> = [], templateContext: DynamicTemplate.Context = .init()) throws -> Plan {
+        guard disabledCommands == nil || commandEnabled == nil else { throw ConfigurationError("命令状态包含两种不兼容的表示。") }
+        var changes: [String: Any] = [:], messages: [String] = []
+        var conflicts = 0, omitted = 0
+        func choose(_ key: String, _ value: Any) {
+            if let old = current[key], !Self.equal(old, value) {
+                conflicts += 1
+                if !overwrite { return }
+            }
+            if !Self.equal(current[key], value) { changes[key] = value }
+        }
+        for (key, value) in preferences {
+            if let allowed = Self.enums[key] {
+                guard case .string(let text) = value, allowed.contains(text) else { throw ConfigurationError("偏好值无效：\(key)。") }
+            } else if Self.flags.contains(key) {
+                guard case .bool = value else { throw ConfigurationError("偏好类型无效：\(key)。") }
+            } else if key == "launcherReturnDelay" {
+                guard case .integer(let n) = value, [-1, 0, 30, 90, 300].contains(n) else { throw ConfigurationError("返回延迟无效。") }
+            } else { omitted += 1; continue }
+            choose(key, value.object)
+        }
+        // Resolve link identity before merging any command-keyed configuration.
+        var canonicalIDs: [String: String] = [:]
+        if let quicklinks {
+            var existing: [Quicklink] = []
+            if let stored = current[QuicklinkLibrary.storageKey] {
+                guard let data = stored as? Data else { throw ConfigurationError("现有 Quicklinks 损坏。") }
+                existing = try JSONDecoder().decode(QuicklinkLibrary.self, from: data).links
+            }
+            var seen: Set<String> = []
+            // Validate all input and apply same-ID replacements first. A new
+            // link must never deduplicate against content replaced later.
+            for link in quicklinks {
+                guard (link.id == QuicklinkLibrary.legacyID || link.id.hasPrefix("quicklink:")),
+                      seen.insert(link.id).inserted, !link.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ConfigurationError("Quicklinks 标识或名称无效。") }
+                _ = try link.parsedTemplate(context: templateContext)
+                if let index = existing.firstIndex(where: { $0.id == link.id }) {
+                    if existing[index] != link { conflicts += 1; if overwrite { existing[index] = link } }
+                }
+            }
+            let retainedIDs = Set(existing.map(\.id))
+            for link in quicklinks where !retainedIDs.contains(link.id) {
+                if let canonical = existing.first(where: { $0.title == link.title && $0.template == link.template && $0.openingApplicationID == link.openingApplicationID && ($0.usesDynamicPlaceholders == true) == (link.usesDynamicPlaceholders == true) }) {
+                    canonicalIDs[link.id] = canonical.id
+                    omitted += 1
+                } else { existing.append(link) }
+            }
+            let data = try JSONEncoder().encode(QuicklinkLibrary(links: existing))
+            if let old = current[QuicklinkLibrary.storageKey] as? Data,
+               (try? JSONDecoder().decode(QuicklinkLibrary.self, from: old))?.links == existing {} else { changes[QuicklinkLibrary.storageKey] = data }
+        }
+        func remap<Value>(_ mapping: [String: Value]) -> [String: Value] {
+            var result: [String: Value] = [:]
+            // An explicit canonical entry wins over references from duplicates.
+            let keys = mapping.keys.sorted {
+                let a = canonicalIDs[$0] == nil, b = canonicalIDs[$1] == nil
+                return a != b ? a : $0 < $1
+            }
+            for key in keys {
+                let target = canonicalIDs[key] ?? key
+                if result[target] != nil { omitted += 1; continue }
+                result[target] = mapping[key]
+            }
+            return result
+        }
+        if let disabledCommands {
+            guard !disabledCommands.contains("settings"), Set(disabledCommands).count == disabledCommands.count, disabledCommands.allSatisfy({ !$0.isEmpty && $0.count < 1024 }) else { throw ConfigurationError("命令启用状态无效。") }
+            omitted += disabledCommands.filter { excludingCommandStates.contains($0) }.count
+            let retained = (current["disabledLauncherCommands"] as? [String] ?? []).filter { excludingCommandStates.contains($0) }
+            choose("disabledLauncherCommands", Set(disabledCommands.map { canonicalIDs[$0] ?? $0 }.filter { !excludingCommandStates.contains($0) } + retained).sorted())
+        }
+        if let commandEnabled {
+            var disabled = Set(current["disabledLauncherCommands"] as? [String] ?? [])
+            for (id, enabled) in commandEnabled {
+                guard !id.isEmpty, id.count < 1024, id != "settings" || enabled else { throw ConfigurationError("命令状态记录无效。") }
+            }
+            for (id, enabled) in remap(commandEnabled) {
+                if excludingCommandStates.contains(id) { omitted += 1; continue }
+                let wasEnabled = !disabled.contains(id)
+                if wasEnabled != enabled { conflicts += 1; if !overwrite { continue } }
+                if enabled { disabled.remove(id) } else { disabled.insert(id) }
+            }
+            let proposed = disabled.sorted()
+            let old = (current["disabledLauncherCommands"] as? [String] ?? []).sorted()
+            if proposed != old { changes["disabledLauncherCommands"] = proposed }
+        }
+        if let aliases {
+            for (key, value) in aliases {
+                guard !key.isEmpty, key.count < 1024, value.count <= 4096 else { throw ConfigurationError("别名记录无效。") }
+            }
+            let old = current["aliases"] as? [String: String] ?? [:]
+            let result = Self.mergeCommandMapping(remap(aliases), into: old, overwrite: overwrite) {
+                !$0.isEmpty && !$1.isEmpty && $0.localizedCaseInsensitiveCompare($1) == .orderedSame
+            }
+            conflicts += result.conflicts; omitted += result.omitted
+            if !Self.equal(current["aliases"], result.values) { changes["aliases"] = result.values }
+        }
+        var bindings: [String: Shortcut] = ["launcher": .launcher]
+        if let stored = current["shortcuts"] {
+            guard let data = stored as? Data else { throw ConfigurationError("现有快捷键损坏，未写入任何配置。") }
+            bindings = try JSONDecoder().decode([String: Shortcut].self, from: data)
+        }
+        if let shortcuts {
+            guard ShortcutValidation.conflict(in: shortcuts) == nil else { throw ConfigurationError("导入文件中的快捷键无效或相互冲突。") }
+            for (key, value) in shortcuts {
+                guard !key.isEmpty, key.count < 1024, value.modifiers & ~UInt32(256 | 512 | 2048 | 4096) == 0 else {
+                    throw ConfigurationError("快捷键记录无效。")
+                }
+            }
+            let result = Self.mergeCommandMapping(remap(shortcuts), into: bindings, overwrite: overwrite, collides: ==)
+            conflicts += result.conflicts; omitted += result.omitted
+            // Preserve the old behavior for unrelated invalid saved bindings: a
+            // restore must not persist a final mapping that fails validation.
+            if ShortcutValidation.conflict(in: result.values) == nil { bindings = result.values }
+            else { omitted += result.applied }
+            let data = try JSONEncoder().encode(bindings)
+            if let old = current["shortcuts"] as? Data,
+               (try? JSONDecoder().decode([String: Shortcut].self, from: old)) == bindings {} else { changes["shortcuts"] = data }
+        }
+        messages.append("偏好 \(preferences.count) 项；快捷键 \(shortcuts?.count ?? 0) 项；禁用命令 \(disabledCommands?.count ?? 0) 项；别名 \(aliases?.count ?? 0) 项；Quicklinks \(quicklinks?.count ?? 0) 条。")
+        messages.append("冲突 \(conflicts) 项（\(overwrite ? "覆盖同名项" : "保留现有项")）；跳过不支持、重复或热键冲突 \(omitted) 项。缺失项目保留现状。")
+        messages.append("将更改 \(changes.count) 个存储分组。系统占用的热键需重启后检查；缺失命令或应用的映射可能暂不生效。")
+        return Plan(changes: changes, messages: messages, conflicts: conflicts, omitted: omitted)
+    }
+    /// Resolve the complete proposed mapping, including swaps/cycles. If an
+    /// update is rejected, its original value remains reserved and may reject
+    /// dependent updates too. No intermediate mapping is persisted.
+    private static func mergeCommandMapping<Value: Equatable>(
+        _ incoming: [String: Value], into current: [String: Value], overwrite: Bool,
+        collides: (Value, Value) -> Bool
+    ) -> (values: [String: Value], conflicts: Int, omitted: Int, applied: Int) {
+        var updates: [String: Value] = [:], conflicts = 0, omitted = 0
+        for key in incoming.keys.sorted() {
+            let value = incoming[key]!
+            if let old = current[key] {
+                guard old != value else { continue }
+                conflicts += 1
+                if !overwrite { continue }
+            }
+            updates[key] = value
+        }
+        // Existing semantic owners win duplicate incoming aliases (including
+        // case-only edits); otherwise use stable command-ID ordering.
+        let ordered = updates.keys.sorted { lhs, rhs in
+            let ownsLeft = current[lhs].map { collides($0, updates[lhs]!) } ?? false
+            let ownsRight = current[rhs].map { collides($0, updates[rhs]!) } ?? false
+            return ownsLeft == ownsRight ? lhs < rhs : ownsLeft
+        }
+        var proposed: [String: Value] = [:]
+        for key in ordered {
+            let value = updates[key]!
+            if proposed.values.contains(where: { collides($0, value) }) { omitted += 1 }
+            else { proposed[key] = value }
+        }
+        // Build original-owner dependencies once. Rejection restores an owner's
+        // old value, so propagate to its dependents rather than rescanning every
+        // retained value on every step of a long collision chain.
+        var dependents: [String: [String]] = [:]
+        var blocked: Set<String> = []
+        for (key, value) in proposed {
+            for (owner, old) in current where owner != key && collides(old, value) {
+                dependents[owner, default: []].append(key)
+                if proposed[owner] == nil { blocked.insert(key) }
+            }
+        }
+        var rejected = blocked.sorted(), index = 0
+        while index < rejected.count {
+            let key = rejected[index]; index += 1
+            guard proposed.removeValue(forKey: key) != nil else { continue }
+            omitted += 1
+            for dependent in dependents[key] ?? [] where proposed[dependent] != nil {
+                rejected.append(dependent)
+            }
+        }
+        var merged = current
+        for (key, value) in proposed { merged[key] = value }
+        return (merged, conflicts, omitted, proposed.count)
+    }
+    static func equal(_ a: Any?, _ b: Any?) -> Bool {
+        guard let a, let b else { return a == nil && b == nil }
+        return NSDictionary(dictionary: ["v": a]).isEqual(to: ["v": b])
+    }
+}
+
+public struct ConfigurationError: LocalizedError {
+    public let errorDescription: String?
+    public init(_ message: String) { errorDescription = message }
+}

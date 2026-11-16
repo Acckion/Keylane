@@ -6,6 +6,9 @@ struct SettingsSearchField: NSViewRepresentable {
     @Binding var text: String
     var placeholder = "搜索设置…"
     var floating = false
+    var autofocus = false
+    var endEditing: () -> Void = {}
+    var cancel: (() -> Void)?
     var submit: () -> Void = {}
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSSearchField {
@@ -21,6 +24,12 @@ struct SettingsSearchField: NSViewRepresentable {
         field.target = context.coordinator
         field.action = #selector(Coordinator.search)
         field.setAccessibilityLabel(placeholder)
+        if autofocus {
+            DispatchQueue.main.async { [weak field] in
+                guard let field else { return }
+                field.window?.makeFirstResponder(field)
+            }
+        }
         return field
     }
     func updateNSView(_ field: NSSearchField, context: Context) {
@@ -35,6 +44,18 @@ struct SettingsSearchField: NSViewRepresentable {
         func controlTextDidChange(_ notification: Notification) {
             if let field = notification.object as? NSSearchField { parent.text = field.stringValue }
         }
+        func controlTextDidEndEditing(_ notification: Notification) {
+            let endEditing = parent.endEditing
+            DispatchQueue.main.async { endEditing() }
+        }
+
+        func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            guard commandSelector == #selector(NSResponder.cancelOperation(_:)),
+                  !textView.hasMarkedText(), let cancel = parent.cancel else { return false }
+            cancel()
+            return true
+        }
+
         @objc func search(_ sender: NSSearchField) {
             parent.text = sender.stringValue
             if NSApp.currentEvent?.type == .keyDown, NSApp.currentEvent?.keyCode == 36 { parent.submit() }

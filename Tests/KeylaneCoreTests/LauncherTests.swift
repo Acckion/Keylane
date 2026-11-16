@@ -33,6 +33,127 @@ final class LauncherTests: XCTestCase {
         XCTAssertNil(SearchRanker.score("AppCleaner", query: "系统设置"))
         XCTAssertNil(SearchRanker.score("AppCleaner", query: "剪贴板"))
     }
+    func testLauncherRankingUsesTypedCandidatesAndUserPreferences() throws {
+        let ranking = LauncherSearchRanking(query: "  编辑器 ", aliases: ["shortcut": "编辑器"],
+                                           favorites: ["shortcut"], usage: ["shortcut": 7])
+        let shortcut = try XCTUnwrap(ranking.match(id: "shortcut", title: "Utility"))
+        let application = try XCTUnwrap(ranking.match(id: "app", title: "Editor", names: ["编辑器"]))
+        let file = try XCTUnwrap(ranking.match(id: "file", title: "编辑器.txt", kind: .file))
+        let calculator = try XCTUnwrap(ranking.match(id: "expression", title: "42", kind: .calculator))
+        XCTAssertEqual([shortcut.score, application.score, file.score, calculator.score], [1500, 1000, 800, 2000])
+        XCTAssertTrue(shortcut.favorite)
+        XCTAssertEqual(shortcut.uses, 7)
+        XCTAssertNil(ranking.match(id: "unrelated", title: "Calendar"))
+    }
+
+    func testSelectionRetainsCommandAcrossAsyncResultChanges() {
+        let first = CommandID(rawValue: "first")
+        let selected = CommandID(rawValue: "selected")
+        let inserted = CommandID(rawValue: "inserted")
+        var selection = LauncherResultSelection()
+        selection.selectDefault(first)
+        selection.move(by: 1, in: [first, selected], identifiedBy: \.self)
+        let updated = [inserted, first, selected]
+        selection.selectDefault(inserted)
+        let activationIndex = selection.index(in: updated, identifiedBy: \.self)
+        XCTAssertEqual(activationIndex.map { updated[$0] }, selected)
+        XCTAssertNil(selection.index(in: [inserted, first], identifiedBy: \.self))
+        selection.move(by: 1, in: [inserted, first], identifiedBy: \.self)
+        XCTAssertEqual(selection.id, inserted)
+    }
+
+    func testPageLifecycleDoesNotLeaveHiddenPageTwice() {
+        let files = PageID(rawValue: "files")
+        let notes = PageID(rawValue: "notes")
+        var presentation = LauncherPagePresentation()
+
+        XCTAssertEqual(presentation.update(page: .root, visible: true).activation, .enter)
+        let toFiles = presentation.update(page: files, visible: true)
+        XCTAssertEqual(toFiles.previousPage, .root)
+        XCTAssertEqual(toFiles.deactivation, .root)
+        XCTAssertEqual(toFiles.activation, .enter)
+        XCTAssertNil(presentation.update(page: files, visible: true).activation)
+
+        XCTAssertEqual(presentation.update(page: files, visible: false).deactivation, files)
+        XCTAssertNil(presentation.update(page: files, visible: false).deactivation)
+        XCTAssertEqual(presentation.update(page: files, visible: true).activation, .resume)
+        XCTAssertEqual(presentation.update(page: files, visible: false).deactivation, files)
+
+        let switchWhileHidden = presentation.update(page: notes, visible: false)
+        XCTAssertEqual(switchWhileHidden.previousPage, files)
+        XCTAssertNil(switchWhileHidden.deactivation)
+        XCTAssertNil(switchWhileHidden.activation)
+        XCTAssertEqual(presentation.update(page: notes, visible: true).activation, .enter)
+    }
+
+    func testPageReplacementWithSameIDLeavesOldActivationAndEntersNewOne() {
+        let page = PageID(rawValue: "extension")
+        let old = UUID()
+        let replacement = UUID()
+        var presentation = LauncherPagePresentation()
+
+        XCTAssertEqual(presentation.update(page: page, visible: true, activationID: old).activation, .enter)
+        let change = presentation.update(page: page, visible: true, activationID: replacement)
+        XCTAssertEqual(change.deactivation, page)
+        XCTAssertEqual(change.activation, .enter)
+        XCTAssertNil(presentation.update(page: page, visible: true, activationID: replacement).deactivation)
+        XCTAssertEqual(presentation.update(page: page, visible: false, activationID: replacement).deactivation, page)
+        XCTAssertNil(presentation.update(page: page, visible: false, activationID: old).deactivation)
+        XCTAssertEqual(presentation.update(page: page, visible: true, activationID: old).activation, .enter)
+    }
+
+    func testCancellingPasteReleasesLauncherFocusAndRejectsStaleCallbacks() throws {
+        var paste = LauncherPaste()
+        let clipboard = try XCTUnwrap(paste.begin(keepingLauncherOpen: true))
+        XCTAssertTrue(paste.keepsLauncherOpen)
+        XCTAssertNil(paste.begin(keepingLauncherOpen: false))
+
+        paste.cancel()
+        XCTAssertFalse(paste.isCurrent(clipboard))
+        XCTAssertFalse(paste.keepsLauncherOpen)
+        let file = try XCTUnwrap(paste.begin(keepingLauncherOpen: true))
+        paste.finish(clipboard)
+        XCTAssertTrue(paste.isCurrent(file))
+        XCTAssertTrue(paste.keepsLauncherOpen)
+
+        paste.cancel()
+        XCTAssertFalse(paste.isCurrent(file))
+        XCTAssertFalse(paste.keepsLauncherOpen)
+        let next = try XCTUnwrap(paste.begin(keepingLauncherOpen: false))
+        paste.finish(file)
+        XCTAssertTrue(paste.isCurrent(next))
+        XCTAssertFalse(paste.keepsLauncherOpen)
+        paste.finish(next)
+        XCTAssertFalse(paste.isPending)
+    }
+
+    func testLauncherReturnDelayIncludesBoundaryAndNever() {
+        XCTAssertTrue(LauncherReturnDelay.immediately.shouldReturn(hiddenFor: 0))
+        XCTAssertFalse(LauncherReturnDelay.after90Seconds.shouldReturn(hiddenFor: 89.9))
+        XCTAssertTrue(LauncherReturnDelay.after90Seconds.shouldReturn(hiddenFor: 90))
+        XCTAssertFalse(LauncherReturnDelay.never.shouldReturn(hiddenFor: 10_000))
+    }
+
+    func testSearchSensitivityFiltersWeakMatchesAndPreservesAliases() {
+        func ranking(_ query: String, _ sensitivity: LauncherSearchRanking.Sensitivity) -> LauncherSearchRanking {
+            LauncherSearchRanking(query: query, aliases: ["alias": "bc"], favorites: [], usage: [:],
+                                  sensitivity: sensitivity)
+        }
+        XCTAssertNotNil(ranking("bc", .low).match(id: "fuzzy", title: "Abxdc"))
+        // A single word avoids initials becoming an exact alternative.
+        XCTAssertNil(ranking("bc", .medium).match(id: "fuzzy", title: "Abxdc"))
+        XCTAssertNotNil(ranking("bc", .medium).match(id: "substring", title: "Abcd"))
+        XCTAssertNil(ranking("bc", .high).match(id: "substring", title: "Abcd"))
+        XCTAssertNotNil(ranking("bc", .high).match(id: "prefix", title: "Bcde"))
+        XCTAssertNotNil(ranking("bc", .high).match(id: "alias", title: "Utility"))
+        XCTAssertNotNil(ranking("", .high).match(id: "default", title: "Utility"))
+    }
+
+    func testInvisibleOnlyQueryDoesNotPromoteSystemSettings() {
+        let rank = LauncherSearchRanking(query: "\u{200B}", aliases: [:], favorites: [], usage: [:])
+        XCTAssertNil(rank.match(id: "settings", title: "系统设置", kind: .systemSetting))
+    }
+
     func testRankingKeepsMatchQualityAheadOfFavoritesAndFrequency() {
         let exact = SearchResultRank(score:1000,favorite:false,uses:0,title:"A",id:"1")
         let fuzzy = SearchResultRank(score:300,favorite:true,uses:999,title:"B",id:"2")
@@ -50,14 +171,14 @@ final class LauncherTests: XCTestCase {
         tap.cancel(); XCTAssertFalse(tap.update(pressed:true,time:2)); XCTAssertFalse(tap.update(pressed:false,time:2.8))
     }
     func testRealCatalogSearchBaseline() throws {
-        let apps = ApplicationCatalog.scan(roots: ApplicationCatalog.defaultRoots, excluded: [])
+        let apps = ApplicationCatalog.scan(roots: ApplicationCatalog.defaultRoots, excluded: [], languages: ["zh-Hans-CN"])
         guard !apps.isEmpty else { throw XCTSkip("No installed applications available") }
         var samples: [Double] = []
         for query in ["系统", "System Settings", "xtsz", "Terminal", "vsc", "Safari", "计算器", "Calculator", "设置", "mail", "notes", "finder"] {
             let start = Date()
             let matches = apps.compactMap { $0.identity.score(query: query) }
             samples.append(Date().timeIntervalSince(start))
-            if query == "系统" || query == "System Settings" { XCTAssertFalse(matches.isEmpty) }
+            if query == "系统" || query == "System Settings" { XCTAssertFalse(matches.isEmpty, "No matches for \(query)") }
         }
         let sorted = samples.sorted()
         print("CORE_SEARCH_BASELINE apps=\(apps.count) p95_ms=\(sorted[min(sorted.count-1, Int(Double(sorted.count)*0.95))]*1000)")

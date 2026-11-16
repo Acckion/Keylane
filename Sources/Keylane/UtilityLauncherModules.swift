@@ -1,0 +1,357 @@
+import AppKit
+import Combine
+import KeylaneCore
+import SwiftUI
+
+enum UtilityLauncherModules {
+    static func make(model: Model) -> [LauncherModule] {
+        [contacts(model), dictionary(model), emoji(model), shortcuts(model)]
+    }
+
+    private static func contacts(_ model: Model) -> LauncherModule {
+        let controller = model.contacts
+        let permission = PermissionFeature("contacts.enabled", authorization: .contacts, observeImmediately: false)
+        var permissionChanges: AnyCancellable?
+        let pageID = PageID(rawValue: "Contacts")
+        let selectedContact = controller.$visible.combineLatest(controller.$selectedID)
+            .map { results, id in results.first { $0.id == id } }
+        var page = LauncherPage(id: pageID, placeholder: "搜索联系人…",
+                                badge: ("联系人", "person.crop.circle"),
+                                contentPlacement: .underChrome,
+                                content: { [weak model] in
+                                    AnyView(ContactsPage(controller: controller, permission: permission,
+                                                         showSettings: { model?.openSettings(page: "keylane.contacts") }))
+                                },
+                                queryChanged: { controller.query = $0 },
+                                leave: controller.stop,
+                                move: controller.move,
+                                submit: {
+                                    if let contact = controller.selected, let value = contact.firstValue {
+                                        controller.copy(value, for: contact.id)
+                                    }
+                                    else { UtilityActions.openApplication("com.apple.AddressBook") }
+                                },
+                                primaryTitle: { controller.selected?.firstValue == nil ? "打开联系人" : "复制" },
+                                actions: { contactActions(controller) },
+                                updates: ViewObservation.changes(selectedContact))
+        page.loading = controller.$loading.eraseToAnyPublisher()
+        page.enter = { query in
+            controller.query = query
+            if permission.available { controller.start() }
+            return nil
+        }
+        page.resume = { if permission.available { controller.start() } }
+        return .init(id: .init(rawValue: "keylane.contacts"), title: "联系人", symbol: "person.crop.circle", commands: [
+            command("contacts", "搜索联系人", "系统通讯录", "person.crop.circle",
+                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID), settings: "keylane.contacts",
+                    permission: permission)
+        ], pages: [page], services: [.init(start: {
+            permission.startObserving()
+            permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
+                if !permission.available { controller.stop() }
+            }
+        }, stop: {
+            permissionChanges?.cancel()
+            permissionChanges = nil
+            permission.stopObserving()
+            controller.stop()
+        })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用联系人"))
+    }
+
+    private static func contactActions(_ controller: ContactsController) -> [LauncherAction] {
+        var actions = [
+            LauncherAction(id: "contacts-open", title: "打开系统联系人", icon: "person.crop.circle",
+                           perform: { UtilityActions.openApplication("com.apple.AddressBook") }),
+            LauncherAction(id: "contacts-refresh", title: "刷新联系人", icon: "arrow.clockwise",
+                           perform: controller.refresh)
+        ]
+        if let contact = controller.selected {
+            actions += contact.phones.enumerated().map { index, value in
+                LauncherAction(id: "phone-\(index)", title: "复制电话 " + value, icon: "phone",
+                               perform: { controller.copy(value, for: contact.id) })
+            }
+            actions += contact.emails.enumerated().map { index, value in
+                LauncherAction(id: "email-\(index)", title: "复制邮箱 " + value, icon: "envelope",
+                               perform: { controller.copy(value, for: contact.id) })
+            }
+        }
+        return actions
+    }
+
+    private static func dictionary(_ model: Model) -> LauncherModule {
+        let controller = model.dictionary
+        let pageID = PageID(rawValue: "Dictionary")
+        let suggestionID = CommandID(rawValue: "dictionary-query")
+        let provider = LauncherModule.Provider(namespace: .exact(suggestionID), entries: { input in
+            guard let term = dictionaryTerm(input.query) else { return [] }
+            return [Entry(id: suggestionID.rawValue, commandID: suggestionID, name: "查询「" + term + "」",
+                          detail: "系统词典", symbol: "book.closed", matchScore: 2000)]
+        }, resolve: { [weak model] _, origin in
+            guard origin != .shortcut, let model, let term = dictionaryTerm(model.query) else { return nil }
+            return {
+                controller.initialTerm = term
+                model.openPage(pageID, origin: origin)
+            }
+        })
+        var page = LauncherPage(id: pageID, placeholder: "输入要查询的词语…",
+                                badge: ("词典", "book.closed"),
+                                content: { AnyView(DictionaryPage(controller: controller)) },
+                                queryChanged: controller.search,
+                                leave: { controller.search("") },
+                                submit: {
+                                    guard controller.canSubmit else { return }
+                                    if controller.definition != nil { copyDefinition(controller, term: controller.term) }
+                                    else { openDictionary(controller) }
+                                },
+                                primaryTitle: {
+                                    if controller.loading { return "正在查询…" }
+                                    return controller.definition == nil ? "打开词典" : "复制释义"
+                                },
+                                primaryEnabled: { controller.canSubmit },
+                                actions: { dictionaryActions(controller) },
+                                updates: Publishers.Merge3(ViewObservation.changes(controller.$definition),
+                                                           ViewObservation.changes(controller.$loading),
+                                                           ViewObservation.changes(controller.$term)).eraseToAnyPublisher())
+        page.loading = controller.$loading.eraseToAnyPublisher()
+        page.enter = { _ in
+            let term = controller.initialTerm
+            controller.initialTerm = ""
+            return term
+        }
+        page.resume = { [weak model] in
+            if let query = model?.query { controller.search(query) }
+        }
+        return .init(id: .init(rawValue: "keylane.dictionary"), title: "词典", symbol: "book", commands: [
+            command("dictionary", "查询词典", "查找词语释义", "book.closed",
+                    ["Dictionary", "Define Word", "字典", "查词"], destination: .page(pageID))
+        ], providers: [provider], pages: [page], services: [.init(start: {}, stop: {
+            controller.initialTerm = ""
+            controller.search("")
+        })])
+    }
+
+    private static func dictionaryTerm(_ query: String) -> String? {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = ["define ", "词典 ", "查词 "]
+        guard let prefix = prefixes.first(where: { trimmed.lowercased().hasPrefix($0) }) else { return nil }
+        let term = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        return (1...DictionaryController.maximumTermLength).contains(term.utf16.count) ? term : nil
+    }
+
+    private static func dictionaryActions(_ controller: DictionaryController) -> [LauncherAction] {
+        guard !controller.termTooLong else { return [] }
+        let open = LauncherAction(id: "dictionary-open", title: "打开系统词典", icon: "book.closed",
+                                  perform: { openDictionary(controller) })
+        guard controller.definition != nil else { return [open] }
+        let term = controller.term
+        return [LauncherAction(id: "dictionary-copy", title: "复制释义", icon: "doc.on.doc",
+                               perform: { copyDefinition(controller, term: term) }), open]
+    }
+
+    private static func copyDefinition(_ controller: DictionaryController, term: String) {
+        guard term == controller.term, !controller.loading, controller.definition != nil else { return }
+        let copied = controller.copyDefinition(for: term)
+        (NSApp.delegate as? Delegate)?.showLauncherFeedback(copied ? "已复制释义" : "无法复制释义",
+                                                            style: copied ? .success : .failure)
+    }
+
+    private static func openDictionary(_ controller: DictionaryController) {
+        controller.openDictionary {
+            (NSApp.delegate as? Delegate)?.showLauncherFeedback("无法打开系统词典。", style: .failure)
+        }
+    }
+
+    private static func emoji(_ model: Model) -> LauncherModule {
+        let controller = model.emoji
+        let pageID = PageID(rawValue: "Emoji")
+        let title = EmojiCatalog.label("Emoji 与符号", "Emoji & Symbols")
+        let use: (EmojiItem, Bool) -> Void = { item, paste in
+            let delegate = NSApp.delegate as? Delegate
+            guard controller.selected?.id == item.id else { return }
+            guard let generation = controller.copy(item) else {
+                delegate?.showLauncherFeedback(EmojiCatalog.label("无法复制字符", "Could not copy character"), style: .failure)
+                return
+            }
+            if paste, let delegate, delegate.pasteTargetName != nil {
+                delegate.pasteIntoPreviousApplication(clipboardGeneration: generation)
+            } else {
+                delegate?.hideLauncher()
+                delegate?.showLauncherFeedback(EmojiCatalog.label("已复制字符", "Character copied"), style: .success)
+            }
+        }
+        var page = LauncherPage(id: pageID,
+                                placeholder: EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"),
+                                badge: (title, "face.smiling"),
+                                contentPlacement: .underChrome,
+                                content: { AnyView(EmojiSearchPage(controller: controller) { use($0, true) }) },
+                                queryChanged: { controller.query = $0 },
+                                move: { controller.move($0, vertical: true) },
+                                submit: { if let item = controller.selected { use(item, true) } },
+                                primaryTitle: emojiPasteTitle,
+                                actions: {
+                                    guard let item = controller.selected else { return [] }
+                                    return [
+                                        LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
+                                                       keys: ["↩"], perform: { use(item, true) }),
+                                        LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"),
+                                                       icon: "doc.on.doc", keys: ["⌘", "↩"], perform: { use(item, false) })
+                                    ]
+                                },
+                                updates: Publishers.Merge(ViewObservation.changes(controller.$selection),
+                                                          ViewObservation.changes(controller.$category)).eraseToAnyPublisher())
+        page.loading = controller.$isLoading.combineLatest(controller.$isSearching)
+            .map { loading, searching in loading || searching }.removeDuplicates().eraseToAnyPublisher()
+        page.enter = { query in
+            controller.query = query
+            controller.start()
+            return nil
+        }
+        page.leave = controller.stop
+        page.resume = controller.start
+        page.primaryEnabled = { controller.selected != nil }
+        page.shortcutSubmit = { if let item = controller.selected { use(item, false) } }
+        page.moveHorizontal = { controller.move($0, vertical: false) }
+        page.navigateWhileTyping = true
+        page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
+        page.maximumActionWidth = 258
+        page.typeFilterWidth = 174
+        page.typeFilter = { [weak model] open in
+            AnyView(ResultTypeFilter(
+                selection: Binding(get: { controller.category }, set: { controller.category = $0 }),
+                options: EmojiCatalog.categories, open: open, navigation: model?.navigation ?? "arrows", width: 174,
+                searchPlaceholder: EmojiCatalog.label("搜索分类…", "Search categories…")
+            ))
+        }
+        return .init(id: .init(rawValue: "keylane.emoji"), title: "Emoji 与符号", symbol: "face.smiling", commands: [
+            command("emoji-symbols", EmojiCatalog.label("Emoji 与符号", "Search Emoji & Symbols"),
+                    EmojiCatalog.label("搜索并插入表情与符号", "Search and insert emoji and symbols"),
+                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID))
+        ], pages: [page], services: [.init(start: {}, stop: controller.releaseCatalog)])
+    }
+
+    private static func emojiPasteTitle() -> String {
+        guard let app = (NSApp.delegate as? Delegate)?.pasteTargetName else {
+            return EmojiCatalog.label("复制字符", "Copy Character")
+        }
+        return EmojiCatalog.label("粘贴到 \(app)", "Paste to \(app)")
+    }
+
+    private static func shortcuts(_ model: Model) -> LauncherModule {
+        let controller = model.systemShortcuts
+        let pageID = "shortcuts"
+        let editPageID = PageID(rawValue: "ShortcutCommandEdit")
+        let editor = ApplicationCommandEdit()
+        let search = SettingsSearchControls()
+        let provider = LauncherModule.Provider(namespace: .prefix("shortcut:"), entries: { _ in
+            return controller.entries.compactMap { shortcut in
+                guard !controller.disabledIDs.contains(shortcut.id) else { return nil }
+                return Entry(id: shortcut.commandID, commandID: .init(rawValue: shortcut.commandID),
+                             name: shortcut.name, detail: "Shortcut", symbol: "square.stack.3d.up",
+                             subtitle: controller.duplicateTitles.contains(shortcut.name) ? shortcut.identifierSuffix : nil)
+            }
+        }, resolve: { command, _ in
+            guard let shortcut = controller.entries.first(where: { $0.commandID == command.rawValue }),
+                  !controller.disabledIDs.contains(shortcut.id) else { return nil }
+            return {
+                controller.run(shortcut.id) { status in
+                    let message: String
+                    let style: ToastStyle
+                    switch status {
+                    case .started:
+                        message = "正在运行「\(shortcut.name)」…"
+                        style = .neutral
+                    case .completed:
+                        message = "「\(shortcut.name)」已完成。"
+                        style = .success
+                    default:
+                        message = status.message
+                        style = .failure
+                    }
+                    (NSApp.delegate as? Delegate)?.showLauncherFeedback(message, style: style)
+                }
+            }
+        }, primaryTitle: { _ in
+            controller.runningID == nil ? "运行" : "运行中"
+        }, actions: { [weak model] row in
+            guard let model else { return nil }
+            return shortcutActions(for: row, model: model) { [weak model] in
+                guard let model else { return }
+                editor.prepare(row, model: model, isAvailable: {
+                    controller.entries.contains { shortcut in
+                        shortcut.commandID == row.commandID.rawValue && !controller.disabledIDs.contains(shortcut.id)
+                    }
+                })
+                model.openPage(editPageID, origin: .search)
+            }
+        }, displayDetail: { _ in "快捷指令" }, artwork: { row in
+            AnyView(ShortcutArtwork(image: controller.icon(forCommandID: row.id)))
+        })
+        let settings = LauncherSettingsPage(id: pageID, title: "快捷指令", symbol: "square.stack.3d.up",
+                                            subtitle: "为系统快捷指令设置搜索别名与热键。", order: 60,
+                                            items: SettingsItem.all.filter { $0.page == pageID },
+                                            trailingToolbar: {
+                                                AnyView(SettingsToolbarSearch(title: "搜索快捷指令", selection: search))
+                                            },
+                                            loading: controller.$loading.combineLatest(controller.$entries)
+                                                .map { $0 && $1.isEmpty }.removeDuplicates().eraseToAnyPublisher(),
+                                            content: { [weak model] in
+                                                guard let model else { return AnyView(EmptyView()) }
+                                                return AnyView(SystemShortcutsPreferences(model: model, controller: controller, search: search))
+                                            })
+        let searchUpdates = Publishers.Merge(
+            controller.$entries.removeDuplicates().dropFirst().map { _ in () },
+            controller.$disabledIDs.removeDuplicates().dropFirst().map { _ in () }
+        ).eraseToAnyPublisher()
+        var module = LauncherModule(id: .init(rawValue: "keylane.shortcuts"), commands: [
+            command("system-shortcuts", "管理快捷指令", "别名、热键与启用状态", "square.stack.3d.up",
+                    ["Shortcuts", "Apple Shortcuts", "快捷指令"], destination: .settings(pageID), settings: pageID)
+        ], providers: [provider], pages: [.init(
+            id: editPageID, placeholder: "", badge: ("配置快捷指令", "keyboard"), contentPlacement: .form,
+            content: { [weak model] in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(ApplicationCommandEditPage(editor: editor, model: model) { row in
+                    AnyView(ShortcutArtwork(image: controller.icon(forCommandID: row.id)))
+                })
+            }, submit: { [weak model] in
+                if let model { editor.save(model: model) }
+            }, primaryTitle: { "保存别名" }
+        )], settings: [settings], services: [
+            .init(start: controller.start, stop: controller.stop)
+        ], searchUpdates: [searchUpdates], dynamicCommandSettings: .init(
+            model: model, items: { controller.entries }, title: \.name, commandID: \.commandID,
+            updates: {
+                [ViewObservation.changes(controller.$entries), ViewObservation.changes(controller.$disabledIDs),
+                 controller.$icons.dropFirst().map { _ in () }.eraseToAnyPublisher()]
+            },
+            entry: { $0.commandSettingsEntry(model: $1, controller: controller) }
+        ))
+        module.launcherShown = controller.launcherShown
+        module.launcherHidden = controller.launcherHidden
+        module.presentationUpdates = [
+            controller.$runningID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            controller.$icons.dropFirst().map { _ in () }.eraseToAnyPublisher()
+        ]
+        return module
+    }
+
+    private static func shortcutActions(for row: Entry, model: Model,
+                                        configure: @escaping () -> Void) -> [LauncherAction] {
+        return [
+            LauncherAction(id: "shortcut-run", title: "运行快捷指令", icon: "play", perform: { [weak model] in
+                model?.runCommand(row.commandID, origin: .menu, usageKey: row.id)
+            }),
+            LauncherAction(id: "shortcut-configure", title: "编辑别名与快捷键…", icon: "keyboard",
+                           group: 1, perform: configure),
+            LauncherAction(id: "shortcut-settings", title: "快捷指令设置…", icon: "gearshape", perform: { [weak model] in
+                model?.runCommand(CommandID(rawValue: "system-shortcuts"), origin: .menu)
+            })
+        ]
+    }
+
+    private static func command(_ id: String, _ title: String, _ detail: String, _ symbol: String,
+                                _ keywords: [String], destination: LauncherCommandDeclaration.Destination,
+                                settings: String? = nil, permission: PermissionFeature? = nil) -> LauncherModule.Command {
+        .init(declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
+                                keywords: keywords, destination: destination, settingsPage: settings), permission: permission)
+    }
+}
