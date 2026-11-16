@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Keylane — 想到，即刻开始。</title>
+<meta name="description" content="应用、文件、常用工具。把日常操作收进一个原生搜索窗口，让双手留在键盘上。">
+<meta name="theme-color" content="#111510">
+<link rel="icon" href="assets/icon.png">
+<link rel="stylesheet" href="style.css">
+<link rel="alternate" hreflang="zh-CN" href="https://acckion.github.io/Keylane/">
+<link rel="alternate" hreflang="en" href="https://acckion.github.io/Keylane/en/">
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+<header>
+<a class="brand" href="./">
+<img src="assets/icon.png" alt="" width="36" height="36">Keylane</a>
+<nav aria-label="主导航">
+<a href="#experience">体验</a>
+<a href="#beta">试用须知</a>
+<a href="en/" lang="en">English</a>
+<a href="https://github.com/Acckion/Keylane">GitHub ↗</a>
+</nav>
+</header>
+<main id="main">
+<section class="hero">
+<p class="eyebrow">为 macOS 而生 · DEVELOPER PREVIEW</p>
+<h1>想到，即刻开始。</h1>
+<p class="intro">应用、文件、常用工具。把日常操作收进一个原生搜索窗口，让双手留在键盘上。</p>
+<div class="actions">
+<a class="button" href="https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1">下载 Beta 1 <span aria-hidden="true">↗</span>
+</a>
+<a class="secondary" href="https://github.com/Acckion/Keylane/tree/dev">查看源代码 ↗</a>
+</div>
+<p class="requirements">macOS 26+ · Apple Silicon · 手动安装 · 未经 Apple 公证</p>
+<figure class="showcase">
+<img src="assets/calculator.png" alt="Keylane 真实计算器界面：输入 128 * 24，结果为 3072" width="1520" height="940">
+<figcaption>真实 Beta 1 界面 · 演示输入 128 × 24 · 中文应用界面</figcaption>
+</figure>
+</section>
+<section id="experience">
+<p class="eyebrow">OPTION + SPACE</p>
+<h2>一个入口，接住日常。</h2>
+<p class="lead">按下 Option + Space，输入你要找的内容。用方向键选择，按 Return 打开。</p>
+<div class="steps">
+<article>
+<span class="number">01</span>
+<h3>打开应用</h3>
+<p>按名称、拼音或模糊关键词查找应用，把常用项收藏起来。</p>
+</article>
+<article>
+<span class="number">02</span>
+<h3>找到文件</h3>
+<p>结合 Spotlight 与本地补充索引，在你授权的目录中搜索。</p>
+</article>
+<article>
+<span class="number">03</span>
+<h3>调用工具</h3>
+<p>计算、Emoji、快捷链接与脚本命令，从同一个窗口进入。</p>
+</article>
+</div>
+</section>
+<section class="expression">
+<div>
+<p class="eyebrow">EMOJI &amp; SYMBOLS</p>
+<h2>表达，也可以更直接。</h2>
+<p class="lead">搜索 Emoji 与符号，浏览结果，再复制需要的字符。少一次窗口切换，多一点专注。</p>
+</div>
+<figure>
+<img loading="lazy" src="assets/emoji.png" alt="真实 Beta 1 的 Emoji 与符号页面，搜索“星”，显示星星、行星等字符" width="1520" height="940">
+<figcaption>内置字符库 · 演示搜索“星” · 未使用个人记录</figcaption>
+</figure>
+</section>
+<section class="privacy">
+<span aria-hidden="true">⌘</span>
+<div>
+<h2>你的数据，由你决定。</h2>
+<p>剪贴板历史、文件访问等能力按需启用。数据保存在本机；文件 AI 仅在主动提交时向你配置的服务发送问题及所选上下文，服务可能收费。没有内置遥测或云同步。</p>
+</div>
+</section>
+<section id="beta">
+<p class="eyebrow">BETA 1 / BUILD 27</p>
+<h2>先了解，再试用。</h2>
+<p class="lead">当前公开下载为 1.0.2 Beta 1（build 27）。这是开发预览，部分系统交互仍需验证。</p>
+<div class="notes">
+<details open>
+<summary>安装与首次打开</summary>
+<p>下载 DMG 与 SHA-256 文件并核对校验和。打开 DMG，将 Keylane 拖到“应用程序”，再打开应用。本包使用 ad-hoc 临时签名，未公证，系统可能阻止首次打开。请阅读 Apple 的安全说明；本次需要手动安装。</p>
+<a href="https://support.apple.com/en-us/102445">Apple：在 Mac 上安全地打开 App ↗</a>
+</details>
+<details open>
+<summary>已知验证边界</summary>
+<p>默认安全设置下首次打开、从 Alpha 升级、隔离启动/退出/重复启动及合成配置升级仍待验收。Navigation 本轮真实焦点复验未通过；键盘与权限流程、多屏、全屏、Spaces 和真实目标应用行为仍有验证缺口。Intel 和通用二进制未验证。</p>
+</details>
+<details open>
+<summary>开发中</summary>
+<p>Raycast 扩展兼容、配置迁移和 iPhone 应用启动不属于此 Beta。功能存在于开发分支或草稿 PR，不等于已发布或已完成实机验收。</p>
+</details>
+<details open>
+<summary>源码与发行包的许可</summary>
+<p>当前 dev 源码采用 GPL-3.0-or-later，允许在遵守条款的前提下商业使用、修改和再分发。Beta 1（891ab2c）及当前 main（877ca22）仍采用各自版本附带的 PolyForm Noncommercial 许可；GPL 变更不追溯旧标签或安装包。</p>
+</details>
+</div>
+<div class="actions">
+<a class="button" href="https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1">下载 Beta 1 ↗</a>
+<a href="https://github.com/Acckion/Keylane/blob/dev/README.md">阅读文档 ↗</a>
+</div>
+</section>
+</main>
+<footer>
+<a class="brand" href="https://github.com/Acckion/Keylane">Keylane</a>
+<p>原生 Swift · SwiftUI · AppKit</p>
+<a href="https://github.com/Acckion/Keylane/issues">反馈问题 ↗</a>
+</footer>
+</body>
+</html>
