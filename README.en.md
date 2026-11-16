@@ -81,7 +81,17 @@ Requires **macOS 26 or later**. Current installers target Apple Silicon; Intel a
 
 Build from source to use Raycast configuration migration; the current Beta 1 installer does not include it.
 
-The current public installer is **1.0.2 Beta 1**. It is ad-hoc signed, not Apple notarized, and requires manual installation. macOS may block the first launch. Read [Apple’s safety guidance](https://support.apple.com/en-us/102445) and proceed only if you trust the download source.
+The current public installer is **1.0.2 Beta 1**. It is ad-hoc signed, not Apple notarized, and requires manual installation.
+
+### If macOS blocks the first launch
+
+For an “unidentified developer” or “Apple cannot check it for malicious software” warning, first confirm the installer comes from this project's Releases, its checksum matches, and it has not been tampered with. Unsigned or unnotarized software can put your Mac and personal information at risk. If you trust it, follow [Apple's instructions](https://support.apple.com/en-us/102445) to add an exception for Keylane only:
+
+1. Try opening Keylane from Applications, then dismiss the warning.
+2. Open **System Settings → Privacy & Security**, scroll down, and click **Open Anyway** for Keylane.
+3. Click **Open** in the next prompt and complete any confirmation macOS requests.
+
+Do not disable Gatekeeper or remove security restrictions through Terminal. If macOS says the app “will damage your computer,” contains malware, or “is damaged,” stop rather than bypassing the warning and report the issue to the project.
 
 ## Data and permissions
 
