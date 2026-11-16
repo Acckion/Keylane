@@ -151,10 +151,15 @@ struct ApplicationUninstallReviewPage: View {
                 Text("没有匹配的文件").foregroundStyle(.secondary).padding(20)
             }
             ForEach(review.visible) { item in
+                let checked = review.selected.contains(item.id)
                 ResultListButton(id: item.id, action: { review.toggle(item.id) }) {
                     ResultListRow(selected: item.id == review.highlighted) {
-                        Image(systemName: review.selected.contains(item.id) ? "checkmark.square.fill" : "square")
-                            .foregroundStyle(review.selected.contains(item.id) ? Color.accentColor : Color.secondary)
+                        Toggle("勾选", isOn: .constant(checked))
+                            .labelsHidden()
+                            .toggleStyle(.checkbox)
+                            .allowsHitTesting(false)
+                            .focusable(false)
+                            .accessibilityHidden(true)
                     } content: {
                         HStack(spacing: 10) {
                             Text(item.title).font(VisualStyle.rowText).lineLimit(1).layoutPriority(1)
@@ -168,7 +173,7 @@ struct ApplicationUninstallReviewPage: View {
                     }
                 }
                 .accessibilityLabel(item.title + "，" + item.directory)
-                .accessibilityValue((review.selected.contains(item.id) ? "已勾选" : "未勾选") + "，" + review.sizeLabel(for: item))
+                .accessibilityValue((checked ? "已勾选" : "未勾选") + "，" + review.sizeLabel(for: item))
                 .help(item.id)
                 .disabled(review.isSubmitting)
             }
