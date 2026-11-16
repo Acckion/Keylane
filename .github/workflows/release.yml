@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Full SHA of the main commit to release (must match selected main ref)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keylane-stable-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Validate and notarize release
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate fixed release target and metadata
+        id: version
+        run: |
+          test "$(uname -m)" = arm64
+          python3 scripts/check-version.py --release-policy
+          python3 scripts/check-release-notes.py "$(python3 -c 'import json; print("v" + json.load(open("version.json"))["version"])')"
+      - name: Validate scripts and tests
+        run: |
+          git diff --check
+          python3 -m compileall -q scripts
+          for script in scripts/*.sh; do bash -n "$script"; done
+          python3 -m unittest discover -s Tests/ReleaseTests -p 'test_*.py'
+          swift test --scratch-path .build-current --disable-sandbox
+      - name: Configure mandatory distribution signing
+        env:
+          CERTIFICATE: ${{ secrets.KEYLANE_DEVELOPER_ID_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.KEYLANE_DEVELOPER_ID_PASSWORD }}
+          APPLE_ID: ${{ secrets.KEYLANE_NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.KEYLANE_NOTARY_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.KEYLANE_NOTARY_APP_PASSWORD }}
+        run: bash scripts/import-release-certificate.sh
+      - name: Build distribution DMG
+        run: bash scripts/package.sh
+      - name: Notarize and staple DMG
+        env:
+          APPLE_ID: ${{ secrets.KEYLANE_NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.KEYLANE_NOTARY_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.KEYLANE_NOTARY_APP_PASSWORD }}
+        run: bash scripts/notarize-dmg.sh dist/Keylane-*.dmg
+      - name: Verify distribution and checksum
+        run: |
+          test "$KEYLANE_DISTRIBUTION" = 1
+          python3 scripts/verify-package.py --distribution dist/Keylane-*.dmg
+          printf '%s\n' "$GITHUB_SHA" > dist/commit.txt
+          cd dist
+          for image in Keylane-*.dmg; do shasum -a 256 "$image" > "$image.sha256"; done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            dist/*.dmg
+            dist/*.sha256
+            dist/commit.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Publish release
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-${{ github.sha }}
+          path: dist
+      - name: Publish verified build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/publish-release.sh
