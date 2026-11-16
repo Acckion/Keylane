@@ -21,6 +21,11 @@ for directory in (data, build, outside):
 canary = outside / "canary.txt"
 canary.write_text("synthetic boundary canary")
 (data / "escape").symlink_to(outside, target_is_directory=True)
+home, temporary = data / "home", data / "tmp"
+home.mkdir(mode=0o700)
+temporary.mkdir(mode=0o700)
+child_environment = {"PATH": "/usr/bin:/bin", "HOME": str(home), "TMPDIR": str(temporary) + "/",
+                     "LANG": "C", "LC_ALL": "C"}
 profile = base / "fixture.sb"
 profile.write_text("""(version 1)
 (deny default)
@@ -51,7 +56,8 @@ def sandbox(*command, must_succeed=True):
     stdout, stderr = data / "command.stdout", data / "command.stderr"
     with stdout.open("w") as output, stderr.open("w") as errors:
         completed = subprocess.run(["/usr/bin/sandbox-exec", "-f", str(profile), *map(str, command)],
-                                   stdout=output, stderr=errors, timeout=60)
+                                   stdin=subprocess.DEVNULL, stdout=output, stderr=errors, timeout=60,
+                                   cwd=data, env=child_environment)
     result = subprocess.CompletedProcess(completed.args, completed.returncode, stdout.read_text(), stderr.read_text())
     if must_succeed and result.returncode:
         raise RuntimeError(f"Contained command failed (exit={result.returncode}): " + result.stderr[-3000:])
