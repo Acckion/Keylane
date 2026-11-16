@@ -105,6 +105,7 @@ final class ReleaseNotesLauncher: ObservableObject {
             }
         }
         .padding(20)
+        .padding(.bottom, VisualStyle.launcherBottomInset)
     }
 
     private struct ReleaseNotesList: View {

@@ -343,7 +343,8 @@ final class ClipboardTests: XCTestCase {
     }
     func testCountAndByteBudgetActuallyEvictOnlyUnpinnedRecords() throws {
         let directory = directory(); defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try ClipboardStore(directory: directory, limits: .init(maxItems: 2, maxBytes: 20))
+        let unlimited = ClipboardLimits.unlimitedRetentionDays
+        let store = try ClipboardStore(directory: directory, limits: .init(maxItems: 2, retentionDays: unlimited, maxBytes: 20))
         let now = Date()
         let pinned = try store.capture(.text("pinned"), at: now)
         try store.setPinned(id: pinned, pinned: true)
@@ -351,7 +352,7 @@ final class ClipboardTests: XCTestCase {
         let latest = try store.capture(.text("latest"), at: now.addingTimeInterval(2))
         XCTAssertNil(try store.detail(id: old))
         XCTAssertEqual(Set(try store.list().map(\.id)), Set([pinned, latest]))
-        store.limits = .init(maxItems: 20, maxBytes: 8)
+        store.limits = .init(maxItems: 20, retentionDays: unlimited, maxBytes: 8)
         try store.prune(now: now)
         XCTAssertEqual(try store.list().map(\.id), [pinned])
         XCTAssertThrowsError(try store.capture(.text("unretainable"), at: now))

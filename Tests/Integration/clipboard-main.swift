@@ -866,3 +866,39 @@ func verifySequentialPaste() throws {
 
 struct SequenceFixtureError: Error { let message: String }
 try verifySequentialPaste()
+
+func verifyUnlimitedRetention() throws {
+    let name = suite + ".retention"
+    let preferences = UserDefaults(suiteName: name)!
+    let board = NSPasteboard(name: .init(name))
+    let directory = root.appendingPathComponent("retention-fixture", isDirectory: true)
+    defer {
+        board.releaseGlobally()
+        preferences.removePersistentDomain(forName: name)
+    }
+
+    let initial = ClipboardController(directory: directory, board: board, preferences: preferences,
+                                      startTimer: false, startStorage: false)
+    precondition(initial.retentionDays == 30)
+    initial.retentionDays = ClipboardLimits.unlimitedRetentionDays
+
+    let store = try ClipboardStore(directory: directory)
+    let earlier = Date().addingTimeInterval(-400 * 86400)
+    let old = try store.capture(.text("Old unpinned fixture"), at: earlier)
+    let pinned = try store.capture(.text("Old pinned fixture"), at: earlier)
+    try store.setPinned(id: pinned, pinned: true)
+
+    let restored = ClipboardController(directory: directory, board: board, preferences: preferences, startTimer: false)
+    defer { restored.stopRuntime() }
+    precondition(restored.retentionDays == ClipboardLimits.unlimitedRetentionDays)
+    wait("unlimited retention survives startup maintenance") {
+        Set(restored.items.map(\.id)) == Set([old, pinned])
+    }
+    restored.retentionDays = 7
+    wait("switching to a finite retention removes old unpinned history") {
+        restored.items.map(\.id) == [pinned]
+    }
+    print("PASS persisted unlimited retention, startup maintenance, finite cleanup and pinned exemption")
+}
+
+try verifyUnlimitedRetention()

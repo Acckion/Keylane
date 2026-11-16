@@ -7,7 +7,6 @@ enum SnippetsModule {
     private static let listID = PageID(rawValue: "Snippets")
     private static let editID = PageID(rawValue: "EditSnippet")
     private static let settingsID = "snippets"
-    static let searchSettingsID = SettingsItem.snippetSearchCommand.page
     static let guideURL = URL(string: "https://manual.raycast.com/snippets")!
     private static let symbol = "text.badge.plus"
 
@@ -170,13 +169,10 @@ enum SnippetsModule {
             pages: [list, editor, argumentsPage],
             settings: [
                 .init(id: settingsID, title: "文字片段", symbol: symbol, subtitle: "管理常用文字与缩写展开。",
-                      order: 85, items: [.snippetExpansion], guideURL: guideURL, content: { [weak model] in
+                      order: 85, items: [.snippetExpansion, .snippetSearchCommand], guideURL: guideURL, content: { [weak model] in
                           guard let model else { return AnyView(EmptyView()) }
                           return AnyView(SnippetPreferences(model: model, controller: snippets, expansionPermission: expansionPermission))
-                      }),
-                .init(id: searchSettingsID, title: Command.search.title, symbol: symbol, subtitle: "", order: 86,
-                      items: [.snippetSearchCommand], parentID: settingsID,
-                      content: { AnyView(SnippetSearchPreferences(controller: snippets)) })
+                      })
             ],
             services: [.init(start: { [weak model] in
                 expansionPermission.startObserving()

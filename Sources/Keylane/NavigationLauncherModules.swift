@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import KeylaneCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum NavigationLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
@@ -44,7 +45,7 @@ enum NavigationLauncherModules {
             }
             SystemNavigation.shared.stopObservingFocus()
         })
-        return LauncherModule(id: .init(rawValue: "keylane.navigation"), title: "窗口与菜单", symbol: "macwindow", commands: [
+        let commands: [LauncherModule.Command] = [
             .init(declaration: .init(
                 id: .init(rawValue: "switch-windows"), title: NavigationMode.windows.title,
                 detail: NavigationText.label("查找并切换已打开的窗口", "Find and switch open windows"),
@@ -57,11 +58,23 @@ enum NavigationLauncherModules {
                 symbol: NavigationMode.menus.symbol, keywords: ["Search Menu Items", "菜单", "菜单栏", "Navigation"],
                 destination: .page(menus), settingsPage: "keylane.navigation"
             ), permission: permission)
-        ], pages: [
+        ]
+        let settingsItem = SettingsItem(id: "keylane.navigation", page: "keylane.navigation", title: "窗口与菜单",
+                                        keywords: "切换窗口 搜索菜单项 禁用的应用 Search Menu Items")
+        let titlebar = permission.titlebar("启用窗口与菜单")
+        let settings = LauncherSettingsPage(
+            id: settingsItem.page, title: settingsItem.title, symbol: "macwindow",
+            subtitle: "管理窗口切换和菜单搜索。", order: 130, items: [settingsItem], titlebar: titlebar
+        ) { [weak model] in
+            guard let model else { return AnyView(EmptyView()) }
+            return AnyView(NavigationCommandPreferences(model: model, commands: commands, exclusionsItem: settingsItem))
+        }
+        return LauncherModule(id: .init(rawValue: "keylane.navigation"), title: settingsItem.title, symbol: "macwindow",
+                              commands: commands, pages: [
             navigationPage(windows, mode: .windows, model: model, permission: permission),
             navigationPage(menus, mode: .menus, model: model, permission: permission)
-        ], services: [focusService], searchUpdates: [permission.updates], applicationFocused: observeFocus,
-           permissionTitlebar: permission.titlebar("启用窗口与菜单"))
+        ], settings: [settings], services: [focusService], searchUpdates: [permission.updates],
+           applicationFocused: observeFocus, permissionTitlebar: titlebar)
     }
 
     private static func navigationPage(_ id: PageID, mode: NavigationMode, model: Model, permission: PermissionFeature) -> LauncherPage {
@@ -281,5 +294,51 @@ enum NavigationLauncherModules {
             ViewObservation.changes(selectedMedia)
         ]).eraseToAnyPublisher()
         return page
+    }
+}
+
+private struct NavigationCommandPreferences: View {
+    let model: Model
+    let commands: [LauncherModule.Command]
+    let exclusionsItem: SettingsItem
+    @State private var showsExclusions = false
+
+    var body: some View {
+        ExtensionCommandPreferences(model: model, commands: commands) { command in
+            guard command.declaration.id.rawValue == "search-menu-items" else { return nil }
+            return CommandSettingsDisclosure(isExpanded: $showsExclusions, revealItem: exclusionsItem) {
+                AnyView(MenuSearchExclusions(controller: model.systemNavigation))
+            }
+        }
+    }
+}
+
+private struct MenuSearchExclusions: View {
+    @ObservedObject var controller: NavigationController
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SettingsListHeader(title: "禁用的应用", detail: "菜单搜索会跳过这些应用。") {
+                SettingsIconButton("添加应用", symbol: "plus", action: addApplications)
+            }
+            SettingsCompactList(items: controller.excludedMenuApplications.keys.sorted(), id: \.self) { id in
+                let name = controller.excludedMenuApplications[id] ?? id
+                SettingsExcludedApplicationRow(id: id, name: name) {
+                    controller.excludedMenuApplications.removeValue(forKey: id)
+                }
+            }
+        }
+    }
+
+    private func addApplications() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let id = Bundle(url: url)?.bundleIdentifier else { continue }
+            controller.excludedMenuApplications[id] = FileManager.default.displayName(atPath: url.path)
+        }
     }
 }

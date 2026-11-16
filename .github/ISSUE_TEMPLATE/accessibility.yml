@@ -1,0 +1,33 @@
+name: Accessibility / 无障碍反馈
+description: Report a keyboard, VoiceOver, readability, or other interaction barrier / 反馈无障碍问题
+body:
+  - type: markdown
+    attributes:
+      value: "This issue is public. Describe the interaction barrier, not your medical history. Remove personal data from evidence. / Issue 公开可见，无需披露健康信息，请移除证据中的个人数据。"
+  - type: input
+    id: environment
+    attributes:
+      label: Keylane and macOS versions / 应用和系统版本
+    validations:
+      required: true
+  - type: input
+    id: input-method
+    attributes:
+      label: Input method or assistive technology / 输入方式或辅助技术
+      placeholder: Keyboard only, VoiceOver, Increase Contrast…
+  - type: textarea
+    id: steps
+    attributes:
+      label: Screen, steps, and observed barrier / 页面、步骤和实际障碍
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Workaround or redacted evidence / 临时办法或脱敏证据

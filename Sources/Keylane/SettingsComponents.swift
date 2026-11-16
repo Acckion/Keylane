@@ -1,5 +1,6 @@
 import SwiftUI
 import KeylaneCore
+import UniformTypeIdentifiers
 
 /// Shared surfaces for all settings pages; colors follow the system appearance.
 struct SettingsSurface: ViewModifier {
@@ -88,6 +89,22 @@ extension SettingsRow where Label == SettingsRowLabel {
     init(_ title: String, detail: String? = nil, @ViewBuilder control: @escaping () -> Control) {
         self.label = { SettingsRowLabel(title: title, detail: detail) }
         self.control = control
+    }
+}
+
+/// Keeps dependent controls with their parent as one row in a settings group.
+struct SettingsRowWithSuboptions<Row: View, Suboptions: View>: View {
+    @ViewBuilder let row: () -> Row
+    @ViewBuilder let suboptions: () -> Suboptions
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            row()
+            VStack(alignment: .leading, spacing: 6, content: suboptions)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -547,6 +564,32 @@ struct SettingsShortcutBindingRow: View {
     var body: some View {
         SettingsRow(title) {
             ShortcutRecorder(shortcut: shortcut, title: title, icon: { AnyView(Image(systemName: symbol)) }, changed: change)
+        }
+    }
+}
+
+/// An excluded application may outlive its installation.
+struct SettingsExcludedApplicationRow: View {
+    let id: String
+    let name: String
+    let remove: () -> Void
+
+    var body: some View {
+        SettingsRow {
+            Label {
+                Text(name).font(.system(size: 12)).foregroundStyle(.secondary)
+            } icon: {
+                Group {
+                    if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+                        WorkspaceItemIcon(path: url.path)
+                    } else {
+                        Image(nsImage: NSWorkspace.shared.icon(for: .applicationBundle)).resizable()
+                    }
+                }
+                .scaledToFit().frame(width: 16, height: 16)
+            }
+        } control: {
+            SettingsRemoveItemButton(label: "移除应用", help: name) { remove() }
         }
     }
 }

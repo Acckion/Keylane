@@ -17,6 +17,7 @@ struct SystemShortcutsPreferences: View {
             ViewObservation.changes(model.$aliases),
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(controller.$entries),
+            ViewObservation.changes(controller.$folders),
             ViewObservation.changes(controller.$loading),
             ViewObservation.changes(controller.$message),
             ViewObservation.changes(controller.$executionMessage),
@@ -36,20 +37,48 @@ struct SystemShortcutsPreferences: View {
                     }
                 }
             }
-            if !controller.entries.isEmpty {
-                CommandSettingsList(items: controller.entries.filter {
-                    search.query.isEmpty || $0.name.localizedCaseInsensitiveContains(search.query)
-                }, id: \.id, emptyMessage: "没有匹配的快捷指令") { entry in
-                    entry.commandSettingsEntry(model: model, controller: controller)
-                }
-            }
+            if !controller.entries.isEmpty { shortcutLists }
         }.settingsAnchor(.systemShortcuts).task {
             controller.refresh(force: true)
+            controller.refreshFolders()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(15)) }
                 catch { return }
                 controller.refresh()
+                controller.refreshFolders()
             }
+        }.onDisappear(perform: controller.stopFolderRefresh)
+    }
+
+    @ViewBuilder private var shortcutLists: some View {
+        let query = search.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let folders = controller.folders {
+            let sections = SystemShortcutFolder.sections(folders, shortcuts: controller.entries)
+            let visible = sections.compactMap { section -> (section: SystemShortcutFolder.Section, rows: [SystemShortcut])? in
+                let rows = query.isEmpty || section.name.localizedCaseInsensitiveContains(query)
+                    ? section.shortcuts : section.shortcuts.filter { matches($0, query: query) }
+                return rows.isEmpty ? nil : (section, rows)
+            }
+            if visible.isEmpty { CommandSettingsEmptyState(message: "没有匹配的快捷指令") }
+            ForEach(visible, id: \.section.id) { group in
+                VStack(alignment: .leading, spacing: 8) {
+                    SettingsSectionTitle(title: group.section.name)
+                    shortcutList(group.rows)
+                }
+            }
+        } else {
+            shortcutList(controller.entries.filter { matches($0, query: query) })
+        }
+    }
+
+    private func matches(_ shortcut: SystemShortcut, query: String) -> Bool {
+        query.isEmpty || shortcut.name.localizedCaseInsensitiveContains(query)
+            || model.aliases[shortcut.commandID]?.localizedCaseInsensitiveContains(query) == true
+    }
+
+    private func shortcutList(_ shortcuts: [SystemShortcut]) -> some View {
+        CommandSettingsList(items: shortcuts, id: \.id, emptyMessage: "没有匹配的快捷指令") {
+            $0.commandSettingsEntry(model: model, controller: controller)
         }
     }
 }

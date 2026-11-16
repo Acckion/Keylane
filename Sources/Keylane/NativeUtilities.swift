@@ -33,6 +33,7 @@ enum UtilityActions {
 
 final class SystemShortcutsController: ObservableObject {
     @Published private(set) var entries: [SystemShortcut] = []
+    @Published private(set) var folders: [SystemShortcutFolder]?
     private(set) var duplicateTitles: Set<String> = []
     @Published private(set) var loading = false
     @Published private(set) var runningID: String?
@@ -44,6 +45,7 @@ final class SystemShortcutsController: ObservableObject {
         didSet { UserDefaults.standard.set(Array(disabledIDs), forKey: "systemShortcuts.disabled") }
     }
     private let catalogQueue = DispatchQueue(label: "org.keylane.shortcuts.catalog", qos: .utility)
+    private let folderQueue = DispatchQueue(label: "org.keylane.shortcuts.folders", qos: .utility)
     private let runQueue = DispatchQueue(label: "org.keylane.shortcuts.run", qos: .userInitiated)
     private let iconQueue = DispatchQueue(label: "org.keylane.shortcuts.icons", qos: .utility)
     private let loadsIcons: Bool
@@ -52,6 +54,7 @@ final class SystemShortcutsController: ObservableObject {
     private var iconGeneration = 0
     private var iconRequest: DispatchWorkItem?
     private var catalogRequest: ExtensionProcessRequest?
+    private var folderRequest: ExtensionProcessRequest?
     private var runRequest: ExtensionProcessRequest?
     private var active: Bool
     private var lastRefresh = Date.distantPast
@@ -92,6 +95,8 @@ final class SystemShortcutsController: ObservableObject {
         iconPermissionRequested = false
         catalogRequest?.cancel()
         catalogRequest = nil
+        stopFolderRefresh()
+        folders = nil
         runRequest?.cancel()
         runRequest = nil
         iconGeneration += 1
@@ -120,7 +125,7 @@ final class SystemShortcutsController: ObservableObject {
         let request = ExtensionProcessRequest()
         catalogRequest = request
         catalogQueue.async { [weak self, executable] in
-            let result = Self.listShortcuts(executable: executable, request: request)
+            let result = Self.readShortcutList(executable: executable, request: request)
             let records = result.map(SystemShortcut.parse)
             DispatchQueue.main.async {
                 guard let self, self.catalogRequest === request else { return }
@@ -150,6 +155,42 @@ final class SystemShortcutsController: ObservableObject {
                 }
             }
         }
+    }
+
+    func refreshFolders() {
+        guard active, folderRequest == nil else { return }
+        let request = ExtensionProcessRequest()
+        folderRequest = request
+        folderQueue.async { [weak self, executable] in
+            let result = Self.readFolders(executable: executable, request: request)
+            DispatchQueue.main.async {
+                guard let self, self.folderRequest === request else { return }
+                self.folderRequest = nil
+                if self.folders != result { self.folders = result }
+            }
+        }
+    }
+
+    func stopFolderRefresh() {
+        folderRequest?.cancel()
+        folderRequest = nil
+    }
+
+    private static func readFolders(executable: URL, request: ExtensionProcessRequest) -> [SystemShortcutFolder]? {
+        let timeout = DispatchWorkItem { request.cancel() }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 20, execute: timeout)
+        defer { timeout.cancel() }
+        guard let names = readShortcutList(executable: executable, options: ["--folders"], request: request) else {
+            return nil
+        }
+        var folders: [SystemShortcutFolder] = []
+        for folder in SystemShortcut.parse(names) {
+            guard let output = readShortcutList(executable: executable, options: ["--folder-name", folder.id],
+                                                request: request) else { return nil }
+            let ids = Set(SystemShortcut.parse(output).map(\.id))
+            folders.append(SystemShortcutFolder(id: folder.id, name: folder.name, shortcutIDs: ids))
+        }
+        return request.isCancelled ? nil : folders
     }
 
     func icon(forCommandID commandID: String) -> NSImage? {
@@ -301,10 +342,10 @@ final class SystemShortcutsController: ObservableObject {
         }
     }
 
-    private static func listShortcuts(executable: URL, request: ExtensionProcessRequest) -> String? {
+    private static func readShortcutList(executable: URL, options: [String] = [], request: ExtensionProcessRequest) -> String? {
         let process = Process()
         process.executableURL = executable
-        process.arguments = ["list", "--show-identifiers"]
+        process.arguments = ["list"] + options + ["--show-identifiers"]
         process.standardInput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         let pipe = Pipe()
@@ -321,7 +362,7 @@ final class SystemShortcutsController: ObservableObject {
             else { overflow = true }
         }
         process.waitUntilExit()
-        guard process.terminationStatus == 0, !overflow else { return nil }
+        guard process.terminationStatus == 0, !overflow, !request.isCancelled else { return nil }
         return String(data: bytes, encoding: .utf8)
     }
 }

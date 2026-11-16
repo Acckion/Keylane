@@ -415,12 +415,15 @@ private struct CalendarSettingsGroups: View {
             }.settingsAnchor(.calendarDisplay)
 
             SettingsGroup {
-                SettingsRow("自动加入会议", detail: "会议开始时打开日程中的会议链接。") {
-                    Toggle("自动加入会议", isOn: Binding(get: { controller.autoJoin }, set: { controller.autoJoin = $0 }))
-                        .labelsHidden()
+                SettingsRowWithSuboptions {
+                    SettingsRow("自动加入会议", detail: "会议开始时打开日程中的会议链接。") {
+                        Toggle("自动加入会议", isOn: Binding(get: { controller.autoJoin }, set: { controller.autoJoin = $0 }))
+                            .labelsHidden()
+                    }
+                } suboptions: {
+                    Toggle("加入前确认", isOn: Binding(get: { controller.confirmJoin }, set: { controller.confirmJoin = $0 }))
+                        .toggleStyle(.checkbox).disabled(!controller.autoJoin)
                 }
-                Toggle("加入前确认", isOn: Binding(get: { controller.confirmJoin }, set: { controller.confirmJoin = $0 }))
-                    .toggleStyle(.checkbox).disabled(!controller.autoJoin)
                 Divider()
                 SettingsRow("相机预览", detail: "加入会议时调用 Keylane 工具中的相机预览。") {
                     Toggle("相机预览", isOn: Binding(get: { controller.previewBeforeJoining }, set: { controller.previewBeforeJoining = $0 }))
@@ -429,17 +432,20 @@ private struct CalendarSettingsGroups: View {
             }.settingsAnchor(.calendarMeetings)
 
             SettingsGroup {
-                SettingsPicker("在菜单栏中显示日程", selection: Binding(
-                    get: { registry.isEnabled("calendar.agenda") ? controller.menuTiming : .never },
-                    set: controller.setMenuTiming
-                )) {
-                    ForEach(AgendaMenuTiming.allCases, id: \.self) { timing in
-                        Text(menuTimingTitle(timing)).tag(timing)
+                SettingsRowWithSuboptions {
+                    SettingsPicker("在菜单栏中显示日程", selection: Binding(
+                        get: { registry.isEnabled("calendar.agenda") ? controller.menuTiming : .never },
+                        set: controller.setMenuTiming
+                    )) {
+                        ForEach(AgendaMenuTiming.allCases, id: \.self) { timing in
+                            Text(menuTimingTitle(timing)).tag(timing)
+                        }
                     }
+                } suboptions: {
+                    Toggle("仅显示带会议链接的日程", isOn: Binding(
+                        get: { controller.menuMeetingsOnly }, set: { controller.menuMeetingsOnly = $0 }
+                    )).toggleStyle(.checkbox)
                 }
-                Toggle("仅显示带会议链接的日程", isOn: Binding(
-                    get: { controller.menuMeetingsOnly }, set: { controller.menuMeetingsOnly = $0 }
-                )).toggleStyle(.checkbox)
                 Divider()
                 SettingsPicker("隐藏当前日程", selection: Binding(
                     get: { controller.menuHideMinutes }, set: { controller.menuHideMinutes = $0 }

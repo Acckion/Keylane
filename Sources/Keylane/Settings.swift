@@ -8,7 +8,7 @@ struct SettingsView: View {
     @State private var selected = "applications"
     @State private var headerScrolledAway = false
     @State private var query = ""
-    @State private var target: String?
+    @State private var target: SettingsRevealRequest?
     @State private var searchSelection: String?
     @State private var history = ["applications"]
     @State private var historyIndex = 0
@@ -212,7 +212,7 @@ struct SettingsView: View {
     private func reveal(_ item: SettingsItem) {
         selected = item.page; target = nil; searchSelection = nil; query = ""
         if state.extensionEnabled(for: item.page) != nil || state.catalog.page(item.page)?.titlebar?.searchItem?.id != item.id {
-            DispatchQueue.main.async { target = item.id }
+            DispatchQueue.main.async { target = SettingsRevealRequest(itemID: item.id) }
         }
     }
 }
@@ -277,7 +277,7 @@ enum LauncherSettingsContent {
             if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String {
                 LabeledContent("构建号", value: build)
             }
-            LabeledContent("许可", value: "PolyForm Noncommercial 1.0.0")
+            LabeledContent("许可", value: "GPL-3.0-or-later")
             Text("独立实现，非 SuperCmd 或 Raycast 官方产品。").foregroundStyle(.secondary)
         }.settingsAnchor(.version)
         UpdatePreferences(updates: model.updates).settingsAnchor(.softwareUpdates)

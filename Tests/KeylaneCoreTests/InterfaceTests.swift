@@ -1,6 +1,16 @@
 import XCTest
 @testable import KeylaneCore
 final class InterfaceTests: XCTestCase {
+    func testCollapsedCommandSettingsHaveSpecificSearchTargets() {
+        for query in ["超时", "换行", "sequential paste"] {
+            let matches = SettingsItem.search(query)
+            XCTAssertTrue(matches.contains(.clipboardSequence), query)
+            XCTAssertFalse(matches.contains(.clipboardReplay), query)
+        }
+        XCTAssertTrue(SettingsItem.search("纯文本").contains(.clipboardReplay))
+        XCTAssertTrue(SettingsItem.search("搜索文字片段的主要操作").contains(.snippetSearchCommand))
+    }
+
     func testSettingsSearchFindsActualControlsAcrossLanguages() {
         XCTAssertEqual(SettingsItem.search("深色").map(\.id), ["appearance"])
         XCTAssertEqual(SettingsItem.search("备份").map(\.id), ["advanced-export-passphrase", "advanced-scheduled-export", "advanced-preferences-export", "advanced-local-export", "advanced-preferences-import"])

@@ -93,11 +93,15 @@ public struct ClipboardOCRCandidate: Sendable {
     public let filePath: String?
 }
 public struct ClipboardLimits {
+    public static let unlimitedRetentionDays = 0
+
     public var maxItems: Int
     public var retentionDays: Int
     public var maxBytes: Int
     public init(maxItems: Int = 500, retentionDays: Int = 30, maxBytes: Int = 256 * 1024 * 1024) {
-        self.maxItems = max(1, min(5000, maxItems)); self.retentionDays = max(1, min(365, retentionDays)); self.maxBytes = max(1, maxBytes)
+        self.maxItems = max(1, min(5000, maxItems))
+        self.retentionDays = retentionDays == Self.unlimitedRetentionDays ? Self.unlimitedRetentionDays : max(1, min(365, retentionDays))
+        self.maxBytes = max(1, maxBytes)
     }
 }
 public enum ClipboardError: LocalizedError {
@@ -650,9 +654,11 @@ public final class ClipboardStore {
     }
 
     public func prune(now: Date = Date()) throws {
-        let cutoff = now.addingTimeInterval(-Double(limits.retentionDays)*86400).timeIntervalSince1970
+        // A NULL cutoff never matches by age. The count and byte limits still apply.
+        let cutoff: Value = limits.retentionDays == ClipboardLimits.unlimitedRetentionDays
+            ? .null : .number(now.addingTimeInterval(-Double(limits.retentionDays) * 86400).timeIntervalSince1970)
         let pinned = try scalar("SELECT count(*) FROM clips WHERE pinned=1")
-        let s = try statement("SELECT id FROM clips WHERE pinned=0 AND (copied < ? OR id IN (SELECT id FROM clips WHERE pinned=0 ORDER BY copied DESC,id LIMIT -1 OFFSET ?))",[.number(cutoff),.number(Double(max(0,limits.maxItems-pinned)))])
+        let s = try statement("SELECT id FROM clips WHERE pinned=0 AND (copied < ? OR id IN (SELECT id FROM clips WHERE pinned=0 ORDER BY copied DESC,id LIMIT -1 OFFSET ?))",[cutoff,.number(Double(max(0,limits.maxItems-pinned)))])
         var ids: [String] = []; while sqlite3_step(s) == SQLITE_ROW { ids.append(string(s,0)) }; sqlite3_finalize(s)
         for id in ids { try remove(id:id) }
         var bytes = try scalar("SELECT coalesce(sum(bytes),0) FROM clips")
