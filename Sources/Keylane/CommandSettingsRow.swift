@@ -40,6 +40,7 @@ private struct CommandSettingsRow<Icon: View>: View {
     let entry: CommandSettingsEntry<Icon>
     let commandIdentity: AnyHashable
     let disclosure: CommandSettingsDisclosure?
+    @Environment(\.isEnabled) private var isEnabled
     @FocusState private var aliasFocused: Bool
     @State private var aliasHovered = false
 
@@ -59,9 +60,16 @@ private struct CommandSettingsRow<Icon: View>: View {
                         }
                         .padding(.horizontal, 6)
                         .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                         .background(.primary.opacity(disclosure.isExpanded.wrappedValue ? 0.07 : 0), in: RoundedRectangle(cornerRadius: 6))
                     }
                     .buttonStyle(.plain)
+                    .focusable()
+                    .onKeyPress(.space, phases: .down) { press in
+                        guard isEnabled, entry.available, press.modifiers.isEmpty else { return .ignored }
+                        disclosure.isExpanded.wrappedValue.toggle()
+                        return .handled
+                    }
                     .accessibilityValue(disclosure.isExpanded.wrappedValue ? "已展开" : "已折叠")
                 } else if let perform = entry.perform {
                     Button(action: perform) {
