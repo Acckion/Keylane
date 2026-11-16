@@ -22,7 +22,7 @@
 
 ## 后续范围
 
-快捷链接、文字片段、补充检索三模块已按用户要求移入 [TODO.md](TODO.md)，后续再做；便笺继续单独延期。
+快捷链接、文字片段、补充检索三模块已按用户要求移入 [TODO.md](../TODO.md)，后续再做；便笺继续单独延期。
 
 Apple接口：
 https://developer.apple.com/documentation/appkit/nsworkspace/open(_:withapplicationat:configuration:completionhandler:)
