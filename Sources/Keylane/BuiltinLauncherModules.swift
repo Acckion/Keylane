@@ -144,6 +144,26 @@ enum BuiltinLauncherModules {
                             startUninstall(model.query)
                         }
                      ), .init(
+                        id: ApplicationUninstallReview.pageID, placeholder: "筛选文件和文件夹…", badge: ("卸载应用程序", "trash"),
+                        contentPlacement: .underChrome,
+                        content: { AnyView(ApplicationUninstallReviewPage(review: applicationActions.uninstallReview)) },
+                        queryChanged: applicationActions.uninstallReview.filter,
+                        leave: applicationActions.uninstallReview.clear,
+                        back: { [weak model] in model?.pageID = uninstallPage },
+                        move: applicationActions.uninstallReview.move,
+                        submit: applicationActions.uninstallReview.submit,
+                        actionContextTitle: { applicationActions.uninstallReview.name },
+                        primaryTitle: { applicationActions.uninstallReview.isSubmitting ? "正在移到废纸篓…" : "移到废纸篓" },
+                        primaryEnabled: { applicationActions.uninstallReview.canSubmit },
+                        actions: {
+                            [LauncherAction(id: "toggle-uninstall-file", title: "勾选或取消所选文件", icon: "checkmark.square",
+                                            enabled: !applicationActions.uninstallReview.isSubmitting) {
+                                applicationActions.uninstallReview.toggleHighlighted()
+                            }]
+                        },
+                        updates: applicationActions.uninstallReview.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+                        searchAccessory: { AnyView(ApplicationUninstallSortPicker(review: applicationActions.uninstallReview)) }
+                     ), .init(
                         id: ApplicationCommandEdit.pageID, placeholder: "", badge: ("编辑应用命令", "keyboard"),
                         contentPlacement: .form,
                         content: { [weak model] in
