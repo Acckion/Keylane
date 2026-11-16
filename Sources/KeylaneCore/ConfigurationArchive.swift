@@ -122,17 +122,15 @@ public struct ConfigurationArchive: Codable {
             if proposed != old { changes["disabledLauncherCommands"] = proposed }
         }
         if let aliases {
-            var merged = current["aliases"] as? [String: String] ?? [:]
-            for key in aliases.keys.sorted() {
-                let value = aliases[key]!
+            for (key, value) in aliases {
                 guard !key.isEmpty, key.count < 1024, value.count <= 4096 else { throw ConfigurationError("别名记录无效。") }
-                if let old = merged[key], old != value { conflicts += 1; if !overwrite { continue } }
-                if !value.isEmpty, merged.contains(where: { $0.key != key && $0.value.localizedCaseInsensitiveCompare(value) == .orderedSame }) {
-                    omitted += 1; continue
-                }
-                merged[key] = value
             }
-            if !Self.equal(current["aliases"], merged) { changes["aliases"] = merged }
+            let old = current["aliases"] as? [String: String] ?? [:]
+            let result = Self.mergeCommandMapping(aliases, into: old, overwrite: overwrite) {
+                !$0.isEmpty && !$1.isEmpty && $0.localizedCaseInsensitiveCompare($1) == .orderedSame
+            }
+            conflicts += result.conflicts; omitted += result.omitted
+            if !Self.equal(current["aliases"], result.values) { changes["aliases"] = result.values }
         }
         var bindings: [String: Shortcut] = ["launcher": .launcher]
         if let stored = current["shortcuts"] {
@@ -141,16 +139,17 @@ public struct ConfigurationArchive: Codable {
         }
         if let shortcuts {
             guard ShortcutValidation.conflict(in: shortcuts) == nil else { throw ConfigurationError("导入文件中的快捷键无效或相互冲突。") }
-            for key in shortcuts.keys.sorted() {
-                let value = shortcuts[key]!
+            for (key, value) in shortcuts {
                 guard !key.isEmpty, key.count < 1024, value.modifiers & ~UInt32(256 | 512 | 2048 | 4096) == 0 else {
                     throw ConfigurationError("快捷键记录无效。")
                 }
-                if let old = bindings[key], old != value { conflicts += 1; if !overwrite { continue } }
-                var candidate = bindings; candidate[key] = value
-                if ShortcutValidation.conflict(in: candidate) != nil { omitted += 1; continue }
-                bindings = candidate
             }
+            let result = Self.mergeCommandMapping(shortcuts, into: bindings, overwrite: overwrite, collides: ==)
+            conflicts += result.conflicts; omitted += result.omitted
+            // Preserve the old behavior for unrelated invalid saved bindings: a
+            // restore must not persist a final mapping that fails validation.
+            if ShortcutValidation.conflict(in: result.values) == nil { bindings = result.values }
+            else { omitted += result.applied }
             let data = try JSONEncoder().encode(bindings)
             if let old = current["shortcuts"] as? Data,
                (try? JSONDecoder().decode([String: Shortcut].self, from: old)) == bindings {} else { changes["shortcuts"] = data }
@@ -180,6 +179,48 @@ public struct ConfigurationArchive: Codable {
         messages.append("冲突 \(conflicts) 项（\(overwrite ? "覆盖同名项" : "保留现有项")）；跳过不支持、重复或热键冲突 \(omitted) 项。缺失项目保留现状。")
         messages.append("将更改 \(changes.count) 个存储分组。系统占用的热键需重启后检查；缺失命令或应用的映射可能暂不生效。")
         return Plan(changes: changes, messages: messages, conflicts: conflicts, omitted: omitted)
+    }
+    /// Resolve the complete proposed mapping, including swaps/cycles. If an
+    /// update is rejected, its original value remains reserved and may reject
+    /// dependent updates too. No intermediate mapping is persisted.
+    private static func mergeCommandMapping<Value: Equatable>(
+        _ incoming: [String: Value], into current: [String: Value], overwrite: Bool,
+        collides: (Value, Value) -> Bool
+    ) -> (values: [String: Value], conflicts: Int, omitted: Int, applied: Int) {
+        var updates: [String: Value] = [:], conflicts = 0, omitted = 0
+        for key in incoming.keys.sorted() {
+            let value = incoming[key]!
+            if let old = current[key] {
+                guard old != value else { continue }
+                conflicts += 1
+                if !overwrite { continue }
+            }
+            updates[key] = value
+        }
+        // Existing semantic owners win duplicate incoming aliases (including
+        // case-only edits); otherwise use stable command-ID ordering.
+        let ordered = updates.keys.sorted { lhs, rhs in
+            let ownsLeft = current[lhs].map { collides($0, updates[lhs]!) } ?? false
+            let ownsRight = current[rhs].map { collides($0, updates[rhs]!) } ?? false
+            return ownsLeft == ownsRight ? lhs < rhs : ownsLeft
+        }
+        var proposed: [String: Value] = [:]
+        for key in ordered {
+            let value = updates[key]!
+            if proposed.values.contains(where: { collides($0, value) }) { omitted += 1 }
+            else { proposed[key] = value }
+        }
+        while !proposed.isEmpty {
+            let retained = current.filter { proposed[$0.key] == nil }
+            let rejected = proposed.keys.filter { key in
+                retained.values.contains { collides($0, proposed[key]!) }
+            }
+            guard !rejected.isEmpty else { break }
+            for key in rejected { proposed.removeValue(forKey: key); omitted += 1 }
+        }
+        var merged = current
+        for (key, value) in proposed { merged[key] = value }
+        return (merged, conflicts, omitted, proposed.count)
     }
     static func equal(_ a: Any?, _ b: Any?) -> Bool {
         guard let a, let b else { return a == nil && b == nil }
