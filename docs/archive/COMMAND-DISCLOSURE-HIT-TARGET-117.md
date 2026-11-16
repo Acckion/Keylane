@@ -69,6 +69,6 @@ Space 展开、再按 Space 收起；Tab 回别名后继续输入；启用复选
 截图由本轮原生窗口内容直接保存，仅含演示数据。蓝色边框是键盘焦点环，
 收起时仍保留焦点环，不等于展开时的灰色标题背景。
 
-![深色展开与标题焦点](evidence/issue-117/hit-target-dark-expanded.png)
+![深色展开与标题焦点](../evidence/issue-117/hit-target-dark-expanded.png)
 
-![浅色全部收起与标题焦点](evidence/issue-117/hit-target-light-collapsed.png)
+![浅色全部收起与标题焦点](../evidence/issue-117/hit-target-light-collapsed.png)

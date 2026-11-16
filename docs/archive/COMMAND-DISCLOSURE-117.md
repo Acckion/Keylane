@@ -62,11 +62,11 @@ KEYLANE_UI_EVIDENCE=/tmp/keylane-disclosure-evidence bash scripts/verify-command
 
 深色混合展开状态（同时可见别名焦点背景）：
 
-![深色混合展开状态](evidence/issue-117/dark-mixed.png)
+![深色混合展开状态](../evidence/issue-117/dark-mixed.png)
 
 浅色全部收起（demo 是临时输入的演示别名）：
 
-![浅色全部收起](evidence/issue-117/light-collapsed.png)
+![浅色全部收起](../evidence/issue-117/light-collapsed.png)
 
 未验证：安装版四个实际设置页的完整子项、设置搜索跳转、VoiceOver 朗读、
 标题按钮的 Tab/Space 操作。本机默认 Tab 导航在文本字段之间移动，
