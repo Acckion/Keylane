@@ -36,6 +36,8 @@ Screenshots show an actual Beta 1 app copy with fixed demo inputs. The app UI is
 
 **In development, outside this Beta:** Raycast extension compatibility, configuration migration, and iPhone app launching. Development branches and draft PRs do not imply released features. See the [roadmap](docs/TODO.md) and [feature inventory](docs/FEATURES.csv).
 
+See the [configuration migration scope and validation](docs/CONFIGURATION-MIGRATION.md) for the development version.
+
 ## Build from source
 
 Requires macOS 26+, a Swift 6 toolchain (usually supplied by Xcode), and Python 3. SQLite uses the system library.

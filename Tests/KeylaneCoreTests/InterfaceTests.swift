@@ -13,10 +13,11 @@ final class InterfaceTests: XCTestCase {
 
     func testSettingsSearchFindsActualControlsAcrossLanguages() {
         XCTAssertEqual(SettingsItem.search("深色").map(\.id), ["appearance"])
-        XCTAssertEqual(SettingsItem.search("备份").map(\.id), ["advanced-export-passphrase", "advanced-scheduled-export", "advanced-preferences-export", "advanced-local-export"])
+        XCTAssertEqual(SettingsItem.search("备份").map(\.id), ["advanced-export-passphrase", "advanced-scheduled-export", "advanced-preferences-export", "advanced-local-export", "advanced-preferences-import"])
         XCTAssertEqual(SettingsItem.search("certificate authority").map(\.page), ["advanced"])
         XCTAssertEqual(SettingsItem.search("窗口激活").map(\.id), ["advanced-window-activation"])
         XCTAssertEqual(SettingsItem.search("CLIPBOARD history").map(\.id), ["capture"])
+        XCTAssertEqual(SettingsItem.search("rayconfig").map(\.id), ["advanced-raycast-migration"])
         XCTAssertTrue(SettingsItem.search("不存在的配置项").isEmpty)
         XCTAssertTrue(SettingsItem.search("  \n").isEmpty)
         XCTAssertEqual(Set(SettingsItem.all.map(\.id)).count,SettingsItem.all.count)

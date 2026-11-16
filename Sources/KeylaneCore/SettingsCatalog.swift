@@ -75,6 +75,10 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let exportPassphrase = SettingsItem(id: "advanced-export-passphrase", page: "advanced", title: "导出口令", keywords: "加密 备份 export passphrase encryption")
     public static let scheduledExport = SettingsItem(id: "advanced-scheduled-export", page: "advanced", title: "定时导出", keywords: "自动备份 scheduled export backup")
     public static let exportPreferences = SettingsItem(id: "advanced-preferences-export", page: "advanced", title: "导出设置", keywords: "备份 偏好 JSON export preferences settings")
+    public static let importPreferences = SettingsItem(id: "advanced-preferences-import", page: "advanced", title: "导入配置", keywords: "恢复 备份 import restore configuration")
+    public static let raycastMigration = SettingsItem(id: "advanced-raycast-migration", page: "advanced", title: "从 Raycast 迁移", keywords: "raycast rayconfig 迁移 import migration")
+    public static let cancelConfigurationImport = SettingsItem(id: "advanced-cancel-import", page: "advanced", title: "取消待处理导入", keywords: "取消 恢复 pending cancel import")
+    public static let undoConfigurationImport = SettingsItem(id: "advanced-undo-import", page: "advanced", title: "撤销上次导入", keywords: "撤销 恢复 undo restore backup")
     public static let exportLocalRecords = SettingsItem(id: "advanced-local-export", page: "advanced", title: "导出本地资料", keywords: "备份 JSON export local records")
     public static let systemProxy = SettingsItem(id: "advanced-system-proxy", page: "advanced", title: "使用系统代理设置", keywords: "网络 连接 system proxy settings")
     public static let additionalCertificateAuthority = SettingsItem(id: "advanced-certificate-authority", page: "advanced", title: "额外的证书颁发机构", keywords: "信任 连接 CA certificate authority crt cer pem")
@@ -145,6 +149,10 @@ public struct SettingsItem: Identifiable, Equatable {
         scheduledExport,
         exportPreferences,
         exportLocalRecords,
+        importPreferences,
+        raycastMigration,
+        cancelConfigurationImport,
+        undoConfigurationImport,
         systemProxy,
         additionalCertificateAuthority,
         dataDirectory,

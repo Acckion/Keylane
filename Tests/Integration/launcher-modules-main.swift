@@ -110,6 +110,14 @@ let localRegistry = try LauncherModuleRegistry(
     modules: [.init(id: .init(rawValue: "test.preference"), commands: [localCommand])],
     commandEnabled: { !globalDisabled.contains($0.rawValue) }
 )
+precondition(localRegistry.independentlyEnabledCommandIDs == [localID.rawValue])
+precondition(registry.independentlyEnabledCommandIDs.isEmpty)
+var configuration = ConfigurationArchive()
+configuration.disabledCommands = [localID.rawValue, "host-only"]
+let configurationPlan = try configuration.plan(current: [:], overwrite: true,
+                                                excludingCommandStates: localRegistry.independentlyEnabledCommandIDs)
+precondition(configurationPlan.changes["disabledLauncherCommands"] as? [String] == ["host-only"])
+precondition(locallyEnabled && configurationPlan.omitted == 1)
 globalDisabled = localRegistry.migrateDisabledCommands(globalDisabled)
 precondition(globalDisabled == ["host-only"] && !locallyEnabled)
 precondition(localRegistry.candidates(for: input).isEmpty)

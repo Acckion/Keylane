@@ -36,6 +36,8 @@
 
 **开发中，未随 Beta 提供：** Raycast 扩展兼容、配置迁移和 iPhone 应用启动。开发分支或草稿 PR 不代表已发布。详细状态见 [待办](docs/TODO.md)、[功能清单](docs/FEATURES.csv)。
 
+开发中的配置导出、恢复和部分 Raycast 迁移见[迁移范围与验证](docs/CONFIGURATION-MIGRATION.md)。
+
 ## 从源码构建
 
 需要 macOS 26+、Swift 6 工具链（通常由 Xcode 提供）、Python 3。SQLite 使用系统库。
