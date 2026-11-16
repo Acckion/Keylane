@@ -81,7 +81,7 @@ public struct ConfigurationArchive: Codable {
     }
 
     /// Merge-only restoration: missing categories/keys never delete existing configuration.
-    public func plan(current: [String: Any], overwrite: Bool, excludingCommandStates: Set<String> = []) throws -> Plan {
+    public func plan(current: [String: Any], overwrite: Bool, excludingCommandStates: Set<String> = [], templateContext: DynamicTemplate.Context = .init()) throws -> Plan {
         guard disabledCommands == nil || commandEnabled == nil else { throw ConfigurationError("命令状态包含两种不兼容的表示。") }
         var changes: [String: Any] = [:], messages: [String] = []
         var conflicts = 0, omitted = 0
@@ -102,16 +102,56 @@ public struct ConfigurationArchive: Codable {
             } else { omitted += 1; continue }
             choose(key, value.object)
         }
+        // Resolve link identity before merging any command-keyed configuration.
+        var canonicalIDs: [String: String] = [:]
+        if let quicklinks {
+            var existing: [Quicklink] = []
+            if let stored = current[QuicklinkLibrary.storageKey] {
+                guard let data = stored as? Data else { throw ConfigurationError("现有 Quicklinks 损坏。") }
+                existing = try JSONDecoder().decode(QuicklinkLibrary.self, from: data).links
+            }
+            var seen: Set<String> = []
+            for link in quicklinks {
+                guard (link.id == QuicklinkLibrary.legacyID || link.id.hasPrefix("quicklink:")),
+                      seen.insert(link.id).inserted, !link.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ConfigurationError("Quicklinks 标识或名称无效。") }
+                _ = try link.parsedTemplate(context: templateContext)
+                if let index = existing.firstIndex(where: { $0.id == link.id }) {
+                    if existing[index] != link { conflicts += 1; if overwrite { existing[index] = link } }
+                } else if let canonical = existing.first(where: { $0.title == link.title && $0.template == link.template && $0.openingApplicationID == link.openingApplicationID }) {
+                    canonicalIDs[link.id] = canonical.id
+                    omitted += 1
+                } else { existing.append(link) }
+            }
+            let data = try JSONEncoder().encode(QuicklinkLibrary(links: existing))
+            if let old = current[QuicklinkLibrary.storageKey] as? Data,
+               (try? JSONDecoder().decode(QuicklinkLibrary.self, from: old))?.links == existing {} else { changes[QuicklinkLibrary.storageKey] = data }
+        }
+        func remap<Value>(_ mapping: [String: Value]) -> [String: Value] {
+            var result: [String: Value] = [:]
+            // An explicit canonical entry wins over references from duplicates.
+            let keys = mapping.keys.sorted {
+                let a = canonicalIDs[$0] == nil, b = canonicalIDs[$1] == nil
+                return a != b ? a : $0 < $1
+            }
+            for key in keys {
+                let target = canonicalIDs[key] ?? key
+                if result[target] != nil { omitted += 1; continue }
+                result[target] = mapping[key]
+            }
+            return result
+        }
         if let disabledCommands {
             guard !disabledCommands.contains("settings"), Set(disabledCommands).count == disabledCommands.count, disabledCommands.allSatisfy({ !$0.isEmpty && $0.count < 1024 }) else { throw ConfigurationError("命令启用状态无效。") }
             omitted += disabledCommands.filter { excludingCommandStates.contains($0) }.count
             let retained = (current["disabledLauncherCommands"] as? [String] ?? []).filter { excludingCommandStates.contains($0) }
-            choose("disabledLauncherCommands", Set(disabledCommands.filter { !excludingCommandStates.contains($0) } + retained).sorted())
+            choose("disabledLauncherCommands", Set(disabledCommands.map { canonicalIDs[$0] ?? $0 }.filter { !excludingCommandStates.contains($0) } + retained).sorted())
         }
         if let commandEnabled {
             var disabled = Set(current["disabledLauncherCommands"] as? [String] ?? [])
             for (id, enabled) in commandEnabled {
                 guard !id.isEmpty, id.count < 1024, id != "settings" || enabled else { throw ConfigurationError("命令状态记录无效。") }
+            }
+            for (id, enabled) in remap(commandEnabled) {
                 if excludingCommandStates.contains(id) { omitted += 1; continue }
                 let wasEnabled = !disabled.contains(id)
                 if wasEnabled != enabled { conflicts += 1; if !overwrite { continue } }
@@ -126,7 +166,7 @@ public struct ConfigurationArchive: Codable {
                 guard !key.isEmpty, key.count < 1024, value.count <= 4096 else { throw ConfigurationError("别名记录无效。") }
             }
             let old = current["aliases"] as? [String: String] ?? [:]
-            let result = Self.mergeCommandMapping(aliases, into: old, overwrite: overwrite) {
+            let result = Self.mergeCommandMapping(remap(aliases), into: old, overwrite: overwrite) {
                 !$0.isEmpty && !$1.isEmpty && $0.localizedCaseInsensitiveCompare($1) == .orderedSame
             }
             conflicts += result.conflicts; omitted += result.omitted
@@ -144,7 +184,7 @@ public struct ConfigurationArchive: Codable {
                     throw ConfigurationError("快捷键记录无效。")
                 }
             }
-            let result = Self.mergeCommandMapping(shortcuts, into: bindings, overwrite: overwrite, collides: ==)
+            let result = Self.mergeCommandMapping(remap(shortcuts), into: bindings, overwrite: overwrite, collides: ==)
             conflicts += result.conflicts; omitted += result.omitted
             // Preserve the old behavior for unrelated invalid saved bindings: a
             // restore must not persist a final mapping that fails validation.
@@ -153,27 +193,6 @@ public struct ConfigurationArchive: Codable {
             let data = try JSONEncoder().encode(bindings)
             if let old = current["shortcuts"] as? Data,
                (try? JSONDecoder().decode([String: Shortcut].self, from: old)) == bindings {} else { changes["shortcuts"] = data }
-        }
-        if let quicklinks {
-            var existing: [Quicklink] = []
-            if let stored = current[QuicklinkLibrary.storageKey] {
-                guard let data = stored as? Data else { throw ConfigurationError("现有 Quicklinks 损坏。") }
-                existing = try JSONDecoder().decode(QuicklinkLibrary.self, from: data).links
-            }
-            var seen: Set<String> = []
-            for link in quicklinks {
-                guard (link.id == QuicklinkLibrary.legacyID || link.id.hasPrefix("quicklink:")),
-                      seen.insert(link.id).inserted, !link.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ConfigurationError("Quicklinks 标识或名称无效。") }
-                _ = try link.parsedTemplate()
-                if let index = existing.firstIndex(where: { $0.id == link.id }) {
-                    if existing[index] != link { conflicts += 1; if overwrite { existing[index] = link } }
-                } else if existing.contains(where: { $0.title == link.title && $0.template == link.template && $0.openingApplicationID == link.openingApplicationID }) {
-                    omitted += 1
-                } else { existing.append(link) }
-            }
-            let data = try JSONEncoder().encode(QuicklinkLibrary(links: existing))
-            if let old = current[QuicklinkLibrary.storageKey] as? Data,
-               (try? JSONDecoder().decode(QuicklinkLibrary.self, from: old))?.links == existing {} else { changes[QuicklinkLibrary.storageKey] = data }
         }
         messages.append("偏好 \(preferences.count) 项；快捷键 \(shortcuts?.count ?? 0) 项；禁用命令 \(disabledCommands?.count ?? 0) 项；别名 \(aliases?.count ?? 0) 项；Quicklinks \(quicklinks?.count ?? 0) 条。")
         messages.append("冲突 \(conflicts) 项（\(overwrite ? "覆盖同名项" : "保留现有项")）；跳过不支持、重复或热键冲突 \(omitted) 项。缺失项目保留现状。")

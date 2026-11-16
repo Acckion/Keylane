@@ -17,6 +17,71 @@ final class ConfigurationMappingTests: XCTestCase {
         return (plan, result)
     }
 
+    func testQuicklinkSnippetValidationUsesProvidedContext() throws {
+        var archive = ConfigurationArchive()
+        archive.quicklinks = [Quicklink(title: "Synthetic", template: "https://example.com/?q={snippet name=Greeting}")]
+        XCTAssertThrowsError(try archive.plan(current: [:], overwrite: true))
+        var context = DynamicTemplate.Context()
+        context.snippet = { $0 == "Greeting" ? "hello" : nil }
+        XCTAssertNotNil(try archive.plan(current: [:], overwrite: true, templateContext: context).changes[QuicklinkLibrary.storageKey])
+        context.snippet = { _ in "{snippet name=Other}" }
+        XCTAssertThrowsError(try archive.plan(current: [:], overwrite: true, templateContext: context))
+    }
+
+    func testDeduplicatedQuicklinkRemapsReferencesAndRepeatsWithoutChanges() throws {
+        let retained = Quicklink(title: "Synthetic", template: "https://example.com/")
+        let duplicate = Quicklink(title: retained.title, template: retained.template)
+        var archive = ConfigurationArchive()
+        archive.quicklinks = [duplicate]
+        archive.aliases = [duplicate.id: "synthetic"]
+        archive.shortcuts = [duplicate.id: q]
+        archive.disabledCommands = [duplicate.id]
+        let initial: [String: Any] = [QuicklinkLibrary.storageKey: try JSONEncoder().encode(QuicklinkLibrary(links: [retained])),
+                                     "shortcuts": try JSONEncoder().encode([String: Shortcut]())]
+        let plan = try archive.plan(current: initial, overwrite: true)
+        XCTAssertNil(plan.changes[QuicklinkLibrary.storageKey])
+        XCTAssertEqual(plan.changes["aliases"] as? [String: String], [retained.id: "synthetic"])
+        XCTAssertEqual(try JSONDecoder().decode([String: Shortcut].self, from: XCTUnwrap(plan.changes["shortcuts"] as? Data)), [retained.id: q])
+        XCTAssertEqual(plan.changes["disabledLauncherCommands"] as? [String], [retained.id])
+        let applied = initial.merging(plan.changes) { _, new in new }
+        XCTAssertTrue(try archive.plan(current: applied, overwrite: true).changes.isEmpty)
+        archive.disabledCommands = nil; archive.commandEnabled = [duplicate.id: true]
+        XCTAssertEqual(try archive.plan(current: applied, overwrite: true).changes["disabledLauncherCommands"] as? [String], [])
+    }
+
+    func testRemappedQuicklinkMappingsRespectExistingConflictsAndCanonicalEntry() throws {
+        let retained = Quicklink(title: "Synthetic", template: "https://example.com/")
+        let duplicate = Quicklink(title: retained.title, template: retained.template)
+        var archive = ConfigurationArchive(); archive.quicklinks = [duplicate]
+        archive.aliases = [duplicate.id: "new"]
+        archive.shortcuts = [duplicate.id: w]
+        let initial: [String: Any] = [QuicklinkLibrary.storageKey: try JSONEncoder().encode(QuicklinkLibrary(links: [retained])),
+            "aliases": [retained.id: "old"], "shortcuts": try JSONEncoder().encode([retained.id: q, "reserved": w])]
+        XCTAssertTrue(try archive.plan(current: initial, overwrite: false).changes.isEmpty)
+        let overwrite = try archive.plan(current: initial, overwrite: true)
+        XCTAssertEqual(overwrite.changes["aliases"] as? [String: String], [retained.id: "new"])
+        XCTAssertNil(overwrite.changes["shortcuts"])
+        archive.aliases = [duplicate.id: "discarded", retained.id: "canonical"]
+        archive.shortcuts = [duplicate.id: e, retained.id: r]
+        let canonical = try archive.plan(current: initial, overwrite: true)
+        XCTAssertEqual(canonical.changes["aliases"] as? [String: String], [retained.id: "canonical"])
+        XCTAssertEqual(try JSONDecoder().decode([String: Shortcut].self, from: XCTUnwrap(canonical.changes["shortcuts"] as? Data)), [retained.id: r, "reserved": w])
+    }
+
+    func testDuplicateQuicklinksWithinArchiveShareOneStableIdentity() throws {
+        let first = Quicklink(title: "Synthetic", template: "https://example.com/")
+        let second = Quicklink(title: first.title, template: first.template)
+        var archive = ConfigurationArchive(); archive.quicklinks = [first, second]
+        archive.aliases = [second.id: "synthetic"]
+        archive.shortcuts = [second.id: q]
+        let current: [String: Any] = ["shortcuts": try JSONEncoder().encode([String: Shortcut]())]
+        let plan = try archive.plan(current: current, overwrite: true)
+        XCTAssertEqual(try JSONDecoder().decode(QuicklinkLibrary.self, from: XCTUnwrap(plan.changes[QuicklinkLibrary.storageKey] as? Data)).links, [first])
+        XCTAssertEqual(plan.changes["aliases"] as? [String: String], [first.id: "synthetic"])
+        XCTAssertEqual(try JSONDecoder().decode([String: Shortcut].self, from: XCTUnwrap(plan.changes["shortcuts"] as? Data)), [first.id: q])
+        XCTAssertTrue(try archive.plan(current: current.merging(plan.changes) { _, new in new }, overwrite: true).changes.isEmpty)
+    }
+
     func testOverwriteHotkeySwapAndThreeWayCycleAreFinalStateValidAndIdempotent() throws {
         let old = ["a": q, "b": w, "c": e]
         for incoming in [["a": w, "b": q], ["a": w, "b": e, "c": q]] {

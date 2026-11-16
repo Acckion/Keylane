@@ -55,14 +55,14 @@ enum ConfigurationTransfer {
                 let preview = try RaycastConfiguration.decode(data, password: password, applicationPaths: paths)
                 password = ""; archive = preview.archive; warnings = preview.warnings
             } else { archive = try ConfigurationArchive.decode(data) }
-            guard let registry = (NSApp.delegate as? Delegate)?.model.launcherModules else {
+            guard let model = (NSApp.delegate as? Delegate)?.model, let registry = model.launcherModules else {
                 throw ConfigurationError("命令目录不可用，无法安全预览配置。")
             }
             let snapshot = current
             let exclusions = registry.independentlyEnabledCommandIDs
             warnings.append("具有独立开关的命令（例如剪贴板、相机和 AI）的启用状态不迁移，避免间接改变权限或未备份的偏好。")
-            let preserve = try archive.plan(current: snapshot, overwrite: false, excludingCommandStates: exclusions)
-            let overwrite = try archive.plan(current: snapshot, overwrite: true, excludingCommandStates: exclusions)
+            let preserve = try archive.plan(current: snapshot, overwrite: false, excludingCommandStates: exclusions, templateContext: model.snippets.templateContext(interactive: false))
+            let overwrite = try archive.plan(current: snapshot, overwrite: true, excludingCommandStates: exclusions, templateContext: model.snippets.templateContext(interactive: false))
             let selection = NSAlert(); selection.messageText = "导入预览"
             selection.informativeText = "先检查范围与限制，再选择冲突策略。此步骤不写入配置。"
             selection.accessoryView = previewText((preserve.messages + warnings + ["覆盖仅更新文件中提供的项目，不清空其他配置。热键冲突一律跳过；系统保留热键需重启后检查。选择后还会显示最终更改范围。"]).joined(separator: "\n\n"))

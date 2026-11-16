@@ -1,4 +1,5 @@
 import AppKit
+import KeylaneCore
 
 // Link the production configuration UI without the real app's controllers,
 // services, filesystem stores or permission features.
@@ -9,7 +10,11 @@ enum ConfigurationStartupProbe {
 final class ConfigurationFixtureRegistry {
     var independentlyEnabledCommandIDs: Set<String> { [] }
 }
+final class ConfigurationFixtureSnippets {
+    func templateContext(interactive: Bool) -> DynamicTemplate.Context { .init() }
+}
 final class Model {
+    let snippets = ConfigurationFixtureSnippets()
     var apps: [URL] = []
     var launcherModules: ConfigurationFixtureRegistry? = .init()
     init() {
