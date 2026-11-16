@@ -1,8 +1,8 @@
 # Issue #76：自动退出搜索弹窗与卸载预览
 
-范围来自 [输入故障评论](https://github.com/Acckion/Keylane/issues/76#issuecomment-6905943310) 和 [卸载界面对照评论](https://github.com/Acckion/Keylane/issues/76#issuecomment-6905972431)。已查看三张截图：输入故障位于「设置 → 应用程序 → 自动退出 → 右上角＋ → 搜索应用…」，不是卸载确认框。卸载要求是将系统 NSAlert 改成 Keylane 内的文件选择页。本修复基于 dev `2b445bc`，不涉及发行或其他设置功能。
+范围来自 [输入故障评论](https://github.com/Acckion/Keylane/issues/76#issuecomment-6905943310) 和 [卸载界面对照评论](https://github.com/Acckion/Keylane/issues/76#issuecomment-6905972431)。已查看三张截图：输入故障位于「设置 → 应用程序 → 自动退出 → 右上角＋ → 搜索应用…」，不是卸载确认框。卸载要求是将系统 NSAlert 改成 Keylane 内的文件选择页。本修复已无冲突同步到 dev `ace5f90`（含 #140），不涉及发行或其他设置功能。
 
-## 根因与修复
+## 实现与证据边界
 
 `ApplicationAutoQuitAddButton` 原来将 `open`、`query`、`options` 与错误提示一起保存在 SwiftUI 工具栏弹窗宿主。工具栏更新与弹窗的输入状态耦合；AppKit 弹窗的焦点归属也需要按实际事件窗口处理，不能只用 `NSApp.keyWindow` 判断。该属性在 popover 已为 key 的情况下仍可能返回父窗口。
 
