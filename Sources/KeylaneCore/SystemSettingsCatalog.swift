@@ -77,7 +77,7 @@ public enum SystemSettingsCatalog {
               ["系统更新", "macOS Update"]),
         .init("storage", "储存空间", "Storage", "internaldrive", "com.apple.settings.Storage",
               ["存储空间", "磁盘空间", "Disk Space"]),
-        .init("airdrop-handoff", "隔空投送与接力", "AirDrop & Handoff", "airdrop", "com.apple.AirDrop-Handoff-Settings.extension",
+        .init("airdrop-handoff", "隔空投送与接力", "AirDrop & Handoff", "airplayaudio", "com.apple.AirDrop-Handoff-Settings.extension",
               ["隔空投送与连续互通", "隔空投送", "接力", "AirDrop", "Handoff", "Continuity"]),
         .init("login-items", "登录项与扩展", "Login Items & Extensions", "rectangle.and.text.magnifyingglass", "com.apple.LoginItems-Settings.extension",
               ["登录项", "开机启动", "启动项", "Login Items", "Startup Apps", "Extensions"]),
@@ -147,7 +147,7 @@ public enum SystemSettingsCatalog {
               ["互联网账号", "网络账户"]),
         .init("keyboard", "键盘", "Keyboard", "keyboard", "com.apple.Keyboard-Settings.extension",
               ["输入法", "键盘快捷键", "Input Sources", "Keyboard Shortcuts"]),
-        .init("trackpad", "触控板", "Trackpad", "trackpad", "com.apple.Trackpad-Settings.extension",
+        .init("trackpad", "触控板", "Trackpad", "rectangle.and.hand.point.up.left", "com.apple.Trackpad-Settings.extension",
               ["触摸板", "手势", "Gestures"]),
         .init("printers-scanners", "打印机与扫描仪", "Printers & Scanners", "printer", "com.apple.Print-Scan-Settings.extension",
               ["打印机", "扫描仪", "Printer", "Scanner", "Printers and Scanners"])
