@@ -2,11 +2,11 @@ import SwiftUI
 import AppKit
 import KeylaneCore
 
-/// The AppKit popover owns its lifetime independently of toolbar SwiftUI updates.
+/// Search menus share the clipboard filter surface and stay in their owner window.
 struct ApplicationAutoQuitAddButton: View {
     let model: Model
     var body: some View {
-        SettingsPopoverButton(title: "", symbol: "plus", label: "添加自动退出应用", enabled: model.applicationsEnabled) { dismiss in
+        SettingsSearchMenuButton(title: "", symbol: "plus", label: "添加自动退出应用", enabled: model.applicationsEnabled) { dismiss in
             AnyView(ApplicationAutoQuitPicker(model: model, dismiss: dismiss))
         }
     }
@@ -77,7 +77,7 @@ struct AutoQuitDurationPicker: View {
     let select: (Int) -> Void
 
     var body: some View {
-        SettingsPopoverButton(title: minutes == ApplicationAutoQuit.useDefault ? "" : title(for: minutes),
+        SettingsSearchMenuButton(title: minutes == ApplicationAutoQuit.useDefault ? "" : title(for: minutes),
                               symbol: "clock", label: label, value: title(for: minutes)) { dismiss in
             AnyView(AutoQuitDurationOptions(minutes: minutes, defaultMinutes: defaultMinutes,
                                            navigation: navigation, title: title, select: { value in
@@ -115,9 +115,10 @@ private struct AutoQuitDurationOptions: View {
     }
 }
 
-/// Native presentation gives the search editor a real key window. A SwiftUI
-/// toolbar popover can focus an editor while leaving its owner as the key window.
-private struct SettingsPopoverButton: NSViewRepresentable {
+/// Host the same in-window search surface as the clipboard filter. Keeping the
+/// editor in the owner window avoids transient-popover dismissal during keyboard
+/// activation. Only pointer events outside the menu and window lifecycle close it.
+private struct SettingsSearchMenuButton: NSViewRepresentable {
     let title: String
     let symbol: String
     let label: String
@@ -137,9 +138,7 @@ private struct SettingsPopoverButton: NSViewRepresentable {
         configure(button)
         if !enabled { context.coordinator.close() }
     }
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? {
-        nsView.fittingSize
-    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? { nsView.fittingSize }
     private func configure(_ button: NSButton) {
         button.title = title.isEmpty ? label : title
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
@@ -151,29 +150,81 @@ private struct SettingsPopoverButton: NSViewRepresentable {
     }
     static func dismantleNSView(_ view: NSButton, coordinator: Coordinator) { coordinator.close() }
 
-    final class Coordinator: NSObject, NSPopoverDelegate {
-        var parent: SettingsPopoverButton
-        private var popover: NSPopover?
-        init(_ parent: SettingsPopoverButton) { self.parent = parent }
+    final class Coordinator: NSObject {
+        var parent: SettingsSearchMenuButton
+        private weak var button: NSButton?
+        private weak var owner: NSWindow?
+        private var menu: MenuView?
+        private var pointerMonitor: Any?
+        private var observations: [NSObjectProtocol] = []
+        init(_ parent: SettingsSearchMenuButton) { self.parent = parent }
+
         @objc func toggle(_ sender: NSButton) {
-            if popover?.isShown == true { close(); return }
-            guard parent.enabled, sender.window != nil else { return }
-            let popover = NSPopover()
-            popover.behavior = .transient
-            popover.animates = false
-            popover.delegate = self
-            popover.contentViewController = NSHostingController(rootView: parent.content { [weak self] in self?.close() })
-            self.popover = popover
-            popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
+            if menu != nil { close(); return }
+            guard parent.enabled, let owner = sender.window, let container = owner.contentView else { return }
+            self.button = sender
+            self.owner = owner
+            let surface = parent.content { [weak self] in self?.close() }
+                .modifier(LauncherMenuSurface(open: true))
+                .fixedSize()
+                .shadow(color: .black.opacity(0.22), radius: 12, y: 4)
+                .accessibilityIdentifier("settings-search-menu")
+            let menu = MenuView(rootView: AnyView(surface))
+            menu.identifier = NSUserInterfaceItemIdentifier("KeylaneSettingsSearchMenu")
+            menu.resized = { [weak self] in self?.positionMenu() }
+            self.menu = menu
+            container.addSubview(menu, positioned: .above, relativeTo: nil)
+            positionMenu()
+            pointerMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
+                guard let self, let menu = self.menu, let container = menu.superview else { return event }
+                guard event.window === self.owner else { self.close(); return event }
+                let point = container.convert(event.locationInWindow, from: nil)
+                let anchor = self.button.map { container.convert($0.bounds, from: $0) } ?? .zero
+                if !menu.frame.contains(point) && !anchor.contains(point) { self.close() }
+                return event
+            }
+            for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
+                observations.append(NotificationCenter.default.addObserver(forName: name, object: owner, queue: .main) { [weak self] _ in self?.close() })
+            }
+            observations.append(NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: owner, queue: .main) { [weak self] _ in self?.positionMenu() })
         }
-        func popoverDidShow(_ notification: Notification) {
-            popover?.contentViewController?.view.window?.makeKeyAndOrderFront(nil)
+
+        private func positionMenu() {
+            guard let menu, let container = menu.superview, let button, button.window === owner else { close(); return }
+            let size = menu.fittingSize
+            guard size.width > 0, size.height > 0 else { return }
+            let bounds = container.bounds.insetBy(dx: 8, dy: 8)
+            let anchor = container.convert(button.bounds, from: button)
+            let x = min(max(bounds.minX, anchor.maxX - size.width), max(bounds.minX, bounds.maxX - size.width))
+            let below = container.isFlipped ? anchor.maxY + 6 : anchor.minY - size.height - 6
+            let above = container.isFlipped ? anchor.minY - size.height - 6 : anchor.maxY + 6
+            let fitsBelow = below >= bounds.minY && below + size.height <= bounds.maxY
+            let preferred = fitsBelow ? below : above
+            let y = min(max(bounds.minY, preferred), max(bounds.minY, bounds.maxY - size.height))
+            let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
+            if menu.frame != frame { menu.frame = frame }
         }
-        func close() { popover?.performClose(nil) }
-        func popoverDidClose(_ notification: Notification) {
-            popover?.contentViewController = nil
-            popover = nil
+
+        func close() {
+            guard let menu else { return }
+            self.menu = nil
+            menu.resized = nil
+            menu.removeFromSuperview()
+            if let pointerMonitor { NSEvent.removeMonitor(pointerMonitor) }
+            pointerMonitor = nil
+            observations.forEach(NotificationCenter.default.removeObserver)
+            observations = []
+            if let owner, let button, button.window === owner { owner.makeFirstResponder(button) }
+            button = nil
+            owner = nil
+        }
+    }
+
+    final class MenuView: NSHostingView<AnyView> {
+        var resized: (() -> Void)?
+        override func invalidateIntrinsicContentSize() {
+            super.invalidateIntrinsicContentSize()
+            DispatchQueue.main.async { [weak self] in self?.resized?() }
         }
     }
 }

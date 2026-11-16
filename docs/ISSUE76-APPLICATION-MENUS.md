@@ -1,38 +1,39 @@
-# Issue #76：自动退出搜索弹窗与卸载预览
+# Issue #76：同窗口搜索菜单与卸载预览
 
-范围来自 [输入故障评论](https://github.com/Acckion/Keylane/issues/76#issuecomment-6905943310) 和 [卸载界面对照评论](https://github.com/Acckion/Keylane/issues/76#issuecomment-6905972431)。已查看三张截图：输入故障位于「设置 → 应用程序 → 自动退出 → 右上角＋ → 搜索应用…」，不是卸载确认框。卸载要求是将系统 NSAlert 改成 Keylane 内的文件选择页。本修复已无冲突同步到 dev `ace5f90`（含 #140），不涉及发行或其他设置功能。
+范围来自 [输入故障评论](https://github.com/Acckion/Keylane/issues/76#issuecomment-6905943310) 和 [卸载界面对照评论](https://github.com/Acckion/Keylane/issues/76#issuecomment-6905972431)。输入故障的实际入口为「设置 → 应用程序 → 自动退出 → 右上角＋ → 搜索应用…」。已查看这两条评论的截图，以及用户后来提供的剪贴板右上角「文字／仅文字」菜单参考。基线已同步 dev `503d84a`（含 #145），仅更新草稿 PR #144。
 
-## 实现与证据边界
+## 当前实现与证据边界
 
-`ApplicationAutoQuitAddButton` 原来将 `open`、`query`、`options` 与错误提示一起保存在 SwiftUI 工具栏弹窗宿主。工具栏更新与弹窗的输入状态耦合；AppKit 弹窗的焦点归属也需要按实际事件窗口处理，不能只用 `NSApp.keyWindow` 判断。该属性在 popover 已为 key 的情况下仍可能返回父窗口。
+剪贴板右上角的生产实现由 `ResultTypeFilter` 在原窗口内展开 `ResultFilterPanel`，通过 `LauncherMenuSurface` 绘制圆角玻璃表面，不创建独立弹窗窗口。当前应用与时长选择器复用同一搜索列表、行样式和玻璃表面，作为原窗口 contentView 内的独立菜单视图，按触发按钮位置排列并约束在内容区域。
 
-现在两个设置选择器使用原生 NSButton/NSPopover 管理展示、关闭及显示完成后的焦点，目录观察、搜索、选项与错误状态由弹窗内容持有。关闭释放内容，重新打开时搜索为空。保留既有 `SearchField`；IME 检测优先读取当前事件窗口的 field editor，避免误读父窗口。未增加全局按键监听或吞掉普通文字。
+- 菜单编辑器始终属于原窗口，普通按键不承担任何关闭职责。没有全局键盘监听，也不转发或吞掉文字按键。
+- 搜索、目录观察、选项、错误状态由菜单内容持有，不反向重建工具栏按钮；关闭释放内容，重新打开清空查询。
+- 仅通过选择、ESC、触发按钮切换、菜单外的指针事件、窗口失焦/关闭或按钮拆卸关闭。滚动菜单内部不会关闭，窗口改变大小会重新定位。
+- `SearchField` 从当前事件窗口读取 IME marked text，回退到应用 key window。这样无需假定 `NSApp.keyWindow` 一定返回正在编辑的独立 popover。
+- 卸载预览仍使用 Keylane 登记的文件页，与搜索菜单的展示方式分开。
 
-证据边界：早期隔离夹具通过 CUA `pressKey("d")` 复现菜单关闭，但该通道在修改后仍将文字送入父搜索框，因而不能独自证明代码根因或实际键盘修复成功。最终夹具通过 LaunchServices 启动，在 NSApplication 主事件循环中确认 popover 自身为 key，并通过应用级原生事件断言。CUA `typeText("demo")` 确认弹窗保持打开并正确筛选；实体键盘与真正输入法仍需维护者验收。
+早先尝试的 NSPopover 版本在定向窗口事件测试中通过，但 CUA `pressKey("d")` 会关闭菜单并把文字送入父搜索框，而 `typeText` 正常。这不足以独自证明产品根因或实际按键修复成功；因此本轮移除了跨窗口的 transient 生命周期，采用用户指定的剪贴板同窗口路径。旧的定向 `sendEvent` 结果只证明正确路由后可编辑，不作为当前焦点验收证据。
 
 ## Keylane 卸载预览
 
-原有应用动作和「卸载应用程序」命令均进入登记的 Keylane 预览页。列表显示应用及关联文件的名称、所在目录、可获取的单文件大小与图标，支持搜索、按路径/名称排序、逐项勾选、方向键定位与操作菜单中的「勾选或取消所选文件」。回车或底部动作提交当前完整选择；返回取消预览。
+应用动作和「卸载应用程序」命令进入登记的 Keylane 预览页。列表显示应用及关联文件名称、目录、可获取的单文件大小与图标，支持搜索、路径/名称排序、逐项勾选、方向键定位及操作菜单中的「勾选或取消所选文件」。
 
-- 仅应用默认勾选，关联文件保持默认不勾选。取消应用勾选后不能提交；本页不支持仅清理残留。
-- 搜索隐藏的勾选项仍属于选择，顶部计数始终统计全部选择。无匹配结果不会改变选择。
-- 目录大小显示 `—`，不递归读取应用数据估算体积；这不是截图中完整磁盘占用统计的实现。
-- 确认只能提交一次；离开预览使未提交回调失效。后台操作完成时只清理对应预览，不打断其他页面。
-- 保留原有运行状态、应用文件身份、bundle ID 与共享副本复核，以及 `ApplicationLeftovers` 的目标身份检查。应用模块关闭或预览页不可用时不再展示已完成扫描的过期结果。
-- 文件移动仍走原有废纸篓流程。系统拒绝和部分残留失败仍使用原有反馈；本次未执行真实卸载来验收这些分支。
+仅应用默认勾选，关联文件默认不勾选；取消应用勾选后不能提交。搜索隐藏的勾选项仍属于完整选择，计数不会因筛选变化。取消使未提交回调失效，确认只能提交一次。目录大小显示 `—`，不递归扫描应用数据估算体积，暂不实现截图中的完整磁盘占用统计。
 
-## 验证
+保留原有运行状态、应用文件身份、bundle ID、共享副本和残留目标复核。模块关闭或预览页已不可用时丢弃扫描结果。文件移动仍使用原有废纸篓流程；本轮没有执行真实卸载来验收系统拒绝或部分残留失败。
 
-环境：macOS 27.3（26C5035r），arm64。自动化结果与实体操作分开记录。
+## 自动化验证
 
-- 最终代码 `swift test --scratch-path .build-current --disable-sandbox`：161 项通过，0 失败。
-- `python3 scripts/check-version.py`、18 项 `Tests/ReleaseTests`、脚本 `bash -n`、`git diff --check`：通过。
-- `scripts/verify-application-menu-ui.sh`：在临时 home、独立 bundle ID 和假应用中编译生产代码，只替换程序入口。未启动 Delegate 服务；卸载预览的确认/取消使用记录回调，绝不调用真实删除处理。状态断言覆盖默认选择、筛选保持隐藏勾选、键盘定位后切换、取消应用后的提交禁止、选择快照、重复提交禁止与取消幂等。
-- 同一夹具的原生 AppKit 窗口断言通过：普通字母、退格、原生 marked text、中文提交、ESC、重新打开清空搜索、下/上/下/回车只选中对应假应用、选择后关闭、无结果回车不关闭、时长搜索与选择后关闭。事件经过夹具自身 NSApplication 分发，不向系统事件流注入；同时检查可见 popover 自身的 key 状态。完整通过输出见 [native-ui-regression.txt](evidence/issue-76/native-ui-regression.txt)。
-- `KEYLANE_ALLOW_ADHOC=1 bash scripts/package.sh` 与 `python3 scripts/verify-package.py`：最终生产代码的 Apple Silicon DMG 构建、内容清单、元数据、许可证、架构与签名校验通过。临时签名、未公证；没有安装或发布。
+环境：macOS 27.3 / arm64。完整 Swift 测试 161 项、发行测试 18 项、版本检查、脚本语法和 diff 检查通过。最终同窗口生产代码的临时签名 Apple Silicon DMG 构建、内容清单、元数据、许可证、架构和签名校验通过；未公证、未安装、未发布。
 
-夹具使用方式：默认参数运行断言并清理临时目录；`--prepare` 只构建并打印 app/home 路径；`--interactive` 保留临时目录并运行演示。使用 `--prepare` 的产物时，必须通过 `open -n --env CFFIXED_USER_HOME=<打印的home> <app>` 正常启动，隔离前置条件会校验 home 和 bundle ID。交互演示中的「演示确认」仅记录选择，不删除文件；不要将其当作真实卸载成功证明。
+`scripts/verify-application-menu-ui.sh` 从仓库源码生成独立 bundle ID、临时 home 和假应用，只替换程序入口；不启动 Delegate 服务。预览确认使用记录回调，绝不调用真实卸载。状态断言覆盖默认不选残留、隐藏选择保持、定位后切换、禁止只提交残留、选择快照、重复确认禁止和取消幂等。
 
-## 尚待验收
+当前键盘回归通过 LaunchServices 正常启动应用，以异步任务让 NSApplication 主事件循环处理 `postEvent`，按键 **windowNumber=0，不指定菜单或编辑器窗口**。已通过：同窗口归属、普通字母、退格、原生 marked text/中文提交、方向键/回车/ESC、重新打开、无结果回车、时长菜单选择与关闭。不会向系统全局事件流注入。通过输出见 [native-ui-regression.txt](evidence/issue-76/native-ui-regression.txt)。合成 marked text 仍不等同于真实中文输入法。
 
-CUA 实机检查通过文字输入筛选、点击外部关闭、预览逐项勾选、计数及筛选保留隐藏选择，并查看了深色演示布局。应用级 `pressKey("d")` 仍关闭菜单并把文字送入父搜索框，原因未定；与正常事件循环的自动断言存在差异，不能宣称实体键盘已验收。实际中文输入法候选/组字/提交、安装版完整导航、深浅色完整对照与 VoiceOver 仍未完成。此前 CUA 多次 `Transport closed`；没有将合成 marked text 当作实际中文输入法验收。未操作真实应用卸载、清理真实用户文件、修改系统权限或覆盖安装。macOS 26 兼容性也未在本次设备上复测。Issue #76 应保持打开。
+脚本默认运行断言并清理其临时目录；`--prepare` 仅构建并打印 app/home；`--interactive` 运行演示并保留目录。准备产物需通过 `open -n --env CFFIXED_USER_HOME=<打印的home> <app>` 启动。另有仅用于诊断的 `--trace-input` 纯 AppKit 对照及本地事件日志，日志不保存文字；`--settings-entry` 使用真实 SettingsView 的自动退出入口、隔离模型和假应用，不启动后台服务，重置的仅是该独立测试 bundle 的偏好域。
+
+## 尚待实机验收
+
+旧 NSPopover 的 CUA 输入差异已有记录；当前同窗口版的 CUA 未指定窗口按键、真正中文输入法候选/组字/提交和真实 SettingsView 入口仍待复验。此前多次 CUA 读取窗口停滞并最终 `Transport closed`，不能把连接恢复状态当作输入验收。真实安装版完整导航、深浅色完整对照、VoiceOver 和 macOS 26 设备也未完成。
+
+所有测试仅使用隔离数据，未真实卸载、清理用户文件、修改权限或覆盖安装。PR #144 保持 Draft，Issue #76 保持打开。
