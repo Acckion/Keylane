@@ -28,7 +28,11 @@ for path in SITE.rglob('*.html'):
     text = path.read_text()
     page.feed(text)
     assert RELEASE in text and 'releases/latest' not in text
-    assert '891ab2c' in text and '877ca22' in text and 'GPL-3.0-or-later' in text
+    assert 'PolyForm Noncommercial' in text and 'GPL-3.0-or-later' in text
+    assert '1.0.2 Beta 1' in text and ('未经 Apple 公证' in text or 'not Apple notarized' in text)
+    assert 'DEVELOPER PREVIEW' not in text
+    for screenshot in ('launcher.png', 'file-search.png', 'clipboard.png'):
+        assert screenshot in text, f'Missing product screenshot: {path}: {screenshot}'
     assert 'width=device-width' in text
     pages[path] = page
 assert pages[SITE/'index.html'].lang == 'zh-CN'
