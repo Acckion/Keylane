@@ -17,7 +17,7 @@ The independent `.github/workflows/pages.yml` validates PRs targeting dev/main, 
 
 Release facts were checked against the GitHub [Beta 1 release](https://github.com/Acckion/Keylane/releases/tag/v1.0.2-beta.1): tag `v1.0.2-beta.1`, build 27, commit `891ab2cca019a60750b7b90321014ef0a06c84df`, macOS 26+, Apple Silicon, ad-hoc signature, no notarization, manual installation. All download links target that release, never `releases/latest`.
 
-Current synchronized dev baseline `69d203ff6eb179c02bece1bf7d33159d69f9bf39` includes GPL migration #134, community standards #135, system actions #136 and the validation/manual release split #137. Current main `877ca22` and Beta 1 retain their PolyForm Noncommercial license. Recheck these branch snapshots whenever updating the site; GPL does not retroactively change old installers. Raycast compatibility, migration, and iPhone app launching are explicitly outside the released Beta. Website and both READMEs repeat the first-launch/upgrade and Navigation focus validation gaps from the release.
+Current synchronized dev baseline `69d203ff6eb179c02bece1bf7d33159d69f9bf39` includes GPL migration #134, community standards #135, system actions #136 and the validation/manual release split #137. The pre-sync main snapshot `877ca22` and Beta 1 retain their PolyForm Noncommercial license. Recheck these branch snapshots whenever updating the site; GPL does not retroactively change old installers. Raycast compatibility, migration, and iPhone app launching are explicitly outside the released Beta. Website and both READMEs repeat the first-launch/upgrade and Navigation focus validation gaps from the release.
 
 ## Asset provenance and privacy
 
@@ -88,3 +88,5 @@ Rechecks after resolving the conflict:
 - GitHub main was rechecked as `877ca22df5cea229b41256fdc70e79cd1780a766`; Beta 1 still identifies build 27 at `891ab2c`, ad-hoc signing, no notarization, manual installation and the recorded focus/first-launch gaps. Pages API still returns 404. The intended Pages URL remains explicitly pending setup, not claimed live.
 
 Current-head GitHub checks are reported on PR #138. Historical local pasteboard/build-service restrictions and the unperformed real-device/production checks above remain disclosed; no rejected operation was retried as part of this synchronization.
+
+The public copy calls `877ca22` the pre-sync main snapshot rather than timeless “current main”, so the historical PolyForm disclosure remains accurate after the later coordinated Pages/main synchronization. The exact SHA and Beta license boundary are retained in both languages.

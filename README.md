@@ -18,7 +18,7 @@
 
 默认安全设置下首次打开、从 Alpha 升级、隔离启动/退出/重复启动和合成配置升级仍待验收。Navigation 本轮真实焦点复验未通过；安装版键盘与权限流程、多屏、全屏、Spaces 和真实目标应用仍有验证缺口。CI 或隔离测试通过不等于这些流程已验收。
 
-> **许可分清版本：** 当前 dev 源码为 GPL-3.0-or-later，允许依条款商业使用。Beta 1（`891ab2c`）及当前 main（`877ca22`）仍为其版本附带的 PolyForm Noncommercial 许可。GPL 迁移不追溯旧标签或安装包。
+> **许可分清版本：** 当前 dev 源码为 GPL-3.0-or-later，允许依条款商业使用。Beta 1（`891ab2c`）及同步前的 main 快照（`877ca22`）仍为其版本附带的 PolyForm Noncommercial 许可。GPL 迁移不追溯旧标签或安装包。
 
 ## 日常能力
 

@@ -18,7 +18,7 @@ The public download is **1.0.2 Beta 1 · build 27 · `891ab2c`**, requiring **ma
 
 First launch under default security settings, upgrading from Alpha, isolated launch/quit/relaunch, and synthetic configuration upgrades remain unverified. The latest real-focus Navigation recheck did not pass. Installed keyboard and permission flows, multiple displays, full screen, Spaces, and real target apps still have validation gaps. Passing CI or isolated tests does not complete that acceptance.
 
-> **Licensing depends on the version:** current dev source uses GPL-3.0-or-later, permitting commercial use under its terms. Beta 1 (`891ab2c`) and current main (`877ca22`) retain their shipped PolyForm Noncommercial license. The GPL migration does not retroactively relicense old tags or installers.
+> **Licensing depends on the version:** current dev source uses GPL-3.0-or-later, permitting commercial use under its terms. Beta 1 (`891ab2c`) and the pre-sync main snapshot (`877ca22`) retain their shipped PolyForm Noncommercial license. The GPL migration does not retroactively relicense old tags or installers.
 
 ## Everyday capabilities
 
