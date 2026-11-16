@@ -32,13 +32,18 @@ let review = ApplicationUninstallReview()
 var submissions: [Set<String>] = []
 var cancellations = 0
 func prepareReview() {
-    review.prepare(name: "Demo Alpha", detail: "隔离演示：操作仅记录选择，不移除文件。",
+    review.prepare(name: "Demo Alpha",
                    items: [.init(url: alpha, isApplication: true), .init(url: data)],
                    confirm: { submissions.append($0) }, cancel: { cancellations += 1 })
 }
 prepareReview()
 expect(review.selected == [alpha.path], "leftovers are opt-in")
+for _ in 0..<40 where review.sizes.count < 2 { drain(0.05) }
+expect(review.sizes[alpha.path]?.complete == true && (review.sizes[alpha.path]?.bytes ?? 0) > 0,
+       "app bundle is measured recursively")
+expect(review.selectedSizeSummary == "0 字节", "application bytes are excluded from leftover total")
 review.toggle(data.path)
+expect(review.selectedSizeSummary == review.sizeLabel(for: review.items[1]), "checked leftover size is included")
 review.filter("no matches")
 expect(review.visible.isEmpty && review.selected.count == 2, "filtering preserves hidden selections")
 review.sort = .name
@@ -62,7 +67,7 @@ expect(FileManager.default.fileExists(atPath: alpha.path) && FileManager.default
 prepareReview()
 review.toggle("/not-in-snapshot")
 expect(review.selected == [alpha.path], "unknown selection is ignored")
-review.prepare(name: "New", detail: "No leftovers", items: [.init(url: beta, isApplication: true)], confirm: { submissions.append($0) }, cancel: { cancellations += 1 })
+review.prepare(name: "New", items: [.init(url: beta, isApplication: true)], confirm: { submissions.append($0) }, cancel: { cancellations += 1 })
 expect(review.selected == [beta.path] && review.query.isEmpty && review.sort == .path, "replacement resets query sorting and selection")
 review.clear()
 expect(!review.canSubmit && review.visible.isEmpty, "leaving review disables submission")
@@ -84,19 +89,53 @@ expect(review.items.isEmpty && review.selected.isEmpty && !review.canSubmit && s
        "resume never restores cancelled deletion consent")
 lifecyclePage.resume?()
 expect(cancellations == beforeHideCancellations + 1, "repeated resume does not repeat cancellation")
+// Exercise production Launcher show/hide notifications without starting services.
+let model = Model()
+let productionReview = model.applicationResultActions.uninstallReview
+let launcherWindow = NSWindow(contentRect: NSRect(x: 160, y: 160, width: 760, height: 530),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+launcherWindow.contentView = NSHostingView(rootView: Launcher(model: model))
+launcherWindow.makeKeyAndOrderFront(nil)
+drain()
+productionReview.prepare(name: "Demo Alpha", items: [.init(url: alpha, isApplication: true), .init(url: data)],
+                         confirm: { _ in preconditionFailure("Fixture must never uninstall") }, cancel: {})
+model.pageID = ApplicationUninstallReview.pageID
+NotificationCenter.default.post(name: .launcherShown, object: nil)
+drain()
+productionReview.toggle(data.path)
+model.query = "demo"
+productionReview.sort = .name
+drain()
+let selectionBeforeHide = productionReview.selected
+launcherWindow.orderOut(nil)
+NotificationCenter.default.post(name: .launcherHidden, object: nil)
+drain()
+launcherWindow.makeKeyAndOrderFront(nil)
+NotificationCenter.default.post(name: .launcherShown, object: nil)
+drain()
+expect(model.pageID == ApplicationUninstallReview.pageID && productionReview.selected == selectionBeforeHide
+       && productionReview.query == "demo" && productionReview.sort == .name && productionReview.canSubmit,
+       "production launcher restores the application, checked rows, query and sort after hiding")
+NotificationCenter.default.post(name: .launcherHidden, object: nil)
+drain()
+model.pageID = .root
+drain()
+expect(productionReview.items.isEmpty && !productionReview.canSubmit, "leaving while hidden discards the preview")
+launcherWindow.orderOut(nil)
 print("PASS uninstall preview state regression (recording callbacks; no real uninstall)")
 if !CommandLine.arguments.contains("--interactive") { exit(0) }
 prepareReview()
 struct ReviewVerificationView: View {
     @ObservedObject var review: ApplicationUninstallReview
     @State private var query = ""
+    @State private var sortOpen = false
     var body: some View {
         VStack(spacing: 0) {
             Text("卸载预览 · 隔离演示").font(.headline).padding()
             HStack {
                 TextField("筛选文件和文件夹…", text: $query)
                     .onChange(of: query) { _, text in review.filter(text) }
-                ApplicationUninstallSortPicker(review: review)
+                ApplicationUninstallSortPicker(review: review, open: $sortOpen, navigation: "arrows")
                 Button("重新准备") { prepareReview(); query = "" }
             }.padding()
             ApplicationUninstallReviewPage(review: review)

@@ -349,16 +349,25 @@ struct Launcher: View {
             }
         }
         if wasVisible != visible || change.previousPage != nil { closeMenus() }
-        if let previous = change.deactivation {
+        // An opted-in page remains active across hiding. A page or module change
+        // still releases its state even if the window was already hidden.
+        let retainedPrevious = change.previousPage.flatMap { previous -> PageID? in
+            model.launcherModules?.page(previous, includingInactive: true)?.keepsStateWhenHidden == true ? previous : nil
+        }
+        if let previous = change.deactivation ?? retainedPrevious {
             dispatchedQuery = nil
+            let retainsState = !visible && change.previousPage == nil &&
+                model.launcherModules?.page(previous, includingInactive: true)?.keepsStateWhenHidden == true
             if previous == .root {
                 model.fileSearch.cancel()
                 FilePreview.shared.dismiss()
-            } else if let previousActivation {
-                model.leaveRegisteredPage(previous, activation: previousActivation)
-            } else if let previousPage = model.launcherModules?.page(previous, includingInactive: true) {
-                previousPage.leave()
-                previousPage.releasePreview?()
+            } else if !retainsState {
+                if let previousActivation {
+                    model.leaveRegisteredPage(previous, activation: previousActivation)
+                } else if let previousPage = model.launcherModules?.page(previous, includingInactive: true) {
+                    previousPage.leave()
+                    previousPage.releasePreview?()
+                }
             }
         }
 

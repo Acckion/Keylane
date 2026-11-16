@@ -194,7 +194,7 @@ final class ApplicationResultActions {
                     return
                 }
                 self.confirmUninstall(url, candidate: candidate, operation: operation, name: name,
-                                      leftovers: leftovers, shared: shared, model: model)
+                                      leftovers: leftovers, model: model)
             }
         }
     }
@@ -226,20 +226,12 @@ final class ApplicationResultActions {
     }
 
     private func confirmUninstall(_ url: URL, candidate: UninstallCandidate, operation: String, name: String,
-                                  leftovers: [ApplicationLeftovers.Item], shared: Bool, model: Model) {
+                                  leftovers: [ApplicationLeftovers.Item], model: Model) {
         guard model.applicationsEnabled, model.launcherModules?.page(ApplicationUninstallReview.pageID) != nil else {
             uninstalling.remove(operation)
             return
         }
-        let detail: String
-        if shared {
-            detail = "检测到同一应用的其他副本，将保留可能共用的文件。"
-        } else if leftovers.isEmpty {
-            detail = "在常见位置没有找到与此应用标识匹配的文件。"
-        } else {
-            detail = "关联文件默认保留，请勾选需要一并移除的项目。"
-        }
-        uninstallReview.prepare(name: name, detail: detail,
+        uninstallReview.prepare(name: name,
                                 items: [.init(url: candidate.url, isApplication: true)] + leftovers.map { .init(url: $0.url) },
                                 confirm: { [weak self, weak model] selected in
             guard let self else { return }

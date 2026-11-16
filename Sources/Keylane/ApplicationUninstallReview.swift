@@ -10,19 +10,17 @@ final class ApplicationUninstallReview: ObservableObject {
     struct Item: Identifiable {
         let url: URL
         let isApplication: Bool
-        let bytes: Int64?
         var id: String { url.path }
         var title: String { url.lastPathComponent }
         var directory: String { (url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath }
         init(url: URL, isApplication: Bool = false) {
             self.url = url
             self.isApplication = isApplication
-            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
-            // Do not recursively scan app data to estimate a directory's size.
-            bytes = values?.isDirectory == false ? values?.fileSize.map(Int64.init) : nil
         }
     }
-    enum Sort: String, CaseIterable { case path = "路径", name = "名称" }
+    enum Sort: String, CaseIterable { case path, name
+        var title: String { self == .path ? "按路径排序" : "按名称排序" } }
+    @Published private(set) var sizes: [String: UninstallItemSize] = [:]
     @Published private(set) var items: [Item] = []
     @Published private(set) var selected = Set<String>()
     @Published private(set) var highlighted: String?
@@ -30,7 +28,8 @@ final class ApplicationUninstallReview: ObservableObject {
     @Published var sort = Sort.path
     @Published private(set) var isSubmitting = false
     private(set) var name = ""
-    private(set) var detail = ""
+    private let sizeQueue = DispatchQueue(label: "org.keylane.uninstall.preview-size", qos: .utility)
+    private var sizing: DispatchWorkItem?
     private var confirm: ((Set<String>) -> Void)?
     private var cancel: (() -> Void)?
 
@@ -46,22 +45,50 @@ final class ApplicationUninstallReview: ObservableObject {
             }
     }
     var selectedSizeSummary: String {
-        let chosen = items.filter { selected.contains($0.id) }
-        let known = chosen.compactMap(\.bytes).reduce(Int64(0), +)
-        let size = ByteCountFormatter.string(fromByteCount: known, countStyle: .file)
-        return chosen.contains { $0.bytes == nil } ? "已知大小 \(size) · 部分未统计" : size
+        let chosen = items.filter { !$0.isApplication && selected.contains($0.id) }
+        let measured = chosen.compactMap { sizes[$0.id] }
+        guard measured.count == chosen.count else { return "计算中…" }
+        return Self.sizeLabel(bytes: measured.reduce(0) { $0 + $1.bytes },
+                              complete: measured.allSatisfy(\.complete))
     }
+
+    func sizeLabel(for item: Item) -> String {
+        guard let size = sizes[item.id] else { return "计算中…" }
+        return Self.sizeLabel(bytes: size.bytes, complete: size.complete)
+    }
+
+    private static func sizeLabel(bytes: Int64, complete: Bool) -> String {
+        let formatted = bytes == 0 ? "0 字节" : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        if complete { return formatted }
+        return bytes > 0 ? "≥ " + formatted : "无法统计"
+    }
+
     var canSubmit: Bool { !isSubmitting && confirm != nil && items.contains { $0.isApplication && selected.contains($0.id) } }
 
-    func prepare(name: String, detail: String, items: [Item], confirm: @escaping (Set<String>) -> Void, cancel: @escaping () -> Void) {
+    func prepare(name: String, items: [Item], confirm: @escaping (Set<String>) -> Void, cancel: @escaping () -> Void) {
         clear()
         self.name = name
-        self.detail = detail
         self.confirm = confirm
         self.cancel = cancel
         self.items = items
         selected = Set(items.filter(\.isApplication).map(\.id))
         highlighted = items.first?.id
+        measureSizes(items)
+    }
+
+    private func measureSizes(_ items: [Item]) {
+        let request = DispatchWorkItem {}
+        sizing = request
+        sizeQueue.async { [weak self] in
+            // Leftovers appear first in the selection total. Defer the app bundle itself.
+            for item in items.filter({ !$0.isApplication }) + items.filter(\.isApplication) {
+                guard let size = UninstallItemSize.measure(item.url, cancelled: { request.isCancelled }) else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.sizing === request else { return }
+                    self.sizes[item.id] = size
+                }
+            }
+        }
     }
     func filter(_ text: String) {
         query = text
@@ -96,6 +123,9 @@ final class ApplicationUninstallReview: ObservableObject {
         let cancel = self.cancel
         self.cancel = nil
         confirm = nil
+        sizing?.cancel()
+        sizing = nil
+        sizes = [:]
         items = []
         selected = []
         highlighted = nil
@@ -103,7 +133,6 @@ final class ApplicationUninstallReview: ObservableObject {
         sort = .path
         isSubmitting = false
         name = ""
-        detail = ""
         cancel?()
     }
 }
@@ -113,16 +142,11 @@ struct ApplicationUninstallReviewPage: View {
 
     var body: some View {
         SelectableResultList(selection: review.highlighted, firstResult: review.visible.first?.id) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("已选择 \(review.selected.count) / \(review.items.count) 项").font(.caption)
-                    Text(review.selectedSizeSummary).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                }
-                Text(review.detail).font(.caption).foregroundStyle(.secondary)
-                Text("应用及勾选的关联文件将移到废纸篓；关联文件可能包含设置和应用数据。")
-                    .font(.caption).foregroundStyle(.secondary)
-            }.padding(.horizontal, 18).padding(.vertical, 10)
+            HStack(spacing: 10) {
+                Text("已选择 \(review.selected.count) / \(review.items.count) 项")
+                Text("已选残留 \(review.selectedSizeSummary)").foregroundStyle(.secondary)
+                Spacer()
+            }.font(.caption).padding(.horizontal, 18).padding(.vertical, 10)
             if review.visible.isEmpty {
                 Text("没有匹配的文件").foregroundStyle(.secondary).padding(20)
             }
@@ -137,14 +161,14 @@ struct ApplicationUninstallReviewPage: View {
                             Text(item.directory).font(VisualStyle.rowText).foregroundStyle(.secondary)
                                 .lineLimit(1).truncationMode(.middle)
                             Spacer()
-                            Text(item.bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? "—")
+                            Text(review.sizeLabel(for: item))
                                 .font(.caption).foregroundStyle(.secondary)
                             WorkspaceItemIcon(path: item.id).frame(width: 22, height: 22)
                         }
                     }
                 }
                 .accessibilityLabel(item.title + "，" + item.directory)
-                .accessibilityValue(review.selected.contains(item.id) ? "已勾选" : "未勾选")
+                .accessibilityValue((review.selected.contains(item.id) ? "已勾选" : "未勾选") + "，" + review.sizeLabel(for: item))
                 .help(item.id)
                 .disabled(review.isSubmitting)
             }
@@ -152,16 +176,19 @@ struct ApplicationUninstallReviewPage: View {
     }
 }
 
-/// Kept in the launcher search bar rather than the scrolling results.
 struct ApplicationUninstallSortPicker: View {
     @ObservedObject var review: ApplicationUninstallReview
+    @Binding var open: Bool
+    let navigation: String
+
     var body: some View {
-        Picker("文件排序", selection: $review.sort) {
-            ForEach(ApplicationUninstallReview.Sort.allCases, id: \.self) {
-                Label("按\($0.rawValue)排序", systemImage: "folder").tag($0)
-            }
-        }
-        .fixedSize().labelsHidden().accessibilityLabel("文件排序")
+        ResultTypeFilter(selection: Binding(
+            get: { review.sort.rawValue },
+            set: { if let sort = ApplicationUninstallReview.Sort(rawValue: $0) { review.sort = sort } }
+        ), options: ApplicationUninstallReview.Sort.allCases.map {
+            .init(id: $0.rawValue, title: $0.title, symbol: "arrow.up.arrow.down")
+        }, open: $open, navigation: navigation, width: 152,
+           searchPlaceholder: "查找排序方式…", emptyTitle: "没有匹配的排序方式")
         .disabled(review.isSubmitting)
     }
 }

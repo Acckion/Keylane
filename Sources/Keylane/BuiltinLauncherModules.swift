@@ -149,6 +149,7 @@ enum BuiltinLauncherModules {
                         content: { AnyView(ApplicationUninstallReviewPage(review: applicationActions.uninstallReview)) },
                         queryChanged: applicationActions.uninstallReview.filter,
                         leave: applicationActions.uninstallReview.clear,
+                        keepsStateWhenHidden: true,
                         back: { [weak model] in model?.pageID = uninstallPage },
                         move: applicationActions.uninstallReview.move,
                         submit: applicationActions.uninstallReview.submit,
@@ -162,11 +163,15 @@ enum BuiltinLauncherModules {
                             }]
                         },
                         updates: applicationActions.uninstallReview.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
-                        searchAccessory: { AnyView(ApplicationUninstallSortPicker(review: applicationActions.uninstallReview)) },
                         resume: { [weak model] in
                             applicationActions.uninstallReview.resume {
                                 model?.pageID = uninstallPage
                             }
+                        },
+                        typeFilterWidth: 152,
+                        typeFilter: { [weak model] open in
+                            AnyView(ApplicationUninstallSortPicker(review: applicationActions.uninstallReview,
+                                                                   open: open, navigation: model?.navigation ?? "arrows"))
                         }
                      ), .init(
                         id: ApplicationCommandEdit.pageID, placeholder: "", badge: ("编辑应用命令", "keyboard"),
