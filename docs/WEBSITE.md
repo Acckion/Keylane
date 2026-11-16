@@ -40,6 +40,26 @@ Current dev baseline `f7f5903` includes GPL migration #134 and community standar
 - Swift tests: compiled with temporary module caches; 161 tests ran, two `ExtensionClipboardContentTests` cases produced 8 assertion failures when named pasteboard access returned nil/false in the restricted environment. Other tests passed. Automatic approval review rejected an unsandboxed full-suite rerun, citing risk of system clipboard access. It was not executed or bypassed. The two observed cases use UUID-named NSPasteboard instances, but the complete suite was not audited for external system effects, so a full unsandboxed pass is **not claimed**.
 - Local packaging was attempted with `KEYLANE_ALLOW_ADHOC=1`; the release build failed at `dsymutil` with Operation not permitted. Package verification could not run without a produced DMG. No installer was published. Application code and packaging scripts are unchanged.
 
+## Follow-up investigation: local restrictions versus PR changes
+
+The completed [application CI run 43789875017](https://github.com/Acckion/Keylane/actions/runs/43789875017), associated with PR head `d272bcb10ef23e0ad9e4290c44f0b4391096dfc4`, checked out GitHub's synthetic merge `7b12bd4b7ed10429ac2e3682aa89e86ff00d70b3` (that head merged into dev `f7f5903`). Its log confirms:
+
+| Check | Local restricted environment | GitHub macOS runner |
+| --- | --- | --- |
+| Swift XCTest suite | 161 tests, 8 assertions failed in two named-pasteboard cases | **161 tests, zero failures**, including both cases |
+| Production build / DMG packaging | Nested build invocation of `dsymutil` returns `Operation not permitted` | **Build drag-to-Applications DMG passed** |
+| Package verification | No locally produced DMG to verify | **DMG layout, app metadata, license, file inventory, architecture and signature: OK** |
+| Software release | None | **Publish release skipped**; the existing workflow uploaded a temporary Actions test artifact, not a GitHub Release asset |
+| Website | Resource and bilingual checks passed | [Website check passed](https://github.com/Acckion/Keylane/actions/runs/43789875146), deployment skipped as intended on a PR |
+
+The two clipboard cases instantiate `NSPasteboard(name: UUID-based test name)` and pass that explicit board into `ExtensionClipboardContent.write(to:)`. That function writes only to its supplied board; it does not obtain `NSPasteboard.general`. The failing assertions reported false writes and nil reads. The cases and application implementation are unchanged from the dev baseline and pass on the CI runner. This supports an environment-specific pasteboard-service restriction, rather than a regression introduced by the website change. No real user clipboard was read or modified during this follow-up. The rejected unsandboxed full-suite operation was not retried, and no alternative route was used to exercise clipboard access.
+
+For `dsymutil`, a synthetic C fixture was compiled with a retained object file under `/tmp` without executing the result. Its dSYM generated successfully with matching binary/dSYM UUIDs. A direct invocation on the already-built `keylane-extension` binary also generated a matching dSYM, both under `/tmp` and at the original build output path, within the existing restricted environment. Re-running the unchanged packaging script still failed when Swift's build service invoked the same tool. Therefore this is **not a universal failure of dsymutil or basic directory write permission**. Evidence points to the nested build-service execution context; the exact denied operation was not established. CI independently validates the unchanged production build and packaging path. No sandbox policy was weakened, build/debug flags changed, test skipped to claim success, or local package uploaded.
+
+Follow-up checks also passed: both language pages share the same external destinations (apart from their language-specific README), corresponding image sources match, all README local links exist, both READMEs retain matching release/license/system markers and reciprocal language navigation, and the website icon is byte-identical to the original project artwork. Both committed screenshots were visually re-inspected: only the fixed calculator expression and built-in Emoji search are visible, with no private data. No new application capture or host-data access was needed.
+
+The Pages API was rechecked and still returned HTTP 404; no settings or deployment were changed. Static review confirms relative `/Keylane/` resources, main-only deployment, PR deployment exclusion, least-scope deployment permissions, and separation from application publishing. These results supersede the earlier pending-CI status, **not** the recorded local failures or remaining real-device acceptance gaps.
+
 ## Not verified
 
 No live Pages deployment, production smoke test, VoiceOver session, automated axe audit, real phone hardware, or complete first-launch/upgrade acceptance was performed. Existing Beta app acceptance gaps remain. GitHub Actions results on the draft are reported separately; local checks do not stand in for CI.
