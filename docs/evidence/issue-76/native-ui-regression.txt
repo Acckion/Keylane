@@ -1,0 +1,27 @@
+PASS leftovers are opt-in
+PASS filtering preserves hidden selections
+PASS keyboard highlight toggles only its target
+PASS cannot remove leftovers without selecting the application
+PASS disabled confirmation cannot submit
+PASS confirmation snapshots selection exactly once
+PASS completed confirmation is not cancelled twice
+PASS cancel invalidates stale confirmation exactly once
+PASS review and cancellation preserve fixture files
+PASS open production toolbar popover
+PASS popover receives native field-editor focus
+PASS ordinary letter stays in open popover
+PASS backspace edits without dismissing
+PASS native marked-text composition keeps the popover open
+PASS committed Chinese text remains searchable
+PASS Escape dismisses popover
+PASS open production toolbar popover
+PASS reopening resets the query
+PASS Down Up Down Return chooses only the highlighted fake application
+PASS choosing an application dismisses the popover
+PASS open production toolbar popover
+PASS Return with no results keeps the picker open
+PASS open duration popover
+PASS duration search stays open
+PASS duration Return selects and dismisses
+PASS UI checks did not delete data
+PASS application menu UI regression checks (synthetic native composition; physical IME still requires manual acceptance)

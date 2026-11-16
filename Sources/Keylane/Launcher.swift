@@ -458,7 +458,7 @@ struct Launcher: View {
                 RootScriptArgumentBar(script: script, controller: model.scripts, submit: run)
                     .id(script.id)
             } else {
-                if model.pageID != .root { backButton { model.pageID = .root } }
+                if model.pageID != .root { backButton { if let back = page?.back { back() } else { model.pageID = .root } } }
                 if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
                 SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
                             back: page?.moveHorizontal.map { move in { move(-1) } },
