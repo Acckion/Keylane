@@ -60,6 +60,7 @@ struct LauncherPage {
     var content: (() -> AnyView)?
     var queryChanged: (String) -> Void = { _ in }
     var leave: () -> Void = {}
+    var keepsStateWhenHidden = false
     var back: (() -> Void)?
     var move: ((Int) -> Void)?
     var submit: (() -> Void)?

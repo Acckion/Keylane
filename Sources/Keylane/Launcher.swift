@@ -349,16 +349,25 @@ struct Launcher: View {
             }
         }
         if wasVisible != visible || change.previousPage != nil { closeMenus() }
-        if let previous = change.deactivation {
+        // An opted-in page remains active across hiding. A page or module change
+        // still releases its state even if the window was already hidden.
+        let retainedPrevious = change.previousPage.flatMap { previous -> PageID? in
+            model.launcherModules?.page(previous, includingInactive: true)?.keepsStateWhenHidden == true ? previous : nil
+        }
+        if let previous = change.deactivation ?? retainedPrevious {
             dispatchedQuery = nil
+            let retainsState = !visible && change.previousPage == nil &&
+                model.launcherModules?.page(previous, includingInactive: true)?.keepsStateWhenHidden == true
             if previous == .root {
                 model.fileSearch.cancel()
                 FilePreview.shared.dismiss()
-            } else if let previousActivation {
-                model.leaveRegisteredPage(previous, activation: previousActivation)
-            } else if let previousPage = model.launcherModules?.page(previous, includingInactive: true) {
-                previousPage.leave()
-                previousPage.releasePreview?()
+            } else if !retainsState {
+                if let previousActivation {
+                    model.leaveRegisteredPage(previous, activation: previousActivation)
+                } else if let previousPage = model.launcherModules?.page(previous, includingInactive: true) {
+                    previousPage.leave()
+                    previousPage.releasePreview?()
+                }
             }
         }
 
@@ -458,7 +467,7 @@ struct Launcher: View {
                 RootScriptArgumentBar(script: script, controller: model.scripts, submit: run)
                     .id(script.id)
             } else {
-                if model.pageID != .root { backButton { model.pageID = .root } }
+                if model.pageID != .root { backButton { if let back = page?.back { back() } else { model.pageID = .root } } }
                 if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
                 SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
                             back: page?.moveHorizontal.map { move in { move(-1) } },
