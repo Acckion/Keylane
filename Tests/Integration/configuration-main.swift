@@ -39,6 +39,24 @@ func deliverSyntheticHotkey() {
     precondition(SendEventToEventTarget(event, GetApplicationEventTarget()) == noErr)
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
 }
+func withAutoClosedDialog(check: @escaping (NSWindow) -> Void, operation: () -> Void) {
+    var observed = false
+    let started = Date()
+    let timer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { _ in
+        if let window = NSApp.modalWindow {
+            if !observed { check(window); observed = true }
+            NSApp.stopModal(withCode: .alertFirstButtonReturn)
+            window.orderOut(nil)
+        } else if Date().timeIntervalSince(started) > 5 {
+            fatalError("Expected synthetic native dialog was not presented")
+        }
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    defer { timer.invalidate() }
+    operation()
+    if !observed { print("SYNTHETIC_DIALOG_NOT_OBSERVED windows=\(NSApp.windows.count) pending=\(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("pending.plist").path)) applied=\(defaults.string(forKey: "appearance") == "dark")") }
+    precondition(observed)
+}
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 switch phase {
@@ -75,13 +93,23 @@ case "stage":
     precondition(!FileManager.default.fileExists(atPath: recovery.appendingPathComponent("last-import.plist").path))
     print("CONFIGURATION_STAGE_NO_LIVE_WRITE_OK")
 case "apply":
-    let completed = try ConfigurationTransaction.finish(defaults: defaults, domain: suite, directory: recovery)
-    precondition(completed)
+    precondition(NSApp != nil && ConfigurationStartupProbe.modelsCreated == 0)
+    withAutoClosedDialog(check: { _ in
+        precondition(ConfigurationStartupProbe.modelsCreated == 0)
+        precondition(defaults.string(forKey: "appearance") == "dark")
+    }, operation: {
+        ConfigurationTransfer.finishPending(defaults: defaults, domain: suite, directory: recovery)
+    })
+    ConfigurationStartupProbe.restoreHandled = true
+    let delegate = Delegate()
+    app.delegate = delegate
+    precondition(ConfigurationStartupProbe.modelsCreated == 1)
     precondition(defaults.string(forKey: "appearance") == "dark")
     precondition(defaults.string(forKey: "unrelatedFixture") == "keep")
     let archive = try ConfigurationArchive.decode(Data(contentsOf: fixture))
     let repeated = try archive.plan(current: current(), overwrite: true)
     precondition(repeated.changes.isEmpty)
+    print("CONFIGURATION_NATIVE_STARTUP_NOTICE_BEFORE_MODEL_OK")
     print("CONFIGURATION_NEW_PROCESS_APPLY_IDEMPOTENCY_OK")
 case "hotkeys":
     let bindings = try JSONDecoder().decode([String: Shortcut].self, from: defaults.data(forKey: "shortcuts")!)
@@ -128,6 +156,42 @@ case "undo":
     precondition(restored == baseline.shortcuts)
     precondition(defaults.dictionary(forKey: "aliases") as? [String: String] == ["keep": "synthetic-existing"])
     print("CONFIGURATION_NEW_PROCESS_UNDO_OK")
+case "preview-ui":
+    let text = (0..<100).map { "Synthetic preview row \($0): supported category and conflict count" }.joined(separator: "\n")
+    let alert = NSAlert()
+    alert.messageText = "Synthetic Configuration Preview"
+    alert.accessoryView = ConfigurationTransfer.previewText(text)
+    alert.addButton(withTitle: "Close")
+    withAutoClosedDialog(check: { _ in
+        guard let scroll = alert.accessoryView as? NSScrollView,
+              let view = scroll.documentView as? NSTextView,
+              let manager = view.layoutManager, let container = view.textContainer else { fatalError("Preview structure missing") }
+        precondition(!view.isEditable && view.isSelectable && scroll.hasVerticalScroller)
+        manager.ensureLayout(for: container)
+        let needed = manager.usedRect(for: container).height + view.textContainerInset.height * 2
+        precondition(needed > scroll.contentView.bounds.height)
+        precondition(view.frame.height >= needed - 1)
+        precondition(view.string == text)
+    }, operation: { _ = alert.runModal() })
+    print("CONFIGURATION_NATIVE_SCROLL_PREVIEW_OK")
+case "startup-failure":
+    precondition(ConfigurationStartupProbe.modelsCreated == 0)
+    try ConfigurationTransaction.stage(changes: ["appearance": "dark"], current: current(), directory: recovery)
+    defaults.set("system", forKey: "appearance")
+    precondition(defaults.synchronize())
+    withAutoClosedDialog(check: { _ in
+        precondition(ConfigurationStartupProbe.modelsCreated == 0)
+        precondition(defaults.string(forKey: "appearance") == "system")
+    }, operation: {
+        ConfigurationTransfer.finishPending(defaults: defaults, domain: suite, directory: recovery)
+    })
+    precondition(defaults.string(forKey: "appearance") == "system")
+    precondition(FileManager.default.fileExists(atPath: recovery.appendingPathComponent("pending.plist").path))
+    ConfigurationStartupProbe.restoreHandled = true
+    let delegate = Delegate()
+    app.delegate = delegate
+    precondition(ConfigurationStartupProbe.modelsCreated == 1)
+    print("CONFIGURATION_NATIVE_STARTUP_FAILURE_PRESERVES_CONFIGURATION_OK")
 case "cleanup":
     defaults.removePersistentDomain(forName: suite)
     precondition(defaults.synchronize())

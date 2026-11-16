@@ -1318,7 +1318,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in guard let self else { return }; self.windowDiagnostics.record("shownSettled", launcher: self.window, settings: self.settingsWindow, hotkeyStatus: self.hotkeyStatus) }
     }
 }
+// AppKit must exist before a pending restore can present its result. Keep all
+// model/controller construction after restore so it reads the restored domain.
+let application = NSApplication.shared
 ConfigurationTransfer.finishPending()
 let delegate = Delegate()
-NSApplication.shared.delegate = delegate
-NSApplication.shared.run()
+application.delegate = delegate
+application.run()

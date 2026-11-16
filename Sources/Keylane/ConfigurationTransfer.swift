@@ -97,14 +97,16 @@ enum ConfigurationTransfer {
         do { try ConfigurationTransaction.cancel(directory: directory, current: current); notice("已处理待处理记录", "未改写当前配置。若导入此前已应用，取消不会撤销它；可使用“撤销上次导入”恢复。") }
         catch { show(error) }
     }
-    static func finishPending() {
+    static func finishPending(defaults: UserDefaults = .standard,
+                              domain: String = ConfigurationTransfer.domain,
+                              directory: URL = ConfigurationTransfer.directory) {
         do {
-            if try ConfigurationTransaction.finish(defaults: .standard, domain: domain, directory: directory) {
+            if try ConfigurationTransaction.finish(defaults: defaults, domain: domain, directory: directory) {
                 notice("已应用待处理配置", "配置已在启动前恢复。可在高级设置中撤销上次导入；请检查热键与链接是否符合预期。")
             }
         } catch { show(error) }
     }
-    private static func previewText(_ text: String) -> NSView {
+    static func previewText(_ text: String) -> NSView {
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 500, height: 280))
         scroll.hasVerticalScroller = true; scroll.borderType = .bezelBorder
         let view = NSTextView(frame: scroll.bounds)
