@@ -79,6 +79,8 @@ Keylane 将继续完善日常体验，并逐步加入 Raycast、SuperCmd 中更�
 2. 核对校验和，打开 DMG，将 Keylane 拖入“应用程序”。
 3. 打开 Keylane，按 **Option + Space** 开始使用。需要时再为相应功能授予权限。
 
+Raycast 配置迁移请从源码构建；当前 Beta 1 安装包尚未包含此功能。
+
 当前公开安装包为 **1.0.2 Beta 1**，采用临时签名，未经 Apple 公证，需要手动安装。首次打开可能受到 macOS 安全机制限制，请参阅 [Apple 的安全说明](https://support.apple.com/en-us/102445)，并仅在确认下载来源可信后继续。
 
 ## 数据与权限

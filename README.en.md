@@ -79,6 +79,8 @@ Requires **macOS 26 or later**. Current installers target Apple Silicon; Intel a
 2. Verify the checksum, open the DMG, and drag Keylane into Applications.
 3. Open Keylane and press **Option + Space**. Grant access to individual features when you need them.
 
+Build from source to use Raycast configuration migration; the current Beta 1 installer does not include it.
+
 The current public installer is **1.0.2 Beta 1**. It is ad-hoc signed, not Apple notarized, and requires manual installation. macOS may block the first launch. Read [Apple’s safety guidance](https://support.apple.com/en-us/102445) and proceed only if you trust the download source.
 
 ## Data and permissions
