@@ -16,6 +16,7 @@ final class NavigationController: ObservableObject {
     private static let exclusionsKey = "navigation.excludedMenuApplications"
     private let preferences: UserDefaults
     private var items: [NavigationItem] = []
+    private var scanGeneration: UInt64 = 0
     private var scanRequest: NavigationScanRequest?
     private var actionRequest: NavigationScanRequest?
     private var mode: NavigationMode?
@@ -41,6 +42,7 @@ final class NavigationController: ObservableObject {
 
     var query = "" { didSet { if oldValue != query { filter() } } }
     var selected: NavigationItem? { results.indices.contains(selection) ? results[selection] : nil }
+    var actionSelectionID: String? { selected.map { "\(scanGeneration):\($0.id)" } }
 
     func load(_ mode: NavigationMode, target: NSRunningApplication?) {
         cancelAction()
@@ -68,6 +70,7 @@ final class NavigationController: ObservableObject {
                 self.status = .noApplication
                 return
             }
+            self.scanGeneration &+= 1
             self.items = scan.items
             self.incomplete = scan.incomplete
             self.filter()

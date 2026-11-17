@@ -117,6 +117,7 @@ enum NavigationLauncherModules {
             if let item = controller.selected { activate(item) }
         }
         page.primaryTitle = { mode.action }
+        page.actionSelectionID = { controller.actionSelectionID }
         page.actions = {
             let refresh = LauncherAction(id: "refresh-navigation", title: NavigationText.label("刷新结果", "Refresh Results"),
                                          icon: "arrow.clockwise", perform: reload)
@@ -252,6 +253,7 @@ enum NavigationLauncherModules {
         }
         page.primaryTitle = { "复制到剪贴板" }
         page.primaryEnabled = { library.selected != nil }
+        page.actionSelectionID = { library.selected?.id }
         page.actionContextTitle = { library.selected?.name ?? "截图操作" }
         page.actionShortcutsEnabled = true
         page.actions = { [weak model] in

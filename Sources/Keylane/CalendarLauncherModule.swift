@@ -43,6 +43,7 @@ enum CalendarLauncherModule {
                 leave: { calendar.endPresentation() },
                 move: { calendar.move($0) },
                 submit: { primary(calendar) },
+                actionSelectionID: { calendar.selectedEvent?.id },
                 actionContextTitle: { calendar.selectedEvent?.title },
                 primaryTitle: { calendar.selectedEvent.map(primaryTitle) ?? "打开日历" },
                 actions: { [weak model] in

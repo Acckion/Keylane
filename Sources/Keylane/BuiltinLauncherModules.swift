@@ -200,6 +200,7 @@ enum BuiltinLauncherModules {
                         parent: uninstallPage,
                         move: applicationActions.uninstallReview.move,
                         submit: applicationActions.uninstallReview.submit,
+                        actionSelectionID: { applicationActions.uninstallReview.highlighted },
                         actionContextTitle: { applicationActions.uninstallReview.name },
                         primaryTitle: { applicationActions.uninstallReview.isSubmitting ? "正在移到废纸篓…" : "移到废纸篓" },
                         primaryEnabled: { applicationActions.uninstallReview.canSubmit },
@@ -516,6 +517,7 @@ enum BuiltinLauncherModules {
                     delegate.pasteClipboard(keepOpen: true)
                 }
             ]),
+            actionSelectionID: { [weak model] in model?.clipboard.selectedID },
             actionContextTitle: { [weak model] in
                 guard let controller = model?.clipboard,
                       let item = controller.items.first(where: { $0.id == controller.selectedID }) else { return nil }

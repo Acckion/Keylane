@@ -51,6 +51,7 @@
 - 左右分栏使用 `ResultDetailLayout`，预览和信息由 `ResultDetailPane` 独立滚动。Quick Look 保留自身滚动，固定尺寸的图片预览直接填入预览区。页面提供内容、查询和预览生命周期。便笺使用独立的编辑分栏。
 - 截图与 Emoji 通过 `ResultGrid` 显示内容，用 `ResultGridSelection` 处理方向键和结果变化。模块负责分组、图片和激活动作。
 - `LauncherAction.shortcut` 登记实际按键，操作菜单从同一份定义生成键帽。普通回车和 Esc 继续由宿主派发。页面通过 `returnBindings` 声明主动作和替代动作的回车绑定。保存类表单的 Command-Return 与底部主按钮使用同一提交函数和可用性判断。已由页面声明的回车绑定只登记一次，回车键帽也由绑定生成。
+- 页面通过 `actionSelectionID` 登记当前结果的稳定 ID，操作标题仅用于展示。宿主校验页面访问和选中项，菜单按动作 ID 保持高亮，子菜单按动作路径读取当前可用内容。
 - 搜索页浮动筛选使用 `ResultTypeFilter`。底部菜单与筛选共用 `LauncherMenuRow` 和 `LauncherMenuSurface`，宿主管理浮动菜单的打开、关闭和焦点归还。应用与文件动作由模块登记。
 
 - 二级页面通过 `LauncherPage.ContentPlacement` 声明内容与浮动栏的位置。只读正文使用 `.readingDetail`，宿主统一提供顶栏、滚动、边距及边缘渐隐。更新日志只提供标题、日期和正文。列表中的可激活结果用 `ResultListButton` 保持点击动作和滚动目标的 ID 一致。宿主只观察会改变页头、主按钮或操作菜单的状态，列表、详情和便笺编辑器各自观察自己的内容。

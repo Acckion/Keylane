@@ -19,7 +19,7 @@ enum AppleNotesModule {
             id: searchPage, placeholder: "搜索 Apple 备忘录…", badge: ("Apple 备忘录", symbol),
             contentPlacement: .underChrome, content: { AnyView(AppleNotesList(controller: notes)) },
             queryChanged: notes.search, leave: notes.clearSearch, move: notes.move,
-            submit: notes.openSelected, primaryTitle: { "打开备忘录" },
+            submit: notes.openSelected, actionSelectionID: { notes.selectedID }, primaryTitle: { "打开备忘录" },
             primaryEnabled: { notes.selectedID != nil && !notes.saving },
             actions: {
                 var actions: [LauncherAction] = [.init(id: "create-apple-note", title: "新建 Apple 备忘录", icon: "plus") { create(.menu) }]
