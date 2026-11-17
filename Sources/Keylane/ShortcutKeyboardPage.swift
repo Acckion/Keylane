@@ -3,8 +3,9 @@ import KeylaneCore
 import SwiftUI
 
 final class ShortcutKeyboardSelection: ObservableObject {
-    @Published var shortcut = Shortcut(key: 3, modifiers: 256)
-    @Published var previewModifiers: UInt32?
+    @Published var input = ShortcutKeyboardInput(selected: Shortcut(key: 3, modifiers: 256))
+    var shortcut: Shortcut { input.selected }
+    var previewModifiers: UInt32? { input.previewModifiers }
     @Published var choosing = false
     @Published var feedback: String?
 }
@@ -20,7 +21,6 @@ struct ShortcutKeyboardPage: View {
     @State private var stagedCommand: String?
     @State private var change: Change?
     @State private var inputMonitor: Any?
-    @State private var capturedDuringHold = false
 
     private struct Change {
         let target: Shortcut
@@ -122,32 +122,25 @@ struct ShortcutKeyboardPage: View {
               window.isVisible, window.isKeyWindow else { return }
         delegate.shortcuts.suspend()
         inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak window] event in
-            guard let window, NSApp.keyWindow === window,
-                  event.window == nil || event.window === window, model.pageID == Self.pageID else { return event }
+            guard let window, window.isKeyWindow, model.pageID == Self.pageID else { return event }
+            if let eventWindow = event.window, eventWindow !== window { return event }
             let pressed = Shortcut(event: event)
             if event.type == .flagsChanged {
-                if pressed.modifiers == 0 {
-                    capturedDuringHold = false
-                    selection.previewModifiers = nil
-                } else if !capturedDuringHold {
-                    selection.previewModifiers = pressed.modifiers
-                }
+                selection.input.modifiersChanged(pressed.modifiers)
                 return event
             }
-            // Keep the Launcher's navigation and standard control keys usable on their own.
-            guard Self.editableCodes.contains(pressed.key),
-                  pressed.modifiers != 0 || !Self.navigationCodes.contains(pressed.key) else { return event }
-            selection.shortcut = pressed
-            selection.previewModifiers = nil
-            capturedDuringHold = pressed.modifiers != 0
+            // Bare keys remain available to the Launcher and never replace a captured chord.
+            guard pressed.modifiers != 0, Self.editableCodes.contains(pressed.key) else { return event }
+            if !event.isARepeat {
+                selection.input.select(pressed)
+            }
             selection.feedback = nil
             return nil
         }
     }
 
     private func stopCapturing() {
-        selection.previewModifiers = nil
-        capturedDuringHold = false
+        selection.input.resetPreview()
         guard let inputMonitor else { return }
         NSEvent.removeMonitor(inputMonitor)
         self.inputMonitor = nil
@@ -296,14 +289,9 @@ struct ShortcutKeyboardPage: View {
                         if cap.code != nil || cap.modifier != 0 {
                             Button {
                                 if let code = cap.code {
-                                    selection.shortcut = Shortcut(key: code, modifiers: displayedModifiers)
-                                    if selection.previewModifiers != nil {
-                                        capturedDuringHold = true
-                                        selection.previewModifiers = nil
-                                    }
+                                    selection.input.select(Shortcut(key: code, modifiers: displayedModifiers))
                                 } else {
-                                    selection.shortcut.modifiers ^= cap.modifier
-                                    selection.previewModifiers = nil
+                                    selection.input.select(Shortcut(key: shortcut.key, modifiers: displayedModifiers ^ cap.modifier))
                                 }
                                 selection.choosing = false
                                 selection.feedback = nil
@@ -401,7 +389,6 @@ struct ShortcutKeyboardPage: View {
         var description: String { [label, legend].compactMap { $0 }.joined(separator: " ") }
     }
 
-    private static let navigationCodes: Set<UInt32> = [36, 48, 49, 51, 53, 123, 124, 125, 126]
     private static let editableCodes = Set(layout.compactMap(\.code))
 
     private static let layout: [Key] = {
