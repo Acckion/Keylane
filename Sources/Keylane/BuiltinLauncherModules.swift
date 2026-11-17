@@ -94,7 +94,7 @@ enum BuiltinLauncherModules {
                             }, back: leaveKeyboard, submit: bindShortcut,
                             primaryTitle: { "绑定命令" }, primaryEnabled: canBind,
                             actions: {
-                                [.init(id: "bind-shortcut", title: "绑定命令", icon: "keyboard", keys: ["↩"],
+                                [.init(id: "bind-shortcut", title: "绑定命令", icon: "keyboard", shortcut: .init(.return, modifiers: []),
                                        enabled: canBind(), perform: bindShortcut)]
                             },
                             updates: keyboard.objectWillChange.eraseToAnyPublisher(),
@@ -471,7 +471,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func openAction(_ title: String, entry: Entry, model: Model) -> LauncherAction {
-        .init(id: "open", title: title, icon: "return", keys: ["↩"]) { [weak model] in
+        .init(id: "open", title: title, icon: "return", shortcut: .init(.return, modifiers: [])) { [weak model] in
             model?.runCommand(entry.commandID, origin: .menu, usageKey: entry.id)
         }
     }
@@ -545,12 +545,12 @@ enum BuiltinLauncherModules {
                 guard let model else { return [] }
                 return [
                     .init(id: "configure-clipboard-command", title: "配置命令…", icon: "gearshape",
-                          keys: ["⇧", "⌘", ","]) { [weak model] in
+                          shortcut: .init(",", modifiers: [.shift, .command])) { [weak model] in
                         model?.clipboard.showsHistorySettings = true
                         model?.openSettings(page: "clipboard")
                     },
                     .init(id: "configure-clipboard-extension", title: "配置扩展", icon: "gearshape",
-                          keys: ["⌥", "⌘", ","]) { [weak model] in
+                          shortcut: .init(",", modifiers: [.option, .command])) { [weak model] in
                         model?.clipboard.showsHistorySettings = false
                         model?.openSettings(page: "clipboard")
                     }

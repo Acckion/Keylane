@@ -50,6 +50,7 @@
 - 普通结果用 `ResultListRow`。主搜索使用 `.root` 布局，二级列表使用标准布局。带选中状态的列表用 `SelectableResultList` 管理滚动定位。主搜索和文件结果用 `CommandID` 保持选中项，结果重排后按同一 ID 执行。文件类型随查询结果发布，筛选与结果行复用同一份元数据。
 - 左右分栏使用 `ResultDetailLayout`，预览和信息由 `ResultDetailPane` 独立滚动。Quick Look 保留自身滚动，固定尺寸的图片预览直接填入预览区。页面提供内容、查询和预览生命周期。便笺使用独立的编辑分栏。
 - 截图与 Emoji 通过 `ResultGrid` 显示内容，用 `ResultGridSelection` 处理方向键和结果变化。模块负责分组、图片和激活动作。
+- `LauncherAction.shortcut` 登记实际按键，操作菜单从同一份定义生成键帽。普通回车和 Esc 继续由宿主派发。已由页面处理的 Command-Return、Option-Return 在操作菜单中显示相同绑定，宿主只登记一条执行路径。
 - 搜索页浮动筛选使用 `ResultTypeFilter`。底部菜单与筛选共用 `LauncherMenuRow` 和 `LauncherMenuSurface`，宿主管理浮动菜单的打开、关闭和焦点归还。应用与文件动作由模块登记。
 
 - 二级页面通过 `LauncherPage.ContentPlacement` 声明内容与浮动栏的位置。只读正文使用 `.readingDetail`，宿主统一提供顶栏、滚动、边距及边缘渐隐。更新日志只提供标题、日期和正文。列表中的可激活结果用 `ResultListButton` 保持点击动作和滚动目标的 ID 一致。宿主只观察会改变页头、主按钮或操作菜单的状态，列表、详情和便笺编辑器各自观察自己的内容。

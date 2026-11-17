@@ -797,31 +797,17 @@ struct Launcher: View {
 
     private var pageMenuShortcuts: some View {
         ForEach(shortcutActions) { action in
-            let modifiers = action.keys.dropLast()
-            if let shortcut = action.shortcut, action.enabled {
+            if let shortcut = action.shortcut, action.enabled, !shortcut.modifiers.isEmpty,
+               !usesPageSubmitShortcut(shortcut) {
                 pageMenuShortcut(action, shortcut: shortcut)
-            } else if action.shortcut == nil, action.enabled, !modifiers.isEmpty, let key = action.keys.last,
-               !usesPageSubmitShortcut(key: key, modifiers: modifiers),
-               let character = key.lowercased().first {
-                let key = key == "↩" ? KeyEquivalent.return : KeyEquivalent(character)
-                pageMenuShortcut(action, shortcut: KeyboardShortcut(key, modifiers: shortcutModifiers(modifiers)))
             }
         }
     }
 
-    private func usesPageSubmitShortcut(key: String, modifiers: ArraySlice<String>) -> Bool {
-        guard key == "↩" else { return false }
-        return (modifiers.elementsEqual(["⌘"]) && page?.shortcutSubmit != nil && page?.submitWithReturn != true)
-            || (modifiers.elementsEqual(["⌥"]) && page?.optionSubmit != nil)
-    }
-
-    private func shortcutModifiers(_ modifiers: ArraySlice<String>) -> EventModifiers {
-        var flags: EventModifiers = []
-        if modifiers.contains("⌘") { flags.insert(.command) }
-        if modifiers.contains("⌥") { flags.insert(.option) }
-        if modifiers.contains("⌃") { flags.insert(.control) }
-        if modifiers.contains("⇧") { flags.insert(.shift) }
-        return flags
+    private func usesPageSubmitShortcut(_ shortcut: KeyboardShortcut) -> Bool {
+        guard shortcut.key == .return else { return false }
+        return (shortcut.modifiers == .command && page?.shortcutSubmit != nil && page?.submitWithReturn != true)
+            || (shortcut.modifiers == .option && page?.optionSubmit != nil)
     }
 
     private func pageMenuShortcut(_ action: MenuAction, shortcut: KeyboardShortcut) -> some View {
@@ -832,7 +818,8 @@ struct Launcher: View {
             guard presentation.page == pageID, model.pageID == pageID,
                   page?.actionContextTitle?() == context, selectedEntry?.commandID == selection,
                   !SearchField.isComposing,
-                  let current = shortcutActions.first(where: { $0.id == action.id }), current.enabled else { return }
+                  let current = shortcutActions.first(where: { $0.id == action.id }), current.enabled,
+                  current.shortcut?.key == shortcut.key, current.shortcut?.modifiers == shortcut.modifiers else { return }
             if current.submenu != nil, !actions { toggleMenu(application: false) }
             activate(current)
         }
@@ -851,9 +838,9 @@ struct Launcher: View {
             if let badgeActions = page?.badgeActions { return badgeActions() }
             return [
                 MenuAction(id: "about", title: "关于 Keylane", icon: "app.badge", perform: { model.openSettings(page: "about") }),
-                MenuAction(id: "settings", title: "设置…", icon: "gearshape", keys: ["⌘", ","], perform: { model.runCommand(.init(rawValue: "settings"), origin: .menu) }),
+                MenuAction(id: "settings", title: "设置…", icon: "gearshape", shortcut: .init(",", modifiers: .command), perform: { model.runCommand(.init(rawValue: "settings"), origin: .menu) }),
                 MenuAction(id: "clipboard", title: "剪贴板历史", icon: "list.clipboard", perform: { model.runCommand(.init(rawValue: "clipboard"), origin: .menu) }),
-                MenuAction(id: "hide", title: "隐藏 Keylane", icon: "rectangle.compress.vertical", keys: ["esc"], perform: { (NSApp.delegate as? Delegate)?.hideLauncher() }),
+                MenuAction(id: "hide", title: "隐藏 Keylane", icon: "rectangle.compress.vertical", shortcut: .init(.escape, modifiers: []), perform: { (NSApp.delegate as? Delegate)?.hideLauncher() }),
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
             ].filter { model.launcherModules?.isCommandModuleEnabled(CommandID(rawValue: $0.id)) != false }
         }
@@ -863,7 +850,7 @@ struct Launcher: View {
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
         var actions = model.launcherModules?.actions(for: row) ?? [
-            MenuAction(id: "open", title: "执行命令", icon: "return", keys: ["↩"]) {
+            MenuAction(id: "open", title: "执行命令", icon: "return", shortcut: .init(.return, modifiers: [])) {
                 model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
             },
             model.favoriteAction(for: row)

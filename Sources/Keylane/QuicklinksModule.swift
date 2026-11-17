@@ -114,7 +114,7 @@ enum QuicklinksModule {
                 guard let model else { return [] }
                 let selection = controller.selected(in: controller.rows(aliases: model.aliases))
                 return (selection.map { actions(for: $0, model: model, edit: startEdit) } ?? []) + [
-                    .init(id: "quicklink-create", title: "创建快捷链接", icon: "plus", keys: ["⌘", "N"],
+                    .init(id: "quicklink-create", title: "创建快捷链接", icon: "plus", shortcut: .init("n", modifiers: .command),
                           enabled: controller.storageError == nil && !model.disabledCommands.contains(Command.create.rawValue),
                           perform: create)
                 ]
@@ -233,12 +233,12 @@ enum QuicklinksModule {
     private static func actions(for link: Quicklink, model: Model, edit: @escaping (Quicklink?) -> Void) -> [LauncherAction] {
         let controller = model.quicklinks
         return [
-            .init(id: "quicklink-open", title: "打开链接", icon: "arrow.up.right", keys: ["↩"],
+            .init(id: "quicklink-open", title: "打开链接", icon: "arrow.up.right", shortcut: .init(.return, modifiers: []),
                   enabled: !model.disabledCommands.contains(link.id)) { [weak model] in
                 if let model { open(link, model: model) }
             },
             .init(id: "quicklink-edit", title: "编辑快捷链接", icon: "pencil",
-                  keys: model.pageID == listID ? ["⌘", "E"] : []) { edit(link) },
+                  shortcut: model.pageID == listID ? .init("e", modifiers: .command) : nil) { edit(link) },
             .init(id: "quicklink-duplicate", title: "复制为新链接", icon: "plus.square.on.square") { edit(link.duplicate()) },
             .init(id: "quicklink-copy-name", title: "复制名称", icon: "doc.on.doc") {
                 UtilityActions.copy(link.title, feedback: "已复制名称")

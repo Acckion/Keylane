@@ -88,7 +88,7 @@ enum DictionaryLauncherModule {
             actions: {
                 guard let selected = controller.selected else {
                     return controller.canSubmit ? [.init(id: "dictionary-open", title: Action.open.title,
-                                                         icon: Action.open.symbol, keys: ["↩"], perform: { open(controller) })] : []
+                                                         icon: Action.open.symbol, shortcut: .init(.return, modifiers: []), perform: { open(controller) })] : []
                 }
                 return actions(for: selected, controller: controller, primary: primary(), details: openDetails)
             }, updates: updates,
@@ -155,31 +155,16 @@ enum DictionaryLauncherModule {
                                 details: (() -> Void)? = nil) -> [LauncherAction] {
         let supported = Action.allCases.filter { $0 != .details || details != nil }
         return ([primary] + supported.filter { $0 != primary }).map { action in
-            let keys: [String]
-            let shortcut: KeyboardShortcut?
-            if action == primary {
-                keys = ["↩"]
-                shortcut = nil
-            }
-            else {
-                switch action {
-                case .details:
-                    keys = []
-                    shortcut = nil
-                case .open:
-                    keys = []
-                    shortcut = .init(.return, modifiers: .command)
-                case .paste:
-                    keys = []
-                    shortcut = .init(.return, modifiers: details == nil ? .command : .option)
-                case .copy:
-                    keys = []
-                    shortcut = details == nil ? .init(.return, modifiers: .option) : .init("c", modifiers: [.shift, .command])
-                }
+            let shortcut: KeyboardShortcut? = switch action {
+            case _ where action == primary: .init(.return, modifiers: [])
+            case .details: nil
+            case .open: .init(.return, modifiers: .command)
+            case .paste: .init(.return, modifiers: details == nil ? .command : .option)
+            case .copy: details == nil ? .init(.return, modifiers: .option) : .init("c", modifiers: [.shift, .command])
             }
             let targetIcon = action == .paste ? (NSApp.delegate as? Delegate)?.pasteTargetIcon : nil
             return LauncherAction(id: "dictionary-" + action.rawValue, title: actionTitle(action), icon: action.symbol,
-                                  keys: keys, shortcut: shortcut, artwork: targetIcon) {
+                                  shortcut: shortcut, artwork: targetIcon) {
                 perform(action, word: word, controller: controller, details: details)
             }
         } + [.init(id: "dictionary-copy-definition", title: "复制释义", icon: "doc.on.doc", group: 1) {

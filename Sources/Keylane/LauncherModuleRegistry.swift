@@ -34,12 +34,16 @@ struct LauncherAction: Identifiable {
     let id: String
     let title: String
     let icon: String
-    var keys: [String] = []
     var shortcut: KeyboardShortcut? = nil
     var displayedKeys: [String] {
-        guard let shortcut else { return keys }
+        guard let shortcut else { return [] }
         let modifiers: [(EventModifiers, String)] = [(.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
-        let key = shortcut.key == .return ? "↩" : String(shortcut.key.character).uppercased()
+        let key: String
+        switch shortcut.key {
+        case .return: key = "↩"
+        case .escape: key = "esc"
+        default: key = String(shortcut.key.character).uppercased()
+        }
         return modifiers.compactMap { shortcut.modifiers.contains($0.0) ? $0.1 : nil } + [key]
     }
     var artwork: NSImage? = nil
