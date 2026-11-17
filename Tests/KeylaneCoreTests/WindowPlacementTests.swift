@@ -105,6 +105,27 @@ final class WindowPlacementTests: XCTestCase {
         XCTAssertTrue(layout.isValid)
     }
 
+    func testLayoutPositionPresetPreservesCustomModeAndResetsOffsets() throws {
+        var entry = WindowLayoutEntry(bundleID: "org.keylane.fixture")
+        XCTAssertEqual(entry.positionPreset, .topLeft)
+        entry.geometry.x = .init(12, percentage: false)
+        XCTAssertNil(entry.positionPreset)
+
+        entry.positionPreset = nil
+        entry.geometry.x.value = 0
+        let data = try JSONEncoder().encode(entry)
+        entry = try JSONDecoder().decode(WindowLayoutEntry.self, from: data)
+        XCTAssertNil(entry.positionPreset)
+
+        entry.geometry.y = .init(-16, percentage: false)
+        let width = entry.geometry.width
+        entry.positionPreset = .center
+        XCTAssertEqual(entry.positionPreset, .center)
+        XCTAssertEqual(entry.geometry.width, width)
+        XCTAssertEqual(entry.geometry.x, .init(0, percentage: false))
+        XCTAssertEqual(entry.geometry.y, .init(0, percentage: false))
+    }
+
     func testDraggingLayoutWindowPreservesSizeUnitsAndKeepsScreenGaps() throws {
         let screen = CGRect(x: -1200, y: 25, width: 1200, height: 800)
         var entry = WindowLayoutEntry(bundleID: "org.keylane.fixture")

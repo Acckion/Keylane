@@ -12,8 +12,24 @@ public struct WindowLayoutEntry: Codable, Identifiable, Equatable {
     public var display = 0
     public var geometry = WindowGeometry()
     public var argument: Argument = .none
+    private var customPosition: Bool?
 
     public init(bundleID: String) { self.bundleID = bundleID }
+
+    public var positionPreset: WindowGeometry.Anchor? {
+        get {
+            if customPosition == true || geometry.x.value != 0 || geometry.y.value != 0 { return nil }
+            return geometry.anchor
+        }
+        set {
+            customPosition = newValue == nil ? true : nil
+            if let anchor = newValue {
+                geometry.anchor = anchor
+                geometry.x.value = 0
+                geometry.y.value = 0
+            }
+        }
+    }
 
     public func frame(in screen: CGRect, windowGap: CGFloat = 0, screenGap: CGFloat = 0) -> CGRect? {
         let area = Self.layoutArea(in: screen, screenGap: screenGap)

@@ -39,15 +39,11 @@ struct WindowLayoutEditor: View {
     var body: some View {
         HStack(spacing: 0) {
             previewPane
+                .padding(.bottom, VisualStyle.launcherBottomInset)
             Divider().padding(.vertical, 10)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 13) { inspector }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(width: 300)
+                .padding(.bottom, VisualStyle.launcherBottomInset)
+            inspectorPane
         }
-        .padding(.bottom, VisualStyle.launcherBottomInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             refreshDisplays()
@@ -76,6 +72,26 @@ struct WindowLayoutEditor: View {
         }
     }
 
+    private var inspectorPane: some View {
+        let topFade: CGFloat = 18
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 13) { inspector }
+                .padding(16)
+                .padding(.top, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .launcherScrollInsets(top: false)
+        .launcherScrollEdgeFade(top: topFade)
+        .overlay(alignment: .top) {
+            ChromeBlur()
+                .frame(height: topFade)
+                .mask(LinearGradient(colors: [.black.opacity(0.85), .clear], startPoint: .top, endPoint: .bottom))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+        .frame(width: 300)
+    }
+
     private var previewPane: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
@@ -84,7 +100,6 @@ struct WindowLayoutEditor: View {
                     .frame(maxWidth: 182)
                 layoutPicker
             }
-            .zIndex(1)
             GeometryReader { proxy in
                 if let display = displays[safe: screenIndex] {
                     displayPreview(display, available: proxy.size)
@@ -120,6 +135,21 @@ struct WindowLayoutEditor: View {
         .padding(.horizontal, VisualStyle.launcherEdgeInset)
         .padding(.bottom, 12)
         .frame(minWidth: 285)
+        .overlayPreferenceValue(LayoutPickerAnchor.self) { anchor in
+            if let anchor {
+                GeometryReader { geometry in
+                    let trigger = geometry[anchor]
+                    let width = min(244, geometry.size.width)
+                    Group {
+                        if adding { applicationMenu }
+                        else { windowMenu }
+                    }
+                    .frame(width: width)
+                    .modifier(LauncherMenuSurface(open: true))
+                    .offset(x: max(0, trigger.maxX - width), y: trigger.maxY + 6)
+                }
+            }
+        }
     }
 
     private func displayPreview(_ display: Display, available: CGSize) -> some View {
@@ -131,7 +161,7 @@ struct WindowLayoutEditor: View {
             shape.fill(.secondary.opacity(0.28))
             shape.strokeBorder(.primary.opacity(0.24))
             if entries.isEmpty {
-                Text("从右侧添加应用程序").font(.callout).foregroundStyle(.secondary)
+                Text("点按上方加号添加应用程序").font(.callout).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             ForEach(entries) { entry in
@@ -149,7 +179,6 @@ struct WindowLayoutEditor: View {
         }
         .frame(width: frame.width * scale, height: frame.height * scale)
         .coordinateSpace(.named(PreviewSpace.display))
-        .clipShape(shape)
         .accessibilityLabel("\(display.name)上的窗口布局预览")
     }
 
@@ -177,7 +206,8 @@ struct WindowLayoutEditor: View {
                     : [.bottomRight]
                 ForEach(handles, id: \.self) { handle in
                     let position = handle.factors
-                    let inset = min(5, size.width / 2, size.height / 2)
+                    let isCorner = position.x != 0.5 && position.y != 0.5
+                    let inset = min(isCorner ? 2.5 : 1, size.width / 2, size.height / 2)
                     Circle()
                         .fill(.white)
                         .overlay { Circle().strokeBorder(Color.accentColor, lineWidth: 1) }
@@ -211,8 +241,11 @@ struct WindowLayoutEditor: View {
                 guard let geometry = draft.draggedGeometry(for: start, in: screen,
                     windowGap: CGFloat(preferences.windowGap), screenGap: CGFloat(preferences.screenGap),
                     translation: translation, resizingFrom: handle, minimumSize: 28 / scale
-                ), geometry != windows[index].geometry else { return }
-                draft.windows?[index].geometry = geometry
+                ) else { return }
+                var updated = windows[index]
+                updated.geometry = geometry
+                updated.positionPreset = nil
+                if updated != windows[index] { draft.windows?[index] = updated }
             }
     }
 
@@ -264,47 +297,43 @@ struct WindowLayoutEditor: View {
                     measurement("Y", value: binding.geometry.y, field: .y)
                 }
             }
-            section("位置") { positionGrid(binding.geometry.anchor) }
-        }
-        Divider()
-        DisclosureGroup("更多选项") {
-            VStack(alignment: .leading, spacing: 12) {
-                if let entry = selectedEntry {
-                    let binding = entryBinding(entry)
-                    Picker("显示器", selection: binding.display) {
-                        ForEach(displays.indices, id: \.self) { index in
-                            Text(displays[index].name).tag(index)
-                                .disabled(index != entry.display && windows.filter { $0.display == index }.count >= 8)
-                        }
-                        if !displays.indices.contains(entry.display) {
-                            Text("显示器 \(entry.display + 1)（未连接）").tag(entry.display)
-                        }
+            SettingsRow("位置") {
+                Picker("窗口位置", selection: binding.positionPreset) {
+                    Text("自定义").tag(nil as WindowGeometry.Anchor?)
+                    Divider()
+                    Text("居中").tag(WindowGeometry.Anchor.center as WindowGeometry.Anchor?)
+                    ForEach(WindowGeometry.Anchor.allCases.filter { $0 != .center }, id: \.self) { anchor in
+                        Text(anchor.localizedTitle).tag(anchor as WindowGeometry.Anchor?)
                     }
-                    TextField("匹配窗口标题", text: binding.windowTitle)
-                        .help("留空时匹配该应用的可用窗口。")
                 }
-                Picker("其他窗口", selection: $draft.otherWindows) {
-                    Text("保留").tag(CustomWindowAction.OtherWindows.keep)
-                    Text("最小化").tag(CustomWindowAction.OtherWindows.minimize)
-                    Text("关闭").tag(CustomWindowAction.OtherWindows.close)
-                }
-                Button("添加可见窗口") { capture(appendVisible) }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
             }
-            .padding(.top, 8)
+            Divider()
+            Picker("显示器", selection: binding.display) {
+                ForEach(displays.indices, id: \.self) { index in
+                    Text(displays[index].name).tag(index)
+                        .disabled(index != entry.display && windows.filter { $0.display == index }.count >= 8)
+                }
+                if !displays.indices.contains(entry.display) {
+                    Text("显示器 \(entry.display + 1)（未连接）").tag(entry.display)
+                }
+            }
+            TextField("匹配窗口标题", text: binding.windowTitle)
+                .help("留空时匹配该应用的可用窗口。")
         }
+        Picker("其他窗口", selection: $draft.otherWindows) {
+            Text("保留").tag(CustomWindowAction.OtherWindows.keep)
+            Text("最小化").tag(CustomWindowAction.OtherWindows.minimize)
+            Text("关闭").tag(CustomWindowAction.OtherWindows.close)
+        }
+        Button("添加可见窗口") { capture(appendVisible) }
         if let message { Text(message).foregroundStyle(.red).font(.callout) }
     }
 
     private var layoutPicker: some View {
         HStack(spacing: 8) {
-            Button("添加应用程序", systemImage: "plus") {
-                appQuery = ""
-                choosingWindow = false
-                adding.toggle()
-            }
-            .labelStyle(.iconOnly).buttonStyle(.bordered)
-            .disabled(!canAddWindow || displays.isEmpty)
-            .help(canAddWindow ? "为当前显示器添加窗口" : "每台显示器最多八个窗口")
             Button {
                 adding = false
                 choosingWindow.toggle()
@@ -326,17 +355,24 @@ struct WindowLayoutEditor: View {
             .disabled(windows.isEmpty)
             .accessibilityLabel("选择要编辑的窗口")
             .accessibilityValue(selectedEntry.map { appName($0.bundleID) } ?? "")
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if adding || choosingWindow {
-                Group {
-                    if adding { applicationMenu }
-                    else { windowMenu }
-                }
-                .frame(width: 244)
-                .modifier(LauncherMenuSurface(open: true))
-                .alignmentGuide(.bottom) { $0[.top] - 6 }
+            .anchorPreference(key: LayoutPickerAnchor.self, value: .bounds) { choosingWindow ? $0 : nil }
+
+            Button {
+                appQuery = ""
+                choosingWindow = false
+                adding.toggle()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 24, height: 26)
             }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
+            .disabled(!canAddWindow || displays.isEmpty)
+            .help(canAddWindow ? "为当前显示器添加窗口" : "每台显示器最多八个窗口")
+            .accessibilityLabel("添加应用程序")
+            .anchorPreference(key: LayoutPickerAnchor.self, value: .bounds) { adding ? $0 : nil }
         }
     }
 
@@ -487,24 +523,6 @@ struct WindowLayoutEditor: View {
         }
     }
 
-    private func positionGrid(_ selection: Binding<WindowGeometry.Anchor>) -> some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), spacing: 4) {
-            ForEach(WindowGeometry.Anchor.allCases, id: \.self) { anchor in
-                let isSelected = selection.wrappedValue == anchor
-                Button { selection.wrappedValue = anchor } label: {
-                    WindowAnchorImage(anchor: anchor)
-                        .foregroundStyle(isSelected ? .primary : .secondary)
-                        .frame(maxWidth: .infinity, minHeight: 32)
-                        .background(.primary.opacity(isSelected ? 0.10 : 0), in: RoundedRectangle(cornerRadius: 8))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(anchor.localizedTitle)
-                .accessibilityAddTraits(isSelected ? .isSelected : [])
-            }
-        }
-    }
-
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Text(title).font(.headline).accessibilityAddTraits(.isHeader)
@@ -634,20 +652,11 @@ struct WindowLayoutEditor: View {
     }
 }
 
-private struct WindowAnchorImage: View {
-    let anchor: WindowGeometry.Anchor
+private struct LayoutPickerAnchor: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
 
-    var body: some View {
-        let factors = anchor.factors
-        let width = factors.x == 0.5 && factors.y != 0.5 ? 20.0 : 10.0
-        let height = factors.y == 0.5 && factors.x != 0.5 ? 12.0 : 6.0
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 5).strokeBorder(lineWidth: 1.5)
-            RoundedRectangle(cornerRadius: 1).fill(.foreground.opacity(0.8))
-                .frame(width: width, height: height)
-                .offset(x: 2 + (22 - width) * factors.x, y: 2 + (14 - height) * factors.y)
-        }
-        .frame(width: 26, height: 18)
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        if let anchor = nextValue() { value = anchor }
     }
 }
 
