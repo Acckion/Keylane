@@ -24,7 +24,7 @@ const specialKeys = Object.freeze({
 });
 
 function randomId(size = 21) {
-  if (!Number.isSafeInteger(size) || size < 0 || size > 4_096) throw new RangeError("Expected an ID length from 0 to 4096");
+  if (!Number.isSafeInteger(size) || size < 0) throw new RangeError("Expected a nonnegative integer ID length");
   const byteCount = Math.ceil(size * 3 / 4);
   return randomBytes(byteCount).toString("base64url").slice(0, size);
 }
