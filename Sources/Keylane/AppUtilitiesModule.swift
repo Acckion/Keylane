@@ -5,10 +5,12 @@ import UniformTypeIdentifiers
 import KeylaneCore
 
 enum AppUtilitiesModule {
+    static let cameraPageID = PageID(rawValue: "CameraPreview")
+
     static func make(model: Model) -> LauncherModule {
         let releaseNotes = ReleaseNotesLauncher(model: model)
         let capture = PermissionFeature("screenCapture.enabled", authorization: .screenCapture, observeImmediately: false)
-        let camera = CameraPreviewWindow()
+        let camera = model.cameraPreview
         let cameraPermission = PermissionFeature("cameraPreview.enabled", authorization: .camera, observeImmediately: false)
         var cameraChanges: AnyCancellable?
         var pendingCapture: DispatchWorkItem?
@@ -44,16 +46,17 @@ enum AppUtilitiesModule {
                   }),
             .init(declaration: .init(id: .init(rawValue: "show-camera"), title: "显示相机", detail: "实时相机预览",
                                      symbol: "camera", keywords: ["Show Camera", "Camera Preview", "摄像头", "相机预览"],
-                                     destination: .action, settingsPage: "keylane.app-utilities"),
+                                     destination: .page(cameraPageID), settingsPage: "keylane.app-utilities"),
                   settingsEnabled: Binding(get: { cameraPermission.enabled }, set: cameraPermission.setEnabled),
-                  permission: cameraPermission, execute: { [weak model] _ in
-                      camera.show(activation: model?.windowActivationBehavior ?? .systemDefault)
-                  })
-        ], pages: releaseNotes.pages, services: [.init(start: {
+                  permission: cameraPermission, execute: { _ in camera.meeting = nil })
+        ], pages: releaseNotes.pages + [cameraPage(model: model, permission: cameraPermission)], services: [.init(start: { [weak model] in
             capture.startObserving()
             cameraPermission.startObserving()
             cameraChanges = cameraPermission.updates.receive(on: DispatchQueue.main).sink {
-                if !cameraPermission.available { camera.close() }
+                if !cameraPermission.available {
+                    camera.stop()
+                    if model?.pageID == cameraPageID { model?.pageID = .root }
+                }
             }
         }, stop: {
             cameraChanges?.cancel()
@@ -63,9 +66,33 @@ enum AppUtilitiesModule {
             pendingCapture?.cancel()
             pendingCapture = nil
             SystemTools.shared.stopScreenshot()
-            camera.close()
+            camera.stop()
         })], searchUpdates: [capture.updates, cameraPermission.updates],
            shortcutSettingsUpdates: [capture.settingsUpdates, cameraPermission.settingsUpdates])
+    }
+
+    private static func cameraPage(model: Model, permission: PermissionFeature) -> LauncherPage {
+        let camera = model.cameraPreview
+        let back: () -> Void = { [weak model] in
+            let page = camera.meeting?.returnPage ?? .root
+            model?.pageID = model?.launcherModules?.page(page) == nil ? .root : page
+        }
+        let start = { if permission.available { camera.start() } }
+        let submit: () -> Void = { [weak model] in
+            guard let meeting = camera.meeting else { back(); return }
+            camera.stop(completion: meeting.join)
+            model?.pageID = .root
+            (NSApp.delegate as? Delegate)?.hideLauncher()
+        }
+        return .init(
+            id: cameraPageID, placeholder: "", badge: ("相机预览", "camera"), contentPlacement: .form,
+            content: { AnyView(CameraPreviewPage(camera: camera, back: back)) },
+            leave: { camera.stop() }, back: back,
+            submit: submit, shortcutSubmit: submit,
+            primaryTitle: { camera.meeting == nil ? "返回" : "加入会议" },
+            updates: camera.$meeting.map { $0 != nil }.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            enter: { _ in start(); return nil }, resume: start
+        )
     }
 
     private static func command(_ id: String, _ title: String, _ symbol: String, _ keywords: [String],

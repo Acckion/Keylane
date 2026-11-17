@@ -51,6 +51,7 @@ final class Model: ObservableObject {
     let dictionary = DictionaryController()
     let emoji = EmojiSearchController()
     let systemNavigation = NavigationController()
+    let cameraPreview = CameraPreview()
     let menuBar = MenuBarRegistry()
     lazy var calendar = CalendarController(registry: menuBar)
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots

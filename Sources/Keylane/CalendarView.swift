@@ -425,7 +425,7 @@ private struct CalendarSettingsGroups: View {
                         .toggleStyle(.checkbox).disabled(!controller.autoJoin)
                 }
                 Divider()
-                SettingsRow("相机预览", detail: "加入会议时调用 Keylane 工具中的相机预览。") {
+                SettingsRow("相机预览", detail: "启用「显示相机」后，先在启动器中预览，再确认加入会议。") {
                     Toggle("相机预览", isOn: Binding(get: { controller.previewBeforeJoining }, set: { controller.previewBeforeJoining = $0 }))
                         .labelsHidden()
                 }
