@@ -36,7 +36,13 @@ final class Model: ObservableObject {
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
     @Published var query = ""
     @Published var pageID = PageID.root
-    let fileAI = FileAIController()
+    let aiSettings = AIConfiguration()
+    let aiRuntime = AIRuntime()
+    lazy var fileAI: FileAIController = {
+        let controller = FileAIController(settings: aiSettings, runtime: aiRuntime)
+        controller.openSettings = { [weak self] in self?.openSettings(page: "ai") }
+        return controller
+    }()
     private var moduleSearchChanges: AnyCancellable?
     private var moduleActivationRevocations: AnyCancellable?
     private var registeredPageCleanup: (page: PageID, activation: LauncherModuleRegistry.Activation, leave: () -> Void)?
