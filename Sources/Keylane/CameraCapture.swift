@@ -14,12 +14,13 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
         let completion: (Data?) -> Void
     }
     private var pendingPhoto: PhotoRequest?
+    private var firstFrame: (() -> Void)?
 
     init(queue: DispatchQueue) {
         self.queue = queue
     }
 
-    func start(with device: AVCaptureDevice) -> Bool {
+    func start(with device: AVCaptureDevice, onFirstFrame: @escaping () -> Void) -> Bool {
         guard let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else { return false }
         session.addInput(input)
@@ -32,11 +33,13 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = false
         }
+        firstFrame = onFirstFrame
         session.startRunning()
         return session.isRunning
     }
 
     func stop() {
+        firstFrame = nil
         pendingPhoto = nil
         output.setSampleBufferDelegate(nil, queue: nil)
         session.stopRunning()
@@ -56,7 +59,12 @@ final class CameraCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     }
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let request = pendingPhoto, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard firstFrame != nil || pendingPhoto != nil, let buffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        if let firstFrame {
+            self.firstFrame = nil
+            firstFrame()
+        }
+        guard let request = pendingPhoto else { return }
         pendingPhoto = nil
         let image = Self.jpeg(CIImage(cvPixelBuffer: buffer), mirrored: request.mirrored,
                               aspect: request.aspect, context: imageContext)

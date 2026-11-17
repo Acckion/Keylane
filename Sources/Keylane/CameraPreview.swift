@@ -82,15 +82,24 @@ final class CameraPreview: ObservableObject {
                 guard let self, let session, self.session === session else { return }
                 self.fail()
             }
-        let request = DispatchWorkItem { [weak self] in
-            let started = capture.start(with: device)
-            DispatchQueue.main.async {
-                guard let self, self.session === session else { return }
-                self.captureStart = nil
-                if started {
+        let request = DispatchWorkItem { [weak self, weak session] in
+            let started = capture.start(with: device) { [weak self, weak session] in
+                DispatchQueue.main.async {
+                    guard let self, let session, self.session === session else { return }
                     UserDefaults.standard.set(device.uniqueID, forKey: "cameraPreview.deviceID")
                     self.state = .running
-                } else { self.fail() }
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self, let session, self.session === session else { return }
+                self.captureStart = nil
+                if !started { self.fail() }
+            }
+            if started {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self, weak session] in
+                    guard let self, let session, self.session === session, self.state == .starting else { return }
+                    self.fail()
+                }
             }
         }
         captureStart = request
@@ -195,24 +204,25 @@ struct CameraPreviewPage: View {
     var body: some View {
         ZStack {
             Color.black
-            switch camera.state {
-            case .idle:
-                EmptyView()
-            case .starting:
-                ProgressView("正在打开相机…")
-            case .running:
-                if let session = camera.session {
-                    CameraVideoView(session: session).id(ObjectIdentifier(session))
+            if let session = camera.session {
+                let ready = camera.state == .running
+                ZStack {
+                    CameraVideoView(session: session, ready: ready)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .scaleEffect(x: camera.mirrored ? -1 : 1)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel("实时相机预览")
+                        .accessibilityHidden(!ready)
+                    CameraAperture(ready: ready)
                 }
-            case .failed:
+                .id(ObjectIdentifier(session))
+            } else if camera.state == .failed {
                 Text("无法打开相机。请确认相机已连接且可用。")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .padding()
+            } else {
+                CameraAperture(ready: false)
             }
         }
         .foregroundStyle(.white)
@@ -236,17 +246,18 @@ struct CameraPreviewPage: View {
 
 private struct CameraVideoView: NSViewRepresentable {
     let session: AVCaptureSession
+    let ready: Bool
 
     func makeNSView(context: Context) -> NSView {
-        let view = PreviewView(session: session)
-        if let connection = (view.layer as? AVCaptureVideoPreviewLayer)?.connection, connection.isVideoMirroringSupported {
+        PreviewView(session: session)
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        if ready, let connection = (view.layer as? AVCaptureVideoPreviewLayer)?.connection, connection.isVideoMirroringSupported {
             connection.automaticallyAdjustsVideoMirroring = false
             connection.isVideoMirrored = false
         }
-        return view
     }
-
-    func updateNSView(_ view: NSView, context: Context) {}
 
     private final class PreviewView: NSView {
         let session: AVCaptureSession
