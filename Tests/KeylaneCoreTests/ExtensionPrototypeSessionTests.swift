@@ -1,8 +1,31 @@
 import Foundation
+import Darwin
 import XCTest
 @testable import KeylaneCore
 
 final class ExtensionPrototypeSessionTests: XCTestCase {
+    func testStorageLockTimesOutAndAcquiresAfterRelease() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
+        let owner = Darwin.open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        XCTAssertGreaterThanOrEqual(owner, 0)
+        guard owner >= 0 else { return }
+        defer { close(owner); try? FileManager.default.removeItem(atPath: path) }
+        let waiter = Darwin.open(path, O_RDWR | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(waiter, 0)
+        guard waiter >= 0 else { return }
+        defer { close(waiter) }
+
+        try ExtensionStorageLock.acquire(owner, until: .now + .seconds(1))
+        let started = ContinuousClock.now
+        XCTAssertThrowsError(try ExtensionStorageLock.acquire(waiter, until: started + .milliseconds(40))) {
+            XCTAssertEqual(($0 as? CocoaError)?.code, .fileLocking)
+        }
+        XCTAssertLessThan(started.duration(to: .now), .seconds(1))
+        XCTAssertEqual(flock(owner, LOCK_UN), 0)
+        try ExtensionStorageLock.acquire(waiter, until: .now + .seconds(1))
+        XCTAssertEqual(flock(waiter, LOCK_UN), 0)
+    }
+
     func testViewPreferenceSnapshotLimitIsIndependentOfOtherViewInput() throws {
         XCTAssertNil(try ExtensionViewPreferencesTransport.snapshot(in: ["query": "hello"]))
         let large = String(repeating: "字", count: 3_000)

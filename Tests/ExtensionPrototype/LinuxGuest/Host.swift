@@ -329,7 +329,7 @@ final class GuestProbe: NSObject, VZVirtioSocketListenerDelegate {
                 return ""
             case .localStorage:
                 guard let localStorage else { throw CocoaError(.featureUnsupported) }
-                return try localStorage.reply(to: text)
+                return try localStorage.reply(to: text, deadline: executionBudget.replyDeadline)
             case .clipboardRead:
                 guard let clipboardReader else { throw CocoaError(.featureUnsupported) }
                 let parts = text.split(separator: ":", omittingEmptySubsequences: false)
@@ -1900,7 +1900,7 @@ final class GuestLocalStorage {
         return storage.signatureIsValid ? storage : nil
     }
 
-    func reply(to text: String) throws -> String {
+    func reply(to text: String, deadline: ContinuousClock.Instant) throws -> String {
         guard signatureIsValid else { throw CocoaError(.featureUnsupported) }
         let data = Data(text.utf8)
         guard data.count <= (Self.uploadChunkSize * 4 / 3) + 256,
@@ -1918,10 +1918,10 @@ final class GuestLocalStorage {
                   let decoded = try JSONSerialization.jsonObject(with: contents) as? [String: Any],
                   let name = decoded["operation"] as? String, let entryOperation = Operation(rawValue: name),
                   [.get, .set, .remove].contains(entryOperation) else { throw CocoaError(.featureUnsupported) }
-            return try perform(entryOperation, request: decoded)
+            return try perform(entryOperation, request: decoded, deadline: deadline)
         default:
             upload = Data()
-            return try perform(operation, request: request)
+            return try perform(operation, request: request, deadline: deadline)
         }
     }
 
@@ -1943,7 +1943,7 @@ final class GuestLocalStorage {
         return ""
     }
 
-    private func perform(_ operation: Operation, request: [String: Any]) throws -> String {
+    private func perform(_ operation: Operation, request: [String: Any], deadline: ContinuousClock.Instant) throws -> String {
         let key = request["key"] as? String
         let expected: Set<String>
         switch operation {
@@ -1971,7 +1971,7 @@ final class GuestLocalStorage {
         let lock = Darwin.open(lockPath, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard lock >= 0 else { throw CocoaError(.fileWriteNoPermission) }
         defer { close(lock) }
-        guard flock(lock, LOCK_EX) == 0 else { throw CocoaError(.fileWriteUnknown) }
+        try ExtensionStorageLock.acquire(lock, until: deadline)
 
         var values = try load()
         switch operation {

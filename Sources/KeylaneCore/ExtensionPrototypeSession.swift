@@ -1,5 +1,6 @@
 import Foundation
 import CoreFoundation
+import Darwin
 import UniformTypeIdentifiers
 
 /// Host-owned admission state for a single extension process.
@@ -649,6 +650,20 @@ final class ExtensionExecutionBudget: @unchecked Sendable {
             deadline += elapsed
             confirmationStart = nil
         }
+    }
+}
+
+/// Serializes extension storage transactions within the broker's reply budget.
+enum ExtensionStorageLock {
+    static func acquire(_ descriptor: Int32, until deadline: ContinuousClock.Instant) throws {
+        while ContinuousClock.now < deadline {
+            if flock(descriptor, LOCK_EX | LOCK_NB) == 0 { return }
+            let failure = errno
+            if failure == EINTR { continue }
+            guard failure == EWOULDBLOCK else { throw CocoaError(.fileWriteUnknown) }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        throw CocoaError(.fileLocking)
     }
 }
 
