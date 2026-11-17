@@ -15,7 +15,17 @@ final class FixtureProtocol: URLProtocol {
             let response = HTTPURLResponse(url:self.request.url!,statusCode:code,httpVersion:"HTTP/1.1",headerFields:["Content-Type":"application/json"])!
             let text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             self.client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-            self.client?.urlProtocol(self,didLoad:Data(text.utf8)); self.client?.urlProtocolDidFinishLoading(self)
+            if mode == "stream" || mode == "incomplete" {
+                let first = Data("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\r\n\r\n".utf8)
+                for byte in first { self.client?.urlProtocol(self, didLoad: Data([byte])) }
+                if mode == "stream" {
+                    let end = "data: {\"choices\":[{\"delta\":{\"content\":\"好\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"total_tokens\":5}}\n\ndata: [DONE]\n\n"
+                    self.client?.urlProtocol(self, didLoad: Data(end.utf8))
+                }
+            } else {
+                self.client?.urlProtocol(self, didLoad: Data(text.utf8))
+            }
+            self.client?.urlProtocolDidFinishLoading(self)
         }
     }
     override func stopLoading() { lock.lock(); stopped = true; lock.unlock() }
@@ -24,13 +34,22 @@ let suite = "org.keylane.file-ai-test."+UUID().uuidString
 let prefs = UserDefaults(suiteName:suite)!
 defer { prefs.removePersistentDomain(forName:suite) }
 let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FixtureProtocol.self]
-let controller = FileAIController(preferences:prefs,configuration:configuration,useKeychain:false)
+let fresh = AIConfiguration(preferences: prefs)
+precondition(!fresh.isAvailable && fresh.selected == nil)
+prefs.set("http://localhost/v1", forKey: "fileAIEndpoint")
+prefs.set("fixture-model", forKey: "fileAIModel")
+let settings = AIConfiguration(preferences: prefs)
+let legacy = settings.selected!
+precondition(settings.isAvailable && legacy.mode == .complete && legacy.legacyAccount == "http://localhost/v1")
+precondition(AIConfiguration(preferences: prefs).selected == legacy)
+let controller = FileAIController(settings: settings, runtime: AIRuntime(configuration: configuration),
+                                  preferences: prefs, readKey: { _ in nil })
 func wait(_ label:String,_ condition:()->Bool) {
     let deadline = Date().addingTimeInterval(5)
     while !condition(),Date()<deadline { RunLoop.current.run(until:Date().addingTimeInterval(0.02)) }
     precondition(condition(),label+" "+controller.status)
 }
-controller.endpoint = "http://localhost/v1"; controller.modelName = "fixture-model"; controller.question = "fixture question"
+controller.question = "fixture question"
 controller.setFiles([URL(fileURLWithPath:"/synthetic/作业.pdf")])
 controller.send(); wait("Successful response") { !controller.running }
 precondition(controller.answer == "synthetic answer" && controller.status.contains("3 tokens"))
@@ -38,5 +57,22 @@ FixtureProtocol.mode = "error"; controller.send(); wait("HTTP failure") { !contr
 FixtureProtocol.mode = "bad"; controller.send(); wait("Malformed payload") { !controller.running }; precondition(controller.status.contains("请求未完成"))
 FixtureProtocol.mode = "slow"; controller.send(); RunLoop.current.run(until:Date().addingTimeInterval(0.05)); controller.cancel()
 RunLoop.current.run(until:Date().addingTimeInterval(0.7)); precondition(controller.status == "已取消" && controller.answer.isEmpty)
-controller.endpoint = "http://external.example/v1"; controller.send(); precondition(controller.status.contains("HTTPS"))
-print("PASS file AI fixture transport: response, usage, HTTP failure, malformed payload, cancellation/stale response, HTTPS validation; no external requests or real keys")
+var invalid = legacy
+invalid.endpoint = "http://external.example/v1"
+precondition(!settings.save(invalid) && settings.selected == legacy)
+let second = AIConnection(name: "second", endpoint: "http://127.0.0.1/v1", model: "fixture-model")
+precondition(settings.save(second))
+FixtureProtocol.mode = "stream"
+controller.send(); wait("Streaming response") { !controller.running }
+precondition(controller.answer == "你好" && controller.status.contains("5 tokens"))
+FixtureProtocol.mode = "incomplete"
+controller.send(); wait("Interrupted stream") { !controller.running }
+precondition(controller.answer == "你" && controller.status.contains("不完整"))
+FixtureProtocol.mode = "slow"
+controller.send()
+settings.setEnabled(false)
+controller.send()
+precondition(!controller.running && controller.status.contains("启用"))
+settings.select(legacy.id)
+precondition(AIConfiguration(preferences: prefs).selected == legacy)
+print("PASS file AI fixture transport: response, usage, HTTP failure, malformed payload, cancellation/stale response, HTTPS validation, migration, Unicode SSE, truncation and disable; no external requests or real keys")

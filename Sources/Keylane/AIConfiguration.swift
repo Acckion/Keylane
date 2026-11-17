@@ -1,0 +1,167 @@
+import Combine
+import Foundation
+import Security
+
+final class AIConfiguration: ObservableObject {
+    struct State: Codable, Equatable {
+        var enabled = false
+        var connections: [AIConnection] = []
+        var selectedID: UUID?
+        var selected: AIConnection? { connections.first { $0.id == selectedID } }
+        var isAvailable: Bool { enabled && selected?.isConfigured == true }
+    }
+
+    @Published private(set) var state: State
+    private let preferences: UserDefaults
+    private static let storageKey = "aiConnections.v1"
+    private static let service = "org.keylane.ai"
+    private static let legacyService = "org.keylane.file-ai"
+
+    init(preferences: UserDefaults = .standard) {
+        self.preferences = preferences
+        if let data = preferences.data(forKey: Self.storageKey),
+           let saved = try? JSONDecoder().decode(State.self, from: data) {
+            state = saved
+        } else {
+            let endpoint = preferences.string(forKey: "fileAIEndpoint") ?? ""
+            let model = preferences.string(forKey: "fileAIModel") ?? ""
+            if endpoint.isEmpty && model.isEmpty {
+                state = State()
+            } else {
+                let account = URL(string: endpoint)?.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let connection = AIConnection(name: "文件问答", endpoint: endpoint, model: model,
+                                              mode: .complete, legacyAccount: account)
+                state = State(enabled: connection.isConfigured, connections: [connection], selectedID: connection.id)
+                if let data = try? JSONEncoder().encode(state) { preferences.set(data, forKey: Self.storageKey) }
+            }
+        }
+    }
+
+    var selected: AIConnection? { state.selected }
+    var isAvailable: Bool { state.isAvailable }
+
+    func setEnabled(_ enabled: Bool) {
+        var updated = state
+        updated.enabled = enabled
+        persist(updated)
+    }
+
+    func select(_ id: UUID) {
+        guard state.connections.contains(where: { $0.id == id }) else { return }
+        var updated = state
+        updated.selectedID = id
+        persist(updated)
+    }
+
+    @discardableResult
+    func save(_ draft: AIConnection) -> Bool {
+        var connection = draft
+        connection.endpoint = draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        connection.model = draft.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        connection.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard connection.isConfigured else { return false }
+        var updated = state
+        if let index = updated.connections.firstIndex(where: { $0.id == connection.id }) {
+            let original = updated.connections[index]
+            if original.completionURL != connection.completionURL {
+                // Endpoint edits keep the old credential item bound to its original endpoint.
+                connection.legacyAccount = nil
+                if let oldEndpoint = original.completionURL?.absoluteString {
+                    var previous = Set(original.previousEndpoints ?? [])
+                    previous.insert(oldEndpoint)
+                    if let current = connection.completionURL?.absoluteString { previous.remove(current) }
+                    connection.previousEndpoints = previous.sorted()
+                }
+            }
+            updated.connections[index] = connection
+        } else {
+            updated.connections.append(connection)
+        }
+        updated.selectedID = connection.id
+        persist(updated)
+        return true
+    }
+
+    func remove(_ connection: AIConnection) throws {
+        guard let saved = state.connections.first(where: { $0.id == connection.id }) else { return }
+        if saved.baseURL != nil { try Self.deleteKey(for: saved, includingPreviousEndpoints: true) }
+        var updated = state
+        updated.connections.removeAll { $0.id == connection.id }
+        if updated.selectedID == connection.id { updated.selectedID = updated.connections.first?.id }
+        persist(updated)
+    }
+
+    private func persist(_ updated: State) {
+        guard updated != state, let data = try? JSONEncoder().encode(updated) else { return }
+        preferences.set(data, forKey: Self.storageKey)
+        state = updated
+    }
+
+    enum CredentialError: Error, LocalizedError {
+        case unavailable, invalidKey
+        var errorDescription: String? {
+            self == .unavailable ? "无法访问此连接的钥匙串密钥。" : "请输入一行有效的 API 密钥。"
+        }
+    }
+
+    private static func queries(for connection: AIConnection) -> [[String: Any]] {
+        guard let url = connection.completionURL else { return [] }
+        func query(service: String, account: String) -> [String: Any] {
+            [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+             kSecAttrAccount as String: account]
+        }
+        var result = [query(service: service, account: connection.id.uuidString + "|" + url.absoluteString)]
+        if let account = connection.legacyAccount { result.append(query(service: legacyService, account: account)) }
+        return result
+    }
+
+    static func hasKey(for connection: AIConnection) -> Bool {
+        queries(for: connection).contains { query in
+            SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
+        }
+    }
+
+    static func key(for connection: AIConnection) throws -> String? {
+        for var query in queries(for: connection) {
+            query[kSecReturnData as String] = true
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &result)
+            if status == errSecItemNotFound { continue }
+            guard status == errSecSuccess, let bytes = result as? Data,
+                  let key = String(data: bytes, encoding: .utf8) else { throw CredentialError.unavailable }
+            return key
+        }
+        return nil
+    }
+
+    static func saveKey(_ input: String, for connection: AIConnection) throws {
+        let key = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, key.utf8.count <= 8192, key.rangeOfCharacter(from: .controlCharacters) == nil
+        else { throw CredentialError.invalidKey }
+        guard var query = queries(for: connection).first else { throw CredentialError.unavailable }
+        let values = [kSecValueData as String: Data(key.utf8)]
+        var status = SecItemUpdate(query as CFDictionary, values as CFDictionary)
+        if status == errSecItemNotFound {
+            query[kSecValueData as String] = values[kSecValueData as String]
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            status = SecItemAdd(query as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw CredentialError.unavailable }
+    }
+
+    static func deleteKey(for connection: AIConnection, includingPreviousEndpoints: Bool = false) throws {
+        var all = queries(for: connection)
+        if includingPreviousEndpoints {
+            for endpoint in connection.previousEndpoints ?? [] {
+                var previous = connection
+                previous.endpoint = endpoint
+                previous.legacyAccount = nil
+                all.append(contentsOf: queries(for: previous))
+            }
+        }
+        for query in all.reversed() {
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else { throw CredentialError.unavailable }
+        }
+    }
+}
