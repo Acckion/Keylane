@@ -9,6 +9,9 @@ struct ResultFilterOption: Identifiable {
     var help: String? = nil
     var iconPath: String? = nil
     var subtitle: String? = nil
+    var artwork: NSImage? = nil
+    var destructive = false
+    var keywords: [String] = []
     static let clipboard: [Self] = [
         .init(id: "all", title: "全部类型", symbol: "list.bullet"),
         .init(id: "text", title: "仅文字", symbol: "textformat"),
@@ -80,13 +83,14 @@ struct LauncherHeaderMenuButton: View {
     let symbol: String
     let width: CGFloat
     var accessibilityTitle: String? = nil
+    var icon: AnyView? = nil
     let action: () -> Void
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         NativeHoverButton(title: accessibilityTitle ?? title, action: action) {
             HStack(spacing: 9) {
-                Image(systemName: symbol)
+                if let icon { icon } else { Image(systemName: symbol) }
                 Text(title).lineLimit(1)
                 Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold))
             }
@@ -113,6 +117,7 @@ struct ResultFilterPanel: View {
     static func matches(_ options: [ResultFilterOption], query: String) -> [ResultFilterOption] {
         options.filter {
             query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query)
+                || $0.keywords.contains { $0.localizedCaseInsensitiveContains(query) }
         }
     }
 
@@ -136,7 +141,7 @@ struct ResultFilterPanel: View {
                     LazyVStack(spacing: 3) {
                         ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
                             LauncherMenuRow(title: option.title, symbol: option.symbol, selected: highlighted == index,
-                                            style: .filter, iconPath: option.iconPath,
+                                            style: .filter, destructive: option.destructive, artwork: option.artwork, iconPath: option.iconPath,
                                             activate: { choose(option) }, highlight: { highlighted = index }) {
                                 if let help = option.help {
                                     Image(systemName: "info.circle").help(help).accessibilityLabel(help)

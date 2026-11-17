@@ -20,10 +20,9 @@ struct ShortcutKeyboardPage: View {
 
     let model: Model
     @ObservedObject var selection: ShortcutKeyboardSelection
-    let showsToolbarControls: Bool
+    let menuOpen: Binding<Bool>?
     @StateObject private var observation: ViewObservation
     @State private var query = ""
-    @State private var stagedCommand: String?
     @State private var change: Change?
     @State private var inputMonitor: Any?
 
@@ -34,10 +33,10 @@ struct ShortcutKeyboardPage: View {
         let displaced: String?
     }
 
-    init(model: Model, selection: ShortcutKeyboardSelection, showsToolbarControls: Bool = false) {
+    init(model: Model, selection: ShortcutKeyboardSelection, menuOpen: Binding<Bool>? = nil) {
         self.model = model
         self.selection = selection
-        self.showsToolbarControls = showsToolbarControls
+        self.menuOpen = menuOpen
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(model.$aliases),
@@ -60,15 +59,14 @@ struct ShortcutKeyboardPage: View {
             return fixed + binding + (group.dynamicCommands?.commandNames() ?? [])
         }
         let names = Dictionary(catalog.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
-        if showsToolbarControls {
-            keyboardControls(commandName: owner.map { names[$0] ?? $0 })
+        if let menuOpen {
+            keyboardControls(catalog, names: names, registry: registry, open: menuOpen)
         } else {
-            keyboardContent(catalog, names: names, registry: registry)
+            keyboardContent(names: names)
         }
     }
 
-    private func keyboardContent(_ catalog: [ShortcutCommandName], names: [String: String],
-                                 registry: LauncherModuleRegistry?) -> some View {
+    private func keyboardContent(names: [String: String]) -> some View {
         let bindingsByShortcut = Dictionary(model.bindings.sorted { $0.key < $1.key }.map { ($0.value, $0.key) },
                                             uniquingKeysWith: { first, _ in first })
         return keyboard(bindings: bindingsByShortcut, names: names)
@@ -77,32 +75,10 @@ struct ShortcutKeyboardPage: View {
             .padding(.horizontal, 22)
             .padding(.top, VisualStyle.launcherTopInset + 10)
             .frame(maxHeight: .infinity, alignment: .top)
-        .overlay {
-            if selection.choosing {
-                ZStack {
-                    Color.black.opacity(0.26).contentShape(Rectangle())
-                        .onTapGesture { closePicker() }
-                        .accessibilityHidden(true)
-                    Group {
-                        if let change {
-                            confirmation(change, names: names, registry: registry)
-                        } else {
-                            commandPicker(catalog, registry: registry)
-                        }
-                    }
-                    .frame(width: 420)
-                    .modifier(LauncherMenuSurface(open: true))
-                }
-                .padding(.bottom, VisualStyle.launcherBottomInset)
-                .onExitCommand { if !SearchField.isComposing { closePicker() } }
-            }
-        }
         .onAppear(perform: startCapturing)
         .onDisappear(perform: stopCapturing)
         .onChange(of: selection.choosing) { _, choosing in
             if choosing {
-                query = ""
-                stagedCommand = nil
                 stopCapturing()
             } else { startCapturing() }
         }
@@ -189,26 +165,51 @@ struct ShortcutKeyboardPage: View {
         .accessibilityHidden(true)
     }
 
-    private func keyboardControls(commandName: String?) -> some View {
-        let enabled = shortcut != nil && selection.previewModifiers == nil && validation == nil && !selection.choosing
-        let title = commandName == nil ? "绑定命令" : "更换命令"
-        return HStack(spacing: 8) {
-            if let commandName {
-                Text(commandName).font(.caption).lineLimit(1).foregroundStyle(.secondary)
-                    .frame(maxWidth: 160, alignment: .trailing)
-                Button("解除绑定", action: unbind)
-                    .buttonStyle(ContentActionButtonStyle())
-                    .disabled(!enabled)
+    private func keyboardControls(_ catalog: [ShortcutCommandName], names: [String: String],
+                                  registry: LauncherModuleRegistry?, open: Binding<Bool>) -> some View {
+        let enabled = shortcut != nil && selection.previewModifiers == nil && validation == nil
+        let title = owner.map { names[$0] ?? $0 } ?? "绑定命令"
+        let width: CGFloat = owner == nil ? 138 : 220
+        let options = selection.choosing && open.wrappedValue
+            ? ResultFilterPanel.matches(commandOptions(catalog, registry: registry),
+                                        query: query.trimmingCharacters(in: .whitespacesAndNewlines))
+            : []
+        return ZStack(alignment: .topTrailing) {
+            if open.wrappedValue, selection.choosing {
+                if let change {
+                    confirmation(change, names: names, registry: registry)
+                        .frame(width: 300)
+                        .onExitCommand { if !SearchField.isComposing { closePicker() } }
+                } else {
+                    ResultFilterPanel(selection: "", options: options, query: $query,
+                                      searchPlaceholder: "搜索命令…", emptyTitle: "没有匹配的命令",
+                                      navigation: model.navigation, width: 300, choose: { option in
+                        if option.id == Self.unbindID { unbind() }
+                        else { assign(option.id, registry: registry) }
+                    }, dismiss: closePicker)
+                }
+            } else {
+                LauncherHeaderMenuButton(title: title, symbol: "command", width: width,
+                                         icon: owner.map { AnyView(bindingIcon($0)) }) {
+                    guard enabled else { return }
+                    selection.feedback = nil
+                    selection.choosing = true
+                }
+                .disabled(!enabled)
+                .opacity(enabled ? 1 : 0.45)
+                .help(selection.feedback ?? validation ?? title)
             }
-            LauncherHeaderMenuButton(title: title, symbol: "command", width: 138) {
-                guard enabled else { return }
-                selection.feedback = nil
-                selection.choosing = true
+        }
+        .modifier(LauncherMenuSurface(open: open.wrappedValue && selection.choosing))
+        .onChange(of: selection.choosing, initial: true) { _, choosing in
+            if choosing {
+                query = ""
+                change = nil
             }
-            .disabled(!enabled)
-            .opacity(enabled ? 1 : 0.45)
-            .modifier(LauncherMenuSurface(open: false))
-            .help(selection.feedback ?? validation ?? title)
+            if open.wrappedValue != choosing { open.wrappedValue = choosing }
+        }
+        .onChange(of: open.wrappedValue) { _, isOpen in
+            if !isOpen && selection.choosing { closePicker() }
         }
     }
 
@@ -232,53 +233,27 @@ struct ShortcutKeyboardPage: View {
         change = nil
     }
 
-    private func commandPicker(_ catalog: [ShortcutCommandName], registry: LauncherModuleRegistry?) -> some View {
-        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let commands = catalog.filter {
-            $0.id != owner && (term.isEmpty || $0.title.localizedCaseInsensitiveContains(term)
-                || model.aliases[$0.aliasKey ?? $0.id]?.localizedCaseInsensitiveContains(term) == true)
-                && registry?.canBindFromShortcutKeyboard(.init(rawValue: $0.id)) == true
+    private static let unbindID = "keylane.unbind-shortcut"
+
+    private func commandOptions(_ catalog: [ShortcutCommandName],
+                                registry: LauncherModuleRegistry?) -> [ResultFilterOption] {
+        var options: [ResultFilterOption] = []
+        if owner != nil {
+            options.append(.init(id: Self.unbindID, title: "解除绑定", symbol: "link.badge.minus", destructive: true))
         }
-        return SettingsGroup {
-            SettingsSearchField(text: $query, placeholder: "搜索命令…", autofocus: true,
-                                cancel: closePicker, submit: {
-                if let command = commands.first { stagedCommand = command.id }
-            })
-            if commands.isEmpty {
-                SettingsDescription("没有匹配的命令")
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(commands) { command in
-                            Button {
-                                stagedCommand = command.id
-                            } label: {
-                                HStack {
-                                    Text(command.title).lineLimit(1)
-                                    Spacer()
-                                    if let current = model.bindings[command.id] {
-                                        Text(current.label).foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(.vertical, 6)
-                                .padding(.horizontal, 8)
-                                .background(stagedCommand == command.id ? Color.accentColor.opacity(0.13) : .clear,
-                                            in: RoundedRectangle(cornerRadius: 6))
-                                .contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                                .accessibilityAddTraits(stagedCommand == command.id ? .isSelected : [])
-                        }
-                    }
-                }.frame(height: CGFloat(min(commands.count, 6)) * 30)
-            }
-            HStack {
-                Spacer()
-                Button("取消", action: closePicker)
-                Button("保存绑定") {
-                    if let stagedCommand { assign(stagedCommand, registry: registry) }
-                }.disabled(!commands.contains { $0.id == stagedCommand })
-            }
-        }.onChange(of: query) { _, _ in stagedCommand = nil }
+        for command in catalog where command.id != owner {
+            let id = CommandID(rawValue: command.id)
+            guard registry?.canBindFromShortcutKeyboard(id) == true else { continue }
+            let declaration = registry?.declaration(id)
+            let module = registry?.moduleOwningCommand(id)
+            let artwork = command.id.hasPrefix("shortcut:") ? model.systemShortcuts.icon(forCommandID: command.id)
+                : ModuleArtwork.command(id, settingsPage: declaration?.settingsPage, moduleID: module)
+            let appPath = command.id.hasPrefix("app:") ? String(command.id.dropFirst(4)) : nil
+            options.append(.init(id: command.id, title: command.title, symbol: declaration?.symbol ?? "command",
+                                 iconPath: appPath, subtitle: model.bindings[command.id]?.label, artwork: artwork,
+                                 keywords: model.aliases[command.aliasKey ?? command.id].map { [$0] } ?? []))
+        }
+        return options
     }
 
     private func keyboard(bindings: [Shortcut: String], names: [String: String]) -> some View {

@@ -479,8 +479,7 @@ struct Launcher: View {
                                 spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil)
                         .frame(height: 30)
                 }
-                if let accessory = page?.searchAccessory { accessory() }
-                else if showsTypeFilter {
+                if showsTypeFilter {
                     Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
                         .accessibilityHidden(true)
                 }

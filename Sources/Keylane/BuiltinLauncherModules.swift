@@ -104,9 +104,10 @@ enum BuiltinLauncherModules {
                                     .font(.system(size: 19))
                                     .foregroundStyle(keys.isEmpty ? .secondary : .primary))
                             },
-                            searchAccessory: { [weak model] in
+                            typeFilterWidth: 220,
+                            typeFilter: { [weak model] open in
                                 guard let model else { return AnyView(EmptyView()) }
-                                return AnyView(ShortcutKeyboardPage(model: model, selection: keyboard, showsToolbarControls: true))
+                                return AnyView(ShortcutKeyboardPage(model: model, selection: keyboard, menuOpen: open))
                             })],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
                          settingsPage(model, "launcher", "启动器", "magnifyingglass", "管理启动器的显示与搜索行为。", 5) {

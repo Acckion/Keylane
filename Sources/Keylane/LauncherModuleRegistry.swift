@@ -72,7 +72,6 @@ struct LauncherPage {
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
     var searchDisplay: (() -> AnyView)?
-    var searchAccessory: (() -> AnyView)?
     var enter: ((String) -> String?)?
     var resume: (() -> Void)?
     var moveHorizontal: ((Int) -> Void)?
