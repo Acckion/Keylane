@@ -1,0 +1,16 @@
+name: Preview ref policy probe
+on:
+  push:
+    branches: [test/preview-signing-ref-policy]
+permissions:
+  contents: read
+jobs:
+  forbidden-ref:
+    name: Reject unintegrated ref before runner
+    runs-on: ubuntu-latest
+    environment: preview-signing-auto
+    steps:
+      - name: Fail if environment gate allowed this branch
+        run: |
+          echo 'UNEXPECTED: environment allowed an unintegrated branch; no credentials were requested.'
+          exit 1
