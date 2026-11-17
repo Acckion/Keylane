@@ -32,7 +32,7 @@ struct KeylaneToolPreferences: View {
                 ?? model.launcherModules?.declaration(.init(rawValue: rawID)).map { LauncherModule.Command(declaration: $0) }
         }
         SettingsPageSections {
-            SettingsCard {
+            SettingsCard(anchor: .keylaneTools) {
                 Button("导出 Keylane 设置与数据", systemImage: "square.and.arrow.up", action: ConfigurationTransfer.export)
                     .buttonStyle(.plain)
             }
@@ -65,7 +65,7 @@ struct KeylaneToolPreferences: View {
         guard id == "capture-keylane-window" || id == "show-camera" else { return nil }
         return CommandSettingsDisclosure(isExpanded: Binding(get: { expanded.contains(id) }, set: { value in
             if value { expanded.insert(id) } else { expanded.remove(id) }
-        })) {
+        }), revealItem: id == "capture-keylane-window" ? .keylaneWindowCapture : .keylaneCamera) {
             AnyView(VStack(alignment: .leading, spacing: 10) {
                 if id == "capture-keylane-window" {
                     Toggle("复制到剪贴板", isOn: $copyCapture)

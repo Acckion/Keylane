@@ -75,7 +75,8 @@ enum AppUtilitiesModule {
                   permission: cameraPermission, execute: { _ in camera.meeting = nil })
         ]
         let settings = LauncherSettingsPage(id: settingsID, title: "Keylane 工具", symbol: "wrench.and.screwdriver",
-                                            subtitle: "管理 Keylane 的命令、更新和诊断。", order: 89, items: [],
+                                            subtitle: "管理 Keylane 的命令、更新和诊断。", order: 89,
+                                            items: SettingsItem.all.filter { $0.page == settingsID },
                                             centeredHeader: true, content: { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(KeylaneToolPreferences(model: model, camera: camera, commands: commands))
