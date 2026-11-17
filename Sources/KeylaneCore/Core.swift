@@ -99,8 +99,21 @@ public enum Calculator {
     static func groupingInput(_ input: String, locale: Locale) -> String {
         guard let separator = locale.groupingSeparator, !separator.isEmpty, input.contains(separator),
               separator != locale.decimalSeparator else { return input }
-        // In a function argument list a comma always remains available as a separator.
-        if separator == ",", input.contains("(") { return input }
+        // Preserve commas only at the immediate function argument depth. Ordinary
+        // parentheses (including those inside a call) still allow grouped numbers.
+        var argumentSeparators = Set<Int>()
+        if separator == "," {
+            var functionScopes: [Bool] = []
+            var previous: Character?
+            var offset = 0
+            for character in input {
+                if character == "(" { functionScopes.append(previous?.isLetter == true) }
+                if character == ")", !functionScopes.isEmpty { functionScopes.removeLast() }
+                if character == ",", functionScopes.last == true { argumentSeparators.insert(offset) }
+                if !character.isWhitespace { previous = character }
+                offset += character.utf16.count
+            }
+        }
         let group = NSRegularExpression.escapedPattern(for: separator)
         let decimal = NSRegularExpression.escapedPattern(for: locale.decimalSeparator ?? ".")
         let pattern = "(?<![\\d\\w" + group + "])\\d{1,3}(?:" + group +
@@ -108,7 +121,8 @@ public enum Calculator {
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return input }
         var result = input
         for match in regex.matches(in: input, range: NSRange(input.startIndex..., in: input)).reversed() {
-            guard let range = Range(match.range, in: result) else { continue }
+            guard !argumentSeparators.contains(where: { NSLocationInRange($0, match.range) }),
+                  let range = Range(match.range, in: result) else { continue }
             result.replaceSubrange(range, with: result[range].replacingOccurrences(of: separator, with: ""))
         }
         return result

@@ -256,8 +256,10 @@ enum CalculatorMinorCurrency {
         let target = target.lowercased()
         let source = match[1].lowercased()
         let localDollar = ["CAD", "AUD", "NZD", "SGD", "HKD"].contains(locale.currency?.identifier ?? "") ? locale.currency!.identifier.lowercased() : "usd"
+        // Explicit supported ISO codes are unambiguous in every locale.
+        // The local currency only supplies the default for generic dollar names.
         let defaults: [(Set<String>, Set<String>)] = [
-            ([localDollar, "dollar", "dollars"], ["cent", "cents"]),
+            (["usd", "cad", "aud", localDollar, "dollar", "dollars"], ["cent", "cents"]),
             (["eur", "euro", "euros"], ["euro cent", "euro cents", "cent", "cents"]),
             (["gbp", "pound", "pounds"], ["pence"])
         ]

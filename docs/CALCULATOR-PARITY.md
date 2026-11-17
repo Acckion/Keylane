@@ -19,3 +19,12 @@
 | 性能 | 本地有界解析及独立 ECB 请求 | 本轮仍用本地有界解析。Raycast 公布的性能数字仅适用于它的版本更新。 |
 
 资料：[Raycast 计算器手册](https://manual.raycast.com/calculator) · [Raycast macOS 更新日志](https://www.raycast.com/changelog) · [CSS Color 4](https://www.w3.org/TR/css-color-4/) · [CIAAW 标准原子量](https://ciaaw.org/abridged-atomic-weights.htm) · [NIST 国际单位制](https://www.nist.gov/pml/special-publication-330/sp-330-section-4) · [IANA 时区数据](https://data.iana.org/time-zones/tzdb-2025a/theory.html)。
+
+## PR #156 审查回归
+
+- 显式 ISO 日期加减先走日期解析，避免 `2026-11-17 + 2` 被当作减法得到 `2000`。
+- USD、CAD、AUD 的显式主辅币单位转换不依赖当前地区；泛称 dollar 仍使用本地区默认解释。
+- 普通算术括号继续识别千位分组；函数参数位置的逗号保留分隔含义。需要在函数中输入分组数时，可用独立算术括号，例如 `sum((1,000), 3)`。
+- 百分比单位比较保留原始大小写，区分 MB 与 Mb。
+
+`CalculatorReviewRegressionTests` 覆盖正反日期偏移、三种货币/地区交叉、嵌套括号与函数分隔、小数逗号地区、字节与比特比例。旧基线 `edfbae2` 上 4 组测试产生 21 个断言失败，修复后 4 组通过。此处为解析层回归，不代表安装版跨应用粘贴或物理键盘已经验收。

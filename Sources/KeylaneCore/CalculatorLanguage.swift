@@ -1,12 +1,20 @@
 import Foundation
 
 public enum CalculatorLanguage {
+    private static let isoDateOffset = CalculationPattern(#"\d{4}-\d{2}-\d{2}\s*[+\-]\s*\d+\s*(?:days?|weeks?|months?|years?|hours?|minutes?)?"#)
+
     public static func evaluate(_ query: String, locale: Locale = .current, pixelsPerEm: Double = 16,
                                 now: Date = .now, timeZone: TimeZone = .current) -> String? {
         guard query.utf16.count <= 512 else { return nil }
         let folded = query.folding(options: .widthInsensitive, locale: locale)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let raw = folded.hasPrefix("=") ? folded.dropFirst().trimmingCharacters(in: .whitespaces) : folded
+        // An explicit ISO date with an offset is also valid arithmetic syntax.
+        // Keep it on the date path, including invalid/unsupported date offsets.
+        if Self.isoDateOffset.captures(raw) != nil {
+            return CalculatorDates(now: now, timeZone: timeZone, locale: locale)
+                .evaluate(raw.lowercased(), original: raw)
+        }
         if Calculator.isExpression(folded), let value = Calculator.evaluate(folded, locale: locale) {
             return Calculator.format(value, locale: locale)
         }
@@ -82,7 +90,7 @@ struct CalculatorPhrases {
             }
             return moneyText(value, symbol: amount.symbol, split: match[3])
         }
-        if let match = Self.ratio.captures(text) {
+        if let match = Self.ratio.captures(raw) {
             if let a = number(match[0]), let b = number(match[1]), b != 0 { return decimal(a / b * 100, suffix: "%") }
             if let ratio = CalculatorUnits.ratio(match[0], match[1], locale: locale) { return decimal(ratio * 100, suffix: "%") }
         }
