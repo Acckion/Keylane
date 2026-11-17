@@ -1,14 +1,24 @@
 import AppKit
+import Combine
 import SwiftUI
 
 final class AIChatWindow: NSObject, NSWindowDelegate {
     private let controller: QuickAIController
     private let configuration: AIConfiguration
     private var window: NSWindow?
+    private var appearance: NSAppearance?
+    private var appearanceChanges: AnyCancellable?
 
-    init(controller: QuickAIController, configuration: AIConfiguration) {
+    init(controller: QuickAIController, configuration: AIConfiguration, appearance: AnyPublisher<String, Never>) {
         self.controller = controller
         self.configuration = configuration
+        super.init()
+        appearanceChanges = appearance.removeDuplicates().sink { [weak self] value in
+            let resolved = value == "dark" ? NSAppearance(named: .darkAqua)
+                : value == "light" ? NSAppearance(named: .aqua) : nil
+            self?.appearance = resolved
+            self?.window?.appearance = resolved
+        }
     }
 
     func show(draft: String, restoreLatest: Bool, activation: WindowActivationBehavior, leaveLauncher: () -> Void) {
@@ -19,6 +29,7 @@ final class AIChatWindow: NSObject, NSWindowDelegate {
                                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                 backing: .buffered, defer: false)
             chat.title = "AI Chat"
+            chat.appearance = appearance
             chat.minSize = NSSize(width: 620, height: 350)
             chat.isReleasedWhenClosed = false
             chat.delegate = self

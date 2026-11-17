@@ -14,7 +14,8 @@ enum AIModule {
             .appendingPathComponent("Keylane/AI/history.sqlite")
         let quickAI = QuickAIController(configuration: configuration, runtime: runtime,
                                         history: AIChatHistory(url: historyURL))
-        let chat = AIChatWindow(controller: quickAI, configuration: configuration)
+        let chat = AIChatWindow(controller: quickAI, configuration: configuration,
+                                appearance: model.$appearance.eraseToAnyPublisher())
         let openChat: () -> Void = { [weak model] in
             guard let model, configuration.isAvailable else { return }
             let fromQuickAI = model.pageID == QuickAILauncher.pageID
