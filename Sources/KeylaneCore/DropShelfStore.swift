@@ -33,6 +33,7 @@ public final class DropShelfStore {
         }
     }
     public private(set) var shelves: [Shelf] = []
+    public var didChange: (() -> Void)?
     public let directory: URL
     private let fm = FileManager.default
     public var assetsDirectory: URL { directory.appendingPathComponent("Assets", isDirectory: true) }
@@ -83,6 +84,9 @@ public final class DropShelfStore {
             if let items { shelves[index].items.removeAll { items.contains($0.id) } }
             else { shelves[index].items.removeAll(); shelves[index].pinned = false }
         }
+    }
+    public func deleteShelf(_ id: UUID) throws {
+        try change { shelves.removeAll { $0.id == id } }
     }
     public func reorder(_ id: UUID, item: UUID, before: UUID?) throws {
         try change {
@@ -192,5 +196,6 @@ public final class DropShelfStore {
             try data.write(to: url, options: .atomic)
             try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch { shelves = old; throw error }
+        didChange?()
     }
 }

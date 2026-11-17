@@ -9,12 +9,68 @@ final class DropShelfController: ObservableObject {
     @Published var keepOpen: Bool { didSet { preferences.set(keepOpen, forKey: "dropShelf.keepOpen") } }
     @Published var shakeEnabled: Bool { didSet { preferences.set(shakeEnabled, forKey: "dropShelf.shake") } }
     @Published var error = ""
+    @Published private(set) var managedShelves: [DropShelfStore.Shelf] = []
+    @Published var selectedShelfID: UUID?
+    @Published var shelfFilter = "all" { didSet { refreshManagement() } }
+    @Published private(set) var managementActive = false
+    func beginManagement(_ query: String) { managementActive = true; searchShelves(query) }
+    func endManagement() { managementActive = false; pendingRemoval = nil; pendingRename = nil }
+    @Published var pendingRemoval: DropShelfStore.Shelf?
+    @Published var pendingRename: DropShelfStore.Shelf?
+    private var managementQuery = ""
+    var openManager: (() -> Void)?
+    var selectedShelf: DropShelfStore.Shelf? { managedShelves.first { $0.id == selectedShelfID } }
+    func searchShelves(_ query: String) { managementQuery = query; refreshManagement() }
+    func refreshManagement() {
+        let terms = managementQuery.split(whereSeparator: \.isWhitespace).map(String.init)
+        let values = (store?.shelves ?? []).filter { shelf in
+            (shelfFilter == "all" || (shelfFilter == "pinned" ? shelf.pinned : !shelf.pinned)) && terms.allSatisfy { term in
+                ([shelf.title] + shelf.items.flatMap { [$0.title, $0.value ?? "", $0.url?.path ?? ""] }).contains { $0.localizedStandardContains(term) }
+            }
+        }
+        let ordered = values.filter(\.pinned) + values.filter { !$0.pinned }
+        if managedShelves != ordered { managedShelves = ordered }
+        if !ordered.contains(where: { $0.id == selectedShelfID }) { selectedShelfID = ordered.first?.id }
+    }
+    func moveShelf(_ delta: Int) {
+        guard !managedShelves.isEmpty else { return }
+        let index = managedShelves.firstIndex { $0.id == selectedShelfID } ?? 0
+        selectedShelfID = managedShelves[min(max(index + delta, 0), managedShelves.count - 1)].id
+    }
+    func openSelectedShelf() { if let id = selectedShelfID { _ = reveal(id) } }
+    func toggleSelectedPin() {
+        guard let shelf = selectedShelf else { return }
+        do { try store?.pin(shelf.id, value: !shelf.pinned); windows[shelf.id]?.refresh() } catch { report(error) }
+    }
+    func removeManagedShelf(_ id: UUID) {
+        guard store?.shelf(id) != nil else { return }
+        windows[id]?.close() // Cancels in-flight imports before removing the record.
+        do { try store?.deleteShelf(id) } catch { report(error) }
+        pendingRemoval = nil
+    }
+    func renameManagedShelf(_ id: UUID, title: String) {
+        guard store?.shelf(id) != nil else { pendingRename = nil; return }
+        do { try store?.rename(id, title: title); windows[id]?.refresh(); pendingRename = nil } catch { report(error) }
+    }
     private let preferences: UserDefaults
     private let directory: URL
     private(set) var store: DropShelfStore?
     private var windows: [UUID: DropShelfWindow] = [:]
     private weak var registry: MenuBarRegistry?
     private var timer: Timer?
+    private var automaticShelves = Set<UUID>()
+    @discardableResult func createForDrag() -> DropShelfWindow? {
+        guard let window = create(activate: false) else { return nil }
+        automaticShelves.insert(window.shelfID)
+        return window
+    }
+    func finishDragActivation() {
+        for id in Array(automaticShelves) {
+            automaticShelves.remove(id)
+            guard let window = windows[id], store?.shelf(id)?.items.isEmpty == true, !window.receivedDrop else { continue }
+            window.close()
+        }
+    }
     private var active = false
     private var performedStartupCleanup = false
     private var lastX: CGFloat?
@@ -43,6 +99,8 @@ final class DropShelfController: ObservableObject {
         guard !active else { return }
         do {
             store = try DropShelfStore(directory: directory)
+            store?.didChange = { [weak self] in self?.refreshManagement() }
+            refreshManagement()
             if !performedStartupCleanup { try store?.collectUnusedAssets(); performedStartupCleanup = true }
         } catch { self.error = error.localizedDescription; return }
         active = true; self.registry = registry
@@ -56,6 +114,7 @@ final class DropShelfController: ObservableObject {
     }
     func stop() {
         active = false; timer?.invalidate(); timer = nil
+        endManagement()
         for window in Array(windows.values) { window.close() }
         windows.removeAll()
         registry?.unregister(owner: "keylane.drop-shelf"); registry = nil
@@ -89,6 +148,7 @@ final class DropShelfController: ObservableObject {
     }
     func closed(_ window: DropShelfWindow) {
         windows.removeValue(forKey: window.shelfID)
+        automaticShelves.remove(window.shelfID)
         do { try store?.remember(window.shelfID, keeping: Set(windows.keys)) } catch { report(error) }
     }
     func clipboardShelf() { _ = create()?.receive(.general) }
@@ -100,6 +160,7 @@ final class DropShelfController: ObservableObject {
     func report(_ failure: Error) { error = failure.localizedDescription }
     private func menu() -> [MenuBarCommand] {
         var commands: [MenuBarCommand] = [
+            .init(title: "管理暂存架", symbol: "tray.full", action: { [weak self] in self?.openManager?() }),
             .init(title: "新建暂存架", symbol: "plus", action: { [weak self] in self?.create() }),
             .init(title: "从剪贴板创建", symbol: "doc.on.clipboard", action: { [weak self] in self?.clipboardShelf() })
         ]
@@ -121,6 +182,7 @@ final class DropShelfController: ObservableObject {
         refreshTick += 1
         if refreshTick % 40 == 0 { windows.values.forEach { $0.refreshFiles() } }
         guard NSEvent.pressedMouseButtons & 1 != 0 else {
+            finishDragActivation()
             lastX = nil; direction = 0; turns = []; shookThisDrag = false; return
         }
         guard shakeEnabled, !shookThisDrag else { return }
@@ -135,7 +197,7 @@ final class DropShelfController: ObservableObject {
         turns = turns.filter { now - $0 < 0.8 }
         if direction != 0 && next != direction { turns.append(now) }
         direction = next
-        if turns.count >= 3 { shookThisDrag = true; create(activate: false) }
+        if turns.count >= 3 { shookThisDrag = true; createForDrag() }
     }
 }
 
@@ -192,14 +254,22 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     let store: DropShelfStore
     weak var controller: DropShelfController?
     let table = DropShelfTable()
+    private let gridTable = DropShelfTable()
+    private let gridPreviews = NSMapTable<NSUUID, DropShelfPreview>.strongToWeakObjects()
+    private let contentScroll = NSScrollView()
+    private let closeControl = NSButton()
+    private let expandedTitle = NSTextField(labelWithString: "")
+    private let sortControl = NSButton()
+    private let viewControl = NSSegmentedControl()
+    private var gridMode = true
+    private var sortMode = 0
+    private let capsule = NSStackView()
     private let status = NSTextField(wrappingLabelWithString: "拖入文件、文件夹、图片、链接或文字")
-    private let titleField = NSTextField(string: "")
-    private let pinButton = NSButton(checkboxWithTitle: "固定", target: nil, action: nil)
-    private let progress = NSProgressIndicator()
     private var batches: [UUID: DropShelfImport] = [:]
     private var rows: [DropShelfStore.Item] = []
     private var heldAccess: [URL] = []
     private var dragItems: [UUID] = []
+    private(set) var receivedDrop = false
     private var receivedSequence: Int?
     private var refreshInProgress = false
     private var internalReorder = false
@@ -212,7 +282,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private var thumbnailKey: String?
     private var thumbnailRequest: QLThumbnailGenerator.Request?
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if firstResponder !== titleField.currentEditor(), event.modifierFlags.contains(.command), key(event) { return true }
+        if event.modifierFlags.contains(.command), key(event) { return true }
         return super.performKeyEquivalent(with: event)
     }
     override var canBecomeKey: Bool { true }
@@ -229,10 +299,17 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         effect.layer?.masksToBounds = true; effect.layer?.borderWidth = 1
         effect.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
         let surface = NSView(); effect.contentView = surface; contentView = effect
-        let closeButton = roundButton(symbol: "xmark", label: "关闭暂存架", action: #selector(closeShelf))
-        configureRound(disclosure, symbol: "chevron.down", label: "展开暂存内容", action: #selector(toggleDetails))
+        configureRound(closeControl, symbol: "xmark", label: "关闭暂存架", action: #selector(closeShelf))
+        configureRound(disclosure, symbol: "chevron.down", label: "展开暂存内容", action: #selector(disclosureAction))
         let spacer = NSView()
-        let top = NSStackView(views: [closeButton, spacer, disclosure]); top.spacing = 4
+        configureRound(sortControl, symbol: "arrow.up.arrow.down", label: "排序", action: #selector(showSortMenu))
+        expandedTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+        viewControl.segmentCount = 2; viewControl.setImage(NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "网格"), forSegment: 0)
+        viewControl.setImage(NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "列表"), forSegment: 1)
+        viewControl.selectedSegment = 0; viewControl.target = self; viewControl.action = #selector(changeViewMode)
+        viewControl.setAccessibilityLabel("内容显示方式")
+        expandedTitle.isHidden = true; sortControl.isHidden = true; viewControl.isHidden = true
+        let top = NSStackView(views: [closeControl, expandedTitle, spacer, sortControl, viewControl, disclosure]); top.spacing = 6
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         filename.target = self; filename.action = #selector(toggleDetails); filename.isBordered = false
         filename.font = .systemFont(ofSize: 12, weight: .medium); filename.lineBreakMode = .byTruncatingMiddle
@@ -244,42 +321,45 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         preview.ended = { [weak self] in self?.finishDrag($0) }
         preview.operations = { [weak controller] in controller?.copyByDefault == true ? .copy : [.copy, .move] }
         preview.shortcut = { [weak self] in self?.key($0) ?? false }
-        titleField.placeholderString = "暂存架名称"; titleField.target = self; titleField.action = #selector(renameShelf)
-        titleField.font = .systemFont(ofSize: 13, weight: .semibold)
-        titleField.setAccessibilityLabel("暂存架名称")
-        pinButton.target = self; pinButton.action = #selector(togglePin)
-        let header = NSStackView(views: [titleField, pinButton]); header.spacing = 10
-        titleField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-        let column = NSTableColumn(identifier: .init("content")); column.title = "内容"; table.addTableColumn(column)
+        let scroll = contentScroll; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
+        let column = NSTableColumn(identifier: .init("content")); column.title = "内容"; column.resizingMask = .autoresizingMask; table.addTableColumn(column); table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.headerView = nil; table.rowHeight = 40; table.style = .fullWidth; table.backgroundColor = .clear
         table.allowsMultipleSelection = true; table.dataSource = self; table.delegate = self
         table.registerForDraggedTypes(DropShelfController.types + [DropShelfController.marker])
         table.setAccessibilityLabel("暂存内容，可拖出到其他应用")
         table.shortcut = { [weak self] event in self?.key(event) ?? false }
-        scroll.documentView = table
-        let copy = NSButton(title: "复制", target: self, action: #selector(copyContents))
-        let paste = NSButton(title: "粘贴", target: self, action: #selector(pasteContents))
-        let clear = NSButton(title: "清空", target: self, action: #selector(clearContents))
-        let cancel = NSButton(title: "取消加载", target: self, action: #selector(cancelImports))
-        progress.style = .spinning; progress.controlSize = .small; progress.isDisplayedWhenStopped = false
-        let buttons = NSStackView(views: [copy, paste, clear, cancel, progress]); buttons.spacing = 6
-        buttons.distribution = .fillProportionally
+        let gridColumn = NSTableColumn(identifier: .init("grid")); gridColumn.resizingMask = .autoresizingMask; gridTable.addTableColumn(gridColumn); gridTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        gridTable.headerView = nil; gridTable.rowHeight = 132; gridTable.backgroundColor = .clear
+        gridTable.style = .fullWidth; gridTable.selectionHighlightStyle = .none
+        gridTable.dataSource = self; gridTable.delegate = self
+        gridTable.registerForDraggedTypes(DropShelfController.types)
+        gridTable.shortcut = { [weak self] in self?.key($0) ?? false }
+        gridTable.setAccessibilityLabel("暂存内容网格")
+        scroll.documentView = gridTable
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
         details.orientation = .vertical; details.alignment = .leading; details.spacing = 10
-        for view in [header, scroll, buttons] { details.addArrangedSubview(view) }
+        let finder = NSButton(title: "在 Finder 中显示", target: self, action: #selector(revealInFinder))
+        finder.image = NSImage(systemSymbolName: "arrowshape.turn.up.right.circle", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 32, weight: .regular))
+        finder.imagePosition = .imageAbove; finder.isBordered = false; finder.font = .systemFont(ofSize: 12)
+        let finderRow = NSStackView(views: [finder, NSView()]); finderRow.alignment = .top
+        finder.heightAnchor.constraint(equalToConstant: 68).isActive = true
+        for view in [scroll, finderRow] { details.addArrangedSubview(view) }
         details.isHidden = true
-        let capsule = NSStackView(views: [NSView(), filename, NSView()]); capsule.distribution = .equalCentering
+        for view in [NSView(), filename, NSView()] { capsule.addArrangedSubview(view) }; capsule.distribution = .equalCentering
         let stack = NSStackView(views: [top, preview, capsule, details, status])
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
         surface.addSubview(stack); stack.translatesAutoresizingMaskIntoConstraints = false
+        let grabber = NSView(); grabber.wantsLayer = true; grabber.layer?.cornerRadius = 2
+        grabber.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
+        surface.addSubview(grabber); grabber.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([grabber.centerXAnchor.constraint(equalTo: surface.centerXAnchor), grabber.topAnchor.constraint(equalTo: surface.topAnchor, constant: 5), grabber.widthAnchor.constraint(equalToConstant: 36), grabber.heightAnchor.constraint(equalToConstant: 4)])
         for view in [top, preview, capsule, status] {
             view.translatesAutoresizingMaskIntoConstraints = false
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         details.translatesAutoresizingMaskIntoConstraints = false
         detailWidth = details.widthAnchor.constraint(equalTo: stack.widthAnchor)
-        for view in [header, scroll, buttons] {
+        for view in details.arrangedSubviews {
             view.translatesAutoresizingMaskIntoConstraints = false
             view.widthAnchor.constraint(equalTo: details.widthAnchor).isActive = true
         }
@@ -294,7 +374,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             filename.heightAnchor.constraint(equalToConstant: 28),
             filename.widthAnchor.constraint(lessThanOrEqualToConstant: 150),
             filename.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
-            scroll.heightAnchor.constraint(equalToConstant: 150)
+            scroll.heightAnchor.constraint(equalToConstant: 155)
         ])
         updateDragOperations(); refresh()
     }
@@ -306,13 +386,12 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     func refresh() {
         let selected = Set(table.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil })
         rows = store.shelf(shelfID)?.items ?? []
-        if firstResponder !== titleField.currentEditor() { titleField.stringValue = store.shelf(shelfID)?.title ?? "暂存架" }
-        pinButton.state = store.shelf(shelfID)?.pinned == true ? .on : .off
-        table.reloadData()
+        if sortMode == 1 { rows.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending } }
+        if sortMode == 2 { rows.sort { $0.kind.rawValue < $1.kind.rawValue } }
+        table.reloadData(); gridTable.reloadData()
         table.selectRowIndexes(IndexSet(rows.indices.filter { selected.contains(rows[$0].id) }), byExtendingSelection: false)
         updateCompactPreview()
-        progress.isHidden = batches.isEmpty
-        if batches.isEmpty { progress.stopAnimation(nil) } else { progress.startAnimation(nil) }
+        expandedTitle.stringValue = contentTitle
     }
     private func configureRound(_ button: NSButton, symbol: String, label: String, action: Selector) {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
@@ -324,26 +403,32 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         button.widthAnchor.constraint(equalToConstant: 32).isActive = true
         button.heightAnchor.constraint(equalToConstant: 32).isActive = true
     }
-    private func roundButton(symbol: String, label: String, action: Selector) -> NSButton {
-        let button = NSButton(); configureRound(button, symbol: symbol, label: label, action: action); return button
-    }
-    @objc private func closeShelf() { close() }
-    @objc private func toggleDetails() {
+    @objc private func closeShelf() { if expanded { toggleDetails() } else { close() } }
+    @objc func toggleDetails() {
         expanded.toggle(); details.isHidden = !expanded; detailWidth?.isActive = expanded
-        disclosure.image = NSImage(systemSymbolName: expanded ? "chevron.up" : "chevron.down", accessibilityDescription: expanded ? "收起暂存内容" : "展开暂存内容")
-        disclosure.setAccessibilityLabel(expanded ? "收起暂存内容" : "展开暂存内容")
+        preview.isHidden = expanded; capsule.isHidden = expanded
+        expandedTitle.isHidden = !expanded; sortControl.isHidden = !expanded; viewControl.isHidden = !expanded
+        closeControl.image = NSImage(systemSymbolName: expanded ? "chevron.backward" : "xmark", accessibilityDescription: nil)
+        closeControl.setAccessibilityLabel(expanded ? "返回收起的暂存架" : "关闭暂存架")
+        disclosure.image = NSImage(systemSymbolName: expanded ? "slider.horizontal.3" : "chevron.down", accessibilityDescription: expanded ? "暂存架设置" : "展开暂存内容")
+        disclosure.setAccessibilityLabel(expanded ? "暂存架设置" : "展开暂存内容")
         resizeCard()
         makeFirstResponder(expanded ? table : preview)
     }
     func focusContents() { makeFirstResponder(expanded ? table : preview) }
     private func resizeCard() {
-        let size = expanded ? NSSize(width: 370, height: 450) : NSSize(width: status.isHidden ? 210 : 246, height: status.isHidden ? 210 : 246)
+        let size = expanded ? NSSize(width: 420, height: 320) : NSSize(width: status.isHidden ? 210 : 246, height: status.isHidden ? 210 : 246)
         setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
     }
     private func updateCompactPreview() {
-        filename.title = rows.isEmpty ? "暂存架" : rows.count == 1 ? rows[0].title : "\(rows.count) 个项目"
+        filename.title = rows.isEmpty ? "暂存架" : rows.count == 1 ? rows[0].title : contentTitle
         filename.toolTip = rows.map(\.title).joined(separator: "\n")
         preview.placeholder.isHidden = !rows.isEmpty
+        let icons = rows.prefix(3).compactMap { item -> NSImage? in
+            guard let url = try? store.resolve(item) else { return NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil) }
+            return NSWorkspace.shared.icon(forFile: url.path)
+        }
+        preview.setBackingImages(icons)
         guard let item = rows.first else { preview.imageView.image = nil; thumbnailKey = nil; return }
         let key = item.id.uuidString + item.title
         guard key != thumbnailKey else { return }
@@ -377,8 +462,115 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         } catch { releaseAccess(); message(error.localizedDescription, failed: true); return [] }
         return items
     }
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    private func gridRow(_ row: Int) -> NSView {
+        let stack = NSStackView(); stack.orientation = .horizontal; stack.spacing = 8; stack.distribution = .fillEqually
+        for index in (row * 3)..<min(row * 3 + 3, rows.count) {
+            let item = rows[index]
+            let icon = DropShelfPreview(frame: NSRect(x: 0, y: 0, width: 110, height: 86))
+            icon.placeholder.isHidden = true
+            gridPreviews.setObject(icon, forKey: item.id as NSUUID)
+            icon.showSelection(table.selectedRowIndexes.contains(index))
+            let url = try? store.resolve(item)
+            let access = url.map(DropShelfFileAccess.init)
+            defer { withExtendedLifetime(access) {} }
+            icon.imageView.image = url.map { NSWorkspace.shared.icon(forFile: $0.path) } ?? NSImage(systemSymbolName: item.kind == .link ? "link" : "doc.text", accessibilityDescription: nil)
+            icon.selected = { [weak self] event in
+                guard let self, let index = self.rows.firstIndex(where: { $0.id == item.id }) else { return }
+                self.table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: event.modifierFlags.contains(.command))
+            }
+            icon.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
+            icon.operations = { [weak self] in self?.controller?.copyByDefault == true ? .copy : [.copy, .move] }
+            icon.begin = { [weak self, weak icon] event in
+                guard let self, let icon else { return [] }
+                do {
+                    let point = icon.convert(event.locationInWindow, from: nil)
+                    let selected = self.selectedItems
+                    let items = try selected.map { value -> NSDraggingItem in
+                        let drag = NSDraggingItem(pasteboardWriter: try self.writer(value))
+                        drag.setDraggingFrame(NSRect(x: point.x - 35, y: point.y - 30, width: 70, height: 60), contents: icon.imageView.image)
+                        return drag
+                    }
+                    self.dragItems = selected.map(\.id)
+                    return items
+                } catch { self.message(error.localizedDescription, failed: true); return [] }
+            }
+            icon.ended = { [weak self] in self?.finishDrag($0) }
+            icon.shortcut = { [weak self] in self?.key($0) ?? false }
+            icon.heightAnchor.constraint(equalToConstant: 86).isActive = true
+            let label = NSTextField(labelWithString: item.title); label.alignment = .center; label.lineBreakMode = .byTruncatingMiddle
+            label.font = .systemFont(ofSize: 12, weight: .medium)
+            let detail = NSTextField(labelWithString: ""); detail.alignment = .center; detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
+            if let url, let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]) {
+                detail.stringValue = values.isDirectory == true ? "文件夹" : values.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "文件"
+            }
+            let tile = NSStackView(views: [icon, label, detail]); tile.orientation = .vertical; tile.spacing = 3; tile.alignment = .centerX
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: 115).isActive = true
+            stack.addArrangedSubview(tile)
+        }
+        while stack.arrangedSubviews.count < 3 { stack.addArrangedSubview(NSView()) }
+        return stack
+    }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        for (index, item) in rows.enumerated() {
+            gridPreviews.object(forKey: item.id as NSUUID)?.showSelection(table.selectedRowIndexes.contains(index))
+        }
+    }
+    private var contentTitle: String {
+        let folders = !rows.isEmpty && rows.allSatisfy { item in
+            guard let url = try? store.resolve(item) else { return false }
+            return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        }
+        return "\(rows.count) 个" + (folders ? "文件夹" : "项目")
+    }
+    @objc private func disclosureAction() { if expanded { showShelfOptions() } else { toggleDetails() } }
+    @objc private func changeViewMode() {
+        gridMode = viewControl.selectedSegment == 0
+        contentScroll.documentView = gridMode ? gridTable : table
+        refresh()
+    }
+    @objc private func showSortMenu() {
+        let menu = NSMenu()
+        for (index, title) in ["原始顺序", "名称", "内容类型"].enumerated() {
+            let item = NSMenuItem(title: title, action: #selector(changeSort(_:)), keyEquivalent: "")
+            item.target = self; item.tag = index; item.state = index == sortMode ? .on : .off; menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: sortControl)
+    }
+    @objc private func changeSort(_ sender: NSMenuItem) { sortMode = sender.tag; refresh() }
+    private func showShelfOptions() {
+        let menu = NSMenu()
+        let entries: [(String, Selector)] = [
+            (store.shelf(shelfID)?.pinned == true ? "取消固定" : "固定暂存架", #selector(pinFromMenu)),
+            ("重命名暂存架…", #selector(renameFromMenu)), ("复制内容", #selector(copyContents)),
+            ("粘贴内容", #selector(pasteContents)), ("清空暂存架", #selector(clearContents)),
+            ("取消加载", #selector(cancelImports)), ("关闭暂存架", #selector(closeFromMenu))
+        ]
+        for (title, selector) in entries { let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self; menu.addItem(item) }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: disclosure)
+    }
+    @objc private func pinFromMenu() {
+        do { try store.pin(shelfID, value: store.shelf(shelfID)?.pinned != true); refresh() } catch { message(error.localizedDescription, failed: true) }
+    }
+    @objc private func closeFromMenu() { close() }
+    @objc private func renameFromMenu() {
+        let alert = NSAlert(); alert.messageText = "重命名暂存架"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
+        let field = NSTextField(string: store.shelf(shelfID)?.title ?? "暂存架"); field.frame.size = NSSize(width: 240, height: 24); alert.accessoryView = field
+        alert.beginSheetModal(for: self) { [weak self] result in
+            guard result == .alertFirstButtonReturn, !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let self else { return }
+            do { try self.store.rename(self.shelfID, title: field.stringValue); self.refresh() } catch { self.message(error.localizedDescription, failed: true) }
+        }
+    }
+    @objc private func revealInFinder() {
+        do {
+            let urls = try selectedItems.compactMap { try store.resolve($0) }
+            for url in urls where url.startAccessingSecurityScopedResource() { heldAccess.append(url) }
+            guard !urls.isEmpty else { message("文字和链接可从复制菜单获取"); return }
+            NSWorkspace.shared.activateFileViewerSelecting(urls)
+        } catch { message(error.localizedDescription, failed: true) }
+    }
+    func numberOfRows(in tableView: NSTableView) -> Int { tableView === gridTable ? (rows.count + 2) / 3 : rows.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if tableView === gridTable { return gridRow(row) }
         let item = rows[row]
         let symbol = item.kind == .image ? "photo" : item.kind == .link ? "link" : item.kind == .text ? "text.alignleft" : "doc"
         let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!)
@@ -388,7 +580,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         tableView.setDropRow(row, dropOperation: .above)
-        return info.draggingSource as? NSTableView === table ? .move : .copy
+        return info.draggingSource as? NSTableView === table ? (sortMode == 0 ? .move : []) : .copy
     }
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
         if info.draggingSource as? NSTableView === table {
@@ -422,7 +614,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         }
         refresh()
         message((promiseAccepted ? "正在接收文件；已加入 \(accepted) 项" : "已加入 \(accepted) 项") + (duplicates > 0 ? "，\(duplicates) 项已存在" : "") + (failures.isEmpty ? "" : "；" + failures.joined(separator: "；")), failed: !failures.isEmpty)
-        return accepted + duplicates > 0 || promiseAccepted
+        let received = accepted + duplicates > 0 || promiseAccepted
+        if isDrag && received { receivedDrop = true }
+        return received
     }
     func receivePromises(_ promises: [DropShelfReceiving]) -> Bool {
         do {
@@ -473,12 +667,6 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         cancelImports()
         do { try store.remove(shelfID); refresh(); message("已清空暂存内容，未删除源文件") }
         catch { message(error.localizedDescription, failed: true) }
-    }
-    @objc private func renameShelf() {
-        do { try store.rename(shelfID, title: titleField.stringValue); refresh() } catch { message(error.localizedDescription, failed: true) }
-    }
-    @objc private func togglePin() {
-        do { try store.pin(shelfID, value: pinButton.state == .on); refresh() } catch { message(error.localizedDescription, failed: true) }
     }
     private var selectedItems: [DropShelfStore.Item] {
         let indexes = table.selectedRowIndexes

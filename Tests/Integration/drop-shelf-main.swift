@@ -89,9 +89,112 @@ window.cancelImports(); drain(0.9)
 expect(shelves.store!.shelf(window.shelfID)!.items.count == 6, "late cancelled callback cannot revive content")
 let incoming = root.appendingPathComponent("Storage/Incoming")
 expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty) == true, "finished and failed promise batches leave no residue")
+let emptyDragShelf = shelves.createForDrag()!
+let populatedDragShelf = shelves.createForDrag()!
+try shelves.store!.addFile(source, to: populatedDragShelf.shelfID)
+populatedDragShelf.refresh()
+let manualEmptyShelf = shelves.create()!
+shelves.finishDragActivation()
+expect(!emptyDragShelf.isVisible, "unused drag-triggered empty shelf closes when drag ends")
+expect(populatedDragShelf.isVisible, "populated drag-triggered shelf remains open")
+expect(manualEmptyShelf.isVisible, "manually opened empty shelf is not auto-closed")
+populatedDragShelf.close(); manualEmptyShelf.close()
+window.toggleDetails()
+expect(window.frame.width > window.frame.height, "expanded shelf uses the wide content layout")
+window.toggleDetails()
+expect(abs(window.frame.width - window.frame.height) < 1, "returning from expanded mode restores square shelf")
+let managed = try shelves.store!.create()
+try shelves.store!.rename(managed, title: "Manager fixture")
+try shelves.store!.addText("searchable payload token", to: managed)
+try shelves.store!.addFile(source, to: managed)
+shelves.searchShelves("payload token")
+expect(shelves.managedShelves.map(\.id) == [managed], "manager searches nested content with all query terms")
+expect(shelves.selectedShelfID == managed, "manager maintains a valid selection")
+shelves.toggleSelectedPin()
+shelves.shelfFilter = "pinned"
+expect(shelves.selectedShelf?.id == managed && shelves.selectedShelf!.pinned, "manager pin and filter update live")
+shelves.renameManagedShelf(managed, title: "Renamed manager fixture")
+expect(shelves.selectedShelf?.title == "Renamed manager fixture", "manager rename refreshes snapshots")
+shelves.searchShelves("unmatched manager query")
+expect(shelves.managedShelves.isEmpty && shelves.selectedShelfID == nil, "empty search clears stale selection")
+shelves.searchShelves("")
+shelves.selectedShelfID = managed
+shelves.removeManagedShelf(managed)
+expect(shelves.store!.shelf(managed) == nil, "manager removes the selected shelf record")
+expect(FileManager.default.fileExists(atPath: source.path), "manager removal preserves source files")
+shelves.shelfFilter = "all"
+shelves.searchShelves("")
+shelves.beginManagement("")
+shelves.pendingRemoval = shelves.selectedShelf
+shelves.pendingRename = shelves.selectedShelf
+shelves.endManagement()
+expect(!shelves.managementActive && shelves.pendingRemoval == nil && shelves.pendingRename == nil, "leaving manager clears drafts and preview activation")
 print("PASS production shelf integration (synthetic pasteboard, not physical drag acceptance)")
 }
 print("FIXTURE_ROOT " + root.path)
+if CommandLine.arguments.contains("--folder-preview") {
+    try shelves.store!.remove(window.shelfID)
+    for name in ["Dev", "Downloads", "Library"] {
+        let folder = fixtures.appendingPathComponent("FolderSamples/" + name, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try shelves.store!.addFile(folder, to: window.shelfID)
+    }
+    window.refresh()
+}
+if CommandLine.arguments.contains("--manager-preview") {
+    precondition(URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath() == root.appendingPathComponent("home").resolvingSymlinksInPath(), "manager fixture requires its isolated home")
+    let previewDelegate = Delegate()
+    let previewModel = previewDelegate.model
+    NSApp.delegate = previewDelegate
+    previewModel.dropShelf.start(registry: previewModel.menuBar)
+    guard let managerStore = previewModel.dropShelf.store else { fatalError(previewModel.dropShelf.error) }
+    for old in managerStore.shelves { try managerStore.deleteShelf(old.id) }
+    let designShelf = try managerStore.create()
+    try managerStore.rename(designShelf, title: "设计素材")
+    try managerStore.addFile(imageURL, to: designShelf)
+    try managerStore.pin(designShelf, value: true)
+    let documentShelf = try managerStore.create()
+    try managerStore.rename(documentShelf, title: "本周资料")
+    try managerStore.addText("页面草稿与待整理的资料", to: documentShelf)
+    try managerStore.addText("https://example.invalid/reference", link: true, to: documentShelf)
+    previewModel.runCommand(.init(rawValue: "drop-shelf-history"), origin: .search)
+    expect(previewModel.pageID == PageID(rawValue: "DropShelfHistory"), "registered manager command opens Launcher page")
+    let previewWindow = LauncherPanel(contentRect: NSRect(x: 100, y: 100, width: 760, height: 470), styleMask: [.borderless], backing: .buffered, defer: false)
+    previewDelegate.window = previewWindow
+    previewWindow.title = "Keylane Shelf Manager — Isolated Preview"
+    previewWindow.isOpaque = false; previewWindow.backgroundColor = .clear
+    let glass = NSGlassEffectView(); glass.style = .regular; glass.cornerRadius = 28
+    let hosted = NSHostingView(rootView: Launcher(model: previewModel))
+    glass.contentView = hosted; previewWindow.contentView = glass
+    previewWindow.orderFrontRegardless()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+    NotificationCenter.default.post(name: .launcherShown, object: nil)
+    for mode in ["dark", "light"] {
+        previewModel.appearance = mode
+        previewWindow.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        hosted.layoutSubtreeIfNeeded()
+        guard let bitmap = hosted.bitmapImageRepForCachingDisplay(in: hosted.bounds) else { fatalError("manager snapshot allocation") }
+        hosted.cacheDisplay(in: hosted.bounds, to: bitmap)
+        var visibleSamples = 0
+        for x in stride(from: 0, to: bitmap.pixelsWide, by: max(1, bitmap.pixelsWide / 25)) {
+            for y in stride(from: 0, to: bitmap.pixelsHigh, by: max(1, bitmap.pixelsHigh / 25)) {
+                if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1 { visibleSamples += 1 }
+            }
+        }
+        expect(visibleSamples > 5, "Launcher manager snapshot contains visible content")
+        try bitmap.representation(using: .png, properties: [:])!.write(to: root.appendingPathComponent("manager-" + mode + ".png"))
+
+    }
+    withExtendedLifetime(previewDelegate) { print("PASS registered Launcher manager mounted in light and dark appearance (visual QA separate)") }
+    if CommandLine.arguments.contains("--manager-interactive") {
+        previewModel.appearance = "dark"
+        previewWindow.appearance = NSAppearance(named: .darkAqua)
+        previewWindow.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        NSApp.run()
+    }
+    previewWindow.close(); previewModel.dropShelf.stop(); previewModel.menuBar.shutdown(); NSApp.delegate = nil
+}
 if CommandLine.arguments.contains("--image-preview") {
     try shelves.store!.remove(window.shelfID)
     try shelves.store!.addFile(imageURL, to: window.shelfID)

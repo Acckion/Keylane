@@ -117,4 +117,22 @@ final class DropShelfTests: XCTestCase {
         }
     }
 
+    func testShelfDeletionNotifiesOnceAndPreservesExternalFiles() throws {
+        try fixture { root, store in
+            var notifications = 0
+            store.didChange = { notifications += 1 }
+            let source = root.appendingPathComponent("manager-source.txt")
+            try Data("source".utf8).write(to: source)
+            let id = try store.create()
+            try store.addFile(source, to: id)
+            try store.pin(id, value: true)
+            let before = notifications
+            try store.deleteShelf(id)
+            XCTAssertEqual(notifications, before + 1)
+            XCTAssertNil(store.shelf(id))
+            XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "source")
+            XCTAssertNil(try DropShelfStore(directory: store.directory).shelf(id))
+        }
+    }
+
 }
