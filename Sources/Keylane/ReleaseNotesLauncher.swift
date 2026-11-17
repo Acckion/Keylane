@@ -53,10 +53,10 @@ final class ReleaseNotesLauncher: ObservableObject {
                              return self.returningToList ? self.query : ""
                          }),
             LauncherPage(id: Self.detailID, placeholder: "", badge: ("更新日志", "doc.text"),
-                         contentPlacement: .form, content: { AnyView(self.detailView) },
+                         contentPlacement: .underChrome, content: { AnyView(self.detailView) },
                          back: back, submit: { if let release = self.detail { self.open(release) } },
                          primaryTitle: { "在浏览器中打开" }, primaryEnabled: { self.detail != nil },
-                         actions: { self.actions(for: self.detail) }, badgeTitle: { self.detail?.tag ?? "更新日志" })
+                         actions: { self.actions(for: self.detail) }, showsSearchField: false, badgeTitle: { self.detail?.tag ?? "更新日志" })
         ]
     }
 
@@ -92,20 +92,21 @@ final class ReleaseNotesLauncher: ObservableObject {
     }
 
     private var detailView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Button(action: back) { Label("返回版本列表", systemImage: "chevron.backward") }
-                .buttonStyle(.plain)
+        ScrollView {
             if let detail {
-                Text(detail.title ?? detail.tag).font(.title2.weight(.semibold))
-                if let date = detail.publishedAt { Text(date, style: .date).foregroundStyle(.secondary) }
-                ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(detail.title ?? detail.tag).font(.title2.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    if let date = detail.publishedAt { Text(date, style: .date).foregroundStyle(.secondary) }
                     ReleaseNotesBody(notes: detail.notes)
-                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.bottom, VisualStyle.launcherEdgeInset)
             }
         }
-        .padding(20)
-        .padding(.bottom, VisualStyle.launcherBottomInset)
+        .launcherScrollInsets()
+        .launcherScrollEdgeFade()
     }
 
     private struct ReleaseNotesList: View {

@@ -71,6 +71,7 @@ struct LauncherPage {
     var primaryEnabled: (() -> Bool)?
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
+    var showsSearchField = true
     var searchDisplay: (() -> AnyView)?
     var enter: ((String) -> String?)?
     var resume: (() -> Void)?
