@@ -11,6 +11,7 @@ struct Launcher: View {
     @State private var selectionQuery = ""
     @State private var pageRevision = 0
     @State private var presentation = LauncherPagePresentation()
+    @State private var pageHistory = LauncherPageHistory()
     @State private var presentedModuleActivation: LauncherModuleRegistry.Activation?
     private var moduleActivation: LauncherModuleRegistry.Activation? {
         model.launcherModules?.activation(forPage: model.pageID)
@@ -20,6 +21,7 @@ struct Launcher: View {
     private var launcherVisible: Bool { presentation.visible }
     private var page: LauncherPage? { model.activeLauncherPage }
     private var showsFileResults: Bool { page?.contentPlacement == .fileResults }
+    private var showsReadingDetail: Bool { page?.contentPlacement == .readingDetail }
     private var showsRecentFiles: Bool {
         showsFileResults && model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -34,7 +36,6 @@ struct Launcher: View {
     private enum Menu { case application, actions, filter, sort }
     @State private var menu: Menu?
     @State private var inlineEmojiTarget: (query: String, range: NSRange)?
-    @State private var escapeMonitor: Any?
     private var actions: Bool { menu == .actions }
     private var appMenu: Bool { menu == .application }
     private var filterOpen: Bool { menu == .filter || menu == .sort }
@@ -165,6 +166,15 @@ struct Launcher: View {
                     Group {
                         switch page.contentPlacement {
                         case .underChrome: content()
+                        case .readingDetail:
+                            ScrollView {
+                                content()
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 20)
+                                    .padding(.bottom, VisualStyle.launcherEdgeInset)
+                            }
+                            .launcherScrollInsets()
+                            .launcherScrollEdgeFade()
                         case .form: content()
                         case .inset, .fileResults:
                             content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
@@ -226,7 +236,7 @@ struct Launcher: View {
                 Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
                 Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             }
-            if page?.showsSearchField == false, menu == nil, primaryActionEnabled {
+            if showsReadingDetail, menu == nil, primaryActionEnabled {
                 Button("", action: run)
                     .keyboardShortcut(.return, modifiers: [])
                     .hidden().accessibilityHidden(true)
@@ -286,12 +296,15 @@ struct Launcher: View {
         .onAppear {
             updatePresentation(visible: (NSApp.delegate as? Delegate)?.window?.isVisible == true)
             focusToken += 1
-            monitorEscapeWithoutSearchField()
+            ((NSApp.delegate as? Delegate)?.window as? LauncherPanel)?.cancelWithoutFocusedView = {
+                guard launcherVisible else { return false }
+                escape()
+                return true
+            }
         }
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
         .onDisappear {
-            if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
-            escapeMonitor = nil
+            ((NSApp.delegate as? Delegate)?.window as? LauncherPanel)?.cancelWithoutFocusedView = nil
             updatePresentation(visible: false)
         }
         .onExitCommand { if !SearchField.isComposing { escape() } }
@@ -312,6 +325,7 @@ struct Launcher: View {
             updatePresentation(visible: true)
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherResetSearch)) { _ in
+            pageHistory = .init()
             mainSearchQuery = ""
             mainSearchSelection = .init()
             mainSearchExpanded = false
@@ -364,6 +378,9 @@ struct Launcher: View {
         let activation = moduleActivation
         let previousActivation = presentedModuleActivation
         let change = presentation.update(page: current, visible: visible, activationID: activation?.id)
+        let restoredQuery = change.previousPage.flatMap { previous in
+            pageHistory.transition(from: previous, to: current, parentOfCurrent: page?.parent, query: model.query)
+        }
         presentedModuleActivation = activation
         if wasVisible != visible {
             if visible {
@@ -409,7 +426,7 @@ struct Launcher: View {
                 model.query = mainSearchQuery
                 model.compactExpanded = mainSearchExpanded
             } else {
-                model.query = ""
+                model.query = restoredQuery ?? ""
             }
         }
 
@@ -420,7 +437,8 @@ struct Launcher: View {
         case .enter:
             if let seed = page?.enter?(model.query) {
                 if showsFileResults { fileType = "all" }
-                model.query = seed
+                // A page can seed a fresh entry. A return keeps the query saved by the host.
+                if restoredQuery == nil { model.query = seed }
             }
             refreshActiveQuery()
         case .resume:
@@ -459,31 +477,18 @@ struct Launcher: View {
             selection.move(by: delta, in: rows, identifiedBy: \.commandID)
         }
     }
-    private func monitorEscapeWithoutSearchField() {
-        guard escapeMonitor == nil else { return }
-        // Read-only pages have no search editor to receive AppKit's Cancel command.
-        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.keyCode == 53,
-                  event.modifierFlags.intersection([.command, .option, .shift, .control]).isEmpty,
-                  let window = (NSApp.delegate as? Delegate)?.window, window.isKeyWindow,
-                  event.window == nil || event.window === window,
-                  page?.showsSearchField == false, menu == nil else { return event }
-            if !event.isARepeat { escape() }
-            return nil
-        }
-    }
-
     private func escape() {
         if inlineEmojiTarget != nil { closeMenus(); return }
         if submenu != nil { dismissSubmenu(); return }
         if rootScriptArguments != nil { cancelRootScriptArguments(); return }
         if argumentTarget != nil { dismissArgumentEditor(); focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
-        else if model.pageID != .root,
-                page?.showsSearchField == false || model.launcherEscapeBehavior == .backOrClose {
-            if let back = page?.back { back() } else { model.pageID = .root }
-        }
-        else { (NSApp.delegate as? Delegate)?.hideLauncher() }
+        else if presentation.page == model.pageID { model.cancelLauncherPage() }
+    }
+
+    private func goBack() {
+        guard presentation.page == model.pageID else { return }
+        model.goBackInLauncher()
     }
 
     private var showsTypeFilter: Bool { showsFileResults || page?.typeFilter != nil }
@@ -496,15 +501,12 @@ struct Launcher: View {
                     .id(script.id)
             } else {
                 if model.pageID != .root {
-                    LauncherBackButton {
-                        if let back = page?.back { back() }
-                        else { model.pageID = .root }
-                    }
+                    LauncherBackButton(action: goBack)
                 }
                 if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
                 if let display = page?.searchDisplay {
                     display().frame(maxWidth: .infinity, alignment: .leading)
-                } else if page?.showsSearchField != false {
+                } else if !showsReadingDetail {
                     SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen && inlineEmojiTarget == nil, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
                                 back: page?.moveHorizontal.map { move in { move(-1) } },
                                 forward: page?.moveHorizontal.map { move in { move(1) } },
@@ -1062,7 +1064,7 @@ struct Launcher: View {
             return
         }
         if let submit = page?.submit { submit(); return }
-        if model.pageID != .root && !showsFileResults { model.pageID = .root; return }
+        if model.pageID != .root && !showsFileResults { goBack(); return }
         if let row = selectedEntry { performRootEntry(row) }
     }
 

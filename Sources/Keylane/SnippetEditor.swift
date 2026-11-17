@@ -4,7 +4,7 @@ import SwiftUI
 
 struct SnippetEditor: View {
     @ObservedObject var controller: SnippetsController
-    let back: () -> Void
+    let model: Model
     @StateObject private var editor = SnippetEditorState()
     @FocusState private var focus: Field?
     @State private var tagText = ""
@@ -14,7 +14,7 @@ struct SnippetEditor: View {
                                   "code", "link", "heart", "book", "person", "checkmark.seal"]
 
     var body: some View {
-        LauncherCreationForm(back: back) {
+        LauncherCreationForm(back: model.goBackInLauncher) {
             Link("文字片段指南", destination: SnippetsModule.guideURL)
                 .font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary).underline()
         } fields: {
@@ -60,8 +60,9 @@ struct SnippetEditor: View {
         }
         .task(id: controller.draft.id) { tagText = controller.draft.tags.joined(separator: ", ") }
         .onExitCommand {
+            guard !SearchField.isComposing else { return }
             if editor.completion != nil { editor.dismiss() }
-            else { back() }
+            else { model.cancelLauncherPage() }
         }
     }
 
@@ -359,7 +360,7 @@ private final class SnippetNativeTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if editor?.key(event) == true { return }
+        if !hasMarkedText(), editor?.key(event) == true { return }
         if event.characters == "{", !hasMarkedText(), selectedRange().length == 0,
            event.modifierFlags.intersection([.command, .control]).isEmpty {
             insertBracePair()

@@ -410,6 +410,17 @@ final class Model: ObservableObject {
         pageID = page
         if origin != .search { (NSApp.delegate as? Delegate)?.revealLauncherDestination() }
     }
+    func goBackInLauncher() {
+        guard pageID != .root else { return }
+        let page = activeLauncherPage
+        if let back = page?.back { back() }
+        else if let parent = page?.parent, launcherModules?.page(parent) != nil { pageID = parent }
+        else { pageID = .root }
+    }
+    func cancelLauncherPage() {
+        if launcherEscapeBehavior.returnsToParent(from: pageID) { goBackInLauncher() }
+        else { (NSApp.delegate as? Delegate)?.hideLauncher() }
+    }
     func launch(_ url: URL) {
         if NSWorkspace.shared.open(url) { (NSApp.delegate as? Delegate)?.hideLauncher() }
         else { error = "无法打开应用，路径可能已经失效。"; discovery.refresh() }
@@ -641,7 +652,17 @@ final class Model: ObservableObject {
 }
 final class LauncherPanel: NSPanel {
     var dragHandler: ((NSEvent) -> Void)?
+    var cancelWithoutFocusedView: (() -> Bool)?
+
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, event.keyCode == 53, isKeyWindow, attachedSheet == nil,
+           event.modifierFlags.intersection([.command, .option, .shift, .control]).isEmpty {
+            if event.isARepeat { return }
+            // Local event monitors have already run. An editor or focused control
+            // still receives AppKit's Cancel command through its normal responder chain.
+            if firstResponder === self || firstResponder == nil,
+               cancelWithoutFocusedView?() == true { return }
+        }
         // Keep a narrow drag area above the hosted search field.
         let point = event.locationInWindow
         if event.type == .leftMouseDown, dragHandler != nil,
