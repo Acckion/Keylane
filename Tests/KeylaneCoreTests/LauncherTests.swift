@@ -62,6 +62,37 @@ final class LauncherTests: XCTestCase {
         XCTAssertEqual(selection.id, inserted)
     }
 
+    func testEscapeBehaviorDependsOnPageAndPreference() {
+        let detail = PageID(rawValue: "release-note-detail")
+        XCTAssertTrue(LauncherEscapeBehavior.backOrClose.returnsToParent(from: detail))
+        XCTAssertFalse(LauncherEscapeBehavior.backOrClose.returnsToParent(from: .root))
+        XCTAssertFalse(LauncherEscapeBehavior.closeWindow.returnsToParent(from: detail))
+        XCTAssertFalse(LauncherEscapeBehavior.closeWindow.returnsToParent(from: .root))
+    }
+
+    func testNestedLauncherPagesRestoreTheirOwnParentQuery() {
+        let list = PageID(rawValue: "list")
+        let detail = PageID(rawValue: "detail")
+        let child = PageID(rawValue: "child")
+        var history = LauncherPageHistory()
+
+        XCTAssertNil(history.transition(from: list, to: detail, parentOfCurrent: list, query: "list filter"))
+        XCTAssertNil(history.transition(from: detail, to: child, parentOfCurrent: detail, query: "detail filter"))
+        XCTAssertEqual(history.transition(from: child, to: detail, parentOfCurrent: list, query: ""), "detail filter")
+        XCTAssertEqual(history.transition(from: detail, to: list, parentOfCurrent: nil, query: ""), "list filter")
+    }
+
+    func testUnrelatedLauncherEntryDoesNotRestoreAnOldQuery() {
+        let list = PageID(rawValue: "list")
+        let detail = PageID(rawValue: "detail")
+        var history = LauncherPageHistory()
+
+        XCTAssertNil(history.transition(from: list, to: detail, parentOfCurrent: list, query: "old filter"))
+        XCTAssertNil(history.transition(from: detail, to: .root, parentOfCurrent: nil, query: ""))
+        XCTAssertNil(history.transition(from: .root, to: detail, parentOfCurrent: list, query: "root filter"))
+        XCTAssertNil(history.transition(from: detail, to: list, parentOfCurrent: nil, query: ""))
+    }
+
     func testPageLifecycleDoesNotLeaveHiddenPageTwice() {
         let files = PageID(rawValue: "files")
         let notes = PageID(rawValue: "notes")

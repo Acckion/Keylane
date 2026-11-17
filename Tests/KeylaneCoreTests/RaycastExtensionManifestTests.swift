@@ -64,6 +64,27 @@ final class RaycastExtensionManifestTests: XCTestCase {
         }
     }
 
+    func testPreferenceDefaultsChooseMacOSValues() throws {
+        let decoder = JSONDecoder()
+        let checkbox = try decoder.decode(RaycastExtensionManifest.Field.self, from:
+            Data(#"{"name":"flag","type":"checkbox","default":{"macOS":false,"Windows":true}}"#.utf8))
+        XCTAssertEqual(checkbox.defaultValue, .bool(false))
+        let text = try decoder.decode(RaycastExtensionManifest.Field.self, from:
+            Data(#"{"name":"text","type":"textfield","default":{"Windows":"windows-only"}}"#.utf8))
+        XCTAssertNil(text.defaultValue)
+    }
+
+    func testPasswordDefaultsAreNeverIncludedInManifestProjection() throws {
+        let field = try JSONDecoder().decode(RaycastExtensionManifest.Field.self, from:
+            Data(#"{"name":"token","type":"password","required":true,"default":"fixture"}"#.utf8))
+        XCTAssertNil(field.defaultValue)
+        XCTAssertFalse(field.accepts(.string("fixture")))
+        let encoded = try JSONEncoder().encode(field)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertNil(json["default"])
+        XCTAssertEqual(json["type"] as? String, "password")
+    }
+
     func testRejectsInvalidCommandEntries() throws {
         try fixture { root in
             try manifest(root, commands: [command("../outside")])

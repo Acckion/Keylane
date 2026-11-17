@@ -1,14 +1,14 @@
 const { AsyncLocalStorage } = require("node:async_hooks");
 
-const maximumSnapshotBytes = 4096;
+const maximumSnapshotBytes = 32 * 1024;
 const maximumEntries = 64;
 const maximumNameBytes = 128;
-const maximumValueBytes = 2048;
+const maximumValueBytes = 16 * 1024;
 const unpairedSurrogate = /[\uD800-\uDFFF]/u;
 const cacheWriteBlock = new AsyncLocalStorage();
-const currentViewInput = Symbol("currentViewInput");
 
 let scope;
+let stateRevision = 0;
 
 function validateString(value, bytes, description) {
   if (typeof value !== "string" || unpairedSurrogate.test(value) || Buffer.byteLength(value) > bytes) {
@@ -32,6 +32,7 @@ function validateSize(entries) {
 }
 
 function configureCache(snapshot, { writable = true } = {}) {
+  for (const pending of scope?.pending.values() ?? []) clearTimeout(pending.timer);
   scope = undefined;
   if (snapshot === undefined) return;
   if (!snapshot || typeof snapshot !== "object") throw new TypeError("Invalid extension cache snapshot");
@@ -51,7 +52,7 @@ function configureCache(snapshot, { writable = true } = {}) {
     if (wireKey(namespace, pair[1]) !== encoded) throw new TypeError("Invalid extension cache entry");
     validateString(data, maximumValueBytes, "cache value");
   }
-  scope = { entries, subscribers: new Map(), writable, changed: false, ordered };
+  scope = { entries, subscribers: new Map(), pending: new Map(), writable, changed: false, ordered };
 }
 
 function setCacheWritesAllowed(allowed) {
@@ -62,14 +63,8 @@ function withCacheWritesBlocked(callback) {
   return cacheWriteBlock.run(true, callback);
 }
 
-function withCurrentViewInput(callback) {
-  const parent = cacheWriteBlock.getStore();
-  return cacheWriteBlock.run(parent === true || parent?.active === false ? true : currentViewInput, callback);
-}
-
 function withCacheWriteLifetime(lifetime, callback) {
-  const parent = cacheWriteBlock.getStore();
-  return cacheWriteBlock.run(parent === true || parent === currentViewInput || parent?.active === false ? parent : lifetime, callback);
+  return cacheWriteBlock.run(cacheWriteBlock.getStore() === true ? true : lifetime, callback);
 }
 
 function cacheAvailable() {
@@ -78,36 +73,36 @@ function cacheAvailable() {
 
 function cacheWritesBlocked() {
   const guard = cacheWriteBlock.getStore();
-  return scope?.writable === false || guard === true || guard === currentViewInput || guard?.active === false;
-}
-
-function cachedQueriesBlocked() {
-  const guard = cacheWriteBlock.getStore();
   return scope?.writable === false || guard === true || guard?.active === false;
 }
 
-function takeCacheSnapshot() {
-  if (!scope?.writable || !scope.changed || cacheWriteBlock.getStore()) return undefined;
-  const snapshot = validateSize(scope.entries);
-  return scope.ordered ? [...scope.entries] : snapshot;
+function hasCacheChanges() {
+  return scope?.writable === true && !cacheWriteBlock.getStore() && (scope.changed || scope.pending.size > 0);
 }
 
-function writeCache(cache, key, data) {
-  if (!cacheAvailable() || cacheWritesBlocked()) return;
-  let encoded;
-  try {
-    encoded = JSON.stringify(data);
-  } catch {
-    // Preserve this run's value when it cannot be represented in the cache.
-    return;
+function cacheStateRevision() {
+  return stateRevision;
+}
+
+function commitCachedState(cache, encoded, pending) {
+  if (scope !== cache || cache.pending.get(encoded) !== pending) return;
+  cache.pending.delete(encoded);
+  // The update was validated in its original write context and belongs to this invocation.
+  if (cache.writable) cacheWriteBlock.exit(() => pending.target.set(pending.key, pending.value));
+}
+
+function takeCacheSnapshot({ flushPending = false } = {}) {
+  if (!scope?.writable || cacheWriteBlock.getStore()) return undefined;
+  if (flushPending) {
+    if (scope.pendingError) throw scope.pendingError;
+    for (const [encoded, pending] of scope.pending) {
+      clearTimeout(pending.timer);
+      commitCachedState(scope, encoded, pending);
+    }
   }
-  if (encoded === undefined || Buffer.byteLength(encoded) > maximumValueBytes) return;
-  try {
-    cache.set(key, encoded);
-  } catch (error) {
-    // Hitting the extension's shared cache budget does not invalidate fresh data.
-    if (!(error instanceof RangeError)) throw error;
-  }
+  if (!scope.changed) return undefined;
+  const snapshot = validateSize(scope.entries);
+  return scope.ordered ? [...scope.entries] : snapshot;
 }
 
 function currentScope(writing = false) {
@@ -133,6 +128,41 @@ function lookupKey(namespace, key) {
 function notify(cache, namespace, key, data) {
   const subscribers = cache.subscribers.get(namespace);
   if (subscribers) for (const callback of [...subscribers]) callback(key, data);
+}
+
+function readCachedState(target, namespace, key) {
+  return currentScope().pending.get(lookupKey(namespace, key))?.value ?? target.get(key);
+}
+
+function writeCachedState(target, namespace, key, value, delay) {
+  const scope = currentScope(true);
+  const encoded = wireKey(namespace, key);
+  const previous = scope.pending.get(encoded);
+  if (!(delay >= 0) || !Number.isFinite(delay)) {
+    target.set(key, value);
+    clearTimeout(previous?.timer);
+    if (scope.pending.delete(encoded)) stateRevision++;
+    return;
+  }
+
+  validateString(value, maximumValueBytes, "cache value");
+  const projected = new Map(scope.entries);
+  for (const [pendingKey, pending] of scope.pending) projected.set(pendingKey, pending.value);
+  projected.set(encoded, value);
+  validateSize(projected);
+
+  clearTimeout(previous?.timer);
+  const pending = { target, key, value };
+  pending.timer = setTimeout(() => {
+    try {
+      commitCachedState(scope, encoded, pending);
+    } catch (error) {
+      scope.pendingError = error;
+    }
+  }, Math.min(delay, 2 ** 31 - 1));
+  pending.timer.unref();
+  scope.pending.set(encoded, pending);
+  stateRevision++;
 }
 
 class Cache {
@@ -196,6 +226,7 @@ class Cache {
     validateSize(entries);
     cache.changed ||= evicted.length > 0 || cache.entries.get(encoded) !== data ||
       (cache.ordered && lastKeyInNamespace(cache.entries, this.#namespace) !== encoded);
+    if (evicted.length || entries.get(encoded) !== cache.entries.get(encoded)) stateRevision++;
     cache.entries = entries;
     for (const removed of evicted) notify(cache, this.#namespace, removed, undefined);
     if (entries.has(encoded)) notify(cache, this.#namespace, key, data);
@@ -205,6 +236,7 @@ class Cache {
     const cache = currentScope(true);
     const removed = cache.entries.delete(lookupKey(this.#namespace, key));
     if (removed) {
+      stateRevision++;
       cache.changed = true;
       notify(cache, this.#namespace, key, undefined);
     }
@@ -215,6 +247,7 @@ class Cache {
     const cache = currentScope(true);
     for (const [encoded] of namespaceEntries(cache.entries, this.#namespace)) {
       cache.entries.delete(encoded);
+      stateRevision++;
       cache.changed = true;
     }
     if (notifySubscribers) notify(cache, this.#namespace, undefined, undefined);
@@ -235,4 +268,5 @@ class Cache {
   }
 }
 
-module.exports = { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCurrentViewInput, withCacheWriteLifetime, cacheAvailable, cacheWritesBlocked, cachedQueriesBlocked, writeCache };
+module.exports = { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCacheWriteLifetime, cacheAvailable, cacheWritesBlocked,
+  hasCacheChanges, cacheStateRevision, readCachedState, writeCachedState };

@@ -1,4 +1,8 @@
 const { existsSync } = require("node:fs");
+const { copyFile, mkdtemp, rm, stat } = require("node:fs/promises");
+const { tmpdir } = require("node:os");
+const { join } = require("node:path");
+const { environment } = require("./environment.cjs");
 const { utilitiesHooksFor } = require("./utilities-hooks.cjs");
 const cacheUtilities = require("./utilities-cache.cjs");
 const deeplinkUtilities = require("./utilities-deeplinks.cjs");
@@ -13,7 +17,30 @@ async function executeSQL(databasePath, query) {
     throw new Error("The database does not exist");
   }
 
-  // The database path is resolved inside this VM, which has no host filesystem mount.
+  try {
+    return readDatabase(databasePath, query);
+  } catch (error) {
+    // SQLite includes extended flags in the high bits of an error code.
+    const code = error.errcode & 0xff;
+    if (code !== 5 && code !== 14) throw error; // SQLITE_BUSY and SQLITE_CANTOPEN
+    const source = await stat(databasePath);
+    if (!source.isFile() || source.size > 64 * 1024 * 1024) throw error;
+    const parent = process.env.KEYLANE_PHASE ? environment.supportPath : tmpdir();
+    const directory = await mkdtemp(join(parent, "sql-snapshot-"));
+    try {
+      const snapshot = join(directory, "database.sqlite");
+      await copyFile(databasePath, snapshot);
+      // Match the utility's best-effort recovery from the main file alone.
+      // Recent writes in a separate WAL may be absent from this snapshot.
+      return readDatabase(snapshot, query);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+}
+
+function readDatabase(databasePath, query) {
+  // Both the original and the recovery snapshot are scoped to the guest.
   const { DatabaseSync } = require("node:sqlite");
   const database = new DatabaseSync(databasePath, { readOnly: true });
   try {

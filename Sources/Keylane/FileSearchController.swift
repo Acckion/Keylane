@@ -63,6 +63,13 @@ final class FileSearchController: ObservableObject {
     private var pendingMerge: DispatchWorkItem?
     private var mergeVersion = 0
     private var watch: FSEventStreamRef?
+    private let eventQueue = DispatchQueue(label: "org.keylane.files.events", qos: .utility)
+    private var watchLifetime: FileScanCancellation?
+    private var pendingEvents: [IndexEventBatch] = []
+    private var pendingEventCount = 0
+    private var processingEvents = false
+    private var recoverEvents = false
+    private static let maxQueuedEvents = 8192
     private var pendingRefresh: DispatchWorkItem?
     private var restored: Set<String> = []
     private var dirtyPaths = Set<String>()
@@ -666,7 +673,7 @@ final class FileSearchController: ObservableObject {
         scanIndex(force: force)
     }
 
-    private func scanIndex(paths: [String]? = nil, force: Bool = false) {
+    private func scanIndex(paths: Set<String>? = nil, force: Bool = false) {
         guard isRunning, options.enabled else { return }
         guard !indexPaused else {
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
@@ -678,6 +685,7 @@ final class FileSearchController: ObservableObject {
         indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []; startWatch()
         writer.async { [weak self] in
             guard let self, let db = self.writeDB, !token.cancelled else { return }
+            let paths = paths.map(Self.coalescedIndexPaths)
             defer { db.releaseCachedPages() }
             let start = Date(); var lastProgress = Date.distantPast; var invalid = 0; var denied: [String] = []; var auto: [AutomaticFileExclusion] = []; var processed = 0
             let homeLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
@@ -866,7 +874,60 @@ final class FileSearchController: ObservableObject {
         return error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)
     }
 
-    private func stopWatch() { pendingRefresh?.cancel(); pendingRefresh = nil; dirtyPaths.removeAll(); needsFullScan = false; if let watch { FSEventStreamStop(watch); FSEventStreamInvalidate(watch); FSEventStreamRelease(watch) }; watch = nil }
+    private static func coalescedIndexPaths(_ paths: Set<String>) -> [String] {
+        // Sorting by the directory prefix keeps every subtree next to its parent.
+        let sorted = paths.map { ($0, $0 == "/" ? "/" : $0 + "/") }.sorted { $0.1 < $1.1 }
+        var targets: [String] = []
+        var parent = ""
+        for (path, prefix) in sorted where targets.isEmpty || !prefix.hasPrefix(parent) {
+            targets.append(path)
+            parent = prefix
+        }
+        return targets
+    }
+
+    private struct IndexEventBatch {
+        let paths: CFArray
+        let flags: [FSEventStreamEventFlags]
+        let date: Date
+    }
+
+    private struct IndexEventConfiguration: Equatable {
+        let options: FileSearchOptions
+        let restored: Set<String>
+        let exclusions: [AutomaticFileExclusion]
+    }
+
+    private struct IndexEventResult {
+        var exclusions: [AutomaticFileExclusion]
+        var churn: [String: (Date, Int)]
+        var paths = Set<String>()
+        var requiresFullScan = false
+    }
+
+    private var eventConfiguration: IndexEventConfiguration {
+        .init(options: authorizedOptions, restored: restored, exclusions: automaticExclusions)
+    }
+
+    private func stopWatch() {
+        watchLifetime?.cancel()
+        watchLifetime = nil
+        pendingEvents.removeAll()
+        pendingEventCount = 0
+        recoverEvents = false
+        processingEvents = false
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
+        dirtyPaths.removeAll()
+        needsFullScan = false
+        if let watch {
+            FSEventStreamStop(watch)
+            FSEventStreamInvalidate(watch)
+            FSEventStreamRelease(watch)
+        }
+        watch = nil
+    }
+
     private func startWatch() {
         let roots = authorizedRoots
         guard watch == nil, watchEnabled, options.enabled, !indexPaused, !roots.isEmpty else { return }
@@ -874,89 +935,158 @@ final class FileSearchController: ObservableObject {
         watch = FSEventStreamCreate(nil, { _, context, count, rawPaths, flags, _ in
             guard let context else { return }
             let owner = Unmanaged<FileSearchController>.fromOpaque(context).takeUnretainedValue()
-            let paths = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue() as! [String]
-            let recovery = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
-            let directories = Set((0..<count).compactMap { index in
-                flags[index] & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0 ? paths[index] : nil
-            })
-            owner.changed(Array(paths.prefix(count)), directories: directories, requiresFullScan: (0..<count).contains { flags[$0] & recovery != 0 })
+            owner.receiveIndexEvents(count: count, rawPaths: rawPaths, flags: flags)
         }, &context, roots as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 2, FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
         if let watch {
             FSEventStreamSetDispatchQueue(watch, .main)
-            if !FSEventStreamStart(watch) {
+            if FSEventStreamStart(watch) {
+                watchLifetime = FileScanCancellation()
+            } else {
                 FSEventStreamInvalidate(watch)
                 FSEventStreamRelease(watch)
                 self.watch = nil
             }
         }
     }
-    private var churn: [String:(Date,Int)] = [:]
-    private func changed(_ paths: [String], directories: Set<String>, requiresFullScan: Bool) {
-        var exclusions = automaticExclusions
-        var newExclusions: Set<String> = []
-        var changedPaths: [String] = []
-        let now = Date()
-        let scopes = authorizedRoots
-        var indexLocations: FileSearchLocation?
-        churn = churn.filter { now.timeIntervalSince($0.value.0) < 60 }
-        for path in paths {
-            if let i = exclusions.firstIndex(where: { path == $0.path || path.hasPrefix($0.path + "/") }) {
-                exclusions[i].events += 1
-                continue
-            }
-            changedPaths.append(path)
-            guard !requiresFullScan,
-                  let directory = FileIndexExclusionPolicy.changeCandidate(
-                      for: path, scopes: scopes, restored: restored, includeHidden: options.includeHidden
-                  )
-            else { continue }
-            if indexLocations == nil {
-                indexLocations = FileSearchLocation(options: authorizedOptions,
-                                                    automaticExclusions: [], restored: restored)
-            }
-            guard indexLocations?.includesIndexChange(at: path, directory: directories.contains(path)) == true else { continue }
-            let previous = churn[directory] ?? (now, 0)
-            let value = now.timeIntervalSince(previous.0) < 60 ? (previous.0, previous.1 + 1) : (now, 1)
-            if value.1 >= 120 {
-                exclusions.append(.init(path: directory, reason: "一分钟内持续变化的构建或缓存目录", events: 0))
-                newExclusions.insert(directory)
-                churn.removeValue(forKey: directory)
-            } else {
-                churn[directory] = value
-            }
+
+    private func receiveIndexEvents(count: Int, rawPaths: UnsafeMutableRawPointer, flags: UnsafePointer<FSEventStreamEventFlags>) {
+        guard !recoverEvents, count > 0 else { return }
+        // The stream owns the flag buffer. Copy it and retain the immutable
+        // path array so path bridging and classification can run off-main.
+        if count <= Self.maxQueuedEvents - pendingEventCount {
+            let paths = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue()
+            pendingEvents.append(.init(paths: paths, flags: Array(UnsafeBufferPointer(start: flags, count: count)), date: Date()))
+            pendingEventCount += count
+        } else {
+            pendingEvents.removeAll()
+            pendingEventCount = 0
+            recoverEvents = true
         }
-        if exclusions != automaticExclusions {
-            automaticExclusions = exclusions
-            saveAutomatic()
-        }
-        let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
-        let targets = changedPaths.map { path in
-            let url = URL(fileURLWithPath: path)
-            guard options.useIgnoreFiles else { return path }
-            if [".gitignore", ".ignore", ".rayignore"].contains(url.lastPathComponent) { return url.deletingLastPathComponent().path }
-            if path.hasSuffix("/.git/info/exclude") { return String(path.dropLast("/.git/info/exclude".count)) }
-            return path
-        }
-        let relevant = targets.filter { path in
-            guard options.roots.contains(where: { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }) else { return false }
-            if !options.includeHidden && path.split(separator:"/").contains(where:{ $0.hasPrefix(".") }) { return false }
-            if path == library || path.hasPrefix(library + "/") {
-                guard options.roots.contains(where:{ ($0 == library || $0.hasPrefix(library + "/")) && (path == $0 || path.hasPrefix($0 + "/")) }) else { return false }
-            }
-            return !automaticExclusions.contains { FileSearchLocation.contains(path, in: $0.path) }
-                && !options.excludedPaths.contains { FileSearchLocation.contains(path, in: $0) }
-                && !options.ignorePatterns.contains { FileSearchRules.glob($0,matches:path) }
-        }
-        dirtyPaths.formUnion(relevant)
-        // Purge newly excluded subtrees even though their own events are filtered above.
-        dirtyPaths.formUnion(newExclusions.filter { path in
-            options.roots.contains { path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }
-        })
-        if requiresFullScan || dirtyPaths.count > 256 {
+        processPendingEvents()
+    }
+
+    private var churn: [String: (Date, Int)] = [:]
+
+    private func processPendingEvents() {
+        guard let lifetime = watchLifetime, !processingEvents else { return }
+        if recoverEvents {
+            recoverEvents = false
             needsFullScan = true
             dirtyPaths.removeAll()
+            scheduleRefresh()
         }
-        scheduleRefresh()
+        guard !pendingEvents.isEmpty else { return }
+        let batches = pendingEvents
+        let count = pendingEventCount
+        let config = eventConfiguration
+        let churn = churn
+        pendingEvents = []
+        pendingEventCount = 0
+        processingEvents = true
+        eventQueue.async { [weak self] in
+            guard let result = Self.classifyEvents(batches, configuration: config, churn: churn, lifetime: lifetime) else { return }
+            DispatchQueue.main.async {
+                guard let self, self.watchLifetime === lifetime else { return }
+                self.processingEvents = false
+                if config == self.eventConfiguration {
+                    self.churn = result.churn
+                    if self.automaticExclusions != result.exclusions {
+                        self.automaticExclusions = result.exclusions
+                        self.saveAutomatic()
+                    }
+                    if result.requiresFullScan {
+                        self.needsFullScan = true
+                    }
+                    if !self.needsFullScan {
+                        self.dirtyPaths.formUnion(result.paths)
+                        self.needsFullScan = self.dirtyPaths.count > Self.maxQueuedEvents
+                    }
+                    if self.needsFullScan { self.dirtyPaths.removeAll() }
+                    self.scheduleRefresh()
+                } else if !self.recoverEvents {
+                    // An exclusion, grant, or restore changed while filtering.
+                    // Replay the batch in order using the new rules.
+                    if count <= Self.maxQueuedEvents - self.pendingEventCount {
+                        self.pendingEvents = batches + self.pendingEvents
+                        self.pendingEventCount += count
+                    } else {
+                        self.pendingEvents.removeAll()
+                        self.pendingEventCount = 0
+                        self.recoverEvents = true
+                    }
+                }
+                self.processPendingEvents()
+            }
+        }
+    }
+
+    private static func classifyEvents(_ batches: [IndexEventBatch], configuration: IndexEventConfiguration,
+                                       churn: [String: (Date, Int)], lifetime: FileScanCancellation) -> IndexEventResult? {
+        let options = configuration.options
+        var result = IndexEventResult(exclusions: configuration.exclusions, churn: churn)
+        let ignores = FileSearchRules.pathFilter(options.ignorePatterns)
+        let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
+        let recovery = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
+            | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
+            | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
+        for batch in batches {
+            guard !lifetime.cancelled else { return nil }
+            let paths = batch.paths as! [String]
+            let requiresFullScan = batch.flags.contains { $0 & recovery != 0 }
+            result.requiresFullScan = result.requiresFullScan || requiresFullScan
+            result.churn = result.churn.filter { batch.date.timeIntervalSince($0.value.0) < 60 }
+            var indexLocations: FileSearchLocation?
+            var targets = Set<String>()
+            var newExclusions = Set<String>()
+            for (path, flags) in zip(paths, batch.flags) {
+                guard !lifetime.cancelled else { return nil }
+                if let i = result.exclusions.firstIndex(where: { FileSearchLocation.contains(path, in: $0.path) }) {
+                    result.exclusions[i].events += 1
+                    continue
+                }
+                targets.insert(options.useIgnoreFiles ? indexEventTarget(path) : path)
+                guard !requiresFullScan, let directory = FileIndexExclusionPolicy.changeCandidate(
+                    for: path, scopes: options.roots, restored: configuration.restored, includeHidden: options.includeHidden
+                ) else { continue }
+                if indexLocations == nil {
+                    indexLocations = FileSearchLocation(options: options, automaticExclusions: [], restored: configuration.restored)
+                }
+                let isDirectory = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0
+                guard indexLocations?.includesIndexChange(at: path, directory: isDirectory) == true else { continue }
+                let previous = result.churn[directory] ?? (batch.date, 0)
+                if previous.1 + 1 >= 120 {
+                    result.exclusions.append(.init(path: directory, reason: "一分钟内持续变化的构建或缓存目录", events: 0))
+                    newExclusions.insert(directory)
+                    result.churn.removeValue(forKey: directory)
+                } else {
+                    result.churn[directory] = (previous.0, previous.1 + 1)
+                }
+            }
+            guard !result.requiresFullScan else { continue }
+            for path in targets {
+                guard !lifetime.cancelled else { return nil }
+                guard options.roots.contains(where: { FileSearchLocation.contains(path, in: $0) }) else { continue }
+                if !options.includeHidden && path.split(separator: "/").contains(where: { $0.hasPrefix(".") }) { continue }
+                if FileSearchLocation.contains(path, in: library),
+                   !options.roots.contains(where: { FileSearchLocation.contains($0, in: library) && FileSearchLocation.contains(path, in: $0) }) { continue }
+                if result.exclusions.contains(where: { FileSearchLocation.contains(path, in: $0.path) })
+                    || options.excludedPaths.contains(where: { FileSearchLocation.contains(path, in: $0) })
+                    || ignores(path, URL(fileURLWithPath: path).lastPathComponent) { continue }
+                result.paths.insert(path)
+            }
+            // Purge newly excluded subtrees even though their own events were filtered above.
+            result.paths.formUnion(newExclusions)
+        }
+        return result
+    }
+
+    private static func indexEventTarget(_ path: String) -> String {
+        let url = URL(fileURLWithPath: path)
+        if [".gitignore", ".ignore", ".rayignore"].contains(url.lastPathComponent) {
+            return url.deletingLastPathComponent().path
+        }
+        if path.hasSuffix("/.git/info/exclude") { return String(path.dropLast("/.git/info/exclude".count)) }
+        return path
     }
 
     private func scheduleRefresh() {
@@ -966,13 +1096,9 @@ final class FileSearchController: ObservableObject {
             self.pendingRefresh = nil
             guard !self.indexing else { return }
             if self.needsFullScan { self.startIndex(); return }
-            let paths = self.dirtyPaths.sorted()
+            let paths = self.dirtyPaths
             self.dirtyPaths.removeAll()
-            var targets: [String] = []
-            for path in paths where !targets.contains(where: { path.hasPrefix($0 == "/" ? "/" : $0 + "/") }) {
-                targets.append(path)
-            }
-            if !targets.isEmpty { self.scanIndex(paths: targets) }
+            if !paths.isEmpty { self.scanIndex(paths: paths) }
         }
         pendingRefresh = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)

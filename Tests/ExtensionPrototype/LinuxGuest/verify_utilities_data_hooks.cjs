@@ -106,3 +106,28 @@ test("useSQL reads a guest database and preserves read-only validation", async (
     assert.match((await hookSnapshot(() => useSQL(join(directory, "missing"), "SELECT 1"))).error, /does not exist/);
   });
 });
+
+test("executeSQL recovers checkpointed guest data when an exclusive writer locks the database", async () => {
+  await withFixtures(async (directory) => {
+    const file = join(directory, "locked.sqlite");
+    const writer = new DatabaseSync(file);
+    try {
+      writer.exec("CREATE TABLE samples (name TEXT); INSERT INTO samples VALUES ('已提交');");
+      writer.exec("BEGIN EXCLUSIVE; INSERT INTO samples VALUES ('未提交');");
+      const independent = new DatabaseSync(file, { readOnly: true });
+      try {
+        assert.throws(() => independent.prepare("SELECT * FROM samples").all(), /locked/);
+      } finally {
+        independent.close();
+      }
+      assert.deepEqual((await executeSQL(file, "SELECT * FROM samples")).map((row) => ({ ...row })), [{ name: "已提交" }]);
+      assert.deepEqual(await hookSnapshot(() => useSQL(file, "SELECT name FROM samples")), {
+        data: [{ name: "已提交" }], isLoading: false, permissionView: null,
+      });
+      assert.equal(writer.prepare("SELECT count(*) AS total FROM samples").get().total, 2);
+      writer.exec("ROLLBACK");
+    } finally {
+      writer.close();
+    }
+  });
+});

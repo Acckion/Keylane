@@ -11,7 +11,7 @@ enum ModuleArtwork {
         "files": "file-search", "screenshots": "screenshots",
         "clipboard": "clipboard-history", "calendar": "calendar", "shortcuts": "shortcuts",
         "links": "quicklinks", "script-commands": "script-commands",
-        "keylane.calculator": "calculator", "keylane.system-tools": "system-actions",
+        "keylane.calculator": "calculator", "keylane.system": "system-actions",
         "keylane.app-utilities": "keylane-tools", "keylane.navigation": "navigation",
         "keylane.contacts": "contacts", "keylane.dictionary": "dictionary", "keylane.emoji": "emoji",
         "keylane.apple-notes": "notes", "keylane.window-management": "window-management",

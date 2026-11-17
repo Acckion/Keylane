@@ -120,8 +120,10 @@ enum SnippetsModule {
             id: editID, placeholder: "", badge: ("创建文字片段", symbol),
             contentPlacement: .form,
             content: { [weak model] in
-                AnyView(SnippetEditor(controller: snippets) { model?.pageID = listID })
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(SnippetEditor(controller: snippets, model: model))
             },
+            parent: listID,
             submit: save, shortcutSubmit: save, primaryTitle: { "保存片段" },
             badgeTitle: { snippets.entries.contains { $0.id == snippets.draft.id } ? "编辑文字片段" : "创建文字片段" }
         )

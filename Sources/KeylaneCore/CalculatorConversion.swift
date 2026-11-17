@@ -1,6 +1,8 @@
 import Foundation
 
 public struct CalculatorConversion {
+    private static let currencyShorthand = CalculationPattern(#"([a-z]{3})\s*([+\-]?\d+(?:[.,]\d+)?)\s*([kmbt])?\s+(?:to|in)\s+(.+)"#)
+    private static let conversion = CalculationPattern(#"\s*=?\s*([+\-−]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([^\d\s][^\d]*?)\s*(?:\bto\b|\bin\b|换算成|换成|转换为|转为|转成|转|到|=|→)\s*([^\d]+?)\s*"#)
     public let amount: Double
     public let source: String
     public let target: String
@@ -8,24 +10,32 @@ public struct CalculatorConversion {
 
     public init?(_ query: String, locale: Locale = .current) {
         guard query.utf16.count <= 512 else { return nil }
-        let normalized = Calculator.decimalInput(query.folding(options: .widthInsensitive, locale: locale), locale: locale)
-        let pattern = #"^\s*=?\s*([+\-−]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([^\d\s][^\d]*?)\s*(?:\bto\b|\bin\b|换算成|换成|转换为|转为|转成|转|到|=|→)\s*([^\d]+?)\s*$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-              let match = regex.firstMatch(in: normalized, range: NSRange(normalized.startIndex..., in: normalized)),
-              let number = Range(match.range(at: 1), in: normalized),
-              let from = Range(match.range(at: 2), in: normalized),
-              let to = Range(match.range(at: 3), in: normalized),
-              let amount = Double(normalized[number].replacingOccurrences(of: "−", with: "-")), amount.isFinite else { return nil }
+        let folded = query.folding(options: .widthInsensitive, locale: locale).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let match = Self.currencyShorthand.captures(folded),
+           Self.currencyCode(match[0]) != nil, Self.currencyCode(match[3]) != nil,
+           let value = Calculator.evaluate(match[1], locale: locale) {
+            let scales: [String: Double] = ["k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12]
+            amount = value * (scales[match[2].lowercased()] ?? 1)
+            guard amount.isFinite else { return nil }
+            source = match[0]
+            target = match[3]
+            self.locale = locale
+            return
+        }
+        let normalized = Calculator.decimalInput(Calculator.groupingInput(folded, locale: locale), locale: locale)
+        guard let match = Self.conversion.captures(normalized),
+              let amount = Double(match[0].replacingOccurrences(of: "−", with: "-")), amount.isFinite else { return nil }
         self.amount = amount
         self.locale = locale
-        self.source = normalized[from].trimmingCharacters(in: .whitespaces)
-        self.target = normalized[to].trimmingCharacters(in: .whitespaces)
+        self.source = match[1].trimmingCharacters(in: .whitespaces)
+        self.target = match[2].trimmingCharacters(in: .whitespaces)
     }
 
     public var unitResult: String? {
         guard let from = Self.units[source.lowercased()], let to = Self.units[target.lowercased()],
               type(of: from) == type(of: to) else { return nil }
-        let value = Measurement(value: amount, unit: from).converted(to: to).value
+        let value = CalculatorUnits.exactAmount(amount, from: source, to: target)
+            ?? Measurement(value: amount, unit: from).converted(to: to).value
         guard value.isFinite else { return nil }
         return Calculator.format(value, locale: locale) + " " + to.symbol
     }
@@ -44,7 +54,12 @@ public struct CalculatorConversion {
     private static let currencyAliases = [
         "美元": "USD", "美金": "USD", "人民币": "CNY", "欧元": "EUR", "英镑": "GBP",
         "日元": "JPY", "港币": "HKD", "港元": "HKD", "澳元": "AUD", "加元": "CAD",
-        "韩元": "KRW", "新加坡元": "SGD", "瑞士法郎": "CHF"
+        "韩元": "KRW", "新加坡元": "SGD", "瑞士法郎": "CHF",
+        "won": "KRW", "korean won": "KRW", "south korean won": "KRW", "rupiah": "IDR", "indonesian rupiah": "IDR",
+        "zl": "PLN", "zł": "PLN", "zloty": "PLN", "złoty": "PLN", "polish zloty": "PLN",
+        "euro": "EUR", "euros": "EUR", "us dollar": "USD", "us dollars": "USD", "american dollars": "USD",
+        "pound sterling": "GBP", "british pounds": "GBP", "japanese yen": "JPY", "yen": "JPY",
+        "chinese yuan": "CNY", "yuan": "CNY", "canadian dollars": "CAD", "australian dollars": "AUD"
     ]
     private static let units: [String: Dimension] = {
         let entries: [(Dimension, [String])] = [

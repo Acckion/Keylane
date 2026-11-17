@@ -1,5 +1,7 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const { randomBytes } = require("node:crypto");
+const { deflateRawSync } = require("node:zlib");
 const { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked } = require("./cache-api.cjs");
 const { useCachedState, withCache } = require("./utilities-cache.cjs");
 
@@ -67,12 +69,12 @@ test("Cache wire keys preserve separate Unicode spellings across Swift dictionar
 test("Cache rejects malformed or oversize data atomically and blocks writes during sensitive actions", () => {
   configureCache({});
   const cache = new Cache();
-  cache.set("💾", "x".repeat(2048));
+  cache.set("💾", "x".repeat(16384));
   const original = takeCacheSnapshot();
   assert.throws(() => cache.set("bad", 7), /cache value/);
   assert.throws(() => cache.set("bad", "\uD800"), /cache value/);
   assert.throws(() => cache.set("x".repeat(129), "bad"), /cache key/);
-  assert.throws(() => cache.set("over", "x".repeat(2048)), /size limit/);
+  assert.throws(() => cache.set("over", "x".repeat(16384)), /size limit/);
   assert.deepEqual(takeCacheSnapshot(), original);
   setCacheWritesAllowed(false);
   assert.throws(() => cache.set("secret", "confidential"), /unavailable/);
@@ -197,31 +199,183 @@ test("Cache subscriptions register and unsubscribe independently", () => {
   assert.deepEqual(events, [["a", "A"], ["a", "A"], ["a", undefined], [undefined, undefined]]);
 });
 
-test("withCache returns successful results even when they cannot be persisted", async () => {
-  configureCache({});
-  const oversized = "x".repeat(2048);
-  assert.equal(await withCache(async () => oversized)(), oversized);
-  const circular = {};
-  circular.self = circular;
-  assert.equal(await withCache(async () => circular)(), circular);
-  assert.equal(takeCacheSnapshot(), undefined);
+test("reviewed no-view commands load cache before execution and stage only completed writes", async (t) => {
+  const api = require("./raycast-api.cjs");
+  const baseline = [['["shared","view"]', "V"]];
+  const updates = [];
+  let allowed = true;
+  t.mock.method(api, "request", async (capability, text) => {
+    if (capability === "preferences.read") {
+      return JSON.stringify({ preferences: { defaultAction: "copy" }, cache: allowed ? baseline : undefined });
+    }
+    assert.equal(capability, "cache.commit");
+    updates.push(JSON.parse(text));
+    return "";
+  });
+  await api.loadPreferences();
+  await api.runNoViewCommand(() => {
+    const cache = new api.Cache({ namespace: "shared" });
+    assert.equal(cache.get("view"), "V");
+    cache.set("command", "C");
+  });
+  assert.deepEqual(updates, [[...baseline, ['["shared","command"]', "C"]]]);
 
-  const occupied = new Cache({ namespace: "other" });
-  occupied.set("one", "x".repeat(2000));
-  occupied.set("two", "x".repeat(2000));
-  const before = takeCacheSnapshot();
-  assert.equal(await withCache(async () => "small result")(), "small result");
-  assert.deepEqual(takeCacheSnapshot(), before);
-  const failure = new Error("operation failed");
-  await assert.rejects(withCache(async () => { throw failure; })(), (error) => error === failure);
-  assert.deepEqual(takeCacheSnapshot(), before);
+  await api.loadPreferences();
+  await assert.rejects(api.runNoViewCommand(() => {
+    new api.Cache().set("failed", "ignore");
+    throw new Error("Command failed");
+  }), /Command failed/);
+  assert.equal(updates.length, 1);
+
+  allowed = false;
+  await api.loadPreferences();
+  await api.runNoViewCommand(() => assert.throws(() => new api.Cache().get("view"), /Cache is unavailable/));
+  assert.equal(updates.length, 1);
 });
 
-test("withCache runs without persisting when storage is read-only or unavailable", async () => {
-  const cached = withCache(async () => "computed");
-  configureCache({});
-  assert.equal(await withCacheWritesBlocked(() => cached()), "computed");
+test("withCache hashes argument types and restores structured results from a new cache scope", async () => {
+  let calls = 0;
+  async function compute() {
+    return { sequence: ++calls, when: new Date("2026-11-16T00:00:00Z"), bytes: Buffer.from([1, 2, 3]),
+      values: new Map([["flags", new Set([undefined, NaN])]]) };
+  }
+  configureCache([]);
+  const cached = withCache(compute);
+  const plain = { a: undefined, b: new Date("2026-11-16T00:00:00Z") };
+  const original = await cached(plain);
+  assert.equal((await cached(null)).sequence, 2);
+  assert.equal((await cached(undefined)).sequence, 3);
+  assert.equal((await cached({ b: "2026-11-16T00:00:00.000Z" })).sequence, 4);
+  const cycle = {};
+  cycle.self = cycle;
+  assert.equal((await cached(cycle)).sequence, 5);
+  const anotherCycle = {};
+  anotherCycle.self = anotherCycle;
+  assert.equal((await cached(anotherCycle)).sequence, 5);
+  configureCache(takeCacheSnapshot());
+  assert.deepEqual(await withCache(compute)({ b: plain.b, a: undefined }), original);
+  assert.equal(calls, 5);
+});
+
+test("withCache returns fresh results when writing is blocked or the result exceeds storage", async () => {
+  let calls = 0;
+  async function compute(size) { return { order: ++calls, bytes: randomBytes(size) }; }
+  configureCache([]);
+  const cached = withCache(compute);
+  assert.equal((await withCacheWritesBlocked(() => cached(1))).order, 1);
   assert.equal(takeCacheSnapshot(), undefined);
-  configureCache(undefined);
-  assert.equal(await cached(), "computed");
+  assert.equal((await cached(20_000)).order, 2);
+  assert.equal(takeCacheSnapshot(), undefined);
+});
+
+test("withCache compresses larger structured results and bounds their decoding", async () => {
+  let calls = 0;
+  async function compute() {
+    return {
+      sequence: ++calls, when: new Date("2026-11-16T00:00:00Z"),
+      page: Array.from({ length: 800 }, (_, id) => ({ id, text: "重复的分页内容" })),
+    };
+  }
+  configureCache([]);
+  const original = await withCache(compute)("page");
+  const [[key, encoded]] = takeCacheSnapshot();
+  const entry = JSON.parse(encoded);
+  assert.equal(entry.encoding, "deflate-raw");
+  assert.ok(encoded.length < 16 * 1024);
+  configureCache([[key, encoded]]);
+  assert.deepEqual(await withCache(compute)("page"), original);
+  assert.equal(calls, 1);
+
+  for (const patch of [
+    { encoding: "unknown" },
+    { payload: "invalid" },
+    { payload: deflateRawSync(Buffer.alloc(1024 * 1024 + 1)).toString("base64") },
+  ]) {
+    configureCache([[key, JSON.stringify({ ...entry, ...patch })]]);
+    assert.equal((await withCache(compute)("page")).sequence, calls);
+    assert.equal(JSON.parse(takeCacheSnapshot()[0][1]).encoding, "deflate-raw");
+  }
+  assert.equal(calls, 4);
+});
+
+test("useCachedState shares optimistic state, coalesces writes, and flushes on successful completion", async () => {
+  configureCache({});
+  const config = { cacheNamespace: "settings", cacheWriteDebounce: 25 };
+  const cache = new Cache({ namespace: "settings" });
+  const calls = [];
+  cache.subscribe((...args) => calls.push(args));
+  const [, set] = useCachedState("counter", 0, config);
+  set((value) => value + 1);
+  set((value) => value + 1);
+  assert.equal(useCachedState("counter", 0, config)[0], 2);
+  assert.equal(cache.get("counter"), undefined);
+  assert.equal(takeCacheSnapshot(), undefined);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(cache.get("counter"), "2");
+  assert.deepEqual(calls, [["counter", "2"]]);
+
+  set((value) => value + 1);
+  assert.throws(() => withCacheWritesBlocked(() => set(5)), /unavailable/);
+  assert.equal(cache.get("counter"), "2");
+  const snapshot = takeCacheSnapshot({ flushPending: true });
+  assert.deepEqual(calls, [["counter", "2"], ["counter", "3"]]);
+  configureCache(snapshot);
+  assert.equal(useCachedState("counter", 0, config)[0], 3);
+  assert.equal(useCachedState("counter", 0)[0], 0);
+});
+
+test("a pending useCachedState write cannot escape its invocation or overwrite a newer immediate update", async () => {
+  configureCache({});
+  const [, old] = useCachedState("state", 0, { cacheWriteDebounce: 5 });
+  old(1);
+  const [, immediate] = useCachedState("state", 0);
+  immediate(2);
+  const snapshot = takeCacheSnapshot({ flushPending: true });
+  const [, abandoned] = useCachedState("state", 0, { cacheWriteDebounce: 5 });
+  abandoned(3);
+  configureCache(snapshot);
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(useCachedState("state", 0)[0], 2);
+  assert.equal(takeCacheSnapshot({ flushPending: true }), undefined);
+});
+
+test("useCachedState restores Date and Buffer while preserving literal strings and legacy JSON", () => {
+  configureCache({});
+  new Cache().set("legacy", JSON.stringify("~keylane:date:2026-11-16T03:00:00Z"));
+  const value = {
+    date: new Date("2026-11-16T03:00:00Z"),
+    payloads: [Buffer.from([0, 1, 255]), "~keylane:buffer:AAE="],
+  };
+  const config = { cacheWriteDebounce: 100 };
+  const [, update] = useCachedState("new", null, config);
+  update(value);
+  assert.deepEqual(useCachedState("new", null, config)[0], value);
+  configureCache(takeCacheSnapshot({ flushPending: true }));
+  assert.deepEqual(useCachedState("new")[0], value);
+  assert.equal(useCachedState("legacy")[0], "~keylane:date:2026-11-16T03:00:00Z");
+});
+
+test("large guest cache snapshots use bounded chunks independent of the view reply", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const entries = [['["transfer","data"]', "中".repeat(5000)]];
+  const data = Buffer.from(JSON.stringify(entries));
+  const received = [];
+  const request = t.mock.method(broker, "request", async (capability, payload) => {
+    if (capability === "cache.readChunk") {
+      const offset = Number(payload);
+      return data.subarray(offset, offset + 8192).toString("base64");
+    }
+    assert.equal(capability, "cache.writeChunk");
+    received.push(payload);
+    return "";
+  });
+  assert.deepEqual(await broker.readCache({ cacheSnapshotBytes: data.length }), entries);
+  await broker.commitCache(entries, { legacy: true });
+  assert.equal(received.pop(), "");
+  assert.equal(received.length, 2);
+  assert.deepEqual(Buffer.concat(received.map((chunk) => Buffer.from(chunk, "base64"))), data);
+
+  request.mock.mockImplementation(async () => "AA==");
+  await assert.rejects(broker.readCache({ cacheSnapshotBytes: data.length }), /Invalid cache transfer chunk/);
+  await assert.rejects(broker.readCache({ cacheSnapshotBytes: 40_000 }), /Invalid cache transfer size/);
 });

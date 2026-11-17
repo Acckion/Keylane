@@ -1,16 +1,23 @@
 import SwiftUI
+import KeylaneCore
 
 struct CalculatorResultCard: View {
     let expression: String
     let result: String
     let selected: Bool
     let conversionDetail: String?
+    @AppStorage("calculatorSyntaxHighlighting") private var syntaxHighlighting = true
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         HStack(spacing: 0) {
             column(styledExpression, badge: conversionDetail == nil ? operation : "换算")
-            column(Text(result).monospacedDigit(), badge: conversionDetail ?? resultInWords)
+            if conversionDetail == CalculatorLauncherModule.colorDetail, let sample = CalculatorColor(result)?.color {
+                column(Text(result).monospacedDigit(), badge: conversionDetail ?? "",
+                       swatch: Color(red: sample.red, green: sample.green, blue: sample.blue, opacity: sample.alpha))
+            } else {
+                column(Text(result).monospacedDigit(), badge: conversionDetail ?? resultInWords)
+            }
         }
         .frame(height: 126)
         .overlay {
@@ -30,14 +37,18 @@ struct CalculatorResultCard: View {
         .contentShape(RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text("\(expression) 等于 \(result) \(conversionDetail ?? "")"))
-        .accessibilityHint("复制计算结果")
+        .accessibilityHint(conversionDetail == CalculatorLauncherModule.colorDetail ? "选择复制格式" : "复制计算结果")
     }
 
-    private func column(_ text: Text, badge: String) -> some View {
+    private func column(_ text: Text, badge: String, swatch: Color? = nil) -> some View {
         VStack(spacing: 0) {
-            text.font(.system(size: 25, weight: .semibold))
-                .lineLimit(1).minimumScaleFactor(0.45)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack {
+                if let swatch {
+                    RoundedRectangle(cornerRadius: 6).fill(swatch).frame(width: 28, height: 28)
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.primary.opacity(0.20)))
+                }
+                text.font(.system(size: 25, weight: .semibold)).lineLimit(1).minimumScaleFactor(0.45)
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
             Text(badge)
                 .font(.system(size: 11, weight: .medium))
                 .lineLimit(1).minimumScaleFactor(0.7)
@@ -61,6 +72,7 @@ struct CalculatorResultCard: View {
     }
 
     private var styledExpression: Text {
+        guard syntaxHighlighting else { return Text(displayedExpression) }
         var text = AttributedString()
         for character in displayedExpression {
             var part = AttributedString(String(character))

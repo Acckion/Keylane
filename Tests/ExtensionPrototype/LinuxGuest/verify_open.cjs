@@ -123,14 +123,14 @@ test("an unawaited callback loses the grant when its action settles", async () =
   assert.match((await late).message, /requires a selected view action/);
 });
 
-test("the no-view adapter and menu actions cannot request a web open", async () => {
-  assert.equal(require("./raycast-api.cjs").open, undefined);
+test("passive menu rendering cannot request a web open", async () => {
   const { MenuBarExtra, runMenuBar } = require("./view-api.cjs");
-  const menu = () => MenuBarExtra({ children: MenuBarExtra.Item({
-    title: "Open",
-    onAction: async () => { await open("https://example.com/menu"); },
-  }) });
-  await assert.rejects(runMenuBar(menu, { menuAction: 0, wallTime: 1 }), /requires a selected view action/);
+  let passive;
+  await runMenuBar(() => {
+    passive = open("https://example.invalid/menu").catch((error) => error);
+    return MenuBarExtra({});
+  }, { wallTime: 1 });
+  assert.match((await passive).message, /requires a selected view action/);
 });
 
 test("open completion selects the same action and provides its original target only after receipt", async () => {
@@ -159,4 +159,187 @@ test("open completion selects the same action and provides its original target o
   assert.deepEqual(await render(command, { action: fileAction, openReceipt: file.openReceipt }), { kind: "action" });
   assert.deepEqual(await render(command, { action: browserAction, openReceipt: browser.openReceipt }), { kind: "action" });
   assert.deepEqual(targets, ["file:///tmp/Doc%20A.pdf", "https://EXAMPLE.com/docs"]);
+});
+
+test("signed view and menu actions wait for the native open reply", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const { MenuBarExtra, runMenuBar } = require("./view-api.cjs");
+  let ack;
+  const receipt = new Promise((resolve) => { ack = resolve; });
+  const requests = [];
+  const bridge = t.mock.method(broker, "request", async (capability, payload) => {
+    requests.push([capability, JSON.parse(payload)]);
+    await receipt;
+  });
+  let resumed = false;
+  const command = detailWithActions(Action({ title: "Open file", async onAction() {
+    await open("/tmp/some file.txt", "com.apple.TextEdit");
+    resumed = true;
+  } }));
+  const opening = render(command, {
+    action: { row: 0, id: 0 }, liveNavigation: true, openTargetAllowed: true,
+  });
+  await new Promise(setImmediate);
+  assert.deepEqual(requests, [["files.open", { path: "/tmp/some file.txt", application: { name: "com.apple.TextEdit" } }]]);
+  assert.equal(resumed, false);
+  ack();
+  assert.deepEqual(await opening, { kind: "action" });
+  assert.equal(resumed, true);
+  const menu = () => MenuBarExtra({ children: MenuBarExtra.Item({
+    title: "Open web", onAction: () => open("https://example.invalid", "com.apple.Safari"),
+  }) });
+  const selection = { wallTime: 1, openTargetAllowed: true, menuAction: 0 };
+  assert.deepEqual(await runMenuBar(menu, selection), { kind: "menuAction" });
+  assert.deepEqual(requests.at(-1), ["files.open", {
+    url: "https://example.invalid/", application: { name: "com.apple.Safari" },
+  }]);
+  bridge.mock.mockImplementation(async () => { throw new Error("Host action failed"); });
+  await assert.rejects(runMenuBar(menu, selection), /Host action failed/);
+});
+
+test("no-view adapters propagate the same open receipt and rejection", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const { runCommand, showHUD } = require("./view-api.cjs");
+  const calls = [];
+  const bridge = t.mock.method(broker, "request", async (capability, payload) => {
+    calls.push([capability, JSON.parse(payload)]);
+    if (calls.length === 2) throw new Error("Host action failed");
+  });
+  assert.equal(await broker.open("/tmp/fixture.txt", "TextEdit"), undefined);
+  await assert.rejects(broker.open("https://example.invalid/"), /Host action failed/);
+  const command = async () => {
+    await open("file:///tmp/fixture.txt");
+    await showHUD("Opened");
+  };
+  await assert.rejects(runCommand(command, { mode: "generateV5" }), /requires a selected view action/);
+  assert.equal((await runCommand(command, {
+    mode: "generateV5", suitePreferencesAllowed: true, openTargetAllowed: true,
+  })).kind, "action");
+  const history = detailWithActions(Action({ title: "Open", onAction: () => open("/tmp/history.txt") }));
+  assert.deepEqual(await render(history, {
+    mode: "history", action: { row: 0, id: 0 }, suitePreferencesAllowed: true, openTargetAllowed: true,
+  }), { kind: "action" });
+  assert.deepEqual(calls, [
+    ["files.open", { path: "/tmp/fixture.txt", application: { name: "TextEdit" } }],
+    ["files.open", { url: "https://example.invalid/" }],
+    ["files.open", { path: "/tmp/fixture.txt" }],
+    ["feedback.hud", { text: "Opened", clearRootSearch: false, popToRootType: "default" }],
+    ["files.open", { path: "/tmp/history.txt" }],
+  ]);
+  assert.equal(bridge.mock.callCount(), 5);
+});
+
+test("generic open supports validated mail and telephone links across the broker", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const events = [];
+  t.mock.method(broker, "request", async (capability, payload) => { events.push([capability, JSON.parse(payload)]); });
+  const mail = "mailto:fixture@example.invalid?subject=%E6%B5%8B%E8%AF%95";
+  const tel = "TEL:+1-(202)-555.0123";
+  await broker.open(mail, "com.apple.mail");
+  await broker.open(tel);
+  assert.deepEqual(events, [
+    ["files.open", { url: mail, application: { name: "com.apple.mail" } }],
+    ["files.open", { url: "tel:+12025550123" }],
+  ]);
+  assert.equal(openActionEffect(Action.Open({ target: tel })).text, "tel:+12025550123");
+  for (const target of [
+    "mailto:fixture@example.invalid?subject=x%0D%0Abcc%3Ay",
+    "mailto:fixture@example.invalid?attachment=/etc/hosts", "tel:+12025550123;ext=22",
+    "javascript:alert(1)", "data:text/html,example", "example://user@host/path",
+  ]) {
+    await assert.rejects(broker.open(target));
+  }
+  assert.equal(events.length, 2);
+  assert.throws(() => openActionEffect(Action.OpenInBrowser({ url: mail })), /HTTP/);
+});
+
+test("date and completion receipts allow open to wait without file or navigation grants", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const calls = [];
+  let ready;
+  const receipt = new Promise((resolve) => { ready = resolve; });
+  t.mock.method(broker, "request", async (capability, payload) => {
+    calls.push([capability, JSON.parse(payload)]);
+    await receipt;
+  });
+  const action = { row: 0, id: 0 };
+  let resumed = false;
+  const date = detailWithActions(Action.PickDate({
+    title: "Choose", async onChange() {
+      await open("/tmp/date.txt");
+      resumed = true;
+    },
+  }));
+  const { dateReceipt } = await render(date, { action });
+  const completed = render(date, {
+    action, dateReceipt, pickedDate: "2026-11-12T12:34:56.000Z", openTargetAllowed: true,
+  });
+  await new Promise(setImmediate);
+  assert.deepEqual(calls, [["files.open", { path: "/tmp/date.txt" }]]);
+  assert.equal(resumed, false);
+  ready();
+  assert.equal((await completed).kind, "detail");
+  assert.equal(resumed, true);
+
+  const firstOpen = detailWithActions(Action.Open({
+    target: "/tmp/first.txt", onOpen: () => open("/tmp/next.txt"),
+  }));
+  const { openReceipt } = await render(firstOpen, { action });
+  assert.deepEqual(await render(firstOpen, { action, openReceipt, openTargetAllowed: true }), { kind: "action" });
+  assert.deepEqual(calls.at(-1), ["files.open", { path: "/tmp/next.txt" }]);
+
+  const copy = detailWithActions(Action.CopyToClipboard({
+    content: "demo", onCopy: () => open("/tmp/copied.txt"),
+  }));
+  const { copyReceipt } = await render(copy, { action });
+  assert.ok(copyReceipt);
+  assert.deepEqual(await render(copy, { action, copyReceipt, openTargetAllowed: true }), { kind: "action" });
+  assert.deepEqual(calls.at(-1), ["files.open", { path: "/tmp/copied.txt" }]);
+});
+
+test("registered-scheme candidates preserve their URL and reject active content and ambiguous escaping", async () => {
+  const effects = [];
+  const open = makeOpen((effect) => effects.push(effect));
+  await open("keylane-test://example/a?tab=2#next", "Example");
+  await open("x-apple.systempreferences:com.apple.preference.general");
+  assert.deepEqual(effects, [
+    { kind: "openURL", text: "keylane-test://example/a?tab=2#next", application: { name: "Example" } },
+    { kind: "openURL", text: "x-apple.systempreferences:com.apple.preference.general" },
+  ]);
+  for (const target of ["keylane-test:", "keylane-test://user:secret@example/path",
+    "keylane-test:/%0D%0A", "keylane-test:bad%", "view-source:https://example.invalid", "about:blank",
+    "https:example.invalid", "mailto:test@example.invalid?attach=x"]) {
+    await assert.rejects(open(target));
+  }
+  assert.equal(effects.length, 2);
+});
+
+test("signed menu actions open resolved local documents and preserve custom-action receipts", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const { resolve } = require("node:path");
+  const { MenuBarExtra, runMenuBar } = require("./view-api.cjs");
+  const calls = [];
+  t.mock.method(broker, "request", async (capability, payload) => { calls.push([capability, JSON.parse(payload)]); });
+  const menu = () => MenuBarExtra({ children: MenuBarExtra.Item({
+    title: "Local", onAction: () => open("./notes/../fixture.txt", "TextEdit"),
+  }) });
+  await assert.rejects(runMenuBar(menu, { wallTime: 1, menuAction: 0 }), /only open URLs/);
+  assert.deepEqual(await runMenuBar(menu, {
+    wallTime: 1, menuAction: 0, openTargetAllowed: true,
+  }), { kind: "menuAction" });
+  assert.deepEqual(calls, [["files.open", {
+    path: resolve("fixture.txt"), application: { name: "TextEdit" },
+  }]]);
+  const local = Action.Open({ target: "./fixture.txt" });
+  assert.deepEqual(openActionEffect(local).paths, [resolve("fixture.txt")]);
+
+  const url = "keylane-synthetic://fixture/path";
+  let opened;
+  const command = detailWithActions(Action.Open({ target: url, onOpen: (original) => { opened = original; } }));
+  const action = { row: 0, id: 0 };
+  const proposal = await render(command, { action });
+  assert.equal(proposal.text, url);
+  assert.equal(opened, undefined);
+  await render(command, { action, openReceipt: proposal.openReceipt });
+  assert.equal(opened, url);
 });

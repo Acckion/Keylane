@@ -5,165 +5,13 @@ import SwiftUI
 
 enum UtilityLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        [contacts(model), dictionary(model), emoji(model), shortcuts(model)]
-    }
-
-    private static func contacts(_ model: Model) -> LauncherModule {
-        let controller = model.contacts
-        let permission = PermissionFeature("contacts.enabled", authorization: .contacts, observeImmediately: false)
-        var permissionChanges: AnyCancellable?
-        let pageID = PageID(rawValue: "Contacts")
-        let selectedContact = controller.$visible.combineLatest(controller.$selectedID)
-            .map { results, id in results.first { $0.id == id } }
-        var page = LauncherPage(id: pageID, placeholder: "搜索联系人…",
-                                badge: ("联系人", "person.crop.circle"),
-                                contentPlacement: .underChrome,
-                                content: { [weak model] in
-                                    AnyView(ContactsPage(controller: controller, permission: permission,
-                                                         showSettings: { model?.openSettings(page: "keylane.contacts") }))
-                                },
-                                queryChanged: { controller.query = $0 },
-                                leave: controller.stop,
-                                move: controller.move,
-                                submit: {
-                                    if let contact = controller.selected, let value = contact.firstValue {
-                                        controller.copy(value, for: contact.id)
-                                    }
-                                    else { UtilityActions.openApplication("com.apple.AddressBook") }
-                                },
-                                primaryTitle: { controller.selected?.firstValue == nil ? "打开联系人" : "复制" },
-                                actions: { contactActions(controller) },
-                                updates: ViewObservation.changes(selectedContact))
-        page.loading = controller.$loading.eraseToAnyPublisher()
-        page.enter = { query in
-            controller.query = query
-            if permission.available { controller.start() }
-            return nil
-        }
-        page.resume = { if permission.available { controller.start() } }
-        return .init(id: .init(rawValue: "keylane.contacts"), title: "联系人", symbol: "person.crop.circle", commands: [
-            command("contacts", "搜索联系人", "系统通讯录", "person.crop.circle",
-                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID), settings: "keylane.contacts",
-                    permission: permission)
-        ], pages: [page], services: [.init(start: {
-            permission.startObserving()
-            permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
-                if !permission.available { controller.stop() }
-            }
-        }, stop: {
-            permissionChanges?.cancel()
-            permissionChanges = nil
-            permission.stopObserving()
-            controller.stop()
-        })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用联系人"))
-    }
-
-    private static func contactActions(_ controller: ContactsController) -> [LauncherAction] {
-        var actions = [
-            LauncherAction(id: "contacts-open", title: "打开系统联系人", icon: "person.crop.circle",
-                           perform: { UtilityActions.openApplication("com.apple.AddressBook") }),
-            LauncherAction(id: "contacts-refresh", title: "刷新联系人", icon: "arrow.clockwise",
-                           perform: controller.refresh)
-        ]
-        if let contact = controller.selected {
-            actions += contact.phones.enumerated().map { index, value in
-                LauncherAction(id: "phone-\(index)", title: "复制电话 " + value, icon: "phone",
-                               perform: { controller.copy(value, for: contact.id) })
-            }
-            actions += contact.emails.enumerated().map { index, value in
-                LauncherAction(id: "email-\(index)", title: "复制邮箱 " + value, icon: "envelope",
-                               perform: { controller.copy(value, for: contact.id) })
-            }
-        }
-        return actions
-    }
-
-    private static func dictionary(_ model: Model) -> LauncherModule {
-        let controller = model.dictionary
-        let pageID = PageID(rawValue: "Dictionary")
-        let suggestionID = CommandID(rawValue: "dictionary-query")
-        let provider = LauncherModule.Provider(namespace: .exact(suggestionID), entries: { input in
-            guard let term = dictionaryTerm(input.query) else { return [] }
-            return [Entry(id: suggestionID.rawValue, commandID: suggestionID, name: "查询「" + term + "」",
-                          detail: "系统词典", symbol: "book.closed", matchScore: 2000)]
-        }, resolve: { [weak model] _, origin in
-            guard origin != .shortcut, let model, let term = dictionaryTerm(model.query) else { return nil }
-            return {
-                controller.initialTerm = term
-                model.openPage(pageID, origin: origin)
-            }
-        })
-        var page = LauncherPage(id: pageID, placeholder: "输入要查询的词语…",
-                                badge: ("词典", "book.closed"),
-                                content: { AnyView(DictionaryPage(controller: controller)) },
-                                queryChanged: controller.search,
-                                leave: { controller.search("") },
-                                submit: {
-                                    guard controller.canSubmit else { return }
-                                    if controller.definition != nil { copyDefinition(controller, term: controller.term) }
-                                    else { openDictionary(controller) }
-                                },
-                                primaryTitle: {
-                                    if controller.loading { return "正在查询…" }
-                                    return controller.definition == nil ? "打开词典" : "复制释义"
-                                },
-                                primaryEnabled: { controller.canSubmit },
-                                actions: { dictionaryActions(controller) },
-                                updates: Publishers.Merge3(ViewObservation.changes(controller.$definition),
-                                                           ViewObservation.changes(controller.$loading),
-                                                           ViewObservation.changes(controller.$term)).eraseToAnyPublisher())
-        page.loading = controller.$loading.eraseToAnyPublisher()
-        page.enter = { _ in
-            let term = controller.initialTerm
-            controller.initialTerm = ""
-            return term
-        }
-        page.resume = { [weak model] in
-            if let query = model?.query { controller.search(query) }
-        }
-        return .init(id: .init(rawValue: "keylane.dictionary"), title: "词典", symbol: "book", commands: [
-            command("dictionary", "查询词典", "查找词语释义", "book.closed",
-                    ["Dictionary", "Define Word", "字典", "查词"], destination: .page(pageID))
-        ], providers: [provider], pages: [page], services: [.init(start: {}, stop: {
-            controller.initialTerm = ""
-            controller.search("")
-        })])
-    }
-
-    private static func dictionaryTerm(_ query: String) -> String? {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefixes = ["define ", "词典 ", "查词 "]
-        guard let prefix = prefixes.first(where: { trimmed.lowercased().hasPrefix($0) }) else { return nil }
-        let term = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-        return (1...DictionaryController.maximumTermLength).contains(term.utf16.count) ? term : nil
-    }
-
-    private static func dictionaryActions(_ controller: DictionaryController) -> [LauncherAction] {
-        guard !controller.termTooLong else { return [] }
-        let open = LauncherAction(id: "dictionary-open", title: "打开系统词典", icon: "book.closed",
-                                  perform: { openDictionary(controller) })
-        guard controller.definition != nil else { return [open] }
-        let term = controller.term
-        return [LauncherAction(id: "dictionary-copy", title: "复制释义", icon: "doc.on.doc",
-                               perform: { copyDefinition(controller, term: term) }), open]
-    }
-
-    private static func copyDefinition(_ controller: DictionaryController, term: String) {
-        guard term == controller.term, !controller.loading, controller.definition != nil else { return }
-        let copied = controller.copyDefinition(for: term)
-        (NSApp.delegate as? Delegate)?.showLauncherFeedback(copied ? "已复制释义" : "无法复制释义",
-                                                            style: copied ? .success : .failure)
-    }
-
-    private static func openDictionary(_ controller: DictionaryController) {
-        controller.openDictionary {
-            (NSApp.delegate as? Delegate)?.showLauncherFeedback("无法打开系统词典。", style: .failure)
-        }
+        [ContactsLauncherModule.make(model: model), DictionaryLauncherModule.make(model: model), emoji(model), shortcuts(model)]
     }
 
     private static func emoji(_ model: Model) -> LauncherModule {
         let controller = model.emoji
-        let pageID = PageID(rawValue: "Emoji")
+        let pageID = EmojiSearchController.pageID
+        let settingsID = "keylane.emoji"
         let title = EmojiCatalog.label("Emoji 与符号", "Emoji & Symbols")
         let use: (EmojiItem, Bool) -> Void = { item, paste in
             let delegate = NSApp.delegate as? Delegate
@@ -179,26 +27,31 @@ enum UtilityLauncherModules {
                 delegate?.showLauncherFeedback(EmojiCatalog.label("已复制字符", "Character copied"), style: .success)
             }
         }
+        let primaryTitle = {
+            controller.primaryAction == .paste ? emojiPasteTitle() : EmojiCatalog.label("复制字符", "Copy Character")
+        }
         var page = LauncherPage(id: pageID,
                                 placeholder: EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"),
                                 badge: (title, "face.smiling"),
                                 contentPlacement: .underChrome,
-                                content: { AnyView(EmojiSearchPage(controller: controller) { use($0, true) }) },
+                                content: { AnyView(EmojiSearchPage(controller: controller) { use($0, controller.primaryAction == .paste) }) },
                                 queryChanged: { controller.query = $0 },
                                 move: { controller.move($0, vertical: true) },
-                                submit: { if let item = controller.selected { use(item, true) } },
-                                primaryTitle: emojiPasteTitle,
+                                submit: { if let item = controller.selected { use(item, controller.primaryAction == .paste) } },
+                                primaryTitle: primaryTitle,
                                 actions: {
                                     guard let item = controller.selected else { return [] }
-                                    return [
-                                        LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
-                                                       keys: ["↩"], perform: { use(item, true) }),
-                                        LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"),
-                                                       icon: "doc.on.doc", keys: ["⌘", "↩"], perform: { use(item, false) })
-                                    ]
+                                    let pasteFirst = controller.primaryAction == .paste
+                                    let paste = LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
+                                                               keys: pasteFirst ? ["↩"] : ["⌘", "↩"], perform: { use(item, true) })
+                                    let copy = LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"),
+                                                               icon: "doc.on.doc", keys: pasteFirst ? ["⌘", "↩"] : ["↩"],
+                                                               perform: { use(item, false) })
+                                    return pasteFirst ? [paste, copy] : [copy, paste]
                                 },
-                                updates: Publishers.Merge(ViewObservation.changes(controller.$selection),
-                                                          ViewObservation.changes(controller.$category)).eraseToAnyPublisher())
+                                updates: Publishers.Merge3(ViewObservation.changes(controller.$selection),
+                                                           ViewObservation.changes(controller.$category),
+                                                           ViewObservation.changes(controller.$primaryAction)).eraseToAnyPublisher())
         page.loading = controller.$isLoading.combineLatest(controller.$isSearching)
             .map { loading, searching in loading || searching }.removeDuplicates().eraseToAnyPublisher()
         page.enter = { query in
@@ -209,7 +62,7 @@ enum UtilityLauncherModules {
         page.leave = controller.stop
         page.resume = controller.start
         page.primaryEnabled = { controller.selected != nil }
-        page.shortcutSubmit = { if let item = controller.selected { use(item, false) } }
+        page.shortcutSubmit = { if let item = controller.selected { use(item, controller.primaryAction == .copy) } }
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
@@ -222,11 +75,18 @@ enum UtilityLauncherModules {
                 searchPlaceholder: EmojiCatalog.label("搜索分类…", "Search categories…")
             ))
         }
-        return .init(id: .init(rawValue: "keylane.emoji"), title: "Emoji 与符号", symbol: "face.smiling", commands: [
+        let settings = LauncherSettingsPage(id: settingsID, title: title, symbol: "face.smiling",
+                                            subtitle: "搜索和插入表情与符号。", order: 65,
+                                            items: SettingsItem.all.filter { $0.page == settingsID },
+                                            centeredHeader: true, content: { [weak model] in
+            guard let model else { return AnyView(EmptyView()) }
+            return AnyView(EmojiPreferences(controller: controller, model: model))
+        })
+        return .init(id: .init(rawValue: settingsID), title: title, symbol: "face.smiling", commands: [
             command("emoji-symbols", EmojiCatalog.label("Emoji 与符号", "Search Emoji & Symbols"),
                     EmojiCatalog.label("搜索并插入表情与符号", "Search and insert emoji and symbols"),
-                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID))
-        ], pages: [page], services: [.init(start: {}, stop: controller.releaseCatalog)])
+                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID), settings: settingsID)
+        ], pages: [page], settings: [settings], services: [.init(start: {}, stop: controller.releaseCatalog)])
     }
 
     private static func emojiPasteTitle() -> String {

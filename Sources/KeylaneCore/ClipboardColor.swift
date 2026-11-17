@@ -56,7 +56,7 @@ public struct ClipboardColor: Equatable, Sendable {
         }
     }
 
-    private init(red: Double, green: Double, blue: Double, alpha: Double) {
+    init(red: Double, green: Double, blue: Double, alpha: Double) {
         self.red = red
         self.green = green
         self.blue = blue
@@ -101,7 +101,7 @@ public struct ClipboardColor: Equatable, Sendable {
         }
     }
 
-    private static func arguments(_ body: Substring) -> (components: [String], alpha: String?)? {
+    static func arguments(_ body: Substring) -> (components: [String], alpha: String?)? {
         if body.contains(",") {
             let parts = body.split(separator: ",", omittingEmptySubsequences: false)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -121,7 +121,7 @@ public struct ClipboardColor: Equatable, Sendable {
         return result
     }
 
-    private static func channel(_ value: String, scale: Double) -> Double? {
+    static func channel(_ value: String, scale: Double) -> Double? {
         let percentage = value.hasSuffix("%")
         guard let number = number(percentage ? String(value.dropLast()) : value) else { return nil }
         let maximum = percentage ? 100 : scale
@@ -129,7 +129,7 @@ public struct ClipboardColor: Equatable, Sendable {
         return number / maximum
     }
 
-    private static func hue(_ value: String) -> Double? {
+    static func hue(_ value: String) -> Double? {
         for (suffix, period) in [("grad", 400.0), ("rad", 2 * .pi), ("turn", 1), ("deg", 360)] where value.hasSuffix(suffix) {
             guard let angle = number(String(value.dropLast(suffix.count))) else { return nil }
             return (angle.truncatingRemainder(dividingBy: period) / period + 1)
@@ -139,7 +139,7 @@ public struct ClipboardColor: Equatable, Sendable {
         return (angle.truncatingRemainder(dividingBy: 360) + 360).truncatingRemainder(dividingBy: 360)
     }
 
-    private static func decimal(_ value: Double, digits: Int = 2) -> String {
+    static func decimal(_ value: Double, digits: Int = 2) -> String {
         var result = String(format: "%.*f", locale: Locale(identifier: "en_US_POSIX"), digits, value)
         while result.hasSuffix("0") { result.removeLast() }
         if result.hasSuffix(".") { result.removeLast() }

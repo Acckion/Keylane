@@ -70,6 +70,7 @@ test("custom empty view actions take precedence and are hidden while loading wit
   const { grid } = await render(command, { query });
   assert.equal(grid.empty.title, "No matches");
   assert.equal(grid.empty.imageDescriptor.fallbackLight.symbol, "Folder");
+  assert.equal(grid.empty.imageDescriptor.light.remoteURL, "https://example.invalid/empty.png");
   assert.equal(grid.actionPanelTitle, "Empty actions");
   assert.deepEqual(grid.actions.map(({ title }) => title), ["More"]);
 
@@ -153,4 +154,56 @@ test("generated UUIDs for unkeyed List and Grid items survive filtering and acti
     assert.deepEqual(await render(command, { query, selectedItemId: ids[2], action: { row: 0, id: 0 } }),
       { kind: "copy", text: ids[2] });
   }
+});
+
+test("List and Grid replay pagination before resolving displayed items and actions", async () => {
+  const { List, useState, LocalStorage } = require("./view-api.cjs");
+  for (const View of [List, Grid]) {
+    const command = () => {
+      const [page, setPage] = useState(0);
+      return View({ pagination: { pageSize: 1, hasMore: page < 2,
+        onLoadMore: async () => { await new Promise(setImmediate); setPage(page + 1); },
+      }, children: Array.from({ length: page + 1 }, (_, index) =>
+        View.Item({ id: String(index), title: String(index), content: String(index), actions: copy(String(index)) })) });
+    };
+    const snapshot = await render(command, { pageCount: 1 });
+    assert.deepEqual(snapshot.pagination, { pageCount: 1, hasMore: true });
+    const rows = snapshot.rows ?? snapshot.grid.sections.flatMap(({ items }) => items);
+    assert.deepEqual(rows.map(({ title }) => title), ["0", "1"]);
+    assert.deepEqual(await render(command, { pageCount: 1, action: { row: 1, id: 0 } }), { kind: "copy", text: "1" });
+    assert.deepEqual((await render(command, { pageCount: 8 })).pagination, { pageCount: 2, hasMore: false });
+    await assert.rejects(render(command, { pageCount: 9 }), /Invalid pagination count/);
+    await assert.rejects(render(() => View({ pagination: { pageSize: 1, hasMore: true,
+      onLoadMore: () => LocalStorage.setItem("denied", "value"),
+    } }), { pageCount: 1, storage: {} }), /unavailable while reconstructing/);
+  }
+});
+
+test("Grid.Item carries a remote tile, accessory icon and distinct tooltips", async () => {
+  const url = "https://example.invalid/item.png";
+  const { grid } = await render(() => Grid({ children: Grid.Item({
+    title: "Sample", content: { value: { source: url, fallback: "Folder" }, tooltip: "Tile content" },
+    accessory: { icon: { source: url, mask: "circle" }, tooltip: "Accessory" },
+  }) }), {});
+  const [item] = grid.sections[0].items;
+  assert.equal(item.contentTooltip, "Tile content");
+  assert.deepEqual(item.imageDescriptor.light, { remoteURL: url });
+  assert.deepEqual(item.imageDescriptor.fallbackLight, { symbol: "Folder" });
+  assert.equal(item.accessory.tooltip, "Accessory");
+  assert.deepEqual(item.accessory.imageDescriptor.light, { remoteURL: url });
+  assert.equal(item.accessory.imageDescriptor.mask, "circle");
+});
+
+test("Grid.Item preserves inline and reviewed remote GIF descriptors", async () => {
+  const gif = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+  const remote = "https://example.invalid/motion.gif";
+  const { grid } = await render(() => Grid({ children: [
+    Grid.Item({ content: gif, title: "Inline", subtitle: "Motion" }),
+    Grid.Item({ content: { source: remote, fallback: "Folder" }, title: "Remote" }),
+  ] }), {});
+  const [inline, hosted] = grid.sections[0].items;
+  assert.deepEqual(inline.imageDescriptor.light, { raster: gif });
+  assert.equal(inline.subtitle, "Motion");
+  assert.deepEqual(hosted.imageDescriptor.light, { remoteURL: remote });
+  assert.deepEqual(hosted.imageDescriptor.fallbackLight, { symbol: "Folder" });
 });

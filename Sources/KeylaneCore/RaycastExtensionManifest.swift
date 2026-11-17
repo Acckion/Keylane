@@ -12,11 +12,13 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
     public enum PreferenceValue: Codable, Equatable, Sendable {
         case string(String)
         case bool(Bool)
+        case application(RaycastApplicationValue)
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.singleValueContainer()
             if let value = try? container.decode(Bool.self) { self = .bool(value) }
-            else { self = .string(try container.decode(String.self)) }
+            else if let value = try? container.decode(String.self) { self = .string(value) }
+            else { self = .application(try container.decode(RaycastApplicationValue.self)) }
         }
 
         public func encode(to encoder: Encoder) throws {
@@ -24,6 +26,7 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
             switch self {
             case .string(let value): try container.encode(value)
             case .bool(let value): try container.encode(value)
+            case .application(let value): try container.encode(value)
             }
         }
     }
@@ -44,6 +47,10 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
         public let defaultValue: PreferenceValue?
         public let options: [Option]?
 
+        private struct PlatformDefault: Decodable {
+            let macOS: PreferenceValue?
+        }
+
         private enum CodingKeys: String, CodingKey {
             case name, type, title, label, description, placeholder, required
             case defaultValue = "default"
@@ -59,7 +66,12 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
             description = try values.decodeIfPresent(String.self, forKey: .description)
             placeholder = try values.decodeIfPresent(String.self, forKey: .placeholder)
             required = try values.decodeIfPresent(Bool.self, forKey: .required)
-            defaultValue = try? values.decode(PreferenceValue.self, forKey: .defaultValue)
+            if ["password", "file", "directory"].contains(type) {
+                defaultValue = nil
+            } else {
+                defaultValue = (try? values.decode(PreferenceValue.self, forKey: .defaultValue)) ??
+                    (try? values.decode(PlatformDefault.self, forKey: .defaultValue))?.macOS
+            }
             options = type == "dropdown" ? try values.decodeIfPresent([Option].self, forKey: .options) : nil
         }
 
@@ -67,7 +79,7 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
             switch (type, value) {
             case ("checkbox", .bool): true
             case ("dropdown", .string(let value)): options?.contains { $0.value == value } == true
-            case ("textfield", .string): true
+            case ("textfield", .string), ("appPicker", .string), ("file", .string), ("directory", .string): true
             default: false
             }
         }
