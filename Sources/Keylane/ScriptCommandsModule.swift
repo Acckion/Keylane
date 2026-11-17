@@ -114,7 +114,7 @@ enum ScriptCommandsModule {
                                      destination: action == .search ? .page(searchPageID) : action == .create ? .page(createPageID) : .action, settingsPage: settingsID),
                   settingsEnabled: controller.commandEnabledBinding(action.rawValue),
                   available: { controller.enabled && !controller.disabled.contains(action.rawValue) },
-                  execute: { _ in
+                  acceptsFallbackQuery: action == .search, execute: { _ in
                       switch action {
                       case .create: controller.prepareCreation()
                       case .reload:

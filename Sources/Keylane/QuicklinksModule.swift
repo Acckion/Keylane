@@ -225,7 +225,8 @@ enum QuicklinksModule {
             return AnyView(QuicklinkPreferences(model: model, controller: controller))
         })
         return .init(id: .init(rawValue: "keylane.links"), title: "快捷链接", symbol: "link", commands: commands + [manage],
-           providers: [provider(.exact(.init(rawValue: QuicklinkLibrary.legacyID))), provider(.prefix("quicklink:"))],
+           providers: [provider(.exact(.init(rawValue: QuicklinkLibrary.legacyID))), provider(.prefix("quicklink:")),
+                       googleSearch(controller)],
            pages: [list, editPage, arguments], settings: [settings], services: [.init(start: controller.load, stop: controller.stop)],
            searchUpdates: [ViewObservation.changes(controller.$links)],
            dynamicCommandSettings: .init(
@@ -233,6 +234,21 @@ enum QuicklinksModule {
                updates: { [ViewObservation.changes(controller.$links)] },
                entry: { $0.commandSettingsEntry(model: $1) }
            ))
+    }
+
+    private static func googleSearch(_ controller: QuicklinksController) -> LauncherModule.Provider {
+        let id = CommandID(rawValue: "google-web-search")
+        let link = Quicklink(id: id.rawValue, title: "Google 搜索", template: "https://www.google.com/search?q={query}")
+        let entry = Entry(id: id.rawValue, commandID: id, name: link.title, detail: "网页搜索", symbol: "globe",
+                          aliases: ["Google Search", "Web Search", "网页搜索"])
+        return .init(namespace: .exact(id), entries: { _ in [] }, resolve: { _, _ in nil },
+                     fallback: .init(entries: { [entry] }, resolve: { _, query in
+            {
+                if controller.openFallback(link, query: query) {
+                    (NSApp.delegate as? Delegate)?.hideLauncher()
+                }
+            }
+        }))
     }
 
     private static func open(_ link: Quicklink, model: Model) {
