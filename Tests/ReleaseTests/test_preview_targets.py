@@ -1,6 +1,11 @@
 """No real credentials/API calls: target policy and checked-in workflow contracts."""
 import copy
 import importlib.util
+import json
+import os
+import subprocess
+import tempfile
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
@@ -83,6 +88,26 @@ class PreviewTargetTests(unittest.TestCase):
                              'maintainer', SHA, event, current, run_attempt=2)
         self.assertEqual(preview.validate('push', 'refs/heads/dev', REPO,
                                          'maintainer', SHA, {}, run_attempt=2), 'auto')
+
+    def test_main_fails_closed_on_api_checkout_or_mode_errors(self):
+        event, current = fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'event.json'
+            path.write_text(json.dumps(event))
+            env = {'GITHUB_EVENT_PATH': str(path), 'GITHUB_REPOSITORY': REPO,
+                   'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_REF': 'refs/pull/152/merge',
+                   'GITHUB_ACTOR': 'maintainer', 'GITHUB_SHA': SHA,
+                   'GITHUB_RUN_ATTEMPT': '1', 'PREVIEW_MODE': 'pr'}
+            for responses, mode, error in [
+                ([subprocess.CalledProcessError(1, 'gh')], 'pr', subprocess.CalledProcessError),
+                ([json.dumps(current), 'd' * 40], 'pr', ValueError),
+                ([json.dumps(current)], 'auto', ValueError),
+            ]:
+                with self.subTest(mode=mode, responses=responses), patch.dict(os.environ, {**env, 'PREVIEW_MODE': mode}, clear=True), patch.object(preview.subprocess, 'check_output', side_effect=responses):
+                    with self.assertRaises(error):
+                        preview.main()
+            with patch.dict(os.environ, env, clear=True), patch.object(preview.subprocess, 'check_output', side_effect=[json.dumps(current), SHA]):
+                preview.main()
 
     def test_workflow_preserves_two_distinct_security_boundaries(self):
         ci = (ROOT / '.github/workflows/ci.yml').read_text()
