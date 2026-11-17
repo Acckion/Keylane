@@ -19,7 +19,7 @@ enum AppleNotesModule {
             id: searchPage, placeholder: "搜索 Apple 备忘录…", badge: ("Apple 备忘录", symbol),
             contentPlacement: .underChrome, content: { AnyView(AppleNotesList(controller: notes)) },
             queryChanged: notes.search, leave: notes.clearSearch, move: notes.move,
-            submit: notes.openSelected, primaryTitle: { "打开备忘录" },
+            submit: notes.openSelected, actionSelectionID: { notes.selectedID }, primaryTitle: { "打开备忘录" },
             primaryEnabled: { notes.selectedID != nil && !notes.saving },
             actions: {
                 var actions: [LauncherAction] = [.init(id: "create-apple-note", title: "新建 Apple 备忘录", icon: "plus") { create(.menu) }]
@@ -30,7 +30,7 @@ enum AppleNotesModule {
                 return actions
             },
             updates: notes.updates,
-            enter: { _ in notes.search(""); return "" },
+            enter: { query in notes.search(query); return "" },
             loading: notes.$searching.combineLatest(notes.$saving)
                 .map { searching, saving in searching || saving }.removeDuplicates().eraseToAnyPublisher()
         )
@@ -50,7 +50,7 @@ enum AppleNotesModule {
             .init(declaration: .init(id: .init(rawValue: "search-apple-notes"), title: "搜索 Apple 备忘录",
                                      detail: "按标题或正文搜索，使用原生编辑器打开", symbol: symbol,
                                      keywords: ["Notes", "Search Notes", "笔记", "便签"], destination: .page(searchPage), settingsPage: "keylane.apple-notes"),
-                  permission: permission),
+                  permission: permission, acceptsFallbackQuery: true),
             .init(declaration: .init(id: .init(rawValue: "create-apple-note"), title: "新建 Apple 备忘录",
                                      detail: "快速记录到 Apple 备忘录的默认文件夹", symbol: "square.and.pencil",
                                      keywords: ["Create Note", "新建笔记", "记笔记"], destination: .action, settingsPage: "keylane.apple-notes"),

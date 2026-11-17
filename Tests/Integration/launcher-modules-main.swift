@@ -229,37 +229,84 @@ print("PASS settings catalog lookup, ordering and page ownership")
 
 
 var unrelatedProviderCalls = 0
+var receivedFallbackQuery: String?
+var scriptEnabled = true
+let fallbackScriptID = CommandID(rawValue: "script:demo")
+let fallbackScript = Entry(id: fallbackScriptID.rawValue, commandID: fallbackScriptID, name: "Demo",
+                           detail: "Script", symbol: "terminal")
 let scopedSearch = LauncherCommandSearch()
 let scopedRegistry = try LauncherModuleRegistry(modules: [
     module,
     .init(id: .init(rawValue: "fixture.providers"), providers: [
-        .init(namespace: .prefix("script:"), entries: { _ in
-            [Entry(id: "script:demo", commandID: .init(rawValue: "script:demo"), name: "Demo",
-                   detail: "Script", symbol: "terminal")]
-        }, resolve: { _, _ in nil }),
-        .init(namespace: .prefix("app:"), entries: { _ in unrelatedProviderCalls += 1; return [] }, resolve: { _, _ in nil }),
-        .init(namespace: .exact(.init(rawValue: "script-fallback")), entries: { input in
-            guard input.page == .root, !input.query.isEmpty else { return [] }
-            return [Entry(id: "script-fallback", commandID: .init(rawValue: "script-fallback"),
-                          name: "Script fallback", detail: "Script", symbol: "terminal", isFallback: true)]
-        }, resolve: { _, _ in nil })
-    ])
-])
+        .init(namespace: .prefix("script:"), entries: { _ in [fallbackScript] },
+              resolve: { _, _ in nil }, available: { _ in scriptEnabled },
+              fallback: .init(entries: { [fallbackScript] }, resolve: { id, query in
+                  guard id == fallbackScriptID else { return nil }
+                  return { receivedFallbackQuery = query }
+              })),
+        .init(namespace: .prefix("app:"), entries: { _ in unrelatedProviderCalls += 1; return [] }, resolve: { _, _ in nil })
+    ]),
+    .init(id: .init(rawValue: "fixture.fallback-page"), commands: [
+        .init(declaration: .init(id: .init(rawValue: "fixture-lookup"), title: "Lookup",
+                                 detail: "", symbol: "book", keywords: [], destination: .page(.init(rawValue: "Lookup"))),
+              acceptsFallbackQuery: true)
+    ], pages: [.init(id: .init(rawValue: "Lookup"), placeholder: "Search")])
+], preferences: extensionPreferences, commandEnabled: { _ in true })
 let scriptsInput = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:],
                                               namespace: .prefix("script:"))
 precondition(scopedSearch.results(for: scriptsInput, registry: scopedRegistry).map(\.id) == ["script:demo"])
 precondition(unrelatedProviderCalls == 0)
 print("PASS scoped ranking skips unrelated providers")
 
-let noMatch = "nothing-matches"
-let rootFallback = LauncherCommandSearch.Input(query: noMatch, page: .root, aliases: [:], favorites: [], usage: [:])
-precondition(scopedSearch.results(for: rootFallback, registry: scopedRegistry).map(\.id) == ["script-fallback"])
-let rootMatch = LauncherCommandSearch.Input(query: "Demo", page: .root, aliases: [:], favorites: [], usage: [:])
-precondition(scopedSearch.results(for: rootMatch, registry: scopedRegistry).map(\.id) == ["script:demo"])
-let scriptsNoMatch = LauncherCommandSearch.Input(query: noMatch, page: .init(rawValue: "SearchScripts"),
-                                                aliases: [:], favorites: [], usage: [:], namespace: .prefix("script:"))
+let noMatch = "  nothing-matches 测试 "
+let fallbackIDs = ["fixture-lookup", "script:demo"]
+let defaultFallback = LauncherCommandSearch.Input(query: noMatch, page: .root, aliases: [:], favorites: [], usage: [:])
+precondition(scopedSearch.results(for: defaultFallback, registry: scopedRegistry).map(\.id) == fallbackIDs)
+var preferenceFallback = defaultFallback
+extensionPreferences.set("script:demo", forKey: "scriptCommands.fallback")
+preferenceFallback.fallbackOrder = FallbackCommandOrder(preferences: extensionPreferences)
+precondition(scopedSearch.results(for: preferenceFallback, registry: scopedRegistry).map(\.id) == Array(fallbackIDs.reversed()))
+extensionPreferences.set([String](), forKey: FallbackCommandOrder.preferenceKey)
+preferenceFallback.fallbackOrder = FallbackCommandOrder(preferences: extensionPreferences)
+precondition(scopedSearch.results(for: preferenceFallback, registry: scopedRegistry).isEmpty)
+let fallbackOrder = FallbackCommandOrder(custom: ["fixture-lookup", "script:missing", "script:demo"])
+var rootFallback = LauncherCommandSearch.Input(query: noMatch, page: .root, aliases: [:], favorites: [], usage: [:],
+                                              fallbackOrder: fallbackOrder)
+let fallbackRows = scopedSearch.results(for: rootFallback, registry: scopedRegistry)
+precondition(fallbackRows.map(\.id) == ["fixture-lookup", "script:demo"])
+precondition(fallbackRows.allSatisfy { $0.fallbackQuery == noMatch })
+precondition(receivedFallbackQuery == nil)
+rootFallback.fallbackOrder.custom?.reverse()
+precondition(scopedSearch.results(for: rootFallback, registry: scopedRegistry).map(\.id) == ["script:demo", "fixture-lookup"])
+rootFallback.allowsFallback = false
+precondition(scopedSearch.results(for: rootFallback, registry: scopedRegistry).isEmpty)
+let rootMatch = LauncherCommandSearch.Input(query: "Demo", page: .root, aliases: [:], favorites: [], usage: [:],
+                                            fallbackOrder: fallbackOrder)
+let matched = scopedSearch.results(for: rootMatch, registry: scopedRegistry)
+precondition(matched.map(\.id) == ["script:demo"] && matched.allSatisfy { !$0.isFallback })
+let scriptsNoMatch = LauncherCommandSearch.Input(query: noMatch, page: .root, aliases: [:], favorites: [], usage: [:],
+                                                namespace: .prefix("script:"), fallbackOrder: fallbackOrder)
 precondition(scopedSearch.results(for: scriptsNoMatch, registry: scopedRegistry).isEmpty)
-print("PASS root fallback remains available only without matching commands")
+let childNoMatch = LauncherCommandSearch.Input(query: noMatch, page: pageID, aliases: [:], favorites: [], usage: [:],
+                                               fallbackOrder: fallbackOrder)
+precondition(scopedSearch.results(for: childNoMatch, registry: scopedRegistry).isEmpty)
+let blank = LauncherCommandSearch.Input(query: "  ", page: .root, aliases: [:], favorites: [], usage: [:],
+                                        fallbackOrder: fallbackOrder)
+precondition(scopedSearch.results(for: blank, registry: scopedRegistry).allSatisfy { !$0.isFallback })
+precondition(!scopedRegistry.invokeFallback(fallbackScriptID, query: "  ") { _ in preconditionFailure() })
+precondition(scopedRegistry.invokeFallback(fallbackScriptID, query: noMatch) { _ in preconditionFailure() })
+precondition(receivedFallbackQuery == noMatch)
+scriptEnabled = false
+precondition(!scopedRegistry.invokeFallback(fallbackScriptID, query: "stale selection") { _ in preconditionFailure() })
+precondition(receivedFallbackQuery == noMatch)
+scopedSearch.invalidate()
+rootFallback.allowsFallback = true
+precondition(scopedSearch.results(for: defaultFallback, registry: scopedRegistry).map(\.id) == ["fixture-lookup"])
+precondition(scopedSearch.results(for: rootFallback, registry: scopedRegistry).map(\.id) == ["fixture-lookup"])
+var fallbackDestination: LauncherCommandDeclaration.Destination?
+precondition(scopedRegistry.invokeFallback(.init(rawValue: "fixture-lookup"), query: noMatch) { fallbackDestination = $0 })
+precondition(fallbackDestination == .page(.init(rawValue: "Lookup")))
+print("PASS root fallback ordering, availability, query forwarding and search scope")
 
 let dictionaryID = CommandID(rawValue: "fixture-dictionary")
 let scriptID = CommandID(rawValue: "fixture-define-task")

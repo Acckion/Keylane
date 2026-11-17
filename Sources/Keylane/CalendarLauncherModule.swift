@@ -19,7 +19,7 @@ enum CalendarLauncherModule {
                 declaration: .init(id: commandID, title: "我的日程", detail: "查看系统日历与日程",
                                    symbol: "calendar", keywords: ["Calendar", "My Schedule", "日历", "日程", "会议"],
                                    destination: .page(pageID), settingsPage: settingsID),
-                permission: calendar.permission,
+                permission: calendar.permission, acceptsFallbackQuery: true,
                 execute: { [weak model] _ in
                     if model?.pageID == pageID { model?.query = "" }
                     calendar.showToday()
@@ -43,6 +43,7 @@ enum CalendarLauncherModule {
                 leave: { calendar.endPresentation() },
                 move: { calendar.move($0) },
                 submit: { primary(calendar) },
+                actionSelectionID: { calendar.selectedEvent?.id },
                 actionContextTitle: { calendar.selectedEvent?.title },
                 primaryTitle: { calendar.selectedEvent.map(primaryTitle) ?? "打开日历" },
                 actions: { [weak model] in

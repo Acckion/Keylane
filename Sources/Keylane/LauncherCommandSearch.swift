@@ -1,6 +1,37 @@
 import Foundation
 import KeylaneCore
 
+struct FallbackCommandOrder: Equatable {
+    static let preferenceKey = "launcherFallbackCommandIDs"
+
+    // An empty custom order is an explicit opt-out. No saved order follows the available catalog.
+    var custom: [String]?
+    var legacyFirst: String?
+
+    init(custom: [String]? = nil, legacyFirst: String? = nil) {
+        self.custom = custom
+        self.legacyFirst = legacyFirst
+    }
+
+    init(preferences: UserDefaults) {
+        let saved = preferences.stringArray(forKey: Self.preferenceKey)
+        let legacy = preferences.string(forKey: "scriptCommands.fallback").flatMap { $0.isEmpty ? nil : $0 }
+        var seen = Set<String>()
+        self.init(custom: saved?.filter { !$0.isEmpty && seen.insert($0).inserted }, legacyFirst: legacy)
+    }
+
+    func ids(in catalog: [Entry]) -> [String] {
+        if let custom { return custom }
+        var ids = catalog.map(\.id)
+        if let legacyFirst, let index = ids.firstIndex(of: legacyFirst) {
+            ids.remove(at: index)
+            ids.insert(legacyFirst, at: 0)
+        }
+        var seen = Set<String>()
+        return ids.filter { seen.insert($0).inserted }
+    }
+}
+
 /// Owns the most recent query result on the UI thread.
 final class LauncherCommandSearch {
     struct Input: Equatable {
@@ -13,6 +44,8 @@ final class LauncherCommandSearch {
         var history = SearchUsageHistory()
         var sensitivity: LauncherSearchRanking.Sensitivity = .low
         var namespace: LauncherCommandNamespace?
+        var fallbackOrder = FallbackCommandOrder()
+        var allowsFallback = true
     }
     private var cached: (input: Input, date: Date, results: [Entry])?
     private var preparedNames: [String: SearchRanker.Name] = [:]
@@ -41,7 +74,6 @@ final class LauncherCommandSearch {
             return prepared
         }
         let results = candidates.compactMap { entry -> (Entry, SearchResultRank)? in
-            guard !entry.isFallback else { return nil }
             if let score = entry.matchScore {
                 return (entry, rank.explicitResult(id: entry.id, title: entry.name, score: score))
             }
@@ -62,8 +94,20 @@ final class LauncherCommandSearch {
         }
 
         // File rows form one section, retaining their rank within the section.
-        let grouped = ordered.isEmpty ? candidates.filter(\.isFallback)
-            : ordered.filter { $0.rankingKind != .file } + ordered.filter { $0.rankingKind == .file }
+        let grouped: [Entry]
+        if ordered.isEmpty, input.page == .root, input.namespace == nil, input.allowsFallback,
+           input.fallbackOrder.custom?.isEmpty != true,
+           !input.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let catalog = registry.fallbackCatalog()
+            let byID = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            grouped = input.fallbackOrder.ids(in: catalog).compactMap { id in
+                guard var entry = byID[id] else { return nil }
+                entry.fallbackQuery = input.query
+                return entry
+            }
+        } else {
+            grouped = ordered.filter { $0.rankingKind != .file } + ordered.filter { $0.rankingKind == .file }
+        }
         if !currentNames.isEmpty { preparedNames = currentNames }
         cached = (input, now, grouped)
         return grouped

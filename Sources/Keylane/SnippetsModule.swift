@@ -71,6 +71,7 @@ enum SnippetsModule {
             returnBindings: .init(alternates: [.command: .init {
                 if let snippet = snippets.selected { snippets.use(snippet, paste: snippets.options.primary == .copy) }
             }]),
+            actionSelectionID: { snippets.selected?.id },
             primaryTitle: {
                 if snippets.entries.isEmpty { return "创建文字片段" }
                 if snippets.options.primary == .paste, let name = (NSApp.delegate as? Delegate)?.pasteTargetName {
@@ -155,7 +156,7 @@ enum SnippetsModule {
             return .init(declaration: .init(id: command.id, title: command.title, detail: "文字片段",
                                             symbol: command.symbol, keywords: command.keywords,
                                             destination: destination, settingsPage: settingsID),
-                         execute: { _ in
+                         acceptsFallbackQuery: command == .search, execute: { _ in
                 switch command {
                 case .export: snippets.exportSnippets()
                 case .import: snippets.importSnippets()

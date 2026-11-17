@@ -75,7 +75,8 @@ enum CalculatorLauncherModule {
         }
         let showHistory = LauncherModule.Command(declaration: .init(id: historyID, title: historyTitle,
                                                                    detail: "搜索最近三个月的计算", symbol: "clock.arrow.circlepath",
-                                                                   keywords: ["Calculator History", "计算记录"], destination: .page(historyPage)))
+                                                                   keywords: ["Calculator History", "计算记录"], destination: .page(historyPage)),
+                                                  acceptsFallbackQuery: true)
         let settings = LauncherSettingsPage(id: settingsID, title: "计算器", symbol: "equal.circle",
                                             subtitle: "在主搜索中计算数字和表达式。", order: 128,
                                             items: [settingsItem, historySettingsItem], centeredHeader: true) { [weak model] in

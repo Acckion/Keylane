@@ -93,6 +93,30 @@ final class LauncherTests: XCTestCase {
         XCTAssertNil(history.transition(from: detail, to: list, parentOfCurrent: nil, query: ""))
     }
 
+    func testMenuSelectionKeepsAvailableActionOrFallsBackWhenItDisappears() {
+        XCTAssertEqual(LauncherActionSelection.reconcile("cancel-script", enabledIDs: ["other", "cancel-script"]), "cancel-script")
+        XCTAssertEqual(LauncherActionSelection.reconcile("cancel-script", enabledIDs: ["copy-script-output", "other"]), "copy-script-output")
+        XCTAssertEqual(LauncherActionSelection.reconcile(nil, enabledIDs: ["copy-script-output"]), "copy-script-output")
+        XCTAssertNil(LauncherActionSelection.reconcile("cancel-script", enabledIDs: []))
+    }
+
+    func testActionContextTracksSelectionAndPageVisit() {
+        let contacts = PageID(rawValue: "contacts")
+        let activation = UUID()
+        var presentation = LauncherPagePresentation()
+        _ = presentation.update(page: contacts, visible: true, activationID: activation)
+        let open = presentation.actionContext(page: contacts, activationID: activation, selectionID: "first")
+        XCTAssertNotNil(open)
+        XCTAssertNotEqual(open, presentation.actionContext(page: contacts, activationID: activation, selectionID: "second"))
+        XCTAssertNil(presentation.actionContext(page: contacts, activationID: UUID(), selectionID: "first"))
+        XCTAssertNil(presentation.actionContext(page: .root, activationID: nil, selectionID: "first"))
+
+        _ = presentation.update(page: contacts, visible: false, activationID: activation)
+        XCTAssertNil(presentation.actionContext(page: contacts, activationID: activation, selectionID: "first"))
+        _ = presentation.update(page: contacts, visible: true, activationID: activation)
+        XCTAssertNotEqual(open, presentation.actionContext(page: contacts, activationID: activation, selectionID: "first"))
+    }
+
     func testPageLifecycleDoesNotLeaveHiddenPageTwice() {
         let files = PageID(rawValue: "files")
         let notes = PageID(rawValue: "notes")
