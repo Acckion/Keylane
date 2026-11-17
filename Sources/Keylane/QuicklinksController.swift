@@ -181,8 +181,27 @@ final class QuicklinksController: ObservableObject {
         return false
     }
 
-    func acceptsFallbackQuery(_ link: Quicklink) -> Bool {
-        guard let template = try? link.parsedTemplate(context: templateContext()) else { return false }
+    func fallbackProvider(in namespace: LauncherCommandNamespace,
+                          didOpen: @escaping () -> Void) -> LauncherModule.Provider.Fallback {
+        .init(entries: {
+            self.links.compactMap { link in
+                let id = CommandID(rawValue: link.id)
+                guard namespace.contains(id), self.acceptsFallbackQuery(link) else { return nil }
+                return Entry(id: link.id, commandID: id, name: link.title, detail: "快捷链接", symbol: "link",
+                             aliases: link.tags)
+            }
+        }, resolve: { id, query in
+            guard namespace.contains(id), let link = self.links.first(where: { $0.id == id.rawValue }),
+                  self.acceptsFallbackQuery(link) else { return nil }
+            return {
+                if self.openFallback(link, query: query) { didOpen() }
+            }
+        })
+    }
+
+    private func acceptsFallbackQuery(_ link: Quicklink) -> Bool {
+        guard !link.hiddenFromRoot,
+              let template = try? link.parsedTemplate(context: templateContext()) else { return false }
         return fallbackParameter(in: template) != nil
     }
 

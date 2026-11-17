@@ -81,22 +81,9 @@ enum QuicklinksModule {
             }, primaryTitle: { _ in "打开链接" }, actions: { [weak model] entry in
                 guard let model, let link = controller.links.first(where: { $0.id == entry.commandID.rawValue }) else { return nil }
                 return actions(for: link, model: model, edit: startEdit) + [model.favoriteAction(for: entry)]
-            }, fallback: .init(entries: {
-                controller.links.compactMap { link in
-                    let id = CommandID(rawValue: link.id)
-                    guard namespace.contains(id), controller.acceptsFallbackQuery(link) else { return nil }
-                    return Entry(id: link.id, commandID: id, name: link.title, detail: "快捷链接", symbol: "link",
-                                 aliases: link.tags)
-                }
-            }, resolve: { id, query in
-                guard let link = controller.links.first(where: { $0.id == id.rawValue }),
-                      controller.acceptsFallbackQuery(link) else { return nil }
-                return {
-                    if controller.openFallback(link, query: query) {
-                        (NSApp.delegate as? Delegate)?.hideLauncher()
-                    }
-                }
-            }))
+            }, fallback: controller.fallbackProvider(in: namespace) {
+                (NSApp.delegate as? Delegate)?.hideLauncher()
+            })
         }
 
         let list = LauncherPage(
