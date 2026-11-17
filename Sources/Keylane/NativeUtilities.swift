@@ -632,14 +632,18 @@ final class DictionaryController: ObservableObject {
     var initialTerm = ""
     static let maximumTermLength = 256
     private let worker = DispatchQueue(label: "org.keylane.dictionary", qos: .userInitiated)
-    private let lookup: (String) -> [DictionaryWord]
-    private var pending: DispatchWorkItem?
+    private let lookup: (String, ExtensionProcessRequest) -> [DictionaryWord]
+    private var pending: (job: DispatchWorkItem, request: ExtensionProcessRequest)?
     private var generation = 0
 
     init() { lookup = DictionaryProcess.search }
 
-    init(lookup: @escaping (String) -> String?) {
-        self.lookup = { word in lookup(word).map { [.init(word: word, entries: [.plain($0)])] } ?? [] }
+    init(lookup: @escaping (String, ExtensionProcessRequest) -> [DictionaryWord]) {
+        self.lookup = lookup
+    }
+
+    convenience init(lookup: @escaping (String) -> String?) {
+        self.init { word, _ in lookup(word).map { [.init(word: word, entries: [.plain($0)])] } ?? [] }
     }
 
     func select(_ id: String) {
@@ -667,15 +671,18 @@ final class DictionaryController: ObservableObject {
         guard term != text else { return }
         generation += 1
         let ticket = generation
-        pending?.cancel()
+        pending?.job.cancel()
+        pending?.request.cancel()
         pending = nil
         term = text
         words = []
         selectedID = nil
         loading = !term.isEmpty && !termTooLong
         guard loading else { return }
+        let request = ExtensionProcessRequest()
         let job = DispatchWorkItem { [weak self, lookup] in
-            let result = lookup(text)
+            guard !request.isCancelled else { return }
+            let result = lookup(text, request)
             DispatchQueue.main.async {
                 guard let self, self.generation == ticket else { return }
                 self.pending = nil
@@ -684,7 +691,7 @@ final class DictionaryController: ObservableObject {
                 self.loading = false
             }
         }
-        pending = job
+        pending = (job, request)
         worker.asyncAfter(deadline: .now() + 0.12, execute: job)
     }
 
