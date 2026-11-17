@@ -62,7 +62,7 @@ enum DictionaryLauncherModule {
         let openDetails: () -> Void = { [weak model] in
             guard controller.selected != nil else { return }
             options.source = "all"
-            model?.pageID = detailID
+            model?.openPage(detailID, origin: .search)
         }
         let updates = Publishers.MergeMany([
             ViewObservation.changes(controller.$words), ViewObservation.changes(controller.$selectedID),
@@ -107,11 +107,7 @@ enum DictionaryLauncherModule {
             },
             leave: { [weak model] in
                 if model?.pageID != listID { controller.search("") }
-            }, keepsStateWhenHidden: true,
-            back: { [weak model] in
-                controller.initialTerm = controller.term
-                model?.pageID = listID
-            },
+            }, keepsStateWhenHidden: true, parent: listID,
             submit: openSelected, shortcutSubmit: openSelected,
             actionContextTitle: { controller.selected?.word },
             primaryTitle: { Action.open.title }, primaryEnabled: { controller.selected != nil },
