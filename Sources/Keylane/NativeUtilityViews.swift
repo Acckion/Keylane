@@ -108,18 +108,21 @@ struct ContactsPage: View {
     var body: some View {
         ResultDetailLayout(hasResults: permissionEnabled && controller.canRead
                            && controller.error.isEmpty && !controller.visible.isEmpty) {
-            SelectableResultList(selection: controller.selectedID) {
-                ForEach(controller.visible) { contact in
-                    ResultListButton(id: contact.id, action: { controller.select(contact.id) }) {
-                        ResultListRow(selected: contact.id == controller.selectedID) {
-                            Image(systemName: "person.crop.circle.fill").font(.system(size: 23)).foregroundStyle(.blue)
-                        } content: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HighlightedResultText(text: contact.name, query: controller.query)
-                                    .font(VisualStyle.rowText).lineLimit(1)
-                                if !contact.listDetail.isEmpty {
-                                    HighlightedResultText(text: contact.listDetail, query: controller.query)
-                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            let groups = Dictionary(grouping: controller.visible) {
+                ContactSummary.section(for: $0.sortName(controller.sortOrder))
+            }
+            let sections = groups.keys.sorted()
+            SelectableResultList(selection: controller.selectedID, firstResult: controller.visible.first?.id,
+                                 revealInitialSelection: true) {
+                ForEach(sections, id: \.self) { section in
+                    ResultListSection(title: section, isFirst: section == sections.first) {
+                        ForEach(groups[section, default: []]) { contact in
+                            ResultListButton(id: contact.id, action: { controller.select(contact.id) }) {
+                                ResultListRow(selected: contact.id == controller.selectedID) {
+                                    ContactAvatar(contact: contact, size: 24)
+                                } content: {
+                                    HighlightedResultText(text: contact.name, query: controller.query)
+                                        .font(VisualStyle.rowText).lineLimit(1)
                                 }
                             }
                         }
@@ -128,19 +131,21 @@ struct ContactsPage: View {
             }
         } detail: {
             if let contact = controller.selected {
-                ResultDetailPane { _ in
+                ResultDetailPane(showsPreviewDivider: false) { availableHeight in
                     VStack(spacing: 12) {
-                        Image(systemName: "person.crop.circle.fill").font(.system(size: 66)).foregroundStyle(.blue)
-                        Text(contact.name).font(.title2.weight(.semibold)).textSelection(.enabled)
-                        if !contact.organization.isEmpty { Text(contact.organization).foregroundStyle(.secondary) }
+                        ContactAvatar(contact: contact, size: min(160, max(44, availableHeight - 56)), isPreview: true)
+                        Text(contact.name).font(.title2.weight(.semibold)).lineLimit(2).textSelection(.enabled)
+                        if !contact.organization.isEmpty, contact.organization != contact.name {
+                            Text(contact.organization).foregroundStyle(.secondary).lineLimit(1)
+                        }
                     }.frame(maxWidth: .infinity)
                 } information: {
-                    DetailInformationSection(rows: contact.phones.enumerated().map {
-                        .init(title: $0.offset == 0 ? "电话" : "电话 \($0.offset + 1)", value: $0.element)
-                    } + contact.emails.enumerated().map {
-                        .init(title: $0.offset == 0 ? "邮箱" : "邮箱 \($0.offset + 1)", value: $0.element)
-                    })
-                    if contact.firstValue == nil { Text("没有电话或邮箱").foregroundStyle(.secondary).font(.caption) }
+                    let rows = detailRows(for: contact)
+                    if rows.isEmpty {
+                        Text("没有电话或邮箱").foregroundStyle(.secondary).font(.caption)
+                    } else {
+                        DetailInformationRows(rows: rows)
+                    }
                 }
             }
         } emptyState: {
@@ -171,6 +176,16 @@ struct ContactsPage: View {
         .onReceive(permission.settingsStatus) { permissionStatus = $0 }
     }
 
+    private func detailRows(for contact: ContactSummary) -> [DetailInformationValue] {
+        var labels: [String: Int] = [:]
+        return (contact.phoneFields + contact.emailFields).map { field in
+            labels[field.label, default: 0] += 1
+            let index = labels[field.label, default: 1]
+            let title = index == 1 ? field.label : "\(field.label) · \(index)"
+            return DetailInformationValue(title: title, value: field.value)
+        }
+    }
+
     private var connection: some View {
         ContentUnavailableView {
             Label("连接联系人", systemImage: "person.crop.circle")
@@ -186,5 +201,32 @@ struct ContactsPage: View {
                 }.buttonStyle(ContentActionButtonStyle())
             }
         }
+    }
+}
+
+private struct ContactAvatar: View {
+    let contact: ContactSummary
+    let size: CGFloat
+    var isPreview = false
+
+    var body: some View {
+        Group {
+            if let data = contact.thumbnail, let image = NSImage(data: data) {
+                Image(nsImage: image).resizable().scaledToFill()
+            } else {
+                ZStack {
+                    Circle().fill(.primary.opacity(isPreview ? 0.09 : 0.17))
+                    if contact.initials.isEmpty {
+                        Image(systemName: "person.fill").foregroundStyle(.secondary)
+                    } else {
+                        Text(contact.initials).lineLimit(1).minimumScaleFactor(0.5)
+                    }
+                }
+                .font(.system(size: size * 0.45, weight: .semibold))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .accessibilityHidden(true)
     }
 }

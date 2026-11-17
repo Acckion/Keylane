@@ -5,77 +5,7 @@ import SwiftUI
 
 enum UtilityLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        [contacts(model), DictionaryLauncherModule.make(model: model), emoji(model), shortcuts(model)]
-    }
-
-    private static func contacts(_ model: Model) -> LauncherModule {
-        let controller = model.contacts
-        let permission = PermissionFeature("contacts.enabled", authorization: .contacts, observeImmediately: false)
-        var permissionChanges: AnyCancellable?
-        let pageID = PageID(rawValue: "Contacts")
-        let selectedContact = controller.$visible.combineLatest(controller.$selectedID)
-            .map { results, id in results.first { $0.id == id } }
-        var page = LauncherPage(id: pageID, placeholder: "搜索联系人…",
-                                badge: ("联系人", "person.crop.circle"),
-                                contentPlacement: .underChrome,
-                                content: { [weak model] in
-                                    AnyView(ContactsPage(controller: controller, permission: permission,
-                                                         showSettings: { model?.openSettings(page: "keylane.contacts") }))
-                                },
-                                queryChanged: { controller.query = $0 },
-                                leave: controller.stop,
-                                move: controller.move,
-                                submit: {
-                                    if let contact = controller.selected, let value = contact.firstValue {
-                                        controller.copy(value, for: contact.id)
-                                    }
-                                    else { UtilityActions.openApplication("com.apple.AddressBook") }
-                                },
-                                primaryTitle: { controller.selected?.firstValue == nil ? "打开联系人" : "复制" },
-                                actions: { contactActions(controller) },
-                                updates: ViewObservation.changes(selectedContact))
-        page.loading = controller.$loading.eraseToAnyPublisher()
-        page.enter = { query in
-            controller.query = query
-            if permission.available { controller.start() }
-            return nil
-        }
-        page.resume = { if permission.available { controller.start() } }
-        return .init(id: .init(rawValue: "keylane.contacts"), title: "联系人", symbol: "person.crop.circle", commands: [
-            command("contacts", "搜索联系人", "系统通讯录", "person.crop.circle",
-                    ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(pageID), settings: "keylane.contacts",
-                    permission: permission)
-        ], pages: [page], services: [.init(start: {
-            permission.startObserving()
-            permissionChanges = permission.updates.receive(on: DispatchQueue.main).sink {
-                if !permission.available { controller.stop() }
-            }
-        }, stop: {
-            permissionChanges?.cancel()
-            permissionChanges = nil
-            permission.stopObserving()
-            controller.stop()
-        })], searchUpdates: [permission.updates], permissionTitlebar: permission.titlebar("启用联系人"))
-    }
-
-    private static func contactActions(_ controller: ContactsController) -> [LauncherAction] {
-        var actions = [
-            LauncherAction(id: "contacts-open", title: "打开系统联系人", icon: "person.crop.circle",
-                           perform: { UtilityActions.openApplication("com.apple.AddressBook") }),
-            LauncherAction(id: "contacts-refresh", title: "刷新联系人", icon: "arrow.clockwise",
-                           perform: controller.refresh)
-        ]
-        if let contact = controller.selected {
-            actions += contact.phones.enumerated().map { index, value in
-                LauncherAction(id: "phone-\(index)", title: "复制电话 " + value, icon: "phone",
-                               perform: { controller.copy(value, for: contact.id) })
-            }
-            actions += contact.emails.enumerated().map { index, value in
-                LauncherAction(id: "email-\(index)", title: "复制邮箱 " + value, icon: "envelope",
-                               perform: { controller.copy(value, for: contact.id) })
-            }
-        }
-        return actions
+        [ContactsLauncherModule.make(model: model), DictionaryLauncherModule.make(model: model), emoji(model), shortcuts(model)]
     }
 
     private static func emoji(_ model: Model) -> LauncherModule {
