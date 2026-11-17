@@ -125,6 +125,35 @@ final class DropShelfTests: XCTestCase {
             XCTAssertEqual(try String(contentsOf: XCTUnwrap(restored.resolve(first)), encoding: .utf8), "promised")
         }
     }
+    func testPromisedFilesKeepBasenamesWithoutCollisions() throws {
+        try fixture { _, store in
+            let id = try store.create()
+            let batch = store.directory.appendingPathComponent("Incoming/names")
+            try FileManager.default.createDirectory(at: batch, withIntermediateDirectories: true)
+            let source = batch.appendingPathComponent("invoice.pdf")
+            for content in ["first", "second"] {
+                try Data(content.utf8).write(to: source)
+                try store.adoptPromise(source, from: batch, to: id)
+            }
+            let folder = batch.appendingPathComponent("Package", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data("child".utf8).write(to: folder.appendingPathComponent("child.txt"))
+            try store.adoptPromise(folder, from: batch, to: id)
+            let restored = try DropShelfStore(directory: store.directory)
+            try restored.collectUnusedAssets()
+            let items = try XCTUnwrap(restored.shelf(id)?.items)
+            let urls = try items.map { try XCTUnwrap(restored.resolve($0)) }
+            XCTAssertEqual(urls.map(\.lastPathComponent), ["invoice.pdf", "invoice.pdf", "Package"])
+            XCTAssertNotEqual(urls[0].deletingLastPathComponent(), urls[1].deletingLastPathComponent())
+            XCTAssertEqual(try String(contentsOf: urls[0], encoding: .utf8), "first")
+            XCTAssertEqual(try String(contentsOf: urls[1], encoding: .utf8), "second")
+            XCTAssertEqual(try String(contentsOf: urls[2].appendingPathComponent("child.txt"), encoding: .utf8), "child")
+            try restored.deleteShelf(id)
+            try restored.collectUnusedAssets()
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: restored.assetsDirectory.path).isEmpty)
+        }
+    }
+
     func testCorruptArchiveIsPreservedAndMutationFailureRollsBack() throws {
         try fixture { _, store in
             let id = try store.create()

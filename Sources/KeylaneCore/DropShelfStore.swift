@@ -128,11 +128,14 @@ public final class DropShelfStore {
         guard url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(root),
               batch.deletingLastPathComponent().standardizedFileURL == directory.appendingPathComponent("Incoming").standardizedFileURL,
               fm.isReadableFile(atPath: url.path), (try url.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw Failure.invalidAsset }
-        let filename = UUID().uuidString + "-" + url.lastPathComponent
-        let target = assetsDirectory.appendingPathComponent(filename)
-        try fm.moveItem(at: url, to: target)
-        do { return try append(Item(id: UUID(), kind: .file, title: url.lastPathComponent, bookmark: try target.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil), asset: filename), to: id) }
-        catch { try? fm.removeItem(at: target); throw error }
+        let filename = UUID().uuidString
+        let container = assetsDirectory.appendingPathComponent(filename, isDirectory: true)
+        let target = container.appendingPathComponent(url.lastPathComponent)
+        try fm.createDirectory(at: container, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        do {
+            try fm.moveItem(at: url, to: target)
+            return try append(Item(id: UUID(), kind: .file, title: url.lastPathComponent, bookmark: try target.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil), asset: filename), to: id)
+        } catch { try? fm.removeItem(at: container); throw error }
     }
     public func resolve(_ item: Item) throws -> URL? {
         if item.asset != nil || item.kind == .file {

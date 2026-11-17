@@ -44,7 +44,8 @@ final class DropShelfController: ObservableObject {
     }
     func removeManagedShelf(_ id: UUID) {
         guard store?.shelf(id) != nil else { return }
-        windows[id]?.close() // Cancels in-flight imports before removing the record.
+        // Detach before closing: cancel imports normally, but do not retain/trim history.
+        windows.removeValue(forKey: id)?.close()
         do { try store?.deleteShelf(id) } catch { report(error) }
         pendingRemoval = nil
     }
@@ -147,8 +148,8 @@ final class DropShelfController: ObservableObject {
         return window
     }
     func closed(_ window: DropShelfWindow) {
-        windows.removeValue(forKey: window.shelfID)
         automaticShelves.remove(window.shelfID)
+        guard windows.removeValue(forKey: window.shelfID) != nil else { return }
         do { try store?.remember(window.shelfID, keeping: Set(windows.keys)) } catch { report(error) }
     }
     func clipboardShelf() { _ = create()?.receive(.general) }

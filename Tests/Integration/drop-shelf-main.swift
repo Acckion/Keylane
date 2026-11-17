@@ -91,6 +91,11 @@ let promiseDelegates = [ShelfTestPromise("promise-one.txt", delay: 0.4), ShelfTe
 expect(window.receivePromises(promiseDelegates), "controlled asynchronous imports begin loading")
 for _ in 0..<100 where shelves.store!.shelf(window.shelfID)!.items.count < 6 { drain(0.05) }
 expect(Array(shelves.store!.shelf(window.shelfID)!.items.suffix(2)).map(\.title) == ["promise-one.txt", "promise-two.txt"], "out-of-order promises preserve source order")
+for (index, name) in ["promise-one.txt", "promise-two.txt"].enumerated() {
+    let writer = window.tableView(NSTableView(), pasteboardWriterForRow: 4 + index) as! NSPasteboardItem
+    let exported = URL(string: writer.string(forType: .fileURL)!)!
+    expect(exported.lastPathComponent == name, "promised export URL keeps original filename: " + name)
+}
 let failing = ShelfTestPromise("failed.txt", fail: true)
 expect(window.receivePromises([failing]), "failed import accepted asynchronously")
 for _ in 0..<100 where !window.feedbackText.contains("synthetic promise failure") { drain(0.05) }
@@ -142,6 +147,31 @@ shelves.pendingRemoval = shelves.selectedShelf
 shelves.pendingRename = shelves.selectedShelf
 shelves.endManagement()
 expect(!shelves.managementActive && shelves.pendingRemoval == nil && shelves.pendingRename == nil, "leaving manager clears drafts and preview activation")
+let deletionRegistry = MenuBarRegistry(preferences: preferences)
+let deletionController = DropShelfController(directory: root.appendingPathComponent("DeletionStorage"), preferences: preferences)
+deletionController.start(registry: deletionRegistry)
+let deletionStore = deletionController.store!
+var savedHistory = Set<UUID>()
+for index in 0..<10 {
+    let id = try deletionStore.create()
+    try deletionStore.addText("history \(index)", to: id)
+    try deletionStore.remember(id)
+    savedHistory.insert(id)
+}
+let removedWindow = deletionController.create()!
+try deletionStore.addFile(source, to: removedWindow.shelfID)
+removedWindow.refresh()
+expect(removedWindow.receivePromises([ShelfTestPromise("removed-pending.txt", delay: 0.4)]), "open shelf deletion starts with a pending import")
+deletionController.removeManagedShelf(removedWindow.shelfID)
+expect(!removedWindow.isVisible && deletionStore.shelf(removedWindow.shelfID) == nil, "manager deletion closes and removes the open shelf")
+expect(Set(deletionStore.shelves.map(\.id)) == savedHistory, "deleting an open populated shelf preserves all ten unrelated history records")
+drain(0.9)
+expect(Set(deletionStore.shelves.map(\.id)) == savedHistory, "late import cannot revive the deleted shelf or evict history")
+expect((try? FileManager.default.contentsOfDirectory(atPath: deletionStore.directory.appendingPathComponent("Incoming").path).isEmpty) == true, "deleted shelf import leaves no batch residue")
+expect(FileManager.default.fileExists(atPath: source.path), "deleting an open shelf preserves its external source")
+let restoredDeletionStore = try KeylaneCore.DropShelfStore(directory: deletionStore.directory)
+expect(Set(restoredDeletionStore.shelves.map(\.id)) == savedHistory, "all ten history records survive reload after open shelf deletion")
+deletionController.stop(); deletionRegistry.shutdown()
 print("PASS production shelf integration (synthetic pasteboard, not physical drag acceptance)")
 }
 print("FIXTURE_ROOT " + root.path)
