@@ -51,7 +51,7 @@ final class ReleaseNotesLauncher: ObservableObject {
                          contentPlacement: .readingDetail, content: { AnyView(self.detailView) },
                          leave: { self.detail = nil }, keepsStateWhenHidden: true, parent: Self.listID,
                          submit: { if let release = self.detail { self.open(release) } },
-                         primaryTitle: { "在浏览器中打开" }, primaryEnabled: { self.detail != nil },
+                         returnBindings: .init(primary: .plain), primaryTitle: { "在浏览器中打开" }, primaryEnabled: { self.detail != nil },
                          actions: { self.actions(for: self.detail) }, badgeTitle: { self.detail?.tag ?? "更新日志" })
         ]
     }

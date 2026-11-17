@@ -68,7 +68,7 @@ enum CalendarLauncherModule {
                     AnyView(CalendarEventForm(controller: calendar) { model?.pageID = pageID })
                 },
                 submit: { [weak model] in calendar.saveDraft { if model?.pageID == formID { model?.pageID = pageID } } },
-                shortcutSubmit: { [weak model] in calendar.saveDraft { if model?.pageID == formID { model?.pageID = pageID } } },
+                returnBindings: .init(primary: .command),
                 primaryTitle: { calendar.formTitle },
                 primaryEnabled: { calendar.canSave },
                 updates: Publishers.Merge(
