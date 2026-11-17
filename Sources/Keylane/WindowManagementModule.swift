@@ -63,6 +63,7 @@ enum WindowManagementModule {
                                                     set: { controller.layoutHasInvalidMeasurements = $0 }),
                     applications: model.applicationSettingsCatalog,
                     quicklinks: model.quicklinks, preferences: controller.preferences,
+                    navigation: model.navigation,
                     capture: controller.captureLayoutEditorWindows, choosePath: controller.chooseLayoutPath,
                     back: back
                 ).id(controller.layoutEditorID))

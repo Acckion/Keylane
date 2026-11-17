@@ -10,6 +10,7 @@ struct WindowLayoutEditor: View {
     @ObservedObject var applications: ApplicationSettingsCatalog
     @ObservedObject var quicklinks: QuicklinksController
     @ObservedObject var preferences: WindowManagementPreferences
+    let navigation: String
     let capture: (@escaping ([WindowLayoutEntry]) -> Void) -> Void
     let choosePath: (Bool, @escaping (String) -> Void) -> Void
     let back: () -> Void
@@ -28,7 +29,7 @@ struct WindowLayoutEditor: View {
     @State private var message: String?
     @FocusState private var focus: Field?
 
-    private enum Field: Hashable { case name, applicationSearch, width, height, x, y }
+    private enum Field: Hashable { case name, width, height, x, y }
     private enum PreviewSpace: Hashable { case display }
     private var windows: [WindowLayoutEntry] { draft.windows ?? [] }
     private var selectedEntry: WindowLayoutEntry? { windows.first { $0.id == selected } }
@@ -141,7 +142,7 @@ struct WindowLayoutEditor: View {
                     let trigger = geometry[anchor]
                     let width = min(244, geometry.size.width)
                     Group {
-                        if adding { applicationMenu }
+                        if adding { applicationMenu(width: width) }
                         else { windowMenu }
                     }
                     .frame(width: width)
@@ -361,6 +362,7 @@ struct WindowLayoutEditor: View {
                 appQuery = ""
                 choosingWindow = false
                 adding.toggle()
+                if adding { focus = nil }
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 15, weight: .medium))
@@ -423,38 +425,15 @@ struct WindowLayoutEditor: View {
         }
     }
 
-    private var applicationMenu: some View {
-        VStack(spacing: 0) {
-            TextField("搜索应用程序…", text: $appQuery)
-                .textFieldStyle(.roundedBorder)
-                .focused($focus, equals: .applicationSearch)
-                .padding(8)
-            Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    let query = appQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let matches = query.isEmpty ? apps : apps.filter { $0.name.localizedStandardContains(query) }
-                    if matches.isEmpty { Text("没有匹配的应用程序").foregroundStyle(.secondary).padding(10) }
-                    ForEach(matches) { app in
-                        Button { add(app) } label: {
-                            HStack(spacing: 8) {
-                                WorkspaceItemIcon(path: app.path).frame(width: 20, height: 20)
-                                Text(app.name).lineLimit(1)
-                                Spacer(minLength: 0)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 8).padding(.vertical, 5)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(6)
-            }
-            .frame(height: 164)
+    private func applicationMenu(width: CGFloat) -> some View {
+        let options = apps.map { app in
+            ResultFilterOption(id: app.id, title: app.name, symbol: "app", iconPath: app.path)
         }
-        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-        .onAppear { focus = .applicationSearch }
+        let matches = ResultFilterPanel.matches(options, query: appQuery.trimmingCharacters(in: .whitespacesAndNewlines))
+        return ResultFilterPanel(selection: "", options: matches, query: $appQuery,
+                                 searchPlaceholder: "搜索应用程序…", emptyTitle: "没有匹配的应用程序",
+                                 navigation: navigation, width: width, maximumVisibleRows: 6,
+                                 choose: { add($0.id) }, dismiss: { adding = false })
     }
 
     @ViewBuilder private func argumentEditor(_ binding: Binding<WindowLayoutEntry>) -> some View {
@@ -541,9 +520,9 @@ struct WindowLayoutEditor: View {
         if let entry, displays.indices.contains(entry.display) { screenIndex = entry.display }
     }
 
-    private func add(_ app: ApplicationChoice) {
+    private func add(_ bundleID: String) {
         guard canAddWindow else { return }
-        var entry = WindowLayoutEntry(bundleID: app.id)
+        var entry = WindowLayoutEntry(bundleID: bundleID)
         entry.display = screenIndex
         entry.geometry.x.percentage = false
         entry.geometry.y.percentage = false
@@ -552,7 +531,6 @@ struct WindowLayoutEditor: View {
         }
         draft.windows?.append(entry)
         choose(entry)
-        adding = false
     }
 
     private func remove(_ id: UUID) {
