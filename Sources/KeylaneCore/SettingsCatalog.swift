@@ -15,6 +15,8 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let applicationAutoQuit = SettingsItem(id: "application-auto-quit", page: "applications-auto-quit", title: "自动退出", keywords: "应用程序 闲置 退出 默认 时长 auto quit idle duration")
     public static let applicationScopes = SettingsItem(id: "scopes", page: "applications", title: "应用搜索范围", keywords: "应用 文件夹 applications folders scope")
     public static let applicationFavorites = SettingsItem(id: "favorites", page: "applications", title: "收藏", keywords: "排序 favorite pin")
+    public static let emojiColumns = SettingsItem(id: "emoji-columns", page: "keylane.emoji", title: "Emoji 列数", keywords: "emoji grid columns 表情 网格")
+    public static let emojiBehavior = SettingsItem(id: "emoji-behavior", page: "keylane.emoji", title: "Emoji 操作与肤色", keywords: "emoji paste copy skin tone inline 表情 粘贴 复制 肤色 内联")
     public static let screenshotColumns = SettingsItem(id: "screenshot-columns", page: "screenshots", title: "截图列数", keywords: "screenshots grid columns 截屏 缩略图")
     public static let screenshotScopes = SettingsItem(id: "screenshot-scopes", page: "screenshots", title: "截图搜索范围", keywords: "screenshots folders scope 截屏 录屏")
     public static let screenshotRetention = SettingsItem(id: "screenshot-retention", page: "screenshots", title: "截图保留期限", keywords: "screenshots storage duration retention cleanup 自动清理 废纸篓")
@@ -112,6 +114,7 @@ public struct SettingsItem: Identifiable, Equatable {
         applicationAutoQuit,
         fileSearchScope,
         fileSearchInline,
+        emojiColumns, emojiBehavior,
         screenshotColumns,
         screenshotScopes,
         screenshotText,

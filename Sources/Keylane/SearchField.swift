@@ -17,6 +17,7 @@ struct SearchField: View {
     var forward: (() -> Void)? = nil
     var navigateWhileTyping = false
     var spaceAtEnd: ((String) -> Bool)? = nil
+    var insertEmoji: ((NSRange) -> Bool)? = nil
     @FocusState private var focused: Bool
     var body: some View {
         TextField(placeholder, text: $text)
@@ -34,6 +35,15 @@ struct SearchField: View {
                       editor.string == text, editor.selectedRange() == NSRange(location: text.utf16.count, length: 0)
                 else { return .ignored }
                 return spaceAtEnd(text) ? .handled : .ignored
+            }
+            .onKeyPress(phases: .down) { press in
+                guard let insertEmoji, press.characters == ":", !Self.isComposing,
+                      press.modifiers.intersection([.command, .option, .control]).isEmpty,
+                      let editor = NSApp.keyWindow?.firstResponder as? NSTextView, editor.string == text,
+                      let range = Range(editor.selectedRange(), in: text),
+                      range.lowerBound == text.startIndex || text[text.index(before: range.lowerBound)].isWhitespace
+                else { return .ignored }
+                return insertEmoji(editor.selectedRange()) ? .handled : .ignored
             }
             .onKeyPress(keys: [.leftArrow], phases: [.down, .repeat]) { guard (text.isEmpty || (navigateWhileTyping && $0.modifiers == .option)), !Self.isComposing, let back else { return .ignored }; back(); return .handled }
             .onKeyPress(keys: [.rightArrow], phases: [.down, .repeat]) { guard (text.isEmpty || (navigateWhileTyping && $0.modifiers == .option)), !Self.isComposing, let forward else { return .ignored }; forward(); return .handled }
