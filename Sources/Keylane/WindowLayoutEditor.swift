@@ -5,15 +5,15 @@ struct WindowLayoutEditor: View {
     static let symbols = ["square.grid.2x2", "rectangle.split.2x1", "rectangle.split.1x2",
                           "rectangle.split.2x2", "rectangle.on.rectangle", "macwindow", "display"]
 
-    @State var draft: CustomWindowAction
+    @Binding var draft: CustomWindowAction
+    @Binding var hasInvalidMeasurements: Bool
     let editing: Bool
     @ObservedObject var applications: ApplicationSettingsCatalog
     @ObservedObject var quicklinks: QuicklinksController
     @ObservedObject var preferences: WindowManagementPreferences
     let capture: (@escaping ([WindowLayoutEntry]) -> Void) -> Void
     let choosePath: (Bool, @escaping (String) -> Void) -> Void
-    let save: (CustomWindowAction) -> Bool
-    let cancel: () -> Void
+    let back: () -> Void
 
     @State private var selected: UUID?
     @State private var screenIndex = 0
@@ -32,24 +32,21 @@ struct WindowLayoutEditor: View {
     private var canAddWindow: Bool {
         windows.count < 64 && windows.filter { $0.display == screenIndex }.count < 8
     }
-    var windowTitle: String { editing ? "编辑窗口布局" : "新建窗口布局" }
+    private var title: String { editing ? "编辑窗口布局" : "新建窗口布局" }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                previewPane
-                Divider()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 15) { inspector }
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(width: 300)
+        HStack(spacing: 0) {
+            previewPane
+            Divider().padding(.vertical, 10)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 13) { inspector }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            Divider()
-            footer
+            .frame(width: 300)
         }
-        .background(.regularMaterial)
+        .padding(.bottom, VisualStyle.launcherBottomInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             refreshDisplays()
             choose(windows.first)
@@ -61,6 +58,7 @@ struct WindowLayoutEditor: View {
         .onChange(of: focus) { old, _ in
             if let old { measurementText[old] = nil; invalidMeasurements.remove(old) }
         }
+        .onChange(of: invalidMeasurements.isEmpty) { _, empty in hasInvalidMeasurements = !empty }
         .task(id: applications.items) {
             let items = applications.items
             apps = await Task.detached {
@@ -75,7 +73,10 @@ struct WindowLayoutEditor: View {
 
     private var previewPane: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(windowTitle).font(.headline).accessibilityAddTraits(.isHeader)
+            HStack(spacing: 12) {
+                LauncherBackButton(action: back)
+                Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+            }
             GeometryReader { proxy in
                 if let display = displays[safe: screenIndex] {
                     displayPreview(display, available: proxy.size)
@@ -107,7 +108,9 @@ struct WindowLayoutEditor: View {
                 }
             }
         }
-        .padding(20)
+        .padding(.top, VisualStyle.launcherEdgeInset)
+        .padding(.horizontal, VisualStyle.launcherEdgeInset)
+        .padding(.bottom, 12)
         .frame(minWidth: 285)
     }
 
@@ -393,25 +396,6 @@ struct WindowLayoutEditor: View {
                 .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         }
-    }
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            Spacer()
-            Button("取消", action: cancel).buttonStyle(.glass).keyboardShortcut(.cancelAction)
-            Button {
-                if !save(draft) { message = "无法保存布局。请检查名称和窗口设置。" }
-            } label: {
-                HStack(spacing: 6) {
-                    Text("保存")
-                    Keycaps(keys: ["⌘", "↩"])
-                }
-            }
-            .buttonStyle(.glassProminent)
-            .keyboardShortcut(.return, modifiers: .command)
-            .disabled(!draft.isValid || !invalidMeasurements.isEmpty)
-        }
-        .padding(.horizontal, 18).padding(.vertical, 11)
     }
 
     private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

@@ -12,6 +12,10 @@ enum WindowManagementModule {
         let spaceShortcuts = WindowSpaceShortcuts()
         let customUpdates = ViewObservation.changes(controller.$actions)
         let draftUpdates = ViewObservation.changes(controller.$draft)
+        let layoutUpdates = Publishers.Merge(
+            ViewObservation.changes(controller.$layoutDraft),
+            ViewObservation.changes(controller.$layoutHasInvalidMeasurements)
+        ).eraseToAnyPublisher()
         let coordinateUpdates = ViewObservation.changes(controller.$coordinates)
         var permissionObservation: AnyCancellable?
         let back: () -> Void = { [weak model] in model?.pageID = .root }
@@ -32,6 +36,7 @@ enum WindowManagementModule {
             let destination: LauncherCommandDeclaration.Destination
             switch command.action {
             case .createCommand: destination = .page(WindowManagementController.editorPage)
+            case .createLayout: destination = .page(WindowManagementController.layoutPage)
             case .coordinate: destination = .page(WindowManagementController.coordinatesPage)
             default: destination = .action
             }
@@ -46,6 +51,24 @@ enum WindowManagementModule {
             back: back, submit: controller.saveDraft, shortcutSubmit: controller.saveDraft,
             primaryTitle: { "保存命令" },
             primaryEnabled: { controller.draft.isValid }, updates: draftUpdates
+        )
+        let layout = LauncherPage(
+            id: WindowManagementController.layoutPage, placeholder: "", badge: ("窗口布局", "macwindow"),
+            contentPlacement: .form,
+            content: { [weak model] in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(WindowLayoutEditor(
+                    draft: Binding(get: { controller.layoutDraft }, set: { controller.layoutDraft = $0 }),
+                    hasInvalidMeasurements: Binding(get: { controller.layoutHasInvalidMeasurements },
+                                                    set: { controller.layoutHasInvalidMeasurements = $0 }),
+                    editing: controller.editingLayout, applications: model.applicationSettingsCatalog,
+                    quicklinks: model.quicklinks, preferences: controller.preferences,
+                    capture: controller.captureLayoutEditorWindows, choosePath: controller.chooseLayoutPath,
+                    back: back
+                ).id(controller.layoutEditorID))
+            }, leave: controller.leaveLayout, back: back, submit: controller.saveLayoutDraft,
+            shortcutSubmit: controller.saveLayoutDraft, primaryTitle: { "保存布局" },
+            primaryEnabled: { controller.layoutIsValid }, updates: layoutUpdates
         )
         let coordinates = LauncherPage(
             id: WindowManagementController.coordinatesPage, placeholder: "", badge: ("窗口管理", "macwindow"), contentPlacement: .form,
@@ -89,7 +112,7 @@ enum WindowManagementModule {
             permission: { _ in permission }
         )
         return .init(id: .init(rawValue: id), title: title, symbol: "macwindow", commands: commands,
-                     providers: [provider], pages: [editor, coordinates], settings: [settings],
+                     providers: [provider], pages: [editor, layout, coordinates], settings: [settings],
                      services: [.init(start: {
                          permission.startObserving()
                          spaceShortcuts.refresh()

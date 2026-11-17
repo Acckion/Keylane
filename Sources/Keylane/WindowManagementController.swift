@@ -5,12 +5,18 @@ import UniformTypeIdentifiers
 
 final class WindowManagementController: ObservableObject {
     static let editorPage = PageID(rawValue: "WindowActionEditor")
+    static let layoutPage = PageID(rawValue: "WindowLayoutEditor")
     static let coordinatesPage = PageID(rawValue: "WindowCoordinates")
     static let customPrefix = "window-custom:"
 
     let preferences = WindowManagementPreferences()
     @Published private(set) var actions: [CustomWindowAction] = []
     @Published var draft = CustomWindowAction()
+    @Published var layoutDraft = CustomWindowAction(windows: [])
+    @Published var layoutHasInvalidMeasurements = false
+    private(set) var layoutEditorID = UUID()
+    var layoutIsValid: Bool { layoutDraft.isValid && !layoutHasInvalidMeasurements }
+    var editingLayout: Bool { actions.contains { $0.id == layoutDraft.id } }
     @Published var coordinates = WindowCoordinates()
     @Published var error = ""
 
@@ -32,7 +38,7 @@ final class WindowManagementController: ObservableObject {
     private weak var model: Model?
     private var permission: PermissionFeature
     private var requests: [UUID: NavigationScanRequest] = [:]
-    private var layoutEditor: WindowLayoutEditorWindow?
+    private var layoutPathPanel: NSOpenPanel?
     private var grid: WindowGridPanel?
     private var gridRequest: NavigationScanRequest?
     private let storageKey = "windowManagement.customActions"
@@ -72,7 +78,7 @@ final class WindowManagementController: ObservableObject {
         case .createCommand:
             draft = .init()
             error = ""
-        case .createLayout: edit(.init(windows: []), origin: origin)
+        case .createLayout: prepareLayout(.init(windows: []))
         case .saveLayout: captureCurrentLayout(origin: origin)
         case .importLayouts: importActions()
         case .switchSpace(let direction):
@@ -187,12 +193,15 @@ final class WindowManagementController: ObservableObject {
         for request in requests.values { request.cancel() }
         requests.removeAll()
         dismissGrid()
-        layoutEditor?.dismiss()
+        leaveLayout()
+        if model?.pageID == Self.layoutPage { model?.pageID = .root }
     }
 
     func edit(_ item: CustomWindowAction, origin: LauncherCommandOrigin = .menu) {
         if item.windows != nil {
-            editLayout(item)
+            guard permission.available else { return }
+            prepareLayout(item)
+            model?.openPage(Self.layoutPage, origin: origin == .search ? .menu : origin)
             return
         }
         draft = item
@@ -222,25 +231,48 @@ final class WindowManagementController: ObservableObject {
         return persist(next)
     }
 
-    private func editLayout(_ item: CustomWindowAction) {
-        if let layoutEditor { layoutEditor.bringToFront(); return }
-        guard let model, permission.available else { return }
-        let editor = WindowLayoutEditorWindow()
-        layoutEditor = editor
-        let view = WindowLayoutEditor(
-            draft: item, editing: actions.contains { $0.id == item.id },
-            applications: model.applicationSettingsCatalog, quicklinks: model.quicklinks, preferences: preferences,
-            capture: { [weak self] completion in self?.captureVisibleWindows(completion: completion) },
-            choosePath: { [weak editor] folder, completion in editor?.choosePath(folder: folder, completion: completion) },
-            save: { [weak self] draft in
-                guard let self, self.permission.available, self.save(draft) else { return false }
-                self.layoutEditor?.dismiss()
-                self.feedback("已保存「\(draft.name)」。", succeeded: true)
-                return true
-            },
-            cancel: { [weak editor] in editor?.dismiss() }
-        )
-        editor.show(view, parent: NSApp.keyWindow) { [weak self] in self?.layoutEditor = nil }
+    private func prepareLayout(_ item: CustomWindowAction) {
+        leaveLayout()
+        layoutDraft = item
+    }
+
+    func leaveLayout() {
+        layoutEditorID = UUID()
+        layoutPathPanel?.cancel(nil)
+        layoutPathPanel = nil
+        layoutHasInvalidMeasurements = false
+    }
+
+    func saveLayoutDraft() {
+        guard permission.available, model?.pageID == Self.layoutPage, layoutIsValid else { return }
+        guard save(layoutDraft) else { feedback("无法保存布局。请检查名称和窗口设置。"); return }
+        model?.pageID = .root
+        feedback("已保存「\(layoutDraft.name)」。", succeeded: true)
+    }
+
+    func captureLayoutEditorWindows(completion: @escaping ([WindowLayoutEntry]) -> Void) {
+        let session = layoutEditorID
+        captureVisibleWindows { [weak self] entries in
+            guard let self, self.layoutEditorID == session, self.model?.pageID == Self.layoutPage else { return }
+            completion(entries)
+        }
+    }
+
+    func chooseLayoutPath(folder: Bool, completion: @escaping (String) -> Void) {
+        guard model?.pageID == Self.layoutPage, layoutPathPanel == nil,
+              let window = (NSApp.delegate as? Delegate)?.window, window.attachedSheet == nil else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = folder
+        panel.canChooseFiles = !folder
+        panel.allowsMultipleSelection = false
+        layoutPathPanel = panel
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard let self, self.layoutPathPanel === panel else { return }
+            self.layoutPathPanel = nil
+            if response == .OK, self.model?.pageID == Self.layoutPage, let url = panel.url {
+                completion(url.path)
+            }
+        }
     }
 
     func remove(_ item: CustomWindowAction) {
