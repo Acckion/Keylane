@@ -34,7 +34,7 @@ public struct ConfigurationArchive: Codable {
         "navigation": ["arrows", "vim", "emacs"], "windowActivationBehavior": ["systemDefault", "activeSpace"],
         "launcherEscapeBehavior": ["backOrClose", "closeWindow"], "pageNavigationKeys": ["brackets", "arrows"]
     ]
-    static let flags: Set<String> = ["rootFileContentSearch", "compactFavorites", "applicationsEnabled", "escapeClosesUtilityWindows", "replaceHyperKeycaps"]
+    static let flags: Set<String> = ["rootFileContentSearch", "applicationsEnabled", "escapeClosesUtilityWindows", "replaceHyperKeycaps"]
     public init() {}
 
     public static func capture(_ defaults: UserDefaults, includePersonalContent: Bool = false) throws -> Self {
@@ -46,7 +46,7 @@ public struct ConfigurationArchive: Codable {
             "windowMode": .string("expanded"), "applicationHotkeyAction": .string("toggle"),
             "navigation": .string("arrows"), "windowActivationBehavior": .string("systemDefault"),
             "launcherEscapeBehavior": .string("backOrClose"), "pageNavigationKeys": .string("brackets"),
-            "rootFileContentSearch": .bool(true), "compactFavorites": .bool(true),
+            "rootFileContentSearch": .bool(true),
             "applicationsEnabled": .bool(true), "escapeClosesUtilityWindows": .bool(true),
             "replaceHyperKeycaps": .bool(false), "launcherReturnDelay": .integer(90)
         ]

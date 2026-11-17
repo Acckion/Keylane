@@ -9,8 +9,7 @@ struct LauncherAppearancePreferences: View {
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$appearance),
             ViewObservation.changes(model.$interfaceSize),
-            ViewObservation.changes(model.$windowMode),
-            ViewObservation.changes(model.$compactFavorites)
+            ViewObservation.changes(model.$windowMode)
         ]))
     }
 
@@ -49,12 +48,6 @@ struct LauncherAppearancePreferences: View {
                     mode("compact", title: "紧凑", expanded: false)
                     mode("expanded", title: "展开", expanded: true)
                     Spacer(minLength: 0)
-                }
-                Divider()
-                Toggle(isOn: binding(\.compactFavorites)) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("在紧凑模式显示收藏")
-                    }
                 }
             }.settingsAnchor(.windowMode)
         }
