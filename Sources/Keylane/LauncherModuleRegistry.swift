@@ -16,7 +16,8 @@ struct Entry: Identifiable {
     var rankingKind: LauncherSearchRanking.Kind = .command
     var matchScore: Int?
     var isDirectory = false
-    var isFallback = false
+    var fallbackQuery: String?
+    var isFallback: Bool { fallbackQuery != nil }
     var subtitle: String?
 }
 
@@ -227,10 +228,16 @@ struct LauncherModule {
         var settingsEnabled: Binding<Bool>?
         var available: () -> Bool = { true }
         var permission: PermissionFeature?
+        var acceptsFallbackQuery = false
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
         var arguments: Arguments?
     }
     struct Provider {
+        struct Fallback {
+            let entries: () -> [Entry]
+            let resolve: (CommandID, String) -> (() -> Void)?
+        }
+
         /// Each provider owns a disjoint ID namespace or a single exact ID.
         let namespace: LauncherCommandNamespace
         let entries: (LauncherCommandSearch.Input) -> [Entry]
@@ -242,6 +249,7 @@ struct LauncherModule {
         var detailView: ((Entry) -> AnyView?)?
         var available: (CommandID) -> Bool = { _ in true }
         var permission: (CommandID) -> PermissionFeature? = { _ in nil }
+        var fallback: Fallback?
     }
 
     /// Runtime-discovered modules expose their current presence from validated in-memory metadata.
@@ -675,6 +683,46 @@ final class LauncherModuleRegistry {
                     isCommandEnabled(id, in: owned.module) && provider.available(id) && provider.permission(id)?.available != false
             }
         }
+    }
+
+    private func fallbackCommandAvailable(_ command: Owned<LauncherModule.Command>) -> Bool {
+        guard command.value.acceptsFallbackQuery, isCommandEnabled(command),
+              command.value.permission?.available != false else { return false }
+        if let arguments = command.value.arguments { return arguments.count.contains(1) }
+        guard case .page(let page) = command.value.declaration.destination else { return false }
+        return self.page(page) != nil
+    }
+
+    func fallbackCatalog() -> [Entry] {
+        let declared = commands.compactMap { owned -> Entry? in
+            guard fallbackCommandAvailable(owned) else { return nil }
+            let item = owned.value.declaration
+            return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
+                         detail: item.detail, symbol: item.symbol, aliases: item.keywords)
+        }
+        return declared + providers.flatMap { owned -> [Entry] in
+            guard isModuleEnabled(owned.module), let fallback = owned.value.fallback else { return [] }
+            return fallback.entries().filter {
+                let id = $0.commandID
+                return owned.value.namespace.contains(id) && isCommandEnabled(id, in: owned.module)
+                    && owned.value.available(id) && owned.value.permission(id)?.available != false
+            }
+        }
+    }
+
+    @discardableResult
+    func invokeFallback(_ id: CommandID, query: String,
+                        navigate: (LauncherCommandDeclaration.Destination) -> Void) -> Bool {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if let command = byID[id] {
+            guard fallbackCommandAvailable(command) else { return false }
+            return invoke(id, origin: .search, arguments: command.value.arguments == nil ? [] : [query], navigate: navigate)
+        }
+        guard let owned = provider(owning: id), isCommandEnabled(id, in: owned.module),
+              owned.value.available(id), permissionAllowsExecution(owned.value.permission(id)),
+              let action = owned.value.fallback?.resolve(id, query) else { return false }
+        action()
+        return true
     }
 
     /// Resolve and run at the point of invocation. Providers consult their current records here,

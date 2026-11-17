@@ -20,7 +20,7 @@ enum ContactsLauncherModule {
         let search = LauncherModule.Command(declaration: .init(
             id: .init(rawValue: "contacts"), title: "搜索联系人", detail: "系统通讯录", symbol: "person.crop.circle",
             keywords: ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(searchPage), settingsPage: settingsID
-        ), permission: permission)
+        ), permission: permission, acceptsFallbackQuery: true)
         let create = LauncherModule.Command(declaration: .init(
             id: createID, title: "新建联系人", detail: "添加到系统通讯录", symbol: "person.badge.plus",
             keywords: ["Create Contact", "New Contact", "添加联系人"], destination: .page(createPage), settingsPage: settingsID

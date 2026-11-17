@@ -255,6 +255,12 @@ struct Launcher: View {
         .onChange(of: firstSelectable(results), initial: true) { _, first in
             if selectionIsCurrent { selection.selectDefault(first) }
         }
+        .onChange(of: results.first?.isFallback == true ? results.map(\.commandID) : []) { _, _ in
+            // An async match or a settings change may replace the selected fallback.
+            if selectionIsCurrent, selectionIndex(in: results) == nil {
+                selection.id = firstSelectable(results)
+            }
+        }
         .onChange(of: showsRecentFiles ? results.map(\.commandID) : []) { _, ids in
             if showsRecentFiles, selectionIsCurrent, let selected = selection.id, !ids.contains(selected) {
                 selection.id = firstSelectable(results)
@@ -424,10 +430,12 @@ struct Launcher: View {
         }
         switch change.activation {
         case .enter:
-            if let seed = page?.enter?(model.query) {
+            let fallbackQuery = model.takeFallbackQuery(for: current)
+            let initialQuery = page?.enter?(fallbackQuery ?? model.query)
+            if let seed = fallbackQuery ?? initialQuery {
                 if showsFileResults { fileType = "all" }
                 // A page can seed a fresh entry. A return keeps the query saved by the host.
-                if restoredQuery == nil { model.query = seed }
+                if restoredQuery == nil || fallbackQuery != nil { model.query = seed }
             }
             refreshActiveQuery()
         case .resume:
@@ -558,7 +566,7 @@ struct Launcher: View {
                     if index == 0 || results[index - 1].detail != "File" { sectionHeader("文件") }
                 } else {
                     if index == 0 || results[index - 1].id == "calculator" {
-                        sectionHeader(model.query.isEmpty ? "建议" : "搜索结果")
+                        sectionHeader(row.isFallback ? "备选命令" : model.query.isEmpty ? "建议" : "搜索结果")
                     }
                     if index == 5 && model.query.isEmpty { sectionHeader("其他") }
                 }
@@ -830,6 +838,16 @@ struct Launcher: View {
         }
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
+        if row.isFallback {
+            return [
+                MenuAction(id: "run-fallback", title: "运行备选命令", icon: "return", shortcut: .init(.return, modifiers: [])) {
+                    model.perform(row)
+                },
+                MenuAction(id: "manage-fallback", title: "管理备选命令…", icon: "gearshape", group: 1) {
+                    model.openSettings(page: "launcher")
+                }
+            ]
+        }
         var actions = model.launcherModules?.actions(for: row) ?? [
             MenuAction(id: "open", title: "执行命令", icon: "return", shortcut: .init(.return, modifiers: [])) {
                 model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
@@ -988,6 +1006,7 @@ struct Launcher: View {
         if rootScriptArguments != nil { return "运行脚本" }
         if let title = page?.primaryTitle?() { return title }
         if let row = selectedEntry {
+            if row.isFallback { return "运行备选命令" }
             if let title = model.launcherModules?.primaryTitle(for: row) { return title }
             if row.id == "calculator" { return "复制结果" }
         }

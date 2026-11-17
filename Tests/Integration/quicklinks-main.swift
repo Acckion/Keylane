@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import KeylaneCore
 
 func verify() throws {
@@ -82,6 +83,7 @@ func verify() throws {
     } catch {
         precondition(preferences.data(forKey: QuicklinkLibrary.storageKey) == corrupt)
     }
+    try verifyFallbackVisibility()
     try verifyEditorNavigation()
     try verifyLocalLinks()
     try verifyApplicationLinks()
@@ -279,6 +281,56 @@ func verifyApplicationLinks() throws {
     controller.draft?.openingApplicationID = nil
     precondition(controller.saveDraft() == configured.id && controller.links[0].openingApplicationID == nil)
     print("PASS Quicklink application links: default route, no handler, explicit route, missing app, failure, encoding and editor cancellation")
+}
+
+func verifyFallbackVisibility() throws {
+    let suite = "org.keylane.quicklinks.fallback." + UUID().uuidString
+    guard let preferences = UserDefaults(suiteName: suite) else { fatalError("Missing test preferences") }
+    defer { preferences.removePersistentDomain(forName: suite) }
+
+    let visible = Quicklink(id: "quicklink:visible", title: "Web lookup", template: "https://example.com/?q={query}")
+    var hidden = Quicklink(id: "quicklink:hidden", title: "Hidden lookup", template: "https://example.org/?q={query}")
+    hidden.hiddenFromRoot = true
+    try QuicklinkLibrary(links: [visible, hidden]).save(to: preferences)
+
+    var opened: [URL] = []
+    var completed = 0
+    let controller = QuicklinksController(preferences: preferences, openURL: { opened.append($0); return true })
+    controller.load()
+    let namespace = LauncherCommandNamespace.prefix("quicklink:")
+    let registry = try LauncherModuleRegistry(modules: [
+        .init(id: .init(rawValue: "fixture.quicklinks"), providers: [
+            .init(namespace: namespace, entries: { _ in [] }, resolve: { _, _ in nil },
+                  fallback: controller.fallbackProvider(in: namespace) { completed += 1 })
+        ], searchUpdates: [controller.$links.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()])
+    ], preferences: preferences)
+    let search = LauncherCommandSearch()
+    let updates = registry.searchUpdates.sink { search.invalidate() }
+    defer { updates.cancel() }
+
+    let query = "  C++ & 中文  "
+    let defaults = LauncherCommandSearch.Input(query: query, page: .root, aliases: [:], favorites: [], usage: [:])
+    var custom = defaults
+    custom.fallbackOrder = .init(custom: [hidden.id, visible.id])
+    precondition(search.results(for: defaults, registry: registry).map(\.id) == [visible.id],
+                 "Hidden quicklinks must be absent from the default fallback list")
+    precondition(search.results(for: custom, registry: registry).map(\.id) == [visible.id])
+    precondition(!registry.invokeFallback(.init(rawValue: hidden.id), query: query) { _ in preconditionFailure() })
+    precondition(opened.isEmpty)
+
+    let entry = search.results(for: defaults, registry: registry)[0]
+    controller.updateOrganization(id: visible.id) { $0.hiddenFromRoot = true }
+    precondition(search.results(for: defaults, registry: registry).isEmpty)
+    precondition(search.results(for: custom, registry: registry).isEmpty)
+    precondition(!registry.invokeFallback(entry.commandID, query: query) { _ in preconditionFailure() })
+    precondition(opened.isEmpty)
+
+    controller.updateOrganization(id: visible.id) { $0.hiddenFromRoot = false }
+    precondition(search.results(for: custom, registry: registry).map(\.id) == [visible.id])
+    precondition(registry.invokeFallback(entry.commandID, query: query) { _ in preconditionFailure() })
+    precondition(completed == 1 && opened.map(\.absoluteString) ==
+                 ["https://example.com/?q=%20%20C%2B%2B%20%26%20%E4%B8%AD%E6%96%87%20%20"])
+    print("PASS quicklink fallback visibility: default and custom order, immediate hide, stale invocation and visible URL")
 }
 
 try verify()

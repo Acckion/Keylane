@@ -114,7 +114,7 @@ enum ScriptCommandsModule {
                                      destination: action == .search ? .page(searchPageID) : action == .create ? .page(createPageID) : .action, settingsPage: settingsID),
                   settingsEnabled: controller.commandEnabledBinding(action.rawValue),
                   available: { controller.enabled && !controller.disabled.contains(action.rawValue) },
-                  execute: { _ in
+                  acceptsFallbackQuery: action == .search, execute: { _ in
                       switch action {
                       case .create: controller.prepareCreation()
                       case .reload:
@@ -225,7 +225,26 @@ enum ScriptCommandsModule {
         }, detailView: { row in
             guard let line = controller.inlineOutput[row.id], !line.isEmpty else { return nil }
             return AnyView(ScriptTerminalText(source: line))
-        })
+        }, fallback: .init(entries: {
+            controller.fallbackEntries.map { script in
+                Entry(id: script.id, commandID: .init(rawValue: script.id), name: script.title,
+                      detail: "脚本命令", symbol: symbol)
+            }
+        }, resolve: { [weak model] id, query in
+            guard let model, let script = controller.fallbackEntry(withID: id.rawValue) else { return nil }
+            return {
+                guard !controller.running else {
+                    model.error = "已有脚本正在运行。"
+                    return
+                }
+                controller.select(script)
+                controller.argumentValues[0] = query
+                if script.metadata?.effectiveMode == .fullOutput || script.metadata?.needsConfirmation == true {
+                    model.openPage(pageID, origin: .search)
+                }
+                controller.run()
+            }
+        }))
         let cancelID = CommandID(rawValue: "cancel-running-script")
         let cancellation = LauncherModule.Provider(namespace: .exact(cancelID), entries: { input in
             guard input.page == .root, let script = controller.runningScript else { return [] }
@@ -235,25 +254,6 @@ enum ScriptCommandsModule {
         }, resolve: { _, _ in
             controller.running ? controller.cancel : nil
         }, primaryTitle: { _ in "取消运行" })
-        let fallbackID = CommandID(rawValue: "script-fallback")
-        let fallback = LauncherModule.Provider(namespace: .exact(fallbackID), entries: { input in
-            let query = input.query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard input.page == .root, !query.isEmpty, let script = controller.fallback else { return [] }
-            return [.init(id: fallbackID.rawValue, commandID: fallbackID,
-                          name: "用「\(script.title)」处理输入", detail: "脚本命令", symbol: symbol, isFallback: true)]
-        }, resolve: { [weak model] _, origin in
-            guard let model, !controller.running, let script = controller.fallback else { return nil }
-            let query = model.query
-            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return {
-                controller.select(script)
-                controller.argumentValues[0] = query
-                if script.metadata?.effectiveMode == .fullOutput || script.metadata?.needsConfirmation == true {
-                    model.openPage(pageID, origin: origin)
-                }
-                controller.run()
-            }
-        })
         let settings = LauncherSettingsPage(
             id: settingsID, title: "脚本命令", symbol: symbol, subtitle: "从指定文件夹发现并运行本机脚本。",
             order: 65, items: [.scriptFolders, .scriptCommands],
@@ -317,14 +317,13 @@ enum ScriptCommandsModule {
                                     detail: "添加脚本文件夹和热键", symbol: symbol,
                                     keywords: ["Script Commands", "脚本", "Shell", "Python", "Node"],
                                     destination: .settings(settingsID), settingsPage: settingsID))
-        ] + actionCommands(controller), providers: [provider, cancellation, fallback], pages: [searchPage(model), page, create, configure], settings: [settings],
+        ] + actionCommands(controller), providers: [provider, cancellation], pages: [searchPage(model), page, create, configure], settings: [settings],
         services: [.init(start: controller.start, stop: controller.stop)],
         searchUpdates: [
             ViewObservation.changes(controller.$folders),
             ViewObservation.changes(controller.$entries),
             ViewObservation.changes(controller.$runningScript),
             ViewObservation.changes(controller.$enabled),
-            ViewObservation.changes(controller.$fallbackID),
             ViewObservation.changes(controller.$disabled)
         ], launcherShown: { controller.setLauncherVisible(true) },
         launcherHidden: { controller.setLauncherVisible(false) },
@@ -475,7 +474,6 @@ private struct ScriptCommandsPreferences: View {
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(controller.$folders),
             ViewObservation.changes(controller.$enabled),
-            ViewObservation.changes(controller.$fallbackID),
             ViewObservation.changes(controller.$entries),
             ViewObservation.changes(controller.$disabled),
             ViewObservation.changes(controller.$scanning),
@@ -494,18 +492,6 @@ private struct ScriptCommandsPreferences: View {
                     Text("部分文件夹无法读取：\(controller.unavailable.joined(separator: "、"))")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-            }
-            if !controller.fallbackEntries.isEmpty {
-                SettingsGroup {
-                    SettingsRow("无匹配结果时使用脚本", detail: "将主搜索的输入作为脚本的第一个参数。") {
-                        Picker("备用脚本", selection: Binding(get: { controller.fallbackID }, set: { controller.fallbackID = $0 })) {
-                            Text("无").tag("")
-                            ForEach(controller.fallbackEntries) { script in Text(script.title).tag(script.id) }
-                        }
-                        .labelsHidden()
-                    }
-                }
-                .disabled(!controller.enabled)
             }
             SettingsSectionTitle(title: "命令").settingsAnchor(.scriptCommands)
             CommandSettingsList(items: ScriptCommandsModule.Action.allCases, id: \.rawValue) { action in

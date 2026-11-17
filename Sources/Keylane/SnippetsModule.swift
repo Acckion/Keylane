@@ -155,7 +155,7 @@ enum SnippetsModule {
             return .init(declaration: .init(id: command.id, title: command.title, detail: "文字片段",
                                             symbol: command.symbol, keywords: command.keywords,
                                             destination: destination, settingsPage: settingsID),
-                         execute: { _ in
+                         acceptsFallbackQuery: command == .search, execute: { _ in
                 switch command {
                 case .export: snippets.exportSnippets()
                 case .import: snippets.importSnippets()
