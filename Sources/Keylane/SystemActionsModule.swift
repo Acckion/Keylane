@@ -4,7 +4,27 @@ import KeylaneCore
 import SwiftUI
 
 enum SystemActionsModule {
+    static let id = ModuleID(rawValue: "keylane.system")
     static let volumePage = PageID(rawValue: "SetSystemVolume")
+
+    static func migratePreferences(model: Model, commands: [LauncherModule.Command]) {
+        let defaults = UserDefaults.standard
+        let key = LauncherModuleRegistry.disabledModulesPreferenceKey
+        var disabled = Set(defaults.stringArray(forKey: key) ?? [])
+        let actionsDisabled = disabled.remove("keylane.system-tools") != nil
+        let settingsDisabled = disabled.remove("keylane.system-settings") != nil
+        guard actionsDisabled || settingsDisabled else { return }
+
+        if actionsDisabled && settingsDisabled {
+            disabled.insert(id.rawValue)
+        } else {
+            let commandIDs = actionsDisabled
+                ? commands.map { $0.declaration.id.rawValue }
+                : SystemSettingsCatalog.pages.map(\.id)
+            model.disabledCommands.formUnion(commandIDs)
+        }
+        defaults.set(disabled.sorted(), forKey: key)
+    }
 
     static func make(model: Model, languages: [String] = Locale.preferredLanguages) -> LauncherModule {
         let chinese = SystemSettingsCatalog.prefersChinese(languages)
@@ -115,8 +135,28 @@ enum SystemActionsModule {
             guard let model, SystemActions.setOutputVolume(volume.percent) else { return }
             model.pageID = .root
         }
-        return .init(id: .init(rawValue: "keylane.system-tools"), title: chinese ? "系统" : "System",
-                     symbol: "gearshape", commands: commands, pages: [.init(
+        let moduleTitle = chinese ? "系统" : "System"
+        let settingsPageID = id.rawValue
+        let actionsItem = SettingsItem(id: "keylane.system-tools", page: settingsPageID,
+                                       title: chinese ? "系统操作" : "System Actions",
+                                       keywords: ([moduleTitle] + commands.flatMap { $0.declaration.keywords }).joined(separator: " "))
+        let settingsItem = SettingsItem(id: "keylane.system-settings", page: settingsPageID,
+                                        title: chinese ? "系统设置" : "System Settings",
+                                        keywords: "System Settings 系統設定 系统设置直达")
+        let search = SettingsSearchControls()
+        let settings = LauncherSettingsPage(
+            id: settingsPageID, title: moduleTitle, symbol: "gearshape",
+            subtitle: chinese ? "管理系统操作和直达 macOS 系统设置的命令。" : "Manage system actions and shortcuts to macOS settings.",
+            order: 128, items: [actionsItem, settingsItem], trailingToolbar: {
+                AnyView(SettingsToolbarSearch(title: chinese ? "搜索系统命令" : "Search System Commands", selection: search))
+            }, content: { [weak model] in
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(SystemCommandPreferences(model: model, commands: commands, actionsItem: actionsItem,
+                                                        settingsItem: settingsItem, search: search))
+            }
+        )
+        return .init(id: id, title: moduleTitle, symbol: "gearshape", commands: commands,
+                     providers: [SystemSettingsCommands.provider(model: model)], pages: [.init(
                         id: volumePage, placeholder: "", badge: (title, "speaker.wave.2"), contentPlacement: .form,
                         content: { [weak model] in
                             AnyView(SystemVolumeView(draft: volume, title: title) { model?.pageID = .root })
@@ -126,13 +166,14 @@ enum SystemActionsModule {
                         updates: volume.$available.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                         enter: { _ in volume.load(); return nil },
                         resume: { volume.load() }
-                     )], services: [.init(start: {
+                     )], settings: [settings], services: [.init(start: {
                          permissions.forEach { $0.startObserving() }
                      }, stop: {
                          permissions.forEach { $0.stopObserving() }
                          SystemControls.cancel()
                          SystemTools.shared.stopSystemTools()
-                     })], searchUpdates: (permissions + [model.finderAutomation]).map(\.updates))
+                     })], searchUpdates: (permissions + [model.finderAutomation]).map(\.updates),
+                     dynamicCommandSettings: SystemSettingsCommands.shortcutSettings(model: model))
     }
 }
 
