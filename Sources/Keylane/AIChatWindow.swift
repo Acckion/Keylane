@@ -105,11 +105,14 @@ private struct AIChatView: View {
                 .overlay { if controller.loadingChat { ProgressView("正在读取对话…") } }
             Divider()
             VStack(alignment: .leading, spacing: 10) {
-                if !controller.matchesCurrentModel {
-                    Text("这段对话使用了另一模型或接口。切回原配置，或新建对话。")
+                if !configuration.state.enabled {
+                    Text("请在「设置 → AI」中启用 AI。")
                         .font(.caption).foregroundStyle(.secondary)
-                } else if let connection = configuration.selected, configuration.isAvailable {
-                    Text(connection.name.isEmpty ? connection.model : connection.name)
+                } else if !controller.matchesCurrentModel {
+                    Text("这段对话的原模型或接口不可用。恢复原连接，或新建对话。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let connection = controller.currentConnection {
+                    Text(connection.displayName)
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("请在「设置 → AI」中启用并配置模型。")
@@ -128,7 +131,7 @@ private struct AIChatView: View {
                     Button("发送", action: submit)
                         .keyboardShortcut(.return, modifiers: .command)
                         .buttonStyle(ContentActionButtonStyle())
-                        .disabled(controller.running || controller.loadingChat || !controller.matchesCurrentModel || !configuration.isAvailable
+                        .disabled(controller.running || controller.loadingChat || !controller.matchesCurrentModel || controller.currentConnection == nil
                                   || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }.padding(16)

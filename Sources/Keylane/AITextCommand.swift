@@ -55,7 +55,7 @@ final class AITextCommandSession: ObservableObject {
     init(configuration: AIConfiguration, runtime: AIRuntime,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
         self.configuration = configuration
-        reply = QuickAIController(configuration: configuration, runtime: runtime, readKey: readKey)
+        reply = QuickAIController(configuration: configuration, runtime: runtime, route: .commands, readKey: readKey)
     }
 
     var destination: String {
@@ -66,7 +66,8 @@ final class AITextCommandSession: ObservableObject {
     }
 
     var destinationChanged: Bool {
-        reviewedConnection != configuration.selected || !configuration.isAvailable
+        guard let reviewedConnection, let current = configuration.state.connection(for: .commands) else { return true }
+        return AIChatRecord.ModelReference(reviewedConnection) != AIChatRecord.ModelReference(current) || reviewedConnection.mode != current.mode
     }
 
     var canSend: Bool {
@@ -75,7 +76,7 @@ final class AITextCommandSession: ObservableObject {
 
     func prepare(_ command: AITextCommand, selection: String?) {
         reply.reset()
-        reviewedConnection = configuration.selected
+        reviewedConnection = configuration.state.connection(for: .commands)
         self.command = command
         input = selection ?? ""
     }

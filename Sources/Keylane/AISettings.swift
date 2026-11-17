@@ -20,7 +20,7 @@ enum AIModule {
         let chat = AIChatWindow(controller: quickAI, configuration: configuration,
                                 appearance: model.$appearance.eraseToAnyPublisher())
         let openChat: () -> Void = { [weak model] in
-            guard let model, configuration.isAvailable else { return }
+            guard let model, configuration.state.enabled else { return }
             let fromQuickAI = model.pageID == QuickAILauncher.pageID
             chat.show(draft: fromQuickAI ? model.query : "", restoreLatest: !fromQuickAI,
                       activation: model.windowActivationBehavior) {
@@ -31,14 +31,14 @@ enum AIModule {
         let quickCommand = LauncherModule.Command(declaration: .init(
             id: QuickAILauncher.commandID, title: "Quick AI", detail: "向已配置的模型提问", symbol: "sparkles",
             keywords: ["ask", "AI", "快速问答", "询问 AI"], destination: .action, settingsPage: "ai"
-        ), available: { configuration.isAvailable }, execute: { [weak model] origin in
+        ), available: { configuration.state.connection(for: .quick) != nil }, execute: { [weak model] origin in
             if quickAI.isInChat { openChat() }
             else { model?.openPage(QuickAILauncher.pageID, origin: origin) }
         })
         let chatCommand = LauncherModule.Command(declaration: .init(
             id: .init(rawValue: "ai-chat"), title: "AI Chat", detail: "打开独立聊天窗口", symbol: "bubble.left.and.bubble.right",
             keywords: ["chat", "AI", "聊天", "对话"], destination: .action, settingsPage: "ai"
-        ), available: { configuration.isAvailable }, execute: { _ in openChat() })
+        ), available: { configuration.state.enabled }, execute: { _ in openChat() })
         let textSession = AITextCommandSession(configuration: configuration, runtime: runtime)
         let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
@@ -55,7 +55,9 @@ enum AIModule {
                       return AnyView(AISettings(configuration: configuration, runtime: runtime,
                                                 model: model, textCommands: textCommands))
                   })
-        ], searchUpdates: [configuration.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher()])
+        ], searchUpdates: [ViewObservation.changes(configuration.$state.map(\.routeAvailability)),
+                           ViewObservation.changes(configuration.$state.map(\.isAvailable)),
+                           ViewObservation.changes(configuration.$state.map(\.enabled))])
     }
 }
 
@@ -64,33 +66,45 @@ private struct AISettings: View {
     let runtime: AIRuntime
     let model: Model
     let textCommands: [LauncherModule.Command]
-    @State private var newConnection: AIConnection?
+    @State private var editingConnection: AIConnection?
 
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                SettingsPicker("当前模型连接", detail: "Quick AI、AI Chat、询问文件和 AI 命令使用此连接。", selection: Binding<UUID?>(
+                SettingsPicker("共用模型连接", detail: "用于询问文件，以及跟随共用连接的 AI 入口。", selection: Binding<UUID?>(
                     get: { configuration.state.selectedID },
-                    set: { if let id = $0 { configuration.select(id); newConnection = nil } }
+                    set: { if let id = $0 { configuration.select(id) } }
                 )) {
-                    if configuration.state.connections.isEmpty { Text("尚未配置").tag(nil as UUID?) }
-                    ForEach(configuration.state.connections) { connection in
+                    if configuration.selected == nil { Text("尚未选择").tag(nil as UUID?) }
+                    ForEach(configuration.state.connections.filter {
+                        $0.hiddenFromPicker != true || $0.id == configuration.state.selectedID
+                    }) { connection in
                         Text(connection.name.isEmpty ? connection.model : connection.name).tag(Optional(connection.id))
                     }
                 }
                 Divider()
                 SettingsRow("模型与提供方", detail: "支持 OpenAI 兼容接口，可以添加多个连接。") {
-                    Button("添加连接", systemImage: "plus") { newConnection = AIConnection() }
+                    HStack {
+                        Button("添加 Ollama") {
+                            editingConnection = AIConnection(name: "Ollama", endpoint: "http://127.0.0.1:11434/v1")
+                        }
+                        SettingsIconButton("添加连接", symbol: "plus") { editingConnection = AIConnection() }
+                    }
                 }
             }.settingsAnchor(AIModule.models)
 
-            if let connection = newConnection ?? configuration.selected {
-                AIConnectionEditor(configuration: configuration, runtime: runtime, connection: connection,
-                                   isNew: newConnection != nil) { newConnection = nil }
-                    .id(connection.id)
-            }
+            AIModelCatalogSettings(configuration: configuration) { editingConnection = $0 }
             ExtensionCommandPreferences(model: model, commands: textCommands)
                 .settingsAnchor(AIModule.textCommandsItem)
+        }
+        .sheet(item: $editingConnection) { draft in
+            ScrollView {
+                let saved = configuration.state.connections.first { $0.id == draft.id }
+                AIConnectionEditor(configuration: configuration, runtime: runtime, connection: saved ?? draft,
+                                   isNew: saved == nil) { editingConnection = nil }
+                    .id(saved != nil)
+                    .padding(16)
+            }.frame(width: 550, height: 560)
         }
     }
 }
@@ -106,6 +120,10 @@ private struct AIConnectionEditor: View {
     @State private var hasKey = false
     @State private var status = ""
     @State private var test: Task<Void, Never>?
+    @State private var discovery: Task<Void, Never>?
+    @State private var discoveredModels: [String] = []
+    @State private var showsModels = false
+    @State private var contextTokens: String
     @State private var confirmRemoval = false
     @State private var confirmKeyDeletion = false
 
@@ -117,6 +135,7 @@ private struct AIConnectionEditor: View {
         self.isNew = isNew
         self.closeDraft = closeDraft
         _draft = State(initialValue: connection)
+        _contextTokens = State(initialValue: connection.contextTokens.map(String.init) ?? "")
     }
 
     var body: some View {
@@ -130,7 +149,15 @@ private struct AIConnectionEditor: View {
             }
             Divider()
             SettingsRow("模型 ID") {
-                TextField("提供方的模型标识", text: $draft.model).frame(width: 245)
+                HStack {
+                    TextField("提供方的模型标识", text: $draft.model).frame(width: 170)
+                    if discovery != nil {
+                        Button("停止", action: cancelDiscovery)
+                    } else {
+                        Button("同步模型", action: discoverModels)
+                            .disabled(!configuration.state.enabled || draft.modelsURL == nil || test != nil)
+                    }
+                }
             }
             Divider()
             SettingsPicker("响应方式", detail: "流式逐段显示回复，完整响应兼容旧接口。", selection: $draft.mode) {
@@ -138,10 +165,23 @@ private struct AIConnectionEditor: View {
                 Text("完整响应").tag(AIResponseMode.complete)
             }
             Divider()
+            SettingsRow("在默认模型选项中显示", detail: "已有默认设置及对话仍可使用此连接。") {
+                Toggle("在默认模型选项中显示", isOn: Binding(get: { draft.hiddenFromPicker != true },
+                    set: { draft.hiddenFromPicker = $0 ? nil : true })).labelsHidden()
+            }
+            Divider()
+            SettingsRow("已知上下文长度", detail: "根据提供方资料填写，留空表示未知。") {
+                TextField("Tokens", text: $contextTokens).frame(width: 150)
+            }
+            Divider()
+            capability("支持图像输入", selection: $draft.supportsImages)
+            Divider()
+            capability("支持工具调用", selection: $draft.supportsTools)
+            Divider()
             SettingsRow("连接") {
                 HStack {
-                    if isNew { Button("取消", action: closeDraft) }
-                    else { Button("移除…") { confirmRemoval = true } }
+                    Button(isNew ? "取消" : "关闭", action: closeDraft)
+                    if !isNew { Button("移除…") { confirmRemoval = true } }
                     Button("保存连接", action: saveConnection)
                 }
             }
@@ -158,7 +198,7 @@ private struct AIConnectionEditor: View {
                 Divider()
                 SettingsRow("测试连接", detail: "发送一条简短测试消息，可能计入提供方用量。") {
                     if test != nil { Button("停止") { cancelTest() } }
-                    else { Button("发送测试") { startTest() }.disabled(!configuration.isAvailable || draft != connection) }
+                    else { Button("发送测试") { startTest() }.disabled(!configuration.state.enabled || draft != connection || discovery != nil) }
                 }
             }
             if !status.isEmpty {
@@ -167,10 +207,20 @@ private struct AIConnectionEditor: View {
             }
         }
         .task(id: connection) { if !isNew { hasKey = AIConfiguration.hasKey(for: connection) } }
-        .onChange(of: configuration.state) { _, _ in cancelTest() }
-        .onDisappear { cancelTest(); key = "" }
+        .onChange(of: configuration.state) { _, state in
+            cancelTest()
+            if !state.enabled { cancelDiscovery(); showsModels = false }
+        }
+        .onChange(of: draft.endpoint) { _, _ in cancelDiscovery() }
+        .onDisappear { cancelTest(); cancelDiscovery(); key = "" }
+        .sheet(isPresented: $showsModels) {
+            AIModelDiscoveryList(models: discoveredModels) { draft.model = $0 }
+        }
         .confirmationDialog("移除此连接及其钥匙串密钥？", isPresented: $confirmRemoval, titleVisibility: .visible) {
-            Button("移除连接", role: .destructive) { withStatus("连接已移除。") { try configuration.remove(connection) } }
+            Button("移除连接", role: .destructive) {
+                do { try configuration.remove(connection); closeDraft() }
+                catch { status = error.localizedDescription }
+            }
         }
         .confirmationDialog("删除此连接的钥匙串密钥？", isPresented: $confirmKeyDeletion, titleVisibility: .visible) {
             Button("删除密钥", role: .destructive) { withStatus("密钥已删除。") { try AIConfiguration.deleteKey(for: connection) } }
@@ -178,14 +228,59 @@ private struct AIConnectionEditor: View {
     }
 
     private func saveConnection() {
-        guard configuration.save(draft), let saved = configuration.selected else {
+        let tokens = contextTokens.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tokens.isEmpty && Int(tokens).map({ $0 > 0 }) != true {
+            status = "上下文长度须为正整数。"
+            return
+        }
+        var edited = draft
+        edited.contextTokens = Int(tokens)
+        guard configuration.save(edited, selectAsDefault: false),
+              let saved = configuration.state.connections.first(where: { $0.id == edited.id }) else {
             status = "请填写有效的接口地址和模型 ID。"
             return
         }
         draft = saved
         key = ""
         status = "连接已保存。"
-        closeDraft()
+        if !isNew { closeDraft() }
+    }
+
+    private func capability(_ title: String, selection: Binding<Bool?>) -> some View {
+        SettingsPicker(title, selection: selection) {
+            Text("未知").tag(nil as Bool?)
+            Text("是").tag(Optional(true))
+            Text("否").tag(Optional(false))
+        }
+    }
+
+    private func cancelDiscovery() {
+        guard let discovery else { return }
+        discovery.cancel()
+        self.discovery = nil
+        status = "同步已停止。"
+    }
+
+    private func discoverModels() {
+        let target = draft
+        let useSavedCredential = !isNew && target.completionURL == connection.completionURL
+        status = "正在同步模型…"
+        discovery = Task { @MainActor in
+            do {
+                let models = try await runtime.listModels(connection: target) {
+                    guard useSavedCredential else { return nil }
+                    return try AIConfiguration.key(for: $0)
+                }
+                guard !Task.isCancelled else { return }
+                discoveredModels = models
+                showsModels = !models.isEmpty
+                status = models.isEmpty ? "接口未返回可选模型，可手动填写模型 ID。" : "已找到 \(models.count) 个模型。"
+            } catch {
+                guard !Task.isCancelled else { return }
+                status = "同步失败：\(error.localizedDescription)"
+            }
+            discovery = nil
+        }
     }
 
     private func withStatus(_ success: String, operation: () throws -> Void) {

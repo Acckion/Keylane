@@ -12,7 +12,7 @@ enum AITextCommandLauncher {
             LauncherModule.Command(declaration: .init(
                 id: .init(rawValue: command.id), title: command.title, detail: "预览选中文本，确认后交给模型处理",
                 symbol: command.icon, keywords: [command.rawValue, "AI", "选中文字"], destination: .action, settingsPage: "ai"
-            ), available: { [weak model] in model?.aiSettings.isAvailable == true }, execute: { [weak model] origin in
+            ), available: { [weak model] in model?.aiSettings.state.connection(for: .commands) != nil }, execute: { [weak model] origin in
                 guard let model else { return }
                 session.prepare(command, selection: selectedText())
                 model.openPage(pageID, origin: origin)
