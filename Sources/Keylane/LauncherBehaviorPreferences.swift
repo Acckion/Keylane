@@ -96,7 +96,7 @@ private struct FallbackCommandPreferences: View {
 
     init(model: Model) {
         self.model = model
-        var changes = [ViewObservation.changes(model.$fallbackCommandIDs),
+        var changes = [ViewObservation.changes(model.$fallbackCommandOrder),
                        ViewObservation.changes(model.$disabledCommands)]
         if let registry = model.launcherModules { changes.append(registry.searchUpdates) }
         _observation = StateObject(wrappedValue: ViewObservation(changes))
@@ -106,7 +106,7 @@ private struct FallbackCommandPreferences: View {
         let registry = model.launcherModules
         let catalog = registry?.fallbackCatalog() ?? []
         let entries = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let configured = model.fallbackCommandIDs
+        let configured = model.fallbackCommandOrder.ids(in: catalog)
         let moduleTitles = Dictionary(uniqueKeysWithValues: (registry?.shortcutCommandGroups ?? []).map { ($0.id, $0.title) })
 
         VStack(alignment: .leading, spacing: 5) {

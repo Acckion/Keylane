@@ -245,14 +245,24 @@ precondition(unrelatedProviderCalls == 0)
 print("PASS scoped ranking skips unrelated providers")
 
 let noMatch = "  nothing-matches 测试 "
-let fallbackOrder = ["fixture-lookup", "script:missing", "script:demo"]
+let fallbackIDs = ["fixture-lookup", "script:demo"]
+let defaultFallback = LauncherCommandSearch.Input(query: noMatch, page: .root, aliases: [:], favorites: [], usage: [:])
+precondition(scopedSearch.results(for: defaultFallback, registry: scopedRegistry).map(\.id) == fallbackIDs)
+var preferenceFallback = defaultFallback
+extensionPreferences.set("script:demo", forKey: "scriptCommands.fallback")
+preferenceFallback.fallbackOrder = FallbackCommandOrder(preferences: extensionPreferences)
+precondition(scopedSearch.results(for: preferenceFallback, registry: scopedRegistry).map(\.id) == Array(fallbackIDs.reversed()))
+extensionPreferences.set([String](), forKey: FallbackCommandOrder.preferenceKey)
+preferenceFallback.fallbackOrder = FallbackCommandOrder(preferences: extensionPreferences)
+precondition(scopedSearch.results(for: preferenceFallback, registry: scopedRegistry).isEmpty)
+let fallbackOrder = FallbackCommandOrder(custom: ["fixture-lookup", "script:missing", "script:demo"])
 var rootFallback = LauncherCommandSearch.Input(query: noMatch, page: .root, aliases: [:], favorites: [], usage: [:],
                                               fallbackOrder: fallbackOrder)
 let fallbackRows = scopedSearch.results(for: rootFallback, registry: scopedRegistry)
 precondition(fallbackRows.map(\.id) == ["fixture-lookup", "script:demo"])
 precondition(fallbackRows.allSatisfy { $0.fallbackQuery == noMatch })
 precondition(receivedFallbackQuery == nil)
-rootFallback.fallbackOrder.reverse()
+rootFallback.fallbackOrder.custom?.reverse()
 precondition(scopedSearch.results(for: rootFallback, registry: scopedRegistry).map(\.id) == ["script:demo", "fixture-lookup"])
 rootFallback.allowsFallback = false
 precondition(scopedSearch.results(for: rootFallback, registry: scopedRegistry).isEmpty)
@@ -277,6 +287,7 @@ precondition(!scopedRegistry.invokeFallback(fallbackScriptID, query: "stale sele
 precondition(receivedFallbackQuery == noMatch)
 scopedSearch.invalidate()
 rootFallback.allowsFallback = true
+precondition(scopedSearch.results(for: defaultFallback, registry: scopedRegistry).map(\.id) == ["fixture-lookup"])
 precondition(scopedSearch.results(for: rootFallback, registry: scopedRegistry).map(\.id) == ["fixture-lookup"])
 var fallbackDestination: LauncherCommandDeclaration.Destination?
 precondition(scopedRegistry.invokeFallback(.init(rawValue: "fixture-lookup"), query: noMatch) { fallbackDestination = $0 })

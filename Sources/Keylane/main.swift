@@ -191,21 +191,17 @@ final class Model: ObservableObject {
     private var appIdentities: [String: ApplicationIdentity] = [:] {
         didSet { applicationEntries = nil; commandSearch.invalidate() }
     }
-    @Published var fallbackCommandIDs = Model.savedFallbackCommands() {
+    @Published private(set) var fallbackCommandOrder = FallbackCommandOrder(preferences: .standard) {
         didSet {
-            UserDefaults.standard.set(fallbackCommandIDs, forKey: "launcherFallbackCommandIDs")
+            UserDefaults.standard.set(fallbackCommandOrder.custom, forKey: FallbackCommandOrder.preferenceKey)
             rootSearchUpdates.send()
         }
     }
     private var fallbackPageQuery: (page: PageID, query: String)?
 
-    private static func savedFallbackCommands(from preferences: UserDefaults = .standard) -> [String] {
-        if let ids = preferences.stringArray(forKey: "launcherFallbackCommandIDs") {
-            var seen = Set<String>()
-            return ids.filter { !$0.isEmpty && seen.insert($0).inserted }
-        }
-        guard let legacy = preferences.string(forKey: "scriptCommands.fallback"), !legacy.isEmpty else { return [] }
-        return [legacy]
+    var fallbackCommandIDs: [String] {
+        get { fallbackCommandOrder.custom ?? fallbackCommandOrder.ids(in: launcherModules?.fallbackCatalog() ?? []) }
+        set { fallbackCommandOrder.custom = newValue }
     }
 
     func takeFallbackQuery(for page: PageID) -> String? {
@@ -690,7 +686,7 @@ final class Model: ObservableObject {
                                                 aliases: aliases, favorites: favorites, usage: usage,
                                                 favoriteOrder: orderedFavoriteIDs, history: pageID == .root ? searchUsage : .init(),
                                                 sensitivity: rootSearchSensitivity, namespace: namespace,
-                                                fallbackOrder: fallbackCommandIDs,
+                                                fallbackOrder: fallbackCommandOrder,
                                                 allowsFallback: !searchesFilesHere ||
                                                     (!fileSearch.isSearching && fileSearch.lastPublishedQuery == query))
         return commandSearch.results(for: input, registry: launcherModules)
