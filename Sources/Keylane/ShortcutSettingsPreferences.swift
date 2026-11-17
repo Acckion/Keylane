@@ -165,7 +165,7 @@ struct ShortcutSettingsPreferences: View {
     let model: Model
     @StateObject private var observation: ViewObservation
     @AppStorage("hiddenShortcutSettingsGroups") private var hiddenGroupIDs = ""
-    @State private var expanded: Set<String> = ["keylane.system-tools"]
+    @State private var expanded: Set<String> = [SystemActionsModule.id.rawValue]
     @ObservedObject var selection: ShortcutSettingsControls
     @State private var collapsedWhileSearching: Set<String> = []
 
@@ -316,13 +316,15 @@ struct ShortcutSettingsPreferences: View {
 struct ExtensionCommandPreferences: View {
     let model: Model
     let commands: [LauncherModule.Command]
+    let emptyMessage: String
     let disclosure: ((LauncherModule.Command) -> CommandSettingsDisclosure?)?
     @StateObject private var observation: ViewObservation
 
-    init(model: Model, commands: [LauncherModule.Command],
+    init(model: Model, commands: [LauncherModule.Command], emptyMessage: String = "暂无命令",
          disclosure: ((LauncherModule.Command) -> CommandSettingsDisclosure?)? = nil) {
         self.model = model
         self.commands = commands
+        self.emptyMessage = emptyMessage
         self.disclosure = disclosure
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases),
@@ -334,7 +336,7 @@ struct ExtensionCommandPreferences: View {
     }
 
     var body: some View {
-        CommandSettingsList(items: commands, id: \.declaration.id, showsColumns: true,
+        CommandSettingsList(items: commands, id: \.declaration.id, emptyMessage: emptyMessage, showsColumns: true,
                             usesFixedRowHeights: !commands.contains { $0.settingsEnabled != nil && $0.permission != nil },
                             disclosure: disclosure) {
             $0.commandSettingsEntry(model: model)
