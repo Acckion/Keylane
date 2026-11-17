@@ -50,7 +50,9 @@
 - 截图与 Emoji 通过 `ResultGrid` 显示内容，用 `ResultGridSelection` 处理方向键和结果变化。模块负责分组、图片和激活动作。
 - 搜索页浮动筛选使用 `ResultTypeFilter`。底部菜单与筛选共用 `LauncherMenuRow` 和 `LauncherMenuSurface`，宿主管理浮动菜单的打开、关闭和焦点归还。应用与文件动作由模块登记。
 
-- 二级页面通过 `LauncherPage.ContentPlacement` 声明内容与浮动栏的位置。列表中的可激活结果用 `ResultListButton` 保持点击动作和滚动目标的 ID 一致。宿主只观察会改变页头、主按钮或操作菜单的状态，列表、详情和便笺编辑器各自观察自己的内容。
-- 创建类命令使用 `LauncherPage.ContentPlacement.form`，由 `LauncherCreationForm` 提供返回按钮、可选顶部操作区域和滚动表单。字段用 `LauncherCreationField` 对齐，输入控件可用 `LauncherCreationControl` 统一描边。命令负责绑定、校验和提交，底栏继续由启动器宿主管理。
+- 二级页面通过 `LauncherPage.ContentPlacement` 声明内容与浮动栏的位置。只读正文使用 `.readingDetail`，宿主统一提供顶栏、滚动、边距及边缘渐隐。更新日志只提供标题、日期和正文。列表中的可激活结果用 `ResultListButton` 保持点击动作和滚动目标的 ID 一致。宿主只观察会改变页头、主按钮或操作菜单的状态，列表、详情和便笺编辑器各自观察自己的内容。
+- 有固定上级的子页登记 `parent`。宿主在从父页进入子页时保存查询，返回后先恢复查询再派发页面事件。模块继续管理结果的选中项。跨窗口或来源不同的特殊返回可提供 `back`。
+- 返回按钮和 Esc 需要返回时调用同一个宿主入口。当前编辑器先处理输入法和局部取消，启动器再关闭菜单或按键盘设置返回、隐藏。没有控件取得焦点时由启动器窗口补接 Esc，搜索框和顶栏的样式不参与这项判断。
+- 创建类命令使用 `LauncherPage.ContentPlacement.form`，由 `LauncherCreationForm` 提供返回按钮、可选顶部操作区域和滚动表单。标准返回按钮使用 `Model.goBackInLauncher`，文字片段编辑页先处理占位符补全，再把 Esc 交给宿主。字段用 `LauncherCreationField` 对齐，输入控件可用 `LauncherCreationControl` 统一描边。命令负责绑定、校验和提交，底栏继续由启动器宿主管理。
 - 创建表单的可搜索选项使用 `LauncherCreationPicker`，悬浮在原窗口的表单上方，展开时下方字段保持原位，复用 `ResultFilterPanel` 的搜索和键盘导航。验收时打开「创建脚本命令」，分别点击模板和模式的搜索框、用鼠标选值，再用方向键和回车选值。按 Esc 应先收起选择器并留在表单。重新展开后搜索为空，当前值仍在。关闭启动器后重新进入创建命令，两个选择器均应收起。
 - 命令子项的设置搜索使用 `CommandSettingsDisclosure.revealItem` 登记定位锚点。验收时先折叠「搜索文字片段」，从另一个设置页搜索并选择「搜索文字片段的主要操作」，检查命令行定位后立即显示「主要操作」。在同页手动折叠，再通过键盘选择同一个搜索结果，检查子项再次展开。剪贴板的「超时」和「换行」搜索也应展开「顺序粘贴」。

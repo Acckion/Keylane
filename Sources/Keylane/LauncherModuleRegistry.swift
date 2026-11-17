@@ -48,6 +48,7 @@ struct LauncherPage {
     enum ContentPlacement {
         case inset
         case underChrome
+        case readingDetail
         case fileResults
         case form
     }
@@ -61,6 +62,8 @@ struct LauncherPage {
     var queryChanged: (String) -> Void = { _ in }
     var leave: () -> Void = {}
     var keepsStateWhenHidden = false
+    var parent: PageID?
+    // A custom return action for pages that can be entered from another window or multiple routes.
     var back: (() -> Void)?
     var move: ((Int) -> Void)?
     var submit: (() -> Void)?
@@ -71,7 +74,6 @@ struct LauncherPage {
     var primaryEnabled: (() -> Bool)?
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
-    var showsSearchField = true
     var searchDisplay: (() -> AnyView)?
     var enter: ((String) -> String?)?
     var resume: (() -> Void)?
