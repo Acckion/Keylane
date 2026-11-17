@@ -4,6 +4,8 @@ import Darwin
 import KeylaneCore
 
 let shortcutController = SystemShortcutsController(loadsIcons: false)
+if CommandLine.arguments.dropFirst() == [DictionaryProcess.argument] { DictionaryProcess.run() }
+
 func wait(_ description: String, _ condition: () -> Bool) {
     let deadline = Date().addingTimeInterval(20)
     while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.04)) }
