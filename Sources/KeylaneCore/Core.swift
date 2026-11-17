@@ -84,16 +84,34 @@ public enum SearchRanker {
 public enum Calculator {
     public static func evaluate(_ input: String, locale: Locale = Locale(identifier: "en_US_POSIX")) -> Double? {
         guard input.utf16.count <= 512 else { return nil }
-        let normalized = decimalInput(input.folding(options: .widthInsensitive, locale: locale), locale: locale)
+        let normalized = groupingInput(input.folding(options: .widthInsensitive, locale: locale), locale: locale)
             .replacingOccurrences(of: "×", with: "*")
             .replacingOccurrences(of: "÷", with: "/")
             .replacingOccurrences(of: "−", with: "-")
-        var parser = Parser(chars: Array(normalized.lowercased()))
+        var parser = Parser(chars: Array(normalized.lowercased()), decimalComma: locale.decimalSeparator == ",")
         parser.skipSpaces()
         _ = parser.consume("=")
         guard let value = parser.expression(), value.isFinite else { return nil }
         parser.skipSpaces()
         return parser.index == parser.chars.count ? value : nil
+    }
+
+    static func groupingInput(_ input: String, locale: Locale) -> String {
+        guard let separator = locale.groupingSeparator, !separator.isEmpty, input.contains(separator),
+              separator != locale.decimalSeparator else { return input }
+        // In a function argument list a comma always remains available as a separator.
+        if separator == ",", input.contains("(") { return input }
+        let group = NSRegularExpression.escapedPattern(for: separator)
+        let decimal = NSRegularExpression.escapedPattern(for: locale.decimalSeparator ?? ".")
+        let pattern = "(?<![\\d\\w" + group + "])\\d{1,3}(?:" + group +
+            "\\d{3})+(?=(?:" + decimal + "\\d|[^\\d" + group + "]|$))"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return input }
+        var result = input
+        for match in regex.matches(in: input, range: NSRange(input.startIndex..., in: input)).reversed() {
+            guard let range = Range(match.range, in: result) else { continue }
+            result.replaceSubrange(range, with: result[range].replacingOccurrences(of: separator, with: ""))
+        }
+        return result
     }
 
     static func decimalInput(_ input: String, locale: Locale) -> String {
@@ -108,11 +126,12 @@ public enum Calculator {
 
     public static func isExpression(_ input: String) -> Bool {
         let text = input.folding(options: .widthInsensitive, locale: .current)
-        return text.first == "=" || text.contains(where: { "+-−*/×÷^%()".contains($0) })
+        return ["e", "pi", "π"].contains(text.lowercased()) || text.first == "=" || text.contains(where: { "+-−*/×÷^%()".contains($0) })
     }
 
     private struct Parser {
         let chars: [Character]
+        let decimalComma: Bool
         var index = 0
         var depth = 0
 
@@ -182,27 +201,92 @@ public enum Calculator {
                 case "pi", "π": return .pi
                 case "e": return exp(1)
                 default:
-                    guard consume("("), let x = expression(), consume(")") else { return nil }
-                    switch name {
-                    case "sqrt": return sqrt(x)
-                    case "abs": return abs(x)
-                    case "ln": return log(x)
-                    case "log": return log10(x)
-                    case "sin": return sin(x)
-                    case "cos": return cos(x)
-                    case "tan": return tan(x)
-                    default: return nil
+                    guard consume("("), let first = expression() else { return nil }
+                    var arguments = [first]
+                    while consume(",") || (decimalComma && consume(";")) {
+                        guard let next = expression() else { return nil }
+                        arguments.append(next)
                     }
+                    guard consume(")"), arguments.allSatisfy(\.isFinite) else { return nil }
+                    return function(name, arguments)
                 }
             }
-            while index < chars.count && (chars[index].isASCII && chars[index].isNumber || chars[index] == ".") { index += 1 }
+            while index < chars.count {
+                let char = chars[index]
+                if char.isASCII && char.isNumber || char == "." ||
+                    (decimalComma && char == "," && chars.indices.contains(index + 1) && chars[index + 1].isNumber) {
+                    index += 1
+                } else { break }
+            }
             guard index > start else { return nil }
             if index < chars.count, chars[index] == "e" {
                 index += 1
                 if index < chars.count, chars[index] == "+" || chars[index] == "-" { index += 1 }
                 while index < chars.count && chars[index].isASCII && chars[index].isNumber { index += 1 }
             }
-            return Double(String(chars[start..<index]))
+            return Double(String(chars[start..<index]).replacingOccurrences(of: ",", with: "."))
+        }
+
+        private func function(_ name: String, _ values: [Double]) -> Double? {
+            let x = values[0]
+            switch name {
+            case "sum": return values.reduce(0, +)
+            case "avg", "mean": return values.reduce(0, +) / Double(values.count)
+            case "min": return values.min()
+            case "max": return values.max()
+            case "round":
+                guard values.count <= 2 else { return nil }
+                let digits = values.count == 2 ? values[1] : 0
+                guard digits.rounded() == digits, abs(digits) <= 15 else { return nil }
+                let scale = pow(10, digits)
+                return (x * scale).rounded() / scale
+            case "gcd":
+                guard values.count > 1 else { return nil }
+                var result: UInt64 = 0
+                for value in values {
+                    guard let integer = Int64(exactly: value) else { return nil }
+                    var next = integer.magnitude
+                    while next != 0 { (result, next) = (next, result % next) }
+                }
+                return Double(result)
+            default: break
+            }
+            guard values.count == 1 else { return nil }
+            switch name {
+            case "sqrt": return sqrt(x)
+            case "cbrt": return cbrt(x)
+            case "abs": return abs(x)
+            case "ln": return log(x)
+            case "log": return log10(x)
+            case "exp": return exp(x)
+            case "ceil": return ceil(x)
+            case "floor": return floor(x)
+            case "sin": return sin(x)
+            case "cos": return cos(x)
+            case "tan": return tan(x)
+            case "cot": return 1 / tan(x)
+            case "sec": return 1 / cos(x)
+            case "csc": return 1 / sin(x)
+            case "asin": return asin(x)
+            case "acos": return acos(x)
+            case "atan": return atan(x)
+            case "acot": return atan2(1, x)
+            case "asec": return acos(1 / x)
+            case "acsc": return asin(1 / x)
+            case "sinh": return sinh(x)
+            case "cosh": return cosh(x)
+            case "tanh": return tanh(x)
+            case "coth": return 1 / tanh(x)
+            case "sech": return 1 / cosh(x)
+            case "csch": return 1 / sinh(x)
+            case "asinh": return asinh(x)
+            case "acosh": return acosh(x)
+            case "atanh": return atanh(x)
+            case "acoth": return atanh(1 / x)
+            case "asech": return acosh(1 / x)
+            case "acsch": return asinh(1 / x)
+            default: return nil
+            }
         }
     }
 }

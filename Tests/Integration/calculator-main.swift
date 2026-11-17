@@ -124,5 +124,12 @@ precondition(requestCount() == before + 2)
 exchange.endPresentation()
 exchange.startPresenting()
 precondition(result(yen).value == "1 USD" && requestCount() == before + 2)
+let manualRefresh = Data("""
+<Cube><Cube time="2026-11-13"><Cube currency="USD" rate="5"/><Cube currency="CNY" rate="8"/></Cube></Cube>
+""".utf8)
+configure([response(manualRefresh)])
+exchange.refresh()
+wait("manual refresh bypasses the normal interval") { result().value == "160 CNY" }
+precondition(requestCount() == before + 3)
 exchange.stop()
-print("PASS calculator: no-data, malformed XML, HTTP failure, offline stale cache, unsupported currency, cancellation, rapid query change and reopen")
+print("PASS calculator: manual refresh, no-data, malformed XML, HTTP failure, offline stale cache, unsupported currency, cancellation, rapid query change and reopen")
