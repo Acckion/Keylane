@@ -128,7 +128,7 @@ enum AppUtilitiesModule {
             id: cameraPageID, placeholder: "", badge: ("相机预览", "camera"), contentPlacement: .form,
             content: { AnyView(CameraPreviewPage(camera: camera, back: back)) },
             leave: { camera.stop() }, back: back,
-            submit: submit, shortcutSubmit: submit,
+            submit: submit, returnBindings: .init(primary: .plain),
             primaryTitle: { camera.meeting == nil ? camera.primaryDestination.title : "加入会议" },
             primaryEnabled: { camera.meeting != nil || camera.canTakePhoto },
             actions: { cameraActions(camera, takePhoto: takePhoto) },
@@ -143,7 +143,7 @@ enum AppUtilitiesModule {
                 ViewObservation.changes(camera.$primaryDestination)
             ]).eraseToAnyPublisher(),
             enter: { _ in start(); return nil }, resume: start,
-            maximumActionWidth: 330, fullBleed: true, submitWithReturn: true
+            maximumActionWidth: 330, fullBleed: true
         )
     }
 
