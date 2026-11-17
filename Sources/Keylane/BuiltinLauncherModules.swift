@@ -98,12 +98,12 @@ enum BuiltinLauncherModules {
                                        enabled: canBind(), perform: bindShortcut)]
                             },
                             updates: keyboard.objectWillChange.eraseToAnyPublisher(),
-                            searchDisplay: {
+                            headerInput: .custom({
                                 let keys = keyboard.displayedKeys
                                 return AnyView(Text(keys.isEmpty ? "按下快捷键…" : keys.joined(separator: " "))
                                     .font(.system(size: 19))
                                     .foregroundStyle(keys.isEmpty ? .secondary : .primary))
-                            },
+                            }),
                             typeFilterWidth: 220,
                             typeFilter: { [weak model] open in
                                 guard let model else { return AnyView(EmptyView()) }

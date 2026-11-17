@@ -287,7 +287,9 @@ enum ScriptCommandsModule {
             id: createPageID, placeholder: "", badge: ("创建脚本命令", "plus.square"),
             contentPlacement: .form,
             content: { [weak model] in
-                AnyView(ScriptCreationPage(controller: controller) { model?.pageID = .root })
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(ScriptCreationPage(controller: controller, back: model.goBackInLauncher,
+                                                  cancel: model.cancelLauncherPage))
             },
             submit: controller.saveDraft, shortcutSubmit: controller.saveDraft,
             primaryTitle: { "创建脚本" },

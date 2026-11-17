@@ -64,6 +64,27 @@ let dictionaryURL = DictionaryController.dictionaryURL(for: termWithReservedChar
 precondition(dictionaryURL.scheme == "dict" && dictionaryURL.query == nil && dictionaryURL.fragment == nil)
 precondition(URLComponents(url: dictionaryURL, resolvingAgainstBaseURL: false)?.path == termWithReservedCharacters)
 print("PASS Dictionary: latest query, cancel/reopen, missing and long input, encoded URL and isolated pasteboard")
+let firstLookupStarted = DispatchSemaphore(value: 0)
+let cancellableDictionary = DictionaryController { term, request in
+    if term == "obsolete" {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["5"]
+        try! request.launch(child)
+        defer { request.finished() }
+        firstLookupStarted.signal()
+        child.waitUntilExit()
+        precondition(request.isCancelled && child.terminationReason == .uncaughtSignal)
+    }
+    return [.init(word: term, entries: [.plain(term)])]
+}
+cancellableDictionary.search("obsolete")
+precondition(firstLookupStarted.wait(timeout: .now() + 3) == .success)
+cancellableDictionary.search("replacement")
+wait("replacement starts after the cancelled child exits") { !cancellableDictionary.loading }
+precondition(cancellableDictionary.selected?.word == "replacement")
+print("PASS Dictionary: replacing a running query terminates its child process")
+
 let record = CNMutableContact()
 record.givenName = "示例"
 record.familyName = "测试"

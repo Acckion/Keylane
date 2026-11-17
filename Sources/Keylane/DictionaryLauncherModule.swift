@@ -113,7 +113,7 @@ enum DictionaryLauncherModule {
             primaryTitle: { Action.open.title }, primaryEnabled: { controller.selected != nil },
             actions: {
                 controller.selected.map { actions(for: $0, controller: controller, primary: .open) } ?? []
-            }, updates: updates, searchDisplay: { AnyView(Color.clear.accessibilityHidden(true)) },
+            }, updates: updates, headerInput: .none,
             typeFilterWidth: 174, typeFilter: { [weak model] isOpen in
                 AnyView(DictionarySourceFilter(word: controller.selected, options: options,
                                                isOpen: isOpen, navigation: model?.navigation ?? "arrows"))
@@ -156,18 +156,30 @@ enum DictionaryLauncherModule {
         let supported = Action.allCases.filter { $0 != .details || details != nil }
         return ([primary] + supported.filter { $0 != primary }).map { action in
             let keys: [String]
-            if action == primary { keys = ["↩"] }
+            let shortcut: KeyboardShortcut?
+            if action == primary {
+                keys = ["↩"]
+                shortcut = nil
+            }
             else {
                 switch action {
-                case .details: keys = []
-                case .open: keys = ["⌘", "↩"]
-                case .paste: keys = details == nil ? ["⌘", "↩"] : ["⌥", "↩"]
-                case .copy: keys = details == nil ? ["⌥", "↩"] : ["⇧", "⌘", "C"]
+                case .details:
+                    keys = []
+                    shortcut = nil
+                case .open:
+                    keys = []
+                    shortcut = .init(.return, modifiers: .command)
+                case .paste:
+                    keys = []
+                    shortcut = .init(.return, modifiers: details == nil ? .command : .option)
+                case .copy:
+                    keys = []
+                    shortcut = details == nil ? .init(.return, modifiers: .option) : .init("c", modifiers: [.shift, .command])
                 }
             }
             let targetIcon = action == .paste ? (NSApp.delegate as? Delegate)?.pasteTargetIcon : nil
             return LauncherAction(id: "dictionary-" + action.rawValue, title: actionTitle(action), icon: action.symbol,
-                                  keys: keys, artwork: targetIcon) {
+                                  keys: keys, shortcut: shortcut, artwork: targetIcon) {
                 perform(action, word: word, controller: controller, details: details)
             }
         } + [.init(id: "dictionary-copy-definition", title: "复制释义", icon: "doc.on.doc", group: 1) {

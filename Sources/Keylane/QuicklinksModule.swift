@@ -147,7 +147,9 @@ enum QuicklinksModule {
         let editPage = LauncherPage(
             id: editID, placeholder: "", badge: ("创建快捷链接", "link"), contentPlacement: .form,
             content: { [weak model] in
-                AnyView(QuicklinkLauncherEditor(controller: controller, guideURL: guideURL, back: { model?.pageID = controller.editorReturnPage }))
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(QuicklinkLauncherEditor(controller: controller, guideURL: guideURL,
+                                                        back: model.goBackInLauncher, cancel: model.cancelLauncherPage))
             },
             leave: { [weak model] in
                 guard let model else { return }
@@ -155,6 +157,7 @@ enum QuicklinksModule {
                     model.pageID = returnPage
                 }
             },
+            back: { [weak model] in model?.pageID = controller.editorReturnPage },
             submit: save, shortcutSubmit: save, primaryTitle: { "保存快捷链接" },
             badgeTitle: {
                 controller.links.contains { $0.id == controller.draft?.id } ? "编辑快捷链接" : "创建快捷链接"
@@ -171,12 +174,15 @@ enum QuicklinksModule {
         let arguments = LauncherPage(
             id: argumentsID, placeholder: "", badge: ("快捷链接", "link"), contentPlacement: .form,
             content: { [weak model] in
-                AnyView(QuicklinkParameterForm(controller: controller, back: { model?.pageID = argumentsReturn }, submit: submit))
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(QuicklinkParameterForm(controller: controller, back: model.goBackInLauncher,
+                                                      cancel: model.cancelLauncherPage, submit: submit))
             },
             leave: { [weak model] in
                 controller.clearInput()
                 if model?.pageID == argumentsID { model?.pageID = argumentsReturn }
             },
+            back: { [weak model] in model?.pageID = argumentsReturn },
             submit: submit, shortcutSubmit: submit, primaryTitle: { "打开链接" }
         )
 

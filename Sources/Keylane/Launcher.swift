@@ -246,6 +246,8 @@ struct Launcher: View {
                     if page?.submitWithReturn == true {
                         if primaryActionEnabled || actions || appMenu { run() }
                     } else {
+                        guard presentation.page == model.pageID, !SearchField.isComposing,
+                              page?.contentPlacement != .form || primaryActionEnabled else { return }
                         if page?.optionSubmit != nil { closeMenus() }
                         shortcutSubmit()
                     }
@@ -504,9 +506,10 @@ struct Launcher: View {
                     LauncherBackButton(action: goBack)
                 }
                 if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
-                if let display = page?.searchDisplay {
+                switch showsReadingDetail ? .none : (page?.headerInput ?? .searchField) {
+                case let .custom(display):
                     display().frame(maxWidth: .infinity, alignment: .leading)
-                } else if !showsReadingDetail {
+                case .searchField:
                     SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen && inlineEmojiTarget == nil, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
                                 back: page?.moveHorizontal.map { move in { move(-1) } },
                                 forward: page?.moveHorizontal.map { move in { move(1) } },
@@ -514,7 +517,7 @@ struct Launcher: View {
                                 spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil,
                                 insertEmoji: openInlineEmoji)
                         .frame(height: 30)
-                } else {
+                case .none:
                     Spacer(minLength: 0)
                 }
                 if showsTypeFilter {
@@ -775,7 +778,7 @@ struct Launcher: View {
         .modifier(LauncherMenuSurface(open: open, tint: open ? nil : feedback?.style.color.opacity(0.16)))
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
-    private var pageMenuShortcuts: some View {
+    private var shortcutActions: [LauncherAction] {
         let entryActions: [LauncherAction]
         if page?.actionShortcutsEnabled == true {
             entryActions = page?.actions?() ?? []
@@ -789,12 +792,19 @@ struct Launcher: View {
         } else {
             entryActions = []
         }
-        return ForEach((page?.badgeActions?() ?? []) + entryActions) { action in
+        return (page?.badgeActions?() ?? []) + entryActions
+    }
+
+    private var pageMenuShortcuts: some View {
+        ForEach(shortcutActions) { action in
             let modifiers = action.keys.dropLast()
-            if action.enabled, !modifiers.isEmpty, let key = action.keys.last,
+            if let shortcut = action.shortcut, action.enabled {
+                pageMenuShortcut(action, shortcut: shortcut)
+            } else if action.shortcut == nil, action.enabled, !modifiers.isEmpty, let key = action.keys.last,
                !usesPageSubmitShortcut(key: key, modifiers: modifiers),
                let character = key.lowercased().first {
-                pageMenuShortcut(action, key: character, modifiers: modifiers)
+                let key = key == "↩" ? KeyEquivalent.return : KeyEquivalent(character)
+                pageMenuShortcut(action, shortcut: KeyboardShortcut(key, modifiers: shortcutModifiers(modifiers)))
             }
         }
     }
@@ -805,17 +815,28 @@ struct Launcher: View {
             || (modifiers.elementsEqual(["⌥"]) && page?.optionSubmit != nil)
     }
 
-    private func pageMenuShortcut(_ action: MenuAction, key: Character, modifiers: ArraySlice<String>) -> some View {
+    private func shortcutModifiers(_ modifiers: ArraySlice<String>) -> EventModifiers {
         var flags: EventModifiers = []
         if modifiers.contains("⌘") { flags.insert(.command) }
         if modifiers.contains("⌥") { flags.insert(.option) }
         if modifiers.contains("⌃") { flags.insert(.control) }
         if modifiers.contains("⇧") { flags.insert(.shift) }
+        return flags
+    }
+
+    private func pageMenuShortcut(_ action: MenuAction, shortcut: KeyboardShortcut) -> some View {
+        let pageID = model.pageID
+        let context = page?.actionContextTitle?()
+        let selection = selectedEntry?.commandID
         return Button("") {
-            if action.submenu != nil, !actions { toggleMenu(application: false) }
-            activate(action)
+            guard presentation.page == pageID, model.pageID == pageID,
+                  page?.actionContextTitle?() == context, selectedEntry?.commandID == selection,
+                  !SearchField.isComposing,
+                  let current = shortcutActions.first(where: { $0.id == action.id }), current.enabled else { return }
+            if current.submenu != nil, !actions { toggleMenu(application: false) }
+            activate(current)
         }
-        .keyboardShortcut(key == "↩" ? .return : KeyEquivalent(key), modifiers: flags)
+        .keyboardShortcut(shortcut)
         .hidden()
         .accessibilityHidden(true)
     }
@@ -922,7 +943,7 @@ struct Launcher: View {
                                         Text(value).font(VisualStyle.rowText).foregroundStyle(.secondary)
                                             .lineLimit(1).help(value)
                                     }
-                                    if !item.keys.isEmpty { Keycaps(keys: item.keys) }
+                                    if !item.displayedKeys.isEmpty { Keycaps(keys: item.displayedKeys) }
                                     if item.submenu != nil {
                                         Image(systemName: "chevron.right")
                                             .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
@@ -1063,6 +1084,7 @@ struct Launcher: View {
             if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
             return
         }
+        guard primaryActionEnabled else { return }
         if let submit = page?.submit { submit(); return }
         if model.pageID != .root && !showsFileResults { goBack(); return }
         if let row = selectedEntry { performRootEntry(row) }

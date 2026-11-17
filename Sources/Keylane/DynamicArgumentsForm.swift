@@ -7,6 +7,7 @@ struct DynamicArgumentsForm: View {
     @Binding var values: [String: String]
     let error: String?
     let back: () -> Void
+    var cancel: (() -> Void)? = nil
     let submit: () -> Void
     @FocusState private var focused: String?
 
@@ -41,7 +42,9 @@ struct DynamicArgumentsForm: View {
             if let error { Text(error).font(.callout).foregroundStyle(.red) }
         }
         .task { focused = arguments.first?.id }
-        .onExitCommand(perform: back)
+        .onExitCommand {
+            if !SearchField.isComposing { (cancel ?? back)() }
+        }
     }
 
     private func value(for argument: DynamicTemplate.Argument) -> Binding<String> {

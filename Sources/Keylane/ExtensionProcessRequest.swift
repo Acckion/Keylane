@@ -20,6 +20,12 @@ final class ExtensionProcessRequest: @unchecked Sendable {
         lock.withLock { process = nil }
     }
 
+    func terminate() {
+        lock.withLock {
+            if let process, process.isRunning { process.terminate() }
+        }
+    }
+
     func cancel() {
         lock.withLock {
             cancelled = true
