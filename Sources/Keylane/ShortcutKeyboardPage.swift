@@ -169,7 +169,6 @@ struct ShortcutKeyboardPage: View {
                                   registry: LauncherModuleRegistry?, open: Binding<Bool>) -> some View {
         let enabled = shortcut != nil && selection.previewModifiers == nil && validation == nil
         let title = owner.map { names[$0] ?? $0 } ?? "绑定命令"
-        let width: CGFloat = owner == nil ? 138 : 220
         let options = selection.choosing && open.wrappedValue
             ? ResultFilterPanel.matches(commandOptions(catalog, registry: registry),
                                         query: query.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -189,7 +188,7 @@ struct ShortcutKeyboardPage: View {
                     }, dismiss: closePicker)
                 }
             } else {
-                LauncherHeaderMenuButton(title: title, symbol: "command", width: width,
+                LauncherHeaderMenuButton(title: title, symbol: "command",
                                          icon: owner.map { AnyView(bindingIcon($0)) }) {
                     guard enabled else { return }
                     selection.feedback = nil

@@ -81,23 +81,32 @@ struct ResultTypeFilter: View {
 struct LauncherHeaderMenuButton: View {
     let title: String
     let symbol: String
-    let width: CGFloat
+    var width: CGFloat? = nil
     var accessibilityTitle: String? = nil
     var icon: AnyView? = nil
     let action: () -> Void
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
+        if let width {
+            button.frame(width: width)
+        } else {
+            button.fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var button: some View {
         NativeHoverButton(title: accessibilityTitle ?? title, action: action) {
             HStack(spacing: 9) {
                 if let icon { icon } else { Image(systemName: symbol) }
-                Text(title).lineLimit(1)
+                Text(title).lineLimit(1).frame(maxWidth: width == nil ? 160 : nil)
                 Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold))
             }
+            .padding(.horizontal, width == nil ? 12 : 0)
             .font(.system(size: 15, weight: .medium))
             .foregroundStyle(Color.primary.opacity(contrast == .increased ? 1 : 0.8))
         }
-        .frame(width: width, height: VisualStyle.launcherControlDiameter)
+        .frame(height: VisualStyle.launcherControlDiameter)
     }
 }
 
