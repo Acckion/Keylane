@@ -1,4 +1,5 @@
 import AppKit
+import KeylaneCore
 import SwiftUI
 
 struct EmojiItem: Identifiable, Sendable {
@@ -63,7 +64,21 @@ enum EmojiCatalog {
 }
 
 final class EmojiSearchController: ObservableObject {
-    static let columnCount = 8
+    static let pageID = PageID(rawValue: "Emoji")
+    static let columnCounts = 6...10
+    enum PrimaryAction: String, CaseIterable {
+        case paste, copy
+        var title: String {
+            self == .paste ? EmojiCatalog.label("粘贴到当前应用", "Paste to Active App")
+                : EmojiCatalog.label("复制到剪贴板", "Copy to Clipboard")
+        }
+    }
+    static let skinTones = ["✋", "✋🏻", "✋🏼", "✋🏽", "✋🏾", "✋🏿"]
+
+    @Published var columns: Int { didSet { defaults.set(columns, forKey: "emojiColumns") } }
+    @Published var primaryAction: PrimaryAction { didSet { defaults.set(primaryAction.rawValue, forKey: "emojiPrimaryAction") } }
+    @Published var skinTone: Int { didSet { defaults.set(skinTone, forKey: "emojiSkinTone") } }
+    @Published var disablesInlinePicker: Bool { didSet { defaults.set(disablesInlinePicker, forKey: "emojiDisablesInlinePicker") } }
     private static let recentsKey = "emojiRecentUsage"
 
     @Published private(set) var sections: [ResultGridSection<EmojiItem>] = []
@@ -87,6 +102,12 @@ final class EmojiSearchController: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        let savedColumns = defaults.integer(forKey: "emojiColumns")
+        columns = Self.columnCounts.contains(savedColumns) ? savedColumns : 8
+        primaryAction = PrimaryAction(rawValue: defaults.string(forKey: "emojiPrimaryAction") ?? "") ?? .paste
+        let savedTone = defaults.integer(forKey: "emojiSkinTone")
+        skinTone = Self.skinTones.indices.contains(savedTone) ? savedTone : 0
+        disablesInlinePicker = defaults.bool(forKey: "emojiDisablesInlinePicker")
         history = defaults.dictionary(forKey: Self.recentsKey) as? [String: Int] ?? [:]
     }
 
@@ -119,9 +140,23 @@ final class EmojiSearchController: ObservableObject {
     func copy(_ item: EmojiItem, to pasteboard: NSPasteboard = .general) -> Int? {
         guard active, selected?.id == item.id else { return nil }
         pasteboard.clearContents()
-        guard pasteboard.setString(item.glyph, forType: .string) else { return nil }
+        guard pasteboard.setString(glyph(for: item), forType: .string) else { return nil }
         recordUse(item)
         return pasteboard.changeCount
+    }
+
+    func glyph(for item: EmojiItem) -> String {
+        Self.glyph(for: item, tone: skinTone, isAvailable: { itemsByID[$0] != nil })
+    }
+
+    static func glyph(for item: EmojiItem, tone: Int, isAvailable: (String) -> Bool) -> String {
+        guard tone > 0, let modifier = UnicodeScalar(0x1F3FA + tone),
+              !item.glyph.unicodeScalars.contains(where: { (0x1F3FB...0x1F3FF).contains($0.value) }),
+              let first = item.glyph.unicodeScalars.first else { return item.glyph }
+        let remaining = item.glyph.unicodeScalars.dropFirst()
+        let suffix = remaining.first?.value == 0xFE0F ? remaining.dropFirst() : remaining
+        let candidate = String(first) + String(modifier) + String(String.UnicodeScalarView(suffix))
+        return isAvailable(candidate) ? candidate : item.glyph
     }
 
     private func recordUse(_ item: EmojiItem) {
@@ -131,7 +166,7 @@ final class EmojiSearchController: ObservableObject {
     }
 
     func move(_ delta: Int, vertical: Bool) {
-        let next = selection?.moving(delta, vertical: vertical, columns: Self.columnCount, in: sections)
+        let next = selection?.moving(delta, vertical: vertical, columns: columns, in: sections)
         if next != selection { selection = next }
     }
 
@@ -251,8 +286,8 @@ struct EmojiSearchPage: View {
 
     var body: some View {
         ResultGrid(sections: controller.sections, selection: $controller.selection,
-                   columnCount: EmojiSearchController.columnCount, itemTitle: { $0.title }, activate: activate) { item in
-            Text(item.glyph)
+                   columnCount: controller.columns, itemTitle: { $0.title }, activate: activate) { item in
+            Text(controller.glyph(for: item))
                 .font(.system(size: 42))
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
@@ -268,5 +303,41 @@ struct EmojiSearchPage: View {
                 }
             }.padding(.top, 50)
         }
+    }
+}
+
+struct EmojiInlinePicker: View {
+    let controller: EmojiSearchController
+    let navigation: String
+    let choose: (String) -> Void
+    let dismiss: () -> Void
+    @State private var catalog: [EmojiItem]?
+    @State private var glyphs: Set<String> = []
+    @State private var query = ""
+
+    var body: some View {
+        let terms = query.lowercased().split(whereSeparator: \.isWhitespace)
+        let matches = (catalog ?? []).lazy.filter { item in
+            terms.allSatisfy { item.searchTerms.localizedCaseInsensitiveContains(String($0)) || item.glyph == $0 }
+        }.prefix(60)
+        var seen: Set<String> = []
+        let options = Array(matches).compactMap { item -> ResultFilterOption? in
+            let glyph = EmojiSearchController.glyph(for: item, tone: controller.skinTone, isAvailable: glyphs.contains)
+            guard seen.insert(glyph).inserted else { return nil }
+            return ResultFilterOption(id: glyph, title: "\(glyph)  \(item.title)", symbol: "")
+        }
+        let width: CGFloat = 270
+        ResultFilterPanel(selection: "", options: options, query: $query,
+                          searchPlaceholder: "搜索 Emoji…", emptyTitle: catalog == nil ? "正在加载…" : "没有匹配的 Emoji",
+                          navigation: navigation, width: width, maximumVisibleRows: 4,
+                          choose: { choose($0.id) }, dismiss: dismiss)
+            .modifier(LauncherMenuSurface(open: true))
+            .task {
+                let loaded = await Task.detached(priority: .userInitiated) { (try? EmojiCatalog.load()) ?? [] }.value
+                if !Task.isCancelled {
+                    glyphs = Set(loaded.map(\.glyph))
+                    catalog = loaded
+                }
+            }
     }
 }
