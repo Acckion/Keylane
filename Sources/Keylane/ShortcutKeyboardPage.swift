@@ -1,19 +1,26 @@
+import AppKit
 import KeylaneCore
 import SwiftUI
 
+final class ShortcutKeyboardSelection: ObservableObject {
+    @Published var shortcut = Shortcut(key: 3, modifiers: 256)
+    @Published var previewModifiers: UInt32?
+    @Published var choosing = false
+    @Published var feedback: String?
+}
+
 struct ShortcutKeyboardPage: View {
     static let pageID = PageID(rawValue: "ShortcutKeyboard")
-    let back: () -> Void
 
     let model: Model
+    @ObservedObject var selection: ShortcutKeyboardSelection
+    let showsToolbarControls: Bool
     @StateObject private var observation: ViewObservation
-    @State private var modifiers: UInt32 = 256
-    @State private var key: UInt32 = 3
-    @State private var choosing = false
     @State private var query = ""
     @State private var stagedCommand: String?
     @State private var change: Change?
-    @State private var feedback: String?
+    @State private var inputMonitor: Any?
+    @State private var capturedDuringHold = false
 
     private struct Change {
         let target: Shortcut
@@ -22,9 +29,10 @@ struct ShortcutKeyboardPage: View {
         let displaced: String?
     }
 
-    init(model: Model, back: @escaping () -> Void) {
+    init(model: Model, selection: ShortcutKeyboardSelection, showsToolbarControls: Bool = false) {
         self.model = model
-        self.back = back
+        self.selection = selection
+        self.showsToolbarControls = showsToolbarControls
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(model.$aliases),
@@ -32,7 +40,7 @@ struct ShortcutKeyboardPage: View {
         ] + (model.launcherModules.map { $0.shortcutSettingsUpdates() + [$0.availabilityChanges.eraseToAnyPublisher()] } ?? [])))
     }
 
-    private var shortcut: Shortcut { Shortcut(key: key, modifiers: modifiers) }
+    private var shortcut: Shortcut { selection.shortcut }
     private var owner: String? { model.bindings.first { $0.value == shortcut }?.key }
     private var validation: String? {
         ShortcutValidation.conflict(in: ["shortcut": shortcut])
@@ -47,18 +55,25 @@ struct ShortcutKeyboardPage: View {
             return fixed + binding + (group.dynamicCommands?.commandNames() ?? [])
         }
         let names = Dictionary(catalog.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
+        if showsToolbarControls {
+            keyboardControls(commandName: owner.map { names[$0] ?? $0 })
+        } else {
+            keyboardContent(catalog, names: names, registry: registry)
+        }
+    }
+
+    private func keyboardContent(_ catalog: [ShortcutCommandName], names: [String: String],
+                                 registry: LauncherModuleRegistry?) -> some View {
         let bindingsByShortcut = Dictionary(model.bindings.sorted { $0.key < $1.key }.map { ($0.value, $0.key) },
                                             uniquingKeysWith: { first, _ in first })
-        return LauncherCreationForm(back: back) {
-            keyboardControls(commandName: owner.map { names[$0] ?? $0 })
-        } fields: {
-            keyboard(bindings: bindingsByShortcut, names: names)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("MacBook Air ANSI 键盘")
-                .padding(.horizontal, 22)
-        }
+        return keyboard(bindings: bindingsByShortcut, names: names)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("MacBook Air ANSI 键盘")
+            .padding(.horizontal, 22)
+            .padding(.top, VisualStyle.launcherTopInset + 10)
+            .frame(maxHeight: .infinity, alignment: .top)
         .overlay {
-            if choosing {
+            if selection.choosing {
                 ZStack {
                     Color.black.opacity(0.26).contentShape(Rectangle())
                         .onTapGesture { closePicker() }
@@ -77,7 +92,89 @@ struct ShortcutKeyboardPage: View {
                 .onExitCommand { if !SearchField.isComposing { closePicker() } }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in closePicker() }
+        .onAppear(perform: startCapturing)
+        .onDisappear(perform: stopCapturing)
+        .onChange(of: selection.choosing) { _, choosing in
+            if choosing {
+                query = ""
+                stagedCommand = nil
+                stopCapturing()
+            } else { startCapturing() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in startCapturing() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { event in
+            guard (event.object as? NSWindow) === (NSApp.delegate as? Delegate)?.window else { return }
+            startCapturing()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { event in
+            guard (event.object as? NSWindow) === (NSApp.delegate as? Delegate)?.window else { return }
+            stopCapturing()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
+            stopCapturing()
+            closePicker()
+        }
+    }
+
+    private func startCapturing() {
+        guard inputMonitor == nil, !selection.choosing, model.pageID == Self.pageID,
+              let delegate = NSApp.delegate as? Delegate, let window = delegate.window,
+              window.isVisible, window.isKeyWindow else { return }
+        delegate.shortcuts.suspend()
+        inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown]) { [weak window] event in
+            guard let window, NSApp.keyWindow === window,
+                  event.window == nil || event.window === window, model.pageID == Self.pageID else { return event }
+            let pressed = Shortcut(event: event)
+            if event.type == .flagsChanged {
+                if pressed.modifiers == 0 {
+                    capturedDuringHold = false
+                    selection.previewModifiers = nil
+                } else if !capturedDuringHold {
+                    selection.previewModifiers = pressed.modifiers
+                }
+                return event
+            }
+            // Keep the Launcher's navigation and standard control keys usable on their own.
+            guard Self.editableCodes.contains(pressed.key),
+                  pressed.modifiers != 0 || !Self.navigationCodes.contains(pressed.key) else { return event }
+            selection.shortcut = pressed
+            selection.previewModifiers = nil
+            capturedDuringHold = pressed.modifiers != 0
+            selection.feedback = nil
+            return nil
+        }
+    }
+
+    private func stopCapturing() {
+        selection.previewModifiers = nil
+        capturedDuringHold = false
+        guard let inputMonitor else { return }
+        NSEvent.removeMonitor(inputMonitor)
+        self.inputMonitor = nil
+        do { try (NSApp.delegate as? Delegate)?.shortcuts.resume() }
+        catch { selection.feedback = error.localizedDescription }
+    }
+
+    private func bindingIcon(_ id: String) -> some View {
+        let commandID = CommandID(rawValue: id)
+        let registry = model.launcherModules
+        let declaration = registry?.declaration(commandID)
+        let module = registry?.moduleOwningCommand(commandID)
+        let artwork = ModuleArtwork.command(commandID, settingsPage: declaration?.settingsPage, moduleID: module)
+        return Group {
+            if id.hasPrefix("app:") {
+                WorkspaceItemIcon(path: String(id.dropFirst(4)))
+            } else if id.hasPrefix("shortcut:") {
+                ShortcutArtwork(image: model.systemShortcuts.icon(forCommandID: id))
+            } else if let artwork {
+                Image(nsImage: artwork).resizable().scaledToFit()
+            } else {
+                Image(systemName: declaration?.symbol ?? (id == "launcher" ? "command" : "bolt"))
+                    .font(.system(size: 13, weight: .medium))
+            }
+        }
+        .frame(width: 15, height: 15)
+        .accessibilityHidden(true)
     }
 
     private func keyboardControls(commandName: String?) -> some View {
@@ -89,7 +186,7 @@ struct ShortcutKeyboardPage: View {
                         .font(.caption).lineLimit(1).truncationMode(.tail)
                         .foregroundStyle(.secondary)
                 }
-                if let message = feedback ?? validation {
+                if let message = selection.feedback ?? validation {
                     Text(message)
                         .font(.caption2).foregroundStyle(.secondary)
                         .lineLimit(1).help(message)
@@ -102,16 +199,17 @@ struct ShortcutKeyboardPage: View {
                     .fixedSize()
             }
             Button(commandName == nil ? "绑定命令" : "更换命令") {
-                query = ""
-                stagedCommand = nil
-                feedback = nil
-                choosing = true
+                selection.feedback = nil
+                selection.choosing = true
             }
             .buttonStyle(ContentActionButtonStyle(active: true))
             .disabled(validation != nil)
             .fixedSize()
         }
         .frame(minHeight: 36)
+        .opacity(selection.previewModifiers == nil ? 1 : 0)
+        .accessibilityHidden(selection.previewModifiers != nil)
+        .allowsHitTesting(selection.previewModifiers == nil)
     }
 
     private func confirmation(_ proposed: Change, names: [String: String], registry: LauncherModuleRegistry?) -> some View {
@@ -130,7 +228,7 @@ struct ShortcutKeyboardPage: View {
     }
 
     private func closePicker() {
-        choosing = false
+        selection.choosing = false
         change = nil
     }
 
@@ -188,27 +286,37 @@ struct ShortcutKeyboardPage: View {
             let unit = proxy.size.width / 1030
             ZStack(alignment: .topLeading) {
                 ForEach(Self.layout) { cap in
-                    let chord = cap.code.map { Shortcut(key: $0, modifiers: modifiers) }
+                    let displayedModifiers = selection.previewModifiers ?? shortcut.modifiers
+                    let chord = cap.code.map { Shortcut(key: $0, modifiers: displayedModifiers) }
                     let bound = chord.flatMap { bindings[$0] }
                     let name = bound.map { names[$0] ?? $0 }
-                    let active = cap.modifier != 0 && modifiers & cap.modifier != 0
-                    let selected = cap.code == key
+                    let active = cap.modifier != 0 && displayedModifiers & cap.modifier != 0
+                    let selected = selection.previewModifiers == nil && cap.code == shortcut.key
                     Group {
                         if cap.code != nil || cap.modifier != 0 {
                             Button {
-                                if let code = cap.code { key = code }
-                                else { modifiers ^= cap.modifier }
-                                choosing = false
-                                feedback = nil
+                                if let code = cap.code {
+                                    selection.shortcut = Shortcut(key: code, modifiers: displayedModifiers)
+                                    if selection.previewModifiers != nil {
+                                        capturedDuringHold = true
+                                        selection.previewModifiers = nil
+                                    }
+                                } else {
+                                    selection.shortcut.modifiers ^= cap.modifier
+                                    selection.previewModifiers = nil
+                                }
+                                selection.choosing = false
+                                selection.feedback = nil
                             } label: {
-                                keycap(cap, name: name, active: active, selected: selected)
+                                keycap(cap, name: name, iconID: selection.previewModifiers == nil ? nil : bound,
+                                       active: active, selected: selected)
                             }.buttonStyle(.plain)
                                 .help(name ?? cap.description)
                                 .accessibilityLabel(chord?.label ?? cap.description)
                                 .accessibilityValue(name ?? (cap.modifier != 0 ? (active ? "已按下" : "未按下") : "未绑定"))
                                 .accessibilityAddTraits(active || selected ? .isSelected : [])
                         } else {
-                            keycap(cap, name: nil, active: false, selected: false)
+                            keycap(cap, name: nil, iconID: nil, active: false, selected: false)
                                 .accessibilityHidden(true)
                         }
                     }
@@ -219,7 +327,7 @@ struct ShortcutKeyboardPage: View {
         }.aspectRatio(1030.0 / 412, contentMode: .fit)
     }
 
-    private func keycap(_ cap: Key, name: String?, active: Bool, selected: Bool) -> some View {
+    private func keycap(_ cap: Key, name: String?, iconID: String?, active: Bool, selected: Bool) -> some View {
         let shape = RoundedRectangle(cornerRadius: 5)
         return VStack(spacing: 0) {
             if let legend = cap.legend {
@@ -227,7 +335,9 @@ struct ShortcutKeyboardPage: View {
             }
             Text(cap.label).font(.system(size: cap.label.count > 2 ? 8 : 11, weight: .medium))
                 .lineLimit(1).minimumScaleFactor(0.7)
-            if let name {
+            if let iconID {
+                bindingIcon(iconID)
+            } else if let name {
                 Text(name).font(.system(size: 9)).lineLimit(1)
                     .foregroundStyle(.secondary)
             }
@@ -251,7 +361,7 @@ struct ShortcutKeyboardPage: View {
               model.bindings[proposed.commandID] == proposed.previous,
               model.bindings.first(where: { $0.value == proposed.target })?.key == proposed.displaced else {
             closePicker()
-            feedback = "快捷键或命令已变化，请重新选择。"
+            selection.feedback = "快捷键或命令已变化，请重新选择。"
             return
         }
         var bindings = model.bindings
@@ -271,10 +381,10 @@ struct ShortcutKeyboardPage: View {
         do {
             try model.updateShortcuts(bindings)
             closePicker()
-            feedback = message
+            selection.feedback = message
         } catch {
             closePicker()
-            feedback = error.localizedDescription
+            selection.feedback = error.localizedDescription
         }
     }
 
@@ -291,6 +401,9 @@ struct ShortcutKeyboardPage: View {
         var description: String { [label, legend].compactMap { $0 }.joined(separator: " ") }
     }
 
+    private static let navigationCodes: Set<UInt32> = [36, 48, 49, 51, 53, 123, 124, 125, 126]
+    private static let editableCodes = Set(layout.compactMap(\.code))
+
     private static let layout: [Key] = {
         var keys: [Key] = []
         func cap(_ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ label: String,
@@ -305,31 +418,32 @@ struct ShortcutKeyboardPage: View {
             }
         }
 
-        cap(0, 0, 100, "esc")
+        cap(0, 0, 100, "esc", code: 53)
+        let functionCodes: [UInt32] = [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111]
         for (index, symbol) in ["☼", "☀", "▤", "⌕", "♩", "☾", "◁◁", "⏯", "▷▷", "◌", "◖", "◖))"].enumerated() {
-            cap(107 + CGFloat(index) * 71.5, 0, 64.5, "F\(index + 1)", legend: symbol)
+            cap(107 + CGFloat(index) * 71.5, 0, 64.5, "F\(index + 1)", legend: symbol, code: functionCodes[index])
         }
         cap(965, 0, 65, "◯")
-        cap(0, 70, 64.5, "`", legend: "~")
+        cap(0, 70, 64.5, "`", legend: "~", code: 50)
         row(70, 71.5, "1234567890", [18, 19, 20, 21, 23, 22, 26, 28, 25, 29], legends: "!@#$%^&*()")
-        cap(786.5, 70, 64.5, "−", legend: "_")
-        cap(858, 70, 64.5, "=", legend: "+")
-        cap(930, 70, 100, "⌫")
-        cap(0, 139, 100, "⇥")
+        cap(786.5, 70, 64.5, "−", legend: "_", code: 27)
+        cap(858, 70, 64.5, "=", legend: "+", code: 24)
+        cap(930, 70, 100, "⌫", code: 51)
+        cap(0, 139, 100, "⇥", code: 48)
         row(139, 107, "QWERTYUIOP", [12, 13, 14, 15, 17, 16, 32, 34, 31, 35])
-        cap(822, 139, 64.5, "[", legend: "{")
-        cap(893.5, 139, 64.5, "]", legend: "}")
-        cap(965, 139, 65, "\\", legend: "|")
+        cap(822, 139, 64.5, "[", legend: "{", code: 33)
+        cap(893.5, 139, 64.5, "]", legend: "}", code: 30)
+        cap(965, 139, 65, "\\", legend: "|", code: 42)
         cap(0, 209, 118, "⇪")
         row(209, 125, "ASDFGHJKL", [0, 1, 2, 3, 5, 4, 38, 40, 37])
-        cap(768.5, 209, 64.5, ";", legend: ":")
-        cap(840, 209, 64.5, "'", legend: "\"")
-        cap(911.5, 209, 118.5, "↩")
+        cap(768.5, 209, 64.5, ";", legend: ":", code: 41)
+        cap(840, 209, 64.5, "'", legend: "\"", code: 39)
+        cap(911.5, 209, 118.5, "↩", code: 36)
         cap(0, 279, 153, "⇧", modifier: 512)
         row(279, 160, "ZXCVBNM", [6, 7, 8, 9, 11, 45, 46])
-        cap(660.5, 279, 64.5, ",", legend: "<")
-        cap(732, 279, 64.5, ".", legend: ">")
-        cap(803.5, 279, 64.5, "/", legend: "?")
+        cap(660.5, 279, 64.5, ",", legend: "<", code: 43)
+        cap(732, 279, 64.5, ".", legend: ">", code: 47)
+        cap(803.5, 279, 64.5, "/", legend: "?", code: 44)
         cap(875, 279, 155, "⇧", modifier: 512)
         cap(0, 349, 64.5, "fn", legend: "◎")
         cap(71.5, 349, 64.5, "⌃", modifier: 4096)
@@ -338,10 +452,10 @@ struct ShortcutKeyboardPage: View {
         cap(303.5, 349, 350, "", code: 49)
         cap(661, 349, 82, "⌘", modifier: 256)
         cap(750.5, 349, 64.5, "⌥", modifier: 2048)
-        cap(822, 380, 64.5, "←", height: 32)
-        cap(893.5, 349, 64.5, "↑", height: 31)
-        cap(893.5, 380, 64.5, "↓", height: 32)
-        cap(965, 380, 65, "→", height: 32)
+        cap(822, 380, 64.5, "←", code: 123, height: 32)
+        cap(893.5, 349, 64.5, "↑", code: 126, height: 31)
+        cap(893.5, 380, 64.5, "↓", code: 125, height: 32)
+        cap(965, 380, 65, "→", code: 124, height: 32)
         return keys
     }()
 }
