@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { configureEnvironment } = require("./environment.cjs");
+const { Color, Icon, iconTint } = require("./presentation-values.cjs");
 const { describeUtilityIcon, getAvatarIcon, getProgressIcon, makeShowFailureToast } =
   require("./utilities-visual-feedback.cjs");
 
@@ -39,6 +40,21 @@ test("progress icon reflects completion and appearance in the SVG and native des
   assert.doesNotMatch(svgFor(getProgressIcon(2)), /stroke-dasharray/);
   assert.equal(describeUtilityIcon(getProgressIcon(2)).fraction, 1);
   configureEnvironment(undefined);
+});
+
+test("Color.Brown preserves the Raycast export and resolves in both appearances", () => {
+  assert.deepEqual(Color.Brown, { light: "#714426", dark: "#9F6138" });
+  assert.deepEqual(iconTint(Icon.Circle, Color.Brown), { tintColor: "#714426", darkTintColor: "#9F6138" });
+  try {
+    for (const [appearance, color] of [["light", "#714426"], ["dark", "#9f6138"]]) {
+      configureEnvironment({ appearance });
+      const avatar = getAvatarIcon("Brown", { background: Color.Brown, gradient: false });
+      assert.equal(describeUtilityIcon(avatar).startColor, color);
+      assert.equal(describeUtilityIcon(getProgressIcon(0.5, Color.Brown)).foreground, color);
+    }
+  } finally {
+    configureEnvironment(undefined);
+  }
 });
 
 test("rendering descriptors are limited to the current guest's generated assets", () => {

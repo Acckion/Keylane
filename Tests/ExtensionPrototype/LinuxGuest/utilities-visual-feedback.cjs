@@ -1,4 +1,5 @@
 const { environment } = require("./environment.cjs");
+const { Color } = require("./presentation-values.cjs");
 
 const palette = ["#965575", "#9a473d", "#9a682c", "#537a40", "#217c73", "#416da2", "#655cab", "#8353a1"];
 const standardColors = new Map([
@@ -23,9 +24,10 @@ function describeUtilityIcon(source) {
 }
 
 function resolveColor(value, fallback) {
+  const dark = environment.appearance !== "light";
+  if (value === Color.Brown) return (dark ? Color.Brown.dark : Color.Brown.light).toLowerCase();
   if (typeof value !== "string") return fallback;
   const color = value.trim().toLowerCase();
-  const dark = environment.appearance !== "light";
   if (color === "raycast-primary-text") return dark ? "#ffffff" : "#000000";
   if (color === "raycast-secondary-text") return dark ? "#a8a8ae" : "#606069";
   if (standardColors.has(color)) return standardColors.get(color);
