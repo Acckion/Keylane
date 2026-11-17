@@ -6,11 +6,6 @@ on:
   push:
     branches: [dev, main]
   workflow_dispatch:
-    inputs:
-      validate_installer:
-        description: Build and verify a test DMG
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -25,6 +20,9 @@ jobs:
     name: Checks
     runs-on: macos-26
     timeout-minutes: 40
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      installer_required: ${{ steps.installer.outputs.required }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -45,31 +43,51 @@ jobs:
           for script in scripts/*.sh; do bash -n "$script"; done
           python3 -m unittest discover -s Tests/ReleaseTests -p 'test_*.py'
       - name: Determine whether to validate the installer
+        if: github.event_name == 'push'
         id: installer
-        env:
-          VALIDATE_INSTALLER: ${{ inputs.validate_installer }}
         run: python3 scripts/check-installer-scope.py
       - name: Core tests
         run: swift test --scratch-path .build-current --disable-sandbox
-      - name: Build drag-to-Applications DMG
-        if: steps.installer.outputs.required == 'true'
+
+  sign-preview-auto:
+    name: Sign integrated preview ${{ github.sha }}
+    if: >-
+      needs.checks.outputs.installer_required == 'true' &&
+      github.actor != 'dependabot[bot]' &&
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main')
+    needs: checks
+    runs-on: macos-26
+    timeout-minutes: 30
+    environment: preview-signing-auto
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify integrated preview target
+        run: python3 scripts/check-preview-target.py
+      - name: Import Apple Development signing identity
         env:
-          KEYLANE_ALLOW_ADHOC: '1'
-        run: bash scripts/package.sh
-      - name: Verify DMG and generate checksum
-        if: steps.installer.outputs.required == 'true'
+          CERTIFICATE: ${{ secrets.KEYLANE_PREVIEW_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.KEYLANE_PREVIEW_P12_PASSWORD }}
+        run: bash scripts/import-release-certificate.sh --preview
+      - name: Build and verify signed DMG
         run: |
+          bash scripts/package.sh
           python3 scripts/verify-package.py dist/Keylane-*.dmg
-          echo 'Ad hoc signed test DMG; without Apple notarization' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Apple Development signed preview DMG; without Apple notarization' >> "$GITHUB_STEP_SUMMARY"
           cd dist
           for image in Keylane-*.dmg; do
             shasum -a 256 "$image" > "$image.sha256"
           done
-      - name: Upload verified package
-        if: steps.installer.outputs.required == 'true'
+      - name: Remove temporary signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/keylane-signing.keychain-db" 2>/dev/null || true
+      - name: Upload verified preview package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: Keylane-${{ steps.version.outputs.version }}-${{ github.sha }}
+          name: Keylane-${{ needs.checks.outputs.version }}-${{ github.sha }}
           path: |
             dist/*.dmg
             dist/*.sha256
