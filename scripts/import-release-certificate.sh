@@ -3,15 +3,23 @@
 set -euo pipefail
 : "${RUNNER_TEMP:?}" "${GITHUB_ENV:?}" "${GITHUB_OUTPUT:?}"
 
-if [[ -z "$CERTIFICATE" && -z "$CERTIFICATE_PASSWORD" && -z "$APPLE_ID" && -z "$APPLE_TEAM_ID" && -z "$APPLE_APP_PASSWORD" ]]; then
+identity_type='Developer ID Application'
+if [[ "${1:-}" == --preview ]]; then
+  identity_type='Apple Development'
+  if [[ -z "${CERTIFICATE:-}" || -z "${CERTIFICATE_PASSWORD:-}" ]]; then
+    echo 'Configure KEYLANE_PREVIEW_P12 and KEYLANE_PREVIEW_P12_PASSWORD before signing a preview.' >&2
+    exit 1
+  fi
+elif [[ -z "$CERTIFICATE" && -z "$CERTIFICATE_PASSWORD" && -z "$APPLE_ID" && -z "$APPLE_TEAM_ID" && -z "$APPLE_APP_PASSWORD" ]]; then
   if [[ "$GITHUB_REF" == refs/heads/main ]]; then
     echo 'Configure Developer ID and Apple notarization secrets before releasing.' >&2
     exit 1
   fi
   echo 'No distribution credentials configured. This build is for testing.'
   exit 0
+else
+  : "${CERTIFICATE:?}" "${CERTIFICATE_PASSWORD:?}" "${APPLE_ID:?}" "${APPLE_TEAM_ID:?}" "${APPLE_APP_PASSWORD:?}"
 fi
-: "${CERTIFICATE:?}" "${CERTIFICATE_PASSWORD:?}" "${APPLE_ID:?}" "${APPLE_TEAM_ID:?}" "${APPLE_APP_PASSWORD:?}"
 
 umask 077
 certificate="$(mktemp "$RUNNER_TEMP/keylane-cert.XXXXXX")"
@@ -27,7 +35,10 @@ security import "$certificate" -k "$keychain" -f pkcs12 -P "$CERTIFICATE_PASSWOR
 security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
 security list-keychains -d user -s "$keychain"
 
-identity="$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2}')"
-[[ "$identity" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo 'Expected exactly one Developer ID Application identity.' >&2; exit 1; }
-printf 'KEYLANE_SIGNING_IDENTITY=%s\nKEYLANE_DISTRIBUTION=1\n' "$identity" >> "$GITHUB_ENV"
-echo 'enabled=true' >> "$GITHUB_OUTPUT"
+identity="$(security find-identity -v -p codesigning "$keychain" | awk -v type="$identity_type" 'index($0, "\"" type ":") {print $2}')"
+[[ "$identity" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "Expected exactly one $identity_type identity." >&2; exit 1; }
+printf 'KEYLANE_SIGNING_IDENTITY=%s\n' "$identity" >> "$GITHUB_ENV"
+if [[ "$identity_type" == 'Developer ID Application' ]]; then
+  echo 'KEYLANE_DISTRIBUTION=1' >> "$GITHUB_ENV"
+  echo 'enabled=true' >> "$GITHUB_OUTPUT"
+fi
