@@ -33,6 +33,10 @@ final class AIConfiguration: ObservableObject {
         }
 
         var routeAvailability: [Bool] { AIRoute.allCases.map { connection(for: $0) != nil } }
+        var availableConnectionIDs: Set<UUID> {
+            guard enabled else { return [] }
+            return Set(connections.filter(\.isConfigured).map(\.id))
+        }
     }
 
     @Published private(set) var state: State

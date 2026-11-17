@@ -20,7 +20,6 @@ final class QuickAIController: ObservableObject {
     private var conversationModel: AIChatRecord.ModelReference?
     private let history: AIChatHistory?
     private let configuration: AIConfiguration
-    private let route: AIRoute
     private let runtime: AIRuntime
     private let readKey: @Sendable (AIConnection) throws -> String?
     private var configurationChanges: AnyCancellable?
@@ -30,13 +29,13 @@ final class QuickAIController: ObservableObject {
     private(set) var isInChat = false
 
     init(configuration: AIConfiguration, runtime: AIRuntime, history: AIChatHistory? = nil,
-         route: AIRoute = .quick,
+         observesDefaultConnection: Bool = true,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
         self.configuration = configuration
         self.runtime = runtime
         self.history = history
-        self.route = route
         self.readKey = readKey
+        guard observesDefaultConnection else { return }
         configurationChanges = configuration.$state.dropFirst()
             .sink { [weak self] next in
                 guard let self else { return }
@@ -59,7 +58,7 @@ final class QuickAIController: ObservableObject {
                 $0.id == conversationModel.profileID && $0.isConfigured && AIChatRecord.ModelReference($0) == conversationModel
             }
         }
-        return state.connection(for: isInChat ? .chat : route)
+        return state.connection(for: isInChat ? .chat : .quick)
     }
 
     var matchesCurrentModel: Bool {
@@ -68,8 +67,12 @@ final class QuickAIController: ObservableObject {
     }
 
     @discardableResult
-    func submit(_ input: String, instructions: String? = nil) -> Bool {
-        guard !running, !loadingChat, matchesCurrentModel, let connection = currentConnection else { return false }
+    func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil) -> Bool {
+        guard !running, !loadingChat, configuration.state.enabled,
+              !isInChat || override == nil,
+              let connection = override ?? currentConnection, connection.isConfigured,
+              configuration.state.connections.contains(connection),
+              conversationModel == nil || conversationModel == AIChatRecord.ModelReference(connection) else { return false }
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return false }
         let maximumQuestionBytes = 32_000
