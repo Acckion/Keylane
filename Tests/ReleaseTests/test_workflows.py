@@ -67,9 +67,20 @@ class ReleaseEntryTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('requires workflow_dispatch', result.stderr)
 
-    def test_ci_has_no_publish_permissions_or_secrets(self):
+    def test_ci_keeps_preview_secrets_out_of_checks(self):
         ci = (ROOT / '.github/workflows/ci.yml').read_text()
-        for forbidden in ['secrets.', 'contents: write', 'publish-release.sh', 'workflow_run', 'import-release-certificate', 'notarize-dmg']:
+        checks, preview = ci.split('  sign-preview-auto:\n', 1)
+        self.assertNotIn('secrets.', checks)
+        self.assertIn("needs.checks.outputs.installer_required == 'true'", preview)
+        self.assertIn("github.event_name == 'push'", preview)
+        self.assertIn("github.actor != 'dependabot[bot]'", preview)
+        self.assertNotIn('KEYLANE_ALLOW_ADHOC', ci)
+        self.assertIn('environment: preview-signing-auto', preview)
+        self.assertNotIn('preview-signing-pr', ci)
+        self.assertIn('check-preview-target.py', preview)
+        self.assertEqual(preview.count('ref: ${{ github.sha }}'), 1)
+        self.assertIn('needs: checks', preview)
+        for forbidden in ['contents: write', 'publish-release.sh', 'workflow_run', 'notarize-dmg']:
             self.assertNotIn(forbidden, ci)
         self.assertIn('name: Checks', ci)
         self.assertIn('check-version.py --sync-policy', ci)
