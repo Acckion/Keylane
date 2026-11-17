@@ -66,3 +66,33 @@ test("selected callbacks can propose richer copy and paste while render and sear
   }) }) });
   await assert.rejects(render(restricted, { actionMenuRow: 0, actionMenuRoute: [{ index: 0 }] }), /Clipboard action unavailable/);
 });
+
+test("Action.Paste waits for the matching dispatch receipt and passes the original content through each alias", async () => {
+  const { Action, ActionPanel, PasteAction } = require("./view-api.cjs");
+  const content = { html: "<b>中文</b>", text: "中文" };
+  const action = { row: 0, id: 0 };
+  const received = [];
+  const command = (factory, payload = content) => () => Detail({ actions: ActionPanel({
+    children: factory({ title: "Paste fixture", content: payload, onPaste: (value) => received.push(value) }),
+  }) });
+
+  for (const factory of [Action.Paste, ActionPanel.Item.Paste, PasteAction]) {
+    const view = command(factory);
+    const effect = await render(view, { action });
+    assert.equal(effect.kind, "paste");
+    assert.match(effect.pasteReceipt, /^[a-f0-9]{64}$/);
+    await assert.rejects(render(view, { action, pasteReceipt: "f".repeat(64) }), /Invalid clipboard completion receipt/);
+    await assert.rejects(render(command(factory, "different"), { action, pasteReceipt: effect.pasteReceipt }),
+      /Invalid clipboard completion receipt/);
+    assert.deepEqual(await render(view, { action, pasteReceipt: effect.pasteReceipt }), { kind: "action" });
+    assert.equal(received.at(-1), content);
+  }
+  assert.equal(received.length, 3);
+
+  for (const payload of [42, { file: new URL("file:///tmp/example.txt") }]) {
+    const view = command(Action.Paste, payload);
+    const effect = await render(view, { action });
+    await render(view, { action, pasteReceipt: effect.pasteReceipt });
+    assert.equal(received.at(-1), payload);
+  }
+});

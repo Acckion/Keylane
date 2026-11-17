@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
+const { pathToFileURL } = require("node:url");
 const { quickLookComponent, quickLookEffect } = require("./quick-look-action.cjs");
 
 test("constructing a Quick Look action leaves the preview target on the row", () => {
@@ -63,8 +64,13 @@ test("only an explicitly selected filtered List or Grid row can request Quick Lo
   const listRow = listSnapshot.rows[0].id;
   const gridRow = gridSnapshot.grid.sections[0].items[0].id;
   const expected = { kind: "toggleQuickLook", paths: [path] };
-  assert.deepEqual(await render(list, { query, action: { row: listRow, id: 0 } }), expected);
-  assert.deepEqual(await render(grid, { query, action: { row: gridRow, id: 0 } }), expected);
+  for (const source of [path, Buffer.from(path), pathToFileURL(path)]) {
+    entries[1].quickLook.path = source;
+    assert.deepEqual(await render(list, { query, action: { row: listRow, id: 0 } }), expected);
+    assert.deepEqual(await render(grid, { query, action: { row: gridRow, id: 0 } }), expected);
+  }
+  entries[1].quickLook.path = new URL("file://remote/fixture.pdf");
+  await assert.rejects(render(list, { query, action: { row: listRow, id: 0 } }), /local file URL/);
   await assert.rejects(render(grid, { query, action: { row: -1, id: 0 } }), /Unknown grid item/);
   await assert.rejects(render(() => Detail({ actions: actions() }), { action: { row: 0, id: 0 } }), /selected item/);
 });

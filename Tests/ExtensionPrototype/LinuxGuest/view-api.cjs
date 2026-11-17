@@ -1,40 +1,58 @@
+const { createHash } = require("node:crypto");
 const { describeImage } = require("./image-api.cjs");
-const { clipboardEffect } = require("./clipboard-write.cjs");
+const { clipboardEffect, clipboardWritePayload } = require("./clipboard-write.cjs");
 // Compatibility surface for the reviewed views and UUID commands.
 const { environment, LaunchType, registerEnvironmentCapability } = require("./environment.cjs");
-const { makeToastAdapter } = require("./toast.cjs");
-const { menuBarComponents, describeMenu } = require("./menu-bar.cjs");
+const { makeToastAdapter, toastInteraction, runWithToastActions } = require("./toast.cjs");
+const { menuBarComponents, describeMenu, describeMenuIcon } = require("./menu-bar.cjs");
 const { gridComponents, gridNodes, describeGrid } = require("./grid-api.cjs");
 const { formComponents, describeForm, hasPasswordField, submitForm, checkedFormEvents, replayFormEvent, mountFormRefs, rememberDropdownOptions } = require("./form-api.cjs");
-const { listNodes, listText } = require("./list-api.cjs");
+const { listNodes, listText, describeListAccessories } = require("./list-api.cjs");
 const {
   ActionStyle, actionPanelComponents, describeActions, findAction, actionPanelTitle,
   checkedMenuRoute, replayActionMenu, submenuOptions, effectReceipt,
 } = require("./action-api.cjs");
 const { dropdownComponent, describeDropdown, applyDropdownSelection, dropdownSearchHandler, restoredDropdownValue } = require("./dropdown-api.cjs");
 const { AsyncLocalStorage } = require("node:async_hooks");
-const { makeOpen, openActionComponents, openActionEffect, webURL } = require("./open-api.cjs");
+const { makeOpen, requestOpen, openActionComponents, openActionEffect, metadataLinkURL } = require("./open-api.cjs");
 const { finderRevealComponent, finderRevealEffect, makeShowInFinder } = require("./finder-reveal.cjs");
-const { trashComponent, trashEffect, makeTrash } = require("./trash-action.cjs");
+const { trashComponent, trashEffect } = require("./trash-action.cjs");
 const { makeClipboardReaders } = require("./clipboard-read.cjs");
 const { makeWindowManagement } = require("./window-management.cjs");
 const { quickLookComponent, quickLookEffect } = require("./quick-look-action.cjs");
 const { openWithComponent, openWithEffect, makeClearClipboard } = require("./open-with-clipboard.cjs");
-const { makeNavigation, PopToRootType } = require("./navigation-api.cjs");
+const { makeNavigation, PopToRootType, requestNavigation } = require("./navigation-api.cjs");
 const { creationActionComponents, creationActionEffect, makeOpenExtensionPreferences } = require("./create-actions.cjs");
 const { pickDateComponent, describePickDate, submitPickDate } = require("./date-action.cjs");
 const { listMetadataComponents, describeListMetadata, metadataTagCallback } = require("./list-metadata.cjs");
-const { describeUtilityIcon } = require("./utilities-visual-feedback.cjs");
 const { captureException, captureMemorySnapshot } = require("./diagnostics-api.cjs");
 
-const { Alert, AlertActionStyle, makePreferences, randomId, viewID, specialKeys } = require("./foundation-api.cjs");
-const { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, withCacheWritesBlocked, withCurrentViewInput, withCacheWriteLifetime } = require("./cache-api.cjs");
-const { makePushNavigation, pushActionComponent, checkedViewRoute, lifecycleReceipt } = require("./push-navigation.cjs");
+const { Alert, AlertActionStyle, makePreferences, resolvePreferenceValues, randomId, viewID, viewIDSeedSlot, fitsViewIDs, checkedViewIDs, specialKeys } = require("./foundation-api.cjs");
+const { Cache, configureCache, setCacheWritesAllowed, takeCacheSnapshot, hasCacheChanges, cacheStateRevision, withCacheWritesBlocked, withCacheWriteLifetime } = require("./cache-api.cjs");
+const { makePushNavigation, pushActionComponent, checkedViewRoute } = require("./push-navigation.cjs");
 
 const { makeApplicationQueries } = require("./applications-api.cjs");
-const applicationQueries = makeApplicationQueries((capability, text) => require("./raycast-api.cjs").request(capability, text));
+let applicationQueryFiles = [];
+let applicationQueryPreferenceCount = 0;
+let applicationQueryEvents = new Map();
+const applicationQuerySelection = new AsyncLocalStorage();
+const applicationQueries = makeApplicationQueries(
+  (capability, text) => require("./raycast-api.cjs").request(capability, text),
+  (path) => {
+    const granted = applicationQueryFiles.indexOf(path);
+    if (!routeReplay.getStore() || (granted !== -1 && granted < applicationQueryPreferenceCount)) return granted;
+    const selection = applicationQuerySelection.getStore();
+    if (!selection?.active) return -1;
+    const index = selection.paths.indexOf(path);
+    return index === -1 ? -1 : selection.offset + index;
+  },
+);
 
 const userViewAction = new AsyncLocalStorage();
+const initialViewEffects = new AsyncLocalStorage();
+const viewSearchClear = new AsyncLocalStorage();
+const userMenuAction = new AsyncLocalStorage();
+const userNoViewCommand = new AsyncLocalStorage();
 const routeReplay = new AsyncLocalStorage();
 const actionPanelUpdates = new AsyncLocalStorage();
 const { Color, Icon, Image, ImageMask, Keyboard, iconTint } = require("./presentation-values.cjs");
@@ -43,6 +61,7 @@ const { localStorageAliases, clipboardAliases } = require("./storage-compat.cjs"
 
 let actionResult;
 let feedback;
+let runningCommand;
 let visibleToast;
 let preferenceValues;
 let preferenceDefinitions;
@@ -50,19 +69,49 @@ let preparedInput;
 let storage;
 let storageChanged;
 let localStorageAllowed;
-let confirmed;
 let state;
+let stateVersion = 0;
 let stateIndex;
+let componentFrames;
+let componentFrame;
+let viewIDs;
+let viewIDSeed;
 let effects;
 let replayingViewInput;
 let capturesActionQuery;
 let clipboardReadAllowed;
 let windowReadAllowed;
+let commandMetadataAllowed;
+let suitePreferencesAllowed;
+let suiteFinderRevealAllowed;
+let suiteOpenAllowed;
 
 function prepareInput(input) {
   preparedInput = input;
-  preferenceValues = input.preferences ?? {};
+  const canQueryHostFiles = input.sensitiveFormSubmission !== true;
+  applicationQueryFiles = canQueryHostFiles && Array.isArray(input.applicationQueryPreferenceFields)
+    ? input.applicationQueryPreferenceFields.map((name) => input.preferences[name])
+    : [];
+  applicationQueryPreferenceCount = applicationQueryFiles.length;
+  if (canQueryHostFiles && Array.isArray(input.applicationQueryFormFields)) {
+    applicationQueryFiles.push(...input.applicationQueryFormFields.flatMap((id) => input.formValues[id]));
+  }
+  applicationQueryEvents = new Map();
+  if (canQueryHostFiles && Array.isArray(input.applicationQueryFormEvents)) {
+    let offset = applicationQueryFiles.length;
+    for (const index of input.applicationQueryFormEvents) {
+      const event = input.formEvents?.[index];
+      if (event?.kind !== "change" || !Array.isArray(event.value)) continue;
+      applicationQueryEvents.set(event, { offset, paths: event.value });
+      offset += event.value.length;
+    }
+  }
+  commandMetadataAllowed = input.commandMetadataAllowed === true && input.sensitiveFormSubmission !== true;
+  suitePreferencesAllowed = input.suitePreferencesAllowed === true && input.sensitiveFormSubmission !== true;
+  suiteFinderRevealAllowed = suitePreferencesAllowed && input.finderRevealAllowed === true;
+  suiteOpenAllowed = suitePreferencesAllowed && input.openTargetAllowed === true;
   preferenceDefinitions = input.preferenceDefinitions;
+  preferenceValues = resolvePreferenceValues(input.preferences, preferenceDefinitions);
   configureCache(input.sensitiveFormSubmission ? undefined : input.cache);
 }
 
@@ -71,55 +120,158 @@ function configure(input) {
   preparedInput = undefined;
   actionResult = undefined;
   feedback = undefined;
+  runningCommand = false;
   visibleToast = undefined;
   storage = input.storage === undefined || input.sensitiveFormSubmission ? undefined : Object.assign(Object.create(null), input.storage);
   localStorageAllowed = input.localStorageAllowed === true && !input.sensitiveFormSubmission;
   storageChanged = false;
-  confirmed = input.confirmed === true;
   clipboardReadAllowed = input.clipboardReadAllowed === true && input.sensitiveFormSubmission !== true;
   windowReadAllowed = input.windowReadAllowed === true && input.sensitiveFormSubmission !== true;
   state = [];
+  viewIDs = undefined;
+  viewIDSeed = undefined;
   stateIndex = 0;
+  componentFrames = new Map();
+  componentFrame = undefined;
   effects = [];
   replayingViewInput = false;
   capturesActionQuery = false;
 }
 
+const Fragment = Symbol("Fragment");
+const nativeComponents = new WeakSet();
+const elementSlots = ["children", "actions", "detail", "metadata", "searchBarAccessory", "target"];
+
 function jsx(type, props, key) {
-  const element = typeof type === "function" ? type(props) : { type, props };
-  return key !== undefined && element?.props ? { ...element, key: String(key) } : element;
+  const element = nativeComponents.has(type) ? type(props ?? {}) : { type, props: props ?? {} };
+  return key === undefined ? element : { ...element, key: String(key) };
+}
+
+function renderComponentTree(render) {
+  const next = new Map();
+  function resolve(value, path, depth = 0) {
+    if (depth > 128) throw new Error("Component tree exceeds supported depth");
+    if (Array.isArray(value)) return value.map((node, index) =>
+      resolve(node, [...path, node?.key === undefined ? index : node.key], depth + 1));
+    if (typeof value !== "object" || value === null || !value.props) return value;
+    const { type, props, key } = value;
+    if (type === Fragment) return resolve(props.children, [...path, "fragment", key ?? null], depth + 1);
+    if (typeof type === "function") {
+      const identity = JSON.stringify([...path, key ?? null]);
+      const prior = componentFrames.get(identity);
+      const frame = prior?.type === type ? prior : {
+        type, identity: createHash("sha256").update(identity).update(Function.prototype.toString.call(type)).digest("hex"),
+        hooks: [], idSlots: new Map(),
+      };
+      next.set(identity, frame);
+      const previousFrame = componentFrame;
+      const previousIndex = stateIndex;
+      let rendered;
+      try {
+        componentFrame = frame;
+        stateIndex = 0;
+        rendered = type(props);
+      } finally {
+        stateIndex = previousIndex;
+        componentFrame = previousFrame;
+      }
+      const resolved = resolve(rendered, [...path, frame.identity], depth + 1);
+      return key !== undefined && resolved?.props ? { ...resolved, key } : resolved;
+    }
+    const result = { ...props };
+    for (const slot of elementSlots) {
+      if (Object.hasOwn(props, slot)) result[slot] = resolve(props[slot], [...path, type, slot], depth + 1);
+    }
+    return { ...value, props: result };
+  }
+  const root = resolve(render(), []);
+  for (const [path, frame] of componentFrames) {
+    if (next.get(path) === frame) continue;
+    for (const [slot, automatic] of frame.idSlots) {
+      viewIDs?.delete(slot);
+      // Persist the replacement ID so the next isolated render sees the same remount.
+      if (automatic && viewIDSeed !== undefined) rememberViewID(slot, viewID(slot, randomId(12)));
+    }
+  }
+  componentFrames = next;
+  return root;
+}
+
+function resolveDetachedTree(element) {
+  const savedFrames = componentFrames;
+  const savedEffects = effects;
+  const savedIDs = viewIDs;
+  const savedSeed = viewIDSeed;
+  try {
+    componentFrames = new Map();
+    effects = undefined;
+    viewIDs = undefined;
+    viewIDSeed = undefined;
+    return renderComponentTree(() => element);
+  } finally {
+    componentFrames = savedFrames;
+    effects = savedEffects;
+    viewIDs = savedIDs;
+    viewIDSeed = savedSeed;
+  }
 }
 
 function useState(initial) {
   const index = stateIndex++;
-  const frameState = state;
+  const frameState = componentFrame?.hooks ?? state;
+  const ownerState = state;
   if (!(index in frameState)) frameState[index] = typeof initial === "function" ? initial() : initial;
   return [frameState[index], (value) => {
-    const next = typeof value === "function" ? value(frameState[index]) : value;
+    const previous = frameState[index];
+    const next = typeof value === "function" ? value(previous) : value;
     frameState[index] = next;
-    if (!routeReplay.getStore() && frameState === state && capturesActionQuery && (!actionResult || actionResult.kind === "query") && typeof next === "string") actionResult = { kind: "query", text: next };
+    if (ownerState === state && !Object.is(previous, next)) stateVersion++;
+    if (!routeReplay.getStore() && ownerState === state && capturesActionQuery && (!actionResult || actionResult.kind === "query") && typeof next === "string") actionResult = { kind: "query", text: next };
   }];
+}
+
+function rememberViewID(index, value) {
+  if (!viewIDs || typeof value !== "string" || Buffer.byteLength(value) > 256) return;
+  const candidate = [...viewIDs, [index, value]];
+  if (fitsViewIDs(candidate)) viewIDs.set(index, value);
+}
+
+function useId(defaultId, generateId) {
+  // Keep native snapshots compatible with existing numeric root hook slots.
+  const index = componentFrame
+    ? createHash("sha256").update(JSON.stringify([componentFrame.identity, stateIndex])).digest().readUIntBE(0, 6) + 256
+    : stateIndex;
+  const automatic = defaultId == null && generateId === undefined;
+  componentFrame?.idSlots.set(index, automatic);
+  const [id] = useState(() => {
+    if (viewIDs?.has(index)) return viewIDs.get(index);
+    if (automatic) {
+      if (!viewIDs) return viewID(index);
+      if (viewIDSeed === undefined) {
+        viewIDSeed = randomId(12);
+        rememberViewID(viewIDSeedSlot, viewIDSeed);
+      }
+      return viewID(index, viewIDSeed);
+    }
+    const value = defaultId ?? generateId();
+    rememberViewID(index, value);
+    return value;
+  });
+  return id;
 }
 
 function useRef(initial) {
   return useState(() => ({ current: initial }))[0];
 }
 
-function useEffect(effect, dependencies) {
-  const [slot] = useState(() => ({ ran: false, dependencies: undefined }));
-  if (!effects || (routeReplay.getStore() && !replayingViewInput)) return;
-  if (slot.ran && (dependencies === undefined ||
-      (slot.dependencies?.length === dependencies.length &&
-       dependencies.every((value, index) => Object.is(value, slot.dependencies[index]))))) return;
-  effects.push(() => {
-    slot.ran = true;
-    slot.dependencies = dependencies;
-    return effect();
-  });
+function useEffect(effect) {
+  if (!routeReplay.getStore() || replayingViewInput) effects?.push(effect);
 }
 
 function component(name) {
-  return (props) => jsx(name, props);
+  const native = (props) => jsx(name, props);
+  nativeComponents.add(native);
+  return native;
 }
 
 const Label = component("label");
@@ -190,11 +342,12 @@ function checkStorageWrite() {
   if (grant?.lifecycle && !grant.active) throw new Error("Navigation callback has ended");
 }
 
+const refreshAfterStorageWrite = Symbol();
 const brokerStorage = makeBrokerLocalStorage((capability, text) => require("./raycast-api.cjs").request(capability, text));
 
 async function brokerStorageWrite(operation, ...args) {
   const result = await brokerStorage[operation](...args);
-  const grant = userViewAction.getStore();
+  const grant = userViewAction.getStore() ?? userMenuAction.getStore();
   if (grant?.active) grant.didWriteStorage = true;
   return result;
 }
@@ -235,10 +388,15 @@ function useActionPanel() {
   return {
     update(panel) {
       if (!scope.active) throw new Error("Action panel updates require an active view render");
+      if (panel) panel = resolveDetachedTree(panel);
       if (panel != null && panel !== false && panel.type !== "actions") {
         throw new TypeError("Expected an ActionPanel");
       }
-      scope.panel = panel || null;
+      const next = panel || null;
+      if (scope.panel !== next) {
+        scope.panel = next;
+        stateVersion++;
+      }
     },
   };
 }
@@ -251,12 +409,103 @@ function actionDescriptions(panel) {
   return describeActions(panel, children);
 }
 
+// Keep code spans and fenced code literal. Generated sources end in the
+// percent-encoded SVG closing tag, even when they contain unescaped parentheses.
+const markdownImage = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`+[^\x60]*`+)|(?<!\\)(!\[(?:\\.|[^\]\\\n])*\]\()(?:<([^<>\n]{1,4096})>(?=[) \t])|(data:image\/svg\+xml,[^\s<>]{1,4075}?%3C%2Fsvg%3E(?:\?[^\s<>()]{1,512})?|[^\s<>()]{1,4096})(?=[) \t]))/g;
+
+const markdownReferenceDefinition = /^[ \t]*(?:>[ \t]*)*(?:(?:[-+*]|[0-9]{1,9}[.)])[ \t]+)?\[(?:\\.|[^\[\]\\\r\n]){1,999}\]:[ \t]*(?:\r?\n[ \t]*(?:>[ \t]*)*)?(?:<([^<>\r\n]{1,4096})>|((?:\\.|[^\s<>]){1,4096}))/gm;
+
+function referenceDestination(source) {
+  const entities = { amp: "&", quot: '"', apos: "'", lt: "<", gt: ">" };
+  return source.replace(/\\([!-/:-@\[-`{-~])|&(#x[0-9a-f]{1,6}|#[0-9]{1,7}|amp|quot|apos|lt|gt);/gi, (match, escaped, entity) => {
+    if (escaped) return escaped;
+    if (!entity.startsWith("#")) return entities[entity] ?? match;
+    const hex = entity[1].toLowerCase() === "x";
+    const value = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+    return value === 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff) ? "\uFFFD" : String.fromCodePoint(value);
+  });
+}
+
+function describeMarkdown(markdown) {
+  if (typeof markdown !== "string") return { markdown };
+  const sources = new Map();
+  const markdownImages = [];
+  function register(source) {
+    const remote = /^https:\/\//i.test(source);
+    const resource = remote ? source.split("#", 1)[0] : source;
+    const queryStart = resource.indexOf("?");
+    const asset = queryStart < 0 ? resource : resource.slice(0, queryStart);
+    const query = queryStart < 0 ? "" : resource.slice(queryStart + 1);
+    const options = new URLSearchParams(query);
+    const displayKeys = ["raycast-width", "raycast-height", "raycast-tint-color", "raycast-tintColor"];
+    const remoteQuery = remote ? query.split("&").filter((pair) =>
+      !displayKeys.includes(new URLSearchParams(pair).keys().next().value)).join("&") : "";
+    const resourceURL = remoteQuery ? asset + "?" + remoteQuery : asset;
+    const tint = options.get("raycast-tint-color") ?? options.get("raycast-tintColor") ?? undefined;
+    const key = JSON.stringify([resourceURL, tint]);
+    let index = sources.get(key);
+    if (index === undefined) {
+      if (markdownImages.length >= 8) return undefined;
+      let destination = resourceURL;
+      if (!remote && !asset.startsWith("data:")) {
+        try {
+          destination = decodeURIComponent(asset);
+        } catch {
+          return undefined;
+        }
+      }
+      const image = describeImage({ source: destination, tintColor: tint }, true, remote);
+      if (!image) return undefined;
+      index = markdownImages.length;
+      sources.set(key, index);
+      markdownImages.push(image);
+    }
+    const dimensions = new URLSearchParams();
+    for (const axis of ["width", "height"]) {
+      const raw = options.get(`raycast-${axis}`);
+      if (raw && /^[0-9]+(?:\.[0-9]{1,3})?$/.test(raw) && Number(raw) >= 1 && Number(raw) <= 1024) {
+        dimensions.set(axis, String(Number(raw)));
+      }
+    }
+    return `keylane-image://icon/${index}` + (dimensions.size ? `?${dimensions}` : "");
+  }
+
+  const text = markdown.replace(markdownImage, (match, code, opening, angleSource, plainSource) => {
+    if (code) return match;
+    const reference = register(angleSource ?? plainSource);
+    if (!reference) return match;
+    return opening + (angleSource === undefined ? reference : `<${reference}>`);
+  });
+
+  const markdownImageReferences = Object.create(null);
+  // Only collect image candidates here. Foundation resolves labels and distinguishes
+  // real image references from links, code and definitions that do not take effect.
+  const candidates = markdown.replace(markdownImage, (match) => match.replace(/[^\r\n]/g, " "));
+  if (candidates.includes("![")) {
+    let count = 0;
+    for (const match of candidates.matchAll(markdownReferenceDefinition)) {
+      if (count === 16) break;
+      const source = referenceDestination(match[1] ?? match[2]);
+      let canonical;
+      try { canonical = /^https:\/\//i.test(source) ? new URL(source).href : decodeURIComponent(source); } catch { continue; }
+      const key = createHash("sha256").update(canonical).digest("hex");
+      if (markdownImageReferences[key]) continue;
+      const reference = register(source);
+      if (!reference) continue;
+      markdownImageReferences[key] = reference;
+      count++;
+    }
+    if (count) return { markdown: text, markdownImages, markdownImageReferences };
+  }
+  return { markdown: text, ...(markdownImages.length > 0 && { markdownImages }) };
+}
+
 function detailDescription({ markdown, navigationTitle, isLoading, metadata, actions: panel }, override) {
   const actions = resolvedPanel(override, panel);
   const title = actionPanelTitle(actions);
   return {
-    markdown, navigationTitle, isLoading,
-    metadata: describeListMetadata(metadata, children, webURL, { includeLabelsOnly: true }),
+    ...describeMarkdown(markdown), navigationTitle, isLoading,
+    metadata: describeListMetadata(metadata, children, metadataLinkURL, { includeLabelsOnly: true }),
     ...(title !== undefined && { actionPanelTitle: title }),
     actions: actionDescriptions(actions),
   };
@@ -268,30 +517,168 @@ function recordUserAction(effect, name) {
   actionResult = effect;
 }
 
-const open = makeOpen((effect) => {
-  if (!userViewAction.getStore()?.allowsOpen) throw new Error("Open requires a selected view action");
-  recordUserAction(effect, "Open");
+function recordMenuAction(grant, effect) {
+  if (!grant.active || grant.effect) throw new Error("Requires one active menu action");
+  grant.effect = effect;
+}
+
+const open = makeOpen(async (effect) => {
+  const menu = userMenuAction.getStore();
+  const view = userViewAction.getStore();
+  if (menu) {
+    if (!menu.openTargetAllowed && effect.kind !== "openURL") throw new Error("Menu actions can only open URLs");
+    if (!menu.active || menu.effect) throw new Error("Requires one active menu action");
+    if (!menu.openTargetAllowed) return recordMenuAction(menu, effect);
+    menu.effect = { kind: "menuAction" };
+  } else if (!(suiteOpenAllowed && runningCommand && !actionResult)) {
+    if (!view?.active || !view.allowsOpen || view.lifecycle || actionResult) {
+      throw new Error("Open requires a selected view action");
+    }
+    if (!view.openTargetAllowed) return recordUserAction(effect, "Open");
+  }
+  if (visibleToast) visibleToast.interaction = undefined;
+  await requestOpen(require("./raycast-api.cjs").request, effect);
 });
 function recordFileEffect(effect) {
   if (!userViewAction.getStore()?.allowsFileEffects) throw new Error("File and clipboard changes require a selected view action");
   recordUserAction(effect, effect.kind);
 }
 
-const showInFinder = makeShowInFinder(recordFileEffect);
-const trash = makeTrash(recordFileEffect);
+const legacyClearClipboard = makeClearClipboard(recordFileEffect);
+async function clearClipboard() {
+  const grant = userViewAction.getStore();
+  const menu = userMenuAction.getStore();
+  const viewAllowed = grant?.active && grant.finderRevealAllowed && grant.allowsFileEffects && !grant.lifecycle && !actionResult;
+  const menuAllowed = menu?.active && menu.finderRevealAllowed && !menu.effect;
+  if (!viewAllowed && !menuAllowed && !(suiteFinderRevealAllowed && runningCommand && !actionResult)) {
+    if (grant?.liveToast || menu) throw new Error("Clearing the clipboard requires an authorized action");
+    return legacyClearClipboard();
+  }
+  if (visibleToast) visibleToast.interaction = undefined;
+  await require("./raycast-api.cjs").Clipboard.clear();
+}
+
+const showInFinder = makeShowInFinder(async ({ paths: [path] }) => {
+  const grant = userViewAction.getStore();
+  const menu = userMenuAction.getStore();
+  const viewAllowed = grant?.active && grant.allowsFileEffects && grant.finderRevealAllowed && !grant.lifecycle && !actionResult;
+  const menuAllowed = menu?.active && menu.finderRevealAllowed && !menu.effect;
+  if (!viewAllowed && !menuAllowed && !(suiteFinderRevealAllowed && runningCommand && !actionResult)) {
+    throw new Error("Finder changes require a selected view action, menu action, or no-view command");
+  }
+  if (visibleToast) visibleToast.interaction = undefined;
+  await require("./raycast-api.cjs").request("files.reveal", path);
+});
+async function trash(path) {
+  const grant = userViewAction.getStore();
+  const menu = userMenuAction.getStore();
+  const viewAllowed = grant?.active && (grant.liveToast || suiteFinderRevealAllowed) && grant.finderRevealAllowed &&
+    grant.allowsFileEffects && !grant.lifecycle && !actionResult;
+  const menuAllowed = menu?.active && menu.finderRevealAllowed && !menu.effect;
+  if (!viewAllowed && !menuAllowed && !(suiteFinderRevealAllowed && runningCommand && !actionResult)) {
+    throw new Error("Moving files to Trash requires an authorized view action, menu action, or no-view command");
+  }
+  if (visibleToast) visibleToast.interaction = undefined;
+  await require("./raycast-api.cjs").trash(path);
+}
 const viewNavigation = makePushNavigation((effect, name) => {
   if (!userViewAction.getStore()?.allowsPushNavigation) throw new Error(`${name} requires a selected view action`);
   recordUserAction(effect, name);
+}, resolveDetachedTree);
+const navigation = makeNavigation(async (effect) => {
+  const command = userNoViewCommand.getStore();
+  if (command?.catalog) {
+    if (!command.active) throw new Error("The no-view command has ended");
+    await requestNavigation(require("./raycast-api.cjs").request, effect);
+    return;
+  }
+  const grant = userViewAction.getStore();
+  const menu = userMenuAction.getStore();
+  if (effect.kind === "popToRoot" && !actionResult) {
+    const fromView = grant?.active && !grant.lifecycle && grant.liveNavigation;
+    const fromInitialEffect = initialViewEffects.getStore()?.active && !routeReplay.getStore();
+    const fromSuite = suitePreferencesAllowed && (runningCommand || grant?.active && !grant.lifecycle);
+    if (menu || fromView || fromInitialEffect || fromSuite) {
+      if ((menu && (!menu.active || !menu.alertAllowed || menu.effect)) || (fromView && !grant.navigationCloseAllowed)) {
+        throw new Error("Host root navigation unavailable");
+      }
+      await require("./raycast-api.cjs").request("navigation.popToRoot", JSON.stringify({ clearSearchBar: effect.clearSearchBar }));
+      return;
+    }
+  }
+  if (effect.kind === "clearSearchBar" && !actionResult) {
+    const fromView = grant?.active && !grant.lifecycle && grant.liveNavigation;
+    const fromSearch = viewSearchClear.getStore()?.active && !routeReplay.getStore();
+    const fromSuite = suitePreferencesAllowed && (runningCommand || grant?.active && !grant.lifecycle);
+    if (menu || fromView || fromSearch || fromSuite) {
+      if ((menu && (!menu.active || !menu.alertAllowed || menu.effect)) || (fromView && !grant.navigationCloseAllowed)) {
+        throw new Error("Host search bar unavailable");
+      }
+      await require("./raycast-api.cjs").request("navigation.clearSearch", JSON.stringify({ forceScrollToTop: effect.forceScrollToTop }));
+      return;
+    }
+  }
+  if (effect.kind === "closeMainWindow" || effect.kind === "hud") {
+    const fromView = grant?.active && !grant.lifecycle && grant.liveNavigation;
+    const initial = initialViewEffects.getStore();
+    const fromInitialEffect = initial?.active && initial.windowEffectsAllowed && !routeReplay.getStore();
+    const fromSuite = suitePreferencesAllowed && (runningCommand || grant?.active && !grant.lifecycle) &&
+      (!actionResult || actionResult.kind === "copy" || actionResult.kind === "paste");
+    if (fromSuite || (!actionResult && (menu || fromView || fromInitialEffect))) {
+      if ((menu && (!menu.active || !menu.alertAllowed || menu.effect)) || (fromView && !grant.navigationCloseAllowed)) {
+        throw new Error("Host window closure unavailable");
+      }
+      if (visibleToast) visibleToast.interaction = undefined;
+      const { kind, ...options } = effect;
+      const capability = kind === "hud" ? "feedback.hud" : "navigation.closeWindow";
+      await require("./raycast-api.cjs").request(capability, JSON.stringify(options));
+      if (fromSuite && runningCommand && !feedback) feedback = { kind: "action" };
+      return;
+    }
+  }
+  if (runningCommand && effect.kind === "hud") {
+    if (!feedback) feedback = effect;
+    return;
+  }
+  recordUserAction(effect, effect.kind);
 });
-const navigation = makeNavigation((effect) => recordUserAction(effect, effect.kind));
-const openExtensionPreferences = makeOpenExtensionPreferences((effect) => recordUserAction(effect, effect.kind));
+const confirmAlert = require("./alert-api.cjs").makeConfirmAlert((payload) => {
+  const grant = userViewAction.getStore();
+  const menu = userMenuAction.getStore();
+  const viewAllowed = grant?.active && !grant.lifecycle && grant.navigationCloseAllowed && !actionResult;
+  const menuAllowed = menu?.active && menu.alertAllowed && !menu.effect;
+  if (!viewAllowed && !menuAllowed) throw new Error("Alert requires an authorized view action or menu action");
+  if (visibleToast) visibleToast.interaction = undefined;
+  return require("./raycast-api.cjs").request("feedback.confirmAlert", payload);
+});
+async function openPreferences(target) {
+  const view = userViewAction.getStore();
+  const menu = userMenuAction.getStore();
+  const viewAllowed = view?.active && !view.lifecycle && (view.navigationCloseAllowed || suitePreferencesAllowed) && !actionResult;
+  const menuAllowed = menu?.active && menu.alertAllowed && !menu.effect;
+  const initialAllowed = initialViewEffects.getStore()?.active === true && !routeReplay.getStore() && !actionResult;
+  if (viewAllowed || menuAllowed || initialAllowed || (suitePreferencesAllowed && runningCommand && !actionResult)) {
+    if (visibleToast) visibleToast.interaction = undefined;
+    await require("./raycast-api.cjs").request("preferences.open", target);
+  } else if (menu) {
+    recordMenuAction(menu, { kind: target === "command" ? "openPreferences" : "openExtensionPreferences" });
+  } else {
+    const kind = target === "command" ? "openPreferences" : "openExtensionPreferences";
+    recordUserAction({ kind }, kind);
+  }
+}
+
+const openExtensionPreferences = makeOpenExtensionPreferences(() => openPreferences("extension"));
 
 async function invokeViewAction(panel, id, allowEmptyResult, input, form, quickLook) {
   const selected = findAction(panel, id, children);
   const isPickDate = selected?.type === "pickDate";
   const hasPickedDate = Object.hasOwn(input, "pickedDate");
   if ((input.dateReceipt !== undefined || hasPickedDate) && !isPickDate) throw new Error("Invalid date selection receipt");
-  if (input.copyReceipt !== undefined && selected?.type !== "copy") throw new Error("Invalid clipboard completion receipt");
+  if ((input.copyReceipt !== undefined && selected?.type !== "copy") ||
+      (input.pasteReceipt !== undefined && selected?.type !== "paste")) {
+    throw new Error("Invalid clipboard completion receipt");
+  }
   const revealsFile = selected?.type === "showInFinder";
   const trashesFiles = selected?.type === "trashFiles";
   const opensWithApplication = selected?.type === "openWith";
@@ -337,20 +724,23 @@ async function invokeViewAction(panel, id, allowEmptyResult, input, form, quickL
   if (selected?.type === "createQuicklink" || selected?.type === "createSnippet") {
     return creationActionEffect(selected);
   }
-  if (selected?.type === "paste") {
-    return clipboardEffect("paste", selected.props.content);
-  }
-  const isCopyCallback = selected?.type === "copy" && input.copyReceipt !== undefined;
-  if (selected?.type === "copy") {
-    const { content, concealed, transient, onCopy } = selected.props;
-    const effect = clipboardEffect("copy", content, { concealed: concealed ?? transient });
+  let clipboardCompletion;
+  const isCopy = selected?.type === "copy";
+  const isPaste = selected?.type === "paste";
+  if (isCopy || isPaste) {
+    const { content, concealed, transient, onCopy, onPaste } = selected.props;
+    const callback = isCopy ? onCopy : onPaste;
+    const key = isCopy ? "copyReceipt" : "pasteReceipt";
+    const effect = isCopy ? clipboardEffect("copy", content, { concealed: concealed ?? transient })
+      : clipboardEffect("paste", content);
     const receipt = effectReceipt([effect, content], selected.props);
-    if (!isCopyCallback) {
-      return typeof onCopy === "function" ? { ...effect, copyReceipt: receipt } : effect;
+    if (input[key] === undefined) {
+      return typeof callback === "function" ? { ...effect, [key]: receipt } : effect;
     }
-    if (typeof onCopy !== "function" || input.copyReceipt !== receipt) {
+    if (typeof callback !== "function" || input[key] !== receipt) {
       throw new Error("Invalid clipboard completion receipt");
     }
+    clipboardCompletion = () => callback(content);
   }
   if (isPickDate) {
     const effect = describePickDate(selected);
@@ -359,7 +749,7 @@ async function invokeViewAction(panel, id, allowEmptyResult, input, form, quickL
     if (!hasPickedDate || input.dateReceipt !== receipt) throw new Error("Invalid date selection receipt");
   }
   const isSubmit = selected?.type === "submitForm" && form;
-  const isCallback = selected?.type === "callback" || isCopyCallback || Boolean(completedOpen || completedFileAction);
+  const isCallback = selected?.type === "callback" || Boolean(clipboardCompletion || completedOpen || completedFileAction);
   if (!isSubmit && !isCallback && !isPickDate) throw new Error("Unknown action");
   if (isSubmit && hasPasswordField(form.root, children)) {
     // Passwords travel only into the selected callback. No effects or extension error text leave it.
@@ -368,7 +758,7 @@ async function invokeViewAction(panel, id, allowEmptyResult, input, form, quickL
     try {
       const accepted = await submitForm(form.root, children, selected, form.values, input.formEvents, form.dropdownContext);
       await flushToastUpdates();
-      if (feedback?.kind === "error") return { kind: "error" };
+      if (feedback?.kind === "error" || visibleToast?.result.toastStyle === ToastStyle.Failure) return { kind: "error" };
       return { kind: accepted === false ? "formRejected" : "action" };
     } catch {
       return { kind: "error" };
@@ -376,24 +766,34 @@ async function invokeViewAction(panel, id, allowEmptyResult, input, form, quickL
       replayingViewInput = false;
     }
   }
+  const liveToast = !input.sensitiveFormSubmission &&
+    (isSubmit ? input.liveFormToast === true && input.interactiveToast === true : input.liveToast === true);
   const grant = {
     active: true,
+    liveNavigation: input.liveNavigation === true && !input.sensitiveFormSubmission,
+    navigationCloseAllowed: input.navigationCloseAllowed === true,
+    openTargetAllowed: input.openTargetAllowed === true,
+    finderRevealAllowed: input.finderRevealAllowed === true,
+    liveToast,
+    interactiveToast: liveToast && input.interactiveToast === true && Boolean(isSubmit || isCallback),
     allowsOpen: (isCallback && !completedFileAction) || isPickDate,
-    allowsPushNavigation: isCallback && !isCopyCallback && !completedOpen && !completedFileAction && input.metadataTagReceipt === undefined,
+    allowsPushNavigation: isCallback && !clipboardCompletion && !completedOpen && !completedFileAction && input.metadataTagReceipt === undefined,
     allowsFileEffects: isCallback && !completedFileAction,
   };
   capturesActionQuery = isCallback && input.metadataTagReceipt === undefined;
   let accepted;
   try {
     await userViewAction.run(grant, async () => {
-      if (isPickDate) await submitPickDate(selected, input.pickedDate);
-      else if (isCopyCallback) await selected.props.onCopy(selected.props.content);
-      else if (completedOpen) await completedOpen();
-      else if (completedFileAction) await completedFileAction();
-      else if (isCallback) {
-        if (typeof selected.props.onAction === "function") await selected.props.onAction();
-      } else accepted = await submitForm(form.root, children, selected, form.values, input.formEvents, form.dropdownContext);
-      await flushToastUpdates();
+      await withInteractiveToast(grant, async () => {
+        if (isPickDate) await submitPickDate(selected, input.pickedDate);
+        else if (clipboardCompletion) await clipboardCompletion();
+        else if (completedOpen) await completedOpen();
+        else if (completedFileAction) await completedFileAction();
+        else if (isCallback) {
+          if (typeof selected.props.onAction === "function") await selected.props.onAction();
+        } else accepted = await submitForm(form.root, children, selected, form.values, input.formEvents, form.dropdownContext);
+        await flushToastUpdates();
+      });
     });
   } finally {
     grant.active = false;
@@ -401,19 +801,27 @@ async function invokeViewAction(panel, id, allowEmptyResult, input, form, quickL
   await new Promise(setImmediate);
   capturesActionQuery = false;
   if (feedback?.kind === "error") return feedback;
-  if (accepted === false) return { kind: "formRejected" };
+  if (accepted === false) {
+    const notice = visibleToast?.grant === grant && visibleToast.result.toastStyle === ToastStyle.Failure
+      ? visibleToast.result : {};
+    return { ...notice, kind: "formRejected" };
+  }
   if (actionResult) return finish(actionResult);
   if (storageChanged) return finish({ kind: "storage" });
-  if (visibleToast?.grant === grant && visibleToast.result) return visibleToast.result;
+  if (!grant.liveToast && visibleToast?.grant === grant && visibleToast.result) return visibleToast.result;
+  if ((grant.didWriteStorage || hasCacheChanges()) && !input.sensitiveFormSubmission &&
+      !clipboardCompletion && !completedOpen && !completedFileAction) {
+    return { kind: "action", [refreshAfterStorageWrite]: true };
+  }
   if (allowEmptyResult || isCallback || isPickDate || grant.didReadClipboard || grant.didReadWindow || grant.didWriteStorage || grant.didUseToast ||
-      takeCacheSnapshot() !== undefined) return { kind: "action" };
+      hasCacheChanges()) return { kind: "action" };
   throw new Error("Unknown action");
 }
 
-async function reconstructView(renderPage, input) {
+async function reconstructView(renderPage, input, effectFrame, renderProgress) {
   const scope = { active: true, panel: undefined };
   try {
-    const snapshot = await actionPanelUpdates.run(scope, () => renderView(renderPage, input, scope));
+    const snapshot = await actionPanelUpdates.run(scope, () => renderView(renderPage, input, scope, effectFrame, renderProgress));
     return {
       ...snapshot, actionPanel: scope.panel,
       refresh() {
@@ -430,13 +838,20 @@ async function reconstructView(renderPage, input) {
   }
 }
 
-async function renderView(renderPage, input, scope) {
+function viewPagination(root) {
+  const pagination = root?.props.pagination;
+  if (typeof pagination?.onLoadMore !== "function" || !Number.isSafeInteger(pagination.pageSize) || pagination.pageSize <= 0) return;
+  return pagination;
+}
+
+async function renderView(renderPage, input, scope, effectFrame, renderProgress) {
   const { query, action } = input;
   const formEvents = checkedFormEvents(input.formEvents);
   const menuRoute = checkedMenuRoute(input.actionMenuRoute);
   const menuRow = action?.row ?? input.actionMenuRow;
   if (menuRoute.length && (!Number.isSafeInteger(menuRow) || menuRow < -1)) throw new Error("Invalid action submenu target");
   state = [];
+  componentFrames = new Map();
   effects = [];
   const formCommands = {};
   const mountedFormRefs = new WeakMap();
@@ -445,90 +860,159 @@ async function renderView(renderPage, input, scope) {
   } : undefined;
   const renderRoot = () => {
     stateIndex = 0;
-    const page = renderPage(query);
+    const page = renderComponentTree(() => renderPage(query));
     if (dropdownContext) rememberDropdownOptions(page, children, dropdownContext);
     if (!input.sensitiveFormSubmission) mountFormRefs(page, children, formCommands, mountedFormRefs, dropdownContext);
     return page;
   };
+  viewIDs = checkedViewIDs(input.viewIDs);
+  viewIDSeed = viewIDs.get(viewIDSeedSlot);
   let root = renderRoot();
   const hasSearchBar = root?.type === "list" || root?.type === "grid";
   const searchChange = hasSearchBar && typeof query === "string" && typeof root.props.onSearchTextChange === "function";
-  const dropdownChange = hasSearchBar && (input.dropdownValue !== undefined ||
-    (root.props.searchBarAccessory?.props?.value === undefined && input.dropdownPreferences?.length > 0));
+  const allowsSearchClear = hasSearchBar && input.searchClearAllowed === true &&
+    !action && !input.sensitiveFormSubmission && !routeReplay.getStore();
+  async function withSearchClear(callback) {
+    if (!allowsSearchClear) return callback();
+    const grant = { active: true };
+    try {
+      return await viewSearchClear.run(grant, callback);
+    } finally {
+      grant.active = false;
+    }
+  }
+  const initialDropdown = hasSearchBar ? describeDropdown(root, children) : undefined;
+  const selectedValue = input.dropdownValue ?? (root?.props?.searchBarAccessory?.props?.value === undefined
+    ? restoredDropdownValue(initialDropdown, input.dropdownPreferences) : undefined);
+  const dropdownChange = hasSearchBar && selectedValue !== undefined;
   const menuSearch = hasSearchBar && typeof input.dropdownQuery === "string";
   const previousReplay = replayingViewInput;
   replayingViewInput = previousReplay || searchChange || dropdownChange || menuSearch;
   let selectedItem;
   let appliedQuery;
   let actionMenu;
+  let effectNavigation;
   let selectedRow;
+  let pageCount = 0;
   async function searchDropdown(text) {
     const handler = dropdownSearchHandler(root);
     if (!handler || typeof text !== "string" || Buffer.byteLength(text) > 256) return;
-    await routeReplay.run(true, () => withCurrentViewInput(() => handler(text)));
+    await routeReplay.run(true, () => withCacheWritesBlocked(() => handler(text)));
     appliedQuery = text;
     effects = [];
     root = renderRoot();
   }
-  async function settleEffects() {
-    let effectPasses = 0;
-    try {
-      while (effects?.length) {
-        if (effectPasses++ === 8) throw new Error("View effects did not settle");
-        const pending = effects;
-        effects = undefined;
-        for (const effect of pending) await effect();
-        await new Promise(setImmediate);
+  try {
+    if (dropdownChange) {
+      await searchDropdown(input.dropdownSelectionQuery);
+      const options = describeDropdown(root, children);
+      const candidate = options?.sections.flatMap(({ items }) => items).find(({ value }) => value === selectedValue);
+      if (await applyDropdownSelection(root, children, selectedValue, {
+        strict: Boolean(action || input.dropdownSelectionEvent),
+        previousValue: initialDropdown?.selected,
+      })) {
+        selectedItem = candidate;
         effects = [];
         root = renderRoot();
       }
-    } finally {
-      effects = undefined;
-    }
-  }
-  try {
-    if (dropdownChange) {
-      await routeReplay.run(true, () => withCurrentViewInput(async () => {
-        await settleEffects();
-        const initialDropdown = describeDropdown(root, children);
-        const selectedValue = input.dropdownValue ?? (root.props.searchBarAccessory?.props?.value === undefined
-          ? restoredDropdownValue(initialDropdown, input.dropdownPreferences) : undefined);
-        if (selectedValue === undefined) return;
-        await searchDropdown(input.dropdownSelectionQuery);
-        await settleEffects();
-        const options = describeDropdown(root, children);
-        const candidate = options?.sections.flatMap(({ items }) => items).find(({ value }) => value === selectedValue);
-        if (await applyDropdownSelection(root, children, selectedValue, {
-          strict: Boolean(action || input.dropdownSelectionEvent),
-          previousValue: initialDropdown?.selected,
-        })) {
-          selectedItem = candidate;
-          effects = [];
-          root = renderRoot();
-        }
-      }));
     }
     if (searchChange && typeof root.props.onSearchTextChange === "function") {
-      await root.props.onSearchTextChange(query);
+      await withSearchClear(() => root.props.onSearchTextChange(query));
       effects = [];
       root = renderRoot();
     }
     if (menuSearch && input.dropdownQuery !== appliedQuery) await searchDropdown(input.dropdownQuery);
-    if (replayingViewInput) {
-      await routeReplay.run(true, () => withCurrentViewInput(settleEffects));
-    } else {
-      await settleEffects();
+    if (effects.length) {
+      const initial = effects;
+      effects = undefined;
+      const runEffects = async () => {
+        for (const [index, effect] of initial.entries()) {
+          const capture = effectFrame ? index === effectFrame.id :
+            input.mountNavigation === true && !action && !input.sensitiveFormSubmission &&
+            !routeReplay.getStore() && !effectNavigation && index < 12;
+          const page = await viewNavigation.runEffect(effect, capture);
+          if (page) effectNavigation = { ...page, index };
+        }
+      };
+      const canPublish = renderProgress && !action && !input.sensitiveFormSubmission && !routeReplay.getStore();
+      const drain = canPublish ? renderProgress.drain : undefined;
+      const run = async () => {
+        await runEffects();
+        if (drain) await drain();
+      };
+      const performEffects = async () => {
+        if (input.initialPreferencesAllowed === true && !action && !input.sensitiveFormSubmission && !routeReplay.getStore()) {
+          const initialMount = query === "" && input.mountNavigation === true && input.viewRoute === undefined;
+          const grant = { active: true, clipboardReadAllowed: initialMount, windowEffectsAllowed: initialMount };
+          try {
+            await initialViewEffects.run(grant, () => withSearchClear(run));
+          } finally {
+            grant.active = false;
+          }
+        } else {
+          await withSearchClear(run);
+        }
+      };
+      const pending = performEffects();
+      if (canPublish) {
+        const finished = pending.then(() => true);
+        let lastVersion;
+        let published = 0;
+        while (published < 4) {
+          let timer;
+          try {
+            const settled = await Promise.race([
+              finished,
+              new Promise((resolve) => {
+                timer = setTimeout(() => resolve(false), 120);
+                // The preview timer must not keep an otherwise idle guest alive.
+                if (drain) timer.unref();
+              }),
+            ]);
+            if (settled) break;
+          } finally {
+            clearTimeout(timer);
+          }
+          const version = stateVersion + cacheStateRevision();
+          if (lastVersion === version || !["detail", "list", "grid"].includes(root?.type)) continue;
+          lastVersion = version;
+          const previewRoot = renderRoot();
+          const preview = await describeView({ root: previewRoot, pageCount: 0, actionPanel: scope.panel ?? null }, { query });
+          if (drain || preview.isLoading === true || preview.detail?.isLoading === true || preview.grid?.isLoading === true ||
+              preview.rows?.some((row) => row.detailLoading === true)) {
+            if (await renderProgress.publish(preview) !== false) published++;
+          }
+        }
+      }
+      await pending;
+      await new Promise(setImmediate);
+      root = renderRoot();
     }
     if (formEvents.length) {
       replayingViewInput = true;
       for (const event of formEvents) {
-        await routeReplay.run(true, () => withCurrentViewInput(async () => {
-          await replayFormEvent(root, children, event, dropdownContext);
-          effects = [];
-          root = renderRoot();
-          await settleEffects();
-        }));
+        const selection = { ...applicationQueryEvents.get(event), active: applicationQueryEvents.has(event) };
+        try {
+          await applicationQuerySelection.run(selection, () =>
+            routeReplay.run(true, () => withCacheWritesBlocked(() => replayFormEvent(root, children, event, dropdownContext))));
+        } finally {
+          selection.active = false;
+        }
+        root = renderRoot();
       }
+    }
+    const pages = input.pageCount ?? 0;
+    if (!Number.isInteger(pages) || pages < 0 || pages > 8) throw new Error("Invalid pagination count");
+    while (pageCount < pages && (root?.type === "list" || root?.type === "grid")) {
+      const pagination = viewPagination(root);
+      if (pagination?.hasMore !== true) break;
+      replayingViewInput = true;
+      await routeReplay.run(true, () => withCacheWritesBlocked(async () => {
+        await pagination.onLoadMore();
+        await new Promise(setImmediate);
+      }));
+      pageCount++;
+      root = renderRoot();
     }
     if (root?.type === "list" || root?.type === "grid") {
       const items = () => root.type === "list"
@@ -550,14 +1034,12 @@ async function renderView(renderPage, input, scope) {
       const handler = root.props.onSelectionChange;
       if (typeof handler === "function") {
         replayingViewInput = true;
-        await routeReplay.run(true, () => withCurrentViewInput(async () => {
+        await routeReplay.run(true, () => withCacheWritesBlocked(async () => {
           if (typeof selected === "string") await handler(selected);
           else if (!visible.length) await handler(null);
           await new Promise(setImmediate);
-          effects = [];
-          root = renderRoot();
-          await settleEffects();
         }));
+        root = renderRoot();
         if (root?.type === "list" || root?.type === "grid") {
           visible = items();
           selectedRow = pick(visible, selected);
@@ -571,13 +1053,11 @@ async function renderView(renderPage, input, scope) {
       replayingViewInput = true;
       actionMenu = await replayActionMenu(menuRoute, () => panelForRoute(root, query, menuRow, scope.panel), children,
         async (callback, ...args) => {
-          await routeReplay.run(true, () => withCurrentViewInput(async () => {
+          await routeReplay.run(true, () => withCacheWritesBlocked(async () => {
             await callback(...args);
             await new Promise(setImmediate);
-            effects = [];
-            root = renderRoot();
-            await settleEffects();
           }));
+          root = renderRoot();
         });
     }
   } finally {
@@ -590,10 +1070,10 @@ async function renderView(renderPage, input, scope) {
   const dropdownFor = (root) => root?.type === "list" || root?.type === "grid"
     ? describeDropdown(root, children, selectedItem?.value, selectedItem) : undefined;
   return {
-    root, dropdown: dropdownFor(root), actionMenu, formCommands, dropdownContext, selectedRow,
+    root, dropdown: dropdownFor(root), actionMenu, formCommands, dropdownContext, selectedRow, pageCount, effectNavigation,
     refresh() {
       const updated = renderRoot();
-      return { root: updated, dropdown: dropdownFor(updated), formCommands, dropdownContext, selectedRow };
+      return { root: updated, dropdown: dropdownFor(updated), formCommands, dropdownContext, selectedRow, pageCount };
     },
   };
 }
@@ -619,14 +1099,14 @@ function panelForRoute(root, query, row, override) {
   }
 }
 
-async function render(command, input) {
+async function render(command, input, renderProgress) {
   configure(input);
   let renderPage = (query) => command({ arguments: { input: query } });
   const route = checkedViewRoute(input.viewRoute);
   const popped = input.poppedFrame === undefined ? undefined : checkedViewRoute([input.poppedFrame])[0];
   const notifyPush = input.notifyPush === true;
   if ((notifyPush || popped) && (input.action !== undefined || input.sensitiveFormSubmission ||
-      (notifyPush && (popped || !route.at(-1)?.lifecycleReceipt)) ||
+      (notifyPush && (popped || route.at(-1)?.mode !== "action" || !route.at(-1)?.lifecycleReceipt)) ||
       (popped && (route.length >= 4 || !popped.lifecycleReceipt || input.query !== popped.query)))) {
     throw new Error("Invalid navigation transition");
   }
@@ -634,26 +1114,28 @@ async function render(command, input) {
   if (route.length) {
     await replayRoute(async () => {
       for (const frame of route) {
-        const { selected } = await reconstructFrame(renderPage, frame, input);
-        entering = selected;
-        const target = await viewNavigation.replay(selected, frame.mode);
-        renderPage = () => target;
+        const { page } = await reconstructFrame(renderPage, frame, input);
+        entering = page.onPush;
+        renderPage = () => page.target;
       }
     });
   }
   let result;
   let lifecycleFailed = false;
   if (popped) {
-    const { selected, snapshot } = await replayRoute(() => reconstructFrame(renderPage, popped, input));
-    lifecycleFailed = await notifyNavigation(selected.props.onPop);
+    const { snapshot, page } = await replayRoute(() => reconstructFrame(renderPage, popped, input));
+    lifecycleFailed = await notifyNavigation(page.onPop);
     result = await describeView(snapshot.refresh(), { query: input.query });
   } else {
-    result = await renderSnapshot(renderPage, input);
-    if (notifyPush) lifecycleFailed = await notifyNavigation(entering.props.onPush);
+    result = await renderSnapshot(renderPage, input, renderProgress);
+    if (notifyPush) lifecycleFailed = await notifyNavigation(entering);
   }
   if (lifecycleFailed) result = { ...result, lifecycleFailed: true };
   if (notifyPush || popped) result = finish(result);
-  const cache = takeCacheSnapshot();
+  if (!input.sensitiveFormSubmission && result.kind !== "error" && viewIDs && (viewIDs.size || input.viewIDs !== undefined)) {
+    result = { ...result, viewIDs: [...viewIDs] };
+  }
+  const cache = takeCacheSnapshot({ flushPending: true });
   return cache === undefined || result.kind === "error" ? result : { ...result, cache };
 }
 
@@ -666,16 +1148,19 @@ function replayRoute(reconstruct) {
 }
 
 async function reconstructFrame(renderPage, frame, input) {
+  const effectFrame = frame.mode === "effect" ? frame : undefined;
   const snapshot = await reconstructView(renderPage, {
     ...frame, actionMenuRow: frame.row, dropdownPreferences: input.dropdownPreferences,
-  });
+  }, effectFrame);
+  if (effectFrame) {
+    const page = snapshot.effectNavigation;
+    if (page?.receipt !== frame.lifecycleReceipt) throw new Error("Invalid effect navigation receipt");
+    return { page, snapshot };
+  }
   const { root, actionPanel, actionMenu } = snapshot;
   const panel = actionMenu ?? panelForRoute(root, frame.query, frame.row, actionPanel);
   const selected = findAction(panel, frame.id, children);
-  if (frame.lifecycleReceipt && frame.lifecycleReceipt !== lifecycleReceipt(selected)) {
-    throw new Error("Invalid navigation lifecycle receipt");
-  }
-  return { selected, snapshot };
+  return { page: await viewNavigation.replay(selected, frame), snapshot };
 }
 
 async function notifyNavigation(callback) {
@@ -691,8 +1176,12 @@ async function notifyNavigation(callback) {
   }
 }
 
-async function renderSnapshot(renderPage, input) {
-  const snapshot = await reconstructView(renderPage, input);
+async function renderSnapshot(renderPage, input, renderProgress) {
+  const snapshot = await reconstructView(renderPage, input, undefined, renderProgress);
+  if (snapshot.effectNavigation) {
+    const { index, receipt } = snapshot.effectNavigation;
+    return finish({ kind: "pushView", routeMode: "effect", effectIndex: index, lifecycleReceipt: receipt });
+  }
   if (input.metadataTagReceipt !== undefined) {
     const reply = await invokeMetadataTag(snapshot.root, input);
     if (reply.kind === "action" || reply.kind === "storage") {
@@ -701,6 +1190,10 @@ async function renderSnapshot(renderPage, input) {
     return reply;
   }
   const reply = await describeView(snapshot, input);
+  if (reply[refreshAfterStorageWrite]) {
+    const updated = await describeView(snapshot.refresh(), { query: input.query });
+    return { ...updated, storageUpdated: true };
+  }
   if (input.dateReceipt !== undefined && reply.kind === "action") {
     return describeView(snapshot.refresh(), { query: input.query });
   }
@@ -721,7 +1214,7 @@ async function invokeMetadataTag(root, input) {
   let scope;
   if (root?.type === "detail" && action.row === 0) {
     panel = root.props.metadata;
-  } else if (root?.type === "list" && Number.isSafeInteger(action.row) && action.row >= 0) {
+  } else if (root?.type === "list" && root.props.isShowingDetail === true && Number.isSafeInteger(action.row) && action.row >= 0) {
     const { nodes } = listNodes(root, query, children);
     const item = nodes[action.row]?.item;
     panel = item?.props.detail?.props.metadata;
@@ -734,7 +1227,7 @@ async function invokeMetadataTag(root, input) {
 
 async function describeView(snapshot, input) {
   const { query, action } = input;
-  const { root, dropdown, actionPanel, actionMenu, formCommands, dropdownContext, selectedRow } = snapshot;
+  const { root, dropdown, actionPanel, actionMenu, formCommands, dropdownContext, selectedRow, pageCount } = snapshot;
   if (input.actionMenuRow !== undefined && !action) {
     if (!actionMenu) throw new Error("Missing action submenu route");
     return { kind: "actionMenu", actions: actionDescriptions(actionMenu), submenu: submenuOptions(actionMenu) };
@@ -758,13 +1251,15 @@ async function describeView(snapshot, input) {
     if (action.row !== 0) throw new Error("Unknown detail");
     return invokeViewAction(panelFor(root.props.actions), action.id, true, input);
   }
+  const pagination = viewPagination(root);
+  const paging = pagination ? { pagination: { pageCount, hasMore: pageCount < 8 && pagination.hasMore === true } } : {};
   const selection = {
     ...(selectedRow !== undefined && { selectedRow }),
     ...(typeof root?.props.onSelectionChange === "function" && { observesSelection: true }),
   };
   if (root?.type === "grid") {
     const { groups, empty } = gridNodes(root, query, children);
-    if (!action) return { kind: "grid", ...selection, grid: describeGrid(root, groups, empty, (panel) => actionDescriptions(panelFor(panel)), (panel) => actionPanelTitle(panelFor(panel))), ...(dropdown && { dropdown }) };
+    if (!action) return { kind: "grid", ...selection, ...paging, grid: describeGrid(root, groups, empty, (panel) => actionDescriptions(panelFor(panel)), (panel) => actionPanelTitle(panelFor(panel))), ...(dropdown && { dropdown }) };
     if (action.row === -1 && empty) return invokeViewAction(panelFor(empty.panel), action.id, true, input);
     const target = groups.flatMap((group) => group.items).find(({ id }) => id === action.row);
     if (!target) throw new Error("Unknown grid item");
@@ -781,25 +1276,30 @@ async function describeView(snapshot, input) {
   return {
     kind: "view",
     ...selection,
+    ...paging,
     ...(dropdown && { dropdown }),
     isLoading: root.props.isLoading,
+    ...(root.props.isShowingDetail === true && { isShowingDetail: true }),
     empty: empty && { title: empty.title, description: empty.description, icon: empty.icon, ...(empty.imageDescriptor && { imageDescriptor: empty.imageDescriptor }), actionPanelTitle: actionPanelTitle(panelFor(empty.panel)), actions: actionDescriptions(panelFor(empty.panel)) },
     rows: nodes.map(({ item, itemID, section, sectionSubtitle, sectionID }, index) => {
       if (item.type !== "item") throw new Error("Expected List.Item");
-      const { title, subtitle, icon, detail, actions: panel, accessories } = item.props;
-      const accessoryText = accessories?.map(({ tag, date }) => tag ?? date?.toISOString()).filter(Boolean).join(" · ");
-      const source = icon?.source ?? icon;
-      const utilityIcon = describeUtilityIcon(source);
-      const imageDescriptor = utilityIcon ? undefined : describeImage(icon);
+      const { title, subtitle, icon, actions: panel, accessories } = item.props;
+      const detail = root.props.isShowingDetail === true ? item.props.detail : undefined;
+      const iconValue = icon && typeof icon === "object" && Object.hasOwn(icon, "value") ? icon.value : icon;
+      const source = iconValue?.source ?? iconValue;
+      const imageDescriptor = describeImage(iconValue, false, true);
       return {
-        id: index, ...(itemID !== undefined && { itemID }), section, sectionSubtitle, sectionID, title: listText(title), subtitle: listText(subtitle) ?? accessoryText,
-        icon: !utilityIcon && typeof source === "string" ? source : undefined,
-        ...iconTint(source, icon?.tintColor),
-        utilityIcon,
+        id: index, ...(itemID !== undefined && { itemID }), section, sectionSubtitle, sectionID, title: listText(title), subtitle: listText(subtitle),
+        titleTooltip: listText(title?.tooltip),
+        subtitleTooltip: listText(subtitle?.tooltip),
+        iconTooltip: listText(icon?.tooltip),
+        accessories: describeListAccessories(accessories),
+        icon: typeof source === "string" && /^[a-z0-9-]{1,128}$/i.test(source) ? source : undefined,
+        ...iconTint(source, iconValue?.tintColor),
         ...(imageDescriptor && { imageDescriptor }),
-        markdown: detail?.props.markdown,
+        ...describeMarkdown(detail?.props.markdown),
         detailLoading: detail?.props.isLoading === true || undefined,
-        richMetadata: describeListMetadata(detail?.props.metadata, children, webURL, { scope: [item.props.id, listText(title)] }),
+        richMetadata: describeListMetadata(detail?.props.metadata, children, metadataLinkURL, { scope: [item.props.id, listText(title)] }),
         metadata: children(detail?.props.metadata).filter((node) => node.type === "label")
           .map(({ props }) => ({ title: listText(props.title) ?? "", text: listText(props.text) ?? "" })),
         actionPanelTitle: actionPanelTitle(panelFor(panel)),
@@ -811,37 +1311,91 @@ async function describeView(snapshot, input) {
 
 // The pinned command uses local calendar fields for a single workday.
 async function runMenuBar(command, input) {
+  const result = await renderMenuBar(command, input);
+  const cache = takeCacheSnapshot({ flushPending: true });
+  return cache === undefined ? result : { ...result, cache };
+}
+
+async function renderMenuBar(command, input) {
   configure(input);
+  if (!input.sensitiveFormSubmission) {
+    viewIDs = checkedViewIDs(input.viewIDs);
+    viewIDSeed = viewIDs.get(viewIDSeedSlot);
+  }
   const wallTime = input.wallTime;
   if (!Number.isFinite(wallTime)) throw new Error("Missing host clock");
   const RealDate = Date;
   process.env.TZ = "UTC";
-  global.Date = class extends RealDate {
+  global.Date = class Date extends RealDate {
     constructor(...args) { super(...(args.length ? args : [wallTime])); }
     static now() { return wallTime; }
+    static [Symbol.hasInstance](value) {
+      return this === Date ? value instanceof RealDate : super[Symbol.hasInstance](value);
+    }
   };
   try {
-    const root = command();
-    if (root == null) return { kind: "menuBar", visible: false, subtitle: feedback?.text };
-    if (root.type !== "menuBar") throw new Error("Expected MenuBarExtra");
+    const requestedType = input.menuActionType;
+    if (requestedType !== undefined &&
+        (input.menuAction === undefined || (requestedType !== "left-click" && requestedType !== "right-click"))) {
+      throw new Error("Invalid menu action event type");
+    }
+    function renderMenu() {
+      stateIndex = 0;
+      const menu = renderComponentTree(command);
+      if (menu != null && menu.type !== "menuBar") throw new Error("Expected MenuBarExtra");
+      return menu;
+    }
+    function menuSnapshot(menu, items) {
+      if (menu == null) return { kind: "menuBar", visible: false, subtitle: feedback?.text };
+      return {
+        kind: "menuBar",
+        visible: true,
+        title: menu.props.title,
+        subtitle: feedback?.text,
+        tooltip: menu.props.tooltip,
+        ...describeMenuIcon(menu.props.icon),
+        tint: typeof menu.props.icon?.tintColor === "string" ? menu.props.icon.tintColor : undefined,
+        items,
+        ...(viewIDs && (viewIDs.size || input.viewIDs !== undefined) && { viewIDs: [...viewIDs] }),
+      };
+    }
+
+    let root = renderMenu();
+    if (effects.length) {
+      const initial = effects;
+      effects = undefined;
+      for (const effect of initial) await effect();
+      await new Promise(setImmediate);
+      root = renderMenu();
+    }
+    if (root == null) return menuSnapshot(root);
     const { items, callbacks } = describeMenu(root, children);
     if (input.menuAction !== undefined) {
+      if (!Number.isSafeInteger(input.menuAction) || input.menuAction < 0) throw new Error("Invalid menu action ID");
       const callback = callbacks[input.menuAction];
       if (typeof callback !== "function") throw new Error("Unknown menu action");
-      await callback({ type: "left-click" });
-      if (actionResult && actionResult.kind !== "openPreferences") throw new Error("Unsupported menu action");
-      return actionResult ?? { kind: "menuAction" };
+      const grant = {
+        active: true, effect: undefined, alertAllowed: input.menuAlertAllowed === true,
+        liveToast: input.menuAlertAllowed === true && input.interactiveToast === true,
+        interactiveToast: input.menuAlertAllowed === true && input.interactiveToast === true,
+        clipboardReadAllowed: clipboardReadAllowed && input.menuAlertAllowed === true,
+        finderRevealAllowed: input.finderRevealAllowed === true,
+        openTargetAllowed: input.openTargetAllowed === true,
+      };
+      try {
+        await userMenuAction.run(grant, () => withInteractiveToast(grant, async () => {
+          await callback({ type: requestedType ?? "left-click" });
+          await flushToastUpdates();
+        }));
+        if (grant.effect) return grant.effect;
+        if (!grant.didWriteStorage && !hasCacheChanges()) return { kind: "menuAction" };
+        root = renderMenu();
+        return { ...menuSnapshot(root, root && describeMenu(root, children).items), storageUpdated: true };
+      } finally {
+        grant.active = false;
+      }
     }
-    return {
-      kind: "menuBar",
-      visible: true,
-      title: root.props.title,
-      subtitle: feedback?.text,
-      tooltip: root.props.tooltip,
-      icon: root.props.icon?.source ?? root.props.icon,
-      tint: root.props.icon?.tintColor,
-      items,
-    };
+    return menuSnapshot(root, items);
   } finally {
     global.Date = RealDate;
   }
@@ -855,47 +1409,101 @@ async function runCommand(command, input) {
     args.numberOfUUIDsToGenerate = String(input.count);
   }
   const count = args.numberOfUUIDsToGenerate || args.numberOfULIDsToGenerate;
-  if (count && (!/^\d+$/.test(count) || Number(count) < 1 || Number(count) > 20)) {
+  if (input.catalogNoView !== true && count && (!/^\d+$/.test(count) || Number(count) < 1 || Number(count) > 20)) {
     return { kind: "error", text: "Enter a count from 1 to 20." };
   }
 
-  await command({ arguments: args });
-  await flushToastUpdates();
+  const grant = { active: true, catalog: input.catalogNoView === true,
+    clipboard: clipboardReadAllowed && (suitePreferencesAllowed || input.catalogNoView === true) };
+  runningCommand = true;
+  try {
+    await userNoViewCommand.run(grant, async () => {
+      try {
+        await command(input.catalogNoView === true
+          ? { arguments: args, launchType: environment.launchType }
+          : { arguments: args });
+      } finally {
+        grant.active = false;
+      }
+    });
+    await flushToastUpdates();
+  } finally {
+    runningCommand = false;
+  }
+  if (input.catalogNoView === true) {
+    const result = feedback ?? visibleToast?.result ?? { kind: "action" };
+    const cache = takeCacheSnapshot({ flushPending: true });
+    return cache === undefined ? result : { ...result, cache };
+  }
   if (feedback?.kind === "error") return feedback;
   if (actionResult) return finish(actionResult);
-  return feedback ?? { kind: "error", text: "The command produced no result." };
+  const toast = visibleToast?.result;
+  return feedback ?? (toast?.toastStyle === ToastStyle.Failure ? { kind: "error", text: toast.text } : toast)
+    ?? { kind: "error", text: "The command produced no result." };
 }
 
-function displayToast(toast, { style, title, message }) {
-  const grant = userViewAction.getStore();
+let viewToastSequence = 0;
+
+function withInteractiveToast(grant, run) {
+  if (!grant.interactiveToast) return run();
+  return runWithToastActions(run, {
+    currentToast: () => visibleToast?.grant === grant ? visibleToast : undefined,
+    hasResult: () => actionResult || storageChanged || feedback || grant.effect || grant.didWriteStorage,
+    select: (token, polling) => require("./raycast-api.cjs").request("feedback.toastAction", polling ? token + ":poll" : token),
+    redisplay: (current, callbacks) => displayToast(current.toast, current.presentation, "update", callbacks),
+    flush: flushToastUpdates,
+  });
+}
+
+async function displayToast(toast, options, operation, callbacks) {
+  const grant = userViewAction.getStore() ?? userMenuAction.getStore();
   if (routeReplay.getStore() || (grant && !grant.active)) return;
-  const text = [title, message].filter(Boolean).join(" ");
-  if (visibleToast?.error && feedback === visibleToast.error) feedback = undefined;
-  if (style === ToastStyle.Failure) {
-    feedback = { kind: "error", text };
-    visibleToast = { toast, grant, error: feedback };
-  } else {
-    visibleToast = { toast, grant, result: { kind: "toast", text, toastStyle: style } };
+  const id = operation === "show" ? ++viewToastSequence : visibleToast.id;
+  const { style, title, message, feedbackAction, secondaryFeedbackAction } = options;
+  const interaction = callbacks && grant?.interactiveToast && !actionResult && !storageChanged && !feedback
+    ? toastInteraction(options) : undefined;
+  if (grant?.liveToast) {
+    await require("./raycast-api.cjs").request("feedback.toast", JSON.stringify({
+      operation, id, style, title, message, feedbackAction, secondaryFeedbackAction, interaction,
+    }));
   }
+  const text = [title, message].filter(Boolean).join(" ");
+  visibleToast = {
+    id, toast, grant, interaction, callbacks, presentation: options,
+    result: {
+      kind: "toast", text, toastStyle: style,
+      ...(feedbackAction && { feedbackAction }),
+      ...(secondaryFeedbackAction && { secondaryFeedbackAction }),
+    },
+  };
   if (grant) grant.didUseToast = true;
 }
 
 const { Toast, ToastStyle, showToast, flushToastUpdates } = makeToastAdapter({
-  show: displayToast,
-  update(toast, options) {
-    if (visibleToast?.toast === toast) displayToast(toast, options);
+  show: (toast, options, callbacks) => displayToast(toast, options, "show", callbacks),
+  update(toast, options, callbacks) {
+    if (visibleToast?.toast === toast) return displayToast(toast, options, "update", callbacks);
   },
-  hide(toast) {
-    const grant = userViewAction.getStore();
-    if (routeReplay.getStore() || (grant && !grant.active) || visibleToast?.toast !== toast) return;
-    if (visibleToast.error && feedback === visibleToast.error) feedback = undefined;
-    visibleToast = undefined;
+  async hide(toast) {
+    const grant = userViewAction.getStore() ?? userMenuAction.getStore();
+    const current = visibleToast;
+    if (routeReplay.getStore() || (grant && !grant.active) || current?.toast !== toast) return;
+    if (grant?.liveToast) {
+      await require("./raycast-api.cjs").request("feedback.toast", JSON.stringify({ operation: "hide", id: current.id }));
+    }
+    if (visibleToast === current) visibleToast = undefined;
   },
 });
 
 function canReadClipboard() {
+  if (!clipboardReadAllowed) return false;
   const grant = userViewAction.getStore();
-  return clipboardReadAllowed && grant?.active === true && grant.allowsFileEffects;
+  const menu = userMenuAction.getStore();
+  const initial = initialViewEffects.getStore();
+  return (grant?.active === true && grant.allowsFileEffects) ||
+    (menu?.active === true && menu.clipboardReadAllowed === true) ||
+    (userNoViewCommand.getStore()?.active === true && userNoViewCommand.getStore()?.clipboard === true) ||
+    (initial?.active === true && initial.clipboardReadAllowed && !routeReplay.getStore());
 }
 
 const clipboardReaders = makeClipboardReaders(async (capability, text) => {
@@ -905,10 +1513,22 @@ const clipboardReaders = makeClipboardReaders(async (capability, text) => {
   return value;
 }, canReadClipboard);
 
+async function copyClipboard(content, options) {
+  const grant = userViewAction.getStore();
+  const menu = userMenuAction.getStore();
+  const viewAllowed = grant?.active && grant.liveToast && grant.finderRevealAllowed && grant.allowsFileEffects &&
+    !grant.lifecycle && !actionResult && !routeReplay.getStore() && !replayingViewInput;
+  const menuAllowed = menu?.active && menu.finderRevealAllowed && !menu.effect;
+  if (!viewAllowed && !menuAllowed) return clipboardResult("copy", content, options);
+  const payload = clipboardWritePayload(content, options);
+  if (visibleToast) visibleToast.interaction = undefined;
+  await require("./raycast-api.cjs").request("clipboard.write", payload);
+}
+
 const Clipboard = {
   ...clipboardReaders,
-  clear: makeClearClipboard(recordFileEffect),
-  copy: async (content, options) => clipboardResult("copy", content, options),
+  clear: clearClipboard,
+  copy: copyClipboard,
   paste: async (content, options) => clipboardResult("paste", content, options),
 };
 
@@ -932,25 +1552,30 @@ for (const api of [Clipboard, Clipboard.read, Clipboard.readText]) {
   registerEnvironmentCapability(api, canReadClipboard);
 }
 
+const updateCommandMetadata = require("./command-metadata.cjs").makeUpdateCommandMetadata(async (subtitle) => {
+  if (routeReplay.getStore() || replayingViewInput) return;
+  if (commandMetadataAllowed) {
+    await require("./raycast-api.cjs").request("command.updateMetadata", JSON.stringify({ subtitle }));
+  } else {
+    // The standalone menu verifier has no signed installation to update.
+    feedback = { kind: "metadata", text: subtitle };
+  }
+});
+
 module.exports = {
   ...applicationQueries,
   WindowManagement,
   environment, LaunchType, Action, ActionPanel, Color, Detail, Form, Grid, Icon, Image, ImageMask, Keyboard, List, MenuBarExtra, LocalStorage, useState, useEffect, useRef, render, runCommand, runMenuBar,
-  updateCommandMetadata: async ({ subtitle }) => {
-    if (!routeReplay.getStore()) feedback = { kind: "metadata", text: subtitle };
-  },
+  updateCommandMetadata,
   open,
   ...navigation,
   PopToRootType,
   openExtensionPreferences,
-  openCommandPreferences: async () => {
-    if (routeReplay.getStore()) throw new Error("Command preferences require a selected action");
-    actionResult = { kind: "openPreferences" };
-  },
+  openCommandPreferences: () => openPreferences("command"),
   getPreferenceValues: () => ({ ...preferenceValues }),
   preferences: makePreferences(() => preferenceValues, () => preferenceDefinitions),
   prepareInput, Cache, specialKeys,
-  useId: () => viewID(stateIndex++),
+  useId,
   randomId,
   ListItem: List.Item,
   ListSection: List.Section,
@@ -985,16 +1610,9 @@ module.exports = {
   ...clipboardAliases(Clipboard),
   Toast,
   ToastStyle,
-  showHUD: async (text) => {
-    if (!routeReplay.getStore() && !feedback && typeof text === "string") feedback = { kind: "hud", text };
-  },
   showToast,
   Alert,
   AlertActionStyle,
-  confirmAlert: async ({ primaryAction }) => {
-    if (routeReplay.getStore()) return false;
-    if (confirmed) await primaryAction?.onAction?.();
-    return confirmed;
-  },
-  jsxRuntime: { jsx, jsxs: jsx },
+  confirmAlert,
+  jsxRuntime: { jsx, jsxs: jsx, Fragment },
 };

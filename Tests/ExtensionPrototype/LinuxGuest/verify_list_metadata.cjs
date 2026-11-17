@@ -16,7 +16,7 @@ test("new metadata preserves ordered labels, links, separators and styled tags",
     Link({ title: "Docs", text: "阅读文档", target: "HTTPS://Example.COM/Guide" }),
     separator(),
     TagList({ title: "Tags", children: [
-      TagList.Item({ text: "标签", color: { light: "#abc", dark: "#123456" } }),
+      TagList.Item({ text: "标签", color: { light: "#abc", dark: "#123456", adjustContrast: false } }),
       TagList.Item({ icon: { source: "Folder" }, color: "raycast-blue" }),
     ] }),
   ] }), children, webURL);
@@ -50,11 +50,11 @@ test("unsafe link targets stay inert and only reviewed tag fields are carried", 
 
 test("a label with a dynamic color or icon uses the rich wire even when it is the only row", async () => {
   const { Detail, Icon, List, render } = require("./view-api.cjs");
-  const labelProps = { title: "Status", text: { value: "可用", color: { light: "#080", dark: "#0f0" } },
-    icon: { source: Icon.Circle, tintColor: "#f00" } };
+  const labelProps = { title: "Status", text: { value: "可用", color: { light: "#080", dark: "#0f0", adjustContrast: false } },
+    icon: { source: Icon.Circle, tintColor: { light: "#f00", adjustContrast: false } } };
   const standalone = await render(() => Detail({ metadata: Detail.Metadata({ children: Detail.Metadata.Label(labelProps) }) }), {});
   const RowDetail = List.Item.Detail;
-  const row = (await render(() => List({ children: List.Item({ title: "Row",
+  const row = (await render(() => List({ isShowingDetail: true, children: List.Item({ title: "Row",
     detail: RowDetail({ isLoading: true, markdown: "## Detail", metadata: RowDetail.Metadata({
       children: RowDetail.Metadata.Label(labelProps),
     }) }),
@@ -76,7 +76,7 @@ test("metadata tags require a receipt for the current row and refresh the clicke
   const RowDetail = List.Item.Detail;
   function command() {
     const [value, setValue] = useState("before");
-    return List({ children: ["first", "second"].map((id) => List.Item({ id, title: id,
+    return List({ isShowingDetail: true, children: ["first", "second"].map((id) => List.Item({ id, title: id,
       detail: RowDetail({ markdown: value, metadata: RowDetail.Metadata({ children: RowDetail.Metadata.TagList({
         title: "Flags", children: [RowDetail.Metadata.TagList.Item({ text: "static" }),
           RowDetail.Metadata.TagList.Item({ text: "click", onAction() { activations++; setValue(id); } })],
@@ -119,7 +119,7 @@ test("reviewed List emits richer metadata alongside legacy labels only when used
   const { List, render } = require("./view-api.cjs");
   const Detail = List.Item.Detail;
   const { Metadata } = Detail;
-  const command = () => List({ children: [
+  const command = () => List({ isShowingDetail: true, children: [
     List.Item({
       title: "Legacy",
       detail: Detail({ markdown: "# Legacy", metadata: Metadata({ children: [
@@ -151,7 +151,7 @@ test("metadata separators survive in rows with only labels and separators", asyn
   const { List, render } = require("./view-api.cjs");
   const { Detail } = List.Item;
   const { Metadata } = Detail;
-  const { rows } = await render(() => List({ children: List.Item({
+  const { rows } = await render(() => List({ isShowingDetail: true, children: List.Item({
     title: "Example",
     detail: Detail({ metadata: Metadata({ children: [
       Metadata.Label({ title: "First", text: "One" }),
@@ -174,7 +174,27 @@ test("standalone and row metadata serialize the same link and keep unsafe target
   }
   for (const [target, expected] of [
     [props.target, { kind: "link", title: props.title, text: props.text, target: new URL(props.target).href }],
-    ["file:///etc/hosts", { kind: "label", title: props.title, text: props.text }],
+    ...[
+      "mailto:help+keylane@example.com",
+      "mailto:help@example.com?subject=%E6%94%AF%E6%8F%B4&body=Help%20please",
+      "mailto:help@example.com?subject=",
+      "tel:+12025550123",
+      "file:///tmp/metadata%20fixture.txt",
+      "x-keylane-fixture://open/metadata",
+
+    ].map((target) =>
+      [target, { kind: "link", title: props.title, text: props.text, target }]),
+    ["TEL:+1-(202)-555.0123", { kind: "link", title: props.title, text: props.text, target: "tel:+12025550123" }],
+    ...["file://remote/etc/hosts", "file:///tmp/%2e%2e/etc/hosts", "file:///tmp/a%5Cb",
+      "file:///tmp/a%00b", "file:///tmp/a%EF%BB%BFb", "file:///tmp/a?", "file:///tmp/a#test",
+      "javascript:alert(1)", "data:text/plain,hello", "custom://guest@example.com", "custom:",
+      "mailto:help@example.com?subject=X&Subject=Y",
+      "mailto:help@example.com?body=%", "mailto:help@example.com?body=%FF",
+      "mailto:help@example.com?subject=Hello%0D%0ABcc%3Aother%40example.com",
+      "mailto:help@example.com?body=test%0A", "mailto:help@example.com?subject=%E2%80%AE",
+      "tel:()", "tel:+1%2D202", "mailto:help@example.com?bcc=other@example.org",
+      "mailto:help@example.com\n", "mailto:help@example.com%0A", "tel:+1;ext=22"]
+      .map((target) => [target, { kind: "label", title: props.title, text: props.text }]),
   ]) {
     const standalone = await render(() => Detail({ metadata: metadata(Detail, target) }), {});
     const RowDetail = List.Item.Detail;
@@ -184,4 +204,31 @@ test("standalone and row metadata serialize the same link and keep unsafe target
     assert.deepEqual(standalone.detail.metadata[0], expected);
     assert.deepEqual(list.rows[0].richMetadata[0], expected);
   }
+});
+
+test("list detail visibility follows the parent and rejects receipts from a hidden detail", async () => {
+  const { List, render, useState } = require("./view-api.cjs");
+  const RowDetail = List.Item.Detail;
+  const command = () => {
+    const [query, setQuery] = useState("");
+    return List({ onSearchTextChange: setQuery, isShowingDetail: query === "show", children: [
+      List.Item({ title: "Row", detail: RowDetail({ markdown: "Body", metadata: RowDetail.Metadata({
+        children: RowDetail.Metadata.TagList({ title: "Tags", children:
+          RowDetail.Metadata.TagList.Item({ text: "Clickable", onAction() {} }),
+        }),
+      }) }) }),
+      List.Item({ title: "No detail" }),
+    ] });
+  };
+  const visible = await render(command, { query: "show" });
+  assert.equal(visible.isShowingDetail, true);
+  assert.equal(visible.rows[0].markdown, "Body");
+  assert.equal(visible.rows[1].markdown, undefined);
+  const { actionReceipt } = visible.rows[0].richMetadata[0].tags[0];
+  const hidden = await render(command, { query: "hide" });
+  assert.equal(hidden.isShowingDetail, undefined);
+  assert.equal(hidden.rows[0].markdown, undefined);
+  assert.equal(hidden.rows[0].richMetadata, undefined);
+  await assert.rejects(render(command, { query: "hide", action: { row: 0, id: 0 }, metadataTagReceipt: actionReceipt }),
+    /Invalid metadata tag action/);
 });

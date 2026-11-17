@@ -140,6 +140,8 @@ static int run_extension(int fd, const char *script) {
             _exit(126);
         if (fd != 3) close(fd);
         enter_worker();
+        // The Finder broker translates this reserved path on the host.
+        if (setenv("HOME", "/keylane-host-home", 1) < 0) _exit(126);
         execl("/usr/bin/node", "node", script, NULL);
         _exit(127);
     }

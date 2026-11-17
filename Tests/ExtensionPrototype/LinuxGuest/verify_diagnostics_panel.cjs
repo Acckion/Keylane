@@ -1,7 +1,6 @@
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { configureEnvironment } = require("./environment.cjs");
-const { guestDiagnostics } = require("./diagnostics-api.cjs");
+const { configureExceptionReporting, configureMemoryReporting, guestDiagnostics, recordMemorySample } = require("./diagnostics-api.cjs");
 const {
   Action, ActionPanel, captureException, captureMemorySnapshot, Detail, Form, Grid, List,
   render, useActionPanel, useEffect,
@@ -9,26 +8,43 @@ const {
 
 const copyPanel = (text) => ActionPanel({ children: Action.CopyToClipboard({ title: text, content: text }) });
 
-test("diagnostics are bounded, retain only safe values, and require development mode for memory sampling", () => {
-  configureEnvironment({ isDevelopment: false });
-  captureMemorySnapshot("test file path");
-  assert.deepEqual(guestDiagnostics(), []);
-  const exception = { get message() { assert.fail("exception details must not be read"); } };
-  captureException(exception);
-  configureEnvironment({ isDevelopment: true });
+test("exception diagnostics retain only value categories", () => {
+  const sent = [];
+  configureExceptionReporting((type) => { sent.push(type); });
   try {
-    captureMemorySnapshot("another private file path");
-    const [exceptionRecord, memoryRecord] = guestDiagnostics();
-    assert.deepEqual(exceptionRecord, { kind: "exception", valueType: "object" });
-    assert.deepEqual(Object.keys(memoryRecord), ["kind", "heapUsed", "heapTotal"]);
-    assert.equal(memoryRecord.kind, "memory");
-    assert.ok(memoryRecord.heapUsed > 0 && memoryRecord.heapTotal >= memoryRecord.heapUsed);
+    const exception = { get message() { assert.fail("exception details must not be read"); } };
+    assert.equal(captureException(exception), undefined);
+    captureException(new Error("private message"));
+    captureException(new Proxy({}, { get() { assert.fail("exception properties must not be read"); } }));
+    assert.deepEqual(sent, ["object", "error", "object"]);
+    assert.deepEqual(guestDiagnostics().map(({ valueType }) => valueType), sent);
     for (let count = 0; count < 100; count++) captureException("private data");
     assert.equal(guestDiagnostics().length, 16);
-    assert.doesNotMatch(JSON.stringify(guestDiagnostics()), /private|file path/);
+    assert.equal(sent.length, 16);
+    assert.doesNotMatch(JSON.stringify(sent), /private/);
   } finally {
-    configureEnvironment(undefined);
+    configureExceptionReporting(undefined);
   }
+});
+
+test("memory diagnostics require an explicit reporter and send bounded labeled and automatic samples immediately", () => {
+  const samples = [];
+  captureMemorySnapshot("disabled");
+  configureMemoryReporting((sample) => { samples.push(sample); });
+  try {
+    captureMemorySnapshot("After\nparsing");
+    recordMemorySample(null);
+    assert.deepEqual(samples.map(({ label }) => label), ["After parsing", null]);
+    assert.ok(samples.every(({ heapUsed, heapTotal }) => heapUsed > 0 && heapTotal >= heapUsed));
+    captureMemorySnapshot("标题".repeat(96));
+    assert.equal(samples[2].label.length, 96);
+    for (let count = 0; count < 100; count++) captureMemorySnapshot("repeat");
+    assert.equal(samples.length, 16);
+  } finally {
+    configureMemoryReporting(undefined);
+  }
+  captureMemorySnapshot("disabled again");
+  assert.equal(samples.length, 16);
 });
 
 test("useActionPanel updates the view and reconstructs the same selected action", async () => {
@@ -98,4 +114,25 @@ test("action-panel overrides participate in valid navigation routes and preserve
   const viewRoute = [{ query: "", row: 0, id: 0, mode: "action" }];
   assert.equal((await render(command, { viewRoute })).detail.markdown, "next");
   await assert.rejects(render(command, { viewRoute: [{ ...viewRoute[0], row: 1 }] }), /Unknown view route/);
+});
+
+test("useActionPanel changes publish during a pending effect even when view state is unchanged", async () => {
+  const sleep = require("node:timers/promises").setTimeout;
+  const observed = [];
+  const command = () => {
+    const panel = useActionPanel();
+    useEffect(async () => {
+      panel.update(copyPanel("first update"));
+      await sleep(170);
+      panel.update(copyPanel("second update"));
+      await sleep(170);
+      panel.update(null);
+    });
+    return Detail({ markdown: "unchanged", actions: copyPanel("original"), isLoading: true });
+  };
+  const result = await render(command, {}, {
+    publish(preview) { observed.push(preview.detail.actions.map(({ title }) => title)); },
+  });
+  assert.deepEqual(observed, [["first update"], ["second update"]]);
+  assert.deepEqual(result.detail.actions, []);
 });

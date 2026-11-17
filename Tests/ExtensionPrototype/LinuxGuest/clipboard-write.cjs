@@ -26,11 +26,22 @@ function clipboardEffect(kind, content, options) {
     throw new TypeError("Expected text, a number, HTML or a local file");
   }
 
-  const concealed = kind === "copy" && options?.concealed === true;
+  const concealed = kind === "copy" && (options?.concealed ?? options?.transient) === true;
   const keepOpen = kind === "paste" && options?.closeMainWindow === false;
   if (payload.text !== undefined && payload.html === undefined && !concealed && !keepOpen &&
       Buffer.byteLength(payload.text) <= 1024) return { kind, text: payload.text };
   return { kind, clipboardContent: payload, ...(concealed && { concealed }), ...(keepOpen && { keepOpen }) };
 }
 
-module.exports = { clipboardEffect };
+function clipboardWritePayload(content, options) {
+  const effect = clipboardEffect("copy", content, options);
+  const payload = JSON.stringify({
+    content: effect.clipboardContent ?? { text: effect.text },
+    concealed: effect.concealed === true,
+  });
+  // The payload travels as a JSON string inside the request frame.
+  if (Buffer.byteLength(JSON.stringify(payload)) > 12_288) throw new RangeError("Clipboard content is too large");
+  return payload;
+}
+
+module.exports = { clipboardEffect, clipboardWritePayload };

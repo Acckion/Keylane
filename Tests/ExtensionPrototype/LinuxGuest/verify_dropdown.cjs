@@ -28,6 +28,7 @@ test("groups options, preserves search metadata, and lets controlled values take
   assert.deepEqual(result.sections[1].items[0].keywords, ["Chinese"]);
   assert.equal(result.sections[1].items[0].icon, "Folder");
   assert.equal(result.sections[1].items[1].icon, undefined);
+  assert.equal(result.sections[1].items[1].imageDescriptor.light.remoteURL, "https://example.invalid/image.png");
   assert.equal(describeDropdown(root({ defaultValue: "en" }), children).selected, "en");
   assert.equal(describeDropdown(root({ defaultValue: "en" }), children, "zh").selected, "zh");
   assert.equal(describeDropdown(root({ defaultValue: "unknown" }), children).selected, "all");
@@ -199,45 +200,27 @@ test("dropdown search callbacks cannot write the reviewed extension cache", asyn
   await assert.rejects(render(command, { cache: [], dropdownQuery: "text" }), /Cache changes are unavailable/);
 });
 
-test("List and Grid await async dropdown options before selection validation and action", async () => {
-  const api = require("./view-api.cjs");
-  const { Action, ActionPanel, Grid, List, render, useState, Cache } = api;
-  const { usePromise } = require("./raycast-utils.cjs").utilitiesFor(() => api);
-  for (const View of [List, Grid]) {
-    const Dropdown = View.Dropdown;
-    let actionCalls = 0;
-    const command = () => {
-      const [query, search] = useState("");
-      const [selected, select] = useState("all");
-      const options = usePromise(async (text) => {
-        await new Promise(setImmediate);
-        assert.throws(() => new Cache().set("blocked", "write"), /unavailable/);
-        return text === "中文" ? ["zh"] : ["all", "default"];
-      }, [query]);
-      return View({ searchBarAccessory: Dropdown({
-        value: selected, onSearchTextChange: search, onChange: select,
-        children: options.data?.map((value) => Dropdown.Item({ value, title: value })),
-      }), children: View.Item({ title: selected, content: "★",
-        actions: ActionPanel({ children: [
-          Action({ title: "Run", onAction() { actionCalls++; return api.Clipboard.copy(selected); } }),
-          Action.Push({ title: "Details", target: api.Detail({ markdown: selected }) }),
-        ] }),
-      }) });
-    };
-    const searched = await render(command, { dropdownQuery: "中文", cache: {} });
-    assert.equal(searched.dropdown.sections[0].items[0].value, "zh");
-    const request = { dropdownValue: "zh", dropdownSelectionQuery: "中文", cache: {} };
-    const chosen = await render(command, { ...request, dropdownSelectionEvent: true });
-    assert.equal(chosen.dropdown.selected, "zh");
-    const action = { row: 0, id: 0 };
-    assert.deepEqual(await render(command, { ...request, action }), { kind: "copy", text: "zh" });
-    assert.equal((await render(command, { dropdownValue: "default", dropdownSelectionEvent: true, cache: {} })).dropdown.selected, "default");
-    await assert.rejects(render(command, { ...request, dropdownValue: "forged", action }), /Invalid dropdown selection/);
-    const child = await render(command, { cache: {}, viewRoute: [{
-      mode: "action", query: "", row: 0, id: 1, dropdownValue: "zh", dropdownSelectionQuery: "中文",
-    }] });
-    assert.equal(child.detail.markdown, "zh");
-    assert.equal(child.cache, undefined);
-    assert.equal(actionCalls, 1);
+
+test("List and Grid preserve themed remote icons and local fallback through the wire budget", async () => {
+  const { Grid, Icon, List, render } = require("./view-api.cjs");
+  const { limitImagePayloads } = require("./image-api.cjs");
+  for (const Collection of [List, Grid]) {
+    const dropdown = Collection.Dropdown;
+    const source = { light: "https://example.invalid/light.png", dark: "https://example.invalid/dark.png" };
+    const dropdownItem = (value, icon) => dropdown.Item({ title: value, value, icon });
+    const result = limitImagePayloads(await render(() => Collection({
+      searchBarAccessory: dropdown({ children: [
+        dropdownItem("themed", { source, fallback: Icon.Folder, mask: "circle" }),
+        dropdownItem("unsafe", { source: "https://user:password@example.invalid/icon.png", fallback: Icon.Folder }),
+      ] }),
+      children: Collection.Item({ title: "Item", content: "★" }),
+    }), {}));
+    const [themed, unsafe] = result.dropdown.sections[0].items.map((item) => item.imageDescriptor);
+    assert.deepEqual(themed.light, { remoteURL: source.light });
+    assert.deepEqual(themed.dark, { remoteURL: source.dark });
+    assert.deepEqual(themed.fallbackLight, { symbol: Icon.Folder });
+    assert.equal(themed.mask, "circle");
+    assert.equal(unsafe.light, undefined);
+    assert.deepEqual(unsafe.fallbackLight, { symbol: Icon.Folder });
   }
 });

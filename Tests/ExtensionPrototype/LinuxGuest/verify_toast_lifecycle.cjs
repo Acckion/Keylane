@@ -181,3 +181,225 @@ test("mutating a superseded toast preserves feedback owned by the newer toast", 
   const reply = await render(command, { action: { row: 0, id: 0 } });
   assert.deepEqual(reply, { kind: "toast", text: "Current", toastStyle: Toast.Style.Success });
 });
+
+test("live view Toast sends only selected callback events and avoids duplicate final feedback", async (t) => {
+  const api = require("./view-api.cjs");
+  const broker = require("./raycast-api.cjs");
+  const requests = [];
+  t.mock.method(broker, "request", async (capability, text) => {
+    assert.equal(capability, "feedback.toast");
+    requests.push(JSON.parse(text));
+  });
+  const command = () => api.List({
+    onSearchTextChange: () => api.showToast({ title: "Search replay" }),
+    children: api.List.Item({ title: "Task", actions: api.ActionPanel({ children: api.Action({
+      title: "Run", async onAction() {
+        const toast = await api.showToast({ title: "Working", style: api.Toast.Style.Animated });
+        toast.title = "Done";
+        await toast.hide();
+        await api.showToast({ title: "Finished" });
+      },
+    }) }) }),
+  });
+  assert.deepEqual(await api.render(command, { query: "Task", liveToast: true, action: { row: 0, id: 0 } }), { kind: "action" });
+  assert.deepEqual(requests.map(({ operation, title }) => [operation, title]), [
+    ["show", "Working"], ["update", "Done"], ["hide", undefined], ["show", "Finished"],
+  ]);
+  assert.equal(requests[0].id, requests[2].id);
+  assert.notEqual(requests[0].id, requests[3].id);
+  requests.length = 0;
+  const form = () => api.Form({
+    children: api.Form.PasswordField({ id: "secret" }),
+    actions: api.ActionPanel({ children: api.Action.SubmitForm({
+      onSubmit: ({ secret }) => api.showToast({ title: secret, style: api.Toast.Style.Failure }),
+    }) }),
+  });
+  assert.deepEqual(await api.render(form, {
+    liveToast: true, sensitiveFormSubmission: true, action: { row: 0, id: 0 }, formValues: { secret: "synthetic" },
+  }), { kind: "error" });
+  assert.deepEqual(requests, []);
+});
+
+test("toast action assignment snapshots live primary and secondary slots without serializing callbacks", async () => {
+  const { registerNativeToastAction } = require("./toast.cjs");
+  const presentations = [];
+  const { Toast, flushToastUpdates } = makeToastAdapter({
+    show: (_toast, options) => presentations.push(options),
+    update: (_toast, options) => presentations.push(options),
+  });
+  const primary = registerNativeToastAction({ title: "First", onAction() {} }, { kind: "copyLogs", value: "first" });
+  const secondary = registerNativeToastAction({ title: "Second", onAction() {} }, { kind: "copyLogs", value: "second" });
+  const custom = { title: "Retry", onAction() {} };
+  const toast = new Toast({ title: "Report", primaryAction: primary, secondaryAction: secondary });
+  assert.equal(toast.primaryAction, primary);
+  assert.equal(toast.secondaryAction, secondary);
+  await toast.show();
+  toast.primaryAction = custom;
+  toast.secondaryAction = undefined;
+  assert.equal(toast.primaryAction, custom);
+  assert.equal(toast.secondaryAction, undefined);
+  assert.throws(() => { toast.primaryAction = { title: "Malformed" }; }, /Invalid toast action/);
+  assert.equal(toast.primaryAction, custom);
+  await flushToastUpdates();
+  assert.deepEqual(presentations.map(({ feedbackAction, secondaryFeedbackAction }) =>
+    [feedbackAction?.value, secondaryFeedbackAction?.value]), [
+    ["first", "second"], [undefined, "second"], [undefined, undefined],
+  ]);
+  assert.ok(presentations.every((event) => !Object.hasOwn(event, "primaryAction") && !Object.hasOwn(event, "secondaryAction")));
+});
+
+test("a selected toast action calls the current closure with the same Toast instance", async (t) => {
+  const api = require("./view-api.cjs");
+  const broker = require("./raycast-api.cjs");
+  const events = [];
+  t.mock.method(broker, "request", async (capability, text) => {
+    if (capability === "feedback.toast") {
+      events.push(JSON.parse(text));
+      return "";
+    }
+    assert.equal(capability, "feedback.toastAction");
+    assert.equal(text, events.at(-1).interaction.token);
+    assert.notEqual(events[0].interaction.token, text);
+    return "primary";
+  });
+  const command = () => api.Detail({ actions: api.ActionPanel({ children: api.Action({
+    async onAction() {
+      let counter = 0;
+      const toast = await api.showToast({
+        title: "Working",
+        primaryAction: { title: "Old", shortcut: { key: "x", modifiers: ["cmd"] }, onAction: () => assert.fail("stale action") },
+        secondaryAction: { title: "Invalid chord", shortcut: { key: "f", modifiers: ["opt", "opt"] }, onAction() {} },
+      });
+      toast.primaryAction = { title: "Retry", shortcut: { macOS: { key: "r", modifiers: ["ctrl", "shift"] } }, async onAction(active) {
+        assert.equal(active, toast);
+        await active.hide();
+        await api.Clipboard.copy(String(++counter));
+      } };
+      counter = 8;
+    },
+  }) }) });
+  const result = await api.render(command, { action: { row: 0, id: 0 }, liveToast: true, interactiveToast: true });
+  assert.deepEqual(result, { kind: "copy", text: "9" });
+  assert.deepEqual(events.map(({ interaction }) => interaction?.primaryShortcut), [
+    { key: "x", modifiers: ["cmd"] }, { key: "r", modifiers: ["ctrl", "shift"] }, undefined, undefined,
+  ]);
+  assert.ok(events.every(({ interaction }) => interaction?.secondaryShortcut === undefined));
+  assert.deepEqual(events.map(({ operation, interaction }) => [operation, interaction?.primary]), [
+    ["show", "Old"], ["update", "Retry"], ["update", undefined], ["hide", undefined],
+  ]);
+});
+
+test("toast clicks can abort a pending selected action before its original work finishes", async (t) => {
+  const { setTimeout: delay } = require("node:timers/promises");
+  const api = require("./view-api.cjs");
+  const broker = require("./raycast-api.cjs");
+  let token;
+  let polls = 0;
+  t.mock.method(broker, "request", async (capability, text) => {
+    if (capability === "feedback.toast") {
+      const event = JSON.parse(text);
+      token = event.interaction?.token;
+      return "";
+    }
+    assert.equal(capability, "feedback.toastAction");
+    assert.equal(text, token + ":poll");
+    return ++polls === 1 ? "" : "primary";
+  });
+  const command = () => api.Detail({ actions: api.ActionPanel({ children: api.Action({
+    async onAction() {
+      const controller = new AbortController();
+      await api.showToast({
+        title: "Running", style: api.Toast.Style.Animated,
+        primaryAction: { title: "Cancel", onAction: () => controller.abort() },
+      });
+      await assert.rejects(delay(2000, undefined, { signal: controller.signal }), { name: "AbortError" });
+      await api.Clipboard.copy("Cancelled before completion");
+    },
+  }) }) });
+  assert.deepEqual(await api.render(command, { action: { row: 0, id: 0 }, liveToast: true, interactiveToast: true }),
+    { kind: "copy", text: "Cancelled before completion" });
+  assert.equal(polls, 2);
+});
+
+test("a selected action can refresh the same Toast and handle another click", async (t) => {
+  const api = require("./view-api.cjs");
+  const broker = require("./raycast-api.cjs");
+  const tokens = [];
+  let previous;
+  t.mock.method(broker, "request", async (capability, text) => {
+    if (capability === "feedback.toast") {
+      const event = JSON.parse(text);
+      previous = event.interaction;
+      return "";
+    }
+    assert.equal(capability, "feedback.toastAction");
+    assert.equal(text, previous.token);
+    assert.ok(!tokens.includes(text));
+    tokens.push(text);
+    return previous.secondary ? "secondary" : "primary";
+  });
+  const command = () => api.Detail({ actions: api.ActionPanel({ children: api.Action({
+    async onAction() {
+      let attempts = 0;
+      const toast = await api.showToast({ title: "Retry", primaryAction: { title: "Retry", onAction(active) {
+        assert.equal(active, toast);
+        if (++attempts < 2) return;
+        active.primaryAction = undefined;
+        active.secondaryAction = { title: "Finish", async onAction(again) {
+          assert.equal(again, toast);
+          await again.hide();
+          await api.Clipboard.copy(String(attempts));
+        } };
+      } } });
+    },
+  }) }) });
+  assert.deepEqual(await api.render(command, { action: { row: 0, id: 0 }, liveToast: true, interactiveToast: true }),
+    { kind: "copy", text: "2" });
+  assert.equal(tokens.length, 3);
+});
+
+test("no-view toast callbacks keep command state and expire when dismissed", async (t) => {
+  const api = require("./raycast-api.cjs");
+  const selections = [];
+  const events = [];
+  let trusted = true;
+  t.mock.method(api, "request", async (capability, text) => {
+    if (capability === "preferences.read") {
+      return JSON.stringify({ preferences: { defaultAction: "copy" }, interactiveToast: trusted });
+    }
+    if (capability === "feedback.toast") {
+      events.push(JSON.parse(text));
+      return "";
+    }
+    assert.equal(capability, "feedback.toastAction");
+    assert.equal(text, events.at(-1).interaction.token);
+    return selections.shift();
+  });
+
+  await api.loadPreferences();
+  selections.push("primary", "dismiss");
+  let count = 0;
+  await api.runNoViewCommand(async () => {
+    const toast = await api.showToast({ title: "Ready", primaryAction: {
+      title: "Increment", onAction(active) {
+        assert.equal(active, toast);
+        count++;
+        active.primaryAction = undefined;
+        active.secondaryAction = { title: "Expired", onAction() { assert.fail("dismissed callback ran"); } };
+      },
+    } });
+  });
+  assert.equal(count, 1);
+  const published = events.flatMap(({ interaction }) => interaction ? [interaction] : []);
+  assert.deepEqual(published.map(({ primary, secondary }) => primary ?? secondary), ["Increment", "Expired"]);
+  assert.notEqual(published[0].token, published[1].token);
+  assert.equal(events.at(-1).interaction, undefined);
+  assert.equal(selections.length, 0);
+
+  trusted = false;
+  await api.loadPreferences();
+  await api.runNoViewCommand(() => api.showToast({
+    title: "Without a grant", primaryAction: { title: "Blocked", onAction() { assert.fail("grant bypass"); } },
+  }));
+  assert.equal(events.at(-1).interaction, undefined);
+});

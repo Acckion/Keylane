@@ -20,7 +20,7 @@ final class ReviewedRaycastCacheTests: XCTestCase {
         XCTAssertEqual(ReviewedRaycastCache(installationImage: second).load(), [])
 
         let tooLarge = (0..<4).map { index in
-            ["[\"\",\"\(index)\"]", String(repeating: "a", count: 1_024)]
+            ["[\"\",\"\(index)\"]", String(repeating: "a", count: ReviewedRaycastCache.maximumBytes / 4)]
         }
         XCTAssertThrowsError(try cache.save(tooLarge))
         XCTAssertEqual(cache.load(), entries)
@@ -33,4 +33,33 @@ final class ReviewedRaycastCacheTests: XCTestCase {
         try cache.remove()
         XCTAssertEqual(cache.load(), [])
     }
+    func testMergesConcurrentSnapshotChangesWithoutRestoringStaleValues() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = ReviewedRaycastCache(installationImage: root.appendingPathComponent("view.cpio"))
+        let menu = ReviewedRaycastCache(installationImage: root.appendingPathComponent("menu-bar.cpio"))
+        let a = #"["shared","a"]"#
+        let b = #"["shared","b"]"#
+        let c = #"["menu","c"]"#
+        let d = #"["view","d"]"#
+        let original = [[a, "old"], [b, "remove"]]
+        try cache.save(original)
+        // One guest updates a and adds c before another guest completes its read and write.
+        try menu.merge([[b, "remove"], [a, "new"], [c, "added"]], from: original)
+        try cache.merge([[a, "old"], [d, "added"]], from: original)
+        XCTAssertEqual(menu.load(), [[a, "new"], [c, "added"], [d, "added"]])
+
+        let beforeTouch = cache.load()
+        try menu.merge([[c, "added"], [d, "added"], [a, "newer"]], from: beforeTouch)
+        try cache.merge([[a, "new"], [d, "added"], [c, "added"]], from: beforeTouch)
+        XCTAssertEqual(menu.load(), [[d, "added"], [a, "newer"], [c, "added"]])
+
+        let composed = [[a, "é"]]
+        let decomposed = "e\u{0301}"
+        try cache.save(composed)
+        try menu.merge([[a, decomposed]], from: composed)
+        XCTAssertEqual(Array(cache.load()[0][1].utf8), Array(decomposed.utf8))
+    }
+
 }

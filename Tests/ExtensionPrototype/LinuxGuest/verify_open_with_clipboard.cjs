@@ -66,3 +66,36 @@ test("reviewed view selects OpenWithAction and both clipboard clear entry points
   }, {}), /require[s]? a selected view action/);
   await assert.rejects(runCommand(clearClipboard, {}), /require[s]? a selected view action/);
 });
+
+test("Clipboard.clear aliases await confirmation and preserve rejection across modes", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const { Action, ActionPanel, Clipboard, Detail, MenuBarExtra, clearClipboard, render, runMenuBar } = require("./view-api.cjs");
+  assert.equal(broker.clearClipboard, broker.Clipboard.clear);
+  assert.equal(clearClipboard, Clipboard.clear);
+  let settle;
+  const receipt = new Promise((resolve) => { settle = resolve; });
+  const bridge = t.mock.method(broker, "request", async (capability, input) => {
+    assert.equal(capability, "clipboard.clear");
+    assert.equal(input, "");
+    return receipt;
+  });
+  const input = { action: { row: 0, id: 0 }, finderRevealAllowed: true };
+  let resumed = false;
+  const command = () => Detail({ actions: ActionPanel({ children: Action({ title: "Clear", async onAction() {
+    await Clipboard.clear();
+    resumed = true;
+  } }) }) });
+  const pending = render(command, input);
+  await new Promise(setImmediate);
+  assert.equal(resumed, false);
+  settle("cleared");
+  assert.deepEqual(await pending, { kind: "action" });
+  assert.equal(resumed, true);
+
+  const item = () => MenuBarExtra({ children: MenuBarExtra.Item({ title: "Clear", onAction: clearClipboard }) });
+  const menu = { wallTime: 1, menuAction: 0, finderRevealAllowed: true };
+  bridge.mock.mockImplementation(async () => "cancelled");
+  await assert.rejects(runMenuBar(item, menu), /was cancelled/);
+  bridge.mock.mockImplementation(async () => "changed");
+  await assert.rejects(broker.clearClipboard(), /clipboard changed/);
+});

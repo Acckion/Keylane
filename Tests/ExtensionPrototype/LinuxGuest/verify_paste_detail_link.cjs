@@ -6,7 +6,7 @@ test("standalone Detail exposes safe metadata links and renders invalid targets 
   const { Metadata } = Detail;
   const reply = await render(() => Detail({ markdown: "Links", metadata: Metadata({ children: [
     Metadata.Link({ title: "Site", text: "网站", target: "https://EXAMPLE.invalid/path" }),
-    Metadata.Link({ title: "Local", text: "文件", target: "file:///private/tmp/a" }),
+    Metadata.Link({ title: "Local", text: "文件", target: "file://remote/private/tmp/a" }),
   ] }) }), {});
   assert.deepEqual(reply.detail.metadata, [
     { kind: "link", title: "Site", text: "网站", target: "https://example.invalid/path" },

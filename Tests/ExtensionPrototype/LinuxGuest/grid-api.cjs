@@ -1,5 +1,4 @@
 const { describeImage } = require("./image-api.cjs");
-const { describeUtilityIcon } = require("./utilities-visual-feedback.cjs");
 const { colorVariants, iconTint } = require("./presentation-values.cjs");
 const { filterViewGroups, viewItemIDs } = require("./view-filter.cjs");
 
@@ -49,10 +48,8 @@ function gridNodes(root, query, children) {
 function gridContent(content) {
   const value = content?.value ?? content;
   const source = value?.source ?? value;
-  const imageDescriptor = describeImage(value);
+  const imageDescriptor = describeImage(value, false, true);
   if (typeof source === "string") {
-    const utilityIcon = describeUtilityIcon(source);
-    if (utilityIcon) return { utilityIcon };
     const inline = /^data:image\/(png|jpeg);base64,/.test(source);
     if (inline && source.length <= 4096) {
       return imageDescriptor && (value?.mask || value?.fallback || value?.tintColor)
@@ -67,6 +64,17 @@ function gridContent(content) {
   return {};
 }
 
+function gridAccessory(accessory) {
+  const imageDescriptor = describeImage(accessory?.icon, true, true);
+  if (!imageDescriptor) return;
+  const tooltip = gridTooltip(accessory);
+  return { imageDescriptor, ...(tooltip !== undefined && { tooltip }) };
+}
+
+function gridTooltip(value) {
+  return typeof value?.tooltip === "string" ? value.tooltip.slice(0, 240) : undefined;
+}
+
 function describeGrid(root, groups, empty, describeActions, panelTitle) {
   const { columns, itemSize, navigationTitle, isLoading, inset, fit, aspectRatio } = root.props;
   const legacyColumns = { small: 8, medium: 5, large: 3 };
@@ -77,7 +85,9 @@ function describeGrid(root, groups, empty, describeActions, panelTitle) {
       items: items.map(({ id, itemID, item: { props } }) => ({
         id, title: props.title, subtitle: props.subtitle,
         ...(itemID !== undefined && { itemID }),
-        ...gridContent(props.content), actions: describeActions(props.actions), actionPanelTitle: panelTitle(props.actions),
+        ...gridContent(props.content),
+        contentTooltip: gridTooltip(props.content), accessory: gridAccessory(props.accessory),
+        actions: describeActions(props.actions), actionPanelTitle: panelTitle(props.actions),
       })),
     })),
     empty: empty && { title: empty.title, description: empty.description, ...gridContent(empty.icon) },
