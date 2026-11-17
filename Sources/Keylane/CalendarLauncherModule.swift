@@ -103,8 +103,15 @@ enum CalendarLauncherModule {
                         }
                     }
                     calendar.showSettings = { [weak model] in model?.openSettings(page: settingsID) }
-                    calendar.previewCamera = { [weak model] in
-                        model?.launcherModules?.resolve(CommandID(rawValue: "show-camera"), origin: .menu, navigate: { _ in })?()
+                    calendar.previewCamera = { [weak model] join in
+                        guard let model, let registry = model.launcherModules else { return false }
+                        return registry.invoke(CommandID(rawValue: "show-camera"), origin: .menu) { destination in
+                            guard case let .page(page) = destination else { return }
+                            let launcherVisible = (NSApp.delegate as? Delegate)?.window?.isVisible == true
+                            let previous = launcherVisible && model.pageID == pageID ? pageID : .root
+                            model.cameraPreview.meeting = .init(returnPage: previous, join: join)
+                            model.openPage(page, origin: .menu)
+                        }
                     }
                     calendar.reportFailure = { message in
                         (NSApp?.delegate as? Delegate)?.toast.show(message, style: .failure)
