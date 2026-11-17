@@ -61,7 +61,7 @@ enum WindowManagementModule {
                     draft: Binding(get: { controller.layoutDraft }, set: { controller.layoutDraft = $0 }),
                     hasInvalidMeasurements: Binding(get: { controller.layoutHasInvalidMeasurements },
                                                     set: { controller.layoutHasInvalidMeasurements = $0 }),
-                    editing: controller.editingLayout, applications: model.applicationSettingsCatalog,
+                    applications: model.applicationSettingsCatalog,
                     quicklinks: model.quicklinks, preferences: controller.preferences,
                     capture: controller.captureLayoutEditorWindows, choosePath: controller.chooseLayoutPath,
                     back: back

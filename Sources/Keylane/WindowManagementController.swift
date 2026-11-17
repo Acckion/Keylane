@@ -16,7 +16,6 @@ final class WindowManagementController: ObservableObject {
     @Published var layoutHasInvalidMeasurements = false
     private(set) var layoutEditorID = UUID()
     var layoutIsValid: Bool { layoutDraft.isValid && !layoutHasInvalidMeasurements }
-    var editingLayout: Bool { actions.contains { $0.id == layoutDraft.id } }
     @Published var coordinates = WindowCoordinates()
     @Published var error = ""
 

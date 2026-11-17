@@ -198,6 +198,61 @@ public struct WindowGeometry: Codable, Equatable {
                       y: (screen.minY + (screen.height - h) * position.y + y.points(in: screen.height)).rounded(),
                       width: w, height: h)
     }
+
+    func dragged(in area: CGRect, translation: CGSize, resizingFrom handle: Anchor?,
+                 minimumSize: CGFloat) -> WindowGeometry? {
+        guard area.width >= 1, area.height >= 1, area.width.isFinite, area.height.isFinite,
+              translation.width.isFinite, translation.height.isFinite,
+              let original = frame(in: area) else { return nil }
+        let start = original.fitted(in: area)
+        let target: CGRect
+        if let direction = handle?.factors {
+            let horizontal = Self.resizeAxis(start.minX...start.maxX, within: area.minX...area.maxX,
+                                             by: translation.width, side: direction.x, minimum: minimumSize)
+            let vertical = Self.resizeAxis(start.minY...start.maxY, within: area.minY...area.maxY,
+                                           by: translation.height, side: direction.y, minimum: minimumSize)
+            target = CGRect(x: horizontal.lowerBound, y: vertical.lowerBound,
+                            width: horizontal.upperBound - horizontal.lowerBound,
+                            height: vertical.upperBound - vertical.lowerBound)
+        } else {
+            target = start.offsetBy(dx: translation.width, dy: translation.height).fitted(in: area)
+        }
+        let position = anchor.factors
+        var result = self
+        if target.width != original.width { result.width.setPoints(target.width, in: area.width) }
+        if target.height != original.height { result.height.setPoints(target.height, in: area.height) }
+        if target.minX != original.minX || target.width != original.width {
+            result.x.setPoints(target.minX - area.minX - (area.width - target.width) * position.x, in: area.width)
+        }
+        if target.minY != original.minY || target.height != original.height {
+            result.y.setPoints(target.minY - area.minY - (area.height - target.height) * position.y, in: area.height)
+        }
+        return result
+    }
+
+    private static func resizeAxis(_ start: ClosedRange<CGFloat>, within bounds: ClosedRange<CGFloat>,
+                                   by delta: CGFloat, side: CGFloat, minimum: CGFloat) -> ClosedRange<CGFloat> {
+        let length = min(start.upperBound - start.lowerBound, max(1, minimum))
+        switch side {
+        case 0:
+            return max(bounds.lowerBound, min(start.lowerBound + delta, start.upperBound - length))...start.upperBound
+        case 1:
+            return start.lowerBound...min(bounds.upperBound, max(start.upperBound + delta, start.lowerBound + length))
+        default:
+            return start
+        }
+    }
+}
+
+private extension WindowGeometry.Measurement {
+    mutating func setPoints(_ points: CGFloat, in length: CGFloat) {
+        if percentage {
+            let percent = (points / length * 100_000).rounded() / 1_000
+            value = max(-100, min(100, percent))
+        } else {
+            value = points.rounded()
+        }
+    }
 }
 
 private extension CGRect {

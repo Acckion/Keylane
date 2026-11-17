@@ -7,7 +7,6 @@ struct WindowLayoutEditor: View {
 
     @Binding var draft: CustomWindowAction
     @Binding var hasInvalidMeasurements: Bool
-    let editing: Bool
     @ObservedObject var applications: ApplicationSettingsCatalog
     @ObservedObject var quicklinks: QuicklinksController
     @ObservedObject var preferences: WindowManagementPreferences
@@ -20,6 +19,9 @@ struct WindowLayoutEditor: View {
     @State private var apps: [ApplicationChoice] = []
     @State private var displays = [Display]()
     @State private var adding = false
+    @State private var choosingWindow = false
+    @State private var dragStart: WindowLayoutEntry?
+    @GestureState private var isDragging = false
     @State private var appQuery = ""
     @State private var measurementText: [Field: String] = [:]
     @State private var invalidMeasurements: Set<Field> = []
@@ -27,12 +29,12 @@ struct WindowLayoutEditor: View {
     @FocusState private var focus: Field?
 
     private enum Field: Hashable { case name, applicationSearch, width, height, x, y }
+    private enum PreviewSpace: Hashable { case display }
     private var windows: [WindowLayoutEntry] { draft.windows ?? [] }
     private var selectedEntry: WindowLayoutEntry? { windows.first { $0.id == selected } }
     private var canAddWindow: Bool {
         windows.count < 64 && windows.filter { $0.display == screenIndex }.count < 8
     }
-    private var title: String { editing ? "编辑窗口布局" : "新建窗口布局" }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -59,6 +61,9 @@ struct WindowLayoutEditor: View {
             if let old { measurementText[old] = nil; invalidMeasurements.remove(old) }
         }
         .onChange(of: invalidMeasurements.isEmpty) { _, empty in hasInvalidMeasurements = !empty }
+        .onChange(of: isDragging) { _, dragging in
+            if !dragging { dragStart = nil }
+        }
         .task(id: applications.items) {
             let items = applications.items
             apps = await Task.detached {
@@ -75,8 +80,11 @@ struct WindowLayoutEditor: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 LauncherBackButton(action: back)
-                Text(title).font(.headline).accessibilityAddTraits(.isHeader)
+                nameControl
+                    .frame(maxWidth: 182)
+                layoutPicker
             }
+            .zIndex(1)
             GeometryReader { proxy in
                 if let display = displays[safe: screenIndex] {
                     displayPreview(display, available: proxy.size)
@@ -131,7 +139,8 @@ struct WindowLayoutEditor: View {
                                                      screenGap: CGFloat(preferences.screenGap)) {
                     let visible = proposed.intersection(frame)
                     if !visible.isNull && !visible.isEmpty {
-                        previewTile(entry, size: CGSize(width: visible.width * scale, height: visible.height * scale))
+                        previewTile(entry, size: CGSize(width: visible.width * scale, height: visible.height * scale),
+                                    in: frame, scale: scale)
                             .offset(x: (visible.minX - frame.minX) * scale, y: (visible.minY - frame.minY) * scale)
                             .zIndex(entry.id == selected ? 2 : entry.id == draft.frontWindowID ? 1 : 0)
                     }
@@ -139,11 +148,12 @@ struct WindowLayoutEditor: View {
             }
         }
         .frame(width: frame.width * scale, height: frame.height * scale)
+        .coordinateSpace(.named(PreviewSpace.display))
         .clipShape(shape)
         .accessibilityLabel("\(display.name)上的窗口布局预览")
     }
 
-    private func previewTile(_ entry: WindowLayoutEntry, size: CGSize) -> some View {
+    private func previewTile(_ entry: WindowLayoutEntry, size: CGSize, in screen: CGRect, scale: CGFloat) -> some View {
         let isSelected = entry.id == selected
         let shape = RoundedRectangle(cornerRadius: 6)
         return Button { choose(entry) } label: {
@@ -151,46 +161,86 @@ struct WindowLayoutEditor: View {
                 shape.fill(isSelected ? Color.accentColor.opacity(0.30) : Color.primary.opacity(0.15))
                 shape.strokeBorder(isSelected ? Color.accentColor : Color.primary.opacity(0.27), lineWidth: isSelected ? 2 : 1)
                 if size.width >= 20, size.height >= 20 {
-                    appIcon(entry.bundleID).frame(width: min(24, size.width - 6), height: min(24, size.height - 6))
+                    let side = min(24, size.width - 6, size.height - 6)
+                    appIcon(entry.bundleID).frame(width: side, height: side)
                 }
             }
             .frame(width: size.width, height: size.height)
             .contentShape(shape)
         }
         .buttonStyle(.plain)
+        .highPriorityGesture(previewDrag(for: entry, in: screen, scale: scale))
+        .overlay {
+            if isSelected {
+                let handles = isDragging || (size.width >= 30 && size.height >= 30)
+                    ? WindowGeometry.Anchor.allCases.filter { $0 != .center }
+                    : [.bottomRight]
+                ForEach(handles, id: \.self) { handle in
+                    let position = handle.factors
+                    let inset = min(5, size.width / 2, size.height / 2)
+                    Circle()
+                        .fill(.white)
+                        .overlay { Circle().strokeBorder(Color.accentColor, lineWidth: 1) }
+                        .frame(width: 7, height: 7)
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
+                        .gesture(previewDrag(for: entry, in: screen, scale: scale, handle: handle))
+                        .position(x: inset + (size.width - 2 * inset) * position.x,
+                                  y: inset + (size.height - 2 * inset) * position.y)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
         .accessibilityLabel(appName(entry.bundleID))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
-    @ViewBuilder private var inspector: some View {
-        section("名称") {
-            LauncherCreationControl(focused: focus == .name) {
-                HStack(spacing: 8) {
-                    TextField("布局名称", text: $draft.name).textFieldStyle(.plain).focused($focus, equals: .name)
-                    Divider().frame(height: 14)
-                    Menu {
-                        ForEach(Self.symbols, id: \.self) { symbol in
-                            Button {
-                                draft.icon = symbol
-                            } label: { Label(Self.symbolTitle(symbol), systemImage: symbol) }
-                        }
-                    } label: { Image(systemName: draft.displaySymbol) }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .accessibilityLabel("布局图标")
+    private func previewDrag(for entry: WindowLayoutEntry, in screen: CGRect, scale: CGFloat,
+                             handle: WindowGeometry.Anchor? = nil) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named(PreviewSpace.display))
+            .updating($isDragging) { _, active, _ in active = true }
+            .onChanged { value in
+                guard scale > 0, let index = windows.firstIndex(where: { $0.id == entry.id }) else { return }
+                if dragStart?.id != entry.id {
+                    dragStart = windows[index]
+                    choose(entry)
+                    focus = nil
                 }
+                guard let start = dragStart else { return }
+                let translation = CGSize(width: value.translation.width / scale, height: value.translation.height / scale)
+                guard let geometry = draft.draggedGeometry(for: start, in: screen,
+                    windowGap: CGFloat(preferences.windowGap), screenGap: CGFloat(preferences.screenGap),
+                    translation: translation, resizingFrom: handle, minimumSize: 28 / scale
+                ), geometry != windows[index].geometry else { return }
+                draft.windows?[index].geometry = geometry
+            }
+    }
+
+    private var nameControl: some View {
+        LauncherCreationControl(focused: focus == .name) {
+            HStack(spacing: 8) {
+                TextField("布局名称", text: $draft.name).textFieldStyle(.plain).focused($focus, equals: .name)
+                Divider().frame(height: 14)
+                Menu {
+                    ForEach(Self.symbols, id: \.self) { symbol in
+                        Button {
+                            draft.icon = symbol
+                        } label: { Label(Self.symbolTitle(symbol), systemImage: symbol) }
+                    }
+                } label: { Image(systemName: draft.displaySymbol) }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .accessibilityLabel("布局图标")
             }
         }
+    }
 
+    @ViewBuilder private var inspector: some View {
         SettingsRow("使用偏好间距", detail: "按窗口管理设置为窗口之间和屏幕边缘留出间距。") {
             Toggle("使用偏好间距", isOn: Binding(get: { draft.usesPreferredGaps == true }, set: { draft.usesPreferredGaps = $0 }))
                 .labelsHidden().toggleStyle(.switch)
         }
         Divider()
-        section("布局") {
-            layoutSelector
-            if adding { applicationMenu }
-        }
         if let entry = selectedEntry {
             let binding = entryBinding(entry)
             section("参数") { argumentEditor(binding) }
@@ -245,44 +295,95 @@ struct WindowLayoutEditor: View {
         if let message { Text(message).foregroundStyle(.red).font(.callout) }
     }
 
-    private var layoutSelector: some View {
+    private var layoutPicker: some View {
         HStack(spacing: 8) {
             Button("添加应用程序", systemImage: "plus") {
                 appQuery = ""
+                choosingWindow = false
                 adding.toggle()
             }
             .labelStyle(.iconOnly).buttonStyle(.bordered)
             .disabled(!canAddWindow || displays.isEmpty)
             .help(canAddWindow ? "为当前显示器添加窗口" : "每台显示器最多八个窗口")
-            Menu {
-                let indices = Set(windows.map(\.display)).sorted()
-                ForEach(indices, id: \.self) { index in
-                    Section(displays[safe: index]?.name ?? "显示器 \(index + 1)") {
-                        ForEach(windows.filter { $0.display == index }) { entry in
-                            Button {
-                                choose(entry)
-                            } label: {
-                                Label(appName(entry.bundleID), systemImage: entry.id == selected ? "checkmark" : "macwindow")
+            Button {
+                adding = false
+                choosingWindow.toggle()
+            } label: {
+                LauncherCreationControl(focused: choosingWindow) {
+                    HStack(spacing: 8) {
+                        if let entry = selectedEntry {
+                            windowLabel(entry)
+                        } else { Text("选择窗口") }
+                        Spacer(minLength: 0)
+                        Image(systemName: choosingWindow ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .disabled(windows.isEmpty)
+            .accessibilityLabel("选择要编辑的窗口")
+            .accessibilityValue(selectedEntry.map { appName($0.bundleID) } ?? "")
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if adding || choosingWindow {
+                Group {
+                    if adding { applicationMenu }
+                    else { windowMenu }
+                }
+                .frame(width: 244)
+                .modifier(LauncherMenuSurface(open: true))
+                .alignmentGuide(.bottom) { $0[.top] - 6 }
+            }
+        }
+    }
+
+    private var windowMenu: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Set(windows.map(\.display)).sorted(), id: \.self) { index in
+                    Text(displays[safe: index]?.name ?? "显示器 \(index + 1)")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .accessibilityAddTraits(.isHeader)
+                        .padding(.horizontal, 8)
+                    ForEach(windows.filter { $0.display == index }) { entry in
+                        Button { choose(entry) } label: {
+                            HStack {
+                                windowLabel(entry)
+                                Spacer()
+                                if entry.id == selected { Image(systemName: "checkmark").font(.caption) }
                             }
+                            .padding(8)
+                            .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(entry.id == selected ? .isSelected : [])
                     }
                 }
                 if let selected {
                     Divider()
                     Button("移除此条目", role: .destructive) { remove(selected) }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
+                        .padding(8)
                 }
-            } label: {
-                HStack(spacing: 7) {
-                    if let entry = selectedEntry {
-                        appIcon(entry.bundleID).frame(width: 19, height: 19)
-                        Text(appName(entry.bundleID)).lineLimit(1)
-                    } else { Text("选择窗口") }
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity)
             }
-            .disabled(windows.isEmpty)
-            .accessibilityLabel("选择要编辑的窗口")
+            .padding(6)
+        }
+        .frame(height: min(184, 62 + CGFloat(windows.count) * 36))
+        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func windowLabel(_ entry: WindowLayoutEntry) -> some View {
+        HStack(spacing: 8) {
+            appIcon(entry.bundleID)
+                .frame(width: 19, height: 19)
+                .fixedSize()
+                .accessibilityHidden(true)
+            Text(appName(entry.bundleID))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -412,6 +513,8 @@ struct WindowLayoutEditor: View {
     }
 
     private func choose(_ entry: WindowLayoutEntry?) {
+        adding = false
+        choosingWindow = false
         if selected != entry?.id {
             measurementText = [:]
             invalidMeasurements.removeAll()

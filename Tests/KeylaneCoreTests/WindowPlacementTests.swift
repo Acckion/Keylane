@@ -105,6 +105,43 @@ final class WindowPlacementTests: XCTestCase {
         XCTAssertTrue(layout.isValid)
     }
 
+    func testDraggingLayoutWindowPreservesSizeUnitsAndKeepsScreenGaps() throws {
+        let screen = CGRect(x: -1200, y: 25, width: 1200, height: 800)
+        var entry = WindowLayoutEntry(bundleID: "org.keylane.fixture")
+        entry.geometry.anchor = .topRight
+        entry.geometry.height = .init(200, percentage: false)
+        entry.geometry.x = .init(-10)
+        let layout = CustomWindowAction(windows: [entry])
+        let moved = try XCTUnwrap(layout.draggedGeometry(for: entry, in: screen, windowGap: 12, screenGap: 10,
+                                                       translation: CGSize(width: 1000, height: 400), minimumSize: 80))
+        XCTAssertEqual(moved.anchor, entry.geometry.anchor)
+        XCTAssertEqual(moved.width, entry.geometry.width)
+        XCTAssertEqual(moved.height, entry.geometry.height)
+        XCTAssertEqual(moved.x, .init(0))
+        entry.geometry = moved
+        XCTAssertEqual(layout.displayFrame(for: entry, in: screen, windowGap: 12, screenGap: 10),
+                       CGRect(x: -594, y: 441, width: 584, height: 188))
+    }
+
+    func testResizingLayoutWindowKeepsOppositeCornerAndMinimumSize() throws {
+        let screen = CGRect(x: -250, y: 20, width: 1000, height: 600)
+        var entry = WindowLayoutEntry(bundleID: "org.keylane.fixture")
+        entry.geometry.anchor = .bottomRight
+        entry.geometry.height = .init(200, percentage: false)
+        entry.geometry.x = .init(-10)
+        entry.geometry.y = .init(-60, percentage: false)
+        var layout = CustomWindowAction(windows: [entry])
+        layout.usesPreferredGaps = false
+        let resized = try XCTUnwrap(layout.draggedGeometry(for: entry, in: screen, windowGap: 12, screenGap: 10,
+                                                          translation: CGSize(width: 800, height: 800),
+                                                          resizingFrom: .topLeft, minimumSize: 80))
+        XCTAssertEqual(resized.width, .init(8))
+        XCTAssertEqual(resized.height, .init(80, percentage: false))
+        XCTAssertEqual(resized.x, entry.geometry.x)
+        XCTAssertEqual(resized.y, entry.geometry.y)
+        XCTAssertEqual(resized.frame(in: screen), CGRect(x: 570, y: 480, width: 80, height: 80))
+    }
+
     func testRestorePreservesFrameAcrossConnectedDisplays() {
         let primary = CGRect(x: 0, y: 25, width: 1200, height: 750)
         let secondary = CGRect(x: 1200, y: 50, width: 1200, height: 700)
