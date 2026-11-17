@@ -13,6 +13,7 @@ function clipboardAliases(Clipboard) {
   return {
     copyTextToClipboard: Clipboard.copy,
     pasteText: Clipboard.paste,
+    clearClipboard: Clipboard.clear,
   };
 }
 

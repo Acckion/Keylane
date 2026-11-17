@@ -1,5 +1,5 @@
 #!/bin/bash
-# Uses the signed helper from verify.sh and the pinned Work Time Countdown sources.
+# Uses the signed helper from verify.sh, icu-data-en.apk, and pinned Work Time Countdown sources.
 set -euo pipefail
 test "$#" -eq 2 || { echo "usage: verify_menu_bar.sh scratch-directory reviewed-source-directory" >&2; exit 2; }
 scratch=$(cd "$1" && pwd -P)

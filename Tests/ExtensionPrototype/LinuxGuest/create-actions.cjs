@@ -1,4 +1,5 @@
-const { webURL } = require("./open-api.cjs");
+const { applicationSelector, metadataLinkURL } = require("./open-api.cjs");
+const { absoluteFilePath } = require("./finder-reveal.cjs");
 
 function creationActionComponents(component) {
   const quicklink = component("createQuicklink");
@@ -26,24 +27,39 @@ function checkedString(value, name, limit, { optional = false, multiline = false
 }
 
 function checkedQuicklink(value) {
-  const { link, name, application } = checkedObject(value, "quicklink");
-  if (application !== undefined) throw new Error("Custom quicklink applications are unavailable");
+  const { link, name, application, icon } = checkedObject(value, "quicklink");
   const template = checkedString(link, "quicklink URL", 2048);
-  const authority = /^https?:\/\/([^/?#]+)/i.exec(template)?.[1];
-  if (!authority || /[{}]/.test(authority)) throw new Error("Expected an HTTP(S) quicklink with a fixed host");
+  const isPath = template.startsWith("/") || template.startsWith("~/");
+  if (!isPath && !/^[a-z][a-z0-9+.-]{0,63}:/i.test(template)) throw new Error("Expected a quicklink with a fixed scheme");
+  const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(template)?.[1];
+  if (authority && /[{}]/.test(authority)) throw new Error("Expected a quicklink with a fixed host");
 
   // Keylane QuicklinkTemplate replaces named parameters only outside the URL authority.
-  const definitions = new Map();
-  const literalURL = template.replace(/\{([\p{L}\p{M}\p{N}_-]+)(?:=([^{}]*))?\}/gu, (_match, parameter, fallback) => {
-    if (definitions.has(parameter) && definitions.get(parameter) !== fallback) {
-      throw new Error("Quicklink parameter has conflicting defaults");
+  const defaults = new Map();
+  const mailRecipientEnd = /^mailto:/i.test(template) ? template.split("?", 1)[0].length : -1;
+  const isTelephone = /^tel:/i.test(template);
+  // The authoritative host parser validates attributes and modifiers before opening the draft.
+  const literalURL = template.replace(/\{([^{}]+)\}/gu, (match, body, offset) => {
+    const legacy = /^([\p{L}\p{M}\p{N}_-]+)(?:[=:]([^{}]*))?$/u.exec(body);
+    if (legacy) {
+      const [, parameter, fallback] = legacy;
+      if (defaults.has(parameter) && defaults.get(parameter) !== fallback) throw new Error("Quicklink parameter has conflicting defaults");
+      defaults.set(parameter, fallback);
     }
-    definitions.set(parameter, fallback);
+    if (isTelephone) return "123";
+    if (offset === "mailto:".length && offset + match.length === mailRecipientEnd) return "user@example.invalid";
     return "value";
   });
   if (/[{}]/.test(literalURL)) throw new Error("Invalid quicklink parameter");
-  webURL(literalURL);
-  return { link: template, name: checkedString(name, "quicklink name", 256, { optional: true }) };
+  if (isPath) {
+    absoluteFilePath(literalURL.startsWith("~/") ? literalURL.slice(1) : literalURL);
+  } else {
+    metadataLinkURL(literalURL);
+  }
+  const app = applicationSelector(application);
+  const symbol = checkedString(icon, "quicklink icon", 96, { optional: true });
+  return { link: template, name: checkedString(name, "quicklink name", 256, { optional: true }),
+    ...(app && { application: app }), ...(symbol !== undefined && { icon: symbol }) };
 }
 
 function checkedSnippet(value) {

@@ -28,8 +28,8 @@ test("declarative Push reconstructs its target without executing lifecycle callb
   assert.equal(effect.kind, "pushView");
   assert.equal(effect.routeMode, "action");
   assert.match(effect.lifecycleReceipt, /^[a-f0-9]{64}$/);
-  assert.equal(await navigation.replay(pushed, "action"), target);
-  await assert.rejects(navigation.replay(pushed, "callback"), /Unknown view route action/);
+  assert.equal((await navigation.replay(pushed, { mode: "action", lifecycleReceipt: effect.lifecycleReceipt })).target, target);
+  await assert.rejects(navigation.replay(pushed, { mode: "callback" }), /Unknown view route action/);
   assert.throws(() => navigation.begin(Push({ target: node("item", {}) })), /navigation target/);
 });
 
@@ -84,6 +84,101 @@ test("only native push and pop transitions trigger their bound lifecycle callbac
     /Invalid navigation lifecycle receipt/);
 });
 
+test("useNavigation.push registers onPop only for the matching returned route", async () => {
+  const { useState } = require("./view-api.cjs");
+  let returns = 0;
+  let detached;
+  const command = () => {
+    const [caption, setCaption] = useState("parent");
+    const { push, pop } = useNavigation();
+    return Detail({ markdown: caption, actions: panel(Action({ title: "Push", async onAction() {
+      await Promise.resolve();
+      push(Detail({ markdown: "child", actions: panel(Action({ title: "Back", onAction: pop })) }), async () => {
+        returns++;
+        await LocalStorage.setItem("from-child", "yes");
+        setCaption("returned");
+        detached = new Promise((resolve) => setImmediate(resolve)).then(() => LocalStorage.setItem("late", "denied"));
+        detached.catch(() => {});
+      });
+    } })) });
+  };
+  const action = { row: 0, id: 0 };
+  const storage = {};
+  const initial = await render(command, { storage, action });
+  assert.equal(initial.routeMode, "callback");
+  assert.match(initial.lifecycleReceipt, /^[a-f0-9]{64}$/);
+  const frame = { ...action, mode: initial.routeMode, lifecycleReceipt: initial.lifecycleReceipt };
+  const viewRoute = [frame];
+  assert.equal((await render(command, { viewRoute })).detail.markdown, "child");
+  assert.deepEqual(await render(command, { viewRoute, action }), { kind: "popView" });
+  assert.equal(returns, 0);
+  await assert.rejects(render(command, { viewRoute, notifyPush: true }), /Invalid navigation transition/);
+  await assert.rejects(render(command, { poppedFrame: { ...frame, lifecycleReceipt: "0".repeat(64) } }),
+    /Invalid navigation lifecycle receipt/);
+  assert.equal(returns, 0);
+
+  const returned = await render(command, { poppedFrame: frame, storage });
+  assert.equal(returned.detail.markdown, "returned");
+  assert.deepEqual({ ...returned.storage }, { "from-child": "yes" });
+  assert.equal(returns, 1);
+  await assert.rejects(detached, /Navigation callback has ended/);
+});
+
+test("mount effects can push once and restore the parent without repeating navigation", async () => {
+  const { useEffect, useState } = require("./view-api.cjs");
+  let returns = 0;
+  let latePush;
+  const command = () => {
+    const [caption, setCaption] = useState("parent");
+    const { push } = useNavigation();
+    useEffect(() => {});
+    useEffect(async () => {
+      await Promise.resolve();
+      push(Detail({ markdown: "from effect" }), () => {
+        returns++;
+        setCaption("returned");
+      });
+      latePush = new Promise((resolve) => setImmediate(resolve)).then(() => push(Detail({ markdown: "too late" })));
+      latePush.catch(() => {});
+    });
+    return Detail({ markdown: caption });
+  };
+  const initial = await render(command, { mountNavigation: true });
+  assert.equal(initial.kind, "pushView");
+  assert.equal(initial.routeMode, "effect");
+  assert.equal(initial.effectIndex, 1);
+  assert.match(initial.lifecycleReceipt, /^[a-f0-9]{64}$/);
+  await assert.rejects(latePush, /Navigation effect has ended/);
+
+  const frame = { row: -1, id: initial.effectIndex, mode: "effect", lifecycleReceipt: initial.lifecycleReceipt };
+  assert.equal((await render(command, { viewRoute: [frame] })).detail.markdown, "from effect");
+  assert.equal((await render(command, { query: "search" })).detail.markdown, "parent");
+  assert.equal(returns, 0);
+  await assert.rejects(render(command, { poppedFrame: { ...frame, id: 0 } }), /Invalid effect navigation receipt/);
+  await assert.rejects(render(command, { viewRoute: [{ ...frame, row: 0 }] }), /Invalid effect navigation route/);
+  const returned = await render(command, { poppedFrame: frame });
+  assert.equal(returned.detail.markdown, "returned");
+  assert.equal(returns, 1);
+});
+
+test("view effect navigation cannot open files or intercept selected actions", async () => {
+  const { useEffect } = require("./view-api.cjs");
+  const command = () => {
+    const { push } = useNavigation();
+    useEffect(() => push(Detail({ markdown: "automatic" })));
+    return Detail({ actions: panel(Action({
+      title: "Explicit",
+      onAction: () => push(Detail({ markdown: "selected" })),
+    })) });
+  };
+  const action = { row: 0, id: 0 };
+  assert.deepEqual(await render(command, { mountNavigation: true, action }), { kind: "pushView", routeMode: "callback" });
+  await assert.rejects(render(() => {
+    useEffect(() => open("https://example.invalid"));
+    return Detail({});
+  }, { mountNavigation: true }), /selected view action/);
+});
+
 test("lifecycle failures preserve the navigation result and cannot launch host file actions", async () => {
   const command = () => Detail({ actions: panel(Action.Push({
     title: "Push child", target: Detail({ markdown: "child" }),
@@ -108,15 +203,15 @@ test("navigation replays one awaited push without emitting host actions", async 
   const callback = node("callback", { onAction: async () => { await Promise.resolve(); push(target); } });
   assert.throws(() => push(target), /No selected view action/);
   assert.throws(pop, /No selected view action/);
-  assert.equal(await navigation.replay(callback, "callback"), target);
+  assert.equal((await navigation.replay(callback, { mode: "callback" })).target, target);
   assert.deepEqual(recorded, []);
 
   enabled = true;
   await callback.props.onAction();
   pop();
   assert.deepEqual(recorded, [{ kind: "pushView", routeMode: "callback" }, { kind: "popView" }]);
-  await assert.rejects(navigation.replay(node("callback", { onAction: pop }), "callback"), /Cannot pop/);
-  await assert.rejects(navigation.replay(node("callback", { onAction() { push(target); push(target); } }), "callback"), /Expected one push/);
+  await assert.rejects(navigation.replay(node("callback", { onAction: pop }), { mode: "callback" }), /Cannot pop/);
+  await assert.rejects(navigation.replay(node("callback", { onAction() { push(target); push(target); } }), { mode: "callback" }), /Expected one push/);
 });
 
 test("detached continuations cannot push after route replay ends", async () => {
@@ -132,7 +227,7 @@ test("detached continuations cannot push after route replay ends", async () => {
       }));
     },
   });
-  assert.equal(await replay(callback, "callback"), target);
+  assert.equal((await replay(callback, { mode: "callback" })).target, target);
   await delayed;
 });
 

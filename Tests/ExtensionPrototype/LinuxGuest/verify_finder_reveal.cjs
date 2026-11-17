@@ -15,7 +15,7 @@ test("Finder reveal accepts absolute strings, file URLs and UTF-8 buffers", () =
 
 test("file requests reject unsafe paths and ambiguous URLs before emitting", async () => {
   const targets = [
-    undefined, 1, ["absolute"], "relative.txt", "~/Documents", "//remote/path",
+    undefined, 1, ["absolute"], "", "//remote/path",
     "file:///tmp/example", "/tmp/line\nbreak", "/tmp/nul\0", "/tmp/\uD800",
     new URL("https://example.com/test"), new URL("file://remote/path"),
     new URL("file:///tmp/target?query"), new URL("file:///tmp/target#fragment"),
@@ -83,4 +83,77 @@ test("imperative Finder reveal submits one effect and preserves selection errors
 
   const denied = makeShowInFinder(() => { throw new Error("Requires a selected action"); });
   await assert.rejects(denied("/tmp/fixture"), /selected action/);
+});
+
+test("imperative Finder reveal waits for host completion and propagates rejection", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const { Action, ActionPanel, Detail, render, showInFinder } = require("./view-api.cjs");
+  let release;
+  const receipt = new Promise((resolve) => { release = resolve; });
+  const bridge = t.mock.method(broker, "request", async (capability, path) => {
+    assert.equal(capability, "files.reveal");
+    assert.equal(path, "/tmp/文件 #1.txt");
+    await receipt;
+  });
+  let continued = false;
+  const command = () => Detail({ actions: ActionPanel({ children: Action({ title: "Reveal", async onAction() {
+    await showInFinder(new URL("file:///tmp/%E6%96%87%E4%BB%B6%20%231.txt"));
+    continued = true;
+  } }) }) });
+  const selected = { action: { row: 0, id: 0 } };
+  await assert.rejects(render(command, selected), /require a selected view action/);
+  assert.equal(bridge.mock.callCount(), 0);
+
+  const authorized = { ...selected, finderRevealAllowed: true };
+  const pending = render(command, authorized);
+  await new Promise(setImmediate);
+  assert.equal(bridge.mock.callCount(), 1);
+  assert.equal(continued, false);
+  release();
+  assert.deepEqual(await pending, { kind: "action" });
+  assert.equal(continued, true);
+
+  bridge.mock.mockImplementation(async () => { throw new Error("Host action failed"); });
+  continued = false;
+  await assert.rejects(render(command, authorized), /Host action failed/);
+  assert.equal(continued, false);
+});
+
+test("menu actions and no-view commands use the same Finder receipt", async (t) => {
+  const broker = require("./raycast-api.cjs");
+  const { MenuBarExtra, runCommand, runMenuBar, showHUD, showInFinder } = require("./view-api.cjs");
+  const calls = [];
+  t.mock.method(broker, "request", async (capability, path) => { calls.push([capability, path]); });
+  const item = MenuBarExtra.Item({ title: "Reveal", onAction: () => showInFinder("/tmp/menu") });
+  const menu = () => MenuBarExtra({ children: item });
+  const mode = { wallTime: 1, finderRevealAllowed: true };
+  await runMenuBar(menu, mode);
+  await assert.rejects(runMenuBar(menu, { wallTime: 1, menuAction: 0 }), /selected view action/);
+  assert.deepEqual(await runMenuBar(menu, { ...mode, menuAction: 0 }), { kind: "menuAction" });
+  const command = async () => {
+    await showInFinder(Buffer.from("/tmp/suite"));
+    await showHUD("Finished");
+  };
+  await assert.rejects(runCommand(command, { mode: "generateV5" }), /no-view command/);
+  assert.equal((await runCommand(command, {
+    mode: "generateV5", suitePreferencesAllowed: true, finderRevealAllowed: true,
+  })).kind, "action");
+  await broker.showInFinder(new URL("file:///tmp/format"));
+  assert.deepEqual(calls, [
+    ["files.reveal", "/tmp/menu"], ["files.reveal", "/tmp/suite"],
+    ["feedback.hud", '{"text":"Finished","clearRootSearch":false,"popToRootType":"default"}'],
+    ["files.reveal", "/tmp/format"],
+  ]);
+});
+
+test("imperative reveal resolves relative strings and buffers in the caller's working directory", async () => {
+  const { resolve } = require("node:path");
+  const calls = [];
+  const showInFinder = makeShowInFinder(({ paths: [path] }) => { calls.push(path); });
+  await showInFinder("./files/../中文 文件.txt");
+  await showInFinder(Buffer.from("items/report.txt"));
+  await showInFinder(new URL("file:///keylane-host-home/Downloads"));
+  assert.deepEqual(calls, [resolve("中文 文件.txt"), resolve("items/report.txt"), "/keylane-host-home/Downloads"]);
+  assert.deepEqual(finderRevealEffect("relative.txt").paths, [resolve("relative.txt")]);
+  assert.throws(() => absoluteFilePath("relative.txt"), TypeError);
 });

@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { formComponents, describeForm, submitForm } = require("./form-api.cjs");
+const { formComponents, describeForm, submitForm, replayFormEvent, mountFormRefs } = require("./form-api.cjs");
 
 const component = (type) => (props = {}) => ({ type, props });
 const children = ({ props }) => [props.children].flat(Infinity).filter(Boolean);
@@ -142,13 +142,36 @@ test("password fields serialize an empty snapshot and pass a string only to the 
   assert.deepEqual(submitted, [{ password: "synthetic-only" }]);
 });
 
+test("password refs request focus and clear without exposing an initial value or events", async () => {
+  const ref = {};
+  const calls = [];
+  const root = Form({ children: Form.PasswordField({
+    id: "password", defaultValue: "synthetic-default", value: "synthetic-controlled", storeValue: true, ref,
+    onChange: () => calls.push("change"), onFocus: () => calls.push("focus"), onBlur: () => calls.push("blur"),
+  }) });
+  const field = describeForm(root, children).fields[0];
+  assert.equal(field.value, "");
+  for (const key of ["controlled", "storeValue", "events"]) assert.equal(field[key], undefined);
+
+  const commands = {};
+  mountFormRefs(root, children, commands, new Map());
+  ref.current.focus();
+  ref.current.reset();
+  assert.equal(commands.focus, "password");
+  assert.deepEqual({ ...commands.reset }, { password: "" });
+  for (const kind of ["change", "focus", "blur"]) {
+    await replayFormEvent(root, children, { id: "password", kind, value: "synthetic-value" });
+  }
+  assert.deepEqual(calls, []);
+});
+
 test("file picker keeps native selection options and submits only bounded absolute paths", async () => {
   const snapshot = Form({ children: Form.FilePicker({
     id: "files", canChooseFiles: false, canChooseDirectories: true,
     allowMultipleSelection: false, showHiddenFiles: true, defaultValue: ["/host-default"],
   }) });
   const field = describeForm(snapshot, children).fields[0];
-  assert.deepEqual(field.value, []);
+  assert.deepEqual(field.value, ["/host-default"]);
   assert.deepEqual(field.picker, {
     canChooseFiles: false, canChooseDirectories: true, allowMultipleSelection: false, showHiddenFiles: true,
   });
@@ -164,6 +187,52 @@ test("file picker keeps native selection options and submits only bounded absolu
   assert.deepEqual(defaults.picker, {
     canChooseFiles: true, canChooseDirectories: false, allowMultipleSelection: true, showHiddenFiles: false,
   });
+});
+
+test("file picker forwards controlled values and storage intent, and resets to its default", async () => {
+  const ref = {};
+  const root = Form({ children: Form.FilePicker({
+    id: "files", value: ["/current"], defaultValue: ["/default"], storeValue: true, ref,
+  }) });
+  const field = describeForm(root, children).fields[0];
+  assert.equal(field.controlled, true);
+  assert.equal(field.storeValue, true);
+  assert.deepEqual(field.value, ["/current"]);
+
+  const commands = {};
+  mountFormRefs(root, children, commands, new Map());
+  ref.current.focus();
+  ref.current.reset();
+  assert.equal(commands.focus, "files");
+  assert.deepEqual({ ...commands.reset }, { files: ["/default"] });
+
+  const action = Submit({ onSubmit: ({ files }) => assert.deepEqual(files, ["/current"]) });
+  await submitForm(root, children, action, { files: ["/current"] });
+  await assert.rejects(submitForm(root, children, action, { files: ["/default"] }), /Invalid controlled Form value/);
+  const invalid = Form({ children: Form.FilePicker({ id: "files", value: ["../relative"] }) });
+  assert.deepEqual(describeForm(invalid, children).fields[0].value, []);
+});
+
+test("file picker replays bounded user selection and clear callbacks", async () => {
+  const values = [];
+  const focusEvents = [];
+  const onFocusChange = (event) => focusEvents.push(event);
+  const picker = Form.FilePicker({
+    id: "files", allowMultipleSelection: false, onChange: (paths) => values.push(paths),
+    onFocus: onFocusChange, onBlur: onFocusChange,
+  });
+  const root = Form({ children: picker });
+  assert.deepEqual(describeForm(root, children).fields[0].events, ["change", "focus", "blur"]);
+  for (const value of [["/synthetic/document"], ["/synthetic/one", "/synthetic/two"], []]) {
+    await replayFormEvent(root, children, { id: "files", kind: "change", value });
+  }
+  for (const kind of ["focus", "blur"]) {
+    await replayFormEvent(root, children, { id: "files", kind, value: ["/synthetic/document"] });
+  }
+  assert.deepEqual(values, [["/synthetic/document"], []]);
+  assert.deepEqual(focusEvents, ["focus", "blur"].map((type) => ({
+    type, target: { id: "files", value: ["/synthetic/document"] },
+  })));
 });
 
 test("form links are web-only header accessories and never submit values", async () => {

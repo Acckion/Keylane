@@ -21,15 +21,24 @@ function flag(options, name, fallback) {
   return value;
 }
 
+function checkedCloseOptions(options) {
+  options = checkedOptions(options);
+  const clearRootSearch = flag(options, "clearRootSearch", false);
+  const { popToRootType = PopToRootType.Default } = options;
+  if (!popToRootTypes.has(popToRootType)) throw new TypeError("Invalid popToRootType");
+  return { clearRootSearch, popToRootType };
+}
+
 function makeNavigation(emit) {
   return {
     async closeMainWindow(options) {
-      options = checkedOptions(options);
-      const clearRootSearch = flag(options, "clearRootSearch", false);
-      const type = options.popToRootType;
-      const popToRootType = type === undefined ? PopToRootType.Default : type;
-      if (!popToRootTypes.has(popToRootType)) throw new TypeError("Invalid popToRootType");
-      await emit({ kind: "closeMainWindow", clearRootSearch, popToRootType });
+      await emit({ kind: "closeMainWindow", ...checkedCloseOptions(options) });
+    },
+
+    async showHUD(text, options) {
+      if (typeof text !== "string") throw new TypeError("Expected a HUD title");
+      if (Buffer.byteLength(text) > 2048) throw new RangeError("HUD title exceeds the feedback limit");
+      await emit({ kind: "hud", text, ...checkedCloseOptions(options) });
     },
 
     async clearSearchBar(options) {
@@ -46,4 +55,15 @@ function makeNavigation(emit) {
   };
 }
 
-module.exports = { makeNavigation, PopToRootType };
+const navigationCapabilities = Object.freeze({
+  closeMainWindow: "navigation.closeWindow",
+  popToRoot: "navigation.popToRoot",
+  clearSearchBar: "navigation.clearSearch",
+  hud: "feedback.hud",
+});
+
+function requestNavigation(request, { kind, ...options }) {
+  return request(navigationCapabilities[kind], JSON.stringify(options));
+}
+
+module.exports = { makeNavigation, PopToRootType, requestNavigation };

@@ -7,7 +7,7 @@ test("deprecated ListItem and ListSection share list details, filtering, and gro
   assert.equal(ListItem, List.Item);
   assert.equal(ListSection, List.Section);
 
-  const command = () => List({ children: ListSection({
+  const command = () => List({ isShowingDetail: true, children: ListSection({
     title: "Languages",
     children: [
       ListItem({ title: "中文", detail: ListItem.Detail({ markdown: "Chinese" }) }),

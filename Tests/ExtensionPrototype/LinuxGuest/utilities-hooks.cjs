@@ -106,41 +106,68 @@ function utilitiesHooksFor(apiProvider, FormValidation) {
     };
   }
 
-  function usePromise(fn, args = [], options = {}, cachedData) {
+  function usePromise(fn, args = [], options = {}, cache) {
     const { useState, useEffect } = apiProvider();
-    const [slot] = useState(() => ({ generation: 0, started: false, isLoading: false }));
+    const [slot] = useState(() => ({ generation: 0, isLoading: false }));
     const execute = options.execute !== false;
-    const inputsChanged = !slot.started || !isDeepStrictEqual(slot.args, args);
+    if (!slot.invocation || !isDeepStrictEqual(slot.invocation.args, args)) {
+      slot.invocation = { args: [...args] };
+      ++slot.generation;
+    }
+    const invocation = slot.invocation;
+    const inputsChanged = slot.startedInvocation !== invocation;
     const willRun = execute && inputsChanged;
-    if (cachedData && !isDeepStrictEqual(slot.seededArgs, args)) {
+    if (cache && !isDeepStrictEqual(slot.seededArgs, args)) {
       slot.seededArgs = [...args];
-      const cached = cachedData();
-      if (cached !== undefined || !options.keepPreviousData || slot.data === undefined) {
-        slot.data = cached === undefined ? options.initialData : cached;
+      const miss = Symbol();
+      const cached = cache.read(miss);
+      if (cached !== miss || !options.keepPreviousData || slot.data === undefined) {
+        slot.data = cached === miss ? options.initialData : cached;
       }
     }
 
-    async function revalidate() {
+    async function runPage(previous) {
+      if (slot.invocation !== invocation) return;
       const generation = ++slot.generation;
       const abortable = options.abortable;
       slot.controller?.abort();
       slot.controller = abortable ? new AbortController() : undefined;
       const controller = slot.controller;
       if (abortable) abortable.current = controller;
-      slot.started = true;
-      slot.args = [...args];
+      slot.startedInvocation = invocation;
       slot.isLoading = true;
       slot.error = undefined;
       try {
         options.onWillExecute?.(args);
-        const data = await waitForOperation(() => fn(...args), controller && (() => controller.abort()));
+        const pagination = previous ? {
+          page: previous.page + 1,
+          cursor: previous.cursor,
+          lastItem: previous.lastItem,
+        } : { page: 0 };
+        const result = await waitForOperation(() => {
+          const operation = fn(...args);
+          return typeof operation === "function"
+            ? Promise.resolve(operation(pagination)).then((page) => ({ page }))
+            : Promise.resolve(operation).then((data) => ({ data }));
+        }, controller && (() => controller.abort()));
         if (generation !== slot.generation) return;
-        slot.data = data;
-        options.onData?.(data);
+        if (Object.hasOwn(result, "page")) {
+          const { data, hasMore, cursor } = result.page;
+          if (!Array.isArray(data) || typeof hasMore !== "boolean") throw new TypeError("Invalid paginated promise result");
+          slot.page = { page: pagination.page, cursor, lastItem: data.at(-1), hasMore,
+            pageSize: hasMore && data.length ? data.length : previous?.pageSize ?? 50 };
+          slot.data = previous ? (slot.data ?? []).concat(data) : data;
+          options.onData?.(data, pagination);
+        } else {
+          slot.page = undefined;
+          slot.data = result.data;
+          options.onData?.(result.data);
+        }
       } catch (cause) {
         if (generation !== slot.generation) return;
         const error = cause instanceof Error ? cause : new Error(String(cause));
         slot.error = error;
+        if (slot.page) slot.page = { ...slot.page, hasMore: false };
         if (options.onError) options.onError(error);
         else await failure(error, options.failureToastOptions);
       } finally {
@@ -148,31 +175,53 @@ function utilitiesHooksFor(apiProvider, FormValidation) {
       }
     }
 
-    useEffect(() => willRun ? revalidate() : undefined, [willRun, slot.generation]);
+    const revalidate = () => runPage();
+    useEffect(() => willRun ? revalidate() : undefined, [execute, invocation]);
+
+    const pagination = execute && !willRun && slot.page ? {
+      pageSize: slot.page.pageSize,
+      hasMore: slot.page.hasMore,
+      async onLoadMore() {
+        if (!slot.isLoading && slot.page?.hasMore) await runPage(slot.page);
+      },
+    } : undefined;
 
     async function mutate(update, mutationOptions = {}) {
       const { optimisticUpdate, rollbackOnError, shouldRevalidateAfter } = mutationOptions;
       const automaticRollback = optimisticUpdate && rollbackOnError !== false && typeof rollbackOnError !== "function";
+      const persist = slot.startedInvocation !== invocation || !slot.page || slot.page.page === 0
+        ? cache?.writeMutation : undefined;
       let before;
+      let mutationGeneration = slot.generation;
+      let appliedOptimistic = false;
       try {
-        if (optimisticUpdate) {
-          ++slot.generation;
+        if (optimisticUpdate && slot.invocation === invocation) {
+          mutationGeneration = ++slot.generation;
           slot.controller?.abort();
           slot.isLoading = false;
-          if (automaticRollback) before = structuredClone(slot.data);
+          if (automaticRollback) before = (cache?.cloneMutation ?? structuredClone)(slot.data);
           slot.data = optimisticUpdate(slot.data);
+          appliedOptimistic = true;
+          persist?.(slot.data);
         }
         return update === undefined ? undefined : await waitForOperation(() => update);
       } catch (error) {
-        if (typeof rollbackOnError === "function") slot.data = rollbackOnError(slot.data);
-        else if (automaticRollback) slot.data = before;
+        if (slot.invocation === invocation && slot.generation === mutationGeneration) {
+          if (typeof rollbackOnError === "function") {
+            slot.data = rollbackOnError(slot.data);
+            persist?.(slot.data);
+          } else if (automaticRollback && appliedOptimistic) {
+            slot.data = before;
+            persist?.(slot.data);
+          }
+        }
         throw error;
       } finally {
         if (shouldRevalidateAfter !== false) await revalidate();
       }
     }
 
-    return { data: slot.data, error: slot.error, isLoading: willRun || slot.isLoading, revalidate, mutate };
+    return { data: slot.data, error: slot.error, isLoading: execute && (willRun || slot.isLoading), pagination, revalidate, mutate };
   }
 
   function useLocalStorage(key, initialValue) {
@@ -189,14 +238,14 @@ function utilitiesHooksFor(apiProvider, FormValidation) {
         try {
           const text = storageEncode(next);
           if (text === undefined) throw new Error("LocalStorage value must be JSON serializable.");
-          await mutate(LocalStorage.setItem(key, text), { optimisticUpdate: () => next });
+          await mutate(LocalStorage.setItem(key, text), { optimisticUpdate: (previous) => previous });
         } catch (error) {
           await failure(error, { title: "Failed to set value in local storage" });
         }
       },
       async removeValue() {
         try {
-          await mutate(LocalStorage.removeItem(key), { optimisticUpdate: () => initialValue });
+          await mutate(LocalStorage.removeItem(key), { optimisticUpdate: () => undefined });
         } catch (error) {
           await failure(error, { title: "Failed to remove value from local storage" });
         }
