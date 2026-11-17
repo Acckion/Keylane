@@ -74,6 +74,20 @@ struct NavigationChecks {
         try require(try !place(.restore, in: fixture).isEmpty, "Restore remained available after use")
         print("Native window placement and restore passed")
 
+        let tiling = WindowPlacementOptions(windowGap: 12, screenGap: 8, halfFractions: [0.5, 2/3, 1/3])
+        let original = try windowTarget(in: fixture, options: tiling)
+        try require(try manage(.half(.left), in: fixture, options: tiling).isEmpty, "Half-screen with gaps failed")
+        let first = try windowTarget(in: fixture, options: tiling)
+        try require(abs(first.frame.minX - first.display.minX - 8) <= 2, "Screen gap was not applied")
+        try require(try manage(.half(.left), in: fixture, options: tiling).isEmpty, "Half-screen cycling failed")
+        let next = try windowTarget(in: fixture, options: tiling)
+        try require(next.frame.width > first.frame.width, "Repeated half-screen did not cycle to the next size")
+        try require(try place(.restore, in: fixture).isEmpty, "Cycled layout did not restore")
+        try require(try windowTarget(in: fixture, options: tiling).frame == first.frame, "Cycle restore frame mismatch")
+        try require(try manage(.place(.resize(original.frame.size)), in: fixture, options: tiling).isEmpty, "Explicit resize failed")
+        try require(try windowTarget(in: fixture, options: tiling).frame.size == original.frame.size, "Explicit resize frame mismatch")
+        print("Native window gaps, half-screen cycling, cycle restore and explicit resize passed")
+
         var menus: NavigationScan?
         _ = navigation.scan(.menus, target: fixture) { menus = $0 }
         let commands = awaitValue(timeout: 8, { menus })?.items ?? []
@@ -227,6 +241,21 @@ struct NavigationChecks {
         var outcome: String?
         SystemNavigation.shared.placeWindow(placement, in: app) { outcome = $0 ?? "" }
         guard let outcome = awaitValue(timeout: 4, { outcome }) else { throw CheckError.failed("Window placement timed out") }
+        return outcome
+    }
+
+    private static func windowTarget(in app: NSRunningApplication, options: WindowPlacementOptions) throws -> SystemNavigation.WindowTarget {
+        var target: SystemNavigation.WindowTarget?
+        SystemNavigation.shared.windowTarget(in: app, options: options, request: .init()) { target = $0 }
+        guard let target = awaitValue(timeout: 4, { target }) else { throw CheckError.failed("Window target could not be read") }
+        return target
+    }
+
+    private static func manage(_ operation: SystemNavigation.WindowOperation, in app: NSRunningApplication,
+                               options: WindowPlacementOptions) throws -> String {
+        var outcome: String?
+        SystemNavigation.shared.manageWindow(operation, in: app, options: options) { outcome = $0 ?? "" }
+        guard let outcome = awaitValue(timeout: 4, { outcome }) else { throw CheckError.failed("Window operation timed out") }
         return outcome
     }
 

@@ -12,6 +12,10 @@ final class ModifierShortcuts {
         event.post(tap: .cghidEventTap)
     }
 
+    static func isUnmodifiedSyntheticEvent(_ event: CGEvent) -> Bool {
+        event.getIntegerValueField(.eventSourceUserData) == unmodifiedEventMarker
+    }
+
     private var global: Any?
     private var local: Any?
     private var tracker = ModifierTapTracker()
@@ -39,7 +43,7 @@ final class ModifierShortcuts {
                 let owner = Unmanaged<ModifierShortcuts>.fromOpaque(context).takeUnretainedValue()
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput { if let tap = owner.tap { CGEvent.tapEnable(tap: tap, enable: true) }; owner.hyperHeld = false; return Unmanaged.passUnretained(event) }
                 if IsSecureEventInputEnabled() { owner.hyperHeld = false; return Unmanaged.passUnretained(event) }
-                if event.getIntegerValueField(.eventSourceUserData) == ModifierShortcuts.unmodifiedEventMarker {
+                if ModifierShortcuts.isUnmodifiedSyntheticEvent(event) {
                     return Unmanaged.passUnretained(event)
                 }
                 let key = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))

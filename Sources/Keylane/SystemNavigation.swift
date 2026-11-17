@@ -52,6 +52,14 @@ final class NavigationScanRequest {
     func cancel() { lock.withLock { cancelled = true } }
 }
 
+struct WindowPlacementOptions {
+    var windowGap: CGFloat = 0
+    var screenGap: CGFloat = 0
+    var respectStageManager = false
+    var halfFractions: [CGFloat] = [0.5]
+    var cycleDisplays = false
+}
+
 /// AX calls can block on another process. All queries, action calls, and history
 /// updates run on this queue; SwiftUI only receives finished snapshots.
 final class SystemNavigation {
@@ -65,53 +73,156 @@ final class SystemNavigation {
 
     private init() {}
 
+    struct WindowTarget {
+        let window: AXUIElement
+        let frame: CGRect
+        let display: CGRect
+    }
+
+    enum WindowOperation {
+        case place(WindowPlacement), half(WindowEdge), fullscreen, minimize, minimizeDisplay
+    }
+
+    static func displayFrames(respectingStageManager: Bool = false) -> [CGRect] {
+        let screens = NSScreen.screens
+        let top = screens.first?.frame.maxY ?? 0
+        let manager = respectingStageManager ? UserDefaults(suiteName: "com.apple.WindowManager") : nil
+        let reserveStrip = manager?.bool(forKey: "GloballyEnabled") == true
+            && !(manager?.bool(forKey: "AutoHide") ?? false)
+        let stripOnRight = reserveStrip && UserDefaults(suiteName: "com.apple.dock")?.string(forKey: "orientation") == "left"
+        return screens.map { screen in
+            var frame = screen.visibleFrame
+            if reserveStrip, frame.width > 240 {
+                if !stripOnRight { frame.origin.x += 100 }
+                frame.size.width -= 100
+            }
+            return CGRect(x: frame.minX, y: top - frame.maxY, width: frame.width, height: frame.height)
+        }
+    }
+
     func placeWindow(_ placement: WindowPlacement, in app: NSRunningApplication?, request: NavigationScanRequest = .init(),
                      completion: @escaping (String?) -> Void) {
+        manageWindow(.place(placement), in: app, request: request, completion: completion)
+    }
+
+    func manageWindow(_ operation: WindowOperation, in app: NSRunningApplication?, options: WindowPlacementOptions = .init(),
+                      expected: WindowTarget? = nil, displayAt point: CGPoint? = nil,
+                      request: NavigationScanRequest = .init(), completion: @escaping (String?) -> Void) {
         guard AXIsProcessTrusted() else {
             completion(NavigationText.label("请在系统设置中允许 Keylane 使用辅助功能。", "Allow Keylane in Accessibility settings."))
             return
         }
-        guard let app, !app.isTerminated else {
-            completion(NavigationText.label("没有可调整的应用窗口。", "No application window to arrange."))
-            return
-        }
-        let screens = NSScreen.screens
-        let top = screens.first?.frame.maxY ?? 0
-        let displays = screens.map { screen -> CGRect in
-            let frame = screen.visibleFrame
-            return CGRect(x: frame.minX, y: top - frame.maxY, width: frame.width, height: frame.height)
+        let displays = Self.displayFrames(respectingStageManager: options.respectStageManager)
+        let runningApps: [NSRunningApplication]
+        if case .minimizeDisplay = operation {
+            runningApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        } else {
+            runningApps = []
         }
         queue.async {
             guard !request.isCancelled else { return }
-            let message = self.applyPlacement(placement, pid: app.processIdentifier, displays: displays)
+            let message: String?
+            if case .minimizeDisplay = operation {
+                let display = point.flatMap { point in displays.first { $0.contains(point) } } ?? displays.first
+                message = self.minimizeWindows(on: display, apps: runningApps, request: request)
+            } else if let app, !app.isTerminated,
+                      let target = self.focusedWindow(pid: app.processIdentifier, displays: displays) {
+                if let expected, !CFEqual(expected.window, target.window) {
+                    message = NavigationText.label("焦点窗口已变化。", "The focused window changed.")
+                } else {
+                    message = self.apply(operation, to: target, displays: displays, options: options)
+                }
+            } else {
+                message = NavigationText.label("目标应用没有可调整的聚焦窗口。", "The target app has no focused window to arrange.")
+            }
             DispatchQueue.main.async { if !request.isCancelled { completion(message) } }
+        }
+    }
+
+    func windowTarget(in app: NSRunningApplication?, options: WindowPlacementOptions,
+                      request: NavigationScanRequest, completion: @escaping (WindowTarget?) -> Void) {
+        let displays = Self.displayFrames(respectingStageManager: options.respectStageManager)
+        queue.async {
+            guard !request.isCancelled else { return }
+            let target = app.flatMap { AXIsProcessTrusted() ? self.focusedWindow(pid: $0.processIdentifier, displays: displays) : nil }
+            DispatchQueue.main.async { if !request.isCancelled { completion(target) } }
         }
     }
 
     func clearWindowPlacementHistory() { queue.async { self.previousFrames.removeAll() } }
 
-    private func applyPlacement(_ placement: WindowPlacement, pid: pid_t, displays: [CGRect]) -> String? {
-        let application = applicationElement(pid)
-        guard let window = element(application, kAXFocusedWindowAttribute) else {
-            return NavigationText.label("目标应用没有聚焦的窗口。", "The target app has no focused window.")
+    private func focusedWindow(pid: pid_t, displays: [CGRect]) -> WindowTarget? {
+        guard let window = element(applicationElement(pid), kAXFocusedWindowAttribute),
+              let frame = frame(of: window),
+              let index = WindowPlacement.displayIndex(for: frame, displays: displays) else { return nil }
+        return WindowTarget(window: window, frame: frame, display: displays[index])
+    }
+
+    private func apply(_ operation: WindowOperation, to target: WindowTarget,
+                       displays: [CGRect], options: WindowPlacementOptions) -> String? {
+        let window = target.window
+        let fullscreen = value(window, "AXFullScreen") as? Bool == true
+        switch operation {
+        case .fullscreen:
+            return setFlag(!fullscreen, key: "AXFullScreen", on: window) ? nil :
+                NavigationText.label("窗口无法切换全屏。", "Could not toggle full screen.")
+        case .minimize:
+            return setFlag(true, key: kAXMinimizedAttribute, on: window) ? nil :
+                NavigationText.label("窗口无法最小化。", "Could not minimize the window.")
+        default:
+            break
         }
-        guard value(window, "AXFullScreen") as? Bool != true else {
+        guard !fullscreen else {
             return NavigationText.label("请先退出窗口的全屏模式。", "Exit full screen before arranging this window.")
         }
-        guard let current = frame(of: window) else {
-            return NavigationText.label("无法读取目标窗口的位置和大小。", "Could not read the target window frame.")
-        }
+        let current = target.frame
         let saved = previousFrames.first { CFEqual($0.window, window) }?.frame
-        guard let target = placement.frame(for: current, displays: displays, previous: saved) else {
+        let placement: WindowPlacement
+        switch operation {
+        case .place(let command):
+            placement = command
+        case .half(let edge):
+            let fractions = options.halfFractions
+            let regions: [WindowPlacement] = fractions.map { fraction in
+                switch edge {
+                case .left: .region(CGRect(x: 0, y: 0, width: fraction, height: 1))
+                case .right: .region(CGRect(x: 1 - fraction, y: 0, width: fraction, height: 1))
+                case .top: .region(CGRect(x: 0, y: 0, width: 1, height: fraction))
+                case .bottom: .region(CGRect(x: 0, y: 1 - fraction, width: 1, height: fraction))
+                }
+            }
+            let matched = regions.firstIndex {
+                guard let frame = $0.frame(for: current, displays: displays, windowGap: options.windowGap, screenGap: options.screenGap) else { return false }
+                return framesMatch(current, frame)
+            }
+            if options.cycleDisplays, matched != nil, displays.count > 1,
+               let next = WindowPlacement.nextDisplay.frame(for: current, displays: displays),
+               let region = regions.first,
+               let frame = region.frame(for: next, displays: displays, windowGap: options.windowGap, screenGap: options.screenGap) {
+                return updateFrame(frame, from: current, window: window)
+            }
+            placement = regions[(matched.map { $0 + 1 } ?? 0) % regions.count]
+        default:
+            return nil
+        }
+        guard let frame = placement.frame(for: current, displays: displays, previous: saved,
+                                          windowGap: options.windowGap, screenGap: options.screenGap) else {
             return placement == .restore
                 ? NavigationText.label("此窗口没有可恢复的位置。", "There is no saved position for this window.")
-                : NavigationText.label("没有其他可用的显示器。", "No other display is available.")
+                : NavigationText.label("没有可用的目标位置或显示器。", "No destination frame or display is available.")
         }
+        return updateFrame(frame, from: current, window: window, restoring: placement == .restore)
+    }
+
+    private func framesMatch(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        abs(lhs.minX - rhs.minX) <= 2 && abs(lhs.minY - rhs.minY) <= 2 &&
+        abs(lhs.width - rhs.width) <= 2 && abs(lhs.height - rhs.height) <= 2
+    }
+
+    private func updateFrame(_ target: CGRect, from current: CGRect, window: AXUIElement, restoring: Bool = false) -> String? {
         guard current != target else { return nil }
         guard writeFrame(target, to: window, resizing: current.size != target.size),
-              let actual = frame(of: window),
-              abs(actual.minX - target.minX) <= 2, abs(actual.minY - target.minY) <= 2,
-              abs(actual.width - target.width) <= 2, abs(actual.height - target.height) <= 2 else {
+              let actual = frame(of: window), framesMatch(actual, target) else {
             let actual = frame(of: window)
             if actual != current {
                 _ = writeFrame(current, to: window, resizing: actual?.size != current.size)
@@ -119,9 +230,142 @@ final class SystemNavigation {
             return NavigationText.label("窗口不支持所选布局，请检查窗口状态。", "The window could not apply this layout. Check its current state.")
         }
         previousFrames.removeAll { CFEqual($0.window, window) }
-        if placement != .restore { previousFrames.insert((window, current), at: 0) }
+        if !restoring { previousFrames.insert((window, current), at: 0) }
         if previousFrames.count > 64 { previousFrames.removeLast() }
         return nil
+    }
+
+    private func setFlag(_ flag: Bool, key: String, on window: AXUIElement) -> Bool {
+        AXUIElementSetAttributeValue(window, key as CFString, flag ? kCFBooleanTrue : kCFBooleanFalse) == .success
+    }
+
+    private func minimizeWindows(on display: CGRect?, apps: [NSRunningApplication], request: NavigationScanRequest) -> String? {
+        guard let display else { return NavigationText.label("未找到当前显示器。", "Could not find the current display.") }
+        let displays = Self.visibleWindows()
+        var refused = 0
+        for app in apps where !app.isTerminated && app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            if request.isCancelled { break }
+            let candidates = displays[app.processIdentifier] ?? []
+            guard candidates.contains(where: { display.contains(CGPoint(x: $0.midX, y: $0.midY)) }) else { continue }
+            let windows = value(applicationElement(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] ?? []
+            for window in windows {
+                if request.isCancelled { break }
+                guard value(window, "AXFullScreen") as? Bool != true, let frame = frame(of: window),
+                      display.contains(CGPoint(x: frame.midX, y: frame.midY)),
+                      candidates.contains(where: { framesMatch($0, frame) }) else { continue }
+                if !setFlag(true, key: kAXMinimizedAttribute, on: window) { refused += 1 }
+            }
+        }
+        return refused == 0 ? nil : NavigationText.label("部分窗口无法最小化。", "Some windows could not be minimized.")
+    }
+
+    private static func visibleWindows() -> [pid_t: [CGRect]] {
+        let descriptions = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        var windows: [pid_t: [CGRect]] = [:]
+        for info in descriptions {
+            guard info[kCGWindowLayer as String] as? Int == 0,
+                  let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let bounds = info[kCGWindowBounds as String] as? NSDictionary,
+                  let rect = CGRect(dictionaryRepresentation: bounds) else { continue }
+            windows[pid, default: []].append(rect)
+        }
+        return windows
+    }
+
+    func snapshotLayout(options: WindowPlacementOptions, request: NavigationScanRequest,
+                        completion: @escaping ([WindowLayoutEntry]) -> Void) {
+        let displays = Self.displayFrames(respectingStageManager: options.respectStageManager)
+        let apps = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+        queue.async {
+            let visible = Self.visibleWindows()
+            var entries: [WindowLayoutEntry] = []
+            for app in apps {
+                guard !request.isCancelled else { return }
+                guard let bundleID = app.bundleIdentifier, let matches = visible[app.processIdentifier] else { continue }
+                let windows = self.value(self.applicationElement(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] ?? []
+                for window in windows {
+                    guard !request.isCancelled else { return }
+                    guard self.value(window, "AXFullScreen") as? Bool != true,
+                          let frame = self.frame(of: window), matches.contains(where: { self.framesMatch($0, frame) }),
+                          let index = WindowPlacement.displayIndex(for: frame, displays: displays),
+                          entries.filter({ $0.display == index }).count < 8 else { continue }
+                    let display = displays[index]
+                    var entry = WindowLayoutEntry(bundleID: bundleID)
+                    entry.display = index
+                    entry.windowTitle = self.value(window, kAXTitleAttribute) as? String ?? ""
+                    entry.geometry.width = .init(frame.width, percentage: false)
+                    entry.geometry.height = .init(frame.height, percentage: false)
+                    entry.geometry.x = .init(frame.minX - display.minX, percentage: false)
+                    entry.geometry.y = .init(frame.minY - display.minY, percentage: false)
+                    entries.append(entry)
+                }
+            }
+            DispatchQueue.main.async { if !request.isCancelled { completion(entries) } }
+        }
+    }
+
+    func applyLayout(_ entries: [(entry: WindowLayoutEntry, pid: pid_t)], otherWindows: CustomWindowAction.OtherWindows,
+                     options: WindowPlacementOptions, request: NavigationScanRequest, completion: @escaping (Int) -> Void) {
+        let displays = Self.displayFrames(respectingStageManager: options.respectStageManager)
+        let apps = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+        queue.async {
+            var used: [AXUIElement] = []
+            var failed = 0
+            let visible = Self.visibleWindows()
+            for (entry, pid) in entries {
+                guard !request.isCancelled else { return }
+                guard displays.indices.contains(entry.display), let destination = entry.geometry.frame(in: displays[entry.display]) else {
+                    failed += 1
+                    continue
+                }
+                let deadline = ProcessInfo.processInfo.systemUptime + 1.5
+                let application = self.applicationElement(pid)
+                var candidate: (AXUIElement, CGRect)?
+                repeat {
+                    let windows = self.value(application, kAXWindowsAttribute) as? [AXUIElement] ?? []
+                    candidate = windows.lazy.compactMap { window -> (AXUIElement, CGRect)? in
+                        guard !used.contains(where: { CFEqual($0, window) }),
+                              self.value(window, "AXFullScreen") as? Bool != true,
+                              (entry.windowTitle.isEmpty || self.value(window, kAXTitleAttribute) as? String == entry.windowTitle),
+                              let frame = self.frame(of: window) else { return nil }
+                        return (window, frame)
+                    }.first
+                    if candidate == nil { Thread.sleep(forTimeInterval: 0.05) }
+                } while candidate == nil && !request.isCancelled && ProcessInfo.processInfo.systemUptime < deadline
+                guard !request.isCancelled else { return }
+                guard let (window, frame) = candidate else { failed += 1; continue }
+                used.append(window)
+                if self.value(window, kAXMinimizedAttribute) as? Bool == true {
+                    _ = self.setFlag(false, key: kAXMinimizedAttribute, on: window)
+                }
+                if self.updateFrame(destination, from: frame, window: window) != nil { failed += 1 }
+            }
+            if otherWindows != .keep, failed == 0, !used.isEmpty {
+                for app in apps {
+                    guard !request.isCancelled else { return }
+                    guard let matches = visible[app.processIdentifier] else { continue }
+                    let windows = self.value(self.applicationElement(app.processIdentifier), kAXWindowsAttribute) as? [AXUIElement] ?? []
+                    for window in windows {
+                        guard !request.isCancelled else { return }
+                        guard !used.contains(where: { CFEqual($0, window) }),
+                              self.value(window, "AXFullScreen") as? Bool != true,
+                              let frame = self.frame(of: window), matches.contains(where: { self.framesMatch($0, frame) }) else { continue }
+                        if otherWindows == .minimize {
+                            if !self.setFlag(true, key: kAXMinimizedAttribute, on: window) { failed += 1 }
+                        } else if let close = self.element(window, kAXCloseButtonAttribute) {
+                            if AXUIElementPerformAction(close, kAXPressAction as CFString) != .success { failed += 1 }
+                        }
+                    }
+                }
+            }
+            let failures = failed
+            DispatchQueue.main.async { if !request.isCancelled { completion(failures) } }
+        }
     }
 
     private func frame(of window: AXUIElement) -> CGRect? {

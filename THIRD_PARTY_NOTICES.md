@@ -25,6 +25,31 @@ Any future reuse must be checked against the exact source version's license and
 retain the required notices. Apple frameworks and the system SQLite library
 remain subject to their respective terms; the project license does not relicense them.
 
+## Window management
+
+The Dock gesture encoding in `WindowSpaceGesture.swift` is adapted from
+[iss](https://github.com/joshuarli/iss), under the following terms:
+
+```text
+Copyright (c) 2026 joshuarli
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL,
+DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING
+FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
+NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+```
+
 ## Existing releases
 
 This change applies to the source revision containing the license migration and
