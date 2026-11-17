@@ -4,11 +4,11 @@ import KeylaneCore
 import SwiftUI
 
 enum AIModule {
-    static let models = SettingsItem(id: "ai-models", page: "ai", title: "模型与提供方",
+    static let models = SettingsItem(id: "ai-models", page: "ai-models", title: "模型与提供方",
                                      keywords: "AI 模型 提供方 接口 API 密钥 Keychain 流式 Ollama")
 
-    static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai", title: "AI 命令",
-                                               keywords: "翻译 润色 摘要 快捷键 translate polish summarize")
+    static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai-text-commands", title: "AI 命令",
+                                               keywords: "翻译 润色 摘要 自定义 提示词 导入 快捷键 translate polish summarize")
 
     static func make(model: Model) -> LauncherModule {
         let configuration = model.aiSettings
@@ -40,30 +40,67 @@ enum AIModule {
             keywords: ["chat", "AI", "聊天", "对话"], destination: .action, settingsPage: "ai"
         ), available: { configuration.isAvailable }, execute: { _ in openChat() })
         let textSession = AITextCommandSession(configuration: configuration, runtime: runtime)
+        let library = CustomAICommandLibrary()
         let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
                               title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand] + textCommands,
+                              providers: [AITextCommandLauncher.customCommands(model: model, session: textSession, library: library)],
                               pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: openChat),
-                                      AITextCommandLauncher.page(model: model, session: textSession)], settings: [
+                                      AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
-                  order: 8, items: [models, textCommandsItem],
+                  order: 8, items: [],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
                   content: { [weak model] in
                       guard let model else { return AnyView(EmptyView()) }
-                      return AnyView(AISettings(configuration: configuration, runtime: runtime,
-                                                model: model, textCommands: textCommands))
+                      return AnyView(AISettingsHome(model: model))
+                  }),
+            .init(id: models.page, title: models.title, symbol: "cpu",
+                  subtitle: "管理模型、连接与访问凭据。", order: 9, items: [models], parentID: "ai",
+                  content: { AnyView(AIModelSettings(configuration: configuration, runtime: runtime)) }),
+            .init(id: textCommandsItem.page, title: textCommandsItem.title, symbol: "sparkles",
+                  subtitle: "管理内置与自定义 AI 命令。", order: 9, items: [textCommandsItem], parentID: "ai",
+                  content: { [weak model] in
+                      guard let model else { return AnyView(EmptyView()) }
+                      return AnyView(SettingsPageSections {
+                          ExtensionCommandPreferences(model: model, commands: textCommands)
+                          CustomAICommandSettings(model: model, library: library, configuration: configuration)
+                              .settingsAnchor(textCommandsItem)
+                      })
                   })
-        ], searchUpdates: [configuration.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher()])
+        ], searchUpdates: [ViewObservation.changes(configuration.$state), ViewObservation.changes(library.$commands)],
+           dynamicCommandSettings: .init(model: model, items: { library.commands }, title: \.title,
+                                         commandID: \.commandID, updates: { [ViewObservation.changes(library.$commands)] },
+                                         entry: { $0.settingsEntry(model: $1) }))
     }
 }
 
-private struct AISettings: View {
+private struct AISettingsHome: View {
+    let model: Model
+
+    var body: some View {
+        SettingsPageSections {
+            SettingsGroup {
+                link(AIModule.models)
+                Divider()
+                link(AIModule.textCommandsItem)
+            }
+        }
+    }
+
+    private func link(_ item: SettingsItem) -> some View {
+        Button { model.settingsPage = item.page } label: {
+            SettingsRow(item.title) {
+                Image(systemName: "chevron.forward").imageScale(.small).foregroundStyle(.secondary)
+            }.contentShape(Rectangle())
+        }.buttonStyle(.plain)
+    }
+}
+
+private struct AIModelSettings: View {
     @ObservedObject var configuration: AIConfiguration
     let runtime: AIRuntime
-    let model: Model
-    let textCommands: [LauncherModule.Command]
     @State private var newConnection: AIConnection?
 
     var body: some View {
@@ -89,8 +126,6 @@ private struct AISettings: View {
                                    isNew: newConnection != nil) { newConnection = nil }
                     .id(connection.id)
             }
-            ExtensionCommandPreferences(model: model, commands: textCommands)
-                .settingsAnchor(AIModule.textCommandsItem)
         }
     }
 }

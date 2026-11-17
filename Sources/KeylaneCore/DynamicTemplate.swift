@@ -134,6 +134,7 @@ public struct DynamicTemplate {
     private let usage: Usage
     private let tokens: [Token]
     public var placeholderRanges: [NSRange] { tokens.map(\.range) }
+    public var placeholderKinds: Set<Kind> { Set(tokens.map(\.kind)) }
 
     var legacySyntaxMigration: String {
         let result = NSMutableString(string: source)

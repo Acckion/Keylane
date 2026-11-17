@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import KeylaneCore
 
 enum AITextCommand: String, CaseIterable, Identifiable {
     case translate, polish, summarize
@@ -41,6 +42,11 @@ enum AITextCommand: String, CaseIterable, Identifiable {
 
 final class AITextCommandSession: ObservableObject {
     @Published private(set) var command: AITextCommand = .translate
+    @Published private(set) var customCommand: CustomAICommand?
+    @Published private(set) var templateError = ""
+    @Published private(set) var arguments: [DynamicTemplate.Argument] = []
+    @Published private(set) var argumentValues: [String: String] = [:]
+    @Published private(set) var invocationID = UUID()
     @Published var input = "" {
         didSet { if oldValue != input, !reply.running { reply.reset() } }
     }
@@ -51,11 +57,20 @@ final class AITextCommandSession: ObservableObject {
     let reply: QuickAIController
     let configuration: AIConfiguration
     private var reviewedConnection: AIConnection?
+    private var plan: DynamicTemplate.Plan?
+    private var configurationChanges: AnyCancellable?
+    private var canInvoke: () -> Bool = { true }
 
     init(configuration: AIConfiguration, runtime: AIRuntime,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
         self.configuration = configuration
-        reply = QuickAIController(configuration: configuration, runtime: runtime, readKey: readKey)
+        reply = QuickAIController(configuration: configuration, runtime: runtime,
+                                  observesDefaultConnection: false, readKey: readKey)
+        configurationChanges = configuration.$state.dropFirst().sink { [weak self] state in
+            guard let self, self.reviewedConnection != Self.connection(for: self.customCommand, in: state)
+            else { return }
+            self.reply.reset()
+        }
     }
 
     var destination: String {
@@ -66,29 +81,81 @@ final class AITextCommandSession: ObservableObject {
     }
 
     var destinationChanged: Bool {
-        reviewedConnection != configuration.selected || !configuration.isAvailable
+        reviewedConnection == nil || reviewedConnection != Self.connection(for: customCommand, in: configuration.state)
     }
+
+    var title: String { customCommand?.title ?? command.title }
+
+    static func connection(for command: CustomAICommand?, in state: AIConfiguration.State) -> AIConnection? {
+        guard state.enabled else { return nil }
+        if let id = command?.connectionID {
+            return state.connections.first { $0.id == id && $0.isConfigured }
+        }
+        return state.selected.flatMap { $0.isConfigured ? $0 : nil }
+    }
+
+    var isInvocationAvailable: Bool { canInvoke() }
 
     var canSend: Bool {
-        !destinationChanged && !reply.running && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !destinationChanged && isInvocationAvailable && !reply.running &&
+            !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    func prepare(_ command: AITextCommand, selection: String?) {
-        reply.reset()
-        reviewedConnection = configuration.selected
+    func prepare(_ command: AITextCommand, selection: String?, canInvoke: @escaping () -> Bool = { true }) {
+        clear()
+        self.canInvoke = canInvoke
+        reviewedConnection = Self.connection(for: nil, in: configuration.state)
         self.command = command
         input = selection ?? ""
     }
 
+    func prepare(_ command: CustomAICommand, template: DynamicTemplate, context: DynamicTemplate.Context,
+                 canInvoke: @escaping () -> Bool) {
+        clear()
+        self.canInvoke = canInvoke
+        customCommand = command
+        reviewedConnection = Self.connection(for: command, in: configuration.state)
+        do {
+            let plan = try template.plan(context: context)
+            self.plan = plan
+            arguments = plan.arguments
+            resolveTemplate()
+        } catch { templateError = error.localizedDescription }
+    }
+
+    func setArgument(_ id: String, value: String) {
+        argumentValues[id] = value
+        resolveTemplate()
+    }
+
+    private func resolveTemplate() {
+        guard let plan else { return }
+        do {
+            input = try plan.resolve(argumentValues).text
+            templateError = ""
+        } catch {
+            input = ""
+            templateError = error.localizedDescription
+        }
+    }
+
     func send() {
-        guard canSend else { return }
+        guard canSend, let reviewedConnection else { return }
         reply.reset()
-        reply.submit(input, instructions: command.instructions(language: language))
+        reply.submit(input, instructions: customCommand == nil ? command.instructions(language: language) : nil,
+                     connection: reviewedConnection)
     }
 
     func clear() {
         reply.reset()
         reviewedConnection = nil
+        customCommand = nil
+        arguments = []
+        argumentValues = [:]
+        plan = nil
+        templateError = ""
+        canInvoke = { true }
         input = ""
+        invocationID = UUID()
     }
 }
