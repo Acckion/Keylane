@@ -21,7 +21,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let screenshotText = SettingsItem(id: "screenshot-text", page: "screenshots", title: "截图文字识别", keywords: "screenshots OCR text cloud 图片内容 云端")
 
     public static let appearance = SettingsItem(id: "appearance", page: "general", title: "外观", keywords: "主题 深色 浅色 系统 界面 大小 appearance theme dark light size")
-    public static let windowMode = SettingsItem(id: "window-mode", page: "general", title: "窗口模式与紧凑收藏", keywords: "紧凑 展开 收藏 compact expanded favorites")
+    public static let windowMode = SettingsItem(id: "window-mode", page: "general", title: "窗口模式", keywords: "紧凑 展开 compact expanded")
     public static let windowPosition = SettingsItem(id: "position", page: "launcher", title: "窗口位置", keywords: "屏幕 显示器 居中 记住 position screen")
     public static let launcherReturnDelay = SettingsItem(id: "launcher-return", page: "launcher", title: "返回主搜索", keywords: "返回 重置 查询 隐藏 超时 launcher root reset")
     public static let rootSearchSensitivity = SettingsItem(id: "root-search-sensitivity", page: "launcher", title: "主搜索灵敏度", keywords: "启动器 模糊 匹配 排序 search sensitivity")
