@@ -182,6 +182,21 @@ wait("FSEvents reports excluded change") {
 RunLoop.current.run(until: Date().addingTimeInterval(2.5))
 let untouched = try index.search("sentinel", options: controller.options)
 precondition(untouched.first?.id == sentinel, "An already excluded path must not trigger a full sweep")
+// Create a burst larger than the old threshold in an existing directory.
+let burstCount = 320
+for number in 0..<burstCount {
+    try Data().write(to: wideDirectory.appendingPathComponent("live-burst-\(number % 2)-\(number).txt"))
+}
+wait("Large FSEvents burst is indexed incrementally") {
+    guard !controller.indexing else { return false }
+    // Split the query so each half is below the search result cap.
+    return (0..<2).allSatisfy { shard in
+        (try? index.search("live-burst-\(shard)-", options: controller.options).count) == burstCount / 2
+    }
+}
+let indexedSentinel = try index.search("sentinel", options: controller.options)
+precondition(indexedSentinel.first?.id == sentinel, "An ordinary burst must not reconcile untouched paths")
+
 let stats = controller.stats
 precondition(stats.entries > 0 && stats.files > 0 && stats.bytes > 0)
 let disconnected = root.appendingPathComponent("disconnected", isDirectory: true)

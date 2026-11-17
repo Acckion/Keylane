@@ -33,6 +33,7 @@ struct Launcher: View {
     @State private var fileType = "all"
     private enum Menu { case application, actions, filter, sort }
     @State private var menu: Menu?
+    @State private var escapeMonitor: Any?
     private var actions: Bool { menu == .actions }
     private var appMenu: Bool { menu == .application }
     private var filterOpen: Bool { menu == .filter || menu == .sort }
@@ -212,6 +213,11 @@ struct Launcher: View {
                 Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
                 Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             }
+            if page?.showsSearchField == false, menu == nil, primaryActionEnabled {
+                Button("", action: run)
+                    .keyboardShortcut(.return, modifiers: [])
+                    .hidden().accessibilityHidden(true)
+            }
             if let shortcutSubmit = page?.shortcutSubmit {
                 Button("") {
                     if page?.submitWithReturn == true {
@@ -267,9 +273,14 @@ struct Launcher: View {
         .onAppear {
             updatePresentation(visible: (NSApp.delegate as? Delegate)?.window?.isVisible == true)
             focusToken += 1
+            monitorEscapeWithoutSearchField()
         }
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
-        .onDisappear { updatePresentation(visible: false) }
+        .onDisappear {
+            if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+            escapeMonitor = nil
+            updatePresentation(visible: false)
+        }
         .onExitCommand { if !SearchField.isComposing { escape() } }
         .onReceive(model.activePageUpdates) { _ in
             if launcherVisible { pageRevision &+= 1 }
@@ -435,12 +446,27 @@ struct Launcher: View {
             selection.move(by: delta, in: rows, identifiedBy: \.commandID)
         }
     }
+    private func monitorEscapeWithoutSearchField() {
+        guard escapeMonitor == nil else { return }
+        // Read-only pages have no search editor to receive AppKit's Cancel command.
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53,
+                  event.modifierFlags.intersection([.command, .option, .shift, .control]).isEmpty,
+                  let window = (NSApp.delegate as? Delegate)?.window, window.isKeyWindow,
+                  event.window == nil || event.window === window,
+                  page?.showsSearchField == false, menu == nil else { return event }
+            if !event.isARepeat { escape() }
+            return nil
+        }
+    }
+
     private func escape() {
         if submenu != nil { dismissSubmenu(); return }
         if rootScriptArguments != nil { cancelRootScriptArguments(); return }
         if argumentTarget != nil { dismissArgumentEditor(); focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
-        else if model.pageID != .root && model.launcherEscapeBehavior == .backOrClose {
+        else if model.pageID != .root,
+                page?.showsSearchField == false || model.launcherEscapeBehavior == .backOrClose {
             if let back = page?.back { back() } else { model.pageID = .root }
         }
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
@@ -464,13 +490,15 @@ struct Launcher: View {
                 if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
                 if let display = page?.searchDisplay {
                     display().frame(maxWidth: .infinity, alignment: .leading)
-                } else {
+                } else if page?.showsSearchField != false {
                     SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
                                 back: page?.moveHorizontal.map { move in { move(-1) } },
                                 forward: page?.moveHorizontal.map { move in { move(1) } },
                                 navigateWhileTyping: page?.navigateWhileTyping ?? false,
                                 spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil)
                         .frame(height: 30)
+                } else {
+                    Spacer(minLength: 0)
                 }
                 if showsTypeFilter {
                     Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
