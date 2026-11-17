@@ -142,6 +142,8 @@ final class Model: ObservableObject {
     let applicationAutoQuit = ApplicationAutoQuit()
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
+    enum ApplicationCatalogConsumer { case applications, windowLayout }
+    private var applicationCatalogConsumers: Set<ApplicationCatalogConsumer> = []
     private var workspaceObservers: [NSObjectProtocol] = []
     @Published var apps: [URL] = [] { didSet { applicationEntries = nil } }
     private var applicationEntries: (locale: Locale, rows: [Entry])?
@@ -367,8 +369,9 @@ final class Model: ObservableObject {
                 self?.rootSearchUpdates.send()
             }
     }
-    func startApplicationDiscovery() {
-        guard workspaceObservers.isEmpty else { return }
+    func acquireApplicationCatalog(for consumer: ApplicationCatalogConsumer) {
+        guard applicationCatalogConsumers.insert(consumer).inserted,
+              applicationCatalogConsumers.count == 1 else { return }
         applicationSettingsCatalog.start()
         reloadCatalog()
         refreshRunningApps()
@@ -376,12 +379,14 @@ final class Model: ObservableObject {
             workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refreshRunningApps() })
         }
     }
-    func stopApplicationDiscovery() {
+    private func stopApplicationDiscovery() {
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         workspaceObservers.removeAll()
         discovery.stop()
     }
-    func releaseApplicationCatalog() {
+    func releaseApplicationCatalog(for consumer: ApplicationCatalogConsumer) {
+        guard applicationCatalogConsumers.remove(consumer) != nil, applicationCatalogConsumers.isEmpty else { return }
+        stopApplicationDiscovery()
         applicationSettingsCatalog.stop()
         commandSearch.releasePreparedNames()
         apps = []

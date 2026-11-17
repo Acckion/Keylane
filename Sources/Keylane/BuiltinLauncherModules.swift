@@ -250,13 +250,12 @@ enum BuiltinLauncherModules {
                          }
                      )],
                      services: [.init(start: { [weak model] in
-                         model?.startApplicationDiscovery()
+                         model?.acquireApplicationCatalog(for: .applications)
                          model?.applicationAutoQuit.start { [weak model] in model?.applicationsEnabled ?? false }
                      }, stop: { [weak model] in
                          model?.applicationResultActions.stopUninstallSelection()
-                         model?.stopApplicationDiscovery()
                          model?.applicationAutoQuit.stop()
-                         model?.releaseApplicationCatalog()
+                         model?.releaseApplicationCatalog(for: .applications)
                      })],
                      searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)],
                      dynamicCommandSettings: .init(
