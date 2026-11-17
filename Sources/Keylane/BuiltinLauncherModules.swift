@@ -98,6 +98,12 @@ enum BuiltinLauncherModules {
                                        enabled: canBind(), perform: bindShortcut)]
                             },
                             updates: keyboard.objectWillChange.eraseToAnyPublisher(),
+                            searchDisplay: {
+                                let keys = keyboard.displayedKeys
+                                return AnyView(Text(keys.isEmpty ? "按下快捷键…" : keys.joined(separator: " "))
+                                    .font(.system(size: 19))
+                                    .foregroundStyle(keys.isEmpty ? .secondary : .primary))
+                            },
                             searchAccessory: { [weak model] in
                                 guard let model else { return AnyView(EmptyView()) }
                                 return AnyView(ShortcutKeyboardPage(model: model, selection: keyboard, showsToolbarControls: true))

@@ -34,7 +34,6 @@ struct ResultFilterOption: Identifiable {
 struct ResultTypeFilter: View {
     @Binding var selection: String
     let options: [ResultFilterOption]
-    @Environment(\.colorSchemeContrast) private var contrast
     @Binding var open: Bool
     var navigation = "arrows"
     var width: CGFloat = 138
@@ -52,15 +51,8 @@ struct ResultTypeFilter: View {
                                   choose: { open = false; selection = $0.id }, dismiss: { open = false })
                     .transition(.opacity)
             } else {
-                NativeHoverButton(title: "筛选：\(current.title)", action: toggle) {
-                    HStack(spacing: 9) {
-                        Image(systemName: current.symbol)
-                        Text(current.title).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold))
-                    }.font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Color.primary.opacity(contrast == .increased ? 1 : 0.8))
-                }
-                .frame(width: width, height: VisualStyle.launcherControlDiameter)
+                LauncherHeaderMenuButton(title: current.title, symbol: current.symbol, width: width,
+                                         accessibilityTitle: "筛选：\(current.title)", action: toggle)
                 .transition(.opacity)
             }
         }
@@ -80,6 +72,28 @@ struct ResultTypeFilter: View {
     private func toggle() {
         if !open { query = "" }
         open.toggle()
+    }
+}
+
+struct LauncherHeaderMenuButton: View {
+    let title: String
+    let symbol: String
+    let width: CGFloat
+    var accessibilityTitle: String? = nil
+    let action: () -> Void
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        NativeHoverButton(title: accessibilityTitle ?? title, action: action) {
+            HStack(spacing: 9) {
+                Image(systemName: symbol)
+                Text(title).lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold))
+            }
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(Color.primary.opacity(contrast == .increased ? 1 : 0.8))
+        }
+        .frame(width: width, height: VisualStyle.launcherControlDiameter)
     }
 }
 

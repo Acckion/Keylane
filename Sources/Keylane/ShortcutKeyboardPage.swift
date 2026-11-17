@@ -6,6 +6,11 @@ final class ShortcutKeyboardSelection: ObservableObject {
     @Published var input = ShortcutKeyboardInput()
     var shortcut: Shortcut? { input.selected }
     var previewModifiers: UInt32? { input.previewModifiers }
+    var displayedKeys: [String] {
+        if let previewModifiers { return Shortcut.modifierKeycaps(previewModifiers) }
+        return shortcut?.keycaps ?? []
+    }
+
     @Published var choosing = false
     @Published var feedback: String?
 }
@@ -137,6 +142,12 @@ struct ShortcutKeyboardPage: View {
                 }
                 return event
             }
+            if pressed.key == 36, pressed.modifiers == 0, !event.isARepeat,
+               selection.shortcut != nil, selection.previewModifiers == nil, validation == nil {
+                selection.feedback = nil
+                selection.choosing = true
+                return nil
+            }
             // Bare keys remain available to the Launcher and never replace a captured chord.
             guard pressed.modifiers != 0, Self.editableCodes.contains(pressed.key) else { return event }
             if !event.isARepeat {
@@ -179,38 +190,26 @@ struct ShortcutKeyboardPage: View {
     }
 
     private func keyboardControls(commandName: String?) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .trailing, spacing: 2) {
-                HStack(spacing: 8) {
-                    if let shortcut { Keycaps(keys: shortcut.keycaps) }
-                    Text(shortcut == nil ? "未选择快捷键" : commandName ?? "未绑定")
-                        .font(.caption).lineLimit(1).truncationMode(.tail)
-                        .foregroundStyle(.secondary)
-                }
-                if let message = selection.feedback ?? validation {
-                    Text(message)
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .lineLimit(1).help(message)
-                }
-            }
-            .frame(maxWidth: 345, alignment: .trailing)
-            if commandName != nil {
+        let enabled = shortcut != nil && selection.previewModifiers == nil && validation == nil && !selection.choosing
+        let title = commandName == nil ? "绑定命令" : "更换命令"
+        return HStack(spacing: 8) {
+            if let commandName {
+                Text(commandName).font(.caption).lineLimit(1).foregroundStyle(.secondary)
+                    .frame(maxWidth: 160, alignment: .trailing)
                 Button("解除绑定", action: unbind)
                     .buttonStyle(ContentActionButtonStyle())
-                    .fixedSize()
+                    .disabled(!enabled)
             }
-            Button(commandName == nil ? "绑定命令" : "更换命令") {
+            LauncherHeaderMenuButton(title: title, symbol: "command", width: 138) {
+                guard enabled else { return }
                 selection.feedback = nil
                 selection.choosing = true
             }
-            .buttonStyle(ContentActionButtonStyle(active: true))
-            .disabled(shortcut == nil || validation != nil)
-            .fixedSize()
+            .disabled(!enabled)
+            .opacity(enabled ? 1 : 0.45)
+            .modifier(LauncherMenuSurface(open: false))
+            .help(selection.feedback ?? validation ?? title)
         }
-        .frame(minHeight: 36)
-        .opacity(selection.previewModifiers == nil ? 1 : 0)
-        .accessibilityHidden(selection.previewModifiers != nil)
-        .allowsHitTesting(selection.previewModifiers == nil)
     }
 
     private func confirmation(_ proposed: Change, names: [String: String], registry: LauncherModuleRegistry?) -> some View {

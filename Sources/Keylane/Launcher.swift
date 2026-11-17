@@ -469,12 +469,16 @@ struct Launcher: View {
             } else {
                 if model.pageID != .root { backButton { if let back = page?.back { back() } else { model.pageID = .root } } }
                 if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
-                SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
-                            back: page?.moveHorizontal.map { move in { move(-1) } },
-                            forward: page?.moveHorizontal.map { move in { move(1) } },
-                            navigateWhileTyping: page?.navigateWhileTyping ?? false,
-                            spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil)
-                    .frame(height: 30)
+                if let display = page?.searchDisplay {
+                    display().frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
+                                back: page?.moveHorizontal.map { move in { move(-1) } },
+                                forward: page?.moveHorizontal.map { move in { move(1) } },
+                                navigateWhileTyping: page?.navigateWhileTyping ?? false,
+                                spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil)
+                        .frame(height: 30)
+                }
                 if let accessory = page?.searchAccessory { accessory() }
                 else if showsTypeFilter {
                     Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
