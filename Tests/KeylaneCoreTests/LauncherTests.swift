@@ -93,6 +93,13 @@ final class LauncherTests: XCTestCase {
         XCTAssertNil(history.transition(from: detail, to: list, parentOfCurrent: nil, query: ""))
     }
 
+    func testMenuSelectionKeepsAvailableActionOrFallsBackWhenItDisappears() {
+        XCTAssertEqual(LauncherActionSelection.reconcile("cancel-script", enabledIDs: ["other", "cancel-script"]), "cancel-script")
+        XCTAssertEqual(LauncherActionSelection.reconcile("cancel-script", enabledIDs: ["copy-script-output", "other"]), "copy-script-output")
+        XCTAssertEqual(LauncherActionSelection.reconcile(nil, enabledIDs: ["copy-script-output"]), "copy-script-output")
+        XCTAssertNil(LauncherActionSelection.reconcile("cancel-script", enabledIDs: []))
+    }
+
     func testActionContextTracksSelectionAndPageVisit() {
         let contacts = PageID(rawValue: "contacts")
         let activation = UUID()

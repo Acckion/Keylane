@@ -55,6 +55,13 @@ public struct LauncherResultSelection {
     }
 }
 
+public enum LauncherActionSelection {
+    public static func reconcile(_ selectedID: String?, enabledIDs: [String]) -> String? {
+        if let selectedID, enabledIDs.contains(selectedID) { return selectedID }
+        return enabledIDs.first
+    }
+}
+
 /// One logical page can enter, suspend while hidden, and resume on the same
 /// route. Showing an already active page and hiding twice have no side effects.
 public struct LauncherPagePresentation {

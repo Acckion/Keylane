@@ -1003,8 +1003,8 @@ struct Launcher: View {
             }, move: moveSelection, escape: escape, back: { escape() }, forward: {
                 activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus, requiresSubmenu: true)
             }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10)
-                .onChange(of: items.map(\.id), initial: true) { _, _ in
-                    if actionSelectionID == nil { actionSelectionID = items.first(where: \.enabled)?.id }
+                .onChange(of: items.filter(\.enabled).map(\.id), initial: true) { _, enabledIDs in
+                    actionSelectionID = LauncherActionSelection.reconcile(actionSelectionID, enabledIDs: enabledIDs)
                 }
         }.frame(width: Self.footerMenuWidth)
     }
