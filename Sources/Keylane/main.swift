@@ -1322,6 +1322,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 }
 // AppKit must exist before a pending restore can present its result. Keep all
 // model/controller construction after restore so it reads the restored domain.
+if CommandLine.arguments.dropFirst() == [DictionaryProcess.argument] { DictionaryProcess.run() }
+
 let application = NSApplication.shared
 ConfigurationTransfer.finishPending()
 let delegate = Delegate()
