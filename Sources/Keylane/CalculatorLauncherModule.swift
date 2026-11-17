@@ -9,10 +9,15 @@ enum CalculatorLauncherModule {
     fileprivate static let settingsItem = SettingsItem(id: "calculator-options", page: "keylane.calculator", title: "计算器",
                                                        keywords: "calculator 颜色 语法 rem em px")
     private static let historyPage = PageID(rawValue: "CalculatorHistory")
-    private static let defaultPixelsPerEm = 16.0
+    fileprivate static let historyID = CommandID(rawValue: "calculator-history")
+    fileprivate static let historyTitle = "计算器历史"
+    fileprivate static let historySettingsItem = SettingsItem(id: "calculator-history-command", page: "keylane.calculator",
+                                                              title: historyTitle, keywords: "calculator history 计算记录 别名 快捷键")
+    fileprivate static let defaultPixelsPerEm = 16.0
+    fileprivate static let pixelsRange = 1.0...512.0
     private static var pixelsPerEm: Double {
         let value = UserDefaults.standard.double(forKey: "calculatorPixelsPerEm")
-        return (1...512).contains(value) ? value : defaultPixelsPerEm
+        return pixelsRange.contains(value) ? value : defaultPixelsPerEm
     }
 
     static func make(model: Model) -> LauncherModule {
@@ -68,13 +73,14 @@ enum CalculatorLauncherModule {
                                                             keywords: ["Calculator", "计算"], destination: .action)) { [weak model] _ in
             model?.query = "="
         }
-        let showHistory = LauncherModule.Command(declaration: .init(id: .init(rawValue: "calculator-history"), title: "计算器历史",
+        let showHistory = LauncherModule.Command(declaration: .init(id: historyID, title: historyTitle,
                                                                    detail: "搜索最近三个月的计算", symbol: "clock.arrow.circlepath",
                                                                    keywords: ["Calculator History", "计算记录"], destination: .page(historyPage)))
         let settings = LauncherSettingsPage(id: settingsID, title: "计算器", symbol: "equal.circle",
-                                            subtitle: "配置主搜索的算式、颜色和 CSS 单位。", order: 128,
-                                            items: [settingsItem]) {
-            AnyView(CalculatorPreferences())
+                                            subtitle: "在主搜索中计算数字和表达式。", order: 128,
+                                            items: [settingsItem, historySettingsItem], centeredHeader: true) { [weak model] in
+            guard let model else { return AnyView(EmptyView()) }
+            return AnyView(CalculatorPreferences(model: model))
         }
         var module = LauncherModule(id: .init(rawValue: settingsID), commands: [help, showHistory],
                                     providers: [provider, hint], pages: [history.page(id: historyPage)],
@@ -171,21 +177,53 @@ enum CalculatorLauncherModule {
 }
 
 private struct CalculatorPreferences: View {
+    @ObservedObject var model: Model
     @AppStorage("calculatorSyntaxHighlighting") private var syntax = true
     @AppStorage("calculatorColorConversion") private var color = true
-    @AppStorage("calculatorPixelsPerEm") private var pixels = 16.0
+    @AppStorage("calculatorPixelsPerEm") private var pixels = CalculatorLauncherModule.defaultPixelsPerEm
+
+    private var pixelValue: Binding<Double> {
+        let range = CalculatorLauncherModule.pixelsRange
+        return Binding(get: {
+            range.contains(pixels) ? pixels : CalculatorLauncherModule.defaultPixelsPerEm
+        }, set: { value in
+            guard value.isFinite else { return }
+            pixels = min(max(value, range.lowerBound), range.upperBound)
+        })
+    }
 
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                SettingsRow("语法高亮") { Toggle("语法高亮", isOn: $syntax).labelsHidden() }
+                Toggle(isOn: $syntax) {
+                    SettingsRowLabel(title: "语法高亮", detail: nil)
+                }
                 Divider()
-                SettingsRow("颜色换算") { Toggle("颜色换算", isOn: $color).labelsHidden() }
+                Toggle(isOn: $color) {
+                    SettingsRowLabel(title: "颜色换算", detail: "在主搜索中预览颜色并转换颜色格式。")
+                }
                 Divider()
-                SettingsRow("REM / EM 像素数", detail: "设置每个 rem 或 em 对应的像素数。") {
-                    Stepper("\(pixels.formatted()) px", value: $pixels, in: 1...512)
+                SettingsRow("REM / EM 转像素", detail: "设置 1 rem 或 1 em 对应的像素数。") {
+                    HStack(spacing: 4) {
+                        TextField("每 REM / EM 的像素数", value: pixelValue, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 66)
+                        Stepper("调整像素数", value: pixelValue, in: CalculatorLauncherModule.pixelsRange)
+                            .labelsHidden()
+                    }
                 }
             }.settingsAnchor(CalculatorLauncherModule.settingsItem)
+
+            SettingsSectionTitle(title: "命令")
+            CommandSettingsList(items: [CalculatorLauncherModule.historyID], id: \.self) { id in
+                CommandSettingsEntry(title: CalculatorLauncherModule.historyTitle, model: model, commandID: id,
+                                     isEnabled: Binding(get: { !model.disabledCommands.contains(id.rawValue) }, set: {
+                    if $0 { model.disabledCommands.remove(id.rawValue) }
+                    else { model.disabledCommands.insert(id.rawValue) }
+                })) {
+                    SettingsIcon(symbol: "equal.circle", artwork: ModuleArtwork.settings("keylane.calculator"))
+                }
+            }.settingsAnchor(CalculatorLauncherModule.historySettingsItem)
         }
     }
 }
