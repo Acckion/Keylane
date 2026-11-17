@@ -68,9 +68,9 @@ enum SnippetsModule {
             queryChanged: { snippets.query = $0 },
             move: snippets.move,
             submit: { if snippets.entries.isEmpty { create() } else { useSelected() } },
-            shortcutSubmit: {
+            returnBindings: .init(alternates: [.command: .init {
                 if let snippet = snippets.selected { snippets.use(snippet, paste: snippets.options.primary == .copy) }
-            },
+            }]),
             primaryTitle: {
                 if snippets.entries.isEmpty { return "创建文字片段" }
                 if snippets.options.primary == .paste, let name = (NSApp.delegate as? Delegate)?.pasteTargetName {
@@ -124,7 +124,7 @@ enum SnippetsModule {
                 return AnyView(SnippetEditor(controller: snippets, model: model))
             },
             parent: listID,
-            submit: save, shortcutSubmit: save, primaryTitle: { "保存片段" },
+            submit: save, returnBindings: .init(primary: .command), primaryTitle: { "保存片段" },
             badgeTitle: { snippets.entries.contains { $0.id == snippets.draft.id } ? "编辑文字片段" : "创建文字片段" }
         )
         let submitArguments: () -> Void = { [weak model] in
@@ -142,7 +142,7 @@ enum SnippetsModule {
                 }, submit: submitArguments))
             },
             leave: snippets.clearInput,
-            submit: submitArguments, shortcutSubmit: submitArguments,
+            submit: submitArguments, returnBindings: .init(primary: .command),
             primaryTitle: { snippets.input?.paste == true ? "插入片段" : "复制片段" }
         )
         let commands: [LauncherModule.Command] = Command.allCases.map { command in
@@ -155,7 +155,7 @@ enum SnippetsModule {
             return .init(declaration: .init(id: command.id, title: command.title, detail: "文字片段",
                                             symbol: command.symbol, keywords: command.keywords,
                                             destination: destination, settingsPage: settingsID),
-                         execute: { _ in
+                         acceptsFallbackQuery: command == .search, execute: { _ in
                 switch command {
                 case .export: snippets.exportSnippets()
                 case .import: snippets.importSnippets()

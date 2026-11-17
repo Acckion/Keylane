@@ -236,27 +236,14 @@ struct Launcher: View {
                 Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
                 Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             }
-            if showsReadingDetail, menu == nil, primaryActionEnabled {
-                Button("", action: run)
-                    .keyboardShortcut(.return, modifiers: [])
-                    .hidden().accessibilityHidden(true)
-            }
-            if let shortcutSubmit = page?.shortcutSubmit {
-                Button("") {
-                    if page?.submitWithReturn == true {
-                        if primaryActionEnabled || actions || appMenu { run() }
-                    } else {
-                        guard presentation.page == model.pageID, !SearchField.isComposing,
-                              page?.contentPlacement != .form || primaryActionEnabled else { return }
-                        if page?.optionSubmit != nil { closeMenus() }
-                        shortcutSubmit()
+            if let page {
+                ForEach(LauncherPage.ReturnKey.allCases, id: \.self) { key in
+                    if page.returnBindings.contains(key), key != .plain || menu == nil {
+                        Button("") { submitReturn(key, on: page.id) }
+                            .keyboardShortcut(key.shortcut)
+                            .hidden().accessibilityHidden(true)
                     }
                 }
-                .keyboardShortcut(.return, modifiers: page?.submitWithReturn == true ? [] : .command)
-                .hidden().accessibilityHidden(true)
-            }
-            if let optionSubmit = page?.optionSubmit {
-                Button("") { closeMenus(); optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
             }
             if rootScriptArguments == nil {
                 pageMenuShortcuts
@@ -267,6 +254,12 @@ struct Launcher: View {
         }
         .onChange(of: firstSelectable(results), initial: true) { _, first in
             if selectionIsCurrent { selection.selectDefault(first) }
+        }
+        .onChange(of: results.first?.isFallback == true ? results.map(\.commandID) : []) { _, _ in
+            // An async match or a settings change may replace the selected fallback.
+            if selectionIsCurrent, selectionIndex(in: results) == nil {
+                selection.id = firstSelectable(results)
+            }
         }
         .onChange(of: showsRecentFiles ? results.map(\.commandID) : []) { _, ids in
             if showsRecentFiles, selectionIsCurrent, let selected = selection.id, !ids.contains(selected) {
@@ -437,10 +430,12 @@ struct Launcher: View {
         }
         switch change.activation {
         case .enter:
-            if let seed = page?.enter?(model.query) {
+            let fallbackQuery = model.takeFallbackQuery(for: current)
+            let initialQuery = page?.enter?(fallbackQuery ?? model.query)
+            if let seed = fallbackQuery ?? initialQuery {
                 if showsFileResults { fileType = "all" }
                 // A page can seed a fresh entry. A return keeps the query saved by the host.
-                if restoredQuery == nil { model.query = seed }
+                if restoredQuery == nil || fallbackQuery != nil { model.query = seed }
             }
             refreshActiveQuery()
         case .resume:
@@ -571,7 +566,7 @@ struct Launcher: View {
                     if index == 0 || results[index - 1].detail != "File" { sectionHeader("文件") }
                 } else {
                     if index == 0 || results[index - 1].id == "calculator" {
-                        sectionHeader(model.query.isEmpty ? "建议" : "搜索结果")
+                        sectionHeader(row.isFallback ? "备选命令" : model.query.isEmpty ? "建议" : "搜索结果")
                     }
                     if index == 5 && model.query.isEmpty { sectionHeader("其他") }
                 }
@@ -717,7 +712,7 @@ struct Launcher: View {
             ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = rootScriptArguments == nil && (page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty)
         let primaryLabel = LauncherFooterButtonLabel(title: primaryTitle,
-            keys: page?.contentPlacement == .form && page?.shortcutSubmit != nil && page?.submitWithReturn != true ? ["⌘", "↩"] : ["↩"])
+            keys: (page?.returnBindings.primary ?? .plain).shortcut.launcherKeycaps)
         let actionsLabel = LauncherFooterButtonLabel(title: "操作", keys: ["⌘", "K"])
         let actionsWidth = showsActions ? actionsLabel.width : 0
         let capsuleInset: CGFloat = 4
@@ -798,16 +793,10 @@ struct Launcher: View {
     private var pageMenuShortcuts: some View {
         ForEach(shortcutActions) { action in
             if let shortcut = action.shortcut, action.enabled, !shortcut.modifiers.isEmpty,
-               !usesPageSubmitShortcut(shortcut) {
+               page?.returnBindings.reserves(shortcut) != true {
                 pageMenuShortcut(action, shortcut: shortcut)
             }
         }
-    }
-
-    private func usesPageSubmitShortcut(_ shortcut: KeyboardShortcut) -> Bool {
-        guard shortcut.key == .return else { return false }
-        return (shortcut.modifiers == .command && page?.shortcutSubmit != nil && page?.submitWithReturn != true)
-            || (shortcut.modifiers == .option && page?.optionSubmit != nil)
     }
 
     private func pageMenuShortcut(_ action: MenuAction, shortcut: KeyboardShortcut) -> some View {
@@ -849,6 +838,16 @@ struct Launcher: View {
         }
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
+        if row.isFallback {
+            return [
+                MenuAction(id: "run-fallback", title: "运行备选命令", icon: "return", shortcut: .init(.return, modifiers: [])) {
+                    model.perform(row)
+                },
+                MenuAction(id: "manage-fallback", title: "管理备选命令…", icon: "gearshape", group: 1) {
+                    model.openSettings(page: "launcher")
+                }
+            ]
+        }
         var actions = model.launcherModules?.actions(for: row) ?? [
             MenuAction(id: "open", title: "执行命令", icon: "return", shortcut: .init(.return, modifiers: [])) {
                 model.runCommand(row.commandID, origin: .menu, usageKey: row.id)
@@ -1007,6 +1006,7 @@ struct Launcher: View {
         if rootScriptArguments != nil { return "运行脚本" }
         if let title = page?.primaryTitle?() { return title }
         if let row = selectedEntry {
+            if row.isFallback { return "运行备选命令" }
             if let title = model.launcherModules?.primaryTitle(for: row) { return title }
             if row.id == "calculator" { return "复制结果" }
         }
@@ -1053,16 +1053,22 @@ struct Launcher: View {
             argumentsFocused = true
         }
     }
-    private func run() {
-        guard presentation.page == model.pageID else { return }
-        if rootScriptArguments != nil {
-            guard !SearchField.isComposing else { return }
-            ScriptCommandsModule.runRootArguments(model)
-            return
+    private func submitReturn(_ key: LauncherPage.ReturnKey, on pageID: PageID) {
+        guard presentation.page == pageID, model.pageID == pageID, let page,
+              !SearchField.isComposing else { return }
+        if page.returnBindings.primary == key {
+            if key == .plain { run() }
+            else { performPrimaryAction() }
+        } else if let action = page.returnBindings.alternates[key] {
+            if action.dismissMenu { closeMenus() }
+            action.perform()
         }
-        if let target = argumentTarget {
-            do { target.submit(try ArgumentParser.parse(argumentText)) }
-            catch { model.error = "参数引号或转义未完成。" }
+    }
+
+    private func run() {
+        guard presentation.page == model.pageID, !SearchField.isComposing else { return }
+        if rootScriptArguments != nil || argumentTarget != nil {
+            performPrimaryAction()
             return
         }
         if (showsFileResults || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
@@ -1071,7 +1077,20 @@ struct Launcher: View {
             if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
             return
         }
+        performPrimaryAction()
+    }
+
+    private func performPrimaryAction() {
         guard primaryActionEnabled else { return }
+        if rootScriptArguments != nil {
+            ScriptCommandsModule.runRootArguments(model)
+            return
+        }
+        if let target = argumentTarget {
+            do { target.submit(try ArgumentParser.parse(argumentText)) }
+            catch { model.error = "参数引号或转义未完成。" }
+            return
+        }
         if let submit = page?.submit { submit(); return }
         if model.pageID != .root && !showsFileResults { goBack(); return }
         if let row = selectedEntry { performRootEntry(row) }

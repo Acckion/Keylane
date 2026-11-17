@@ -51,13 +51,13 @@ enum NavigationLauncherModules {
                 detail: NavigationText.label("查找并切换已打开的窗口", "Find and switch open windows"),
                 symbol: NavigationMode.windows.symbol, keywords: ["Switch Windows", "窗口切换", "窗口", "Navigation"],
                 destination: .page(windows), settingsPage: "keylane.navigation"
-            ), permission: permission),
+            ), permission: permission, acceptsFallbackQuery: true),
             .init(declaration: .init(
                 id: .init(rawValue: "search-menu-items"), title: NavigationMode.menus.title,
                 detail: NavigationText.label("搜索并执行前一个应用的菜单命令", "Find and run a menu command in the previous app"),
                 symbol: NavigationMode.menus.symbol, keywords: ["Search Menu Items", "菜单", "菜单栏", "Navigation"],
                 destination: .page(menus), settingsPage: "keylane.navigation"
-            ), permission: permission)
+            ), permission: permission, acceptsFallbackQuery: true)
         ]
         let settingsItem = SettingsItem(id: "keylane.navigation", page: "keylane.navigation", title: "窗口与菜单",
                                         keywords: "切换窗口 搜索菜单项 禁用的应用 Search Menu Items")
@@ -150,6 +150,7 @@ enum NavigationLauncherModules {
                                    destination: command == .search ? .page(id) : .action, settingsPage: "screenshots"),
                 settingsEnabled: library.commandEnabledBinding(command),
                 available: { !library.disabledCommands.contains(command.rawValue) }, permission: permission,
+                acceptsFallbackQuery: command == .search,
                 execute: { [weak model] _ in
                     if command == .latest, let model { pasteLatestScreenshot(model) }
                 }

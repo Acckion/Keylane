@@ -50,11 +50,13 @@ enum BuiltinLauncherModules {
                                 permission: PermissionFeature? = nil,
                                 dynamicDetail: (() -> String)? = nil,
                                 settingsEnabled: Binding<Bool>? = nil,
+                                acceptsFallbackQuery: Bool = false,
                                 execute: @escaping (LauncherCommandOrigin) -> Void = { _ in }) -> LauncherModule.Command {
         LauncherModule.Command(
             declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
                                keywords: keywords, destination: destination, settingsPage: settings),
-            detail: dynamicDetail, settingsEnabled: settingsEnabled, available: available, permission: permission, execute: execute
+            detail: dynamicDetail, settingsEnabled: settingsEnabled, available: available, permission: permission,
+            acceptsFallbackQuery: acceptsFallbackQuery, execute: execute
         )
     }
 
@@ -343,7 +345,7 @@ enum BuiltinLauncherModules {
         return .init(id: .init(rawValue: "keylane.files"), commands: [
             command("file-search", "搜索文件", "Spotlight", "doc.text.magnifyingglass",
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
-                    permission: permission),
+                    permission: permission, acceptsFallbackQuery: true),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
                     available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.aiSettings.isAvailable && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"), execute: { [weak model] origin in
@@ -388,7 +390,6 @@ enum BuiltinLauncherModules {
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
                            updates(model.fileAI.$commandsEnabled),
-                           model.aiSettings.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
                            model.finderAutomation.updates],
            shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
@@ -506,13 +507,15 @@ enum BuiltinLauncherModules {
                 guard let controller = model?.clipboard else { return }
                 ClipboardActions.submit(controller)
             },
-            shortcutSubmit: { [weak model] in
-                if let controller = model?.clipboard { ClipboardActions.submit(controller, alternate: true) }
-            },
-            optionSubmit: {
-                guard !SearchField.isComposing, let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil else { return }
-                delegate.pasteClipboard(keepOpen: true)
-            },
+            returnBindings: .init(alternates: [
+                .command: .init(dismissMenu: true) { [weak model] in
+                    if let controller = model?.clipboard { ClipboardActions.submit(controller, alternate: true) }
+                },
+                .option: .init(dismissMenu: true) {
+                    guard let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil else { return }
+                    delegate.pasteClipboard(keepOpen: true)
+                }
+            ]),
             actionContextTitle: { [weak model] in
                 guard let controller = model?.clipboard,
                       let item = controller.items.first(where: { $0.id == controller.selectedID }) else { return nil }
@@ -569,7 +572,8 @@ enum BuiltinLauncherModules {
             command("clipboard", "剪贴板历史", "本地文字、图片和文件历史", "clipboard",
                     ["Clipboard History", "剪切板", "剪贴板", "复制历史"], destination: .page(id), settings: "clipboard",
                     available: { controller.historyCommandEnabled },
-                    settingsEnabled: Binding(get: { controller.historyCommandEnabled }, set: { controller.historyCommandEnabled = $0 })),
+                    settingsEnabled: Binding(get: { controller.historyCommandEnabled }, set: { controller.historyCommandEnabled = $0 }),
+                    acceptsFallbackQuery: true),
             command(ClipboardSequenceCommand.paste.rawValue, ClipboardSequenceCommand.paste.title,
                     "粘贴下一条剪贴板记录", ClipboardSequenceCommand.paste.symbol,
                     ["Paste Sequentially", "顺序粘贴", "依次粘贴"], settings: "clipboard", execute: { _ in

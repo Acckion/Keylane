@@ -62,7 +62,9 @@ enum UtilityLauncherModules {
         page.leave = controller.stop
         page.resume = controller.start
         page.primaryEnabled = { controller.selected != nil }
-        page.shortcutSubmit = { if let item = controller.selected { use(item, controller.primaryAction == .copy) } }
+        page.returnBindings.alternates[.command] = .init {
+            if let item = controller.selected { use(item, controller.primaryAction == .copy) }
+        }
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
@@ -85,7 +87,8 @@ enum UtilityLauncherModules {
         return .init(id: .init(rawValue: settingsID), title: title, symbol: "face.smiling", commands: [
             command("emoji-symbols", EmojiCatalog.label("Emoji 与符号", "Search Emoji & Symbols"),
                     EmojiCatalog.label("搜索并插入表情与符号", "Search and insert emoji and symbols"),
-                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID), settings: settingsID)
+                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID), settings: settingsID,
+                    acceptsFallbackQuery: true)
         ], pages: [page], settings: [settings], services: [.init(start: {}, stop: controller.releaseCatalog)])
     }
 
@@ -210,8 +213,10 @@ enum UtilityLauncherModules {
 
     private static func command(_ id: String, _ title: String, _ detail: String, _ symbol: String,
                                 _ keywords: [String], destination: LauncherCommandDeclaration.Destination,
-                                settings: String? = nil, permission: PermissionFeature? = nil) -> LauncherModule.Command {
+                                settings: String? = nil, permission: PermissionFeature? = nil,
+                                acceptsFallbackQuery: Bool = false) -> LauncherModule.Command {
         .init(declaration: .init(id: .init(rawValue: id), title: title, detail: detail, symbol: symbol,
-                                keywords: keywords, destination: destination, settingsPage: settings), permission: permission)
+                                keywords: keywords, destination: destination, settingsPage: settings), permission: permission,
+              acceptsFallbackQuery: acceptsFallbackQuery)
     }
 }

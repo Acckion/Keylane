@@ -43,7 +43,8 @@ enum DictionaryLauncherModule {
         let defaults = UserDefaults.standard
         let command = LauncherModule.Command(declaration: .init(
             id: commandID, title: title, detail: "查找词语释义", symbol: symbol,
-            keywords: ["Dictionary", "Define Word", "字典", "查词"], destination: .page(listID), settingsPage: settingsID))
+            keywords: ["Dictionary", "Define Word", "字典", "查词"], destination: .page(listID), settingsPage: settingsID),
+            acceptsFallbackQuery: true)
         let provider = LauncherModule.Provider(namespace: .exact(queryID), entries: { [weak model] input in
             guard input.page == .root, let model,
                   let term = rootTerm(input.query, model: model, defaults: defaults) else { return [] }
@@ -108,7 +109,7 @@ enum DictionaryLauncherModule {
             leave: { [weak model] in
                 if model?.pageID != listID { controller.search("") }
             }, keepsStateWhenHidden: true, parent: listID,
-            submit: openSelected, shortcutSubmit: openSelected,
+            submit: openSelected, returnBindings: .init(primary: .plain),
             actionContextTitle: { controller.selected?.word },
             primaryTitle: { Action.open.title }, primaryEnabled: { controller.selected != nil },
             actions: {
@@ -118,7 +119,7 @@ enum DictionaryLauncherModule {
                 AnyView(DictionarySourceFilter(word: controller.selected, options: options,
                                                isOpen: isOpen, navigation: model?.navigation ?? "arrows"))
             }, badgeTitle: { controller.selected?.word ?? title },
-            actionShortcutsEnabled: true, submitWithReturn: true
+            actionShortcutsEnabled: true
         )
         let settings = LauncherSettingsPage(
             id: settingsID, title: "词典", symbol: symbol, subtitle: "查询本机词库中的词语释义。",

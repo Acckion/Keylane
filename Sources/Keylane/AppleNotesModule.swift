@@ -30,7 +30,7 @@ enum AppleNotesModule {
                 return actions
             },
             updates: notes.updates,
-            enter: { _ in notes.search(""); return "" },
+            enter: { query in notes.search(query); return "" },
             loading: notes.$searching.combineLatest(notes.$saving)
                 .map { searching, saving in searching || saving }.removeDuplicates().eraseToAnyPublisher()
         )
@@ -40,7 +40,7 @@ enum AppleNotesModule {
             content: { [weak model] in
                 AnyView(AppleNoteForm(controller: notes) { model?.pageID = .root })
             },
-            submit: notes.create, shortcutSubmit: notes.create,
+            submit: notes.create, returnBindings: .init(primary: .command),
             primaryTitle: { notes.createdID == nil ? "创建备忘录" : "打开备忘录" },
             primaryEnabled: { notes.canCreate && !notes.saving },
             updates: notes.updates,
@@ -50,7 +50,7 @@ enum AppleNotesModule {
             .init(declaration: .init(id: .init(rawValue: "search-apple-notes"), title: "搜索 Apple 备忘录",
                                      detail: "按标题或正文搜索，使用原生编辑器打开", symbol: symbol,
                                      keywords: ["Notes", "Search Notes", "笔记", "便签"], destination: .page(searchPage), settingsPage: "keylane.apple-notes"),
-                  permission: permission),
+                  permission: permission, acceptsFallbackQuery: true),
             .init(declaration: .init(id: .init(rawValue: "create-apple-note"), title: "新建 Apple 备忘录",
                                      detail: "快速记录到 Apple 备忘录的默认文件夹", symbol: "square.and.pencil",
                                      keywords: ["Create Note", "新建笔记", "记笔记"], destination: .action, settingsPage: "keylane.apple-notes"),

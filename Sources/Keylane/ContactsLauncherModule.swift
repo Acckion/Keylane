@@ -20,7 +20,7 @@ enum ContactsLauncherModule {
         let search = LauncherModule.Command(declaration: .init(
             id: .init(rawValue: "contacts"), title: "搜索联系人", detail: "系统通讯录", symbol: "person.crop.circle",
             keywords: ["Contacts", "Address Book", "联系人", "通讯录"], destination: .page(searchPage), settingsPage: settingsID
-        ), permission: permission)
+        ), permission: permission, acceptsFallbackQuery: true)
         let create = LauncherModule.Command(declaration: .init(
             id: createID, title: "新建联系人", detail: "添加到系统通讯录", symbol: "person.badge.plus",
             keywords: ["Create Contact", "New Contact", "添加联系人"], destination: .page(createPage), settingsPage: settingsID
@@ -63,7 +63,7 @@ enum ContactsLauncherModule {
         let form = LauncherPage(
             id: createPage, placeholder: "", badge: ("新建联系人", "person.badge.plus"), contentPlacement: .form,
             content: { AnyView(ContactCreationView(editor: editor, back: back)) }, back: back,
-            submit: submit, shortcutSubmit: submit, primaryTitle: { "保存联系人" },
+            submit: submit, returnBindings: .init(primary: .command), primaryTitle: { "保存联系人" },
             primaryEnabled: { permission.available && editor.canSave },
             updates: Publishers.MergeMany([ViewObservation.changes(editor.$draft), ViewObservation.changes(editor.$saving),
                                             permission.updates]).eraseToAnyPublisher()

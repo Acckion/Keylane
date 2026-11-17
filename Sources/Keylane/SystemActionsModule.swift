@@ -161,7 +161,7 @@ enum SystemActionsModule {
                         content: { [weak model] in
                             AnyView(SystemVolumeView(draft: volume, title: title) { model?.pageID = .root })
                         },
-                        submit: submit, shortcutSubmit: submit, primaryTitle: { chinese ? "设置音量" : "Set Volume" },
+                        submit: submit, returnBindings: .init(primary: .command), primaryTitle: { chinese ? "设置音量" : "Set Volume" },
                         primaryEnabled: { volume.available },
                         updates: volume.$available.dropFirst().map { _ in () }.eraseToAnyPublisher(),
                         enter: { _ in volume.load(); return nil },
