@@ -4,20 +4,63 @@ final class ShelfTestPromise: DropShelfReceiving {
     let name: String
     let fail: Bool
     let delay: TimeInterval
+    let contents: String?
+    let overwrite: Bool
+    private(set) var destination: URL?
     var expectedCount: Int { 1 }
     var names: [String] { [name] }
-    init(_ name: String, fail: Bool = false, delay: TimeInterval = 0.1) { self.name = name; self.fail = fail; self.delay = delay }
+    init(_ name: String, fail: Bool = false, delay: TimeInterval = 0.1, contents: String? = nil, overwrite: Bool = false) {
+        self.name = name; self.fail = fail; self.delay = delay; self.contents = contents; self.overwrite = overwrite
+    }
     func receive(at destination: URL, queue: OperationQueue, reader: @escaping (URL, Error?) -> Void) {
+        self.destination = destination
         queue.addOperation { [self] in
             Thread.sleep(forTimeInterval: delay)
             let url = destination.appendingPathComponent(name)
             do {
-                if fail { throw NSError(domain: "KeylaneSyntheticPromise", code: 1, userInfo: [NSLocalizedDescriptionKey: "synthetic promise failure"]) }
-                try Data(("Synthetic " + name).utf8).write(to: url, options: .withoutOverwriting)
+                if fail {
+                    try Data("partial".utf8).write(to: url)
+                    throw NSError(domain: "KeylaneSyntheticPromise", code: 1, userInfo: [NSLocalizedDescriptionKey: "synthetic promise failure"])
+                }
+                try Data((contents ?? "Synthetic " + name).utf8).write(to: url, options: overwrite ? .atomic : .withoutOverwriting)
                 reader(url, nil)
             } catch { reader(url, error) }
         }
     }
+}
+final class ShelfTestMultiPromise: DropShelfReceiving {
+    var expectedCount: Int { 2 }
+    var names: [String] { ["ordered-one.txt", "ordered-two.txt"] }
+    func receive(at destination: URL, queue: OperationQueue, reader: @escaping (URL, Error?) -> Void) {
+        for (index, name) in names.enumerated() {
+            queue.addOperation {
+                Thread.sleep(forTimeInterval: index == 0 ? 0.3 : 0.05)
+                let file = destination.appendingPathComponent(name)
+                do { try Data(name.utf8).write(to: file, options: .withoutOverwriting); reader(file, nil) }
+                catch { reader(file, error) }
+            }
+        }
+    }
+}
+// Protocol double for destination callback ordering; not a physical drag session.
+final class ShelfTestDragInfo: NSObject, NSDraggingInfo {
+    var draggingDestinationWindow: NSWindow?
+    let draggingPasteboard: NSPasteboard
+    var draggingSource: Any? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint { .zero }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingSequenceNumber: Int { 4321 }
+    var draggingFormation: NSDraggingFormation = .none
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    init(window: NSWindow, board: NSPasteboard) { draggingDestinationWindow = window; draggingPasteboard = board }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func resetSpringLoading() {}
+    func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?, classes: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
 }
 let _ = NSApplication.shared
 NSApp.setActivationPolicy(.regular)
@@ -279,6 +322,55 @@ expect(gridWindow.table.selectedRowIndexes == IndexSet(integer: 1), "filename in
 nativeGrid.keyDown(with: deleteKey)
 expect(shelves.store!.shelf(gridWindow.shelfID)!.items.map(\.id) == [gridIDs[0], gridIDs[2]], "Delete removes only the filename-selected tile")
 gridWindow.close()
+let collisionWindow = shelves.create()!
+let collisionProviders = [
+    ShelfTestPromise("invoice.pdf", delay: 0.3, contents: "first"),
+    ShelfTestPromise("invoice.pdf", fail: true),
+    ShelfTestPromise("invoice.pdf", contents: "second", overwrite: true),
+    ShelfTestPromise("invoice.pdf", contents: "third")
+]
+expect(collisionWindow.receivePromises(collisionProviders), "same-name promise batch begins")
+for _ in 0..<100 where shelves.store!.shelf(collisionWindow.shelfID)!.items.count < 3 { drain(0.05) }
+let collisionItems = shelves.store!.shelf(collisionWindow.shelfID)!.items
+expect(collisionItems.count == 3 && collisionItems.allSatisfy { $0.title == "invoice.pdf" }, "same-name successes survive partial failure with original names")
+let collisionData = try collisionItems.map { try String(contentsOf: shelves.store!.resolve($0)!, encoding: .utf8) }
+expect(collisionData == ["first", "second", "third"], "same-name promises never overwrite earlier bytes and retain source order")
+expect(Set(collisionProviders.compactMap(\.destination)).count == 1 && collisionProviders.allSatisfy { $0.destination != nil }, "all receivers use the same AppKit destination")
+expect(collisionWindow.feedbackText.contains("synthetic promise failure"), "same-name partial failure remains visible")
+expect(collisionWindow.receivePromises([ShelfTestMultiPromise()]), "multi-file receiver begins")
+for _ in 0..<100 where shelves.store!.shelf(collisionWindow.shelfID)!.items.count < 5 { drain(0.05) }
+expect(Array(shelves.store!.shelf(collisionWindow.shelfID)!.items.suffix(2)).map(\.title) == ["ordered-one.txt", "ordered-two.txt"], "out-of-order callbacks within a receiver retain declared order")
+let cancelledProviders = [ShelfTestPromise("cancel.pdf", delay: 0.05), ShelfTestPromise("cancel.pdf", delay: 0.4), ShelfTestPromise("cancel.pdf")]
+expect(collisionWindow.receivePromises(cancelledProviders), "multi-receiver cancellation begins")
+for _ in 0..<100 where cancelledProviders[1].destination == nil { drain(0.01) }
+expect(cancelledProviders[1].destination != nil, "cancellation occurs after an earlier receiver has staged its result")
+collisionWindow.cancelImports(); drain(0.8)
+expect(shelves.store!.shelf(collisionWindow.shelfID)!.items.count == 5, "cancelled staged results never enter the shelf")
+expect(cancelledProviders[2].destination == nil, "cancellation does not start unrequested remaining receivers")
+expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty) == true, "collision success failure and cancellation clean receiving and staging directories")
+collisionWindow.close()
+let droppingWindow = shelves.createForDrag()!
+let dropSurface = (droppingWindow.contentView as! NSGlassEffectView).contentView as! DropShelfDropView
+board.clearContents(); board.writeObjects([source as NSURL])
+let dropInfo = ShelfTestDragInfo(window: droppingWindow, board: board)
+expect(dropSurface.registeredDraggedTypes.contains(.fileURL), "whole card surface registers file drops")
+expect(dropSurface.draggingEntered(dropInfo) == .copy && droppingWindow.receivingDrag, "native destination entry marks a pending drop")
+shelves.finishDragActivation()
+expect(droppingWindow.isVisible, "mouse release cleanup cannot close a pending destination before perform")
+expect(dropSurface.prepareForDragOperation(dropInfo) && dropSurface.performDragOperation(dropInfo), "card-wide destination delivers the dropped file")
+dropSurface.concludeDragOperation(dropInfo); dropSurface.draggingEnded(dropInfo)
+shelves.finishDragActivation()
+expect(droppingWindow.isVisible && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "completed file drop keeps the populated automatic shelf")
+expect(!droppingWindow.receivingDrag, "completed drop clears pending destination state")
+expect(dropSurface.performDragOperation(dropInfo) && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "repeated perform callback does not duplicate the file")
+let abandonedWindow = shelves.createForDrag()!
+let abandonedSurface = (abandonedWindow.contentView as! NSGlassEffectView).contentView as! DropShelfDropView
+let abandonedInfo = ShelfTestDragInfo(window: abandonedWindow, board: board)
+_ = abandonedSurface.draggingEntered(abandonedInfo)
+abandonedSurface.draggingExited(abandonedInfo); abandonedSurface.draggingEnded(abandonedInfo)
+shelves.finishDragActivation()
+expect(!abandonedWindow.isVisible && droppingWindow.isVisible, "cancelled empty drop closes only the empty shelf")
+droppingWindow.close()
 print("PASS production shelf integration (synthetic pasteboard, not physical drag acceptance)")
 }
 print("FIXTURE_ROOT " + root.path)

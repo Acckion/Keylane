@@ -9,8 +9,36 @@ final class DropShelfTile: NSStackView {
     }
 }
 
-/// Compact shelf surface, serving both as a native drop destination and drag source.
-final class DropShelfPreview: NSView, NSDraggingSource {
+/// A card-wide drop destination. Keep automatic shelves alive until AppKit finishes the drop.
+class DropShelfDropView: NSView {
+    var receive: ((NSPasteboard) -> Bool)?
+    var dragActivity: ((Bool) -> Void)?
+    private var sequence: Int?
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes(DropShelfController.types)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let operation: NSDragOperation = (sender.draggingSource as? NSView)?.window === window ? [] : .copy
+        dragActivity?(!operation.isEmpty)
+        return operation
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    override func draggingExited(_ sender: NSDraggingInfo?) { dragActivity?(false) }
+    override func draggingEnded(_ sender: NSDraggingInfo) { dragActivity?(false) }
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) { dragActivity?(false) }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { !draggingEntered(sender).isEmpty }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        defer { dragActivity?(false) }
+        guard sequence != sender.draggingSequenceNumber else { return true }
+        sequence = sender.draggingSequenceNumber
+        return receive?(sender.draggingPasteboard) ?? false
+    }
+}
+
+/// Compact preview, serving as both a drop destination and drag source.
+final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
     let imageView = NSImageView()
     private let backImages = [NSImageView(), NSImageView()]
     func setBackingImages(_ images: [NSImage]) {
@@ -24,11 +52,9 @@ final class DropShelfPreview: NSView, NSDraggingSource {
         layer?.backgroundColor = selected ? NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor : NSColor.clear.cgColor
     }
     var selected: ((NSEvent) -> Void)?
-    var receive: ((NSPasteboard) -> Bool)?
     var begin: ((NSEvent) -> [NSDraggingItem])?
     var ended: ((NSDragOperation) -> Void)?
     var operations: () -> NSDragOperation = { [.copy, .move] }
-    private var sequence: Int?
     override var acceptsFirstResponder: Bool { true }
     var shortcut: ((NSEvent) -> Bool)?
     override init(frame: NSRect) {
@@ -47,7 +73,6 @@ final class DropShelfPreview: NSView, NSDraggingSource {
             placeholder.centerXAnchor.constraint(equalTo: centerXAnchor), placeholder.centerYAnchor.constraint(equalTo: centerYAnchor),
             placeholder.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -12)
         ])
-        registerForDraggedTypes(DropShelfController.types)
         setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel("暂存内容预览，可拖入或拖出")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -65,12 +90,4 @@ final class DropShelfPreview: NSView, NSDraggingSource {
     }
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { operations() }
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { ended?(operation) }
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { (sender.draggingSource as? NSView)?.window === window ? [] : .copy }
-    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { !draggingEntered(sender).isEmpty }
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard sequence != sender.draggingSequenceNumber else { return true }
-        sequence = sender.draggingSequenceNumber
-        return receive?(sender.draggingPasteboard) ?? false
-    }
 }

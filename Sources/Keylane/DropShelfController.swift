@@ -67,6 +67,7 @@ final class DropShelfController: ObservableObject {
     }
     func finishDragActivation() {
         for id in Array(automaticShelves) {
+            if windows[id]?.receivingDrag == true { continue }
             automaticShelves.remove(id)
             guard let window = windows[id], store?.shelf(id)?.items.isEmpty == true, !window.receivedDrop else { continue }
             window.close()
@@ -218,24 +219,42 @@ private struct DropShelfNativePromise: DropShelfReceiving {
     }
 }
 
-/// Each batch has one private destination and a revocable commit token. Cancellation does not
+/// Each batch has one shared receiver destination and private staging, plus a revocable token. Cancellation does not
 /// assume another app has stopped writing; late results are ignored and cleaned after completion.
 final class DropShelfImport {
     let id = UUID()
     let directory: URL
+    let stagingDirectory: URL
     let queue = OperationQueue()
     var valid = true
     var remaining: Int
     var results: [Int: [(URL, Error?)]] = [:]
     init(root: URL, count: Int) throws {
         directory = root.appendingPathComponent("Incoming", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
+        stagingDirectory = root.appendingPathComponent("Incoming", isDirectory: true).appendingPathComponent(id.uuidString + "-staged", isDirectory: true)
         remaining = count
         queue.maxConcurrentOperationCount = 2
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     }
     func finished() {
-        remaining -= 1
-        if remaining <= 0 { try? FileManager.default.removeItem(at: directory) }
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.removeItem(at: stagingDirectory)
+    }
+    private func validate(_ url: URL) throws {
+        guard url.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(directory.resolvingSymlinksInPath().standardizedFileURL.path + "/"),
+              (try url.resourceValues(forKeys: [.isSymbolicLinkKey])).isSymbolicLink != true else { throw DropShelfStore.Failure.invalidAsset }
+    }
+    func capture(_ url: URL) throws -> URL {
+        try validate(url)
+        let parent = stagingDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let target = parent.appendingPathComponent(url.lastPathComponent)
+        try FileManager.default.moveItem(at: url, to: target)
+        return target
+    }
+    func discardPartial(_ url: URL) {
+        guard (try? validate(url)) != nil else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 }
 
@@ -271,6 +290,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private var heldAccess: [URL] = []
     private var dragItems: [UUID] = []
     private(set) var receivedDrop = false
+    private(set) var receivingDrag = false
     private var receivedSequence: Int?
     private var refreshInProgress = false
     private var internalReorder = false
@@ -299,7 +319,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         effect.wantsLayer = true; effect.layer?.cornerRadius = 28; effect.layer?.cornerCurve = .continuous
         effect.layer?.masksToBounds = true; effect.layer?.borderWidth = 1
         effect.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
-        let surface = NSView(); effect.contentView = surface; contentView = effect
+        let surface = DropShelfDropView(frame: .zero); effect.contentView = surface; contentView = effect
+        surface.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
+        surface.dragActivity = { [weak self] in self?.receivingDrag = $0 }
         configureRound(closeControl, symbol: "xmark", label: "关闭暂存架", action: #selector(closeShelf))
         configureRound(disclosure, symbol: "chevron.down", label: "展开暂存内容", action: #selector(disclosureAction))
         let spacer = NSView()
@@ -318,6 +340,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         filename.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
         filename.setAccessibilityLabel("展开暂存内容")
         preview.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
+        preview.dragActivity = { [weak self] in self?.receivingDrag = $0 }
         preview.begin = { [weak self] in self?.beginCompactDrag($0) ?? [] }
         preview.ended = { [weak self] in self?.finishDrag($0) }
         preview.operations = { [weak controller] in controller?.copyByDefault == true ? .copy : [.copy, .move] }
@@ -482,6 +505,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
                 self.table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: event.modifierFlags.contains(.command))
             }
             icon.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
+            icon.dragActivity = { [weak self] in self?.receivingDrag = $0 }
             icon.operations = { [weak self] in self?.controller?.copyByDefault == true ? .copy : [.copy, .move] }
             icon.begin = { [weak self, weak icon] event in
                 guard let self, let icon else { return [] }
@@ -632,45 +656,65 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         return received
     }
     func receivePromises(_ promises: [DropShelfReceiving]) -> Bool {
+        guard !promises.isEmpty else { return false }
         do {
             let count = promises.reduce(0) { $0 + max(1, $1.expectedCount) }
             guard count + rows.count <= 1000 else { throw DropShelfStore.Failure.limit }
             let batch = try DropShelfImport(root: store.directory, count: count)
             batches[batch.id] = batch; refresh(); message("正在接收文件…")
-            for (position, receiver) in promises.enumerated() {
-                receiver.receive(at: batch.directory, queue: batch.queue) { [weak self, batch, receiver] url, error in
-                    DispatchQueue.main.async {
-                        batch.results[position, default: []].append((url, error))
-                        guard batch.remaining == 1 else { batch.remaining -= 1; return }
-                        defer {
-                            batch.finished()
-                            self?.batches.removeValue(forKey: batch.id)
-                            self?.refresh()
-                        }
-                        guard let self, batch.valid else { return }
-                        var accepted = 0
-                        var failures: [String] = []
-                        // Complete a batch in source order, even if providers finish out of order.
-                        for index in promises.indices {
-                            let names = promises[index].names
-                            let results = (batch.results[index] ?? []).sorted {
-                                (names.firstIndex(of: $0.0.lastPathComponent) ?? 0) < (names.firstIndex(of: $1.0.lastPathComponent) ?? 0)
-                            }
-                            for (file, error) in results {
-                                do {
-                                    if let error { throw error }
-                                    if try self.store.adoptPromise(file, from: batch.directory, to: self.shelfID) { accepted += 1 }
-                                } catch { failures.append(error.localizedDescription) }
-                            }
-                        }
-                        _ = receiver // Keep each provider alive through its asynchronous callback.
-                        self.batches.removeValue(forKey: batch.id)
-                        self.message("已接收 \(accepted) 项" + (failures.isEmpty ? "" : "；" + failures.joined(separator: "；")), failed: !failures.isEmpty)
-                    }
-                }
-            }
+            receivePromise(promises, position: 0, batch: batch)
             return true
         } catch { message(error.localizedDescription, failed: true); return false }
+    }
+    private func receivePromise(_ promises: [DropShelfReceiving], position: Int, batch: DropShelfImport) {
+        let receiver = promises[position]
+        batch.remaining = max(1, receiver.expectedCount)
+        // AppKit requires the same destination for every receiver. Start the next receiver
+        // only after the current receiver's files have been isolated from that destination.
+        receiver.receive(at: batch.directory, queue: batch.queue) { [weak self, batch, receiver] url, error in
+            DispatchQueue.main.async {
+                batch.results[position, default: []].append((url, error))
+                batch.remaining -= 1
+                guard batch.remaining == 0 else { return }
+                guard let self, batch.valid else { batch.finished(); return }
+                batch.results[position] = batch.results[position, default: []].map { file, error in
+                    do {
+                        if let error { throw error }
+                        return (try batch.capture(file), nil)
+                    } catch {
+                        batch.discardPartial(file)
+                        return (file, error)
+                    }
+                }
+                if position + 1 < promises.count {
+                    self.receivePromise(promises, position: position + 1, batch: batch)
+                    return
+                }
+                defer {
+                    batch.finished()
+                    self.batches.removeValue(forKey: batch.id)
+                    self.refresh()
+                }
+                var accepted = 0
+                var failures: [String] = []
+                // Complete a batch in source order, even if providers finish out of order.
+                for index in promises.indices {
+                    let names = promises[index].names
+                    let results = (batch.results[index] ?? []).sorted {
+                        (names.firstIndex(of: $0.0.lastPathComponent) ?? 0) < (names.firstIndex(of: $1.0.lastPathComponent) ?? 0)
+                    }
+                    for (file, error) in results {
+                        do {
+                            if let error { throw error }
+                            if try self.store.adoptPromise(file, from: batch.stagingDirectory, to: self.shelfID) { accepted += 1 }
+                        } catch { failures.append(error.localizedDescription) }
+                    }
+                }
+                _ = receiver // Keep each provider alive through its asynchronous callback.
+                self.batches.removeValue(forKey: batch.id)
+                self.message("已接收 \(accepted) 项" + (failures.isEmpty ? "" : "；" + failures.joined(separator: "；")), failed: !failures.isEmpty)
+            }
+        }
     }
     @objc func cancelImports() {
         for batch in batches.values { batch.valid = false }
