@@ -313,7 +313,7 @@ final class LauncherModuleRegistry {
     private let modules: [LauncherModule]
     private let disableableModules: Set<ModuleID>
     private let preferences: UserDefaults
-    private static let disabledKey = "disabledLauncherModules"
+    static let disabledModulesPreferenceKey = "disabledLauncherModules"
     private var disabledModules: Set<ModuleID>
     let availabilityChanges = PassthroughSubject<Void, Never>()
     private var launcherVisible = false
@@ -330,7 +330,7 @@ final class LauncherModuleRegistry {
         self.modules = modules
         self.preferences = preferences
         disableableModules = Set(modules.filter(\.canDisable).map(\.id))
-        disabledModules = Set((preferences.stringArray(forKey: Self.disabledKey) ?? []).map(ModuleID.init(rawValue:)))
+        disabledModules = Set((preferences.stringArray(forKey: Self.disabledModulesPreferenceKey) ?? []).map(ModuleID.init(rawValue:)))
         _ = try LauncherModuleCatalog(modules: modules.map {
             LauncherModuleDeclaration(id: $0.id, commands: $0.commands.map(\.declaration),
                                       pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
@@ -409,7 +409,7 @@ final class LauncherModuleRegistry {
         guard let module = modules.first(where: { $0.id == id && $0.canDisable }),
               enabled == disabledModules.contains(id) else { return false }
         if enabled { disabledModules.remove(id) } else { disabledModules.insert(id) }
-        preferences.set(disabledModules.map(\.rawValue).sorted(), forKey: Self.disabledKey)
+        preferences.set(disabledModules.map(\.rawValue).sorted(), forKey: Self.disabledModulesPreferenceKey)
         if module.registration != nil {
             registrationChanged(for: module, resuming: enabled)
         } else if enabled {

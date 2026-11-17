@@ -141,7 +141,11 @@ final class Model: ObservableObject {
     private let commandSearch = LauncherCommandSearch()
     private(set) lazy var launcherModules: LauncherModuleRegistry? = {
         do {
-            let registry = try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) { [weak self] id in
+            let modules = BuiltinLauncherModules.make(model: self)
+            if let system = modules.first(where: { $0.id == SystemActionsModule.id }) {
+                SystemActionsModule.migratePreferences(model: self, commands: system.commands)
+            }
+            let registry = try LauncherModuleRegistry(modules: modules) { [weak self] id in
                 self?.disabledCommands.contains(id.rawValue) == false
             }
             let remaining = registry.migrateDisabledCommands(disabledCommands)
