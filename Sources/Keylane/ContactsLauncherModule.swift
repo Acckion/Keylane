@@ -63,7 +63,7 @@ enum ContactsLauncherModule {
         let form = LauncherPage(
             id: createPage, placeholder: "", badge: ("新建联系人", "person.badge.plus"), contentPlacement: .form,
             content: { AnyView(ContactCreationView(editor: editor, back: back)) }, back: back,
-            submit: submit, shortcutSubmit: submit, primaryTitle: { "保存联系人" },
+            submit: submit, returnBindings: .init(primary: .command), primaryTitle: { "保存联系人" },
             primaryEnabled: { permission.available && editor.canSave },
             updates: Publishers.MergeMany([ViewObservation.changes(editor.$draft), ViewObservation.changes(editor.$saving),
                                             permission.updates]).eraseToAnyPublisher()

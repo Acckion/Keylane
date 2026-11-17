@@ -40,7 +40,7 @@ enum AppleNotesModule {
             content: { [weak model] in
                 AnyView(AppleNoteForm(controller: notes) { model?.pageID = .root })
             },
-            submit: notes.create, shortcutSubmit: notes.create,
+            submit: notes.create, returnBindings: .init(primary: .command),
             primaryTitle: { notes.createdID == nil ? "创建备忘录" : "打开备忘录" },
             primaryEnabled: { notes.canCreate && !notes.saving },
             updates: notes.updates,

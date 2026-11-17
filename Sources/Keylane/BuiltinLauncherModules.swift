@@ -506,13 +506,15 @@ enum BuiltinLauncherModules {
                 guard let controller = model?.clipboard else { return }
                 ClipboardActions.submit(controller)
             },
-            shortcutSubmit: { [weak model] in
-                if let controller = model?.clipboard { ClipboardActions.submit(controller, alternate: true) }
-            },
-            optionSubmit: {
-                guard !SearchField.isComposing, let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil else { return }
-                delegate.pasteClipboard(keepOpen: true)
-            },
+            returnBindings: .init(alternates: [
+                .command: .init(dismissMenu: true) { [weak model] in
+                    if let controller = model?.clipboard { ClipboardActions.submit(controller, alternate: true) }
+                },
+                .option: .init(dismissMenu: true) {
+                    guard let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil else { return }
+                    delegate.pasteClipboard(keepOpen: true)
+                }
+            ]),
             actionContextTitle: { [weak model] in
                 guard let controller = model?.clipboard,
                       let item = controller.items.first(where: { $0.id == controller.selectedID }) else { return nil }

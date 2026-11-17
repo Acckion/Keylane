@@ -48,7 +48,7 @@ enum WindowManagementModule {
         let editor = LauncherPage(
             id: WindowManagementController.editorPage, placeholder: "", badge: ("窗口管理", "macwindow"), contentPlacement: .form,
             content: { AnyView(WindowActionEditor(controller: controller, back: back)) },
-            back: back, submit: controller.saveDraft, shortcutSubmit: controller.saveDraft,
+            back: back, submit: controller.saveDraft, returnBindings: .init(primary: .command),
             primaryTitle: { "保存命令" },
             primaryEnabled: { controller.draft.isValid }, updates: draftUpdates
         )
@@ -71,7 +71,7 @@ enum WindowManagementModule {
                 controller.leaveLayout()
                 model?.releaseApplicationCatalog(for: .windowLayout)
             }, back: back, submit: controller.saveLayoutDraft,
-            shortcutSubmit: controller.saveLayoutDraft, primaryTitle: { "保存布局" },
+            returnBindings: .init(primary: .command), primaryTitle: { "保存布局" },
             primaryEnabled: { controller.layoutIsValid }, updates: layoutUpdates,
             enter: { [weak model] _ in
                 model?.acquireApplicationCatalog(for: .windowLayout)
@@ -81,7 +81,7 @@ enum WindowManagementModule {
         let coordinates = LauncherPage(
             id: WindowManagementController.coordinatesPage, placeholder: "", badge: ("窗口管理", "macwindow"), contentPlacement: .form,
             content: { AnyView(WindowCoordinatesForm(controller: controller, back: back)) },
-            back: back, submit: controller.submitCoordinates, shortcutSubmit: controller.submitCoordinates,
+            back: back, submit: controller.submitCoordinates, returnBindings: .init(primary: .command),
             primaryTitle: { controller.coordinates.resize ? "调整大小" : "移动窗口" },
             primaryEnabled: { controller.coordinates.placement != nil }, updates: coordinateUpdates
         )

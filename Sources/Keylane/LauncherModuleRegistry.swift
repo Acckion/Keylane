@@ -35,17 +35,7 @@ struct LauncherAction: Identifiable {
     let title: String
     let icon: String
     var shortcut: KeyboardShortcut? = nil
-    var displayedKeys: [String] {
-        guard let shortcut else { return [] }
-        let modifiers: [(EventModifiers, String)] = [(.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
-        let key: String
-        switch shortcut.key {
-        case .return: key = "↩"
-        case .escape: key = "esc"
-        default: key = String(shortcut.key.character).uppercased()
-        }
-        return modifiers.compactMap { shortcut.modifiers.contains($0.0) ? $0.1 : nil } + [key]
-    }
+    var displayedKeys: [String] { shortcut?.launcherKeycaps ?? [] }
     var artwork: NSImage? = nil
     var value: String? = nil
     var submenu: Submenu?
@@ -55,6 +45,19 @@ struct LauncherAction: Identifiable {
     var perform: () -> Void = {}
 }
 
+extension KeyboardShortcut {
+    var launcherKeycaps: [String] {
+        let modifierLabels: [(EventModifiers, String)] = [(.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
+        let key: String
+        switch self.key {
+        case .return: key = "↩"
+        case .escape: key = "esc"
+        default: key = String(self.key.character).uppercased()
+        }
+        return modifierLabels.compactMap { modifiers.contains($0.0) ? $0.1 : nil } + [key]
+    }
+}
+
 struct LauncherPage {
     enum ContentPlacement {
         case inset
@@ -62,6 +65,37 @@ struct LauncherPage {
         case readingDetail
         case fileResults
         case form
+    }
+
+    enum ReturnKey: CaseIterable {
+        case plain, command, option
+
+        var modifiers: EventModifiers {
+            switch self {
+            case .plain: []
+            case .command: .command
+            case .option: .option
+            }
+        }
+
+        var shortcut: KeyboardShortcut { .init(.return, modifiers: modifiers) }
+    }
+
+    struct ReturnBindings {
+        struct Alternate {
+            var dismissMenu = false
+            let perform: () -> Void
+        }
+
+        var primary: ReturnKey?
+        var alternates: [ReturnKey: Alternate] = [:]
+
+        func contains(_ key: ReturnKey) -> Bool { key == primary || alternates[key] != nil }
+
+        func reserves(_ shortcut: KeyboardShortcut) -> Bool {
+            guard shortcut.key == .return else { return false }
+            return ReturnKey.allCases.contains { $0.modifiers == shortcut.modifiers && contains($0) }
+        }
     }
 
     let id: PageID
@@ -78,8 +112,7 @@ struct LauncherPage {
     var back: (() -> Void)?
     var move: ((Int) -> Void)?
     var submit: (() -> Void)?
-    var shortcutSubmit: (() -> Void)?
-    var optionSubmit: (() -> Void)?
+    var returnBindings = ReturnBindings()
     var actionContextTitle: (() -> String?)?
     var primaryTitle: (() -> String)?
     var primaryEnabled: (() -> Bool)?
@@ -104,7 +137,6 @@ struct LauncherPage {
     var actionShortcutsEnabled = false
     var loading: AnyPublisher<Bool, Never>?
     var fullBleed = false
-    var submitWithReturn = false
 }
 
 struct SettingsTitlebarContribution {
