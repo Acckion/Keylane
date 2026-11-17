@@ -37,6 +37,7 @@ enum AITextCommandLauncher {
             session.send()
         }
         let updates = Publishers.MergeMany([
+            ViewObservation.changes(session.configuration.$state),
             session.$input.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 .removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.$command.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -46,7 +47,8 @@ enum AITextCommandLauncher {
         ]).eraseToAnyPublisher()
         return LauncherPage(id: pageID, placeholder: "", badge: ("AI 命令", "sparkles"),
                             contentPlacement: .form, content: { [weak model] in
-                                AnyView(AITextCommandForm(session: session, back: { model?.goBackInLauncher() }))
+                                AnyView(AITextCommandForm(session: session, configuration: session.configuration,
+                                                          back: { model?.goBackInLauncher() }))
                             }, leave: session.clear, submit: send, returnBindings: .init(primary: .command),
                             primaryTitle: { "发送给模型" }, primaryEnabled: { session.canSend },
                             actions: {
@@ -65,6 +67,7 @@ enum AITextCommandLauncher {
 
 private struct AITextCommandForm: View {
     @ObservedObject var session: AITextCommandSession
+    @ObservedObject var configuration: AIConfiguration
     let back: () -> Void
     @State private var running = false
     @FocusState private var inputFocused: Bool
@@ -90,7 +93,8 @@ private struct AITextCommandForm: View {
                     .focused($inputFocused)
                     .accessibilityLabel("待处理文本")
                     .disabled(running)
-                Text("发送至 \(session.destination)。无法读取选区时，可在此手动输入。")
+                Text(session.destinationChanged ? "模型连接已变化，请返回并重新打开命令。"
+                     : "发送至 \(session.destination)。无法读取选区时，可在此手动输入。")
                     .font(.caption).foregroundStyle(.secondary)
                 AITextCommandResult(reply: session.reply)
             }

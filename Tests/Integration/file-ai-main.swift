@@ -150,6 +150,11 @@ let savedID = conversation.chatID!
 let savedTurnID = conversation.turns.first!.id
 conversation.leaveLauncher()
 wait("Save handed-off response") { !conversation.running && conversation.chats.first?.id == savedID }
+var savedRecord: AIChatRecord?
+history.perform({ try $0.load(savedID) }) { result in
+    savedRecord = try! result.get()
+}
+wait("Flush completed response to SQLite") { savedRecord?.content.turns.first?.complete == true }
 conversation.closeChat()
 
 let reopened = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
@@ -197,6 +202,23 @@ precondition(request.map(\.role.rawValue) == ["system", "user"])
 precondition(request[0].content.contains("日语") && !request[0].content.contains(selectedText))
 precondition(request[1].content == selectedText)
 precondition(AITextCommand.polish.instructions(language: .chinese) != AITextCommand.summarize.instructions(language: .chinese))
+let reviewedModel = settings.selected!
+let reviewedDestination = commandSession.destination
+let otherModel = AIConnection(endpoint: "http://localhost:9000/alternate", model: "another-model")
+precondition(settings.save(otherModel))
+precondition(commandSession.destinationChanged && commandSession.destination == reviewedDestination)
+commandSession.send()
+precondition(!commandSession.reply.running && commandSession.reply.turns.isEmpty)
+settings.select(reviewedModel.id)
+precondition(commandSession.canSend)
+settings.setEnabled(false)
+commandSession.send()
+precondition(!commandSession.canSend && commandSession.reply.turns.isEmpty)
+settings.setEnabled(true)
+FixtureProtocol.mode = "error"
+commandSession.send()
+wait("AI text command HTTP error") { !commandSession.reply.running }
+precondition(commandSession.reply.lastAnswer == nil && commandSession.reply.status.contains("401"))
 FixtureProtocol.mode = "stream"
 commandSession.send()
 wait("AI text command reply") { !commandSession.reply.running }

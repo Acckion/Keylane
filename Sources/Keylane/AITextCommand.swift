@@ -49,7 +49,8 @@ final class AITextCommandSession: ObservableObject {
     }
 
     let reply: QuickAIController
-    private let configuration: AIConfiguration
+    let configuration: AIConfiguration
+    private var reviewedConnection: AIConnection?
 
     init(configuration: AIConfiguration, runtime: AIRuntime,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
@@ -58,16 +59,23 @@ final class AITextCommandSession: ObservableObject {
     }
 
     var destination: String {
-        guard let connection = configuration.selected, let host = connection.baseURL?.host else { return "尚未配置模型" }
-        return "\(connection.model) · \(host)"
+        guard let connection = reviewedConnection, let endpoint = connection.completionURL else {
+            return "尚未配置模型"
+        }
+        return "\(connection.model) · \(endpoint.absoluteString)"
+    }
+
+    var destinationChanged: Bool {
+        reviewedConnection != configuration.selected || !configuration.isAvailable
     }
 
     var canSend: Bool {
-        configuration.isAvailable && !reply.running && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !destinationChanged && !reply.running && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func prepare(_ command: AITextCommand, selection: String?) {
         reply.reset()
+        reviewedConnection = configuration.selected
         self.command = command
         input = selection ?? ""
     }
@@ -80,6 +88,7 @@ final class AITextCommandSession: ObservableObject {
 
     func clear() {
         reply.reset()
+        reviewedConnection = nil
         input = ""
     }
 }
