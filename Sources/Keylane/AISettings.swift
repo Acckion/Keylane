@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import KeylaneCore
 import SwiftUI
@@ -9,15 +10,42 @@ enum AIModule {
     static func make(model: Model) -> LauncherModule {
         let configuration = model.aiSettings
         let runtime = model.aiRuntime
+        let historyURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Keylane/AI/history.sqlite")
+        let quickAI = QuickAIController(configuration: configuration, runtime: runtime,
+                                        history: AIChatHistory(url: historyURL))
+        let chat = AIChatWindow(controller: quickAI, configuration: configuration,
+                                appearance: model.$appearance.eraseToAnyPublisher())
+        let openChat: () -> Void = { [weak model] in
+            guard let model, configuration.isAvailable else { return }
+            let fromQuickAI = model.pageID == QuickAILauncher.pageID
+            chat.show(draft: fromQuickAI ? model.query : "", restoreLatest: !fromQuickAI,
+                      activation: model.windowActivationBehavior) {
+                (NSApp.delegate as? Delegate)?.hideLauncher()
+                if fromQuickAI { model.pageID = .root }
+            }
+        }
+        let quickCommand = LauncherModule.Command(declaration: .init(
+            id: QuickAILauncher.commandID, title: "Quick AI", detail: "向已配置的模型提问", symbol: "sparkles",
+            keywords: ["ask", "AI", "快速问答", "询问 AI"], destination: .action, settingsPage: "ai"
+        ), available: { configuration.isAvailable }, execute: { [weak model] origin in
+            if quickAI.isInChat { openChat() }
+            else { model?.openPage(QuickAILauncher.pageID, origin: origin) }
+        })
+        let chatCommand = LauncherModule.Command(declaration: .init(
+            id: .init(rawValue: "ai-chat"), title: "AI Chat", detail: "打开独立聊天窗口", symbol: "bubble.left.and.bubble.right",
+            keywords: ["chat", "AI", "聊天", "对话"], destination: .action, settingsPage: "ai"
+        ), available: { configuration.isAvailable }, execute: { _ in openChat() })
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
-                              title: "AI", symbol: "sparkles", settings: [
+                              title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand],
+                              pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: openChat)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
                   order: 8, items: [models],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
                   content: { AnyView(AISettings(configuration: configuration, runtime: runtime)) })
-        ])
+        ], searchUpdates: [configuration.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher()])
     }
 }
 
@@ -29,7 +57,7 @@ private struct AISettings: View {
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                SettingsPicker("当前模型连接", detail: "询问文件使用此连接。", selection: Binding<UUID?>(
+                SettingsPicker("当前模型连接", detail: "Quick AI、AI Chat 和询问文件使用此连接。", selection: Binding<UUID?>(
                     get: { configuration.state.selectedID },
                     set: { if let id = $0 { configuration.select(id); newConnection = nil } }
                 )) {

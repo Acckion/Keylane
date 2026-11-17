@@ -97,3 +97,88 @@ precondition(reloaded.save(restored))
 let restoredQueries = AIConfiguration.credentialQueries(for: reloaded.selected!)
 precondition(restoredQueries.map { $0[credentialKey] as? String } == ["org.keylane.ai", "org.keylane.file-ai"])
 print("PASS legacy credential routing: endpoint changes, reload, original endpoint restoration and removal queries")
+settings.setEnabled(true)
+settings.select(second.id)
+let quick = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), readKey: { _ in nil })
+FixtureProtocol.mode = "stream"
+precondition(!quick.submit("  "))
+precondition(quick.submit("first") && !quick.submit("while busy"))
+wait("Quick AI first answer") { !quick.running }
+precondition(quick.turns.count == 1 && quick.turns[0].complete && quick.lastAnswer == "你好")
+let followUp = quick.messages(for: "second")
+precondition(followUp.map(\.role.rawValue) == ["user", "assistant", "user"])
+precondition(followUp.map(\.content) == ["first", "你好", "second"])
+precondition(quick.submit("second"))
+wait("Quick AI follow-up") { !quick.running }
+precondition(quick.turns.count == 2 && quick.turns[1].complete)
+FixtureProtocol.mode = "slow"
+precondition(quick.submit("cancelled"))
+quick.stop()
+RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+precondition(quick.status == "已停止。" && quick.turns.last?.answer.isEmpty == true)
+settings.select(legacy.id)
+precondition(quick.turns.isEmpty && !quick.running)
+print("PASS Quick AI: initial prompt, complete-turn follow-up, single active request, cancellation and model isolation")
+
+settings.select(second.id)
+FixtureProtocol.mode = "stream"
+precondition(quick.submit("handoff"))
+let transferredTurn = quick.turns.first!.id
+quick.beginChat()
+quick.leaveLauncher()
+precondition(quick.isInChat && quick.running && quick.turns.first?.id == transferredTurn)
+wait("AI Chat receives active Quick AI answer") { !quick.running }
+precondition(quick.turns.count == 1 && quick.turns.first?.id == transferredTurn && quick.lastAnswer == "你好")
+FixtureProtocol.mode = "slow"
+precondition(quick.submit("close while generating"))
+quick.closeChat()
+RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+precondition(!quick.isInChat && !quick.running && quick.turns.isEmpty)
+print("PASS AI Chat handoff: same active turn after launcher leaves; closing discards the session and late results")
+
+let historyDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-history-" + UUID().uuidString)
+defer { try? FileManager.default.removeItem(at: historyDirectory) }
+let historyURL = historyDirectory.appendingPathComponent("history.sqlite")
+let history = AIChatHistory(url: historyURL)
+let conversation = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
+                                     history: history, readKey: { _ in nil })
+FixtureProtocol.mode = "stream"
+precondition(conversation.submit("保留这段对话"))
+precondition(!FileManager.default.fileExists(atPath: historyURL.path))
+conversation.beginChat()
+let savedID = conversation.chatID!
+let savedTurnID = conversation.turns.first!.id
+conversation.leaveLauncher()
+wait("Save handed-off response") { !conversation.running && conversation.chats.first?.id == savedID }
+conversation.closeChat()
+
+let reopened = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
+                                 history: AIChatHistory(url: historyURL), readKey: { _ in nil })
+reopened.beginChat(restoreLatest: true)
+wait("Restore most recent chat from SQLite") { !reopened.loadingChat && reopened.chatID == savedID }
+precondition(reopened.turns.first?.id == savedTurnID && reopened.turns.first?.complete == true)
+precondition(reopened.lastAnswer == "你好")
+settings.select(legacy.id)
+precondition(!reopened.matchesCurrentModel && !reopened.submit("do not send history to another endpoint"))
+settings.select(second.id)
+precondition(reopened.matchesCurrentModel)
+
+reopened.reset()
+FixtureProtocol.mode = "slow"
+precondition(reopened.submit("切换时的未完成问题"))
+let interruptedID = reopened.chatID!
+reopened.openChat(savedID)
+wait("Switch while generating") { !reopened.loadingChat && reopened.chatID == savedID }
+precondition(!reopened.running && reopened.turns.first?.id == savedTurnID)
+reopened.openChat(interruptedID)
+wait("Restore interrupted chat") { !reopened.loadingChat && reopened.chatID == interruptedID }
+precondition(reopened.turns.count == 1 && !reopened.turns[0].complete)
+precondition(reopened.lastAnswer == nil)
+reopened.deleteChat(interruptedID)
+wait("Delete chat") { reopened.chats.count == 1 && reopened.chats.first?.id == savedID }
+precondition(reopened.chatID == nil && reopened.turns.isEmpty)
+let recordsOnDisk = try history.list()
+precondition(recordsOnDisk.map(\.id) == [savedID])
+let permissions = try FileManager.default.attributesOfItem(atPath: historyURL.path)[.posixPermissions] as? NSNumber
+precondition(permissions?.intValue == 0o600)
+print("PASS AI Chat history: lazy SQLite, handoff, reopen, model isolation, interrupted turns, deletion and file permissions")
