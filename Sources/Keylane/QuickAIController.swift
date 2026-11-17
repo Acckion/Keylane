@@ -51,7 +51,7 @@ final class QuickAIController: ObservableObject {
     }
 
     @discardableResult
-    func submit(_ input: String) -> Bool {
+    func submit(_ input: String, instructions: String? = nil) -> Bool {
         guard !running, !loadingChat, matchesCurrentModel, configuration.isAvailable,
               let connection = configuration.selected else { return false }
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -62,7 +62,7 @@ final class QuickAIController: ObservableObject {
             return false
         }
 
-        let requestMessages = messages(for: question)
+        let requestMessages = messages(for: question, instructions: instructions)
         if !isInChat && turns.count >= turnLimit { turns.removeFirst(turns.count - turnLimit + 1) }
         let turn = Turn(question: question)
         conversationModel = AIChatRecord.ModelReference(connection)
@@ -94,7 +94,7 @@ final class QuickAIController: ObservableObject {
         return true
     }
 
-    func messages(for question: String) -> [AIMessage] {
+    func messages(for question: String, instructions: String? = nil) -> [AIMessage] {
         var history = [AIMessage]()
         var remaining = 64_000 - question.utf8.count
         for previous in turns.reversed() where previous.complete {
@@ -104,7 +104,8 @@ final class QuickAIController: ObservableObject {
             history.append(AIMessage(role: .user, content: previous.question))
             remaining -= size
         }
-        var messages = Array(history.reversed())
+        var messages = instructions.map { [AIMessage(role: .system, content: $0)] } ?? []
+        messages.append(contentsOf: history.reversed())
         messages.append(AIMessage(role: .user, content: question))
         return messages
     }

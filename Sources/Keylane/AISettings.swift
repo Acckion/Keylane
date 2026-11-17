@@ -7,6 +7,9 @@ enum AIModule {
     static let models = SettingsItem(id: "ai-models", page: "ai", title: "模型与提供方",
                                      keywords: "AI 模型 提供方 接口 API 密钥 Keychain 流式 Ollama")
 
+    static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai", title: "AI 命令",
+                                               keywords: "翻译 润色 摘要 快捷键 translate polish summarize")
+
     static func make(model: Model) -> LauncherModule {
         let configuration = model.aiSettings
         let runtime = model.aiRuntime
@@ -36,15 +39,22 @@ enum AIModule {
             id: .init(rawValue: "ai-chat"), title: "AI Chat", detail: "打开独立聊天窗口", symbol: "bubble.left.and.bubble.right",
             keywords: ["chat", "AI", "聊天", "对话"], destination: .action, settingsPage: "ai"
         ), available: { configuration.isAvailable }, execute: { _ in openChat() })
+        let textSession = AITextCommandSession(configuration: configuration, runtime: runtime)
+        let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
-                              title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand],
-                              pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: openChat)], settings: [
+                              title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand] + textCommands,
+                              pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: openChat),
+                                      AITextCommandLauncher.page(model: model, session: textSession)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
-                  order: 8, items: [models],
+                  order: 8, items: [models, textCommandsItem],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
-                  content: { AnyView(AISettings(configuration: configuration, runtime: runtime)) })
+                  content: { [weak model] in
+                      guard let model else { return AnyView(EmptyView()) }
+                      return AnyView(AISettings(configuration: configuration, runtime: runtime,
+                                                model: model, textCommands: textCommands))
+                  })
         ], searchUpdates: [configuration.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher()])
     }
 }
@@ -52,12 +62,14 @@ enum AIModule {
 private struct AISettings: View {
     @ObservedObject var configuration: AIConfiguration
     let runtime: AIRuntime
+    let model: Model
+    let textCommands: [LauncherModule.Command]
     @State private var newConnection: AIConnection?
 
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                SettingsPicker("当前模型连接", detail: "Quick AI、AI Chat 和询问文件使用此连接。", selection: Binding<UUID?>(
+                SettingsPicker("当前模型连接", detail: "Quick AI、AI Chat、询问文件和 AI 命令使用此连接。", selection: Binding<UUID?>(
                     get: { configuration.state.selectedID },
                     set: { if let id = $0 { configuration.select(id); newConnection = nil } }
                 )) {
@@ -77,6 +89,8 @@ private struct AISettings: View {
                                    isNew: newConnection != nil) { newConnection = nil }
                     .id(connection.id)
             }
+            ExtensionCommandPreferences(model: model, commands: textCommands)
+                .settingsAnchor(AIModule.textCommandsItem)
         }
     }
 }
