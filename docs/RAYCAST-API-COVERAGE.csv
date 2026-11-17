@@ -265,7 +265,7 @@ package,interface,status
 "@raycast/api","Clipboard.readText","partial"
 "@raycast/api","Color","supported"
 "@raycast/api","Color.Blue","supported"
-"@raycast/api","Color.Brown","partial"
+"@raycast/api","Color.Brown","supported"
 "@raycast/api","Color.Green","supported"
 "@raycast/api","Color.Magenta","supported"
 "@raycast/api","Color.Orange","supported"
