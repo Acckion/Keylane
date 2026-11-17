@@ -112,6 +112,14 @@ swift build -c release
 bash scripts/package.sh
 ```
 
+开发时可以一键编译并安装当前检出的代码。
+
+```sh
+bash scripts/install-local.sh
+```
+
+脚本使用本机钥匙串中的 Apple Development 证书，验证后安装并启动 `/Applications/Keylane.app`。上一版保存在 `dist/local-backups/`。多张开发证书时，可通过 `KEYLANE_SIGNING_IDENTITY` 指定证书名称或指纹。
+
 打包默认使用本机配置的签名身份。没有开发证书时，本地试用可使用临时签名：
 
 ```sh
