@@ -430,6 +430,10 @@ final class Model: ObservableObject {
     func updateShortcut(_ action: String, value: Shortcut?) throws {
         var proposed = bindings
         proposed[action] = value
+        try updateShortcuts(proposed)
+    }
+
+    func updateShortcuts(_ proposed: [String: Shortcut]) throws {
         let data = try JSONEncoder().encode(proposed)
         try (NSApp.delegate as? Delegate)?.shortcuts.apply(proposed)
         bindings = proposed

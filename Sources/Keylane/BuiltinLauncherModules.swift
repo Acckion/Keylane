@@ -60,6 +60,10 @@ enum BuiltinLauncherModules {
 
     private static func host(_ model: Model) -> LauncherModule {
         let category = ShortcutSettingsControls()
+        let backToHotkeys: () -> Void = { [weak model] in
+            model?.pageID = .root
+            model?.openSettings(page: "hotkeys")
+        }
         return .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general"),
@@ -67,6 +71,11 @@ enum BuiltinLauncherModules {
                                  "sparkles.rectangle.stack", ["onboarding", "welcome", "首次引导", "新手引导"]) { _ in
                              (NSApp.delegate as? Delegate)?.showOnboarding()
                          }],
+              pages: [.init(id: ShortcutKeyboardPage.pageID, placeholder: "", badge: ("快捷键键盘", "keyboard"),
+                            contentPlacement: .form, content: { [weak model] in
+                                guard let model else { return AnyView(EmptyView()) }
+                                return AnyView(ShortcutKeyboardPage(model: model, back: backToHotkeys))
+                            }, back: backToHotkeys, submit: backToHotkeys)],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
                          settingsPage(model, "launcher", "启动器", "magnifyingglass", "管理启动器的显示与搜索行为。", 5) {
                              LauncherBehaviorPreferences(model: $0)
@@ -76,7 +85,9 @@ enum BuiltinLauncherModules {
                          },
                          settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7, trailingToolbar: { [weak model] in
                              AnyView(ShortcutSettingsToolbar(groups: model?.launcherModules?.shortcutCommandGroups ?? [],
-                                                                    navigation: model?.navigation ?? "arrows", selection: category))
+                                                                    navigation: model?.navigation ?? "arrows", selection: category) { [weak model] in
+                                 model?.openPage(ShortcutKeyboardPage.pageID, origin: .menu)
+                             })
                          }) {
                              ShortcutSettingsPreferences(model: $0, selection: category)
                          },
