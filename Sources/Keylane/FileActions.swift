@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 enum FilePresentationOwner: Equatable {
     case fileSearch, clipboard, screenshots
     case extensionActivation(UUID)
+    case dropShelf(UUID)
 }
 
 final class FileActionsModel: ObservableObject {

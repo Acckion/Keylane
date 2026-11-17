@@ -33,6 +33,8 @@ final class MenuBarRegistry: NSObject, ObservableObject, NSMenuDelegate {
         var presentation: MenuBarPresentation
         var commands: () -> [MenuBarCommand]
         var item: NSStatusItem?
+        var dropTypes: [NSPasteboard.PasteboardType] = []
+        var dropHandler: ((NSPasteboard) -> Bool)?
         init(_ descriptor: Descriptor, defaultVisible: Bool, presentation: MenuBarPresentation, commands: @escaping () -> [MenuBarCommand]) {
             self.descriptor = descriptor; self.defaultVisible = defaultVisible; self.presentation = presentation; self.commands = commands
         }
@@ -56,6 +58,18 @@ final class MenuBarRegistry: NSObject, ObservableObject, NSMenuDelegate {
         registrations[id] = Registration(descriptor, defaultVisible: defaultVisible, presentation: presentation, commands: commands)
         descriptors = registrations.values.map(\.descriptor).sorted { $0.id < $1.id }
         reconcile(id)
+    }
+    func setDropHandler(id: String, types: [NSPasteboard.PasteboardType], receive: @escaping (NSPasteboard) -> Bool) {
+        guard let entry = registrations[id] else { return }
+        entry.dropTypes = types; entry.dropHandler = receive
+        if let button = entry.item?.button { installDropTarget(entry, button: button) }
+    }
+    private func installDropTarget(_ entry: Registration, button: NSStatusBarButton) {
+        button.subviews.filter { $0 is MenuBarDropTarget }.forEach { $0.removeFromSuperview() }
+        guard let handler = entry.dropHandler else { return }
+        let target = MenuBarDropTarget(frame: button.bounds)
+        target.autoresizingMask = [.width, .height]; target.button = button; target.receive = handler
+        target.registerForDraggedTypes(entry.dropTypes); button.addSubview(target)
     }
     func isEnabled(_ id: String) -> Bool {
         (preferences.object(forKey: "menuBar.visible." + id) as? Bool) ?? registrations[id]?.defaultVisible ?? false
@@ -100,6 +114,7 @@ final class MenuBarRegistry: NSObject, ObservableObject, NSMenuDelegate {
         button.image = value.symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: entry.descriptor.title) }
         button.image?.isTemplate = true; button.imagePosition = .imageLeading; button.toolTip = value.toolTip
         button.setAccessibilityLabel(entry.descriptor.title + (value.title.isEmpty ? "" : "，" + value.title))
+        installDropTarget(entry, button: button)
     }
     private func removeItem(_ entry: Registration) {
         guard let item = entry.item else { return }
@@ -138,4 +153,20 @@ final class MenuBarRegistry: NSObject, ObservableObject, NSMenuDelegate {
     }
     // Internal inspection used by isolated integration checks, never exposing calendar content.
     func nativeItem(id: String) -> NSStatusItem? { registrations[id]?.item }
+}
+
+/// A status-item-local destination; no global event tap or accessibility permission is required.
+private final class MenuBarDropTarget: NSView {
+    weak var button: NSStatusBarButton?
+    var receive: ((NSPasteboard) -> Bool)?
+    private var acceptedSequence: Int?
+    override func mouseDown(with event: NSEvent) { button?.performClick(nil) }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { .copy }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard acceptedSequence != sender.draggingSequenceNumber else { return true }
+        acceptedSequence = sender.draggingSequenceNumber
+        return receive?(sender.draggingPasteboard) ?? false
+    }
 }
