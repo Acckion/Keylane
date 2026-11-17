@@ -49,6 +49,60 @@ final class DropShelfTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: asset.path))
         }
     }
+    func testClosingEmptyShelfDoesNotEvictRecentHistory() throws {
+        try fixture { _, store in
+            var saved: [UUID] = []
+            for n in 0..<10 {
+                let id = try store.create()
+                try store.addText("saved \(n)", to: id)
+                try store.remember(id)
+                saved.append(id)
+            }
+            let empty = try store.create()
+            try store.remember(empty)
+            XCTAssertNil(store.shelf(empty))
+            XCTAssertEqual(Set(store.shelves.map(\.id)), Set(saved))
+            XCTAssertEqual(try DropShelfStore(directory: store.directory).shelves.count, 10)
+        }
+    }
+
+    func testCrossShelfBookmarksRetainOwnedAssetsAfterSourceDeletionAndRestart() throws {
+        try fixture { _, store in
+            let original = try store.create()
+            let destination = try store.create()
+            try store.pin(destination, value: true)
+            try store.addAsset(Data([1, 2, 3]), name: "image.png", kind: .image, to: original)
+            let image = try XCTUnwrap(store.resolve(try XCTUnwrap(store.shelf(original)?.items.first)))
+            let batch = store.directory.appendingPathComponent("Incoming/test")
+            try FileManager.default.createDirectory(at: batch, withIntermediateDirectories: true)
+            let folder = batch.appendingPathComponent("promised", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data("promised".utf8).write(to: folder.appendingPathComponent("child.txt"))
+            try store.adoptPromise(folder, from: batch, to: original)
+            let promised = try XCTUnwrap(store.resolve(try XCTUnwrap(store.shelf(original)?.items.last)))
+            // Text/link exports have no explicit asset field in the source shelf.
+            let text = store.assetsDirectory.appendingPathComponent("export.txt")
+            let link = store.assetsDirectory.appendingPathComponent("export.webloc")
+            try Data("text".utf8).write(to: text)
+            try Data("link".utf8).write(to: link)
+            let urls = [image, promised.appendingPathComponent("child.txt"), text, link]
+            for url in urls { try store.addFile(url, to: destination) }
+            XCTAssertTrue(store.shelf(destination)!.items.allSatisfy { $0.asset == nil })
+            try store.deleteShelf(original)
+            let unused = store.assetsDirectory.appendingPathComponent("unused.txt")
+            try Data("unused".utf8).write(to: unused)
+            let restored = try DropShelfStore(directory: store.directory)
+            try restored.collectUnusedAssets()
+            for (item, url) in zip(restored.shelf(destination)!.items, urls) {
+                XCTAssertEqual(try Data(contentsOf: XCTUnwrap(restored.resolve(item))), try Data(contentsOf: url))
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: unused.path))
+            try restored.deleteShelf(destination)
+            try restored.collectUnusedAssets()
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: restored.assetsDirectory.path).isEmpty)
+        }
+    }
+
     func testPromiseCannotAdoptExternalFileAndGeneratedContentRoundTrips() throws {
         try fixture { root, store in
             let id = try store.create()

@@ -72,8 +72,9 @@ public final class DropShelfStore {
             var recent = 0
             shelves = shelves.filter { shelf in
                 if shelf.pinned || open.contains(shelf.id) { return true }
+                guard !shelf.items.isEmpty else { return false }
                 recent += 1
-                return recent <= 10 && !shelf.items.isEmpty
+                return recent <= 10
             }
         }
         // Asset deletion is deliberately deferred: in-flight drags may still use an exported URL.
@@ -163,7 +164,18 @@ public final class DropShelfStore {
     }
     /// Run only at startup before any file promises or outgoing drags exist.
     public func collectUnusedAssets() throws {
-        let retained = Set(shelves.flatMap(\.items).compactMap(\.asset))
+        var retained = Set(shelves.flatMap(\.items).compactMap(\.asset))
+        let root = assetsDirectory.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        for item in shelves.flatMap(\.items) {
+            // Cross-shelf file imports (including old archives) may only carry a bookmark.
+            // Keep the whole owned directory when a bookmark points to one of its children.
+            for url in [item.url, try? resolve(item)].compactMap({ $0 }) where url.isFileURL {
+                let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+                if path.hasPrefix(root), let name = path.dropFirst(root.count).split(separator: "/").first {
+                    retained.insert(String(name))
+                }
+            }
+        }
         for url in try fm.contentsOfDirectory(at: assetsDirectory, includingPropertiesForKeys: nil) where !retained.contains(url.lastPathComponent) {
             try fm.removeItem(at: url)
         }

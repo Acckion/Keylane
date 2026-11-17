@@ -65,6 +65,19 @@ board.clearContents(); board.writeObjects([png]); expect(window.receive(board), 
 let link = NSPasteboardItem(); link.setString("https://example.invalid", forType: .URL)
 board.clearContents(); board.writeObjects([link]); expect(window.receive(board), "link accepted")
 expect(shelves.store!.shelf(window.shelfID)!.items.count == 4, "all four kinds retained")
+for (type, data) in [(NSPasteboard.PasteboardType.png, try Data(contentsOf: imageURL)), (.tiff, image.tiffRepresentation!)] {
+    let imageShelf = shelves.create()!
+    let imageInput = NSPasteboardItem(); imageInput.setData(data, forType: type)
+    board.clearContents(); board.writeObjects([imageInput])
+    expect(imageShelf.receive(board), "image representation imported: " + type.rawValue)
+    let exported = imageShelf.tableView(NSTableView(), pasteboardWriterForRow: 0) as! NSPasteboardItem
+    expect(exported.string(forType: .fileURL) != nil, "image export retains Finder file URL")
+    expect(exported.data(forType: type) == data, "image export preserves original typed bytes: " + type.rawValue)
+    let imageOnly = NSPasteboardItem(); imageOnly.setData(exported.data(forType: type)!, forType: type)
+    board.clearContents(); board.writeObjects([imageOnly])
+    expect(NSImage(pasteboard: board) != nil, "image-only consumer reads shelf export: " + type.rawValue)
+    imageShelf.close()
+}
 let reopened = try KeylaneCore.DropShelfStore(directory: root.appendingPathComponent("Storage"))
 expect(reopened.shelf(window.shelfID)!.items.count == 4, "cross-instance persistence")
 let moved = fixtures.appendingPathComponent("renamed.txt")

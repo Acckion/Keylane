@@ -682,6 +682,12 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             if scoped { heldAccess.append(url) }
             guard FileManager.default.isReadableFile(atPath: url.path) else { throw DropShelfStore.Failure.unavailable }
             output.setString(url.absoluteString, forType: .fileURL)
+            if item.kind == .image {
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                if let type = UTType(filenameExtension: url.pathExtension), type.conforms(to: .image), !type.isDynamic {
+                    output.setData(data, forType: .init(type.identifier))
+                }
+            }
         } else if let value = item.value {
             output.setString(value, forType: .string)
             if item.kind == .link { output.setString(value, forType: .URL) }
