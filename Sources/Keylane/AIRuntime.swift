@@ -14,7 +14,9 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     var legacyAccount: String?
     var previousEndpoints: [String]?
 
-    var baseURL: URL? {
+    var baseURL: URL? { Self.baseURL(for: endpoint) }
+
+    private static func baseURL(for endpoint: String) -> URL? {
         guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
               let host = url.host, !host.isEmpty,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
@@ -23,8 +25,10 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
         return url
     }
 
-    var completionURL: URL? {
-        guard let url = baseURL else { return nil }
+    var completionURL: URL? { Self.completionURL(for: endpoint) }
+
+    static func completionURL(for endpoint: String) -> URL? {
+        guard let url = baseURL(for: endpoint) else { return nil }
         return url.path.hasSuffix("/chat/completions") ? url : url.appendingPathComponent("chat/completions")
     }
 

@@ -63,9 +63,8 @@ final class AIConfiguration: ObservableObject {
         var updated = state
         if let index = updated.connections.firstIndex(where: { $0.id == connection.id }) {
             let original = updated.connections[index]
+            connection.legacyAccount = original.legacyAccount
             if original.completionURL != connection.completionURL {
-                // Endpoint edits keep the old credential item bound to its original endpoint.
-                connection.legacyAccount = nil
                 if let oldEndpoint = original.completionURL?.absoluteString {
                     var previous = Set(original.previousEndpoints ?? [])
                     previous.insert(oldEndpoint)
@@ -84,7 +83,7 @@ final class AIConfiguration: ObservableObject {
 
     func remove(_ connection: AIConnection) throws {
         guard let saved = state.connections.first(where: { $0.id == connection.id }) else { return }
-        if saved.baseURL != nil { try Self.deleteKey(for: saved, includingPreviousEndpoints: true) }
+        try Self.deleteKey(for: saved, includingPreviousEndpoints: true)
         var updated = state
         updated.connections.removeAll { $0.id == connection.id }
         if updated.selectedID == connection.id { updated.selectedID = updated.connections.first?.id }
@@ -104,25 +103,31 @@ final class AIConfiguration: ObservableObject {
         }
     }
 
-    private static func queries(for connection: AIConnection) -> [[String: Any]] {
-        guard let url = connection.completionURL else { return [] }
+    static func credentialQueries(for connection: AIConnection, includingPreviousEndpoints: Bool = false) -> [[String: Any]] {
         func query(service: String, account: String) -> [String: Any] {
             [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
              kSecAttrAccount as String: account]
         }
-        var result = [query(service: service, account: connection.id.uuidString + "|" + url.absoluteString)]
-        if let account = connection.legacyAccount { result.append(query(service: legacyService, account: account)) }
+
+        let currentURL = connection.completionURL
+        var endpoints = currentURL.map { [$0.absoluteString] } ?? []
+        if includingPreviousEndpoints { endpoints.append(contentsOf: connection.previousEndpoints ?? []) }
+        var result = endpoints.map { query(service: service, account: connection.id.uuidString + "|" + $0) }
+        if let account = connection.legacyAccount,
+           includingPreviousEndpoints || (currentURL != nil && currentURL == AIConnection.completionURL(for: account)) {
+            result.append(query(service: legacyService, account: account))
+        }
         return result
     }
 
     static func hasKey(for connection: AIConnection) -> Bool {
-        queries(for: connection).contains { query in
+        credentialQueries(for: connection).contains { query in
             SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
         }
     }
 
     static func key(for connection: AIConnection) throws -> String? {
-        for var query in queries(for: connection) {
+        for var query in credentialQueries(for: connection) {
             query[kSecReturnData as String] = true
             var result: CFTypeRef?
             let status = SecItemCopyMatching(query as CFDictionary, &result)
@@ -138,7 +143,7 @@ final class AIConfiguration: ObservableObject {
         let key = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, key.utf8.count <= 8192, key.rangeOfCharacter(from: .controlCharacters) == nil
         else { throw CredentialError.invalidKey }
-        guard var query = queries(for: connection).first else { throw CredentialError.unavailable }
+        guard var query = credentialQueries(for: connection).first else { throw CredentialError.unavailable }
         let values = [kSecValueData as String: Data(key.utf8)]
         var status = SecItemUpdate(query as CFDictionary, values as CFDictionary)
         if status == errSecItemNotFound {
@@ -150,16 +155,7 @@ final class AIConfiguration: ObservableObject {
     }
 
     static func deleteKey(for connection: AIConnection, includingPreviousEndpoints: Bool = false) throws {
-        var all = queries(for: connection)
-        if includingPreviousEndpoints {
-            for endpoint in connection.previousEndpoints ?? [] {
-                var previous = connection
-                previous.endpoint = endpoint
-                previous.legacyAccount = nil
-                all.append(contentsOf: queries(for: previous))
-            }
-        }
-        for query in all.reversed() {
+        for query in credentialQueries(for: connection, includingPreviousEndpoints: includingPreviousEndpoints).reversed() {
             let status = SecItemDelete(query as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else { throw CredentialError.unavailable }
         }

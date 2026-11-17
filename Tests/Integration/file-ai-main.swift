@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import KeylaneCore
 
 final class FixtureProtocol: URLProtocol {
@@ -76,3 +77,23 @@ precondition(!controller.running && controller.status.contains("启用"))
 settings.select(legacy.id)
 precondition(AIConfiguration(preferences: prefs).selected == legacy)
 print("PASS file AI fixture transport: response, usage, HTTP failure, malformed payload, cancellation/stale response, HTTPS validation, migration, Unicode SSE, truncation and disable; no external requests or real keys")
+
+let credentialKey = kSecAttrService as String
+let accountKey = kSecAttrAccount as String
+var changed = legacy
+changed.endpoint = "https://replacement.example/v1"
+precondition(settings.save(changed))
+let reloaded = AIConfiguration(preferences: prefs)
+let edited = reloaded.selected!
+let currentQueries = AIConfiguration.credentialQueries(for: edited)
+precondition(currentQueries.count == 1 && currentQueries[0][credentialKey] as? String == "org.keylane.ai")
+let removalQueries = AIConfiguration.credentialQueries(for: edited, includingPreviousEndpoints: true)
+precondition(removalQueries.contains { $0[credentialKey] as? String == "org.keylane.file-ai"
+    && $0[accountKey] as? String == legacy.legacyAccount })
+precondition(removalQueries.contains { ($0[accountKey] as? String)?.hasSuffix("|http://localhost/v1/chat/completions") == true })
+var restored = edited
+restored.endpoint = "http://localhost/v1/"
+precondition(reloaded.save(restored))
+let restoredQueries = AIConfiguration.credentialQueries(for: reloaded.selected!)
+precondition(restoredQueries.map { $0[credentialKey] as? String } == ["org.keylane.ai", "org.keylane.file-ai"])
+print("PASS legacy credential routing: endpoint changes, reload, original endpoint restoration and removal queries")
