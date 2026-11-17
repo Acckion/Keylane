@@ -61,6 +61,7 @@ enum UtilityLauncherModules {
         }
         page.leave = controller.stop
         page.resume = controller.start
+        page.actionSelectionID = { controller.selected?.id }
         page.primaryEnabled = { controller.selected != nil }
         page.returnBindings.alternates[.command] = .init {
             if let item = controller.selected { use(item, controller.primaryAction == .copy) }

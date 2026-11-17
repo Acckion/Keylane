@@ -41,7 +41,7 @@ final class ReleaseNotesLauncher: ObservableObject {
                              if self.query != $0 { self.query = $0; self.selectedTag = nil }
                          },
                          move: move, submit: { if let release = self.selected { self.show(release) } },
-                         primaryTitle: { "查看详情" }, primaryEnabled: { self.selected != nil },
+                         actionSelectionID: { self.selected?.tag }, primaryTitle: { "查看详情" }, primaryEnabled: { self.selected != nil },
                          actions: {
                              guard let release = self.selected else { return [] }
                              return [.init(id: "show-release-details", title: "查看详情", icon: "doc.text",
@@ -51,7 +51,7 @@ final class ReleaseNotesLauncher: ObservableObject {
                          contentPlacement: .readingDetail, content: { AnyView(self.detailView) },
                          leave: { self.detail = nil }, keepsStateWhenHidden: true, parent: Self.listID,
                          submit: { if let release = self.detail { self.open(release) } },
-                         returnBindings: .init(primary: .plain), primaryTitle: { "在浏览器中打开" }, primaryEnabled: { self.detail != nil },
+                         returnBindings: .init(primary: .plain), actionSelectionID: { self.detail?.tag }, primaryTitle: { "在浏览器中打开" }, primaryEnabled: { self.detail != nil },
                          actions: { self.actions(for: self.detail) }, badgeTitle: { self.detail?.tag ?? "更新日志" })
         ]
     }
