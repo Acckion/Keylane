@@ -55,9 +55,10 @@ struct Launcher: View {
     @State private var mainSearchSelection = LauncherResultSelection()
     @State private var mainSearchExpanded = false
     @State private var actionQuery = ""
-    @State private var actionSelection = 0
+    @State private var actionSelectionID: String?
+    @State private var menuContext: LauncherPagePresentation.ActionContext?
     @State private var focusToken = 0
-    @State private var submenu: LauncherAction.Submenu?
+    @State private var submenuPath: [String] = []
     @State private var argumentTarget: LauncherAction.ArgumentForm?
     @State private var argumentText = ""
     @FocusState private var argumentsFocused: Bool
@@ -355,6 +356,9 @@ struct Launcher: View {
         .onChange(of: model.rootSearchSensitivity) { _, _ in
             if model.pageID == .root { resetResultSelection() }
         }
+        .onChange(of: menuContext == nil ? nil : currentMenuContext) { _, value in
+            if menuContext != nil, menuContext != value { closeMenus() }
+        }
         .onChange(of: model.pageID) { _, _ in updatePresentation(visible: launcherVisible) }
         .onChange(of: rootScriptArguments) { _, _ in closeMenus() }
         .onChange(of: moduleActivation?.id) { _, _ in updatePresentation(visible: launcherVisible) }
@@ -455,10 +459,12 @@ struct Launcher: View {
         if model.isCompact { model.compactExpanded = true; return }
         if actions || appMenu {
             let items = filteredMenu(applicationMenu: appMenu)
-            let enabled = items.indices.filter { items[$0].enabled }
-            if let current = enabled.firstIndex(of: actionSelection) {
-                actionSelection = enabled[NavigationBounds.move(current, by: delta, count: enabled.count)]
-            } else if let first = enabled.first { actionSelection = first }
+            let enabled = items.filter(\.enabled)
+            if let current = enabled.firstIndex(where: { $0.id == actionSelectionID }) {
+                actionSelectionID = enabled[NavigationBounds.move(current, by: delta, count: enabled.count)].id
+            } else {
+                actionSelectionID = enabled.first?.id
+            }
         }
         else if let move = page?.move { move(delta) }
         else if model.pageID == .root || showsFileResults {
@@ -468,7 +474,7 @@ struct Launcher: View {
     }
     private func escape() {
         if inlineEmojiTarget != nil { closeMenus(); return }
-        if submenu != nil { dismissSubmenu(); return }
+        if !submenuPath.isEmpty { dismissSubmenu(); return }
         if rootScriptArguments != nil { cancelRootScriptArguments(); return }
         if argumentTarget != nil { dismissArgumentEditor(); focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
@@ -702,7 +708,7 @@ struct Launcher: View {
         let feedback = application ? model.footerFeedback.current : nil
         let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
             ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
-        let showsActions = rootScriptArguments == nil && (page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty)
+        let showsActions = rootScriptArguments == nil && (page?.contentPlacement != .form || !rootMenuItems(applicationMenu: false).isEmpty)
         let primaryLabel = LauncherFooterButtonLabel(title: primaryTitle,
             keys: (page?.returnBindings.primary ?? .plain).shortcut.launcherKeycaps)
         let actionsLabel = LauncherFooterButtonLabel(title: "操作", keys: ["⌘", "K"])
@@ -769,10 +775,10 @@ struct Launcher: View {
         let entryActions: [LauncherAction]
         if page?.actionShortcutsEnabled == true {
             entryActions = page?.actions?() ?? []
-        } else if page == nil, !appMenu, submenu == nil, argumentTarget == nil,
+        } else if page == nil, !appMenu, submenuPath.isEmpty, argumentTarget == nil,
                   let entry = selectedEntry, entry.commandID.rawValue.hasPrefix("app:") {
             entryActions = model.applicationResultActions.shortcutActions(for: entry, model: model)
-        } else if page == nil, !appMenu, submenu == nil, argumentTarget == nil,
+        } else if page == nil, !appMenu, submenuPath.isEmpty, argumentTarget == nil,
                   let entry = selectedEntry, entry.id == CalculatorLauncherModule.resultID.rawValue,
                   entry.detail != CalculatorLauncherModule.colorDetail {
             entryActions = model.launcherModules?.actions(for: entry) ?? []
@@ -783,26 +789,36 @@ struct Launcher: View {
     }
 
     private var pageMenuShortcuts: some View {
-        ForEach(shortcutActions) { action in
-            if let shortcut = action.shortcut, action.enabled, !shortcut.modifiers.isEmpty,
+        let candidates = shortcutActions
+        let context = candidates.isEmpty ? nil : actionContext()
+        return ForEach(candidates) { action in
+            if let context, let shortcut = action.shortcut, action.enabled, !shortcut.modifiers.isEmpty,
                page?.returnBindings.reserves(shortcut) != true {
-                pageMenuShortcut(action, shortcut: shortcut)
+                pageMenuShortcut(action, shortcut: shortcut, context: context)
             }
         }
     }
 
-    private func pageMenuShortcut(_ action: MenuAction, shortcut: KeyboardShortcut) -> some View {
-        let pageID = model.pageID
-        let context = page?.actionContextTitle?()
-        let selection = selectedEntry?.commandID
-        return Button("") {
-            guard presentation.page == pageID, model.pageID == pageID,
-                  page?.actionContextTitle?() == context, selectedEntry?.commandID == selection,
-                  !SearchField.isComposing,
+    private func actionContext(tracksSelection: Bool = true) -> LauncherPagePresentation.ActionContext? {
+        let selectedID: String?
+        if !tracksSelection { selectedID = nil }
+        else if model.pageID == .root || showsFileResults { selectedID = selectionIsCurrent ? selection.id?.rawValue : nil }
+        else { selectedID = page?.actionSelectionID?() }
+        return presentation.actionContext(page: model.pageID, activationID: moduleActivation?.id, selectionID: selectedID)
+    }
+
+    private var currentMenuContext: LauncherPagePresentation.ActionContext? {
+        actionContext(tracksSelection: !appMenu || page?.badgeActions != nil)
+    }
+
+    private func pageMenuShortcut(_ action: MenuAction, shortcut: KeyboardShortcut,
+                                  context: LauncherPagePresentation.ActionContext) -> some View {
+        Button("") {
+            guard actionContext() == context, !SearchField.isComposing,
                   let current = shortcutActions.first(where: { $0.id == action.id }), current.enabled,
                   current.shortcut?.key == shortcut.key, current.shortcut?.modifiers == shortcut.modifiers else { return }
             if current.submenu != nil, !actions { toggleMenu(application: false) }
-            activate(current)
+            activate(current, startsAtRoot: true)
         }
         .keyboardShortcut(shortcut)
         .hidden()
@@ -814,7 +830,7 @@ struct Launcher: View {
         let results = rows
         return selectionIndex(in: results).map { results[$0] }
     }
-    private func menuItems(applicationMenu: Bool) -> [MenuAction] {
+    private func rootMenuItems(applicationMenu: Bool) -> [MenuAction] {
         if applicationMenu {
             if let badgeActions = page?.badgeActions { return badgeActions() }
             return [
@@ -824,9 +840,6 @@ struct Launcher: View {
                 MenuAction(id: "hide", title: "隐藏 Keylane", icon: "rectangle.compress.vertical", shortcut: .init(.escape, modifiers: []), perform: { (NSApp.delegate as? Delegate)?.hideLauncher() }),
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
             ].filter { model.launcherModules?.isCommandModuleEnabled(CommandID(rawValue: $0.id)) != false }
-        }
-        if let submenu {
-            return [MenuAction(id: "back", title: "返回", icon: "chevron.left", perform: dismissSubmenu)] + submenu.items
         }
         if let page, !showsFileResults { return page.actions?() ?? [] }
         guard let row = selectedEntry else { return [] }
@@ -845,32 +858,75 @@ struct Launcher: View {
         }
         return actions
     }
+    private func currentSubmenu(root: [MenuAction]) -> MenuAction.Submenu? {
+        var items = root
+        var active: MenuAction.Submenu?
+        for id in submenuPath {
+            guard let parent = items.first(where: { $0.id == id }), parent.enabled,
+                  let submenu = parent.submenu else { return nil }
+            active = submenu
+            items = submenu.items
+        }
+        return active
+    }
+
     private func dismissSubmenu() {
-        submenu = nil
+        submenuPath.removeAll()
         actionQuery = ""
-        actionSelection = 0
+        actionSelectionID = nil
         focusToken += 1
     }
-    private func activate(_ item: MenuAction) {
+
+    private func activate(_ item: MenuAction, startsAtRoot: Bool = false) {
         guard item.enabled else { return }
-        if let next = item.submenu {
-            submenu = next
+        if item.submenu != nil {
+            if startsAtRoot { submenuPath = [item.id] }
+            else { submenuPath.append(item.id) }
             actionQuery = ""
-            actionSelection = 0
+            actionSelectionID = nil
             focusToken += 1
-        } else if item.id == "back", submenu != nil {
+        } else if item.id == "back", !submenuPath.isEmpty {
             dismissSubmenu()
         } else {
             closeMenus()
             item.perform()
         }
     }
+
     private func filteredMenu(applicationMenu: Bool) -> [MenuAction] {
-        menuItems(applicationMenu: applicationMenu).filter {
+        guard let menuContext, menuContext == currentMenuContext else { return [] }
+        let root = rootMenuItems(applicationMenu: applicationMenu)
+        let items: [MenuAction]
+        if !applicationMenu, !submenuPath.isEmpty {
+            let back = MenuAction(id: "back", title: "返回", icon: "chevron.left", perform: dismissSubmenu)
+            items = [back] + (currentSubmenu(root: root)?.items ?? [])
+        } else {
+            items = root
+        }
+        return items.filter {
             actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery)
                 || $0.value?.localizedCaseInsensitiveContains(actionQuery) == true
         }
     }
+
+    private func selectedAction(in items: [MenuAction]) -> MenuAction? {
+        guard let actionSelectionID else { return items.first(where: \.enabled) }
+        return items.first { $0.id == actionSelectionID && $0.enabled }
+    }
+
+    private func activateMenuItem(_ id: String, applicationMenu: Bool, focus: Int) {
+        guard focusToken == focus, applicationMenu ? appMenu : actions, !SearchField.isComposing,
+              let item = filteredMenu(applicationMenu: applicationMenu).first(where: { $0.id == id }) else { return }
+        activate(item)
+    }
+
+    private func activateSelectedMenuItem(applicationMenu: Bool, focus: Int, requiresSubmenu: Bool = false) {
+        guard focusToken == focus, applicationMenu ? appMenu : actions, !SearchField.isComposing,
+              let item = selectedAction(in: filteredMenu(applicationMenu: applicationMenu)),
+              !requiresSubmenu || item.submenu != nil else { return }
+        activate(item)
+    }
+
     private func menuRowsHeight(_ items: [MenuAction]) -> CGFloat {
         guard !items.isEmpty else { return 48 }
         let breaks = zip(items, items.dropFirst()).filter { $0.group != $1.group }.count
@@ -886,8 +942,11 @@ struct Launcher: View {
             title = "Keylane " + version
         } else {
             let base = page?.actionContextTitle?() ?? page?.actionTitle ?? selectedEntry?.name ?? "操作"
+            let submenu = submenuPath.isEmpty ? nil : currentSubmenu(root: rootMenuItems(applicationMenu: false))
             title = submenu.map { base + " › " + $0.title } ?? base
         }
+        let focus = focusToken
+        let selectedID = selectedAction(in: items)?.id
         return VStack(alignment: .leading, spacing: 0) {
             Text(title)
                 .font(.system(size: 12, weight: .medium))
@@ -904,9 +963,10 @@ struct Launcher: View {
                                 if index > 0, items[index - 1].group != item.group {
                                     Divider().padding(.horizontal, 16).frame(height: 9)
                                 }
-                                LauncherMenuRow(title: item.title, symbol: item.icon, selected: index == actionSelection,
+                                LauncherMenuRow(title: item.title, symbol: item.icon, selected: item.id == selectedID,
                                                 enabled: item.enabled, destructive: item.destructive, artwork: item.artwork,
-                                                activate: { activate(item) }, highlight: { actionSelection = index }) {
+                                                activate: { activateMenuItem(item.id, applicationMenu: applicationMenu, focus: focus) },
+                                                highlight: { if focus == focusToken { actionSelectionID = item.id } }) {
                                     if let value = item.value {
                                         Text(value).font(VisualStyle.rowText).foregroundStyle(.secondary)
                                             .lineLimit(1).help(value)
@@ -924,8 +984,8 @@ struct Launcher: View {
                     }
                     .scrollIndicators(.automatic)
                     .frame(height: menuRowsHeight(items))
-                    .onChange(of: actionSelection) { _, index in
-                        if items.indices.contains(index) { proxy.scrollTo(items[index].id) }
+                    .onChange(of: selectedID) { _, id in
+                        if let id { proxy.scrollTo(id) }
                     }
                     .onChange(of: actionQuery) { _, _ in
                         if let first = items.first { proxy.scrollTo(first.id, anchor: .top) }
@@ -933,12 +993,19 @@ struct Launcher: View {
                 }
             }
             Divider().padding(.top, 9)
-            SearchField(text: $actionQuery, placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, compact: true, navigation: model.navigation, submit: {
-                if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
+            SearchField(text: Binding(get: { actionQuery }, set: { query in
+                guard actionQuery != query else { return }
+                actionQuery = query
+                actionSelectionID = nil
+            }), placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, compact: true,
+                        navigation: model.navigation, submit: {
+                activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus)
             }, move: moveSelection, escape: escape, back: { escape() }, forward: {
-                if items.indices.contains(actionSelection), items[actionSelection].submenu != nil { activate(items[actionSelection]) }
+                activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus, requiresSubmenu: true)
             }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10)
-                .onChange(of: actionQuery) { _, _ in actionSelection = items.firstIndex(where: \.enabled) ?? 0 }
+                .onChange(of: items.map(\.id), initial: true) { _, _ in
+                    if actionSelectionID == nil { actionSelectionID = items.first(where: \.enabled)?.id }
+                }
         }.frame(width: Self.footerMenuWidth)
     }
     private func toggleMenu(application: Bool) {
@@ -946,12 +1013,15 @@ struct Launcher: View {
             guard application else { return }
             cancelRootScriptArguments()
         }
-        if !application, page?.contentPlacement == .form, menuItems(applicationMenu: false).isEmpty { return }
+        if !application, page?.contentPlacement == .form, rootMenuItems(applicationMenu: false).isEmpty { return }
         model.compactExpanded = true
         let target: Menu = application ? .application : .actions
         let open = menu != target
         closeMenus()
-        if open { menu = target }
+        if open, let context = actionContext(tracksSelection: !application || page?.badgeActions != nil) {
+            menuContext = context
+            menu = target
+        }
     }
 
     private func openInlineEmoji(_ range: NSRange) -> Bool {
@@ -966,9 +1036,10 @@ struct Launcher: View {
     private func closeMenus() {
         inlineEmojiTarget = nil
         menu = nil
-        submenu = nil
+        submenuPath.removeAll()
+        menuContext = nil
         actionQuery = ""
-        actionSelection = 0
+        actionSelectionID = nil
         focusToken += 1
     }
     private var moduleTitle: String { page?.placeholder ?? "设置" }
@@ -1055,7 +1126,7 @@ struct Launcher: View {
         if (showsFileResults || selectedEntry?.detail == "File"), model.fileSearch.isSearching { return }
         if actions || appMenu {
             let items = filteredMenu(applicationMenu: appMenu)
-            if items.indices.contains(actionSelection) { activate(items[actionSelection]) }
+            if let item = selectedAction(in: items) { activate(item) }
             return
         }
         performPrimaryAction()

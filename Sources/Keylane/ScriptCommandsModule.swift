@@ -269,6 +269,7 @@ enum ScriptCommandsModule {
             contentPlacement: .underChrome,
             content: { AnyView(ScriptCommandRunView(controller: controller)) },
             submit: { if !controller.running { controller.run() } },
+            actionSelectionID: { controller.selected?.id },
             primaryTitle: { controller.running ? "运行中" : "运行脚本" },
             actions: {
                 if controller.running {

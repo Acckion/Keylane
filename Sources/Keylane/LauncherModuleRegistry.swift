@@ -113,6 +113,7 @@ struct LauncherPage {
     var move: ((Int) -> Void)?
     var submit: (() -> Void)?
     var returnBindings = ReturnBindings()
+    var actionSelectionID: (() -> String?)?
     var actionContextTitle: (() -> String?)?
     var primaryTitle: (() -> String)?
     var primaryEnabled: (() -> Bool)?

@@ -68,16 +68,29 @@ public struct LauncherPagePresentation {
 
     public private(set) var page: PageID
     public private(set) var visible = false
+    public struct ActionContext: Equatable {
+        fileprivate let page: PageID
+        fileprivate let visit: UInt64
+        fileprivate let selectionID: String?
+    }
+
+    private var visit: UInt64 = 0
     private var activationID: UUID?
     private var entered = false
 
     public init(page: PageID = .root) { self.page = page }
+
+    public func actionContext(page: PageID, activationID: UUID?, selectionID: String?) -> ActionContext? {
+        guard visible, self.page == page, self.activationID == activationID else { return nil }
+        return .init(page: page, visit: visit, selectionID: selectionID)
+    }
 
     public mutating func update(page next: PageID, visible showing: Bool, activationID nextActivationID: UUID? = nil) -> Change {
         let previous = page
         let changed = previous != next || activationID != nextActivationID
         let deactivation = visible && (!showing || changed) ? previous : nil
         let activates = showing && (!visible || changed)
+        if changed || visible != showing { visit &+= 1 }
         if changed { entered = false }
         let activation: Activation? = activates ? (entered ? .resume : .enter) : nil
         if activates { entered = true }

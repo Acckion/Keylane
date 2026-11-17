@@ -39,7 +39,7 @@ enum ContactsLauncherModule {
             submit: { [weak model] in
                 guard let contact = controller.selected else { return }
                 openContact(contact, controller: controller, model: model)
-            }, actionContextTitle: { controller.selected?.name }, primaryTitle: { "在通讯录中打开" },
+            }, actionSelectionID: { controller.selected?.id }, actionContextTitle: { controller.selected?.name }, primaryTitle: { "在通讯录中打开" },
             primaryEnabled: { controller.selected != nil },
             actions: { [weak model] in
                 guard let model else { return [] }

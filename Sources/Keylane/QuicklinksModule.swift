@@ -100,6 +100,9 @@ enum QuicklinksModule {
                 if controller.links.isEmpty, controller.storageError == nil { create(); return }
                 if let link = controller.selected(in: controller.rows(aliases: model.aliases)) { open(link, model: model) }
             },
+            actionSelectionID: { [weak model] in
+                model.flatMap { controller.selected(in: controller.rows(aliases: $0.aliases))?.id }
+            },
             actionContextTitle: { [weak model] in
                 model.flatMap { controller.selected(in: controller.rows(aliases: $0.aliases))?.title }
             },
