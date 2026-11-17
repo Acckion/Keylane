@@ -57,6 +57,7 @@ final class Model: ObservableObject {
     let emoji = EmojiSearchController()
     let systemNavigation = NavigationController()
     let menuBar = MenuBarRegistry()
+    let dropShelf = DropShelfController()
     lazy var calendar = CalendarController(registry: menuBar)
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots
     @Published var excluded = Set(UserDefaults.standard.stringArray(forKey: "excludedApps") ?? []) {
@@ -315,6 +316,20 @@ final class Model: ObservableObject {
 
     init() {
         let defaults = UserDefaults.standard
+        // Install the documented shelf defaults once; never replace a user's existing binding
+        // or occupy a combination already configured for another Keylane command.
+        if !defaults.bool(forKey: "dropShelf.shortcutsInstalled") {
+            let shelfDefaults: [String: Shortcut] = [
+                "drop-shelf-new": .init(key: 49, modifiers: 2048 | 512),
+                "drop-shelf-clipboard": .init(key: 0, modifiers: 2048 | 512),
+                "drop-shelf-select": .init(key: 1, modifiers: 2048 | 512)
+            ]
+            for (action, shortcut) in shelfDefaults where bindings[action] == nil && !bindings.values.contains(shortcut) {
+                bindings[action] = shortcut
+            }
+            if let data = try? JSONEncoder().encode(bindings) { defaults.set(data, forKey: "shortcuts") }
+            defaults.set(true, forKey: "dropShelf.shortcutsInstalled")
+        }
         defaults.removeObject(forKey: "notes")
         if aliases.removeValue(forKey: "notes") != nil { defaults.set(aliases, forKey: "aliases") }
         if bindings.removeValue(forKey: "notes") != nil, let data = try? JSONEncoder().encode(bindings) {
@@ -972,6 +987,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         appearanceSubscription = model.$appearance.sink { [weak self] value in
             let appearance = value == "dark" ? NSAppearance(named: .darkAqua) : value == "light" ? NSAppearance(named: .aqua) : nil
             self?.window.appearance = appearance; self?.settingsWindow?.appearance = appearance
+            self?.model.dropShelf.applyAppearance(value)
         }
         errorSubscription = model.$error.filter { !$0.isEmpty }.sink { [weak self] message in
             self?.showLauncherFeedback(message, style: .failure)
