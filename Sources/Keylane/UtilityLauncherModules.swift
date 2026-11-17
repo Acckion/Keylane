@@ -62,7 +62,9 @@ enum UtilityLauncherModules {
         page.leave = controller.stop
         page.resume = controller.start
         page.primaryEnabled = { controller.selected != nil }
-        page.shortcutSubmit = { if let item = controller.selected { use(item, controller.primaryAction == .copy) } }
+        page.returnBindings.alternates[.command] = .init {
+            if let item = controller.selected { use(item, controller.primaryAction == .copy) }
+        }
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
