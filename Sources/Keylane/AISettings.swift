@@ -9,15 +9,21 @@ enum AIModule {
     static func make(model: Model) -> LauncherModule {
         let configuration = model.aiSettings
         let runtime = model.aiRuntime
+        let quickAI = QuickAIController(configuration: configuration, runtime: runtime)
+        let command = LauncherModule.Command(declaration: .init(
+            id: QuickAILauncher.commandID, title: "Quick AI", detail: "向已配置的模型提问", symbol: "sparkles",
+            keywords: ["ask", "AI", "快速问答", "询问 AI"], destination: .page(QuickAILauncher.pageID), settingsPage: "ai"
+        ), available: { configuration.isAvailable })
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
-                              title: "AI", symbol: "sparkles", settings: [
+                              title: "AI", symbol: "sparkles", commands: [command],
+                              pages: [QuickAILauncher.page(model: model, controller: quickAI)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
                   order: 8, items: [models],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
                   content: { AnyView(AISettings(configuration: configuration, runtime: runtime)) })
-        ])
+        ], searchUpdates: [configuration.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher()])
     }
 }
 
@@ -29,7 +35,7 @@ private struct AISettings: View {
     var body: some View {
         SettingsPageSections {
             SettingsGroup {
-                SettingsPicker("当前模型连接", detail: "询问文件使用此连接。", selection: Binding<UUID?>(
+                SettingsPicker("当前模型连接", detail: "Quick AI 与询问文件使用此连接。", selection: Binding<UUID?>(
                     get: { configuration.state.selectedID },
                     set: { if let id = $0 { configuration.select(id); newConnection = nil } }
                 )) {
