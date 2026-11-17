@@ -84,6 +84,8 @@ struct LauncherPage {
     var releasePreview: (() -> Void)?
     var actionShortcutsEnabled = false
     var loading: AnyPublisher<Bool, Never>?
+    var fullBleed = false
+    var submitWithReturn = false
 }
 
 struct SettingsTitlebarContribution {
