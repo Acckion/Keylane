@@ -195,7 +195,7 @@ enum BuiltinLauncherModules {
                         queryChanged: applicationActions.uninstallReview.filter,
                         leave: applicationActions.uninstallReview.clear,
                         keepsStateWhenHidden: true,
-                        back: { [weak model] in model?.pageID = uninstallPage },
+                        parent: uninstallPage,
                         move: applicationActions.uninstallReview.move,
                         submit: applicationActions.uninstallReview.submit,
                         actionContextTitle: { applicationActions.uninstallReview.name },

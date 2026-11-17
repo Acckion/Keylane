@@ -87,3 +87,38 @@ public struct LauncherPagePresentation {
         return Change(previousPage: changed ? previous : nil, deactivation: deactivation, activation: activation)
     }
 }
+
+public enum LauncherEscapeBehavior: String {
+    case backOrClose, closeWindow
+
+    public func returnsToParent(from page: PageID) -> Bool {
+        self == .backOrClose && page != .root
+    }
+}
+
+/// Keeps a parent's query only while the launcher is following its declared child routes.
+public struct LauncherPageHistory {
+    private struct Visit {
+        let parent: PageID
+        let child: PageID
+        let query: String
+    }
+
+    private var visits: [Visit] = []
+
+    public init() {}
+
+    public mutating func transition(from previous: PageID, to current: PageID,
+                                    parentOfCurrent: PageID?, query: String) -> String? {
+        if let visit = visits.last, visit.child == previous, visit.parent == current {
+            visits.removeLast()
+            return visit.query
+        }
+        if previous != current, parentOfCurrent == previous, previous != .root {
+            visits.append(Visit(parent: previous, child: current, query: query))
+        } else {
+            visits.removeAll()
+        }
+        return nil
+    }
+}
