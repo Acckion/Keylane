@@ -34,7 +34,7 @@
 
 已审阅视图命令使用独立的 4 KiB 缓存快照，按扩展目录原子保存。来宾仅能读写当前扩展的快照；敏感提交不携带快照。扩展内导航最多四层，返回时恢复父页面的搜索词与筛选项。隔离回放会重建页面和动作，禁止回放中的宿主操作和持久化写入，包括派生的异步回调。
 
-旧版 `ListItem`、`ListSection`、`FormCheckbox`、`FormDropdown`、`FormDropdownItem`、`CopyToClipboardAction`、`OpenAction` 和 `OpenInBrowserAction` 直接复用对应的现有组件及能力边界。已审阅来宾的 `randomId` 默认生成 21 位 URL 安全随机字符串，允许指定 0 到 4096 位。旧版 Raycast 运行时的具体格式仍待核对。
+旧版 `ListItem`、`ListSection`、`FormCheckbox`、`FormDropdown`、`FormDropdownItem`、`CopyToClipboardAction`、`OpenAction` 和 `OpenInBrowserAction` 直接复用对应的现有组件及能力边界。`randomId(size?)` 按 1.27.0 公开声明生成 URL 安全随机字符串，默认 21 位，显式长度由 Node 的内存与字符串容量限制。扩展虚拟机的内存及输出配额仍独立生效。
 
 旧版 `FormSeparator`、`FormTextArea`、`FormTextField` 和 `ActionPanelItem` 复用已审阅视图的表单与动作组件。`Alert.ActionStyle` 和 `AlertActionStyle` 在视图与无界面来宾中提供相同的样式值，沿用现有确认授权。
 
@@ -91,7 +91,7 @@
 
 已审阅视图通过 `Action.CopyToClipboard` 和 `Action.Paste` 传送文本、数字、HTML 与本地文件引用。显式选中的普通回调也可请求 `Clipboard.copy` 和 `Clipboard.paste`，支持保密复制和保留启动器。宿主在写入前验证类型及路径，保密内容使用剪贴板历史已识别的排除标记。复制动作接受旧版 `transient`，显式设置 `concealed` 时优先。宿主成功写入后才以回执重建 `onCopy`，传入扩展声明的原始内容和类型。合成扩展通过签名 VM 验证协议，AppKit 测试使用独立命名剪贴板。通用无界面授权、远程图标和 `onPaste` 仍待接入。
 
-视图、菜单栏与无界面适配器共同导出 SDK 2.11.1 的 478 个 `Icon` 成员，包含旧名和共用同一标识符的别名。原生界面将标识符映射到 macOS 系统符号。51 至 99 的数字图标使用通用数字符号，Raycast 品牌标识使用通用闪电符号。逐项状态对应 JavaScript 枚举值。九个标准 `Color` 枚举值也已核对，旧版 `Color.Brown` 及额外颜色格式仍按各自能力跟踪。
+视图、菜单栏与无界面适配器共同导出 SDK 2.11.1 的 478 个 `Icon` 成员，包含旧名和共用同一标识符的别名。原生界面将标识符映射到 macOS 系统符号。51 至 99 的数字图标使用通用数字符号，Raycast 品牌标识使用通用闪电符号。逐项状态对应 JavaScript 枚举值。九个标准 `Color` 枚举值也已核对。通过 Raycast 2.12.1.0 的公开 API 核对了旧版 `Color.Brown` 的浅色与深色值，并在 Keylane 中验证图标着色、头像与进度图标。额外颜色格式仍按各自能力跟踪。
 
 `Action.Open` 与 `Action.OpenInBrowser` 的 `onOpen` 在 macOS 返回成功后按操作和内容回执重建，参数保留扩展提供的原始目标。文件和应用仍由宿主校验。普通文件和目录可打开，可执行文件、脚本和应用包不在文件目标范围内。测试核对已登记应用解析、文件校验、隔离 VM 的请求和回执往返。其他协议、外部动作图标和通用无界面 `open` 仍在相应条目跟踪。
 

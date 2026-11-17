@@ -3,8 +3,8 @@ const Icon = require("./icon-values.cjs");
 // Runtime values from the public @raycast/api 2.11.1 declarations and Keyboard reference.
 const Color = Object.freeze({
   Blue: "raycast-blue",
-  // The public SDK declares a dynamic brown without publishing its RGB values.
-  Brown: Object.freeze({ light: "#a2845e", dark: "#ac8e68" }),
+  // Dynamic value observed through the public API in Raycast 2.12.1.0.
+  Brown: Object.freeze({ light: "#714426", dark: "#9F6138" }),
   Green: "raycast-green",
   Magenta: "raycast-magenta",
   Orange: "raycast-orange",
