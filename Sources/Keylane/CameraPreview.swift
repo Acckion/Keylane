@@ -228,18 +228,8 @@ struct CameraPreviewPage: View {
         .foregroundStyle(.white)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .topLeading) {
-            Button(action: back) {
-                Image(systemName: "chevron.backward")
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 36, height: 36)
-                    .background(.black.opacity(0.22), in: Circle())
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.white)
-            .accessibilityLabel("返回")
-            .help("返回")
-            .padding(VisualStyle.launcherEdgeInset)
+            LauncherBackButton(action: back)
+                .padding(VisualStyle.launcherEdgeInset)
         }
     }
 }
