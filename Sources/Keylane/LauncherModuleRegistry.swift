@@ -71,7 +71,7 @@ struct LauncherPage {
     var primaryEnabled: (() -> Bool)?
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
-    var searchAccessory: (() -> AnyView)?
+    var searchDisplay: (() -> AnyView)?
     var enter: ((String) -> String?)?
     var resume: (() -> Void)?
     var moveHorizontal: ((Int) -> Void)?
@@ -239,7 +239,14 @@ extension LauncherModule {
 struct DynamicCommandSettings {
     typealias Matches = (_ title: String, _ commandID: String, _ aliasKey: String?) -> Bool
     let updates: () -> [AnyPublisher<Void, Never>]
+    let commandNames: () -> [ShortcutCommandName]
     let matchingList: (_ matches: Matches?) -> ((_ showsColumns: Bool) -> AnyView)?
+}
+
+struct ShortcutCommandName: Identifiable {
+    let id: String
+    let title: String
+    var aliasKey: String? = nil
 }
 
 struct ShortcutSettingsBinding {
@@ -430,6 +437,15 @@ final class LauncherModuleRegistry {
         }
         reconcilingModules.remove(id)
         registrationChanges.send()
+    }
+
+    func canBindFromShortcutKeyboard(_ id: CommandID) -> Bool {
+        if id.rawValue == "launcher" { return true }
+        if let command = byID[id] {
+            return isCommandEnabled(command) && command.value.arguments?.count.contains(0) != false
+        }
+        guard let provider = provider(owning: id) else { return false }
+        return isCommandEnabled(id, in: provider.module) && provider.value.available(id)
     }
 
     func shortcutSettingsUpdates() -> [AnyPublisher<Void, Never>] {

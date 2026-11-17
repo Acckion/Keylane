@@ -60,13 +60,55 @@ enum BuiltinLauncherModules {
 
     private static func host(_ model: Model) -> LauncherModule {
         let category = ShortcutSettingsControls()
+        let keyboard = ShortcutKeyboardSelection()
+        let canBind = {
+            guard let shortcut = keyboard.shortcut else { return false }
+            return !keyboard.choosing && keyboard.previewModifiers == nil
+                && ShortcutValidation.conflict(in: ["shortcut": shortcut]) == nil
+        }
+        let bindShortcut = {
+            guard canBind() else { return }
+            keyboard.feedback = nil
+            keyboard.choosing = true
+        }
+        var openedFromHotkeys = false
+        let leaveKeyboard: () -> Void = { [weak model] in
+            model?.pageID = .root
+            if openedFromHotkeys { model?.openSettings(page: "hotkeys") }
+        }
         return .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general"),
+                         command("show-shortcut-keyboard", "显示键盘快捷键", "查看和编辑键盘上的快捷键", "keyboard",
+                                 ["Show Keyboard Shortcuts", "快捷键键盘", "热键"],
+                                 destination: .page(ShortcutKeyboardPage.pageID), settings: "hotkeys",
+                                 execute: { _ in openedFromHotkeys = false }),
                          command("show-onboarding", "Show Onboarding", "重新打开 Keylane 的首次引导",
                                  "sparkles.rectangle.stack", ["onboarding", "welcome", "首次引导", "新手引导"]) { _ in
                              (NSApp.delegate as? Delegate)?.showOnboarding()
                          }],
+              pages: [.init(id: ShortcutKeyboardPage.pageID, placeholder: "按下快捷键…", badge: ("快捷键键盘", "keyboard"),
+                            contentPlacement: .underChrome, content: { [weak model] in
+                                guard let model else { return AnyView(EmptyView()) }
+                                return AnyView(ShortcutKeyboardPage(model: model, selection: keyboard))
+                            }, back: leaveKeyboard, submit: bindShortcut,
+                            primaryTitle: { "绑定命令" }, primaryEnabled: canBind,
+                            actions: {
+                                [.init(id: "bind-shortcut", title: "绑定命令", icon: "keyboard", keys: ["↩"],
+                                       enabled: canBind(), perform: bindShortcut)]
+                            },
+                            updates: keyboard.objectWillChange.eraseToAnyPublisher(),
+                            searchDisplay: {
+                                let keys = keyboard.displayedKeys
+                                return AnyView(Text(keys.isEmpty ? "按下快捷键…" : keys.joined(separator: " "))
+                                    .font(.system(size: 19))
+                                    .foregroundStyle(keys.isEmpty ? .secondary : .primary))
+                            },
+                            typeFilterWidth: 220,
+                            typeFilter: { [weak model] open in
+                                guard let model else { return AnyView(EmptyView()) }
+                                return AnyView(ShortcutKeyboardPage(model: model, selection: keyboard, menuOpen: open))
+                            })],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
                          settingsPage(model, "launcher", "启动器", "magnifyingglass", "管理启动器的显示与搜索行为。", 5) {
                              LauncherBehaviorPreferences(model: $0)
@@ -76,7 +118,10 @@ enum BuiltinLauncherModules {
                          },
                          settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7, trailingToolbar: { [weak model] in
                              AnyView(ShortcutSettingsToolbar(groups: model?.launcherModules?.shortcutCommandGroups ?? [],
-                                                                    navigation: model?.navigation ?? "arrows", selection: category))
+                                                                    navigation: model?.navigation ?? "arrows", selection: category) { [weak model] in
+                                 openedFromHotkeys = true
+                                 model?.openPage(ShortcutKeyboardPage.pageID, origin: .menu)
+                             })
                          }) {
                              ShortcutSettingsPreferences(model: $0, selection: category)
                          },
