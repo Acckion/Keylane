@@ -121,7 +121,7 @@ enum NavigationLauncherModules {
             let refresh = LauncherAction(id: "refresh-navigation", title: NavigationText.label("刷新结果", "Refresh Results"),
                                          icon: "arrow.clockwise", perform: reload)
             guard let item = controller.selected else { return [refresh] }
-            return [LauncherAction(id: "run-navigation", title: mode.action, icon: mode.symbol, keys: ["↩"],
+            return [LauncherAction(id: "run-navigation", title: mode.action, icon: mode.symbol, shortcut: .init(.return, modifiers: []),
                                    perform: { activate(item) }), refresh]
         }
         page.updates = Publishers.Merge(

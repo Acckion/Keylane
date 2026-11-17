@@ -60,17 +60,17 @@ enum ClipboardActions {
         var actions: [LauncherAction] = []
         let pasteIsPrimary = targetName != nil && controller.primaryAction == .paste
         let copyAction = LauncherAction(id: "copy-clip", title: "复制到剪贴板", icon: "clipboard",
-                                       keys: pasteIsPrimary ? ["⌘", "↩"] : ["↩"], perform: { copy(controller) })
+                                       shortcut: pasteIsPrimary ? .init(.return, modifiers: .command) : .init(.return, modifiers: []), perform: { copy(controller) })
         if !pasteIsPrimary { actions.append(copyAction) }
         if let targetName {
             actions.append(.init(id: "paste-clip", title: "粘贴到 \(targetName)", icon: "doc.on.clipboard",
-                                 keys: pasteIsPrimary ? ["↩"] : ["⌘", "↩"], artwork: targetIcon,
+                                 shortcut: pasteIsPrimary ? .init(.return, modifiers: []) : .init(.return, modifiers: .command), artwork: targetIcon,
                                  perform: { delegate?.pasteClipboard() }))
         }
         if pasteIsPrimary { actions.append(copyAction) }
         if targetName != nil {
             actions.append(.init(id: "paste-keep-open-clip", title: "粘贴并保持窗口打开", icon: "doc.on.clipboard",
-                                 keys: ["⌥", "↩"], artwork: targetIcon, perform: { delegate?.pasteClipboard(keepOpen: true) }))
+                                 shortcut: .init(.return, modifiers: .option), artwork: targetIcon, perform: { delegate?.pasteClipboard(keepOpen: true) }))
         }
         let formats = controller.availableReplayFormats
         if !formats.isEmpty {
@@ -82,7 +82,7 @@ enum ClipboardActions {
                     }
                 }
                 actions.append(.init(id: "paste-as-clip", title: "粘贴为…", icon: "text.insert",
-                                     keys: ["⌥", "⌘", "↩"], artwork: targetIcon,
+                                     shortcut: .init(.return, modifiers: [.option, .command]), artwork: targetIcon,
                                      submenu: .init(title: "粘贴为…", items: pasteFormats)))
             }
             let copyFormats = choices.enumerated().map { index, format in
@@ -96,7 +96,7 @@ enum ClipboardActions {
         if canEdit, formats.contains(.plainText) {
             if let targetName {
                 actions.append(.init(id: "paste-plain-clip", title: "以纯文本粘贴到 \(targetName)", icon: "text.insert",
-                                     keys: ["⌃", "⌘", "↩"], artwork: targetIcon,
+                                     shortcut: .init(.return, modifiers: [.control, .command]), artwork: targetIcon,
                                      perform: { delegate?.pasteClipboard(format: .plainText) }))
             } else {
                 actions.append(.init(id: "copy-plain-clip", title: "复制为纯文本", icon: "text.alignleft",
@@ -105,7 +105,7 @@ enum ClipboardActions {
         }
 
         if let link {
-            actions.append(.init(id: "open-clip-link", title: "在浏览器中打开", icon: "globe", keys: ["⌘", "O"], group: 1) {
+            actions.append(.init(id: "open-clip-link", title: "在浏览器中打开", icon: "globe", shortcut: .init("o", modifiers: .command), group: 1) {
                 if !NSWorkspace.shared.open(link) { feedback(false, "无法在浏览器中打开链接。") }
             })
         }
@@ -118,7 +118,7 @@ enum ClipboardActions {
                     feedback(copied, copied ? "已复制颜色" : controller.status)
                 })
             }
-            actions.append(.init(id: "copy-color-as", title: title, icon: "clipboard", keys: ["⌥", "⌘", "C"],
+            actions.append(.init(id: "copy-color-as", title: title, icon: "clipboard", shortcut: .init("c", modifiers: [.option, .command]),
                                  submenu: .init(title: title, items: formats), group: 1))
         }
 
@@ -134,35 +134,35 @@ enum ClipboardActions {
             })
         }
         if canEdit {
-            actions.append(.init(id: "edit-clip", title: "编辑文本", icon: "pencil", keys: ["⌘", "E"],
+            actions.append(.init(id: "edit-clip", title: "编辑文本", icon: "pencil", shortcut: .init("e", modifiers: .command),
                                  group: 1, enabled: !text.isEmpty, perform: controller.editSelectedText))
         }
         actions.append(.init(id: "rename-clip", title: "重命名记录…", icon: "rectangle.dashed",
-                             keys: ["⇧", "⌘", "E"], group: 1, perform: controller.renameSelected))
+                             shortcut: .init("e", modifiers: [.shift, .command]), group: 1, perform: controller.renameSelected))
         actions.append(.init(id: "ai-clip", title: canEdit ? "发送给 AI 聊天" : "附加到 AI 聊天",
-                             icon: "sparkles", keys: canEdit ? ["⌘", "J"] : ["⌃", "⌘", "A"],
+                             icon: "sparkles", shortcut: canEdit ? .init("j", modifiers: .command) : .init("a", modifiers: [.control, .command]),
                              group: 1, enabled: false))
 
         if let detail, !canEdit {
             actions += fileActions(detail, controller: controller, hasImage: hasImage, feedback: feedback)
         }
         actions.append(.init(id: "pin-clip", title: item.pinned ? "取消置顶" : "置顶记录", icon: "pin",
-                             keys: ["⌘", "."], group: 1, perform: controller.pinSelected))
+                             shortcut: .init(".", modifiers: .command), group: 1, perform: controller.pinSelected))
         if !text.isEmpty, model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.snippets")) == true {
             actions.append(.init(id: "snippet-clip", title: "存为文字片段", icon: "text.badge.plus",
-                                 keys: ["⌘", "S"], group: 2) { [weak model] in
+                                 shortcut: .init("s", modifiers: .command), group: 2) { [weak model] in
                 model?.runCommand(SnippetsModule.createCommandID, origin: .menu, arguments: [text])
             })
         }
         if let quicklink, model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.links")) == true {
             let title = link?.host() ?? text.trimmingCharacters(in: .whitespacesAndNewlines)
             actions.append(.init(id: "quicklink-clip", title: "存为快捷链接", icon: "link",
-                                 keys: ["⇧", "⌘", "S"], group: 2) { [weak model] in
+                                 shortcut: .init("s", modifiers: [.shift, .command]), group: 2) { [weak model] in
                 if let model { QuicklinksModule.create(from: quicklink, title: title, model: model) }
             })
         } else if let detail {
             actions.append(.init(id: "save-clip", title: "存为文件…", icon: "arrow.down.document",
-                                 keys: ["⌥", "⇧", "⌘", "S"], group: 2) {
+                                 shortcut: .init("s", modifiers: [.option, .shift, .command]), group: 2) {
                 controller.export(detail) { result in
                     switch result {
                     case .success: feedback(true, "已保存文件")
@@ -173,24 +173,24 @@ enum ClipboardActions {
         }
         if let detail, hasImage {
             actions += [
-                .init(id: "ocr-clip", title: "复制图片中的文字", icon: "clipboard", keys: ["⌥", "⌘", "C"], group: 2) {
+                .init(id: "ocr-clip", title: "复制图片中的文字", icon: "clipboard", shortcut: .init("c", modifiers: [.option, .command]), group: 2) {
                     controller.copyImageText(.ocr, from: detail, completion: feedback)
                 },
-                .init(id: "qr-clip", title: "复制二维码文本", icon: "clipboard", keys: ["⌥", "⇧", "⌘", "C"], group: 2) {
+                .init(id: "qr-clip", title: "复制二维码文本", icon: "clipboard", shortcut: .init("c", modifiers: [.option, .shift, .command]), group: 2) {
                     controller.copyImageText(.qr, from: detail, completion: feedback)
                 }
             ]
         }
-        actions.append(.init(id: "delete-clip", title: "删除记录", icon: "trash", keys: ["⌃", "X"],
+        actions.append(.init(id: "delete-clip", title: "删除记录", icon: "trash", shortcut: .init("x", modifiers: .control),
                              group: 3, destructive: true, perform: controller.removeSelected))
         return actions + bulkRemovalActions(controller)
     }
 
     private static func bulkRemovalActions(_ controller: ClipboardController) -> [LauncherAction] {
         [
-            .init(id: "delete-recent-clips", title: "删除最近的记录…", icon: "clock", keys: ["⇧", "⌘", "X"],
+            .init(id: "delete-recent-clips", title: "删除最近的记录…", icon: "clock", shortcut: .init("x", modifiers: [.shift, .command]),
                   group: 3, destructive: true, perform: { controller.confirmHistoryRemoval(recent: true) }),
-            .init(id: "delete-all-clips", title: "删除全部记录", icon: "trash", keys: ["⌃", "⇧", "X"],
+            .init(id: "delete-all-clips", title: "删除全部记录", icon: "trash", shortcut: .init("x", modifiers: [.control, .shift]),
                   group: 3, destructive: true, perform: { controller.confirmHistoryRemoval(recent: false) })
         ]
     }
@@ -198,12 +198,12 @@ enum ClipboardActions {
     private static func fileActions(_ detail: ClipDetail, controller: ClipboardController, hasImage: Bool,
                                     feedback: @escaping (Bool, String) -> Void) -> [LauncherAction] {
         var actions: [LauncherAction] = [
-            .init(id: "open-clip-file", title: "打开方式…", icon: "app", keys: ["⌘", "O"], group: 1) {
+            .init(id: "open-clip-file", title: "打开方式…", icon: "app", shortcut: .init("o", modifiers: .command), group: 1) {
                 withFiles(detail, controller: controller, failure: feedback) { files in
                     FileActionsWindow.shared.show(files.urls, page: "open", retaining: files, owner: .clipboard)
                 }
             },
-            .init(id: "reveal-clip-file", title: "在访达中显示", icon: "folder", keys: ["⇧", "⌘", "O"], group: 1) {
+            .init(id: "reveal-clip-file", title: "在访达中显示", icon: "folder", shortcut: .init("o", modifiers: [.shift, .command]), group: 1) {
                 withFiles(detail, controller: controller, failure: feedback) { files in
                     NSWorkspace.shared.activateFileViewerSelecting(files.urls)
                 }
@@ -211,7 +211,7 @@ enum ClipboardActions {
         ]
         if hasImage {
             actions.append(.init(id: "annotate-clip", title: "在「预览」中标注…", icon: "pencil",
-                                 keys: ["⇧", "⌘", "A"], group: 1) {
+                                 shortcut: .init("a", modifiers: [.shift, .command]), group: 1) {
                 guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Preview") else {
                     feedback(false, "找不到「预览」应用。")
                     return
@@ -229,7 +229,7 @@ enum ClipboardActions {
                 }
             })
         }
-        actions.append(.init(id: "preview-clip-file", title: "快速查看", icon: "eye", keys: ["⌘", "Y"], group: 1) {
+        actions.append(.init(id: "preview-clip-file", title: "快速查看", icon: "eye", shortcut: .init("y", modifiers: .command), group: 1) {
             withFiles(detail, controller: controller, failure: feedback) { files in
                 FilePreview.shared.show(files.urls, retaining: files, owner: .clipboard)
             }

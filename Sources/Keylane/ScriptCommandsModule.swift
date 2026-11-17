@@ -180,7 +180,7 @@ enum ScriptCommandsModule {
             }
             return [
                 .init(id: "script-run", title: script.metadata?.arguments.isEmpty == false ? "填写参数" : "运行脚本",
-                      icon: "play", keys: ["↩"], perform: {
+                      icon: "play", shortcut: .init(.return, modifiers: []), perform: {
                     model.runCommand(row.commandID, origin: model.pageID == .root ? .search : .menu, usageKey: row.id)
                 }),
                 .init(id: "script-configure-run", title: "设置参数并运行", icon: "slider.horizontal.3", perform: {
@@ -287,7 +287,9 @@ enum ScriptCommandsModule {
             id: createPageID, placeholder: "", badge: ("创建脚本命令", "plus.square"),
             contentPlacement: .form,
             content: { [weak model] in
-                AnyView(ScriptCreationPage(controller: controller) { model?.pageID = .root })
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(ScriptCreationPage(controller: controller, back: model.goBackInLauncher,
+                                                  cancel: model.cancelLauncherPage))
             },
             submit: controller.saveDraft, shortcutSubmit: controller.saveDraft,
             primaryTitle: { "创建脚本" },

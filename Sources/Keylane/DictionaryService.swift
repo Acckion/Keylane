@@ -52,14 +52,15 @@ enum DictionaryProcess {
         exit(0)
     }
 
-    static func search(_ term: String) -> [DictionaryWord] {
-        let words = lookupInChild(term)
+    static func search(_ term: String, request: ExtensionProcessRequest) -> [DictionaryWord] {
+        let words = lookupInChild(term, request: request)
+        guard !request.isCancelled else { return [] }
         if words.contains(where: { $0.word.caseInsensitiveCompare(term) == .orderedSame }) { return words }
         guard let definition = DictionaryController.definition(for: term) else { return words }
         return [.init(word: term, entries: [.plain(definition)])] + words
     }
 
-    private static func lookupInChild(_ term: String) -> [DictionaryWord] {
+    private static func lookupInChild(_ term: String, request: ExtensionProcessRequest) -> [DictionaryWord] {
         guard let executable = Bundle.main.executableURL,
               let payload = try? JSONEncoder().encode(term) else { return [] }
         let process = Process()
@@ -70,10 +71,9 @@ enum DictionaryProcess {
         process.standardInput = input
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        let request = ExtensionProcessRequest()
         do { try request.launch(process) } catch { return [] }
         defer { request.finished() }
-        let timeout = DispatchWorkItem { request.cancel() }
+        let timeout = DispatchWorkItem { request.terminate() }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.5, execute: timeout)
         defer { timeout.cancel() }
         try? input.fileHandleForWriting.write(contentsOf: Data((payload.base64EncodedString() + "\n").utf8))
@@ -81,7 +81,11 @@ enum DictionaryProcess {
 
         var result = Data()
         while let chunk = try? output.fileHandleForReading.read(upToCount: 16384), !chunk.isEmpty {
-            if result.count + chunk.count > maximumResponseSize { request.cancel(); break }
+            if result.count + chunk.count > maximumResponseSize {
+                request.terminate()
+                process.waitUntilExit()
+                return []
+            }
             result.append(chunk)
         }
         process.waitUntilExit()
