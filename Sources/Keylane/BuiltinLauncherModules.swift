@@ -7,7 +7,7 @@ import KeylaneCore
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        let modules = [applications(model), host(model), files(model), clipboard(model), AppleNotesModule.make(model: model),
+        let modules = [applications(model), host(model), AIModule.make(model: model), files(model), clipboard(model), AppleNotesModule.make(model: model),
                        QuicklinksModule.make(model: model), CalculatorLauncherModule.make(model: model), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model),
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
@@ -345,14 +345,14 @@ enum BuiltinLauncherModules {
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
                     permission: permission),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
-                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
+                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.aiSettings.isAvailable && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"), execute: { [weak model] origin in
                 guard let model else { return }
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model.fileAI.present(model.fileResults.map(\.url))
             }),
             command("ask-finder", "询问 Finder", "AI", "sparkles", ["Ask Finder"], settings: "files",
-                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.finderAutomation.available && $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false },
+                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.aiSettings.isAvailable && $0.finderAutomation.available && $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-finder"), execute: { [weak model] origin in
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model?.fileAI.presentFinder()
@@ -387,7 +387,9 @@ enum BuiltinLauncherModules {
            })],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
-                           updates(model.fileAI.$commandsEnabled), model.finderAutomation.updates],
+                           updates(model.fileAI.$commandsEnabled),
+                           model.aiSettings.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+                           model.finderAutomation.updates],
            shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
 
@@ -406,8 +408,9 @@ enum BuiltinLauncherModules {
             .init(id: "share-file", title: "分享…", icon: "square.and.arrow.up") { [weak model] in
                 model?.withFileResult(url) { FileActionsWindow.shared.show($0.url, page: "share", owner: .fileSearch) }
             },
-            .init(id: "ask-file", title: "询问此文件…", icon: "sparkles") { [weak model] in
-                model?.withFileResult(url) { model?.fileAI.present([$0.url]) }
+            .init(id: "ask-file", title: "询问此文件…", icon: "sparkles", enabled: model.aiSettings.isAvailable) { [weak model] in
+                guard let model, model.aiSettings.isAvailable else { return }
+                model.withFileResult(url) { model.fileAI.present([$0.url]) }
             },
             .init(id: "reveal-file", title: "在 Finder 中显示", icon: "folder") { [weak model] in
                 model?.withFileResult(url) { NSWorkspace.shared.activateFileViewerSelecting([$0.url]) }
