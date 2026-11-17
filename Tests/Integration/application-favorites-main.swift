@@ -55,7 +55,6 @@ action("move-favorite-later", for: first)?.perform()
 let after = favoriteIDs(model)
 print("Visible order when moving across hidden favorite: \(before.map { URL(fileURLWithPath: $0).lastPathComponent }) → \(after.map { URL(fileURLWithPath: $0).lastPathComponent })")
 expect(after == Array(before.reversed()), "one move swaps visible neighbors")
-expect(model.compactFavoriteEntries.map(\.id) == after, "compact and expanded favorites share the same order")
 expect(probeDefaults.stringArray(forKey: "favoriteOrder") == [last.path, middle.path, first.path], "hidden favorite keeps its saved slot")
 let restarted = Model()
 restarted.apps = [first, middle, last]
@@ -64,37 +63,37 @@ expect(favoriteIDs(restarted) == [last.path, middle.path, first.path], "moving p
 
 model.excluded.formUnion([first.path, last.path])
 model.windowMode = "compact"
-model.compactFavorites = true
-expect(favoriteIDs(model).isEmpty, "all favorites are hidden")
-expect(model.launcherHeight == 61 && model.compactFavoriteEntries.isEmpty, "no empty compact favorites row")
+probeDefaults.set(true, forKey: "compactFavorites")
+expect(favoriteIDs(model).isEmpty && model.launcherHeight == 61, "hidden favorites leave a single search row")
 model.excluded = []
 model.disabledCommands.insert("app:" + middle.path)
-expect(model.compactFavoriteEntries.map(\.id) == [last.path, first.path], "disabled command is hidden from compact favorites")
+expect(favoriteIDs(model) == [last.path, first.path], "disabled command is hidden from favorites")
 model.disabledCommands.remove("app:" + middle.path)
 model.applicationsEnabled = false
 drainChanges()
-expect(model.compactFavoriteEntries.isEmpty && model.launcherHeight == 61, "disabled Applications module leaves no empty bar")
+expect(favoriteIDs(model).isEmpty && model.launcherHeight == 61, "disabled Applications module leaves no empty bar")
 model.applicationsEnabled = true
 drainChanges()
-expect(model.compactFavoriteEntries.map(\.id) == [last.path, middle.path, first.path] && model.launcherHeight == 109,
-       "re-enabling restores saved positions")
+expect(favoriteIDs(model) == [last.path, middle.path, first.path] && model.launcherHeight == 61,
+       "re-enabling restores saved positions without increasing compact height")
 try FileManager.default.removeItem(at: last)
 model.apps = [first, middle]
 drainChanges()
-expect(model.compactFavoriteEntries.map(\.id) == [middle.path, first.path] && model.favorites.contains(last.path),
-       "removed bundle disappears from compact favorites but keeps its saved position")
+expect(favoriteIDs(model) == [middle.path, first.path] && model.favorites.contains(last.path),
+       "removed bundle disappears from favorites but keeps its saved position")
 let _ = try makeFixtureApp("苹果派")
 model.apps = [first, middle, last]
 drainChanges()
-expect(model.compactFavoriteEntries.map(\.id) == [last.path, middle.path, first.path], "returning bundle regains its position")
+expect(favoriteIDs(model) == [last.path, middle.path, first.path], "returning bundle regains its position")
 model.toggleFavorite(last.path)
-expect(model.compactFavoriteEntries.map(\.id) == [middle.path, first.path] &&
+expect(favoriteIDs(model) == [middle.path, first.path] &&
        probeDefaults.stringArray(forKey: "favoriteOrder") == [middle.path, first.path], "removing a favorite persists")
 model.toggleFavorite(last.path)
-expect(model.compactFavoriteEntries.map(\.id) == [middle.path, first.path, last.path], "adding it again appends it")
+expect(favoriteIDs(model) == [middle.path, first.path, last.path], "adding it again appends it")
 
 model.excluded = []
 model.query = "苹果"
+expect(model.launcherHeight == 470, "typing in compact mode expands search results")
 let matches = rows(model)
 expect(matches.map(\.id) == [middle.path, last.path], "Chinese exact match ranks before prefix")
 let appRow = matches.first!

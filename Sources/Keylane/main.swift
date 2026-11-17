@@ -27,17 +27,12 @@ final class Model: ObservableObject {
     }
     @Published var interfaceSize = UserDefaults.standard.string(forKey: "interfaceSize") ?? "medium" { didSet { UserDefaults.standard.set(interfaceSize, forKey: "interfaceSize") } }
     @Published var windowMode = UserDefaults.standard.string(forKey: "windowMode") ?? "expanded" { didSet { UserDefaults.standard.set(windowMode, forKey: "windowMode") } }
-    @Published var compactFavorites = (UserDefaults.standard.object(forKey: "compactFavorites") as? Bool) ?? true { didSet { UserDefaults.standard.set(compactFavorites, forKey: "compactFavorites") } }
     @Published var compactExpanded = false
     let footerFeedback = LauncherFooterFeedbackPresenter()
     var interfaceScale: CGFloat { interfaceSize == "small" ? 0.9 : interfaceSize == "large" ? 1.1 : 1 }
     var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded && footerFeedback.current == nil }
     @Published var presentedLauncherHeight: CGFloat = 470
-    var launcherHeight: CGFloat { isCompact ? (compactFavorites && !compactFavoriteEntries.isEmpty ? 109 : 61) : 470 }
-    var compactFavoriteEntries: [Entry] {
-        guard !favorites.isEmpty else { return [] }
-        return commands.filter { favorites.contains($0.id) }
-    }
+    var launcherHeight: CGFloat { isCompact ? 61 : 470 }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
     @Published var query = ""
     @Published var pageID = PageID.root
@@ -212,7 +207,8 @@ final class Model: ObservableObject {
     }
 
     private var visibleFavoriteIDs: [String] {
-        if pageID == .root, query.isEmpty { return compactFavoriteEntries.map(\.id) }
+        guard !favorites.isEmpty else { return [] }
+        if pageID == .root, query.isEmpty { return commands.filter { favorites.contains($0.id) }.map(\.id) }
         let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: aliases, favorites: favorites, usage: usage)
         let visible = Set(launcherModules?.candidates(for: input).filter { !$0.isFallback }.map(\.id) ?? [])
         return orderedFavoriteIDs.filter { visible.contains($0) }
@@ -983,10 +979,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.$pageID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$query.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.footerFeedback.$current.map { $0 != nil }.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.$compactFavorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.$favorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.rootSearchUpdates.filter { [weak model] in model?.isCompact == true }.eraseToAnyPublisher()
+            model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
         ])
         .debounce(for: .zero, scheduler: DispatchQueue.main)
         .sink { [weak self] _ in self?.updateLauncherGeometry() }
