@@ -91,16 +91,19 @@ final class AITextCommandSession: ObservableObject {
         if let id = command?.connectionID {
             return state.connections.first { $0.id == id && $0.isConfigured }
         }
-        return state.selected
+        return state.selected.flatMap { $0.isConfigured ? $0 : nil }
     }
 
+    var isInvocationAvailable: Bool { canInvoke() }
+
     var canSend: Bool {
-        !destinationChanged && canInvoke() && !reply.running &&
+        !destinationChanged && isInvocationAvailable && !reply.running &&
             !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    func prepare(_ command: AITextCommand, selection: String?) {
+    func prepare(_ command: AITextCommand, selection: String?, canInvoke: @escaping () -> Bool = { true }) {
         clear()
+        self.canInvoke = canInvoke
         reviewedConnection = Self.connection(for: nil, in: configuration.state)
         self.command = command
         input = selection ?? ""

@@ -46,7 +46,7 @@ enum AIModule {
                               title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand] + textCommands,
                               providers: [AITextCommandLauncher.customCommands(model: model, session: textSession, library: library)],
                               pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: openChat),
-                                      AITextCommandLauncher.page(model: model, session: textSession)], settings: [
+                                      AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
                   order: 8, items: [],
                   titlebar: .init(title: "启用 AI",

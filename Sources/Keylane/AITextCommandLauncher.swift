@@ -9,13 +9,17 @@ enum AITextCommandLauncher {
 
     static func commands(model: Model, session: AITextCommandSession) -> [LauncherModule.Command] {
         AITextCommand.allCases.map { command in
-            LauncherModule.Command(declaration: .init(
-                id: .init(rawValue: command.id), title: command.title, detail: "预览选中文本，确认后交给模型处理",
+            let id = CommandID(rawValue: command.id)
+            return LauncherModule.Command(declaration: .init(
+                id: id, title: command.title, detail: "预览选中文本，确认后交给模型处理",
                 symbol: command.icon, keywords: [command.rawValue, "AI", "选中文字"], destination: .action,
                 settingsPage: AIModule.textCommandsItem.page
             ), available: { [weak model] in model?.aiSettings.isAvailable == true }, execute: { [weak model] origin in
                 guard let model else { return }
-                session.prepare(command, selection: selectedText())
+                session.prepare(command, selection: selectedText()) { [weak model] in
+                    model?.launcherModules?.isCommandModuleEnabled(id) == true &&
+                        model?.disabledCommands.contains(id.rawValue) == false
+                }
                 model.openPage(pageID, origin: origin)
             })
         }
@@ -64,12 +68,17 @@ enum AITextCommandLauncher {
         return SnippetTextTarget.attribute(kAXSelectedTextAttribute, of: element) as? String
     }
 
-    static func page(model: Model, session: AITextCommandSession) -> LauncherPage {
+    static func page(model: Model, session: AITextCommandSession, library: CustomAICommandLibrary) -> LauncherPage {
         let send: () -> Void = {
             guard !SearchField.isComposing else { return }
             session.send()
         }
+        let invocationUpdates = Publishers.Merge(
+            ViewObservation.changes(model.$disabledCommands),
+            ViewObservation.changes(library.$commands)
+        ).eraseToAnyPublisher()
         let updates = Publishers.MergeMany([
+            invocationUpdates,
             ViewObservation.changes(session.configuration.$state),
             ViewObservation.changes(session.$invocationID),
             session.$input.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -82,6 +91,7 @@ enum AITextCommandLauncher {
         return LauncherPage(id: pageID, placeholder: "", badge: ("AI 命令", "sparkles"),
                             contentPlacement: .form, content: { [weak model] in
                                 AnyView(AITextCommandForm(session: session, configuration: session.configuration,
+                                                          invocationUpdates: invocationUpdates,
                                                           back: { model?.goBackInLauncher() }))
                             }, leave: session.clear, submit: send, returnBindings: .init(primary: .command),
                             actionSelectionID: { session.invocationID.uuidString },
@@ -103,9 +113,18 @@ enum AITextCommandLauncher {
 private struct AITextCommandForm: View {
     @ObservedObject var session: AITextCommandSession
     @ObservedObject var configuration: AIConfiguration
+    @StateObject private var invocationObservation: ViewObservation
     let back: () -> Void
     @State private var running = false
     @FocusState private var inputFocused: Bool
+
+    init(session: AITextCommandSession, configuration: AIConfiguration,
+         invocationUpdates: AnyPublisher<Void, Never>, back: @escaping () -> Void) {
+        self.session = session
+        self.configuration = configuration
+        self.back = back
+        _invocationObservation = StateObject(wrappedValue: ViewObservation([invocationUpdates]))
+    }
 
     var body: some View {
         LauncherCreationForm(back: back, spacing: 16) {
@@ -150,9 +169,7 @@ private struct AITextCommandForm: View {
                         .accessibilityLabel("待处理文本")
                         .disabled(running)
                 }
-                Text(session.destinationChanged ? "模型连接已变化，请返回并重新打开命令。"
-                     : "发送至 \(session.destination)。")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(destinationStatus).font(.caption).foregroundStyle(.secondary)
                 if session.customCommand == nil, session.input.isEmpty {
                     Text("无法读取选区时，可在此手动输入。").font(.caption).foregroundStyle(.secondary)
                 }
@@ -162,6 +179,12 @@ private struct AITextCommandForm: View {
         }
         .task { inputFocused = session.input.isEmpty }
         .onReceive(session.reply.$running.removeDuplicates()) { running = $0 }
+    }
+
+    private var destinationStatus: String {
+        if !session.isInvocationAvailable { return "命令已停用、编辑或移除，请返回后重新打开。" }
+        if session.destinationChanged { return "模型连接已变化，请返回并重新打开命令。" }
+        return "发送至 \(session.destination)。"
     }
 }
 
