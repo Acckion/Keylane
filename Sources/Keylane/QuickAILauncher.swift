@@ -80,6 +80,9 @@ struct AIConversationTranscript: View {
                         if !turn.answer.isEmpty {
                             Text(turn.answer).textSelection(.enabled)
                         }
+                        if !turn.complete && (!controller.running || turn.id != controller.turns.last?.id) {
+                            Text("回复未完成").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }

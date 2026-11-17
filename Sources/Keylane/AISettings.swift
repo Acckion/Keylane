@@ -10,12 +10,16 @@ enum AIModule {
     static func make(model: Model) -> LauncherModule {
         let configuration = model.aiSettings
         let runtime = model.aiRuntime
-        let quickAI = QuickAIController(configuration: configuration, runtime: runtime)
+        let historyURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Keylane/AI/history.sqlite")
+        let quickAI = QuickAIController(configuration: configuration, runtime: runtime,
+                                        history: AIChatHistory(url: historyURL))
         let chat = AIChatWindow(controller: quickAI, configuration: configuration)
         let openChat: () -> Void = { [weak model] in
             guard let model, configuration.isAvailable else { return }
             let fromQuickAI = model.pageID == QuickAILauncher.pageID
-            chat.show(draft: fromQuickAI ? model.query : "", activation: model.windowActivationBehavior) {
+            chat.show(draft: fromQuickAI ? model.query : "", restoreLatest: !fromQuickAI,
+                      activation: model.windowActivationBehavior) {
                 (NSApp.delegate as? Delegate)?.hideLauncher()
                 if fromQuickAI { model.pageID = .root }
             }

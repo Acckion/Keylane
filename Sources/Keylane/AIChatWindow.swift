@@ -11,15 +11,15 @@ final class AIChatWindow: NSObject, NSWindowDelegate {
         self.configuration = configuration
     }
 
-    func show(draft: String, activation: WindowActivationBehavior, leaveLauncher: () -> Void) {
-        controller.beginChat()
+    func show(draft: String, restoreLatest: Bool, activation: WindowActivationBehavior, leaveLauncher: () -> Void) {
+        controller.beginChat(restoreLatest: restoreLatest)
         leaveLauncher()
         if window == nil {
             let chat = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 730, height: 570),
                                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                 backing: .buffered, defer: false)
             chat.title = "AI Chat"
-            chat.minSize = NSSize(width: 480, height: 350)
+            chat.minSize = NSSize(width: 620, height: 350)
             chat.isReleasedWhenClosed = false
             chat.delegate = self
             chat.contentView = NSHostingView(rootView: AIChatView(controller: controller, configuration: configuration, draft: draft))
@@ -45,13 +45,59 @@ private struct AIChatView: View {
     @ObservedObject var configuration: AIConfiguration
     @State var draft: String
     @FocusState private var editorFocused: Bool
+    @State private var pendingDeletion: AIChatSummary?
 
     var body: some View {
+        HSplitView {
+            sidebar.frame(minWidth: 160, idealWidth: 196, maxWidth: 290)
+            chat.frame(minWidth: 400)
+        }
+        .task { editorFocused = true }
+        .onChange(of: controller.chatID) { _, _ in draft = "" }
+        .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
+        .confirmationDialog("删除这段对话？", isPresented: Binding(
+            get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }
+        ), titleVisibility: .visible, presenting: pendingDeletion) { item in
+            Button("删除对话", role: .destructive) { controller.deleteChat(item.id); pendingDeletion = nil }
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("对话历史").font(.headline)
+                Spacer()
+                Button("新对话", systemImage: "plus", action: newChat)
+                    .labelStyle(.iconOnly).help("新对话")
+            }.padding(12)
+            List(controller.chats, selection: Binding<UUID?>(
+                get: { controller.chatID },
+                set: { if let id = $0 { controller.openChat(id) } }
+            )) { item in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title).lineLimit(1)
+                    Text(item.updated, style: .date).font(.caption).foregroundStyle(.secondary)
+                }
+                .tag(item.id)
+                .contextMenu { Button("删除…", role: .destructive) { pendingDeletion = item } }
+            }
+            .listStyle(.sidebar)
+            if !controller.historyError.isEmpty {
+                Text(controller.historyError).font(.caption).padding(10)
+            }
+        }
+    }
+
+    private var chat: some View {
         VStack(spacing: 0) {
-            AIConversationTranscript(controller: controller)
+            AIConversationTranscript(controller: controller).id(controller.chatID)
+                .overlay { if controller.loadingChat { ProgressView("正在读取对话…") } }
             Divider()
             VStack(alignment: .leading, spacing: 10) {
-                if let connection = configuration.selected, configuration.isAvailable {
+                if !controller.matchesCurrentModel {
+                    Text("这段对话使用了另一模型或接口。切回原配置，或新建对话。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let connection = configuration.selected, configuration.isAvailable {
                     Text(connection.name.isEmpty ? connection.model : connection.name)
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
@@ -61,22 +107,27 @@ private struct AIChatView: View {
                 TextEditor(text: $draft)
                     .frame(height: 76)
                     .focused($editorFocused)
+                    .disabled(controller.loadingChat || !controller.matchesCurrentModel)
                     .accessibilityLabel("问题")
                 HStack {
-                    Button("新对话") { controller.reset(); draft = ""; editorFocused = true }
+                    Button("新对话", action: newChat)
                     Button("复制回复") { AIConversationTranscript.copy(controller.lastAnswer) }
                         .disabled(controller.lastAnswer == nil)
                     Spacer()
                     Button("发送", action: submit)
                         .keyboardShortcut(.return, modifiers: .command)
                         .buttonStyle(ContentActionButtonStyle())
-                        .disabled(controller.running || !configuration.isAvailable
+                        .disabled(controller.running || controller.loadingChat || !controller.matchesCurrentModel || !configuration.isAvailable
                                   || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }.padding(16)
         }
-        .task { editorFocused = true }
-        .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
+    }
+
+    private func newChat() {
+        controller.reset()
+        draft = ""
+        editorFocused = true
     }
 
     private func submit() {
