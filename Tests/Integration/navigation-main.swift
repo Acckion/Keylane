@@ -33,6 +33,16 @@ struct NavigationChecks {
         try checkController()
         try checkMenuExclusions()
 
+        let primary = (bounds: CGRect(x: 0, y: 0, width: 1600, height: 1000),
+                       area: CGRect(x: 0, y: 24, width: 1600, height: 940))
+        let secondary = (bounds: CGRect(x: -1200, y: 80, width: 1200, height: 900),
+                         area: CGRect(x: -1100, y: 110, width: 1100, height: 820))
+        for point in [CGPoint(x: -600, y: 90), CGPoint(x: -600, y: 960), CGPoint(x: -1150, y: 500)] {
+            try require(SystemNavigation.displayArea(at: point, in: [primary, secondary]) == secondary.area,
+                        "Mouse in a secondary display's menu bar, Dock or Stage Manager strip selected the wrong display")
+        }
+        print("Full display bounds select the corresponding window-management area")
+
         guard AXIsProcessTrusted() else {
             print("SKIP native window and menu actions: test runner has no Accessibility access")
             return
@@ -73,6 +83,59 @@ struct NavigationChecks {
         try require(try place(.restore, in: fixture).isEmpty, "Window restore failed")
         try require(try !place(.restore, in: fixture).isEmpty, "Restore remained available after use")
         print("Native window placement and restore passed")
+
+        let tiling = WindowPlacementOptions(windowGap: 12, screenGap: 8, halfFractions: [0.5, 2/3, 1/3])
+        let original = try windowTarget(in: fixture, options: tiling)
+        try require(try manage(.half(.left), in: fixture, options: tiling).isEmpty, "Half-screen with gaps failed")
+        let first = try windowTarget(in: fixture, options: tiling)
+        try require(abs(first.frame.minX - first.display.minX - 8) <= 2, "Screen gap was not applied")
+        try require(try manage(.half(.left), in: fixture, options: tiling).isEmpty, "Half-screen cycling failed")
+        let next = try windowTarget(in: fixture, options: tiling)
+        try require(next.frame.width > first.frame.width, "Repeated half-screen did not cycle to the next size")
+        try require(try place(.restore, in: fixture).isEmpty, "Cycled layout did not restore")
+        try require(try windowTarget(in: fixture, options: tiling).frame == first.frame, "Cycle restore frame mismatch")
+        try require(try manage(.place(.resize(original.frame.size)), in: fixture, options: tiling).isEmpty, "Explicit resize failed")
+        try require(try windowTarget(in: fixture, options: tiling).frame.size == original.frame.size, "Explicit resize frame mismatch")
+        print("Native window gaps, half-screen cycling, cycle restore and explicit resize passed")
+
+        var entry = WindowLayoutEntry(bundleID: "org.keylane.navigation-fixture")
+        entry.windowTitle = "Navigation Fixture B"
+        entry.geometry = WindowGeometry(region: CGRect(x: 0.5, y: 0, width: 0.5, height: 1))
+        var layout = CustomWindowAction(windows: [entry])
+        layout.name = "Fixture layout"
+        layout.frontWindowID = entry.id
+        var layoutFailures: Int?
+        navigation.applyLayout([(entry, fixture.processIdentifier)], layout: layout, otherWindows: .keep,
+                               options: tiling, request: .init()) { layoutFailures = $0 }
+        try require(awaitValue(timeout: 6, { layoutFailures }) == 0, "Applying a layout with a front window failed")
+        let front = try windowTarget(in: fixture, options: tiling)
+        guard let wanted = layout.displayFrame(for: entry, in: front.display, windowGap: 12, screenGap: 8)
+        else { throw CheckError.failed("Fixture layout frame unavailable") }
+        try require(front.frame == wanted, "The configured layout window was not focused at its new size")
+        print("Native layout gaps and configured front window passed")
+
+        var rawWindows: CFTypeRef?
+        var rawTitle: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(fixtureAX, kAXWindowsAttribute as CFString, &rawWindows) == .success,
+              let orderedWindows = rawWindows as? [AXUIElement], orderedWindows.count == 2,
+              let firstWindow = orderedWindows.first,
+              AXUIElementCopyAttributeValue(firstWindow, kAXTitleAttribute as CFString, &rawTitle) == .success,
+              let firstTitle = rawTitle as? String, !firstTitle.isEmpty else {
+            throw CheckError.failed("Could not determine fixture AX window order")
+        }
+        var wildcard = WindowLayoutEntry(bundleID: entry.bundleID)
+        wildcard.geometry = WindowGeometry(region: CGRect(x: 0, y: 0, width: 0.5, height: 1))
+        entry.windowTitle = firstTitle
+        layout.windows = [wildcard, entry]
+        layoutFailures = nil
+        navigation.applyLayout([(wildcard, fixture.processIdentifier), (entry, fixture.processIdentifier)],
+                               layout: layout, otherWindows: .keep, options: tiling, request: .init()) { layoutFailures = $0 }
+        try require(awaitValue(timeout: 6, { layoutFailures }) == 0,
+                    "Wildcard entry took the first AX window reserved by the later titled entry")
+        let targeted = try windowTarget(in: fixture, options: tiling)
+        try require(CFEqual(targeted.window, firstWindow) && targeted.frame == wanted,
+                    "The reserved window did not move to the titled entry's frame")
+        print("Native layout reserves title-matched windows ahead of wildcards")
 
         var menus: NavigationScan?
         _ = navigation.scan(.menus, target: fixture) { menus = $0 }
@@ -227,6 +290,21 @@ struct NavigationChecks {
         var outcome: String?
         SystemNavigation.shared.placeWindow(placement, in: app) { outcome = $0 ?? "" }
         guard let outcome = awaitValue(timeout: 4, { outcome }) else { throw CheckError.failed("Window placement timed out") }
+        return outcome
+    }
+
+    private static func windowTarget(in app: NSRunningApplication, options: WindowPlacementOptions) throws -> SystemNavigation.WindowTarget {
+        var target: SystemNavigation.WindowTarget?
+        SystemNavigation.shared.windowTarget(in: app, options: options, request: .init()) { target = $0 }
+        guard let target = awaitValue(timeout: 4, { target }) else { throw CheckError.failed("Window target could not be read") }
+        return target
+    }
+
+    private static func manage(_ operation: SystemNavigation.WindowOperation, in app: NSRunningApplication,
+                               options: WindowPlacementOptions) throws -> String {
+        var outcome: String?
+        SystemNavigation.shared.manageWindow(operation, in: app, options: options) { outcome = $0 ?? "" }
+        guard let outcome = awaitValue(timeout: 4, { outcome }) else { throw CheckError.failed("Window operation timed out") }
         return outcome
     }
 

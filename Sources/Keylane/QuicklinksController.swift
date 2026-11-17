@@ -157,6 +157,11 @@ final class QuicklinksController: ObservableObject {
         selectedID = rows[NavigationBounds.move(index, by: delta, count: rows.count)].id
     }
 
+    func resolvedLayoutURL(id: String) throws -> URL {
+        guard let link = links.first(where: { $0.id == id }) else { throw Message("此布局关联的快捷链接已不存在。") }
+        return try link.parsedTemplate(context: templateContext()).url()
+    }
+
     @discardableResult
     func launch(_ link: Quicklink, presentParameters: () -> Void) -> Bool {
         clearInput()
