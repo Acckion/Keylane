@@ -62,8 +62,9 @@ enum BuiltinLauncherModules {
         let category = ShortcutSettingsControls()
         let keyboard = ShortcutKeyboardSelection()
         let canBind = {
-            !keyboard.choosing && keyboard.previewModifiers == nil
-                && ShortcutValidation.conflict(in: ["shortcut": keyboard.shortcut]) == nil
+            guard let shortcut = keyboard.shortcut else { return false }
+            return !keyboard.choosing && keyboard.previewModifiers == nil
+                && ShortcutValidation.conflict(in: ["shortcut": shortcut]) == nil
         }
         let bindShortcut = {
             guard canBind() else { return }

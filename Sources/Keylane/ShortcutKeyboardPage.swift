@@ -3,8 +3,8 @@ import KeylaneCore
 import SwiftUI
 
 final class ShortcutKeyboardSelection: ObservableObject {
-    @Published var input = ShortcutKeyboardInput(selected: Shortcut(key: 3, modifiers: 256))
-    var shortcut: Shortcut { input.selected }
+    @Published var input = ShortcutKeyboardInput()
+    var shortcut: Shortcut? { input.selected }
     var previewModifiers: UInt32? { input.previewModifiers }
     @Published var choosing = false
     @Published var feedback: String?
@@ -40,10 +40,10 @@ struct ShortcutKeyboardPage: View {
         ] + (model.launcherModules.map { $0.shortcutSettingsUpdates() + [$0.availabilityChanges.eraseToAnyPublisher()] } ?? [])))
     }
 
-    private var shortcut: Shortcut { selection.shortcut }
+    private var shortcut: Shortcut? { selection.shortcut }
     private var owner: String? { model.bindings.first { $0.value == shortcut }?.key }
     private var validation: String? {
-        ShortcutValidation.conflict(in: ["shortcut": shortcut])
+        shortcut.flatMap { ShortcutValidation.conflict(in: ["shortcut": $0]) }
     }
 
     var body: some View {
@@ -129,6 +129,14 @@ struct ShortcutKeyboardPage: View {
                 selection.input.modifiersChanged(pressed.modifiers)
                 return event
             }
+            if pressed.key == 53, pressed.modifiers == 0 {
+                if event.isARepeat { return nil }
+                if selection.input.cancelSelection() {
+                    selection.feedback = nil
+                    return nil
+                }
+                return event
+            }
             // Bare keys remain available to the Launcher and never replace a captured chord.
             guard pressed.modifiers != 0, Self.editableCodes.contains(pressed.key) else { return event }
             if !event.isARepeat {
@@ -174,8 +182,8 @@ struct ShortcutKeyboardPage: View {
         HStack(spacing: 10) {
             VStack(alignment: .trailing, spacing: 2) {
                 HStack(spacing: 8) {
-                    Keycaps(keys: shortcut.keycaps)
-                    Text(commandName ?? "未绑定")
+                    if let shortcut { Keycaps(keys: shortcut.keycaps) }
+                    Text(shortcut == nil ? "未选择快捷键" : commandName ?? "未绑定")
                         .font(.caption).lineLimit(1).truncationMode(.tail)
                         .foregroundStyle(.secondary)
                 }
@@ -196,7 +204,7 @@ struct ShortcutKeyboardPage: View {
                 selection.choosing = true
             }
             .buttonStyle(ContentActionButtonStyle(active: true))
-            .disabled(validation != nil)
+            .disabled(shortcut == nil || validation != nil)
             .fixedSize()
         }
         .frame(minHeight: 36)
@@ -279,19 +287,19 @@ struct ShortcutKeyboardPage: View {
             let unit = proxy.size.width / 1030
             ZStack(alignment: .topLeading) {
                 ForEach(Self.layout) { cap in
-                    let displayedModifiers = selection.previewModifiers ?? shortcut.modifiers
+                    let displayedModifiers = selection.previewModifiers ?? shortcut?.modifiers ?? 0
                     let chord = cap.code.map { Shortcut(key: $0, modifiers: displayedModifiers) }
                     let bound = chord.flatMap { bindings[$0] }
                     let name = bound.map { names[$0] ?? $0 }
                     let active = cap.modifier != 0 && displayedModifiers & cap.modifier != 0
-                    let selected = selection.previewModifiers == nil && cap.code == shortcut.key
+                    let selected = selection.previewModifiers == nil && cap.code != nil && cap.code == shortcut?.key
                     Group {
                         if cap.code != nil || cap.modifier != 0 {
                             Button {
                                 if let code = cap.code {
                                     selection.input.select(Shortcut(key: code, modifiers: displayedModifiers))
                                 } else {
-                                    selection.input.select(Shortcut(key: shortcut.key, modifiers: displayedModifiers ^ cap.modifier))
+                                    selection.input.toggleModifier(cap.modifier)
                                 }
                                 selection.choosing = false
                                 selection.feedback = nil
@@ -338,7 +346,7 @@ struct ShortcutKeyboardPage: View {
     }
 
     private func assign(_ id: String, registry: LauncherModuleRegistry?) {
-        guard validation == nil, id != owner else { return }
+        guard let shortcut, validation == nil, id != owner else { return }
         let proposed = Change(target: shortcut, commandID: id, previous: model.bindings[id], displaced: owner)
         if proposed.previous != nil || proposed.displaced != nil { change = proposed }
         else { save(proposed, registry: registry) }
