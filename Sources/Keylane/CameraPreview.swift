@@ -7,7 +7,17 @@ import UniformTypeIdentifiers
 
 final class CameraPreview: ObservableObject {
     enum State { case idle, starting, running, failed }
-    enum PhotoDestination { case clipboard, desktop }
+    enum PhotoDestination: String, CaseIterable {
+        case clipboard, desktop
+        var title: String { self == .clipboard ? "拍摄并拷贝到剪贴板" : "拍摄并保存到桌面" }
+    }
+
+    @Published var primaryDestination = PhotoDestination(rawValue: UserDefaults.standard.string(forKey: "cameraPreview.primaryDestination") ?? "") ?? .clipboard {
+        didSet { UserDefaults.standard.set(primaryDestination.rawValue, forKey: "cameraPreview.primaryDestination") }
+    }
+    @Published var remembersCamera = UserDefaults.standard.object(forKey: "cameraPreview.remembersCamera") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(remembersCamera, forKey: "cameraPreview.remembersCamera") }
+    }
 
     struct Meeting {
         let returnPage: PageID
@@ -55,7 +65,7 @@ final class CameraPreview: ObservableObject {
             }
         }
         devices = discovery?.devices ?? []
-        let preferredID = UserDefaults.standard.string(forKey: "cameraPreview.deviceID")
+        let preferredID = remembersCamera ? UserDefaults.standard.string(forKey: "cameraPreview.deviceID") : nil
         guard let device = devices.first(where: { $0.uniqueID == preferredID })
             ?? AVCaptureDevice.default(for: .video) ?? devices.first else {
             state = .failed
@@ -86,7 +96,7 @@ final class CameraPreview: ObservableObject {
             let started = capture.start(with: device) { [weak self, weak session] in
                 DispatchQueue.main.async {
                     guard let self, let session, self.session === session else { return }
-                    UserDefaults.standard.set(device.uniqueID, forKey: "cameraPreview.deviceID")
+                    if self.remembersCamera { UserDefaults.standard.set(device.uniqueID, forKey: "cameraPreview.deviceID") }
                     self.state = .running
                 }
             }
