@@ -34,7 +34,18 @@ struct LauncherAction: Identifiable {
     let id: String
     let title: String
     let icon: String
-    var keys: [String] = []
+    var shortcut: KeyboardShortcut? = nil
+    var displayedKeys: [String] {
+        guard let shortcut else { return [] }
+        let modifiers: [(EventModifiers, String)] = [(.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
+        let key: String
+        switch shortcut.key {
+        case .return: key = "↩"
+        case .escape: key = "esc"
+        default: key = String(shortcut.key.character).uppercased()
+        }
+        return modifiers.compactMap { shortcut.modifiers.contains($0.0) ? $0.1 : nil } + [key]
+    }
     var artwork: NSImage? = nil
     var value: String? = nil
     var submenu: Submenu?
@@ -74,7 +85,12 @@ struct LauncherPage {
     var primaryEnabled: (() -> Bool)?
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
-    var searchDisplay: (() -> AnyView)?
+    enum HeaderInput {
+        case searchField
+        case custom(() -> AnyView)
+        case none
+    }
+    var headerInput: HeaderInput = .searchField
     var enter: ((String) -> String?)?
     var resume: (() -> Void)?
     var moveHorizontal: ((Int) -> Void)?

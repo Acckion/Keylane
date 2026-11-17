@@ -6,25 +6,25 @@ enum ScreenshotActions {
         let library = model.screenshots
         let gridActions: [LauncherAction] = [
             .init(id: "screenshot-reset-zoom", title: "实际大小", icon: "1.magnifyingglass",
-                  keys: ["⌘", "0"], group: 4, perform: library.resetZoom),
+                  shortcut: .init("0", modifiers: .command), group: 4, perform: library.resetZoom),
             .init(id: "screenshot-zoom-in", title: "放大网格", icon: "plus.magnifyingglass",
-                  keys: ["⌘", "+"], group: 4, enabled: library.columns > ScreenshotLibrary.columnCounts.lowerBound,
+                  shortcut: .init("+", modifiers: .command), group: 4, enabled: library.columns > ScreenshotLibrary.columnCounts.lowerBound,
                   perform: library.zoomIn),
             .init(id: "screenshot-zoom-out", title: "缩小网格", icon: "minus.magnifyingglass",
-                  keys: ["⌘", "-"], group: 4, enabled: library.columns < ScreenshotLibrary.columnCounts.upperBound,
+                  shortcut: .init("-", modifiers: .command), group: 4, enabled: library.columns < ScreenshotLibrary.columnCounts.upperBound,
                   perform: library.zoomOut)
         ]
         guard let item = library.selected else { return gridActions }
 
         let delegate = NSApp.delegate as? Delegate
         var actions: [LauncherAction] = [
-            .init(id: "screenshot-copy", title: "复制到剪贴板", icon: "clipboard", keys: ["↩"]) {
+            .init(id: "screenshot-copy", title: "复制到剪贴板", icon: "clipboard", shortcut: .init(.return, modifiers: [])) {
                 copy(item, model: model)
             }
         ]
         if let delegate, let target = delegate.pasteTargetName {
             actions.append(.init(id: "screenshot-paste", title: "粘贴到 \(target)", icon: "clipboard",
-                                 keys: ["⌘", "↩"], artwork: delegate.pasteTargetIcon) {
+                                 shortcut: .init(.return, modifiers: .command), artwork: delegate.pasteTargetIcon) {
                 perform(model) {
                     try library.copy(item)
                     delegate.pasteIntoPreviousApplication()
@@ -32,35 +32,35 @@ enum ScreenshotActions {
             })
         }
         actions += [
-            .init(id: "screenshot-open", title: "打开", icon: "doc", keys: ["⌘", "O"], group: 1) {
+            .init(id: "screenshot-open", title: "打开", icon: "doc", shortcut: .init("o", modifiers: .command), group: 1) {
                 withFile(item, model: model) {
                     guard NSWorkspace.shared.open(item.url) else { throw CocoaError(.fileReadUnknown) }
                     delegate?.hideLauncher()
                 }
             },
             .init(id: "screenshot-open-with", title: "打开方式…", icon: "square.and.arrow.up",
-                  keys: ["⇧", "⌘", "O"], group: 1) {
+                  shortcut: .init("o", modifiers: [.shift, .command]), group: 1) {
                 withFile(item, model: model) { FileActionsWindow.shared.show(item.url, page: "open", owner: .screenshots) }
             },
-            .init(id: "screenshot-preview", title: "快速查看", icon: "eye", keys: ["⌘", "Y"], group: 1) {
+            .init(id: "screenshot-preview", title: "快速查看", icon: "eye", shortcut: .init("y", modifiers: .command), group: 1) {
                 withFile(item, model: model) { FilePreview.shared.show(item.url, owner: .screenshots) }
             },
-            .init(id: "screenshot-reveal", title: "在访达中显示", icon: "folder", keys: ["⌥", "⌘", "O"], group: 1) {
+            .init(id: "screenshot-reveal", title: "在访达中显示", icon: "folder", shortcut: .init("o", modifiers: [.option, .command]), group: 1) {
                 withFile(item, model: model) { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
             }
         ]
         if item.kind == .image {
             actions += [
                 .init(id: "screenshot-annotate", title: "在「预览」中标注…", icon: "pencil",
-                      keys: ["⇧", "⌘", "A"], group: 1) {
+                      shortcut: .init("a", modifiers: [.shift, .command]), group: 1) {
                     annotate(item, model: model)
                 },
                 .init(id: "screenshot-copy-ocr", title: "复制图片中的文字", icon: "clipboard",
-                      keys: ["⌥", "⌘", "C"], group: 1) {
+                      shortcut: .init("c", modifiers: [.option, .command]), group: 1) {
                     copyImageText(.ocr, item: item, model: model)
                 },
                 .init(id: "screenshot-copy-qr", title: "复制二维码文本", icon: "clipboard",
-                      keys: ["⌥", "⇧", "⌘", "C"], group: 1) {
+                      shortcut: .init("c", modifiers: [.option, .shift, .command]), group: 1) {
                     copyImageText(.qr, item: item, model: model)
                 }
             ]
@@ -69,18 +69,18 @@ enum ScreenshotActions {
         let mediaName = item.kind == .image ? "截图" : "录屏"
         actions += [
             .init(id: "screenshot-copy-path", title: "复制路径", icon: "clipboard",
-                  keys: ["⌃", "⌘", "C"], group: 1) {
+                  shortcut: .init("c", modifiers: [.control, .command]), group: 1) {
                 perform(model) {
                     try library.copyPath(item)
                     delegate?.showLauncherFeedback("已复制路径", style: .success)
                 }
             },
             .init(id: "screenshot-pin", title: (pinned ? "取消置顶" : "置顶") + mediaName,
-                  icon: pinned ? "pin.slash" : "pin", keys: ["⌘", "."], group: 2) {
+                  icon: pinned ? "pin.slash" : "pin", shortcut: .init(".", modifiers: .command), group: 2) {
                 perform(model) { try library.togglePin(item) }
             },
             .init(id: "screenshot-trash", title: "删除" + mediaName + "…", icon: "trash",
-                  keys: ["⌃", "X"], group: 3, destructive: true) {
+                  shortcut: .init("x", modifiers: .control), group: 3, destructive: true) {
                 confirmTrash(item, model: model)
             }
         ]

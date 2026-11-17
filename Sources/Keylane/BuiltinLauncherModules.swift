@@ -94,16 +94,16 @@ enum BuiltinLauncherModules {
                             }, back: leaveKeyboard, submit: bindShortcut,
                             primaryTitle: { "绑定命令" }, primaryEnabled: canBind,
                             actions: {
-                                [.init(id: "bind-shortcut", title: "绑定命令", icon: "keyboard", keys: ["↩"],
+                                [.init(id: "bind-shortcut", title: "绑定命令", icon: "keyboard", shortcut: .init(.return, modifiers: []),
                                        enabled: canBind(), perform: bindShortcut)]
                             },
                             updates: keyboard.objectWillChange.eraseToAnyPublisher(),
-                            searchDisplay: {
+                            headerInput: .custom({
                                 let keys = keyboard.displayedKeys
                                 return AnyView(Text(keys.isEmpty ? "按下快捷键…" : keys.joined(separator: " "))
                                     .font(.system(size: 19))
                                     .foregroundStyle(keys.isEmpty ? .secondary : .primary))
-                            },
+                            }),
                             typeFilterWidth: 220,
                             typeFilter: { [weak model] open in
                                 guard let model else { return AnyView(EmptyView()) }
@@ -250,13 +250,12 @@ enum BuiltinLauncherModules {
                          }
                      )],
                      services: [.init(start: { [weak model] in
-                         model?.startApplicationDiscovery()
+                         model?.acquireApplicationCatalog(for: .applications)
                          model?.applicationAutoQuit.start { [weak model] in model?.applicationsEnabled ?? false }
                      }, stop: { [weak model] in
                          model?.applicationResultActions.stopUninstallSelection()
-                         model?.stopApplicationDiscovery()
                          model?.applicationAutoQuit.stop()
-                         model?.releaseApplicationCatalog()
+                         model?.releaseApplicationCatalog(for: .applications)
                      })],
                      searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)],
                      dynamicCommandSettings: .init(
@@ -471,7 +470,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func openAction(_ title: String, entry: Entry, model: Model) -> LauncherAction {
-        .init(id: "open", title: title, icon: "return", keys: ["↩"]) { [weak model] in
+        .init(id: "open", title: title, icon: "return", shortcut: .init(.return, modifiers: [])) { [weak model] in
             model?.runCommand(entry.commandID, origin: .menu, usageKey: entry.id)
         }
     }
@@ -545,12 +544,12 @@ enum BuiltinLauncherModules {
                 guard let model else { return [] }
                 return [
                     .init(id: "configure-clipboard-command", title: "配置命令…", icon: "gearshape",
-                          keys: ["⇧", "⌘", ","]) { [weak model] in
+                          shortcut: .init(",", modifiers: [.shift, .command])) { [weak model] in
                         model?.clipboard.showsHistorySettings = true
                         model?.openSettings(page: "clipboard")
                     },
                     .init(id: "configure-clipboard-extension", title: "配置扩展", icon: "gearshape",
-                          keys: ["⌥", "⌘", ","]) { [weak model] in
+                          shortcut: .init(",", modifiers: [.option, .command])) { [weak model] in
                         model?.clipboard.showsHistorySettings = false
                         model?.openSettings(page: "clipboard")
                     }
