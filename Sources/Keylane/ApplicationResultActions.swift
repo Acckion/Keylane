@@ -1,3 +1,4 @@
+import SwiftUI
 import AppKit
 import Combine
 import KeylaneCore
@@ -14,17 +15,17 @@ final class ApplicationResultActions {
     private var uninstallCatalogChanges: AnyCancellable?
     private var uninstallLoad: DispatchWorkItem?
 
-    private static let directShortcuts: [(String, [String])] = [
-        ("finder-reveal", ["⌘", "⇧", "F"]),
-        ("finder-info", ["⌘", "⇧", "I"]),
-        ("copy-path", ["⌘", "⌥", "C"]),
-        ("edit-app-command", ["⌘", "⇧", "E"]),
-        ("restart-app", ["⌘", "⇧", "R"])
+    private static let directShortcuts: [(String, KeyboardShortcut)] = [
+        ("finder-reveal", .init("f", modifiers: [.command, .shift])),
+        ("finder-info", .init("i", modifiers: [.command, .shift])),
+        ("copy-path", .init("c", modifiers: [.command, .option])),
+        ("edit-app-command", .init("e", modifiers: [.command, .shift])),
+        ("restart-app", .init("r", modifiers: [.command, .shift]))
     ]
 
     func shortcutActions(for entry: Entry, model: Model) -> [LauncherAction] {
-        Self.directShortcuts.map { id, keys in
-            LauncherAction(id: id, title: "", icon: "", keys: keys) { [weak model] in
+        Self.directShortcuts.map { id, shortcut in
+            LauncherAction(id: id, title: "", icon: "", shortcut: shortcut) { [weak model] in
                 guard let model, model.isApplicationCommandAvailable(at: entry.id),
                       let action = self.actions(for: entry, model: model).first(where: { $0.id == id }),
                       action.enabled else { return }
@@ -33,8 +34,8 @@ final class ApplicationResultActions {
         }
     }
 
-    private func keys(_ id: String) -> [String] {
-        Self.directShortcuts.first(where: { $0.0 == id })?.1 ?? []
+    private func shortcut(_ id: String) -> KeyboardShortcut? {
+        Self.directShortcuts.first(where: { $0.0 == id })?.1
     }
 
     func actions(for entry: Entry, model: Model) -> [LauncherAction] {
@@ -45,13 +46,13 @@ final class ApplicationResultActions {
         let favorite = model.favorites.contains(entry.id)
         let autoQuitEnabled = model.applicationAutoQuit.minutes(for: url) != 0
         return [
-            .init(id: "open", title: "打开应用", icon: "arrow.up.forward.app", keys: ["↩"]) { [weak model] in
+            .init(id: "open", title: "打开应用", icon: "arrow.up.forward.app", shortcut: .init(.return, modifiers: [])) { [weak model] in
                 model?.runCommand(entry.commandID, origin: .menu, usageKey: entry.id)
             },
-            .init(id: "finder-reveal", title: "在 Finder 中显示", icon: "folder", keys: keys("finder-reveal")) {
+            .init(id: "finder-reveal", title: "在 Finder 中显示", icon: "folder", shortcut: shortcut("finder-reveal")) {
                 self.reveal(url)
             },
-            .init(id: "finder-info", title: "在 Finder 中显示信息", icon: "info.circle", keys: keys("finder-info")) { [weak model] in
+            .init(id: "finder-info", title: "在 Finder 中显示信息", icon: "info.circle", shortcut: shortcut("finder-info")) { [weak model] in
                 guard let permission = model?.finderAutomation else { return }
                 permission.activate { allowed in
                     if allowed { self.showFinderInfo(url) }
@@ -65,12 +66,12 @@ final class ApplicationResultActions {
                   icon: favorite ? "star.fill" : "star", group: 1) { [weak model] in
                 model?.toggleFavorite(entry.id, showsFeedback: true)
             },
-            .init(id: "copy-path", title: "复制路径", icon: "doc.on.doc", keys: keys("copy-path"), group: 2) { UtilityActions.copy(url.path, feedback: "已复制路径") },
+            .init(id: "copy-path", title: "复制路径", icon: "doc.on.doc", shortcut: shortcut("copy-path"), group: 2) { UtilityActions.copy(url.path, feedback: "已复制路径") },
             .init(id: "copy-name", title: "复制名称", icon: "textformat", group: 2) { UtilityActions.copy(entry.name, feedback: "已复制名称") },
             .init(id: "copy-bundle-id", title: "复制 Bundle Identifier", icon: "number", group: 2, enabled: bundleID != nil) {
                 if let bundleID { UtilityActions.copy(bundleID, feedback: "已复制 Bundle Identifier") }
             },
-            .init(id: "edit-app-command", title: "编辑别名与快捷键…", icon: "keyboard", keys: keys("edit-app-command"), group: 3) { [weak model] in
+            .init(id: "edit-app-command", title: "编辑别名与快捷键…", icon: "keyboard", shortcut: shortcut("edit-app-command"), group: 3) { [weak model] in
                 guard let model, model.isApplicationCommandAvailable(at: entry.id) else { return }
                 self.commandEditor.prepare(entry, model: model, isAvailable: { [weak model] in
                     model?.isApplicationCommandAvailable(at: entry.id) == true
@@ -100,7 +101,7 @@ final class ApplicationResultActions {
                 autoQuit.setMinutes(enabling ? ApplicationAutoQuit.useDefault : 0, for: url)
                 self.feedback(enabling ? "已启用自动退出（\(autoQuit.defaultMinutes) 分钟）" : "已关闭自动退出", style: .success)
             },
-            .init(id: "restart-app", title: "重启应用", icon: "arrow.clockwise", keys: keys("restart-app"), group: 4, enabled: running) { [weak model] in
+            .init(id: "restart-app", title: "重启应用", icon: "arrow.clockwise", shortcut: shortcut("restart-app"), group: 4, enabled: running) { [weak model] in
                 guard let model else { return }
                 self.restart(url, path: path, model: model)
             },

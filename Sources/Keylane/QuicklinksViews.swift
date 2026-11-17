@@ -90,6 +90,7 @@ struct QuicklinkLauncherEditor: View {
     @ObservedObject var controller: QuicklinksController
     let guideURL: URL
     let back: () -> Void
+    let cancel: () -> Void
     @FocusState private var focused: Field?
 
     var body: some View {
@@ -136,7 +137,7 @@ struct QuicklinkLauncherEditor: View {
             guard !Task.isCancelled else { return }
             focused = .title
         }
-        .onExitCommand { if !SearchField.isComposing { back() } }
+        .onExitCommand { if !SearchField.isComposing { cancel() } }
     }
 
     private func field(_ key: WritableKeyPath<Quicklink, String>) -> Binding<String> {
@@ -164,12 +165,13 @@ struct QuicklinkOpeningApplicationMenu: View {
 struct QuicklinkParameterForm: View {
     @ObservedObject var controller: QuicklinksController
     let back: () -> Void
+    let cancel: () -> Void
     let submit: () -> Void
 
     var body: some View {
         if let link = controller.argumentLink {
             DynamicArgumentsForm(title: link.title, arguments: controller.parameters,
-                                 values: $controller.values, error: controller.inputError, back: back, submit: submit)
+                                 values: $controller.values, error: controller.inputError, back: back, cancel: cancel, submit: submit)
         }
     }
 }

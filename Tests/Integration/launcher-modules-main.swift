@@ -140,6 +140,7 @@ var rowBuilds = 0
 let dynamicRegistry = try LauncherModuleRegistry(modules: [
     .init(id: dynamicID, title: "Dynamic Commands", dynamicCommandSettings: .init(
         updates: { [dynamicUpdates.eraseToAnyPublisher()] },
+        commandNames: { [.init(id: "app:/Fixture.app", title: "Fixture App", aliasKey: "/Fixture.app")] },
         matchingList: { matches in
             catalogReads += 1
             guard matches?("Fixture App", "app:/Fixture.app", "/Fixture.app") != false else { return nil }
@@ -149,6 +150,9 @@ let dynamicRegistry = try LauncherModuleRegistry(modules: [
 ])
 let dynamicGroup = dynamicRegistry.shortcutCommandGroups[0]
 precondition(dynamicGroup.id == dynamicID && dynamicGroup.commands.isEmpty)
+precondition(catalogReads == 0 && rowBuilds == 0)
+let keyboardCommand = dynamicGroup.dynamicCommands?.commandNames().first
+precondition(keyboardCommand?.title == "Fixture App" && keyboardCommand?.aliasKey == "/Fixture.app")
 precondition(catalogReads == 0 && rowBuilds == 0)
 var updateCount = 0
 let settingsSubscription = Publishers.MergeMany(dynamicRegistry.shortcutSettingsUpdates()).sink { updateCount += 1 }
@@ -604,6 +608,31 @@ if CommandLine.arguments.contains("--verify-system-shortcuts") {
     try manager.refreshExtensions()
     try manager.resume()
     precondition(sendHotkey(4) != noErr && sendHotkey(5) == noErr)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    fired.removeAll()
+
+    let replacement = "fixture:replacement"
+    let blocked = Shortcut(key: UInt32(kVK_F19), modifiers: nativeShortcut.modifiers)
+    var blocker: EventHotKeyRef?
+    precondition(RegisterEventHotKey(blocked.key, blocked.modifiers, EventHotKeyID(signature: 0x4B4C5453, id: 2),
+                                    GetApplicationEventTarget(), UInt32(kEventHotKeyExclusive), &blocker) == noErr)
+    do {
+        try manager.apply([replacement: nativeShortcut, "zz:blocked": blocked])
+        preconditionFailure("The overlapping transaction should fail as a whole")
+    } catch is ShortcutManager.Failure {}
+    if let blocker { UnregisterEventHotKey(blocker) }
+    precondition(sendHotkey(5) == noErr)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    precondition(fired == [nativeAction], "Failed transfer retains the original destination")
+    fired.removeAll()
+
+    precondition(sendHotkey(5) == noErr)
+    try manager.apply([replacement: nativeShortcut])
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    precondition(fired.isEmpty, "A queued callback must not follow a reassigned shortcut")
+    precondition(sendHotkey(5) == noErr)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    precondition(fired == [replacement], "Reassigned shortcut should invoke its new destination")
     manager.stop()
     print("PASS Carbon registration, queued event revocation, slot release, conflict retry and recorder resume")
 }

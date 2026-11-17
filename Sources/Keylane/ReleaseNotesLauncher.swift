@@ -11,7 +11,6 @@ final class ReleaseNotesLauncher: ObservableObject {
     @Published private var query = ""
     @Published private var selectedTag: String?
     @Published private var detail: GitHubUpdateRelease?
-    private var returningToList = false
 
     init(model: Model) {
         self.model = model
@@ -47,14 +46,11 @@ final class ReleaseNotesLauncher: ObservableObject {
                              guard let release = self.selected else { return [] }
                              return [.init(id: "show-release-details", title: "查看详情", icon: "doc.text",
                                            perform: { self.show(release) })] + self.actions(for: release)
-                         }, updates: changes,
-                         enter: { _ in
-                             defer { self.returningToList = false }
-                             return self.returningToList ? self.query : ""
-                         }),
+                         }, updates: changes),
             LauncherPage(id: Self.detailID, placeholder: "", badge: ("更新日志", "doc.text"),
-                         contentPlacement: .form, content: { AnyView(self.detailView) },
-                         back: back, submit: { if let release = self.detail { self.open(release) } },
+                         contentPlacement: .readingDetail, content: { AnyView(self.detailView) },
+                         leave: { self.detail = nil }, keepsStateWhenHidden: true, parent: Self.listID,
+                         submit: { if let release = self.detail { self.open(release) } },
                          primaryTitle: { "在浏览器中打开" }, primaryEnabled: { self.detail != nil },
                          actions: { self.actions(for: self.detail) }, badgeTitle: { self.detail?.tag ?? "更新日志" })
         ]
@@ -73,11 +69,6 @@ final class ReleaseNotesLauncher: ObservableObject {
         model?.pageID = Self.detailID
     }
 
-    private func back() {
-        returningToList = true
-        model?.pageID = Self.listID
-    }
-
     private func open(_ release: GitHubUpdateRelease) {
         NSWorkspace.shared.open(KeylaneReleaseCheck.releasesURL.appendingPathComponent("tag").appendingPathComponent(release.tag))
     }
@@ -93,19 +84,13 @@ final class ReleaseNotesLauncher: ObservableObject {
 
     private var detailView: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button(action: back) { Label("返回版本列表", systemImage: "chevron.backward") }
-                .buttonStyle(.plain)
             if let detail {
                 Text(detail.title ?? detail.tag).font(.title2.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
                 if let date = detail.publishedAt { Text(date, style: .date).foregroundStyle(.secondary) }
-                ScrollView {
-                    ReleaseNotesBody(notes: detail.notes)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                ReleaseNotesBody(notes: detail.notes)
             }
         }
-        .padding(20)
-        .padding(.bottom, VisualStyle.launcherBottomInset)
     }
 
     private struct ReleaseNotesList: View {

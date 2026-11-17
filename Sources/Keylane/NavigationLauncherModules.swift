@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 enum NavigationLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        [navigation(model), systemSettings(model), screenshots(model)]
+        [navigation(model), screenshots(model)]
     }
 
     private static func navigation(_ model: Model) -> LauncherModule {
@@ -121,7 +121,7 @@ enum NavigationLauncherModules {
             let refresh = LauncherAction(id: "refresh-navigation", title: NavigationText.label("刷新结果", "Refresh Results"),
                                          icon: "arrow.clockwise", perform: reload)
             guard let item = controller.selected else { return [refresh] }
-            return [LauncherAction(id: "run-navigation", title: mode.action, icon: mode.symbol, keys: ["↩"],
+            return [LauncherAction(id: "run-navigation", title: mode.action, icon: mode.symbol, shortcut: .init(.return, modifiers: []),
                                    perform: { activate(item) }), refresh]
         }
         page.updates = Publishers.Merge(
@@ -129,48 +129,6 @@ enum NavigationLauncherModules {
             controller.$results.dropFirst().map { _ in () }
         ).eraseToAnyPublisher()
         return page
-    }
-
-    private static func systemSettings(_ model: Model) -> LauncherModule {
-        let pageID = "keylane.system-settings"
-        let title = "系统设置"
-        let symbol = "gear"
-        let search = SettingsSearchControls()
-        let item = SettingsItem(id: pageID, page: pageID, title: title, keywords: "System Settings 系統設定 系统设置直达")
-        let provider = LauncherModule.Provider(namespace: .prefix("system-setting:"), entries: { input in
-            let hasQuery = !SystemSettingsCatalog.pageQuery(input.query).isEmpty
-            return SystemSettingsCatalog.pages.compactMap { page in
-                guard hasQuery || input.favorites.contains(page.id) else { return nil }
-                return Entry(id: page.id, commandID: .init(rawValue: page.id), name: page.title(),
-                             detail: SystemSettingsCatalog.resultKind, symbol: page.symbol, aliases: page.searchNames,
-                             rankingKind: .systemSetting)
-            }
-        }, resolve: { [weak model] id, _ in
-            guard let page = SystemSettingsCatalog.pages.first(where: { $0.id == id.rawValue }) else { return nil }
-            return { [weak model] in
-                if NSWorkspace.shared.open(page.url) {
-                    (NSApp.delegate as? Delegate)?.hideLauncher()
-                } else {
-                    model?.error = SystemSettingsCatalog.prefersChinese()
-                        ? "无法打开「\(page.title())」。请在系统设置中查找该页面。"
-                        : "Could not open \(page.title()). Look for it in System Settings."
-                }
-            }
-        })
-        let settings = LauncherSettingsPage(
-            id: pageID, title: title, symbol: symbol, subtitle: "配置直达 macOS 系统设置各页面的命令。",
-            order: 134, items: [item], trailingToolbar: {
-                AnyView(SettingsToolbarSearch(title: "搜索系统设置命令", selection: search))
-            }, content: { [weak model] in
-                guard let model else { return AnyView(EmptyView()) }
-                return AnyView(SystemSettingsCommandPreferences(model: model, search: search).settingsAnchor(item))
-            }
-        )
-        return LauncherModule(id: .init(rawValue: pageID), title: title, symbol: symbol,
-                              providers: [provider], settings: [settings], dynamicCommandSettings: .init(
-            model: model, items: { SystemSettingsCatalog.pages }, title: \.commandTitle, commandID: \.id,
-            updates: { [] }, entry: { $0.commandSettingsEntry(model: $1) }
-        ))
     }
 
     private static func screenshots(_ model: Model) -> LauncherModule {
@@ -312,47 +270,6 @@ enum NavigationLauncherModules {
             ViewObservation.changes(selectedMedia)
         ]).eraseToAnyPublisher()
         return page
-    }
-}
-
-private struct SystemSettingsCommandPreferences: View {
-    let model: Model
-    @ObservedObject var search: SettingsSearchControls
-    @StateObject private var observation: ViewObservation
-
-    init(model: Model, search: SettingsSearchControls) {
-        self.model = model
-        self.search = search
-        _observation = StateObject(wrappedValue: ViewObservation([
-            ViewObservation.changes(model.$aliases),
-            ViewObservation.changes(model.$bindings),
-            ViewObservation.changes(model.$disabledCommands)
-        ]))
-    }
-
-    var body: some View {
-        let query = search.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pages = SystemSettingsCatalog.pages.filter { page in
-            query.isEmpty || page.searchNames.contains { $0.localizedCaseInsensitiveContains(query) }
-                || model.aliases[page.id]?.localizedCaseInsensitiveContains(query) == true
-        }
-        CommandSettingsList(items: pages, id: \.id, emptyMessage: "没有匹配的系统设置命令", showsColumns: true) {
-            $0.commandSettingsEntry(model: model)
-        }
-    }
-}
-
-private extension SystemSettingsPage {
-    var commandTitle: String { title() }
-
-    func commandSettingsEntry(model: Model) -> CommandSettingsEntry<SettingsIcon> {
-        CommandSettingsEntry(title: commandTitle, model: model, commandID: .init(rawValue: id),
-                             isEnabled: Binding(get: { !model.disabledCommands.contains(id) }, set: { enabled in
-            if enabled { model.disabledCommands.remove(id) }
-            else { model.disabledCommands.insert(id) }
-        })) {
-            SettingsIcon(symbol: symbol)
-        }
     }
 }
 

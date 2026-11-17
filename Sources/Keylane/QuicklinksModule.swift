@@ -114,7 +114,7 @@ enum QuicklinksModule {
                 guard let model else { return [] }
                 let selection = controller.selected(in: controller.rows(aliases: model.aliases))
                 return (selection.map { actions(for: $0, model: model, edit: startEdit) } ?? []) + [
-                    .init(id: "quicklink-create", title: "创建快捷链接", icon: "plus", keys: ["⌘", "N"],
+                    .init(id: "quicklink-create", title: "创建快捷链接", icon: "plus", shortcut: .init("n", modifiers: .command),
                           enabled: controller.storageError == nil && !model.disabledCommands.contains(Command.create.rawValue),
                           perform: create)
                 ]
@@ -147,7 +147,9 @@ enum QuicklinksModule {
         let editPage = LauncherPage(
             id: editID, placeholder: "", badge: ("创建快捷链接", "link"), contentPlacement: .form,
             content: { [weak model] in
-                AnyView(QuicklinkLauncherEditor(controller: controller, guideURL: guideURL, back: { model?.pageID = controller.editorReturnPage }))
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(QuicklinkLauncherEditor(controller: controller, guideURL: guideURL,
+                                                        back: model.goBackInLauncher, cancel: model.cancelLauncherPage))
             },
             leave: { [weak model] in
                 guard let model else { return }
@@ -155,6 +157,7 @@ enum QuicklinksModule {
                     model.pageID = returnPage
                 }
             },
+            back: { [weak model] in model?.pageID = controller.editorReturnPage },
             submit: save, shortcutSubmit: save, primaryTitle: { "保存快捷链接" },
             badgeTitle: {
                 controller.links.contains { $0.id == controller.draft?.id } ? "编辑快捷链接" : "创建快捷链接"
@@ -171,12 +174,15 @@ enum QuicklinksModule {
         let arguments = LauncherPage(
             id: argumentsID, placeholder: "", badge: ("快捷链接", "link"), contentPlacement: .form,
             content: { [weak model] in
-                AnyView(QuicklinkParameterForm(controller: controller, back: { model?.pageID = argumentsReturn }, submit: submit))
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(QuicklinkParameterForm(controller: controller, back: model.goBackInLauncher,
+                                                      cancel: model.cancelLauncherPage, submit: submit))
             },
             leave: { [weak model] in
                 controller.clearInput()
                 if model?.pageID == argumentsID { model?.pageID = argumentsReturn }
             },
+            back: { [weak model] in model?.pageID = argumentsReturn },
             submit: submit, shortcutSubmit: submit, primaryTitle: { "打开链接" }
         )
 
@@ -227,12 +233,12 @@ enum QuicklinksModule {
     private static func actions(for link: Quicklink, model: Model, edit: @escaping (Quicklink?) -> Void) -> [LauncherAction] {
         let controller = model.quicklinks
         return [
-            .init(id: "quicklink-open", title: "打开链接", icon: "arrow.up.right", keys: ["↩"],
+            .init(id: "quicklink-open", title: "打开链接", icon: "arrow.up.right", shortcut: .init(.return, modifiers: []),
                   enabled: !model.disabledCommands.contains(link.id)) { [weak model] in
                 if let model { open(link, model: model) }
             },
             .init(id: "quicklink-edit", title: "编辑快捷链接", icon: "pencil",
-                  keys: model.pageID == listID ? ["⌘", "E"] : []) { edit(link) },
+                  shortcut: model.pageID == listID ? .init("e", modifiers: .command) : nil) { edit(link) },
             .init(id: "quicklink-duplicate", title: "复制为新链接", icon: "plus.square.on.square") { edit(link.duplicate()) },
             .init(id: "quicklink-copy-name", title: "复制名称", icon: "doc.on.doc") {
                 UtilityActions.copy(link.title, feedback: "已复制名称")

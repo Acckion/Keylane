@@ -1,5 +1,5 @@
 const { absoluteFilePath } = require("./finder-reveal.cjs");
-const { openActionEffect } = require("./open-api.cjs");
+const { openActionEffect, webURL } = require("./open-api.cjs");
 const { Upload } = require("./icon-values.cjs");
 
 function openWithComponent(component) {
@@ -10,7 +10,11 @@ function openWithComponent(component) {
 function openWithEffect(path) {
   if (typeof path === "string") {
     const { kind, paths, text } = openActionEffect({ type: "open", props: { target: path } });
-    return kind === "openFile" ? { kind: "openWithFile", paths } : { kind: "openWithURL", text };
+    if (kind === "openFile") {
+      if (!/^(?:\/|~\/|file:)/i.test(path)) throw new TypeError("Expected an absolute file path");
+      return { kind: "openWithFile", paths };
+    }
+    return { kind: "openWithURL", text: webURL(text) };
   }
   return { kind: "openWithFile", paths: [absoluteFilePath(path)] };
 }

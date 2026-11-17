@@ -12,7 +12,12 @@ extension DynamicCommandSettings {
         updates: @escaping () -> [AnyPublisher<Void, Never>],
         entry: @escaping (Item, Model) -> CommandSettingsEntry<Icon>
     ) {
-        self.init(updates: updates, matchingList: { [weak model] matches in
+        self.init(updates: updates, commandNames: {
+            items().map { item in
+                ShortcutCommandName(id: item[keyPath: commandID], title: item[keyPath: title],
+                                    aliasKey: aliasKey.map { item[keyPath: $0] })
+            }
+        }, matchingList: { [weak model] matches in
             let allItems = items()
             let visible = matches.map { predicate in
                 allItems.filter { item in
@@ -81,11 +86,22 @@ struct ShortcutSettingsToolbar: View {
     let groups: [ShortcutCommandGroup]
     let navigation: String
     @ObservedObject var selection: ShortcutSettingsControls
+    let showKeyboard: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             SettingsToolbarSearch(title: "搜索快捷键", selection: selection)
             ShortcutSettingsCategoryFilter(groups: groups, navigation: navigation, selection: selection)
+            Button(action: showKeyboard) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 16, weight: .medium))
+                    .frame(width: 36, height: 36)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(), in: Circle())
+            .accessibilityLabel("快捷键键盘")
+            .help("快捷键键盘")
         }
     }
 }
@@ -149,7 +165,7 @@ struct ShortcutSettingsPreferences: View {
     let model: Model
     @StateObject private var observation: ViewObservation
     @AppStorage("hiddenShortcutSettingsGroups") private var hiddenGroupIDs = ""
-    @State private var expanded: Set<String> = ["keylane.system-tools"]
+    @State private var expanded: Set<String> = [SystemActionsModule.id.rawValue]
     @ObservedObject var selection: ShortcutSettingsControls
     @State private var collapsedWhileSearching: Set<String> = []
 
@@ -300,13 +316,15 @@ struct ShortcutSettingsPreferences: View {
 struct ExtensionCommandPreferences: View {
     let model: Model
     let commands: [LauncherModule.Command]
+    let emptyMessage: String
     let disclosure: ((LauncherModule.Command) -> CommandSettingsDisclosure?)?
     @StateObject private var observation: ViewObservation
 
-    init(model: Model, commands: [LauncherModule.Command],
+    init(model: Model, commands: [LauncherModule.Command], emptyMessage: String = "暂无命令",
          disclosure: ((LauncherModule.Command) -> CommandSettingsDisclosure?)? = nil) {
         self.model = model
         self.commands = commands
+        self.emptyMessage = emptyMessage
         self.disclosure = disclosure
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$aliases),
@@ -318,7 +336,7 @@ struct ExtensionCommandPreferences: View {
     }
 
     var body: some View {
-        CommandSettingsList(items: commands, id: \.declaration.id, showsColumns: true,
+        CommandSettingsList(items: commands, id: \.declaration.id, emptyMessage: emptyMessage, showsColumns: true,
                             usesFixedRowHeights: !commands.contains { $0.settingsEnabled != nil && $0.permission != nil },
                             disclosure: disclosure) {
             $0.commandSettingsEntry(model: model)

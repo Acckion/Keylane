@@ -110,8 +110,8 @@ public enum RaycastConfiguration {
                             else { skipped += 1 }
                         }
                     }
-                    for (source, destination) in ["escapeKeyClosesWindow": "escapeClosesUtilityWindows", "showFavoritesInCompactMode": "compactFavorites"] {
-                        if let value = general[source] as? Bool { archive.preferences[destination] = .bool(value) }
+                    if let value = general["escapeKeyClosesWindow"] as? Bool {
+                        archive.preferences["escapeClosesUtilityWindows"] = .bool(value)
                     }
                     if let n = general["popToRootTimeout"] as? Int, [-1, 0, 30, 90, 300].contains(n) { archive.preferences["launcherReturnDelay"] = .integer(n) }
                     if let raw = general["globalHotkey"] as? [String: Any] {

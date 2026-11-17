@@ -7,8 +7,8 @@ import KeylaneCore
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        let modules = [applications(model), host(model), files(model), clipboard(model), AppleNotesModule.make(model: model),
-                       QuicklinksModule.make(model: model), calculator(model), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model),
+        let modules = [applications(model), host(model), AIModule.make(model: model), files(model), clipboard(model), AppleNotesModule.make(model: model),
+                       QuicklinksModule.make(model: model), CalculatorLauncherModule.make(model: model), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model),
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model), DropShelfModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
@@ -60,13 +60,55 @@ enum BuiltinLauncherModules {
 
     private static func host(_ model: Model) -> LauncherModule {
         let category = ShortcutSettingsControls()
+        let keyboard = ShortcutKeyboardSelection()
+        let canBind = {
+            guard let shortcut = keyboard.shortcut else { return false }
+            return !keyboard.choosing && keyboard.previewModifiers == nil
+                && ShortcutValidation.conflict(in: ["shortcut": shortcut]) == nil
+        }
+        let bindShortcut = {
+            guard canBind() else { return }
+            keyboard.feedback = nil
+            keyboard.choosing = true
+        }
+        var openedFromHotkeys = false
+        let leaveKeyboard: () -> Void = { [weak model] in
+            model?.pageID = .root
+            if openedFromHotkeys { model?.openSettings(page: "hotkeys") }
+        }
         return .init(id: .init(rawValue: "keylane.host"), origin: .application, title: "Keylane", symbol: "command",
               commands: [command("settings", "Keylane 设置", "偏好设置与隐私", "gearshape",
                                  ["Settings", "Preferences", "设置", "偏好设置"], destination: .settings(nil), settings: "general"),
+                         command("show-shortcut-keyboard", "显示键盘快捷键", "查看和编辑键盘上的快捷键", "keyboard",
+                                 ["Show Keyboard Shortcuts", "快捷键键盘", "热键"],
+                                 destination: .page(ShortcutKeyboardPage.pageID), settings: "hotkeys",
+                                 execute: { _ in openedFromHotkeys = false }),
                          command("show-onboarding", "Show Onboarding", "重新打开 Keylane 的首次引导",
                                  "sparkles.rectangle.stack", ["onboarding", "welcome", "首次引导", "新手引导"]) { _ in
                              (NSApp.delegate as? Delegate)?.showOnboarding()
                          }],
+              pages: [.init(id: ShortcutKeyboardPage.pageID, placeholder: "按下快捷键…", badge: ("快捷键键盘", "keyboard"),
+                            contentPlacement: .underChrome, content: { [weak model] in
+                                guard let model else { return AnyView(EmptyView()) }
+                                return AnyView(ShortcutKeyboardPage(model: model, selection: keyboard))
+                            }, back: leaveKeyboard, submit: bindShortcut,
+                            primaryTitle: { "绑定命令" }, primaryEnabled: canBind,
+                            actions: {
+                                [.init(id: "bind-shortcut", title: "绑定命令", icon: "keyboard", shortcut: .init(.return, modifiers: []),
+                                       enabled: canBind(), perform: bindShortcut)]
+                            },
+                            updates: keyboard.objectWillChange.eraseToAnyPublisher(),
+                            headerInput: .custom({
+                                let keys = keyboard.displayedKeys
+                                return AnyView(Text(keys.isEmpty ? "按下快捷键…" : keys.joined(separator: " "))
+                                    .font(.system(size: 19))
+                                    .foregroundStyle(keys.isEmpty ? .secondary : .primary))
+                            }),
+                            typeFilterWidth: 220,
+                            typeFilter: { [weak model] open in
+                                guard let model else { return AnyView(EmptyView()) }
+                                return AnyView(ShortcutKeyboardPage(model: model, selection: keyboard, menuOpen: open))
+                            })],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
                          settingsPage(model, "launcher", "启动器", "magnifyingglass", "管理启动器的显示与搜索行为。", 5) {
                              LauncherBehaviorPreferences(model: $0)
@@ -76,7 +118,10 @@ enum BuiltinLauncherModules {
                          },
                          settingsPage(model, "hotkeys", "快捷键", "command", "按扩展管理命令别名与快捷键。", 7, trailingToolbar: { [weak model] in
                              AnyView(ShortcutSettingsToolbar(groups: model?.launcherModules?.shortcutCommandGroups ?? [],
-                                                                    navigation: model?.navigation ?? "arrows", selection: category))
+                                                                    navigation: model?.navigation ?? "arrows", selection: category) { [weak model] in
+                                 openedFromHotkeys = true
+                                 model?.openPage(ShortcutKeyboardPage.pageID, origin: .menu)
+                             })
                          }) {
                              ShortcutSettingsPreferences(model: $0, selection: category)
                          },
@@ -150,7 +195,7 @@ enum BuiltinLauncherModules {
                         queryChanged: applicationActions.uninstallReview.filter,
                         leave: applicationActions.uninstallReview.clear,
                         keepsStateWhenHidden: true,
-                        back: { [weak model] in model?.pageID = uninstallPage },
+                        parent: uninstallPage,
                         move: applicationActions.uninstallReview.move,
                         submit: applicationActions.uninstallReview.submit,
                         actionContextTitle: { applicationActions.uninstallReview.name },
@@ -205,13 +250,12 @@ enum BuiltinLauncherModules {
                          }
                      )],
                      services: [.init(start: { [weak model] in
-                         model?.startApplicationDiscovery()
+                         model?.acquireApplicationCatalog(for: .applications)
                          model?.applicationAutoQuit.start { [weak model] in model?.applicationsEnabled ?? false }
                      }, stop: { [weak model] in
                          model?.applicationResultActions.stopUninstallSelection()
-                         model?.stopApplicationDiscovery()
                          model?.applicationAutoQuit.stop()
-                         model?.releaseApplicationCatalog()
+                         model?.releaseApplicationCatalog(for: .applications)
                      })],
                      searchUpdates: [updates(model.$apps), updates(model.$applicationsEnabled)],
                      dynamicCommandSettings: .init(
@@ -301,14 +345,14 @@ enum BuiltinLauncherModules {
                     ["File Search", "Spotlight"], destination: .page(page), settings: "files",
                     permission: permission),
             command("ask-files", "询问文件搜索", "AI", "sparkles", ["Ask File Search"], settings: "files",
-                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
+                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.aiSettings.isAvailable && $0.fileAI.commandsEnabled["ask-files"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-files"), execute: { [weak model] origin in
                 guard let model else { return }
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model.fileAI.present(model.fileResults.map(\.url))
             }),
             command("ask-finder", "询问 Finder", "AI", "sparkles", ["Ask Finder"], settings: "files",
-                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.finderAutomation.available && $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false },
+                    available: { [weak model] in model.map { $0.fileSearch.options.enabled && $0.aiSettings.isAvailable && $0.finderAutomation.available && $0.fileAI.commandsEnabled["ask-finder"] != false } ?? false },
                     settingsEnabled: model.fileAI.commandEnabledBinding("ask-finder"), execute: { [weak model] origin in
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model?.fileAI.presentFinder()
@@ -343,7 +387,9 @@ enum BuiltinLauncherModules {
            })],
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
-                           updates(model.fileAI.$commandsEnabled), model.finderAutomation.updates],
+                           updates(model.fileAI.$commandsEnabled),
+                           model.aiSettings.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+                           model.finderAutomation.updates],
            shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
 
@@ -362,8 +408,9 @@ enum BuiltinLauncherModules {
             .init(id: "share-file", title: "分享…", icon: "square.and.arrow.up") { [weak model] in
                 model?.withFileResult(url) { FileActionsWindow.shared.show($0.url, page: "share", owner: .fileSearch) }
             },
-            .init(id: "ask-file", title: "询问此文件…", icon: "sparkles") { [weak model] in
-                model?.withFileResult(url) { model?.fileAI.present([$0.url]) }
+            .init(id: "ask-file", title: "询问此文件…", icon: "sparkles", enabled: model.aiSettings.isAvailable) { [weak model] in
+                guard let model, model.aiSettings.isAvailable else { return }
+                model.withFileResult(url) { model.fileAI.present([$0.url]) }
             },
             .init(id: "reveal-file", title: "在 Finder 中显示", icon: "folder") { [weak model] in
                 model?.withFileResult(url) { NSWorkspace.shared.activateFileViewerSelecting([$0.url]) }
@@ -426,7 +473,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func openAction(_ title: String, entry: Entry, model: Model) -> LauncherAction {
-        .init(id: "open", title: title, icon: "return", keys: ["↩"]) { [weak model] in
+        .init(id: "open", title: title, icon: "return", shortcut: .init(.return, modifiers: [])) { [weak model] in
             model?.runCommand(entry.commandID, origin: .menu, usageKey: entry.id)
         }
     }
@@ -500,12 +547,12 @@ enum BuiltinLauncherModules {
                 guard let model else { return [] }
                 return [
                     .init(id: "configure-clipboard-command", title: "配置命令…", icon: "gearshape",
-                          keys: ["⇧", "⌘", ","]) { [weak model] in
+                          shortcut: .init(",", modifiers: [.shift, .command])) { [weak model] in
                         model?.clipboard.showsHistorySettings = true
                         model?.openSettings(page: "clipboard")
                     },
                     .init(id: "configure-clipboard-extension", title: "配置扩展", icon: "gearshape",
-                          keys: ["⌥", "⌘", ","]) { [weak model] in
+                          shortcut: .init(",", modifiers: [.option, .command])) { [weak model] in
                         model?.clipboard.showsHistorySettings = false
                         model?.openSettings(page: "clipboard")
                     }
@@ -560,57 +607,6 @@ enum BuiltinLauncherModules {
             })
         ], searchUpdates: [updates(controller.$historyCommandEnabled)],
         shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
-    }
-
-    private static func calculator(_ model: Model) -> LauncherModule {
-        let exchange = CalculatorExchangeRates()
-        func result(_ query: String) -> (value: String?, detail: String)? {
-            if let conversion = CalculatorConversion(query) {
-                if let value = conversion.unitResult { return (value, "单位换算") }
-                if let value = exchange.result(conversion) { return value }
-                return (nil, "单位不支持或无法互相换算")
-            }
-            return calculatorResult(query).map { ($0, "回车复制结果") }
-        }
-        let id = CommandID(rawValue: "calculator")
-        let provider = LauncherModule.Provider(namespace: .exact(id), entries: { input in
-            guard let result = result(input.query), let value = result.value else { return [] }
-            return [Entry(id: id.rawValue, commandID: id, name: value, detail: result.detail,
-                          symbol: "equal", rankingKind: .calculator)]
-        }, resolve: { [weak model] command, origin in
-            guard command == id, origin != .shortcut, let query = model?.query, let value = result(query)?.value else { return nil }
-            return {
-                UtilityActions.copy(value, feedback: "已复制计算结果")
-            }
-        }, actions: { [weak model] row in
-            [LauncherAction(id: "calculator-copy", title: "复制结果", icon: "doc.on.doc", keys: ["↩"]) { [weak model] in
-                model?.runCommand(row.commandID, origin: .menu, usageKey: row.id)
-            }]
-        })
-        let hintID = CommandID(rawValue: "calculator-hint")
-        let hint = LauncherModule.Provider(namespace: .exact(hintID), entries: { input in
-            let query = input.query.trimmingCharacters(in: .whitespacesAndNewlines)
-            let outcome = result(query)
-            guard outcome?.value == nil,
-                  outcome != nil || query.folding(options: .widthInsensitive, locale: .current).hasPrefix("=") else { return [] }
-            let message = outcome?.detail ?? (query.count == 1 ? "例如 2 × (3 + 4)、5 km to mi、100 美元转人民币" : "表达式不完整或无法计算")
-            return [Entry(id: hintID.rawValue, commandID: hintID, name: message,
-                          detail: "计算器", symbol: "equal", rankingKind: .calculator)]
-        }, resolve: { _, _ in nil })
-        var module = LauncherModule(id: .init(rawValue: "keylane.calculator"), commands: [
-            command("calculator-help", "计算器", "在搜索框输入表达式", "equal.circle", ["Calculator", "计算"], execute: { [weak model] _ in
-                model?.query = "="
-            })
-        ], providers: [provider, hint], services: [.init(start: {}, stop: exchange.stop)], searchUpdates: [exchange.updates])
-        module.launcherShown = exchange.startPresenting
-        module.launcherHidden = exchange.endPresentation
-        return module
-    }
-
-    private static func calculatorResult(_ query: String) -> String? {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Calculator.isExpression(trimmed), let value = Calculator.evaluate(trimmed, locale: .current) else { return nil }
-        return Calculator.format(value)
     }
 
     private static func updates<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never>

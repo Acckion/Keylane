@@ -1,10 +1,6 @@
 import SwiftUI
 import KeylaneCore
 
-enum LauncherEscapeBehavior: String {
-    case backOrClose, closeWindow
-}
-
 enum PageNavigationKeys: String {
     case brackets, arrows
 

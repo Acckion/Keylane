@@ -85,10 +85,10 @@ enum SnippetsModule {
                 if let selected = snippets.selected {
                     actions += [
                         .init(id: "snippet-paste", title: "粘贴片段", icon: "clipboard",
-                              keys: snippets.options.primary == .paste ? ["↩"] : ["⌘", "↩"],
+                              shortcut: snippets.options.primary == .paste ? .init(.return, modifiers: []) : .init(.return, modifiers: .command),
                               perform: { snippets.use(selected, paste: true) }),
                         .init(id: "snippet-copy", title: "复制片段", icon: "doc.on.doc",
-                              keys: snippets.options.primary == .copy ? ["↩"] : ["⌘", "↩"],
+                              shortcut: snippets.options.primary == .copy ? .init(.return, modifiers: []) : .init(.return, modifiers: .command),
                               perform: { snippets.use(selected, paste: false) }),
                         .init(id: "snippet-edit", title: "编辑片段", icon: "pencil", perform: {
                             snippets.edit(selected)
@@ -120,8 +120,10 @@ enum SnippetsModule {
             id: editID, placeholder: "", badge: ("创建文字片段", symbol),
             contentPlacement: .form,
             content: { [weak model] in
-                AnyView(SnippetEditor(controller: snippets) { model?.pageID = listID })
+                guard let model else { return AnyView(EmptyView()) }
+                return AnyView(SnippetEditor(controller: snippets, model: model))
             },
+            parent: listID,
             submit: save, shortcutSubmit: save, primaryTitle: { "保存片段" },
             badgeTitle: { snippets.entries.contains { $0.id == snippets.draft.id } ? "编辑文字片段" : "创建文字片段" }
         )

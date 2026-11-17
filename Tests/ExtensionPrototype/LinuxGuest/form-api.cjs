@@ -4,7 +4,7 @@ const { webURL } = require("./open-api.cjs");
 const fieldKinds = new Set([
   "textField", "textArea", "checkbox", "dropdown", "datePicker", "tagPicker", "passwordField", "filePicker",
 ]);
-const interactiveKinds = new Set(["textField", "textArea", "checkbox", "datePicker", "tagPicker", "dropdown"]);
+const interactiveKinds = new Set(["textField", "textArea", "checkbox", "datePicker", "tagPicker", "dropdown", "filePicker"]);
 const formEventCallbacks = Object.freeze({ change: "onChange", focus: "onFocus", blur: "onBlur", search: "onSearchTextChange" });
 const dateTypes = Object.freeze({ Date: "date", DateTime: "date_time" });
 const fullDayDates = new WeakSet();
@@ -166,10 +166,13 @@ function describeForm(root, children, useDefaults = false, context) {
         (event !== "search" || kind === "dropdown") && typeof props[formEventCallbacks[event]] === "function");
       if (events.length) field.events = events;
     }
-    // Secure fields and host paths only accept explicit user input for this invocation.
+    // Secure fields only accept explicit user input for this invocation.
     if (kind === "passwordField") return { ...field, value: "" };
-    if (kind === "filePicker") return { ...field, picker: filePickerOptions(props), value: [] };
     const value = useDefaults || props.value === undefined ? props.defaultValue : props.value;
+    if (kind === "filePicker") {
+      const picker = filePickerOptions(props);
+      return { ...field, picker, value: validSelectedPaths(value, picker) ? [...value] : [] };
+    }
     if (kind === "checkbox") return { ...field, value: typeof value === "boolean" ? value : false };
     if (kind === "datePicker") return { ...field, ...dateField(props, value) };
     if (kind === "dropdown" || kind === "tagPicker") {
@@ -282,7 +285,7 @@ function mountFormRefs(root, children, commands, mounted, context) {
   if (root?.type !== "form") return;
   const nodes = children(root);
   for (const { type, props } of nodes) {
-    if (!interactiveKinds.has(type) || typeof props?.id !== "string" ||
+    if (!(interactiveKinds.has(type) || type === "passwordField") || typeof props?.id !== "string" ||
         (typeof props.ref !== "function" && (!props.ref || typeof props.ref !== "object"))) continue;
     const { id, ref } = props;
     const resetValue = () => describeForm(root, children, true, context).fields.find((field) => field.id === id).value;
@@ -317,7 +320,7 @@ async function submitForm(root, children, selectedAction, values, events = [], c
     const { id } = field;
     if (!Object.hasOwn(values, id)) throw new Error("Missing Form field value");
     const value = values[id];
-    if (field.controlled && events.some((event) => event.id === id && event.kind === "change") &&
+    if (field.controlled && (field.kind === "filePicker" || events.some((event) => event.id === id && event.kind === "change")) &&
         JSON.stringify(field.value) !== JSON.stringify(value)) {
       throw new Error("Invalid controlled Form value");
     }

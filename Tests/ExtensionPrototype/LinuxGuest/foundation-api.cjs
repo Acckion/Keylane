@@ -24,16 +24,45 @@ const specialKeys = Object.freeze({
 });
 
 function randomId(size = 21) {
-  if (!Number.isSafeInteger(size) || size < 0 || size > 4_096) throw new RangeError("Expected an ID length from 0 to 4096");
+  if (!Number.isSafeInteger(size) || size < 0) throw new RangeError("Expected a nonnegative integer ID length");
   const byteCount = Math.ceil(size * 3 / 4);
   return randomBytes(byteCount).toString("base64url").slice(0, size);
 }
 
-function viewID(index) {
+function viewID(index, seed) {
   if (!Number.isSafeInteger(index) || index < 0) throw new Error("useId is only available while rendering a view");
   const scope = [environment.ownerOrAuthorName, environment.extensionName, environment.entryPointName]
     .map((value) => encodeURIComponent(value ?? "")).join("/");
-  return `keylane/${scope}/${index}`;
+  return seed === undefined ? `keylane/${scope}/${index}` : `keylane/${scope}/${seed}/${index}`;
+}
+
+function resolvePreferenceValues(values, definitions) {
+  const fields = new Map((definitions ?? []).map((field) => [field.name, field]));
+  const resolved = Object.fromEntries([...fields.values()]
+    .filter((field) => field.type !== "appPicker" && Object.hasOwn(field, "default"))
+    .map(({ name, default: fallback }) => [name, fallback]));
+  return { ...resolved, ...values };
+}
+
+// Outside the range of root hook indices and hashed component slots.
+const viewIDSeedSlot = Number.MAX_SAFE_INTEGER;
+
+function fitsViewIDs(entries) {
+  return entries.length <= 96 && Buffer.byteLength(JSON.stringify(entries)) <= 6144;
+}
+
+function checkedViewIDs(value) {
+  if (value === undefined) return new Map();
+  if (!Array.isArray(value) || value.length > 96 ||
+      value.some((entry) => !Array.isArray(entry) || entry.length !== 2 ||
+        !Number.isSafeInteger(entry[0]) || entry[0] < 0 || typeof entry[1] !== "string" ||
+        Buffer.byteLength(entry[1]) > 256 ||
+        (entry[0] === viewIDSeedSlot && !/^[A-Za-z0-9_-]{12}$/.test(entry[1]))) || !fitsViewIDs(value)) {
+    throw new Error("Invalid view ID snapshot");
+  }
+  const ids = new Map(value);
+  if (ids.size !== value.length) throw new Error("Duplicate view ID slot");
+  return ids;
 }
 
 function makePreference(name, values, definition) {
@@ -87,4 +116,4 @@ function makePreferences(readValues, readDefinitions = () => undefined) {
   });
 }
 
-module.exports = { Alert, AlertActionStyle, makePreferences, randomId, specialKeys, viewID };
+module.exports = { Alert, AlertActionStyle, makePreferences, resolvePreferenceValues, randomId, specialKeys, viewID, viewIDSeedSlot, fitsViewIDs, checkedViewIDs };

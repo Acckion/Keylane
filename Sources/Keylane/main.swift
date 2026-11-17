@@ -27,21 +27,22 @@ final class Model: ObservableObject {
     }
     @Published var interfaceSize = UserDefaults.standard.string(forKey: "interfaceSize") ?? "medium" { didSet { UserDefaults.standard.set(interfaceSize, forKey: "interfaceSize") } }
     @Published var windowMode = UserDefaults.standard.string(forKey: "windowMode") ?? "expanded" { didSet { UserDefaults.standard.set(windowMode, forKey: "windowMode") } }
-    @Published var compactFavorites = (UserDefaults.standard.object(forKey: "compactFavorites") as? Bool) ?? true { didSet { UserDefaults.standard.set(compactFavorites, forKey: "compactFavorites") } }
     @Published var compactExpanded = false
     let footerFeedback = LauncherFooterFeedbackPresenter()
     var interfaceScale: CGFloat { interfaceSize == "small" ? 0.9 : interfaceSize == "large" ? 1.1 : 1 }
     var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded && footerFeedback.current == nil }
     @Published var presentedLauncherHeight: CGFloat = 470
-    var launcherHeight: CGFloat { isCompact ? (compactFavorites && !compactFavoriteEntries.isEmpty ? 109 : 61) : 470 }
-    var compactFavoriteEntries: [Entry] {
-        guard !favorites.isEmpty else { return [] }
-        return commands.filter { favorites.contains($0.id) }
-    }
+    var launcherHeight: CGFloat { isCompact ? 61 : 470 }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
     @Published var query = ""
     @Published var pageID = PageID.root
-    let fileAI = FileAIController()
+    let aiSettings = AIConfiguration()
+    let aiRuntime = AIRuntime()
+    lazy var fileAI: FileAIController = {
+        let controller = FileAIController(settings: aiSettings, runtime: aiRuntime)
+        controller.openSettings = { [weak self] in self?.openSettings(page: "ai") }
+        return controller
+    }()
     private var moduleSearchChanges: AnyCancellable?
     private var moduleActivationRevocations: AnyCancellable?
     private var registeredPageCleanup: (page: PageID, activation: LauncherModuleRegistry.Activation, leave: () -> Void)?
@@ -56,6 +57,7 @@ final class Model: ObservableObject {
     let dictionary = DictionaryController()
     let emoji = EmojiSearchController()
     let systemNavigation = NavigationController()
+    let cameraPreview = CameraPreview()
     let menuBar = MenuBarRegistry()
     let dropShelf = DropShelfController()
     lazy var calendar = CalendarController(registry: menuBar)
@@ -141,13 +143,19 @@ final class Model: ObservableObject {
     let applicationAutoQuit = ApplicationAutoQuit()
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
+    enum ApplicationCatalogConsumer { case applications, windowLayout }
+    private var applicationCatalogConsumers: Set<ApplicationCatalogConsumer> = []
     private var workspaceObservers: [NSObjectProtocol] = []
     @Published var apps: [URL] = [] { didSet { applicationEntries = nil } }
     private var applicationEntries: (locale: Locale, rows: [Entry])?
     private let commandSearch = LauncherCommandSearch()
     private(set) lazy var launcherModules: LauncherModuleRegistry? = {
         do {
-            let registry = try LauncherModuleRegistry(modules: BuiltinLauncherModules.make(model: self)) { [weak self] id in
+            let modules = BuiltinLauncherModules.make(model: self)
+            if let system = modules.first(where: { $0.id == SystemActionsModule.id }) {
+                SystemActionsModule.migratePreferences(model: self, commands: system.commands)
+            }
+            let registry = try LauncherModuleRegistry(modules: modules) { [weak self] id in
                 self?.disabledCommands.contains(id.rawValue) == false
             }
             let remaining = registry.migrateDisabledCommands(disabledCommands)
@@ -213,7 +221,8 @@ final class Model: ObservableObject {
     }
 
     private var visibleFavoriteIDs: [String] {
-        if pageID == .root, query.isEmpty { return compactFavoriteEntries.map(\.id) }
+        guard !favorites.isEmpty else { return [] }
+        if pageID == .root, query.isEmpty { return commands.filter { favorites.contains($0.id) }.map(\.id) }
         let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: aliases, favorites: favorites, usage: usage)
         let visible = Set(launcherModules?.candidates(for: input).filter { !$0.isFallback }.map(\.id) ?? [])
         return orderedFavoriteIDs.filter { visible.contains($0) }
@@ -375,8 +384,9 @@ final class Model: ObservableObject {
                 self?.rootSearchUpdates.send()
             }
     }
-    func startApplicationDiscovery() {
-        guard workspaceObservers.isEmpty else { return }
+    func acquireApplicationCatalog(for consumer: ApplicationCatalogConsumer) {
+        guard applicationCatalogConsumers.insert(consumer).inserted,
+              applicationCatalogConsumers.count == 1 else { return }
         applicationSettingsCatalog.start()
         reloadCatalog()
         refreshRunningApps()
@@ -384,12 +394,14 @@ final class Model: ObservableObject {
             workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refreshRunningApps() })
         }
     }
-    func stopApplicationDiscovery() {
+    private func stopApplicationDiscovery() {
         workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
         workspaceObservers.removeAll()
         discovery.stop()
     }
-    func releaseApplicationCatalog() {
+    func releaseApplicationCatalog(for consumer: ApplicationCatalogConsumer) {
+        guard applicationCatalogConsumers.remove(consumer) != nil, applicationCatalogConsumers.isEmpty else { return }
+        stopApplicationDiscovery()
         applicationSettingsCatalog.stop()
         commandSearch.releasePreparedNames()
         apps = []
@@ -424,6 +436,17 @@ final class Model: ObservableObject {
         pageID = page
         if origin != .search { (NSApp.delegate as? Delegate)?.revealLauncherDestination() }
     }
+    func goBackInLauncher() {
+        guard pageID != .root else { return }
+        let page = activeLauncherPage
+        if let back = page?.back { back() }
+        else if let parent = page?.parent, launcherModules?.page(parent) != nil { pageID = parent }
+        else { pageID = .root }
+    }
+    func cancelLauncherPage() {
+        if launcherEscapeBehavior.returnsToParent(from: pageID) { goBackInLauncher() }
+        else { (NSApp.delegate as? Delegate)?.hideLauncher() }
+    }
     func launch(_ url: URL) {
         if NSWorkspace.shared.open(url) { (NSApp.delegate as? Delegate)?.hideLauncher() }
         else { error = "无法打开应用，路径可能已经失效。"; discovery.refresh() }
@@ -445,6 +468,10 @@ final class Model: ObservableObject {
     func updateShortcut(_ action: String, value: Shortcut?) throws {
         var proposed = bindings
         proposed[action] = value
+        try updateShortcuts(proposed)
+    }
+
+    func updateShortcuts(_ proposed: [String: Shortcut]) throws {
         let data = try JSONEncoder().encode(proposed)
         try (NSApp.delegate as? Delegate)?.shortcuts.apply(proposed)
         bindings = proposed
@@ -651,7 +678,17 @@ final class Model: ObservableObject {
 }
 final class LauncherPanel: NSPanel {
     var dragHandler: ((NSEvent) -> Void)?
+    var cancelWithoutFocusedView: (() -> Bool)?
+
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, event.keyCode == 53, isKeyWindow, attachedSheet == nil,
+           event.modifierFlags.intersection([.command, .option, .shift, .control]).isEmpty {
+            if event.isARepeat { return }
+            // Local event monitors have already run. An editor or focused control
+            // still receives AppKit's Cancel command through its normal responder chain.
+            if firstResponder === self || firstResponder == nil,
+               cancelWithoutFocusedView?() == true { return }
+        }
         // Keep a narrow drag area above the hosted search field.
         let point = event.locationInWindow
         if event.type == .leftMouseDown, dragHandler != nil,
@@ -999,10 +1036,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             model.$pageID.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.$query.map(\.isEmpty).removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
             model.footerFeedback.$current.map { $0 != nil }.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.$compactFavorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.$favorites.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            model.rootSearchUpdates.filter { [weak model] in model?.isCompact == true }.eraseToAnyPublisher()
+            model.$compactExpanded.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
         ])
         .debounce(for: .zero, scheduler: DispatchQueue.main)
         .sink { [weak self] _ in self?.updateLauncherGeometry() }
@@ -1336,6 +1370,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 }
 // AppKit must exist before a pending restore can present its result. Keep all
 // model/controller construction after restore so it reads the restored domain.
+if CommandLine.arguments.dropFirst() == [DictionaryProcess.argument] { DictionaryProcess.run() }
+
 let application = NSApplication.shared
 ConfigurationTransfer.finishPending()
 let delegate = Delegate()

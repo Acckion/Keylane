@@ -4,6 +4,8 @@ import Darwin
 import KeylaneCore
 
 let shortcutController = SystemShortcutsController(loadsIcons: false)
+if CommandLine.arguments.dropFirst() == [DictionaryProcess.argument] { DictionaryProcess.run() }
+
 func wait(_ description: String, _ condition: () -> Bool) {
     let deadline = Date().addingTimeInterval(20)
     while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.04)) }
@@ -62,6 +64,27 @@ let dictionaryURL = DictionaryController.dictionaryURL(for: termWithReservedChar
 precondition(dictionaryURL.scheme == "dict" && dictionaryURL.query == nil && dictionaryURL.fragment == nil)
 precondition(URLComponents(url: dictionaryURL, resolvingAgainstBaseURL: false)?.path == termWithReservedCharacters)
 print("PASS Dictionary: latest query, cancel/reopen, missing and long input, encoded URL and isolated pasteboard")
+let firstLookupStarted = DispatchSemaphore(value: 0)
+let cancellableDictionary = DictionaryController { term, request in
+    if term == "obsolete" {
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        child.arguments = ["5"]
+        try! request.launch(child)
+        defer { request.finished() }
+        firstLookupStarted.signal()
+        child.waitUntilExit()
+        precondition(request.isCancelled && child.terminationReason == .uncaughtSignal)
+    }
+    return [.init(word: term, entries: [.plain(term)])]
+}
+cancellableDictionary.search("obsolete")
+precondition(firstLookupStarted.wait(timeout: .now() + 3) == .success)
+cancellableDictionary.search("replacement")
+wait("replacement starts after the cancelled child exits") { !cancellableDictionary.loading }
+precondition(cancellableDictionary.selected?.word == "replacement")
+print("PASS Dictionary: replacing a running query terminates its child process")
+
 let record = CNMutableContact()
 record.givenName = "示例"
 record.familyName = "测试"
@@ -79,6 +102,8 @@ let duplicate = ContactSummary(contact: namesake)
 let empty = ContactSummary(contact: CNMutableContact())
 precondition(summary.name == duplicate.name && summary.id != duplicate.id && summary.listDetail != duplicate.listDetail)
 precondition(empty.firstValue == nil && empty.listDetail.isEmpty)
+precondition(summary.initials == "测" && ContactSummary.section(for: summary.sortName(.familyName)) == "#")
+precondition(summary.phoneFields.first?.label == CNLabeledValue<CNPhoneNumber>.localizedString(forLabel: CNLabelPhoneNumberMobile))
 let contactBoard = NSPasteboard.withUniqueName()
 defer { contactBoard.releaseGlobally() }
 
@@ -101,8 +126,11 @@ final class ContactFixture {
 let fixtureContacts = ContactFixture()
 var contactAccess: CNAuthorizationStatus = .denied
 let notifications = NotificationCenter()
+let contactDefaultsName = "org.keylane.tests.contacts." + UUID().uuidString
+let contactDefaults = UserDefaults(suiteName: contactDefaultsName)!
+defer { contactDefaults.removePersistentDomain(forName: contactDefaultsName) }
 let contacts = ContactsController(authorizationStatus: { contactAccess },
-                                  loadContacts: fixtureContacts.load, notifications: notifications)
+                                  loadContacts: fixtureContacts.load, notifications: notifications, defaults: contactDefaults)
 fixtureContacts.set { preconditionFailure("A denied request must not read contacts") }
 contacts.start()
 precondition(contacts.access == .denied && contacts.visible.isEmpty && !contacts.loading)
@@ -128,6 +156,28 @@ precondition(!contacts.copy(email, for: summary.id, to: contactBoard))
 contacts.query = "fixture"
 contacts.select(duplicate.id)
 precondition(contacts.selected?.id == summary.id)
+precondition(contacts.copy(summary.name, for: summary.id, to: contactBoard))
+precondition(contactBoard.string(forType: .string) == summary.name)
+
+let accentedContact = CNMutableContact()
+accentedContact.givenName = "Émile"
+accentedContact.familyName = "Zola"
+let accented = ContactSummary(contact: accentedContact)
+let englishContact = CNMutableContact()
+englishContact.givenName = "Zoe"
+englishContact.familyName = "Anders"
+let english = ContactSummary(contact: englishContact)
+fixtureContacts.set { [accented, english, summary] }
+contacts.query = ""
+contacts.refresh()
+wait("Contact sorting fixtures") { !contacts.loading && contacts.visible.map(\.id) == [summary.id, english.id, accented.id] }
+contacts.select(english.id)
+contacts.sortOrder = .givenName
+precondition(contacts.visible.map(\.id) == [summary.id, accented.id, english.id])
+precondition(contacts.selectedID == english.id)
+precondition(ContactSummary.section(for: accented.sortName(.givenName)) == "E")
+precondition(ContactsController(defaults: contactDefaults).sortOrder == .givenName)
+
 let loadStarted = DispatchSemaphore(value: 0)
 let unblock = DispatchSemaphore(value: 0)
 fixtureContacts.set {
@@ -158,7 +208,7 @@ wait("Contacts reopen") { !contacts.loading && contacts.selected?.id == summary.
 contactAccess = .denied
 precondition(!contacts.copy(email, for: summary.id, to: contactBoard))
 precondition(contacts.visible.isEmpty && contacts.selected == nil && contacts.access == .denied)
-precondition(contactBoard.string(forType: .string) == email)
+precondition(contactBoard.string(forType: .string) == summary.name)
 
 contactAccess = .authorized
 fixtureContacts.set {
@@ -180,7 +230,7 @@ contacts.stop()
 unblock.signal()
 RunLoop.current.run(until: Date().addingTimeInterval(0.15))
 precondition(contacts.visible.isEmpty && contacts.selected == nil && !contacts.loading)
-print("PASS Contacts: multi-field queries, namesakes, blank fields, exact copy, refresh, failures, cancellation, reopen and revoked access")
+print("PASS Contacts: multi-field queries, namesakes, blank fields, name sorting, grouping, exact copy, refresh, failures, cancellation, reopen and revoked access")
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneShortcutsLifecycle-" + UUID().uuidString)
 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: scratch) }

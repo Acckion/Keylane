@@ -9,6 +9,9 @@ struct ResultFilterOption: Identifiable {
     var help: String? = nil
     var iconPath: String? = nil
     var subtitle: String? = nil
+    var artwork: NSImage? = nil
+    var destructive = false
+    var keywords: [String] = []
     static let clipboard: [Self] = [
         .init(id: "all", title: "全部类型", symbol: "list.bullet"),
         .init(id: "text", title: "仅文字", symbol: "textformat"),
@@ -34,7 +37,6 @@ struct ResultFilterOption: Identifiable {
 struct ResultTypeFilter: View {
     @Binding var selection: String
     let options: [ResultFilterOption]
-    @Environment(\.colorSchemeContrast) private var contrast
     @Binding var open: Bool
     var navigation = "arrows"
     var width: CGFloat = 138
@@ -52,15 +54,8 @@ struct ResultTypeFilter: View {
                                   choose: { open = false; selection = $0.id }, dismiss: { open = false })
                     .transition(.opacity)
             } else {
-                NativeHoverButton(title: "筛选：\(current.title)", action: toggle) {
-                    HStack(spacing: 9) {
-                        Image(systemName: current.symbol)
-                        Text(current.title).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold))
-                    }.font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Color.primary.opacity(contrast == .increased ? 1 : 0.8))
-                }
-                .frame(width: width, height: VisualStyle.launcherControlDiameter)
+                LauncherHeaderMenuButton(title: current.title, symbol: current.symbol, width: width,
+                                         accessibilityTitle: "筛选：\(current.title)", action: toggle)
                 .transition(.opacity)
             }
         }
@@ -83,6 +78,38 @@ struct ResultTypeFilter: View {
     }
 }
 
+struct LauncherHeaderMenuButton: View {
+    let title: String
+    let symbol: String
+    var width: CGFloat? = nil
+    var accessibilityTitle: String? = nil
+    var icon: AnyView? = nil
+    let action: () -> Void
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        if let width {
+            button.frame(width: width)
+        } else {
+            button.fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var button: some View {
+        NativeHoverButton(title: accessibilityTitle ?? title, action: action) {
+            HStack(spacing: 9) {
+                if let icon { icon } else { Image(systemName: symbol) }
+                Text(title).lineLimit(1).frame(maxWidth: width == nil ? 160 : nil)
+                Image(systemName: "chevron.down").font(.system(size: 12, weight: .semibold))
+            }
+            .padding(.horizontal, width == nil ? 12 : 0)
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(Color.primary.opacity(contrast == .increased ? 1 : 0.8))
+        }
+        .frame(height: VisualStyle.launcherControlDiameter)
+    }
+}
+
 struct ResultFilterPanel: View {
     let selection: String
     let options: [ResultFilterOption]
@@ -99,6 +126,7 @@ struct ResultFilterPanel: View {
     static func matches(_ options: [ResultFilterOption], query: String) -> [ResultFilterOption] {
         options.filter {
             query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.id.localizedCaseInsensitiveContains(query)
+                || $0.keywords.contains { $0.localizedCaseInsensitiveContains(query) }
         }
     }
 
@@ -122,7 +150,7 @@ struct ResultFilterPanel: View {
                     LazyVStack(spacing: 3) {
                         ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
                             LauncherMenuRow(title: option.title, symbol: option.symbol, selected: highlighted == index,
-                                            style: .filter, iconPath: option.iconPath,
+                                            style: .filter, destructive: option.destructive, artwork: option.artwork, iconPath: option.iconPath,
                                             activate: { choose(option) }, highlight: { highlighted = index }) {
                                 if let help = option.help {
                                     Image(systemName: "info.circle").help(help).accessibilityLabel(help)

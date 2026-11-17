@@ -7,7 +7,8 @@ here=$(cd "$(dirname "$0")" && pwd -P)
 repo=$(cd "$here/../../.." && pwd -P)
 
 xcrun swiftc -swift-version 5 -module-cache-path "$scratch/swift-cache" \
-    "$repo/Sources/KeylaneCore/ExtensionPrototypeSession.swift" "$here/Host.swift" -o "$scratch/host"
+    "$repo/Sources/KeylaneCore/ExtensionPrototypeSession.swift" \
+    "$repo/Sources/KeylaneCore/ExtensionClipboardContent.swift" "$here/Host.swift" -o "$scratch/host"
 cat > "$scratch/virtualization.plist" <<'PLIST'
 <plist version="1.0"><dict><key>com.apple.security.virtualization</key><true/></dict></plist>
 PLIST
@@ -92,10 +93,32 @@ if test "$#" -eq 2; then
     python3 "$here/prepare.py" "$scratch/kernel.apk" "$scratch" uuid-build "$2"
     boot uuid-build uuid-build -
     sed -n 's/^guest-result=//p' "$scratch/uuid-build.out" | base64 -D > "$scratch/uuid-format.cjs"
+    if ! test -f "$scratch/icu-data-en.apk"; then
+        curl -fLsS "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/icu-data-en-76.1-r1.apk" \
+            -o "$scratch/icu-data-en.apk"
+    fi
     python3 "$here/prepare.py" "$scratch/kernel.apk" "$scratch" noview "$scratch/uuid-format.cjs"
 
     boot noview noview-wire node-confirmed
     grep -q '^guest-result=node-confirmed' "$scratch/noview-wire.out"
+    python3 - "$scratch/noview-wire.log" <<'PYTOAST'
+import json
+from pathlib import Path
+import sys
+
+events = [
+    json.loads(line.removeprefix("broker-event "))
+    for line in Path(sys.argv[1]).read_text().splitlines()
+    if line.startswith("broker-event ")
+]
+toasts = [json.loads(event["text"]) for event in events if event["capability"] == "feedback.toast"]
+assert [(event["operation"], event["id"]) for event in toasts] == [
+    ("show", 1), ("update", 1), ("update", 1), ("show", 2), ("hide", 2),
+], toasts
+assert toasts[0]["style"] == "ANIMATED" and toasts[2]["style"] == "SUCCESS", toasts
+assert toasts[2]["title"] == "Done", toasts
+print("toast: signed host accepted ordered updates and rejected stale operations")
+PYTOAST
     echo 'no-view: Node received correlated result and permission error through virtio'
     python3 "$here/verify_host_exit.py" "$scratch" "$sentinel" no-view
 
@@ -139,13 +162,14 @@ def events(phase):
 uuid = "550e8400-e29b-41d4-a716-446655440000"
 copy = events("noview-copy")
 denied = events("noview-denied")
-if copy != [
-    {"capability": "clipboard.copy", "text": uuid},
-    {"capability": "feedback.hud", "text": f"✅ Copied formatted UUID: {uuid}"},
-]:
+if len(copy) != 2 or copy[0] != {"capability": "clipboard.copy", "text": uuid} or (
+    copy[1]["capability"] != "feedback.hud" or json.loads(copy[1]["text"]) != {
+        "text": f"✅ Copied formatted UUID: {uuid}", "clearRootSearch": False, "popToRootType": "default",
+    }
+):
     raise SystemExit(f"unexpected copy events: {copy!r}")
 if len(denied) != 1 or denied[0]["capability"] != "feedback.toast" or (
-    "Capability unavailable for this command" not in denied[0]["text"]
+    "Capability unavailable for this command" not in json.loads(denied[0]["text"]).get("message", "")
 ):
     raise SystemExit(f"unexpected denied events: {denied!r}")
 print(f"UUID Generator formatUuid: copied {uuid} to named pasteboard; paste denied and reported")
@@ -161,5 +185,7 @@ PY
         grep -q '^guest probe passed, .*state=0' "$scratch/noview-preferences-$action.out"
     done
     echo 'preferences: the same signed guest honored both copy and paste'
+
+    python3 "$here/verify_hud_ack.py" "$scratch" "$sentinel"
 
 fi

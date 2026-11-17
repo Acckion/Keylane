@@ -44,7 +44,7 @@ test("custom or explicitly disabled filtering preserves extension-managed result
   expects({ filtering: { keepSectionOrder: true }, onSearchTextChange }, 0);
 });
 
-test("empty state keeps its explicit actions and allows only built-in icons", () => {
+test("empty state keeps its explicit actions and serializes remote icons", () => {
   const panel = node("actions");
   const rootPanel = node("actions", { title: "Root" });
   const empty = node("listEmpty", { title: "Nothing found", description: "Try again", icon: { source: "Folder" }, actions: panel });
@@ -55,7 +55,9 @@ test("empty state keeps its explicit actions and allows only built-in icons", ()
   });
 
   empty.props.icon = { source: "https://example.invalid/asset.png" };
-  assert.equal(listNodes(root, "absent", children).empty.icon, undefined);
+  const remote = listNodes(root, "absent", children).empty;
+  assert.equal(remote.icon, undefined);
+  assert.equal(remote.imageDescriptor.light.remoteURL, "https://example.invalid/asset.png");
   assert.equal(listNodes(node("list", { children: nested, actions: rootPanel }), "absent", children).empty.panel, undefined);
   assert.equal(listNodes(node("list", { actions: rootPanel }), "", children).empty.panel, rootPanel);
 });
@@ -122,4 +124,53 @@ test("list keeps stable section identity and replays the action on ranked result
     { kind: "copy", text: "exact" });
   const fixed = await render(command({ keepSectionOrder: true }), { query });
   assert.deepEqual(fixed.rows.map(({ sectionID }) => sectionID), [0, 1]);
+});
+
+test("List.Item keeps accessory variants, icons and help separate from its subtitle", async () => {
+  const { Color, Icon, List, render } = require("./view-api.cjs");
+  const date = new Date("2026-11-13T09:00:00Z");
+  const reply = await render(() => List({ children: List.Item({
+    title: { value: "Issue", tooltip: "Issue title" },
+    subtitle: { value: "Open", tooltip: "Issue state" },
+    icon: { value: Icon.Hammer, tooltip: "Work item" },
+    accessories: [
+      { icon: Icon.Person, tooltip: "Assignee" },
+      { text: { value: "Review", color: Color.Orange } },
+      { date: { value: date, color: Color.Blue } },
+      { tag: { value: date, color: Color.Green } },
+      { tag: "Release" },
+      { date: new Date(NaN) },
+      { tag: { value: null } },
+    ],
+  }) }), {});
+  const [row] = JSON.parse(JSON.stringify(reply)).rows;
+  assert.equal(row.title, "Issue");
+  assert.equal(row.titleTooltip, "Issue title");
+  assert.equal(row.subtitle, "Open");
+  assert.equal(row.subtitleTooltip, "Issue state");
+  assert.equal(row.icon, Icon.Hammer);
+  assert.equal(row.iconTooltip, "Work item");
+  assert.deepEqual(row.accessories, [
+    { imageDescriptor: { light: { symbol: Icon.Person } }, tooltip: "Assignee" },
+    { title: "Review", tintColor: Color.Orange },
+    { timestamp: date.getTime(), tintColor: Color.Blue },
+    { timestamp: date.getTime(), isTag: true, tintColor: Color.Green },
+    { title: "Release", isTag: true },
+  ]);
+});
+
+test("List.Item carries remote row and accessory icons with local fallbacks", async () => {
+  const { Icon, List, ListItem, render } = require("./view-api.cjs");
+  const url = "https://example.invalid/item.png";
+  assert.equal(ListItem, List.Item);
+  const { rows: [item] } = await render(() => List({ children: ListItem({
+    title: "Sample", icon: { value: { source: url, fallback: Icon.Folder }, tooltip: "Row icon" },
+    accessories: [{ icon: { source: url, mask: "circle" }, tooltip: "Accessory" }],
+  }) }), {});
+  assert.equal(item.iconTooltip, "Row icon");
+  assert.deepEqual(item.imageDescriptor.light, { remoteURL: url });
+  assert.deepEqual(item.imageDescriptor.fallbackLight, { symbol: Icon.Folder });
+  assert.equal(item.accessories[0].tooltip, "Accessory");
+  assert.deepEqual(item.accessories[0].imageDescriptor.light, { remoteURL: url });
+  assert.equal(item.accessories[0].imageDescriptor.mask, "circle");
 });

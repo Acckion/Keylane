@@ -367,28 +367,83 @@ final class SystemShortcutsController: ObservableObject {
     }
 }
 
+enum ContactSortOrder: String, CaseIterable {
+    static let preferenceKey = "contacts.sortOrder"
+    case familyName, givenName
+
+    var title: String { self == .familyName ? "姓氏" : "名字" }
+}
+
 struct ContactSummary: Identifiable, Equatable, Sendable {
+    struct Field: Equatable, Sendable {
+        let label: String
+        let value: String
+    }
+
     let id: String
     let name: String
+    let givenName: String
+    let familyName: String
     let organization: String
-    let phones: [String]
-    let emails: [String]
+    let phoneFields: [Field]
+    let emailFields: [Field]
+    let thumbnail: Data?
     let searchable: String
 
     init(contact: CNContact) {
         id = contact.identifier
+        givenName = contact.givenName.trimmingCharacters(in: .whitespacesAndNewlines)
+        familyName = contact.familyName.trimmingCharacters(in: .whitespacesAndNewlines)
         organization = contact.organizationName
         let formatted = CNContactFormatter.string(from: contact, style: .fullName) ?? ""
         name = formatted.isEmpty ? (organization.isEmpty ? "未命名联系人" : organization) : formatted
-        phones = contact.phoneNumbers.map { $0.value.stringValue }.filter(Self.hasContent)
-        emails = contact.emailAddresses.map { String($0.value) }.filter(Self.hasContent)
-        searchable = ([name, contact.nickname, organization] + phones + emails + phones.map { $0.filter(\.isNumber) }).joined(separator: " ")
+        phoneFields = Self.fields(contact.phoneNumbers, fallback: "电话") { $0.stringValue }
+        emailFields = Self.fields(contact.emailAddresses, fallback: "邮箱") { String($0) }
+        thumbnail = contact.isKeyAvailable(CNContactThumbnailImageDataKey) ? contact.thumbnailImageData : nil
+        let phones = phoneFields.map(\.value)
+        searchable = ([name, givenName, familyName, contact.nickname, organization] + phones +
+                      emailFields.map(\.value) + phones.map { $0.filter(\.isNumber) }).joined(separator: " ")
     }
 
-    var firstValue: String? { phones.first ?? emails.first }
+    var phones: [String] { phoneFields.map(\.value) }
+    var emails: [String] { emailFields.map(\.value) }
+    var firstValue: String? { phoneFields.first?.value ?? emailFields.first?.value }
 
     var listDetail: String {
         ([organization == name ? "" : organization, firstValue ?? ""]).filter(Self.hasContent).joined(separator: " · ")
+    }
+
+    var initials: String {
+        let fallback = Self.hasContent(organization) ? organization.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let first = givenName.first ?? familyName.first ?? fallback.first
+        guard let first else { return "" }
+        let latinName = [givenName, familyName].allSatisfy { Self.section(for: $0) != "#" }
+        if latinName, let given = givenName.first, let family = familyName.first {
+            return String([given, family]).uppercased()
+        }
+        if Self.section(for: String(first)) == "#", let family = familyName.first { return String(family) }
+        return String(first).uppercased()
+    }
+
+    func sortName(_ order: ContactSortOrder) -> String {
+        let names = order == .familyName ? [familyName, givenName] : [givenName, familyName]
+        return names.first(where: Self.hasContent) ?? organization.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func section(for value: String) -> String {
+        let folded = value.folding(options: [.diacriticInsensitive, .widthInsensitive], locale: .current).uppercased()
+        guard let letter = folded.first, ("A"..."Z").contains(letter) else { return "#" }
+        return String(letter)
+    }
+
+    private static func fields<Value>(_ items: [CNLabeledValue<Value>], fallback: String,
+                                      value: (Value) -> String) -> [Field] {
+        items.compactMap {
+            let text = value($0.value)
+            guard hasContent(text) else { return nil }
+            let label = $0.label.map { CNLabeledValue<Value>.localizedString(forLabel: $0) } ?? fallback
+            return Field(label: hasContent(label) ? label : fallback, value: text)
+        }
     }
 
     private static func hasContent(_ value: String) -> Bool {
@@ -404,6 +459,15 @@ final class ContactsController: ObservableObject {
     @Published private(set) var requesting = false
     @Published private(set) var error = ""
     @Published var query = "" { didSet { if oldValue != query { updateResults() } } }
+    @Published var sortOrder: ContactSortOrder {
+        didSet {
+            guard oldValue != sortOrder else { return }
+            defaults.set(sortOrder.rawValue, forKey: ContactSortOrder.preferenceKey)
+            contacts = Self.sorted(contacts, by: sortOrder)
+            updateResults()
+        }
+    }
+    private let defaults: UserDefaults
     private var fetch: Task<Void, Never>?
     private var contacts: [ContactSummary] = []
     private var observation: NSObjectProtocol?
@@ -415,10 +479,12 @@ final class ContactsController: ObservableObject {
 
     init(authorizationStatus: @escaping () -> CNAuthorizationStatus = { CNContactStore.authorizationStatus(for: .contacts) },
          loadContacts: @escaping () throws -> [ContactSummary] = ContactsController.readContacts,
-         notifications: NotificationCenter = .default) {
+         notifications: NotificationCenter = .default, defaults: UserDefaults = .standard) {
         self.authorizationStatus = authorizationStatus
         self.loadContacts = loadContacts
         self.notifications = notifications
+        self.defaults = defaults
+        sortOrder = defaults.string(forKey: ContactSortOrder.preferenceKey).flatMap(ContactSortOrder.init(rawValue:)) ?? .familyName
     }
 
     var canRead: Bool { access == .authorized }
@@ -471,14 +537,10 @@ final class ContactsController: ObservableObject {
             return
         }
         loading = true
+        let order = sortOrder
         fetch = Task.detached(priority: .userInitiated) { [weak self, loadContacts] in
             guard !Task.isCancelled else { return }
-            let result = Result {
-                try loadContacts().sorted { lhs, rhs in
-                    let order = lhs.name.localizedStandardCompare(rhs.name)
-                    return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
-                }
-            }
+            let result = Result { try Self.sorted(loadContacts(), by: order) }
             guard !Task.isCancelled else { return }
             DispatchQueue.main.async {
                 guard let self, self.generation == ticket else { return }
@@ -490,7 +552,7 @@ final class ContactsController: ObservableObject {
                 self.loading = false
                 switch result {
                 case .success(let rows):
-                    self.contacts = rows
+                    self.contacts = self.sortOrder == order ? rows : Self.sorted(rows, by: self.sortOrder)
                     self.updateResults()
                     UtilityVerification.record("contacts", count: rows.count)
                 case .failure:
@@ -505,7 +567,8 @@ final class ContactsController: ObservableObject {
     static func readContacts() throws -> [ContactSummary] {
         let keys: [CNKeyDescriptor] = [CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
             CNContactNicknameKey as NSString, CNContactOrganizationNameKey as NSString,
-            CNContactPhoneNumbersKey as NSString, CNContactEmailAddressesKey as NSString]
+            CNContactPhoneNumbersKey as NSString, CNContactEmailAddressesKey as NSString,
+            CNContactThumbnailImageDataKey as NSString]
         let request = CNContactFetchRequest(keysToFetch: keys)
         var rows: [ContactSummary] = []
         try CNContactStore().enumerateContacts(with: request) { contact, stop in
@@ -517,17 +580,34 @@ final class ContactsController: ObservableObject {
 
     @discardableResult
     func copy(_ value: String, for contactID: String, to pasteboard: NSPasteboard = .general) -> Bool {
-        guard active else { return false }
-        guard authorizationStatus() == .authorized else { refresh(); return false }
-        guard let contact = selected, contact.id == contactID,
-              contact.phones.contains(value) || contact.emails.contains(value) else { return false }
+        guard let contact = authorizedSelection(contactID),
+              value == contact.name || contact.phones.contains(value) || contact.emails.contains(value) else { return false }
         pasteboard.clearContents()
         return pasteboard.setString(value, forType: .string)
     }
 
+    func authorizedSelection(_ contactID: String) -> ContactSummary? {
+        guard active else { return nil }
+        guard authorizationStatus() == .authorized else { refresh(); return nil }
+        return selected.flatMap { $0.id == contactID ? $0 : nil }
+    }
+
+    private static func sorted(_ contacts: [ContactSummary], by order: ContactSortOrder) -> [ContactSummary] {
+        contacts.map { contact in
+            let name = contact.sortName(order)
+            return (contact, name, ContactSummary.section(for: name))
+        }.sorted { lhs, rhs in
+            if lhs.2 != rhs.2 { return lhs.2 < rhs.2 }
+            let order = lhs.1.localizedStandardCompare(rhs.1)
+            if order != .orderedSame { return order == .orderedAscending }
+            let fullNameOrder = lhs.0.name.localizedStandardCompare(rhs.0.name)
+            return fullNameOrder == .orderedSame ? lhs.0.id < rhs.0.id : fullNameOrder == .orderedAscending
+        }.map { $0.0 }
+    }
+
     private func updateResults() {
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
-        let matches = Array(contacts.lazy.filter { entry in terms.allSatisfy { entry.searchable.localizedCaseInsensitiveContains($0) } }.prefix(200))
+        let matches = contacts.filter { entry in terms.allSatisfy { entry.searchable.localizedCaseInsensitiveContains($0) } }
         if visible != matches { visible = matches }
         if !matches.contains(where: { $0.id == selectedID }), selectedID != matches.first?.id { selectedID = matches.first?.id }
     }
@@ -544,17 +624,36 @@ final class ContactsController: ObservableObject {
 
 final class DictionaryController: ObservableObject {
     @Published private(set) var term = ""
-    @Published private(set) var definition: String?
+    @Published private(set) var words: [DictionaryWord] = []
+    @Published private(set) var selectedID: String?
+    var selected: DictionaryWord? { words.first { $0.id == selectedID } }
+    var definition: String? { selected?.definition }
     @Published private(set) var loading = false
     var initialTerm = ""
     static let maximumTermLength = 256
     private let worker = DispatchQueue(label: "org.keylane.dictionary", qos: .userInitiated)
-    private let lookup: (String) -> String?
-    private var pending: DispatchWorkItem?
+    private let lookup: (String, ExtensionProcessRequest) -> [DictionaryWord]
+    private var pending: (job: DispatchWorkItem, request: ExtensionProcessRequest)?
     private var generation = 0
 
-    init(lookup: @escaping (String) -> String? = DictionaryController.definition(for:)) {
+    init() { lookup = DictionaryProcess.search }
+
+    init(lookup: @escaping (String, ExtensionProcessRequest) -> [DictionaryWord]) {
         self.lookup = lookup
+    }
+
+    convenience init(lookup: @escaping (String) -> String?) {
+        self.init { word, _ in lookup(word).map { [.init(word: word, entries: [.plain($0)])] } ?? [] }
+    }
+
+    func select(_ id: String) {
+        if words.contains(where: { $0.id == id }), selectedID != id { selectedID = id }
+    }
+
+    func move(_ delta: Int) {
+        guard !words.isEmpty else { return }
+        let index = words.firstIndex { $0.id == selectedID } ?? 0
+        select(words[NavigationBounds.move(index, by: delta, count: words.count)].id)
     }
 
     var termTooLong: Bool { term.utf16.count > Self.maximumTermLength }
@@ -568,25 +667,31 @@ final class DictionaryController: ObservableObject {
     }
 
     func search(_ query: String) {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard term != text else { return }
         generation += 1
         let ticket = generation
-        pending?.cancel()
+        pending?.job.cancel()
+        pending?.request.cancel()
         pending = nil
-        term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        definition = nil
+        term = text
+        words = []
+        selectedID = nil
         loading = !term.isEmpty && !termTooLong
         guard loading else { return }
-        let text = term
+        let request = ExtensionProcessRequest()
         let job = DispatchWorkItem { [weak self, lookup] in
-            let result = lookup(text)
+            guard !request.isCancelled else { return }
+            let result = lookup(text, request)
             DispatchQueue.main.async {
                 guard let self, self.generation == ticket else { return }
                 self.pending = nil
-                self.definition = result
+                self.words = result
+                self.selectedID = result.first?.id
                 self.loading = false
             }
         }
-        pending = job
+        pending = (job, request)
         worker.asyncAfter(deadline: .now() + 0.12, execute: job)
     }
 
@@ -603,8 +708,9 @@ final class DictionaryController: ObservableObject {
         return components.url
     }
 
-    func openDictionary(onFailure reportFailure: @escaping () -> Void) {
+    func openDictionary(word: String? = nil, onFailure reportFailure: @escaping () -> Void) {
         guard !termTooLong else { return }
+        let target = word ?? term
         let workspace = NSWorkspace.shared
         guard let application = workspace.urlForApplication(withBundleIdentifier: "com.apple.Dictionary") else {
             reportFailure()
@@ -613,9 +719,9 @@ final class DictionaryController: ObservableObject {
         let completion: (NSRunningApplication?, Error?) -> Void = { _, error in
             if error != nil { DispatchQueue.main.async { reportFailure() } }
         }
-        if term.isEmpty {
+        if target.isEmpty {
             workspace.openApplication(at: application, configuration: .init(), completionHandler: completion)
-        } else if let url = Self.dictionaryURL(for: term) {
+        } else if let url = Self.dictionaryURL(for: target) {
             workspace.open([url], withApplicationAt: application, configuration: .init(), completionHandler: completion)
         }
     }

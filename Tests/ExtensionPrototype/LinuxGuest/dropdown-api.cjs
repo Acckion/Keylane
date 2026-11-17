@@ -36,7 +36,7 @@ function describeDropdown(root, children, selection, previousItem) {
     seen.add(value);
     const source = icon?.source ?? icon;
     const words = Array.isArray(keywords) ? keywords.filter((word) => validString(word, 128)).slice(0, 8) : undefined;
-    const imageDescriptor = describeImage(icon);
+    const imageDescriptor = describeImage(icon, false, true);
     return { value, title, icon: builtInIcons.has(source) ? source : undefined, keywords: words, ...(imageDescriptor && { imageDescriptor }) };
   }
 

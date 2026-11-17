@@ -34,7 +34,18 @@ struct LauncherAction: Identifiable {
     let id: String
     let title: String
     let icon: String
-    var keys: [String] = []
+    var shortcut: KeyboardShortcut? = nil
+    var displayedKeys: [String] {
+        guard let shortcut else { return [] }
+        let modifiers: [(EventModifiers, String)] = [(.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘")]
+        let key: String
+        switch shortcut.key {
+        case .return: key = "↩"
+        case .escape: key = "esc"
+        default: key = String(shortcut.key.character).uppercased()
+        }
+        return modifiers.compactMap { shortcut.modifiers.contains($0.0) ? $0.1 : nil } + [key]
+    }
     var artwork: NSImage? = nil
     var value: String? = nil
     var submenu: Submenu?
@@ -48,6 +59,7 @@ struct LauncherPage {
     enum ContentPlacement {
         case inset
         case underChrome
+        case readingDetail
         case fileResults
         case form
     }
@@ -61,6 +73,8 @@ struct LauncherPage {
     var queryChanged: (String) -> Void = { _ in }
     var leave: () -> Void = {}
     var keepsStateWhenHidden = false
+    var parent: PageID?
+    // A custom return action for pages that can be entered from another window or multiple routes.
     var back: (() -> Void)?
     var move: ((Int) -> Void)?
     var submit: (() -> Void)?
@@ -71,7 +85,12 @@ struct LauncherPage {
     var primaryEnabled: (() -> Bool)?
     var actions: (() -> [LauncherAction])?
     var updates: AnyPublisher<Void, Never> = Empty().eraseToAnyPublisher()
-    var searchAccessory: (() -> AnyView)?
+    enum HeaderInput {
+        case searchField
+        case custom(() -> AnyView)
+        case none
+    }
+    var headerInput: HeaderInput = .searchField
     var enter: ((String) -> String?)?
     var resume: (() -> Void)?
     var moveHorizontal: ((Int) -> Void)?
@@ -84,6 +103,8 @@ struct LauncherPage {
     var releasePreview: (() -> Void)?
     var actionShortcutsEnabled = false
     var loading: AnyPublisher<Bool, Never>?
+    var fullBleed = false
+    var submitWithReturn = false
 }
 
 struct SettingsTitlebarContribution {
@@ -239,7 +260,14 @@ extension LauncherModule {
 struct DynamicCommandSettings {
     typealias Matches = (_ title: String, _ commandID: String, _ aliasKey: String?) -> Bool
     let updates: () -> [AnyPublisher<Void, Never>]
+    let commandNames: () -> [ShortcutCommandName]
     let matchingList: (_ matches: Matches?) -> ((_ showsColumns: Bool) -> AnyView)?
+}
+
+struct ShortcutCommandName: Identifiable {
+    let id: String
+    let title: String
+    var aliasKey: String? = nil
 }
 
 struct ShortcutSettingsBinding {
@@ -306,7 +334,7 @@ final class LauncherModuleRegistry {
     private let modules: [LauncherModule]
     private let disableableModules: Set<ModuleID>
     private let preferences: UserDefaults
-    private static let disabledKey = "disabledLauncherModules"
+    static let disabledModulesPreferenceKey = "disabledLauncherModules"
     private var disabledModules: Set<ModuleID>
     let availabilityChanges = PassthroughSubject<Void, Never>()
     private var launcherVisible = false
@@ -323,7 +351,7 @@ final class LauncherModuleRegistry {
         self.modules = modules
         self.preferences = preferences
         disableableModules = Set(modules.filter(\.canDisable).map(\.id))
-        disabledModules = Set((preferences.stringArray(forKey: Self.disabledKey) ?? []).map(ModuleID.init(rawValue:)))
+        disabledModules = Set((preferences.stringArray(forKey: Self.disabledModulesPreferenceKey) ?? []).map(ModuleID.init(rawValue:)))
         _ = try LauncherModuleCatalog(modules: modules.map {
             LauncherModuleDeclaration(id: $0.id, commands: $0.commands.map(\.declaration),
                                       pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
@@ -402,7 +430,7 @@ final class LauncherModuleRegistry {
         guard let module = modules.first(where: { $0.id == id && $0.canDisable }),
               enabled == disabledModules.contains(id) else { return false }
         if enabled { disabledModules.remove(id) } else { disabledModules.insert(id) }
-        preferences.set(disabledModules.map(\.rawValue).sorted(), forKey: Self.disabledKey)
+        preferences.set(disabledModules.map(\.rawValue).sorted(), forKey: Self.disabledModulesPreferenceKey)
         if module.registration != nil {
             registrationChanged(for: module, resuming: enabled)
         } else if enabled {
@@ -430,6 +458,15 @@ final class LauncherModuleRegistry {
         }
         reconcilingModules.remove(id)
         registrationChanges.send()
+    }
+
+    func canBindFromShortcutKeyboard(_ id: CommandID) -> Bool {
+        if id.rawValue == "launcher" { return true }
+        if let command = byID[id] {
+            return isCommandEnabled(command) && command.value.arguments?.count.contains(0) != false
+        }
+        guard let provider = provider(owning: id) else { return false }
+        return isCommandEnabled(id, in: provider.module) && provider.value.available(id)
     }
 
     func shortcutSettingsUpdates() -> [AnyPublisher<Void, Never>] {

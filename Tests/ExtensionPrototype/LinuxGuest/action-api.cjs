@@ -1,6 +1,6 @@
 const { describeImage } = require("./image-api.cjs");
 const { createHash } = require("node:crypto");
-const { builtInIcons } = require("./presentation-values.cjs");
+const { builtInIcons, macOSShortcut } = require("./presentation-values.cjs");
 
 const ActionStyle = Object.freeze({ Regular: "regular", Destructive: "destructive" });
 
@@ -42,22 +42,6 @@ function actionEntries(panel, children) {
   }
 
   return { entries: visitLevel(panel, 1), leaves };
-}
-
-const modifiers = new Set(["cmd", "ctrl", "opt", "shift"]);
-const specialKeys = new Set([
-  "return", "enter", "delete", "backspace", "deleteForward", "tab", "arrowUp", "arrowDown", "arrowLeft", "arrowRight",
-  "pageUp", "pageDown", "home", "end", "space", "escape",
-]);
-
-function actionShortcut(shortcut) {
-  const chord = shortcut?.macOS ?? shortcut;
-  const key = chord?.key;
-  const flags = chord?.modifiers;
-  if (typeof key !== "string" || (!/^[a-z0-9.,;=+\[\]{}«»()/\\'`§^@$-]$/u.test(key) && !specialKeys.has(key)) ||
-      !Array.isArray(flags) || flags.length > 4 || new Set(flags).size !== flags.length ||
-      !flags.every((flag) => modifiers.has(flag))) return undefined;
-  return { key, modifiers: flags };
 }
 
 function actionPanelTitle(panel) {
@@ -114,7 +98,7 @@ function describeActions(panel, children) {
     const source = node.props.icon?.source ?? node.props.icon;
     const imageDescriptor = describeImage(node.props.icon);
     const icon = { ...(builtInIcons.has(source) && { icon: source }), ...(imageDescriptor && { imageDescriptor }) };
-    const shortcut = actionShortcut(node.props.shortcut);
+    const shortcut = macOSShortcut(node.props.shortcut);
     const options = { ...(shortcut && { shortcut }), ...(node.props.autoFocus === true && { autoFocus: true }) };
     if (items) {
       const submenu = submenuOptions(node);

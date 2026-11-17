@@ -103,8 +103,15 @@ enum CalendarLauncherModule {
                         }
                     }
                     calendar.showSettings = { [weak model] in model?.openSettings(page: settingsID) }
-                    calendar.previewCamera = { [weak model] in
-                        model?.launcherModules?.resolve(CommandID(rawValue: "show-camera"), origin: .menu, navigate: { _ in })?()
+                    calendar.previewCamera = { [weak model] join in
+                        guard let model, let registry = model.launcherModules else { return false }
+                        return registry.invoke(CommandID(rawValue: "show-camera"), origin: .menu) { destination in
+                            guard case let .page(page) = destination else { return }
+                            let launcherVisible = (NSApp.delegate as? Delegate)?.window?.isVisible == true
+                            let previous = launcherVisible && model.pageID == pageID ? pageID : .root
+                            model.cameraPreview.meeting = .init(returnPage: previous, join: join)
+                            model.openPage(page, origin: .menu)
+                        }
                     }
                     calendar.reportFailure = { message in
                         (NSApp?.delegate as? Delegate)?.toast.show(message, style: .failure)
@@ -181,11 +188,11 @@ enum CalendarLauncherModule {
         }
         var actions = event.map { eventActions($0, calendar: calendar) }
             ?? [.init(id: "open-calendar", title: "打开日历", icon: "calendar", perform: calendar.openSystemCalendar)]
-        actions.append(.init(id: "new-event", title: "创建日程", icon: "plus", keys: ["⌘", "N"], group: 1,
+        actions.append(.init(id: "new-event", title: "创建日程", icon: "plus", shortcut: .init("n", modifiers: .command), group: 1,
                              enabled: canCreate, perform: { form() }))
         if let event {
             if event.editable {
-                actions.append(.init(id: "edit-event", title: "编辑日程", icon: "pencil", keys: ["⌘", "E"], group: 1,
+                actions.append(.init(id: "edit-event", title: "编辑日程", icon: "pencil", shortcut: .init("e", modifiers: .command), group: 1,
                                      enabled: !calendar.saving, perform: { form(event) }))
             }
             if !event.participants.isEmpty {
@@ -195,29 +202,29 @@ enum CalendarLauncherModule {
                 }))
             }
             actions += [
-                .init(id: "copy-event", title: "复制日程详情", icon: "doc.on.clipboard", keys: ["⇧", "⌘", "C"], group: 2, perform: {
+                .init(id: "copy-event", title: "复制日程详情", icon: "doc.on.clipboard", shortcut: .init("c", modifiers: [.shift, .command]), group: 2, perform: {
                     let time = event.allDay ? "全天" : CalendarController.timeRange(event.start, event.end)
                     let lines = [event.title, event.start.formatted(date: .complete, time: .omitted) + " · " + time,
                                  event.calendarTitle, event.location, event.eventURL?.absoluteString ?? "",
                                  event.meetingURL == event.eventURL ? "" : event.meetingURL?.absoluteString ?? "", event.notes]
                     _ = UtilityActions.copy(lines.filter { !$0.isEmpty }.joined(separator: "\n"))
                 }),
-                .init(id: "copy-event-title", title: "复制日程标题", icon: "doc.on.clipboard", keys: ["⌥", "⌘", "C"], group: 2,
+                .init(id: "copy-event-title", title: "复制日程标题", icon: "doc.on.clipboard", shortcut: .init("c", modifiers: [.option, .command]), group: 2,
                       perform: { _ = UtilityActions.copy(event.title) })
             ]
         }
         actions += [
-            .init(id: "copy-availability", title: "复制空闲时间（七天，09:00–18:00）", icon: "doc.on.clipboard", keys: ["⌃", "⌘", "A"], group: 3,
+            .init(id: "copy-availability", title: "复制空闲时间（七天，09:00–18:00）", icon: "doc.on.clipboard", shortcut: .init("a", modifiers: [.control, .command]), group: 3,
                   enabled: calendar.enabled && !calendar.loading,
                   perform: { _ = UtilityActions.copy(calendar.availabilityText()) }),
-            .init(id: "block-time", title: "预留时间", icon: "clock", keys: ["⇧", "⌘", "B"], group: 3,
+            .init(id: "block-time", title: "预留时间", icon: "clock", shortcut: .init("b", modifiers: [.shift, .command]), group: 3,
                   enabled: canCreate, perform: { form(blocking: true) }),
             .init(id: "calendar-today", title: "回到今天", icon: "calendar", group: 4, perform: calendar.showToday),
             .init(id: "calendar-settings", title: "日历设置…", icon: "gearshape", group: 4,
                   perform: { [weak model] in model?.openSettings(page: settingsID) })
         ]
         if let event, event.editable {
-            actions.append(.init(id: "delete-event", title: "删除日程", icon: "trash", keys: ["⇧", "⌘", "X"], group: 5,
+            actions.append(.init(id: "delete-event", title: "删除日程", icon: "trash", shortcut: .init("x", modifiers: [.shift, .command]), group: 5,
                                  enabled: !calendar.saving, destructive: true, perform: { calendar.confirmDeletion(event) }))
         }
         return actions

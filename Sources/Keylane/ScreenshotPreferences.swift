@@ -32,20 +32,7 @@ struct ScreenshotPreferences: View {
         SettingsPageSections {
             SettingsCard(anchor: .screenshotColumns) {
                 Text("列数").font(VisualStyle.rowText)
-                HStack {
-                    ForEach(ScreenshotLibrary.columnCounts, id: \.self) { count in
-                        if count != ScreenshotLibrary.columnCounts.lowerBound { Spacer(minLength: 8) }
-                        Button { library.columns = count } label: {
-                            VStack(spacing: 5) {
-                                ColumnDiagram(count: count, selected: library.columns == count)
-                                Text("\(count)").foregroundStyle(library.columns == count ? .primary : .secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(count) 列")
-                        .accessibilityAddTraits(library.columns == count ? .isSelected : [])
-                    }
-                }
+                GridColumnChoices(counts: ScreenshotLibrary.columnCounts, selection: binding(\.columns))
             }
             SettingsSearchScopeCard(paths: library.scopes.map(\.path), detail: "搜索已授权的文件夹及其子目录。",
                                     anchor: .screenshotScopes, add: library.chooseFolders, remove: library.removeFolder(at:)) {
@@ -119,6 +106,28 @@ struct ScreenshotPreferences: View {
     }
 
 
+}
+
+struct GridColumnChoices: View {
+    let counts: ClosedRange<Int>
+    @Binding var selection: Int
+
+    var body: some View {
+        HStack {
+            ForEach(counts, id: \.self) { count in
+                if count != counts.lowerBound { Spacer(minLength: 8) }
+                Button { selection = count } label: {
+                    VStack(spacing: 5) {
+                        ColumnDiagram(count: count, selected: selection == count)
+                        Text("\(count)").foregroundStyle(selection == count ? .primary : .secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(count) 列")
+                .accessibilityAddTraits(selection == count ? .isSelected : [])
+            }
+        }
+    }
 }
 
 private struct ColumnDiagram: View {

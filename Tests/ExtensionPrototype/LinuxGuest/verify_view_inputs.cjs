@@ -74,3 +74,89 @@ test("deprecated advanced Form names share the same components", () => {
   assert.equal(FormTagPicker, Form.TagPicker);
   assert.equal(FormTagPickerItem, Form.TagPicker.Item);
 });
+
+test("catalog no-view commands run without rendering and commit cache on normal completion", async () => {
+  const { runCommand, Cache, getPreferenceValues } = require("./view-api.cjs");
+  const { configureEnvironment } = require("./environment.cjs");
+  configureEnvironment({ launchType: "userInitiated", entryPointMode: "no-view" });
+  const result = await runCommand(async (props) => {
+    assert.deepEqual(props, { arguments: {}, launchType: "userInitiated" });
+    assert.deepEqual(getPreferenceValues(), { title: "fixture" });
+    new Cache().set("run", "done");
+  }, { catalogNoView: true, preferences: { title: "fixture" }, cache: [] });
+  assert.equal(result.kind, "action");
+  assert.deepEqual(result.cache, [['["","run"]', "done"]]);
+});
+
+test("catalog no-view HUD awaits native presentation without a clipboard grant", async (t) => {
+  const bridge = require("./raycast-api.cjs");
+  const { runCommand, showHUD, PopToRootType } = require("./view-api.cjs");
+  let acknowledge;
+  let requested;
+  const arrived = new Promise((resolve) => { requested = resolve; });
+  const request = t.mock.method(bridge, "request", (kind, payload) => {
+    requested([kind, JSON.parse(payload)]);
+    return new Promise((resolve) => { acknowledge = resolve; });
+  });
+  let continued = false;
+  const input = { catalogNoView: true };
+  const result = runCommand(async () => {
+    await showHUD("已呈现", { clearRootSearch: true, popToRootType: PopToRootType.Immediate });
+    continued = true;
+  }, input);
+  assert.deepEqual(await arrived, ["feedback.hud", {
+    text: "已呈现", clearRootSearch: true, popToRootType: "immediate",
+  }]);
+  assert.equal(continued, false);
+  acknowledge("");
+  assert.deepEqual(await result, { kind: "action" });
+  assert.equal(continued, true);
+  request.mock.mockImplementation(async () => { throw new Error("Host rejected HUD"); });
+  await assert.rejects(runCommand(() => showHUD("Rejected"), input), /Host rejected HUD/);
+
+  let lateHUD;
+  await runCommand(async () => {
+    lateHUD = new Promise((resolve) => setImmediate(() => resolve(
+      assert.rejects(showHUD("Late"), /no-view command has ended/),
+    )));
+  }, input);
+  await lateHUD;
+  assert.equal(request.mock.callCount(), 2);
+});
+
+test("catalog no-view navigation awaits each host operation in order", async (t) => {
+  const bridge = require("./raycast-api.cjs");
+  const { runCommand, clearSearchBar, popToRoot, closeMainWindow, PopToRootType } = require("./view-api.cjs");
+  const calls = [];
+  let received;
+  const request = t.mock.method(bridge, "request", (kind, payload) => new Promise((acknowledge) => {
+    calls.push([kind, JSON.parse(payload)]);
+    received(acknowledge);
+  }));
+  let arriving = new Promise((resolve) => { received = resolve; });
+  let finished = false;
+  const result = runCommand(async () => {
+    await clearSearchBar({ forceScrollToTop: false });
+    await popToRoot({ clearSearchBar: true });
+    await closeMainWindow({ popToRootType: PopToRootType.Suspended });
+    finished = true;
+  }, { catalogNoView: true });
+  const expected = [
+    ["navigation.clearSearch", { forceScrollToTop: false }],
+    ["navigation.popToRoot", { clearSearchBar: true }],
+    ["navigation.closeWindow", { clearRootSearch: false, popToRootType: "suspended" }],
+  ];
+  for (let index = 0; index < expected.length; index++) {
+    const acknowledge = await arriving;
+    assert.deepEqual(calls, expected.slice(0, index + 1));
+    assert.equal(finished, false);
+    arriving = new Promise((resolve) => { received = resolve; });
+    acknowledge("");
+  }
+  assert.deepEqual(await result, { kind: "action" });
+  assert.equal(finished, true);
+  request.mock.mockImplementation(async () => { throw new Error("Host rejected navigation"); });
+  for (const navigate of [clearSearchBar, popToRoot, closeMainWindow]) {
+    await assert.rejects(runCommand(() => navigate(), { catalogNoView: true }), /Host rejected navigation/);
+  }
+});

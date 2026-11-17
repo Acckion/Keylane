@@ -87,7 +87,7 @@ final class CalendarController: ObservableObject {
     @Published private(set) var lastUpdated: Date?
     var reveal: ((AgendaEvent?) -> Void)?
     var showSettings: (() -> Void)?
-    var previewCamera: (() -> Void)?
+    var previewCamera: ((@escaping () -> Void) -> Bool)?
     var reportFailure: ((String) -> Void)?
     private let registry: MenuBarRegistry
     private let preferences: UserDefaults
@@ -567,12 +567,17 @@ extension CalendarController {
 
     func joinMeeting(_ event: AgendaEvent) {
         guard enabled, let url = event.meetingURL else { return }
+        if previewBeforeJoining, previewCamera?({ [weak self] in self?.openMeeting(event, url: url) }) == true { return }
+        openMeeting(event, url: url)
+    }
+
+    private func openMeeting(_ event: AgendaEvent, url: URL) {
+        guard enabled else { return }
         handledMeetings[event.id] = event.end
         if event.end > event.start {
             joinedMeetings[event.id] = DateInterval(start: event.start, end: event.end)
         }
         error = ""
-        if previewBeforeJoining { previewCamera?() }
         if url.host?.lowercased() == "meet.google.com",
            let browser = NSWorkspace.shared.urlForApplication(withBundleIdentifier: googleBrowser) {
             NSWorkspace.shared.open([url], withApplicationAt: browser, configuration: .init()) { [weak self] _, failure in

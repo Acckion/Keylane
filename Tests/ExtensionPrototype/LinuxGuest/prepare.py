@@ -27,7 +27,10 @@ def require_hash(path, expected):
             raise SystemExit(f"SHA-256 mismatch: {path.name}")
 
 
-def stage_reviewed_assets(destination, manifest):
+RASTER_FORMATS = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".gif": "gif"}
+
+
+def stage_reviewed_assets(destination, manifest, host_images=None):
     if manifest is None:
         return
     if manifest.stat().st_size > 32768:
@@ -35,6 +38,8 @@ def stage_reviewed_assets(destination, manifest):
     entries = json.loads(manifest.read_text())
     if not isinstance(entries, dict) or len(entries) > 64:
         raise SystemExit("invalid reviewed assets manifest")
+    if host_images is not None:
+        host_images.mkdir()
     total = 0
     for name, digest in entries.items():
         parts = name.split("/")
@@ -57,6 +62,9 @@ def stage_reviewed_assets(destination, manifest):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         target.chmod(0o444)
+        image_format = RASTER_FORMATS.get(path.suffix.lower())
+        if host_images is not None and image_format is not None and len(data) > 1800:
+            (host_images / f"{digest}.{image_format}").write_bytes(data)
     for directory in destination.rglob("*"):
         if directory.is_dir():
             directory.chmod(0o555)
@@ -156,7 +164,7 @@ def stage_build(root, packages, source=None, phase="build"):
     source.chmod(0o444)
 
 
-def prepare(apk, output, root, phase, source=None, asset_manifest=None):
+def prepare(apk, output, root, phase, source=None, asset_manifest=None, host_images=None):
     require_hash(apk, KERNEL_SHA256)
     (root / "dev").mkdir()
     (root / "proc").mkdir(exist_ok=True)
@@ -179,7 +187,7 @@ def prepare(apk, output, root, phase, source=None, asset_manifest=None):
     ], check=True, env={**os.environ, "ZIG_GLOBAL_CACHE_DIR": str(output / "zig-cache")})
     if phase != "probe":
         stage_node(root, output / "apks")
-        if phase in ("view", "uuid-suite"):
+        if phase in ("noview", "view", "uuid-suite", "menu-bar"):
             icu = output / "icu-data-en.apk"
             require_hash(icu, "2c2d36d47c82d0f6cff1b549044fe3562f327f944971ef367b9c40eeb35aa6e8")
             with tarfile.open(icu, "r:gz") as archive:
@@ -190,7 +198,7 @@ def prepare(apk, output, root, phase, source=None, asset_manifest=None):
         elif phase in ("noview", "view", "uuid-suite", "menu-bar"):
             assets = root / "assets"
             assets.mkdir()
-            stage_reviewed_assets(assets, asset_manifest)
+            stage_reviewed_assets(assets, asset_manifest, host_images)
             assets.chmod(0o555)
             digest = {
                 "noview": "270da7e4e85f0e4e65d20c31d7de75bb659f4a2d844ecbbc64a8c1a434ffb329",
@@ -203,10 +211,10 @@ def prepare(apk, output, root, phase, source=None, asset_manifest=None):
             (root / "sample.cjs").chmod(0o444)
             scripts = ("no-view.cjs",) if phase == "noview" else (
                 "view.cjs", "view-api.cjs", "menu-bar.cjs", "grid-api.cjs", "list-api.cjs",
-                "view-filter.cjs", "form-api.cjs", "action-api.cjs", "dropdown-api.cjs", "open-api.cjs", "list-metadata.cjs", "navigation-api.cjs", "create-actions.cjs", "date-action.cjs", "push-navigation.cjs",
-                "finder-reveal.cjs", "trash-action.cjs", "open-with-clipboard.cjs", "quick-look-action.cjs", "clipboard-read.cjs", "clipboard-write.cjs", "image-api.cjs", "window-management.cjs",
+                "view-filter.cjs", "form-api.cjs", "action-api.cjs", "dropdown-api.cjs", "list-metadata.cjs", "create-actions.cjs", "date-action.cjs", "push-navigation.cjs",
+                "open-with-clipboard.cjs", "quick-look-action.cjs", "window-management.cjs",
             )
-            common = ("raycast-api.cjs", "environment.cjs", "toast.cjs", "presentation-values.cjs", "icon-values.cjs",
+            common = ("raycast-api.cjs", "open-api.cjs", "finder-reveal.cjs", "clipboard-write.cjs", "clipboard-read.cjs", "trash-action.cjs", "navigation-api.cjs", "command-metadata.cjs", "alert-api.cjs", "image-api.cjs", "environment.cjs", "toast.cjs", "presentation-values.cjs", "icon-values.cjs",
                       "storage-compat.cjs", "broker-local-storage.cjs", "foundation-api.cjs", "cache-api.cjs", "utilities-cache.cjs", "raycast-utils.cjs", "utilities-visual-feedback.cjs", "utilities-hooks.cjs", "utilities-data-hooks.cjs", "utilities-runtime-hooks.cjs", "utilities-deeplinks.cjs", "applications-api.cjs", "diagnostics-api.cjs")
             for name in (*scripts, *common):
                 shutil.copyfile(Path(__file__).with_name(name), root / name)
@@ -238,17 +246,21 @@ def prepare(apk, output, root, phase, source=None, asset_manifest=None):
 
 if __name__ == "__main__":
     asset_manifest = None
+    host_images = None
+    if len(sys.argv) == 9 and sys.argv[5] == "--assets-manifest" and sys.argv[7] == "--host-images":
+        host_images = Path(sys.argv[8]).absolute()
+        del sys.argv[7:]
     if len(sys.argv) == 7 and sys.argv[5] == "--assets-manifest":
         if sys.argv[3] not in ("noview", "view", "uuid-suite", "menu-bar"):
             raise SystemExit("reviewed assets require a runtime artifact")
         asset_manifest = Path(sys.argv[6]).resolve(strict=True)
         del sys.argv[5:]
     if len(sys.argv) not in (4, 5) or sys.argv[3] not in ("probe", "build", "run", "uuid-build", "noview", "view-build", "view", "uuid-suite-build", "uuid-suite", "menu-bar-build", "menu-bar"):
-        raise SystemExit("usage: prepare.py kernel.apk output-directory phase [sample [--assets-manifest manifest.json]]")
+        raise SystemExit("usage: prepare.py kernel.apk output-directory phase [sample [--assets-manifest manifest.json [--host-images directory]]]")
     apk, output = (Path(argument).resolve() for argument in sys.argv[1:3])
     phase = sys.argv[3]
     source = Path(sys.argv[4]).resolve(strict=True) if len(sys.argv) == 5 else None
     if (phase in ("run", "uuid-build", "noview", "view-build", "view", "uuid-suite-build", "uuid-suite", "menu-bar-build", "menu-bar")) != (source is not None):
         raise SystemExit("expected a reviewed source or artifact for this phase")
     with tempfile.TemporaryDirectory(prefix="initramfs-", dir=output) as directory:
-        prepare(apk, output, Path(directory), phase, source, asset_manifest)
+        prepare(apk, output, Path(directory), phase, source, asset_manifest, host_images)

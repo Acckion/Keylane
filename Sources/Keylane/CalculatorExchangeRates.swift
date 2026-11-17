@@ -73,6 +73,12 @@ final class CalculatorExchangeRates: ObservableObject {
         state = .idle
     }
 
+    func refresh() {
+        guard presenting, refreshTask == nil else { return }
+        lastAttempt = nil
+        refreshIfNeeded()
+    }
+
     private func refreshIfNeeded() {
         let now = ProcessInfo.processInfo.systemUptime
         let interval: TimeInterval = state == .offline || state == .failed ? 30 : 900
