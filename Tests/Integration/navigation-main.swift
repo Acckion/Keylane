@@ -88,6 +88,22 @@ struct NavigationChecks {
         try require(try windowTarget(in: fixture, options: tiling).frame.size == original.frame.size, "Explicit resize frame mismatch")
         print("Native window gaps, half-screen cycling, cycle restore and explicit resize passed")
 
+        var entry = WindowLayoutEntry(bundleID: "org.keylane.navigation-fixture")
+        entry.windowTitle = "Navigation Fixture B"
+        entry.geometry = WindowGeometry(region: CGRect(x: 0.5, y: 0, width: 0.5, height: 1))
+        var layout = CustomWindowAction(windows: [entry])
+        layout.name = "Fixture layout"
+        layout.frontWindowID = entry.id
+        var layoutFailures: Int?
+        navigation.applyLayout([(entry, fixture.processIdentifier)], layout: layout, otherWindows: .keep,
+                               options: tiling, request: .init()) { layoutFailures = $0 }
+        try require(awaitValue(timeout: 6, { layoutFailures }) == 0, "Applying a layout with a front window failed")
+        let front = try windowTarget(in: fixture, options: tiling)
+        guard let wanted = layout.displayFrame(for: entry, in: front.display, windowGap: 12, screenGap: 8)
+        else { throw CheckError.failed("Fixture layout frame unavailable") }
+        try require(front.frame == wanted, "The configured layout window was not focused at its new size")
+        print("Native layout gaps and configured front window passed")
+
         var menus: NavigationScan?
         _ = navigation.scan(.menus, target: fixture) { menus = $0 }
         let commands = awaitValue(timeout: 8, { menus })?.items ?? []

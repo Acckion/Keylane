@@ -32,6 +32,7 @@ final class WindowManagementController: ObservableObject {
     private weak var model: Model?
     private var permission: PermissionFeature
     private var requests: [UUID: NavigationScanRequest] = [:]
+    private var layoutEditor: WindowLayoutEditorWindow?
     private var grid: WindowGridPanel?
     private var gridRequest: NavigationScanRequest?
     private let storageKey = "windowManagement.customActions"
@@ -71,9 +72,7 @@ final class WindowManagementController: ObservableObject {
         case .createCommand:
             draft = .init()
             error = ""
-        case .createLayout:
-            draft = .init(windows: [])
-            error = ""
+        case .createLayout: edit(.init(windows: []), origin: origin)
         case .saveLayout: captureCurrentLayout(origin: origin)
         case .importLayouts: importActions()
         case .switchSpace(let direction):
@@ -110,7 +109,7 @@ final class WindowManagementController: ObservableObject {
         guard permission.available, let delegate = NSApp.delegate as? Delegate else { return }
         if origin == .shortcut { delegate.rememberPreviousApplication() }
         if let geometry = item.geometry { manage(.place(.custom(geometry)), app: delegate.previousApplication) }
-        else if let windows = item.windows { applyLayout(windows, otherWindows: item.otherWindows) }
+        else if let windows = item.windows { applyLayout(windows, layout: item) }
     }
 
     private func manage(_ operation: SystemNavigation.WindowOperation, app: NSRunningApplication?,
@@ -188,9 +187,14 @@ final class WindowManagementController: ObservableObject {
         for request in requests.values { request.cancel() }
         requests.removeAll()
         dismissGrid()
+        layoutEditor?.dismiss()
     }
 
     func edit(_ item: CustomWindowAction, origin: LauncherCommandOrigin = .menu) {
+        if item.windows != nil {
+            editLayout(item)
+            return
+        }
         draft = item
         error = ""
         model?.openPage(Self.editorPage, origin: origin == .search ? .menu : origin)
@@ -204,14 +208,39 @@ final class WindowManagementController: ObservableObject {
     }
 
     func saveDraft() {
+        guard save(draft) else { error = "请填写名称并检查窗口尺寸和位置。"; return }
+        model?.pageID = .root
+        feedback("已保存「\(draft.name)」。", succeeded: true)
+    }
+
+    private func save(_ draft: CustomWindowAction) -> Bool {
         var item = draft
         item.name = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
         var next = actions
         if let index = next.firstIndex(where: { $0.id == item.id }) { next[index] = item }
         else { next.append(item) }
-        guard persist(next) else { error = "请填写名称，检查窗口尺寸、位置和每台显示器的窗口数量。"; return }
-        model?.pageID = .root
-        feedback("已保存「\(item.name)」。", succeeded: true)
+        return persist(next)
+    }
+
+    private func editLayout(_ item: CustomWindowAction) {
+        if let layoutEditor { layoutEditor.bringToFront(); return }
+        guard let model, permission.available else { return }
+        let editor = WindowLayoutEditorWindow()
+        layoutEditor = editor
+        let view = WindowLayoutEditor(
+            draft: item, editing: actions.contains { $0.id == item.id },
+            applications: model.applicationSettingsCatalog, quicklinks: model.quicklinks, preferences: preferences,
+            capture: { [weak self] completion in self?.captureVisibleWindows(completion: completion) },
+            choosePath: { [weak editor] folder, completion in editor?.choosePath(folder: folder, completion: completion) },
+            save: { [weak self] draft in
+                guard let self, self.permission.available, self.save(draft) else { return false }
+                self.layoutEditor?.dismiss()
+                self.feedback("已保存「\(draft.name)」。", succeeded: true)
+                return true
+            },
+            cancel: { [weak editor] in editor?.dismiss() }
+        )
+        editor.show(view, parent: NSApp.keyWindow) { [weak self] in self?.layoutEditor = nil }
     }
 
     func remove(_ item: CustomWindowAction) {
@@ -232,27 +261,24 @@ final class WindowManagementController: ObservableObject {
         return true
     }
 
-    func captureCurrentLayout(origin: LauncherCommandOrigin = .menu, append: Bool = false) {
+    private func captureCurrentLayout(origin: LauncherCommandOrigin) {
+        captureVisibleWindows { [weak self] entries in
+            guard !entries.isEmpty else { self?.feedback("当前空间没有可保存的窗口。"); return }
+            var item = CustomWindowAction(windows: entries)
+            item.name = "当前窗口布局"
+            item.usesPreferredGaps = false
+            self?.edit(item, origin: origin)
+        }
+    }
+
+    private func captureVisibleWindows(completion: @escaping ([WindowLayoutEntry]) -> Void) {
+        guard permission.available else { completion([]); return }
         let id = UUID()
         let request = NavigationScanRequest()
         requests[id] = request
         SystemNavigation.shared.snapshotLayout(options: preferences.placementOptions, request: request) { [weak self] entries in
-            guard let self, self.requests.removeValue(forKey: id) != nil else { return }
-            guard !entries.isEmpty else { self.feedback("当前空间没有可保存的窗口。"); return }
-            if append, let existing = self.draft.windows {
-                var counts = Dictionary(grouping: existing, by: \.display).mapValues(\.count)
-                let additions = entries.filter { entry in
-                    guard (counts[entry.display] ?? 0) < 8,
-                          !existing.contains(where: { $0.bundleID == entry.bundleID && $0.windowTitle == entry.windowTitle && $0.geometry == entry.geometry }) else { return false }
-                    counts[entry.display, default: 0] += 1
-                    return true
-                }
-                self.draft.windows = existing + additions
-            } else {
-                var item = CustomWindowAction(windows: entries)
-                item.name = "当前窗口布局"
-                self.edit(item, origin: origin)
-            }
+            guard self?.requests.removeValue(forKey: id) != nil else { return }
+            completion(entries)
         }
     }
 
@@ -291,14 +317,14 @@ final class WindowManagementController: ObservableObject {
         }
     }
 
-    private func applyLayout(_ windows: [WindowLayoutEntry], otherWindows: CustomWindowAction.OtherWindows) {
+    private func applyLayout(_ windows: [WindowLayoutEntry], layout: CustomWindowAction) {
         let id = UUID()
         let request = NavigationScanRequest()
         requests[id] = request
         (NSApp.delegate as? Delegate)?.hideLauncher()
         openLayoutEntries(windows[...], opened: [], failures: 0, request: request) { [weak self] opened, failures in
             guard let self, self.requests[id] != nil else { return }
-            SystemNavigation.shared.applyLayout(opened, otherWindows: failures == 0 ? otherWindows : .keep,
+            SystemNavigation.shared.applyLayout(opened, layout: layout, otherWindows: failures == 0 ? layout.otherWindows : .keep,
                                                 options: self.preferences.placementOptions, request: request) { [weak self] rejected in
                 guard let self, self.requests.removeValue(forKey: id) != nil else { return }
                 let total = rejected + failures
@@ -357,4 +383,8 @@ private extension CGRect {
 
 extension CustomWindowAction {
     var commandID: String { WindowManagementController.customPrefix + id.uuidString }
+    var displaySymbol: String {
+        if windows == nil { return "rectangle.inset.filled" }
+        return icon.flatMap { symbol in WindowLayoutEditor.symbols.contains(symbol) ? symbol : nil } ?? "square.grid.2x2"
+    }
 }

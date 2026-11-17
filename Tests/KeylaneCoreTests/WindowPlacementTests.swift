@@ -62,6 +62,34 @@ final class WindowPlacementTests: XCTestCase {
         XCTAssertNotNil(WindowPlacement.displayStep(1, wrap: true, keepAspectRatio: true).frame(for: secondary, displays: screens))
     }
 
+    func testLayoutPreferredGapsAndFocusSelectionSurviveArchive() throws {
+        let screen = CGRect(x: 0, y: 25, width: 1200, height: 800)
+        let left = WindowLayoutEntry(bundleID: "org.keylane.left-fixture")
+        var right = WindowLayoutEntry(bundleID: "org.keylane.right-fixture")
+        right.geometry.anchor = .topRight
+        var layout = CustomWindowAction(windows: [left, right])
+        layout.name = "Two windows"
+        layout.icon = "square.grid.2x2"
+        layout.frontWindowID = right.id
+        let data = try JSONEncoder().encode(WindowActionsArchive(actions: [layout]))
+        let archive = try JSONDecoder().decode(WindowActionsArchive.self, from: data)
+        XCTAssertEqual(archive.actions, [layout])
+        XCTAssertTrue(archive.isValid)
+        let frames = [left, right].compactMap { layout.displayFrame(for: $0, in: screen, windowGap: 12, screenGap: 10) }
+        XCTAssertEqual(frames, [CGRect(x: 10, y: 35, width: 584, height: 780),
+                                CGRect(x: 606, y: 35, width: 584, height: 780)])
+
+        layout.usesPreferredGaps = nil
+        layout.icon = nil
+        layout.frontWindowID = nil
+        let oldData = try JSONEncoder().encode(WindowActionsArchive(actions: [layout]))
+        let oldLayout = try XCTUnwrap(JSONDecoder().decode(WindowActionsArchive.self, from: oldData).actions.first)
+        XCTAssertEqual(oldLayout.displayFrame(for: right, in: screen, windowGap: 12, screenGap: 10),
+                       CGRect(x: 600, y: 25, width: 600, height: 800))
+        layout.frontWindowID = UUID()
+        XCTAssertFalse(layout.isValid)
+    }
+
     func testLayoutArchiveRoundTripAndPerDisplayLimit() throws {
         var layout = CustomWindowAction(windows: [.init(bundleID: "org.keylane.fixture")])
         layout.name = "Test layout"

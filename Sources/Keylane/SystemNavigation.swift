@@ -307,7 +307,8 @@ final class SystemNavigation {
         }
     }
 
-    func applyLayout(_ entries: [(entry: WindowLayoutEntry, pid: pid_t)], otherWindows: CustomWindowAction.OtherWindows,
+    func applyLayout(_ entries: [(entry: WindowLayoutEntry, pid: pid_t)], layout: CustomWindowAction,
+                     otherWindows: CustomWindowAction.OtherWindows,
                      options: WindowPlacementOptions, request: NavigationScanRequest, completion: @escaping (Int) -> Void) {
         let displays = Self.displayFrames(respectingStageManager: options.respectStageManager)
         let apps = NSWorkspace.shared.runningApplications.filter {
@@ -315,11 +316,14 @@ final class SystemNavigation {
         }
         queue.async {
             var used: [AXUIElement] = []
+            var front: (pid: pid_t, window: AXUIElement)?
             var failed = 0
             let visible = Self.visibleWindows()
             for (entry, pid) in entries {
                 guard !request.isCancelled else { return }
-                guard displays.indices.contains(entry.display), let destination = entry.geometry.frame(in: displays[entry.display]) else {
+                guard displays.indices.contains(entry.display),
+                      let destination = layout.displayFrame(for: entry, in: displays[entry.display], windowGap: options.windowGap,
+                                                            screenGap: options.screenGap) else {
                     failed += 1
                     continue
                 }
@@ -344,6 +348,7 @@ final class SystemNavigation {
                     _ = self.setFlag(false, key: kAXMinimizedAttribute, on: window)
                 }
                 if self.updateFrame(destination, from: frame, window: window) != nil { failed += 1 }
+                else if layout.frontWindowID == entry.id { front = (pid, window) }
             }
             if otherWindows != .keep, failed == 0, !used.isEmpty {
                 for app in apps {
@@ -363,8 +368,15 @@ final class SystemNavigation {
                     }
                 }
             }
-            let failures = failed
-            DispatchQueue.main.async { if !request.isCancelled { completion(failures) } }
+            DispatchQueue.main.async { [failures = failed, front] in
+                guard !request.isCancelled else { return }
+                guard let front else { completion(failures); return }
+                guard let app = NSRunningApplication(processIdentifier: front.pid) else { completion(failures + 1); return }
+                let window = NavigationItem(id: 0, title: "", detail: "", application: app, element: front.window)
+                self.perform(window, mode: .windows, request: request) { error in
+                    completion(failures + (error == nil ? 0 : 1))
+                }
+            }
         }
     }
 

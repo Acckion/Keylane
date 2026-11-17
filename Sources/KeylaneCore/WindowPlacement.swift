@@ -153,7 +153,7 @@ public struct WindowGeometry: Codable, Equatable {
     public enum Anchor: String, Codable, CaseIterable {
         case topLeft, topCenter, topRight, left, center, right, bottomLeft, bottomCenter, bottomRight
 
-        var factors: CGPoint {
+        public var factors: CGPoint {
             switch self {
             case .topLeft: CGPoint(x: 0, y: 0)
             case .topCenter: CGPoint(x: 0.5, y: 0)

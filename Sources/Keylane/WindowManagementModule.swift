@@ -31,7 +31,7 @@ enum WindowManagementModule {
         let commands: [LauncherModule.Command] = WindowCommand.all.map { command in
             let destination: LauncherCommandDeclaration.Destination
             switch command.action {
-            case .createCommand, .createLayout: destination = .page(WindowManagementController.editorPage)
+            case .createCommand: destination = .page(WindowManagementController.editorPage)
             case .coordinate: destination = .page(WindowManagementController.coordinatesPage)
             default: destination = .action
             }
@@ -42,12 +42,9 @@ enum WindowManagementModule {
         }
         let editor = LauncherPage(
             id: WindowManagementController.editorPage, placeholder: "", badge: ("窗口管理", "macwindow"), contentPlacement: .form,
-            content: { [weak model] in
-                guard let model else { return AnyView(EmptyView()) }
-                return AnyView(WindowActionEditor(controller: controller, applications: model.applicationSettingsCatalog,
-                                                  quicklinks: model.quicklinks, back: back))
-            }, back: back, submit: controller.saveDraft, shortcutSubmit: controller.saveDraft,
-            primaryTitle: { controller.draft.geometry == nil ? "保存布局" : "保存命令" },
+            content: { AnyView(WindowActionEditor(controller: controller, back: back)) },
+            back: back, submit: controller.saveDraft, shortcutSubmit: controller.saveDraft,
+            primaryTitle: { "保存命令" },
             primaryEnabled: { controller.draft.isValid }, updates: draftUpdates
         )
         let coordinates = LauncherPage(
@@ -76,7 +73,7 @@ enum WindowManagementModule {
                 return controller.actions.map { item in
                     let id = item.commandID
                     return Entry(id: id, commandID: .init(rawValue: id), name: item.name, detail: title,
-                                 symbol: item.windows == nil ? "rectangle.inset.filled" : "rectangle.split.2x1",
+                                 symbol: item.displaySymbol,
                                  aliases: ["窗口管理", "Window Management"])
                 }
             }, resolve: { id, origin in
@@ -124,7 +121,7 @@ enum WindowManagementModule {
             if value { model.disabledCommands.remove(id) }
             else { model.disabledCommands.insert(id) }
         })) {
-            SettingsIcon(symbol: item.windows == nil ? "rectangle.inset.filled" : "rectangle.split.2x1")
+            SettingsIcon(symbol: item.displaySymbol)
         }
     }
 }

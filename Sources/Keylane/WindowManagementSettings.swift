@@ -73,7 +73,7 @@ struct WindowManagementSettings: View {
                     sectionTitle("自定义命令和布局")
                     CommandSettingsList(items: controller.actions, id: \.id) { item in
                         entry(id: item.commandID, title: item.name,
-                              symbol: item.windows == nil ? "rectangle.inset.filled" : "rectangle.split.2x1",
+                              symbol: item.displaySymbol,
                               menu: [
                                 .init(title: "编辑") { controller.edit(item) },
                                 .init(title: "复制") { controller.duplicate(item) },

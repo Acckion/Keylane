@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 public struct WindowLayoutEntry: Codable, Identifiable, Equatable {
     public enum Argument: Codable, Equatable {
@@ -13,6 +14,21 @@ public struct WindowLayoutEntry: Codable, Identifiable, Equatable {
     public var argument: Argument = .none
 
     public init(bundleID: String) { self.bundleID = bundleID }
+
+    public func frame(in screen: CGRect, windowGap: CGFloat = 0, screenGap: CGFloat = 0) -> CGRect? {
+        let gap = min(max(0, screenGap), max(0, (min(screen.width, screen.height) - 1) / 2))
+        let area = screen.insetBy(dx: gap, dy: gap)
+        guard let frame = geometry.frame(in: area) else { return nil }
+        let half = max(0, windowGap) / 2
+        let left = frame.minX > area.minX ? half : 0
+        let right = frame.maxX < area.maxX ? half : 0
+        let top = frame.minY > area.minY ? half : 0
+        let bottom = frame.maxY < area.maxY ? half : 0
+        let width = frame.width - left - right
+        let height = frame.height - top - bottom
+        guard width > 0, height > 0 else { return nil }
+        return CGRect(x: frame.minX + left, y: frame.minY + top, width: width, height: height)
+    }
 
     public var isValid: Bool {
         guard !bundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, display >= 0, geometry.isValid else { return false }
@@ -36,9 +52,23 @@ public struct CustomWindowAction: Codable, Identifiable, Equatable {
     public var geometry: WindowGeometry?
     public var windows: [WindowLayoutEntry]?
     public var otherWindows: OtherWindows = .keep
+    public var icon: String?
+    public var usesPreferredGaps: Bool?
+    public var frontWindowID: UUID?
 
     public init(geometry: WindowGeometry = .init()) { self.geometry = geometry }
-    public init(windows: [WindowLayoutEntry]) { self.windows = windows }
+    public init(windows: [WindowLayoutEntry]) {
+        self.windows = windows
+        usesPreferredGaps = true
+    }
+
+    public func displayFrame(for entry: WindowLayoutEntry, in screen: CGRect,
+                             windowGap: CGFloat, screenGap: CGFloat) -> CGRect? {
+        if usesPreferredGaps == true {
+            return entry.frame(in: screen, windowGap: windowGap, screenGap: screenGap)
+        }
+        return entry.frame(in: screen)
+    }
 
     public var isValid: Bool {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 120 else { return false }
@@ -47,6 +77,7 @@ public struct CustomWindowAction: Codable, Identifiable, Equatable {
         case (nil, let windows?):
             return !windows.isEmpty && windows.count <= 64 && Set(windows.map(\.id)).count == windows.count
                 && windows.allSatisfy(\.isValid)
+                && (frontWindowID == nil || windows.contains { $0.id == frontWindowID })
                 && Dictionary(grouping: windows, by: \.display).values.allSatisfy { $0.count <= 8 }
         default: return false
         }
