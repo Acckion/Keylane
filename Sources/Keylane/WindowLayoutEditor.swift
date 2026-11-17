@@ -26,7 +26,7 @@ struct WindowLayoutEditor: View {
     @State private var message: String?
     @FocusState private var focus: Field?
 
-    private enum Field: Hashable { case name, width, height, x, y }
+    private enum Field: Hashable { case name, applicationSearch, width, height, x, y }
     private var windows: [WindowLayoutEntry] { draft.windows ?? [] }
     private var selectedEntry: WindowLayoutEntry? { windows.first { $0.id == selected } }
     private var canAddWindow: Bool {
@@ -187,7 +187,10 @@ struct WindowLayoutEditor: View {
                 .labelsHidden().toggleStyle(.switch)
         }
         Divider()
-        section("布局") { layoutSelector }
+        section("布局") {
+            layoutSelector
+            if adding { applicationMenu }
+        }
         if let entry = selectedEntry {
             let binding = entryBinding(entry)
             section("参数") { argumentEditor(binding) }
@@ -246,12 +249,11 @@ struct WindowLayoutEditor: View {
         HStack(spacing: 8) {
             Button("添加应用程序", systemImage: "plus") {
                 appQuery = ""
-                adding = true
+                adding.toggle()
             }
             .labelStyle(.iconOnly).buttonStyle(.bordered)
             .disabled(!canAddWindow || displays.isEmpty)
             .help(canAddWindow ? "为当前显示器添加窗口" : "每台显示器最多八个窗口")
-            .popover(isPresented: $adding, arrowEdge: .bottom) { applicationMenu }
             Menu {
                 let indices = Set(windows.map(\.display)).sorted()
                 ForEach(indices, id: \.self) { index in
@@ -286,7 +288,10 @@ struct WindowLayoutEditor: View {
 
     private var applicationMenu: some View {
         VStack(spacing: 0) {
-            TextField("搜索应用程序…", text: $appQuery).textFieldStyle(.roundedBorder).padding(10)
+            TextField("搜索应用程序…", text: $appQuery)
+                .textFieldStyle(.roundedBorder)
+                .focused($focus, equals: .applicationSearch)
+                .padding(8)
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -309,9 +314,10 @@ struct WindowLayoutEditor: View {
                 }
                 .padding(6)
             }
-            .frame(height: 230)
+            .frame(height: 164)
         }
-        .frame(width: 255)
+        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .onAppear { focus = .applicationSearch }
     }
 
     @ViewBuilder private func argumentEditor(_ binding: Binding<WindowLayoutEntry>) -> some View {
