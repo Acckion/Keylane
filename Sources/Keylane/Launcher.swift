@@ -212,6 +212,11 @@ struct Launcher: View {
                 Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
                 Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             }
+            if page?.showsSearchField == false, menu == nil, primaryActionEnabled {
+                Button("", action: run)
+                    .keyboardShortcut(.return, modifiers: [])
+                    .hidden().accessibilityHidden(true)
+            }
             if let shortcutSubmit = page?.shortcutSubmit {
                 Button("") {
                     if page?.submitWithReturn == true {
@@ -464,13 +469,15 @@ struct Launcher: View {
                 if model.pageID == .root { Image(systemName: "magnifyingglass").font(.system(size: 19, weight: .regular)).foregroundStyle(.secondary) }
                 if let display = page?.searchDisplay {
                     display().frame(maxWidth: .infinity, alignment: .leading)
-                } else {
+                } else if page?.showsSearchField != false {
                     SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
                                 back: page?.moveHorizontal.map { move in { move(-1) } },
                                 forward: page?.moveHorizontal.map { move in { move(1) } },
                                 navigateWhileTyping: page?.navigateWhileTyping ?? false,
                                 spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil)
                         .frame(height: 30)
+                } else {
+                    Spacer(minLength: 0)
                 }
                 if showsTypeFilter {
                     Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
