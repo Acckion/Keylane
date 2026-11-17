@@ -24,7 +24,7 @@ enum AppleNotesModule {
             actions: {
                 var actions: [LauncherAction] = [.init(id: "create-apple-note", title: "新建 Apple 备忘录", icon: "plus") { create(.menu) }]
                 if notes.selectedID != nil {
-                    actions.insert(.init(id: "open-apple-note", title: "在独立窗口打开", icon: "macwindow", keys: ["↩"],
+                    actions.insert(.init(id: "open-apple-note", title: "在独立窗口打开", icon: "macwindow", shortcut: .init(.return, modifiers: []),
                                          enabled: !notes.saving, perform: notes.openSelected), at: 0)
                 }
                 return actions

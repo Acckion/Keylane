@@ -4,6 +4,7 @@ import SwiftUI
 struct ScriptCreationPage: View {
     @ObservedObject var controller: ScriptCommandsController
     let back: () -> Void
+    let cancel: () -> Void
     private enum PickerField { case template, mode }
     @State private var openPicker: PickerField?
     @FocusState private var focus: String?
@@ -94,7 +95,7 @@ struct ScriptCreationPage: View {
         .onExitCommand {
             guard !SearchField.isComposing else { return }
             if openPicker != nil { openPicker = nil }
-            else { back() }
+            else { cancel() }
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in openPicker = nil }
     }

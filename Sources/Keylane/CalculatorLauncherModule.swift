@@ -121,18 +121,18 @@ enum CalculatorLauncherModule {
     private static func actions(query: String, value: String, model: Model?, history: CalculatorHistory,
                                 exchange: CalculatorExchangeRates) -> [LauncherAction] {
         var actions: [LauncherAction] = [
-            .init(id: "calculator-copy", title: "复制结果", icon: "doc.on.doc", keys: ["↩"]) {
+            .init(id: "calculator-copy", title: "复制结果", icon: "doc.on.doc", shortcut: .init(.return, modifiers: [])) {
                 copy(value, expression: query, history: history)
             },
-            .init(id: "calculator-paste", title: "粘贴结果", icon: "clipboard", keys: ["⌘", "↩"]) {
+            .init(id: "calculator-paste", title: "粘贴结果", icon: "clipboard", shortcut: .init(.return, modifiers: .command)) {
                 guard UtilityActions.copy(value), let delegate = NSApp.delegate as? Delegate else { return }
                 history.record(expression: query, answer: value)
                 delegate.pasteIntoPreviousApplication(clipboardGeneration: NSPasteboard.general.changeCount)
             },
-            .init(id: "calculator-copy-raw", title: "复制无格式结果", icon: "doc.on.doc", keys: ["⌥", "⌘", "C"]) {
+            .init(id: "calculator-copy-raw", title: "复制无格式结果", icon: "doc.on.doc", shortcut: .init("c", modifiers: [.option, .command])) {
                 copy(unformatted(value), expression: query, history: history, answer: value)
             },
-            .init(id: "calculator-copy-expression", title: "复制算式和结果", icon: "doc.on.doc", keys: ["⌥", "⇧", "⌘", "C"]) {
+            .init(id: "calculator-copy-expression", title: "复制算式和结果", icon: "doc.on.doc", shortcut: .init("c", modifiers: [.option, .shift, .command])) {
                 copy(query + " = " + value, expression: query, history: history, answer: value)
             },
             .init(id: "calculator-answer-search", title: "将结果放入搜索框", icon: "magnifyingglass", group: 1) { [weak model] in

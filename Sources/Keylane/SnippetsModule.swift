@@ -85,10 +85,10 @@ enum SnippetsModule {
                 if let selected = snippets.selected {
                     actions += [
                         .init(id: "snippet-paste", title: "粘贴片段", icon: "clipboard",
-                              keys: snippets.options.primary == .paste ? ["↩"] : ["⌘", "↩"],
+                              shortcut: snippets.options.primary == .paste ? .init(.return, modifiers: []) : .init(.return, modifiers: .command),
                               perform: { snippets.use(selected, paste: true) }),
                         .init(id: "snippet-copy", title: "复制片段", icon: "doc.on.doc",
-                              keys: snippets.options.primary == .copy ? ["↩"] : ["⌘", "↩"],
+                              shortcut: snippets.options.primary == .copy ? .init(.return, modifiers: []) : .init(.return, modifiers: .command),
                               perform: { snippets.use(selected, paste: false) }),
                         .init(id: "snippet-edit", title: "编辑片段", icon: "pencil", perform: {
                             snippets.edit(selected)

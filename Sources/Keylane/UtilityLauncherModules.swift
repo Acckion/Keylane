@@ -43,9 +43,9 @@ enum UtilityLauncherModules {
                                     guard let item = controller.selected else { return [] }
                                     let pasteFirst = controller.primaryAction == .paste
                                     let paste = LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
-                                                               keys: pasteFirst ? ["↩"] : ["⌘", "↩"], perform: { use(item, true) })
+                                                               shortcut: pasteFirst ? .init(.return, modifiers: []) : .init(.return, modifiers: .command), perform: { use(item, true) })
                                     let copy = LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"),
-                                                               icon: "doc.on.doc", keys: pasteFirst ? ["⌘", "↩"] : ["↩"],
+                                                               icon: "doc.on.doc", shortcut: pasteFirst ? .init(.return, modifiers: .command) : .init(.return, modifiers: []),
                                                                perform: { use(item, false) })
                                     return pasteFirst ? [paste, copy] : [copy, paste]
                                 },

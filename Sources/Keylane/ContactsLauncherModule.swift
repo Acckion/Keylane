@@ -95,7 +95,7 @@ enum ContactsLauncherModule {
 
     private static func contactActions(_ controller: ContactsController, editor: ContactEditor,
                                        permission: PermissionFeature, model: Model) -> [LauncherAction] {
-        let create = LauncherAction(id: "contact-new", title: "新建联系人", icon: "plus", keys: ["⌘", "N"],
+        let create = LauncherAction(id: "contact-new", title: "新建联系人", icon: "plus", shortcut: .init("n", modifiers: .command),
                                     enabled: permission.available && !editor.saving && !model.disabledCommands.contains(createID.rawValue),
                                     perform: { [weak model] in model?.runCommand(createID, origin: .search) })
         let refresh = LauncherAction(id: "contacts-refresh", title: "刷新联系人", icon: "arrow.clockwise",
@@ -103,10 +103,10 @@ enum ContactsLauncherModule {
         guard let contact = controller.selected else { return [create, refresh] }
 
         var actions: [LauncherAction] = [
-            .init(id: "contacts-open", title: "在通讯录中打开", icon: "person.crop.circle", keys: ["↩"]) { [weak model] in
+            .init(id: "contacts-open", title: "在通讯录中打开", icon: "person.crop.circle", shortcut: .init(.return, modifiers: [])) { [weak model] in
                 openContact(contact, controller: controller, model: model)
             },
-            .init(id: "contact-edit", title: "编辑联系人", icon: "pencil", keys: ["⌘", "E"]) { [weak model] in
+            .init(id: "contact-edit", title: "编辑联系人", icon: "pencil", shortcut: .init("e", modifiers: .command)) { [weak model] in
                 openContact(contact, editing: true, controller: controller, model: model)
             },
             create
@@ -114,11 +114,11 @@ enum ContactsLauncherModule {
         let phones = contact.phones.compactMap(ContactLink.phoneRecipient)
         let emails = contact.emails.compactMap(ContactLink.emailRecipient)
         let recipients = phones + emails
-        let communication: [(ContactLink, String, String, String, [String])] = [
-            (.phone, "拨打电话", "phone", "P", phones),
-            (.video, "FaceTime 视频通话", "video", "F", recipients),
-            (.audio, "FaceTime 音频通话", "phone", "A", recipients),
-            (.message, "发送信息", "message", "M", recipients)
+        let communication: [(ContactLink, String, String, KeyEquivalent, [String])] = [
+            (.phone, "拨打电话", "phone", "p", phones),
+            (.video, "FaceTime 视频通话", "video", "f", recipients),
+            (.audio, "FaceTime 音频通话", "phone", "a", recipients),
+            (.message, "发送信息", "message", "m", recipients)
         ]
         for (link, title, icon, key, values) in communication {
             var seen: Set<String> = []
@@ -130,28 +130,28 @@ enum ContactsLauncherModule {
                 }
             }
             guard let first = items.first else { continue }
-            actions.append(.init(id: link.rawValue, title: title, icon: icon, keys: ["⇧", "⌘", key],
+            actions.append(.init(id: link.rawValue, title: title, icon: icon, shortcut: .init(key, modifiers: [.shift, .command]),
                                  submenu: items.count > 1 ? .init(title: title, items: items) : nil,
                                  group: 1, perform: first.perform))
         }
         actions.append(.init(id: "contact-copy-name", title: "复制全名", icon: "doc.on.clipboard",
-                             keys: ["⇧", "⌘", "C"], group: 2) {
+                             shortcut: .init("c", modifiers: [.shift, .command]), group: 2) {
             controller.copy(contact.name, for: contact.id)
         })
         actions += contact.phones.enumerated().map { index, value in
             .init(id: "phone-\(index)", title: contact.phones.count == 1 ? "复制电话号码" : "复制电话 " + value,
-                  icon: "phone", keys: index == 0 ? ["⌥", "⌘", "C"] : [], group: 2) {
+                  icon: "phone", shortcut: index == 0 ? .init("c", modifiers: [.option, .command]) : nil, group: 2) {
                 controller.copy(value, for: contact.id)
             }
         }
         actions += contact.emails.enumerated().map { index, value in
             .init(id: "email-\(index)", title: contact.emails.count == 1 ? "复制邮箱" : "复制邮箱 " + value,
-                  icon: "envelope", keys: index == 0 && contact.phones.isEmpty ? ["⌥", "⌘", "C"] : [], group: 2) {
+                  icon: "envelope", shortcut: index == 0 && contact.phones.isEmpty ? .init("c", modifiers: [.option, .command]) : nil, group: 2) {
                 controller.copy(value, for: contact.id)
             }
         }
         actions.append(refresh)
-        actions.append(.init(id: "contact-delete", title: "删除联系人", icon: "trash", keys: ["⌃", "X"],
+        actions.append(.init(id: "contact-delete", title: "删除联系人", icon: "trash", shortcut: .init("x", modifiers: .control),
                              group: 4, enabled: !editor.saving, destructive: true) { [weak model] in
             guard controller.authorizedSelection(contact.id) != nil,
                   let window = NSApp.keyWindow, window.attachedSheet == nil else { return }

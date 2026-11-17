@@ -22,6 +22,12 @@ final class InterfaceTests: XCTestCase {
         XCTAssertTrue(SettingsItem.search("  \n").isEmpty)
         XCTAssertEqual(Set(SettingsItem.all.map(\.id)).count,SettingsItem.all.count)
     }
+    func testKeylaneToolsSettingsSearchFindsPageAndCommandOptions() {
+        XCTAssertTrue(SettingsItem.search("Keylane 工具").contains(.keylaneTools))
+        XCTAssertTrue(SettingsItem.search("camera preview").contains(.keylaneCamera))
+        XCTAssertTrue(SettingsItem.search("capture window").contains(.keylaneWindowCapture))
+    }
+
     func testKeyboardSettingsSearchUsesDedicatedPage() {
         XCTAssertEqual(SettingsItem.keyboard.page, "keyboard")
         XCTAssertTrue(SettingsItem.search("输入源").contains(.keyboardInputSource))
