@@ -172,6 +172,48 @@ expect(FileManager.default.fileExists(atPath: source.path), "deleting an open sh
 let restoredDeletionStore = try KeylaneCore.DropShelfStore(directory: deletionStore.directory)
 expect(Set(restoredDeletionStore.shelves.map(\.id)) == savedHistory, "all ten history records survive reload after open shelf deletion")
 deletionController.stop(); deletionRegistry.shutdown()
+let restrictedParent = fixtures.appendingPathComponent("Restricted", isDirectory: true)
+try FileManager.default.createDirectory(at: restrictedParent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+let restrictedFile = restrictedParent.appendingPathComponent("retained.txt")
+try Data("permission fixture".utf8).write(to: restrictedFile)
+let permissionWindow = shelves.create()!
+try shelves.store!.addFile(restrictedFile, to: permissionWindow.shelfID)
+try shelves.store!.pin(permissionWindow.shelfID, value: true)
+permissionWindow.refresh()
+let permissionItem = shelves.store!.shelf(permissionWindow.shelfID)!.items.first!
+let initialPermissionFeedback = permissionWindow.feedbackText
+var deniedBooleanCheck = false
+var deniedInspectionCode: Int?
+var retainedInaccessibleReference = false
+var inaccessibleFeedback = ""
+var retainedInaccessibleArchive = false
+do {
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: restrictedParent.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: restrictedParent.path) }
+    deniedBooleanCheck = !FileManager.default.fileExists(atPath: restrictedFile.path)
+    do { _ = try FileManager.default.attributesOfItem(atPath: restrictedFile.path) }
+    catch { deniedInspectionCode = (error as NSError).code }
+    permissionWindow.refreshFiles()
+    retainedInaccessibleReference = shelves.store!.shelf(permissionWindow.shelfID)?.items.map(\.id) == [permissionItem.id]
+    inaccessibleFeedback = permissionWindow.feedbackText
+    let inaccessibleReload = try KeylaneCore.DropShelfStore(directory: root.appendingPathComponent("Storage"))
+    retainedInaccessibleArchive = inaccessibleReload.shelf(permissionWindow.shelfID)?.pinned == true && inaccessibleReload.shelf(permissionWindow.shelfID)?.items.map(\.id) == [permissionItem.id]
+}
+// Restore permissions before assertions, including when a regression aborts this executable.
+expect(deniedBooleanCheck, "permission fixture reproduces ambiguous false existence result")
+expect(deniedInspectionCode == NSFileReadNoPermissionError, "error-aware check distinguishes permission denial")
+expect(retainedInaccessibleReference, "permission failure retains the pinned shelf reference")
+expect(inaccessibleFeedback != initialPermissionFeedback && !inaccessibleFeedback.contains("已从暂存架移除"), "permission failure reports feedback without claiming removal")
+expect(retainedInaccessibleArchive, "pinned reference persists across reload while inaccessible")
+permissionWindow.refreshFiles()
+expect(shelves.store!.shelf(permissionWindow.shelfID)?.items.map(\.id) == [permissionItem.id], "restored permissions keep the original reference")
+let recoveredData = try Data(contentsOf: shelves.store!.resolve(permissionItem)!)
+expect(recoveredData == Data("permission fixture".utf8), "restored pinned file remains readable")
+try FileManager.default.removeItem(at: restrictedFile)
+permissionWindow.refreshFiles()
+expect(shelves.store!.shelf(permissionWindow.shelfID)?.items.isEmpty == true, "definite file deletion removes only the missing reference")
+expect(permissionWindow.feedbackText.contains("已从暂存架移除"), "definite deletion reports removal")
+permissionWindow.close()
 print("PASS production shelf integration (synthetic pasteboard, not physical drag acceptance)")
 }
 print("FIXTURE_ROOT " + root.path)

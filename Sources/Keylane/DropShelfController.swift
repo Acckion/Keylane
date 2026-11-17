@@ -764,11 +764,26 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         var missing = Set<UUID>()
         for item in rows where item.kind == .file || item.asset != nil {
             do {
-                if let url = try store.resolve(item) {
+                let resolved: URL?
+                do { resolved = try store.resolve(item) }
+                catch {
+                    // Bookmark resolution can report "not found" when traversal is denied.
+                    // Confirm against the saved path instead of deleting on that error alone.
+                    let cocoa = error as NSError
+                    guard cocoa.domain == NSCocoaErrorDomain,
+                          [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(cocoa.code),
+                          let saved = item.url else {
+                        message(error.localizedDescription, failed: true); continue
+                    }
+                    resolved = saved
+                }
+                if let url = resolved {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    if !FileManager.default.fileExists(atPath: url.path) { missing.insert(item.id) }
-                    else { try store.refreshReference(item, in: shelfID, resolved: url) }
+                    // Boolean existence checks also return false for permission/volume errors.
+                    // Let the error-aware path below remove only definite missing-file errors.
+                    _ = try FileManager.default.attributesOfItem(atPath: url.path)
+                    try store.refreshReference(item, in: shelfID, resolved: url)
                 }
             } catch {
                 let cocoa = error as NSError
