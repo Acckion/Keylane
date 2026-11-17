@@ -506,7 +506,8 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             if let url, let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]) {
                 detail.stringValue = values.isDirectory == true ? "文件夹" : values.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "文件"
             }
-            let tile = NSStackView(views: [icon, label, detail]); tile.orientation = .vertical; tile.spacing = 3; tile.alignment = .centerX
+            let tile = DropShelfTile(views: [icon, label, detail]); tile.preview = icon
+            tile.orientation = .vertical; tile.spacing = 3; tile.alignment = .centerX
             label.widthAnchor.constraint(lessThanOrEqualToConstant: 115).isActive = true
             stack.addArrangedSubview(tile)
         }
@@ -517,6 +518,12 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         for (index, item) in rows.enumerated() {
             gridPreviews.object(forKey: item.id as NSUUID)?.showSelection(table.selectedRowIndexes.contains(index))
         }
+    }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        guard tableView === gridTable else { return true }
+        // Grid rows contain three independent tiles; never keep a second row selection.
+        table.deselectAll(nil)
+        return false
     }
     private var contentTitle: String {
         let folders = !rows.isEmpty && rows.allSatisfy { item in
@@ -605,7 +612,10 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             if !promises.isEmpty && item.types.contains(where: { NSFilePromiseReceiver.readableDraggedTypes.contains($0.rawValue) }) { continue }
             do {
                 let added: Bool
-                if let text = item.string(forType: .fileURL), let url = URL(string: text), url.isFileURL { added = try store.addFile(url, to: shelfID) }
+                let internalTransfer = item.string(forType: DropShelfController.marker).flatMap(UUID.init(uuidString:)) != nil
+                if internalTransfer, let text = item.string(forType: .URL) { added = try store.addText(text, link: true, to: shelfID) }
+                else if internalTransfer, let text = item.string(forType: .string) { added = try store.addText(text, to: shelfID) }
+                else if let text = item.string(forType: .fileURL), let url = URL(string: text), url.isFileURL { added = try store.addFile(url, to: shelfID) }
                 else if let image = DropShelfController.imageTypes.first(where: { item.types.contains($0.0) }), let data = item.data(forType: image.0) {
                     added = try store.addAsset(data, name: "图片." + image.1, kind: .image, to: shelfID)
                 }
@@ -743,6 +753,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             }
         }
         if event.keyCode == 51 || event.keyCode == 117 {
+            if expanded && gridMode && table.selectedRowIndexes.isEmpty {
+                message("请先选择要移除的内容"); return true
+            }
             cancelImports()
             do { try store.remove(shelfID, items: Set(selectedItems.map(\.id))); refresh(); message("已从暂存架移除，未删除源文件") }
             catch { message(error.localizedDescription, failed: true) }; return true

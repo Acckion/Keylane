@@ -1,5 +1,14 @@
 import AppKit
 
+/// Labels and tile padding use the icon's selection and drag handling as well.
+final class DropShelfTile: NSStackView {
+    weak var preview: DropShelfPreview?
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard super.hitTest(point) != nil else { return nil }
+        return preview
+    }
+}
+
 /// Compact shelf surface, serving both as a native drop destination and drag source.
 final class DropShelfPreview: NSView, NSDraggingSource {
     let imageView = NSImageView()

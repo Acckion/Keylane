@@ -214,6 +214,71 @@ permissionWindow.refreshFiles()
 expect(shelves.store!.shelf(permissionWindow.shelfID)?.items.isEmpty == true, "definite file deletion removes only the missing reference")
 expect(permissionWindow.feedbackText.contains("已从暂存架移除"), "definite deletion reports removal")
 permissionWindow.close()
+let transferSource = shelves.create()!
+let transferDestination = shelves.create()!
+let fullText = String(repeating: "sample ", count: 20) + "internal-transfer-search-token"
+let fullLink = "https://example.invalid/internal-transfer-link"
+try shelves.store!.addText(fullText, to: transferSource.shelfID)
+try shelves.store!.addText(fullLink, link: true, to: transferSource.shelfID)
+transferSource.refresh()
+for row in 0..<2 {
+    let writer = transferSource.tableView(NSTableView(), pasteboardWriterForRow: row) as! NSPasteboardItem
+    expect(writer.string(forType: .fileURL) != nil, "internal text/link writer still supplies external file representation")
+    board.clearContents(); board.writeObjects([writer])
+    expect(transferDestination.receive(board), "internal text/link transfer accepted")
+    expect(transferDestination.receive(board), "repeated internal transfer acknowledged")
+    expect(transferSource.receive(board), "same-shelf text/link paste acknowledged as duplicate")
+}
+let transferred = shelves.store!.shelf(transferDestination.shelfID)!.items
+expect(transferred.map(\.kind) == [.text, .link] && transferred.map(\.value) == [fullText, fullLink], "internal transfers preserve content kinds and complete values")
+expect(shelves.store!.shelf(transferSource.shelfID)!.items.count == 2, "same-shelf paste creates no generated file duplicate")
+for (row, value) in [fullText, fullLink].enumerated() {
+    let writer = transferDestination.tableView(NSTableView(), pasteboardWriterForRow: row) as! NSPasteboardItem
+    expect(writer.string(forType: .string) == value, "transferred content can be copied again as its original string")
+    if row == 1 { expect(writer.string(forType: .URL) == value, "transferred link can be copied again as URL") }
+}
+shelves.searchShelves("internal-transfer-search-token")
+expect(shelves.managedShelves.contains { $0.id == transferDestination.shelfID }, "manager searches full transferred content beyond title preview")
+shelves.searchShelves("")
+let transferReload = try KeylaneCore.DropShelfStore(directory: root.appendingPathComponent("Storage"))
+expect(transferReload.shelf(transferDestination.shelfID)?.items.map(\.value) == [fullText, fullLink], "transferred native content persists across reload")
+let externalMixed = NSPasteboardItem()
+externalMixed.setString(source.absoluteString, forType: .fileURL); externalMixed.setString("external description", forType: .string)
+board.clearContents(); board.writeObjects([externalMixed])
+expect(transferDestination.receive(board), "external mixed representation accepted")
+expect(shelves.store!.shelf(transferDestination.shelfID)?.items.last?.kind == .file, "external mixed input still prefers its file URL")
+transferSource.close(); transferDestination.close()
+
+func descendantViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendantViews) }
+let gridWindow = shelves.create()!
+for name in ["first", "second", "third"] { try shelves.store!.addText(name, to: gridWindow.shelfID) }
+gridWindow.refresh(); gridWindow.toggleDetails()
+gridWindow.contentView!.layoutSubtreeIfNeeded()
+let nativeGrid = descendantViews(gridWindow.contentView!).compactMap { $0 as? DropShelfTable }.first!
+let gridRowView = nativeGrid.view(atColumn: 0, row: 0, makeIfNecessary: true)!
+gridRowView.layoutSubtreeIfNeeded()
+let tiles = descendantViews(gridRowView).compactMap { $0 as? DropShelfTile }
+expect(tiles.count == 3, "grid mounts three selectable tiles")
+let deleteKey = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: gridWindow.windowNumber, context: nil, characters: "\u{7f}", charactersIgnoringModifiers: "\u{7f}", isARepeat: false, keyCode: 51)!
+let gridIDs = shelves.store!.shelf(gridWindow.shelfID)!.items.map(\.id)
+nativeGrid.keyDown(with: deleteKey)
+expect(shelves.store!.shelf(gridWindow.shelfID)!.items.map(\.id) == gridIDs, "Delete without grid item selection preserves every item")
+gridWindow.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+expect(!gridWindow.tableView(nativeGrid, shouldSelectRow: 0) && gridWindow.table.selectedRowIndexes.isEmpty, "native grid row interaction clears stale item selection without selecting a row")
+nativeGrid.keyDown(with: deleteKey)
+expect(shelves.store!.shelf(gridWindow.shelfID)!.items.map(\.id) == gridIDs, "Delete after grid background interaction does not clear the shelf")
+gridWindow.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+let tile = tiles[1]
+let label = tile.arrangedSubviews[1]
+let labelPoint = NSPoint(x: label.bounds.midX, y: label.bounds.midY)
+let hit = tile.hitTest(label.convert(labelPoint, to: tile.superview))
+expect(hit === tile.preview, "filename hit testing routes to its own tile selection handler")
+let click = NSEvent.mouseEvent(with: .leftMouseDown, location: label.convert(labelPoint, to: nil), modifierFlags: [], timestamp: 0, windowNumber: gridWindow.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+hit!.mouseDown(with: click)
+expect(gridWindow.table.selectedRowIndexes == IndexSet(integer: 1), "filename interaction replaces stale list selection with the clicked item")
+nativeGrid.keyDown(with: deleteKey)
+expect(shelves.store!.shelf(gridWindow.shelfID)!.items.map(\.id) == [gridIDs[0], gridIDs[2]], "Delete removes only the filename-selected tile")
+gridWindow.close()
 print("PASS production shelf integration (synthetic pasteboard, not physical drag acceptance)")
 }
 print("FIXTURE_ROOT " + root.path)
