@@ -389,7 +389,6 @@ enum BuiltinLauncherModules {
            searchUpdates: [updates(model.$fileResults),
                            updates(model.fileSearch.$options.map { [$0.enabled, $0.searchFromLauncher] }),
                            updates(model.fileAI.$commandsEnabled),
-                           model.aiSettings.$state.map(\.isAvailable).removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
                            model.finderAutomation.updates],
            shortcutSettingsUpdates: [ViewObservation.changes(model.fileAI.$commandsEnabled)])
     }
