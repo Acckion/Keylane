@@ -188,26 +188,3 @@ struct ContactsPage: View {
         }
     }
 }
-
-struct DictionaryPage: View {
-    @ObservedObject var controller: DictionaryController
-    var body: some View {
-        Group {
-            if let definition = controller.definition {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text(controller.term).font(.system(size: 23, weight: .semibold))
-                        Text(definition).font(VisualStyle.rowText).textSelection(.enabled)
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(22)
-                }
-            } else if controller.loading { Text("正在查询…").foregroundStyle(.secondary) }
-            else if controller.termTooLong {
-                ContentUnavailableView("查询内容太长", systemImage: "book.closed", description: Text("请输入较短的词语或短语。"))
-            } else if controller.term.isEmpty {
-                ContentUnavailableView("输入要查找的词语", systemImage: "book.closed")
-            } else {
-                ContentUnavailableView("没有找到释义", systemImage: "book.closed", description: Text("试试其他拼写，或检查系统词典中已启用的词库。"))
-            }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}

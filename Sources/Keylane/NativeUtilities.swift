@@ -544,17 +544,32 @@ final class ContactsController: ObservableObject {
 
 final class DictionaryController: ObservableObject {
     @Published private(set) var term = ""
-    @Published private(set) var definition: String?
+    @Published private(set) var words: [DictionaryWord] = []
+    @Published private(set) var selectedID: String?
+    var selected: DictionaryWord? { words.first { $0.id == selectedID } }
+    var definition: String? { selected?.definition }
     @Published private(set) var loading = false
     var initialTerm = ""
     static let maximumTermLength = 256
     private let worker = DispatchQueue(label: "org.keylane.dictionary", qos: .userInitiated)
-    private let lookup: (String) -> String?
+    private let lookup: (String) -> [DictionaryWord]
     private var pending: DispatchWorkItem?
     private var generation = 0
 
-    init(lookup: @escaping (String) -> String? = DictionaryController.definition(for:)) {
-        self.lookup = lookup
+    init() { lookup = DictionaryProcess.search }
+
+    init(lookup: @escaping (String) -> String?) {
+        self.lookup = { word in lookup(word).map { [.init(word: word, entries: [.plain($0)])] } ?? [] }
+    }
+
+    func select(_ id: String) {
+        if words.contains(where: { $0.id == id }), selectedID != id { selectedID = id }
+    }
+
+    func move(_ delta: Int) {
+        guard !words.isEmpty else { return }
+        let index = words.firstIndex { $0.id == selectedID } ?? 0
+        select(words[NavigationBounds.move(index, by: delta, count: words.count)].id)
     }
 
     var termTooLong: Bool { term.utf16.count > Self.maximumTermLength }
@@ -568,21 +583,24 @@ final class DictionaryController: ObservableObject {
     }
 
     func search(_ query: String) {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard term != text else { return }
         generation += 1
         let ticket = generation
         pending?.cancel()
         pending = nil
-        term = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        definition = nil
+        term = text
+        words = []
+        selectedID = nil
         loading = !term.isEmpty && !termTooLong
         guard loading else { return }
-        let text = term
         let job = DispatchWorkItem { [weak self, lookup] in
             let result = lookup(text)
             DispatchQueue.main.async {
                 guard let self, self.generation == ticket else { return }
                 self.pending = nil
-                self.definition = result
+                self.words = result
+                self.selectedID = result.first?.id
                 self.loading = false
             }
         }
@@ -603,8 +621,9 @@ final class DictionaryController: ObservableObject {
         return components.url
     }
 
-    func openDictionary(onFailure reportFailure: @escaping () -> Void) {
+    func openDictionary(word: String? = nil, onFailure reportFailure: @escaping () -> Void) {
         guard !termTooLong else { return }
+        let target = word ?? term
         let workspace = NSWorkspace.shared
         guard let application = workspace.urlForApplication(withBundleIdentifier: "com.apple.Dictionary") else {
             reportFailure()
@@ -613,9 +632,9 @@ final class DictionaryController: ObservableObject {
         let completion: (NSRunningApplication?, Error?) -> Void = { _, error in
             if error != nil { DispatchQueue.main.async { reportFailure() } }
         }
-        if term.isEmpty {
+        if target.isEmpty {
             workspace.openApplication(at: application, configuration: .init(), completionHandler: completion)
-        } else if let url = Self.dictionaryURL(for: term) {
+        } else if let url = Self.dictionaryURL(for: target) {
             workspace.open([url], withApplicationAt: application, configuration: .init(), completionHandler: completion)
         }
     }
