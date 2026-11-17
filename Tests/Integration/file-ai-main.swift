@@ -119,3 +119,19 @@ precondition(quick.status == "已停止。" && quick.turns.last?.answer.isEmpty 
 settings.select(legacy.id)
 precondition(quick.turns.isEmpty && !quick.running)
 print("PASS Quick AI: initial prompt, complete-turn follow-up, single active request, cancellation and model isolation")
+
+settings.select(second.id)
+FixtureProtocol.mode = "stream"
+precondition(quick.submit("handoff"))
+let transferredTurn = quick.turns.first!.id
+quick.beginChat()
+quick.leaveLauncher()
+precondition(quick.isInChat && quick.running && quick.turns.first?.id == transferredTurn)
+wait("AI Chat receives active Quick AI answer") { !quick.running }
+precondition(quick.turns.count == 1 && quick.turns.first?.id == transferredTurn && quick.lastAnswer == "你好")
+FixtureProtocol.mode = "slow"
+precondition(quick.submit("close while generating"))
+quick.closeChat()
+RunLoop.current.run(until: Date().addingTimeInterval(0.7))
+precondition(!quick.isInChat && !quick.running && quick.turns.isEmpty)
+print("PASS AI Chat handoff: same active turn after launcher leaves; closing discards the session and late results")

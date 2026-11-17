@@ -19,6 +19,7 @@ final class QuickAIController: ObservableObject {
     private var task: Task<Void, Never>?
     private var activeID: UUID?
     private let turnLimit = 24
+    private(set) var isInChat = false
 
     init(configuration: AIConfiguration, runtime: AIRuntime,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
@@ -91,6 +92,19 @@ final class QuickAIController: ObservableObject {
         task?.cancel()
         finish()
         status = "已停止。"
+    }
+
+    func beginChat() {
+        isInChat = true
+    }
+
+    func leaveLauncher() {
+        if !isInChat { reset() }
+    }
+
+    func closeChat() {
+        isInChat = false
+        reset()
     }
 
     func reset() {
