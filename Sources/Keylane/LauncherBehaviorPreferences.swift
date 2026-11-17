@@ -92,6 +92,7 @@ private struct FallbackCommandPreferences: View {
     @StateObject private var observation: ViewObservation
     @State private var adding = false
     @State private var query = ""
+    @State private var drag: FallbackCommandDrag?
 
     init(model: Model) {
         self.model = model
@@ -102,51 +103,108 @@ private struct FallbackCommandPreferences: View {
     }
 
     var body: some View {
-        let catalog = model.launcherModules?.fallbackCatalog() ?? []
+        let registry = model.launcherModules
+        let catalog = registry?.fallbackCatalog() ?? []
         let entries = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let configured = model.fallbackCommandIDs
-        SettingsListCard(title: "备选命令", detail: "主搜索没有匹配结果时，按这里的顺序显示。选择命令后，它会接收当前搜索内容。",
-                         anchor: .launcherFallbackCommands) {
-            SettingsIconButton("添加备选命令", symbol: "plus") {
-                query = ""
-                adding.toggle()
-            }
-            .popover(isPresented: $adding, arrowEdge: .bottom) {
-                let options = catalog.filter { !configured.contains($0.id) }
-                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                    .map { ResultFilterOption(id: $0.id, title: $0.name, symbol: $0.symbol,
-                                              subtitle: $0.detail, keywords: $0.aliases) }
-                ResultFilterPanel(selection: "", options: ResultFilterPanel.matches(
-                    options, query: query.trimmingCharacters(in: .whitespacesAndNewlines)
-                ), query: $query, searchPlaceholder: "搜索命令…",
-                   emptyTitle: options.isEmpty ? "没有可添加的命令" : "没有匹配的命令",
-                   navigation: model.navigation, width: 330, maximumVisibleRows: 7,
-                   choose: { option in
-                       if !model.fallbackCommandIDs.contains(option.id) { model.fallbackCommandIDs.append(option.id) }
-                       adding = false
-                   }, dismiss: { adding = false })
-            }
-        } content: {
-            if configured.isEmpty {
-                SettingsListEmptyState(title: "尚未添加备选命令")
-            } else {
-                SettingsCompactList(items: configured, id: \.self) { id in
-                    let entry = entries[id]
-                    let declaration = model.launcherModules?.declaration(.init(rawValue: id))
-                    SettingsCompactItemRow(title: entry?.name ?? declaration?.title ?? unavailableTitle(id),
-                                           symbol: entry?.symbol ?? declaration?.symbol ?? "exclamationmark.circle",
-                                           detail: entry?.detail ?? "当前不可用") {
-                        SettingsIconButton("上移", symbol: "arrow.up", compact: true) { move(id, by: -1) }
-                            .disabled(id == configured.first)
-                        SettingsIconButton("下移", symbol: "arrow.down", compact: true) { move(id, by: 1) }
-                            .disabled(id == configured.last)
-                        SettingsIconButton("移除备选命令", symbol: "minus", compact: true) {
-                            model.fallbackCommandIDs.removeAll { $0 == id }
+        let moduleTitles = Dictionary(uniqueKeysWithValues: (registry?.shortcutCommandGroups ?? []).map { ($0.id, $0.title) })
+
+        VStack(alignment: .leading, spacing: 5) {
+            SettingsSectionTitle(title: "备选命令")
+                .padding(.bottom, 8)
+                .settingsAnchor(.launcherFallbackCommands)
+            SettingsGroup {
+                Button {
+                    query = ""
+                    adding.toggle()
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "plus.square")
+                            .foregroundStyle(.secondary)
+                        SettingsTitle("添加备选命令")
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $adding, arrowEdge: .bottom) {
+                    let options = catalog.filter { !configured.contains($0.id) }
+                        .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                        .map { entry in
+                            let source = registry?.moduleOwningCommand(entry.commandID).flatMap { moduleTitles[$0] }
+                            return ResultFilterOption(id: entry.id, title: entry.name, symbol: entry.symbol,
+                                                      subtitle: source ?? entry.detail, keywords: entry.aliases + [source ?? ""])
                         }
+                    ResultFilterPanel(selection: "", options: ResultFilterPanel.matches(
+                        options, query: query.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ), query: $query, searchPlaceholder: "搜索命令…",
+                       emptyTitle: options.isEmpty ? "没有可添加的命令" : "没有匹配的命令",
+                       navigation: model.navigation, width: 330, maximumVisibleRows: 7,
+                       choose: { option in
+                           if !model.fallbackCommandIDs.contains(option.id) { model.fallbackCommandIDs.append(option.id) }
+                           adding = false
+                       }, dismiss: { adding = false })
+                }
+            }
+            if !configured.isEmpty {
+                SettingsGroup {
+                    ForEach(configured, id: \.self) { id in
+                        if id != configured.first { Divider().opacity(0.4) }
+                        let commandID = CommandID(rawValue: id)
+                        let entry = entries[id]
+                        let declaration = registry?.declaration(commandID)
+                        let owner = registry?.moduleOwningCommand(commandID)
+                        let source = owner.flatMap { moduleTitles[$0] }
+                        FallbackCommandSettingsRow(
+                            title: entry?.name ?? declaration?.title ?? unavailableTitle(id),
+                            source: entry == nil ? "当前不可用" : source ?? entry?.detail ?? "",
+                            symbol: entry?.symbol ?? declaration?.symbol ?? "exclamationmark.circle",
+                            artwork: entry.flatMap { registry?.artwork(for: $0) },
+                            dropEdge: dropEdge(for: id, in: configured),
+                            beginDrag: { beginDrag(id) },
+                            receiveDrop: { receiveDrop($0, onto: id) },
+                            remove: { model.fallbackCommandIDs.removeAll { $0 == id } }
+                        )
+                        .accessibilityAction(named: Text("上移")) { move(id, by: -1) }
+                        .accessibilityAction(named: Text("下移")) { move(id, by: 1) }
                     }
                 }
             }
         }
+    }
+
+    private func dropEdge(for id: String, in order: [String]) -> VerticalEdge? {
+        guard let drag, let from = order.firstIndex(of: drag.id), let to = order.firstIndex(of: id),
+              from != to else { return nil }
+        return from < to ? .bottom : .top
+    }
+
+    private func beginDrag(_ id: String) -> NSItemProvider {
+        let newDrag = FallbackCommandDrag(id: id)
+        drag = newDrag
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: FallbackCommandDrag.type,
+                                            visibility: .ownProcess) { completion in
+            completion(newDrag.token, nil)
+            return nil
+        }
+        return provider
+    }
+
+    private func receiveDrop(_ providers: [NSItemProvider], onto id: String) -> Bool {
+        guard let drag, drag.id != id, let provider = providers.first else { return false }
+        provider.loadDataRepresentation(forTypeIdentifier: FallbackCommandDrag.type) { data, _ in
+            DispatchQueue.main.async {
+                guard data == drag.token, self.drag?.token == drag.token else { return }
+                self.drag = nil
+                var order = model.fallbackCommandIDs
+                guard let from = order.firstIndex(of: drag.id), let to = order.firstIndex(of: id) else { return }
+                let command = order.remove(at: from)
+                order.insert(command, at: to)
+                model.fallbackCommandIDs = order
+            }
+        }
+        return true
     }
 
     private func move(_ id: String, by offset: Int) {
@@ -161,5 +219,75 @@ private struct FallbackCommandPreferences: View {
             return URL(fileURLWithPath: String(id.dropFirst(ScriptCommand.namespace.count))).lastPathComponent
         }
         return "命令已停用或移除"
+    }
+}
+
+private struct FallbackCommandDrag {
+    static let type = "org.keylane.fallback-command-order"
+    let id: String
+    let token = Data(UUID().uuidString.utf8)
+}
+
+private struct FallbackCommandSettingsRow: View {
+    let title: String
+    let source: String
+    let symbol: String
+    let artwork: AnyView?
+    let dropEdge: VerticalEdge?
+    let beginDrag: () -> NSItemProvider
+    let receiveDrop: ([NSItemProvider]) -> Bool
+    let remove: () -> Void
+    @State private var hovering = false
+    @State private var targeted = false
+
+    var body: some View {
+        SettingsRow {
+            HStack(spacing: 9) {
+                ZStack {
+                    Group {
+                        if let artwork { artwork }
+                        else { SettingsIcon(symbol: symbol, size: 18) }
+                    }
+                    .opacity(hovering ? 0 : 1)
+                    Image(systemName: "line.3.horizontal")
+                        .foregroundStyle(.secondary)
+                        .opacity(hovering ? 1 : 0)
+                }
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
+                .onDrag(beginDrag)
+                .help("拖拽排序")
+                .accessibilityHidden(true)
+                SettingsTitle(title).lineLimit(1)
+            }
+        } control: {
+            Text(source)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.trailing, 4)
+                .opacity(hovering ? 0 : 1)
+                .overlay(alignment: .trailing) {
+                    if hovering {
+                        Button(action: remove) {
+                            Image(systemName: "minus")
+                                .frame(width: 26, height: 26)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("移除备选命令")
+                        .help("移除备选命令")
+                    }
+                }
+        }
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .overlay(alignment: dropEdge == .top ? .topLeading : .bottomLeading) {
+            if targeted && dropEdge != nil {
+                Capsule().fill(Color.accentColor).frame(height: 2).allowsHitTesting(false)
+            }
+        }
+        .onHover { hovering = $0 }
+        .onDrop(of: [FallbackCommandDrag.type], isTargeted: $targeted, perform: receiveDrop)
+        .accessibilityAction(named: Text("移除备选命令")) { remove() }
     }
 }
