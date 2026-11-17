@@ -1,127 +1,66 @@
-"""No real credentials/API calls: target policy and checked-in workflow contracts."""
-import copy
+"""No credentials: integrated-push-only signing and workflow contracts."""
 import importlib.util
-import json
 import os
-import subprocess
-import tempfile
-from unittest.mock import patch
-import unittest
 from pathlib import Path
+import subprocess
+import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('preview', ROOT / 'scripts/check-preview-target.py')
 preview = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(preview)
-REPO = 'Acckion/Keylane'
 SHA = 'a' * 40
 
 
-def fixture():
-    pr = {'state': 'open', 'user': {'login': 'maintainer'},
-          'head': {'repo': {'full_name': REPO}, 'sha': 'b' * 40},
-          'base': {'repo': {'full_name': REPO}, 'ref': 'dev', 'sha': 'c' * 40},
-          'merge_commit_sha': SHA}
-    return {'number': 152, 'pull_request': pr}, copy.deepcopy(pr)
-
-
 class PreviewTargetTests(unittest.TestCase):
-    def check(self, event='pull_request', ref='refs/pull/152/merge', actor='maintainer', payload=None, current=None):
-        original, live = fixture()
-        return preview.validate(event, ref, REPO, actor, SHA,
-                                original if payload is None else payload,
-                                live if current is None else current)
-
-    def test_integrated_push_and_manual_allowed_only_on_dev_main(self):
-        for event in ['push', 'workflow_dispatch']:
-            for ref in ['refs/heads/dev', 'refs/heads/main']:
-                self.assertEqual(self.check(event=event, ref=ref), 'auto')
-            for ref in ['refs/heads/feature', 'refs/tags/main', 'refs/pull/152/merge']:
-                with self.assertRaises(ValueError):
-                    self.check(event=event, ref=ref)
-
-    def test_same_repo_pr_uses_reviewed_merge_snapshot(self):
-        self.assertEqual(self.check(), 'pr')
-        for field in ['head', 'base']:
-            event, current = fixture()
-            current[field]['sha'] = 'd' * 40
-            with self.assertRaisesRegex(ValueError, 'changed'):
-                self.check(payload=event, current=current)
-        event, current = fixture()
-        current['merge_commit_sha'] = 'd' * 40
-        with self.assertRaises(ValueError):
-            self.check(payload=event, current=current)
-
-    def test_closed_or_retargeted_pr_rejected(self):
-        event, current = fixture()
-        current['state'] = 'closed'
-        with self.assertRaises(ValueError):
-            self.check(payload=event, current=current)
-        event, current = fixture()
-        current['base']['ref'] = 'main'
-        with self.assertRaises(ValueError):
-            self.check(payload=event, current=current)
-
-    def test_fork_and_dependabot_cannot_select_signing(self):
-        event, current = fixture()
-        event['pull_request']['head']['repo']['full_name'] = 'untrusted/Keylane'
-        with self.assertRaises(ValueError):
-            self.check(payload=event, current=current)
-        with self.assertRaises(ValueError):
-            self.check(actor='dependabot[bot]')
-        event, current = fixture()
-        event['pull_request']['user']['login'] = 'dependabot[bot]'
-        with self.assertRaises(ValueError):
-            self.check(payload=event, current=current)
-
-    def test_privileged_events_and_wrong_ref_rejected(self):
-        for event in ['pull_request_target', 'workflow_run', 'repository_dispatch']:
+    def test_only_integrated_pushes_are_allowed(self):
+        for ref in ['refs/heads/dev', 'refs/heads/main']:
+            preview.validate('push', ref, SHA)
+        for ref in ['refs/heads/feature', 'refs/tags/main', 'refs/pull/152/merge']:
             with self.assertRaises(ValueError):
-                self.check(event=event, ref='refs/heads/main')
-        with self.assertRaises(ValueError):
-            self.check(ref='refs/heads/main')
+                preview.validate('push', ref, SHA)
 
-    def test_pr_reruns_require_a_new_approval_run(self):
-        event, current = fixture()
-        with self.assertRaisesRegex(ValueError, 'new run'):
-            preview.validate('pull_request', 'refs/pull/152/merge', REPO,
-                             'maintainer', SHA, event, current, run_attempt=2)
-        self.assertEqual(preview.validate('push', 'refs/heads/dev', REPO,
-                                         'maintainer', SHA, {}, run_attempt=2), 'auto')
+    def test_every_pr_and_privileged_or_manual_event_is_rejected(self):
+        # Source repository and actor cannot grant any exception, including same-repo PRs.
+        for event in ['pull_request', 'pull_request_target', 'workflow_run', 'workflow_dispatch', 'repository_dispatch']:
+            for ref in ['refs/heads/dev', 'refs/heads/main', 'refs/pull/152/merge']:
+                with self.subTest(event=event, ref=ref), self.assertRaises(ValueError):
+                    preview.validate(event, ref, SHA)
 
-    def test_main_fails_closed_on_api_checkout_or_mode_errors(self):
-        event, current = fixture()
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'event.json'
-            path.write_text(json.dumps(event))
-            env = {'GITHUB_EVENT_PATH': str(path), 'GITHUB_REPOSITORY': REPO,
-                   'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_REF': 'refs/pull/152/merge',
-                   'GITHUB_ACTOR': 'maintainer', 'GITHUB_SHA': SHA,
-                   'GITHUB_RUN_ATTEMPT': '1', 'PREVIEW_MODE': 'pr'}
-            for responses, mode, error in [
-                ([subprocess.CalledProcessError(1, 'gh')], 'pr', subprocess.CalledProcessError),
-                ([json.dumps(current), 'd' * 40], 'pr', ValueError),
-                ([json.dumps(current)], 'auto', ValueError),
-            ]:
-                with self.subTest(mode=mode, responses=responses), patch.dict(os.environ, {**env, 'PREVIEW_MODE': mode}, clear=True), patch.object(preview.subprocess, 'check_output', side_effect=responses):
-                    with self.assertRaises(error):
-                        preview.main()
-            with patch.dict(os.environ, env, clear=True), patch.object(preview.subprocess, 'check_output', side_effect=[json.dumps(current), SHA]):
+    def test_requires_full_sha(self):
+        for sha in ['', 'main', 'a' * 39, 'g' * 40]:
+            with self.assertRaises(ValueError):
+                preview.validate('push', 'refs/heads/dev', sha)
+
+    def test_cli_checks_checkout_and_fails_before_commands_for_pr(self):
+        env = {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/dev', 'GITHUB_SHA': SHA}
+        with patch.dict(os.environ, env, clear=True), patch.object(preview.subprocess, 'check_output', return_value=SHA):
+            preview.main()
+        for reply in ['b' * 40, subprocess.CalledProcessError(1, 'git')]:
+            with patch.dict(os.environ, env, clear=True), patch.object(preview.subprocess, 'check_output', side_effect=[reply]):
+                with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                    preview.main()
+        with patch.dict(os.environ, {**env, 'GITHUB_EVENT_NAME': 'pull_request'}, clear=True), patch.object(preview.subprocess, 'check_output') as run:
+            with self.assertRaises(ValueError):
                 preview.main()
+            run.assert_not_called()
 
-    def test_workflow_preserves_two_distinct_security_boundaries(self):
+    def test_workflow_never_signs_or_packages_a_pr(self):
         ci = (ROOT / '.github/workflows/ci.yml').read_text()
-        checks, rest = ci.split('  sign-preview-auto:', 1)
-        auto, pr = rest.split('  sign-preview-pr:', 1)
-        self.assertNotIn('secrets.', checks)
-        self.assertIn('environment: preview-signing-auto', auto)
-        self.assertIn("github.event_name == 'push' || github.event_name == 'workflow_dispatch'", auto)
-        self.assertIn('name: preview-signing-pr', pr)
-        self.assertIn("github.event_name == 'pull_request'", pr)
-        self.assertIn('github.event.pull_request.head.sha', pr)
-        for job in [auto, pr]:
-            self.assertLess(job.index('check-preview-target.py'), job.index('secrets.KEYLANE_PREVIEW_P12'))
-            self.assertIn('ref: ${{ github.sha }}', job)
-            self.assertIn('persist-credentials: false', job)
-        for trigger in ['pull_request_target:', 'workflow_run:']:
-            self.assertNotIn(trigger, ci)
+        checks, signing = ci.split('  sign-preview-auto:', 1)
+        self.assertIn('  pull_request:', checks)
+        self.assertIn('name: Checks', checks)
+        for forbidden in ['secrets.', 'environment:', 'scripts/package.sh', 'upload-artifact@']:
+            self.assertNotIn(forbidden, checks)
+        self.assertNotIn('sign-preview-pr', ci)
+        self.assertNotIn('preview-signing-pr', ci)
+        self.assertIn("github.event_name == 'push'", signing)
+        self.assertNotIn('workflow_dispatch', signing)
+        self.assertIn("github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'", signing)
+        self.assertIn('environment: preview-signing-auto', signing)
+        self.assertIn('ref: ${{ github.sha }}', signing)
+        self.assertLess(signing.index('check-preview-target.py'), signing.index('secrets.KEYLANE_PREVIEW_P12'))
+        self.assertIn('persist-credentials: false', signing)
+        for forbidden in ['pull_request_target:', 'workflow_run:', 'contents: write']:
+            self.assertNotIn(forbidden, ci)
