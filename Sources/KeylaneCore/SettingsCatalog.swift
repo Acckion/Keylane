@@ -50,6 +50,9 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let accessibilityPermission = SettingsItem(id: "permission-accessibility", page: "permissions", title: "辅助功能权限", keywords: "权限 授权 粘贴 窗口 菜单 accessibility permission")
     public static let inputMonitoringPermission = SettingsItem(id: "permission-input-monitoring", page: "permissions", title: "输入监控", keywords: "权限 授权 键盘 Hyperkey input monitoring permission")
     public static let contactsPermission = SettingsItem(id: "permission-contacts", page: "permissions", title: "联系人权限", keywords: "授权 通讯录 contacts permission")
+    public static let keylaneTools = SettingsItem(id: "keylane-tools", page: "keylane.app-utilities", title: "Keylane 工具", keywords: "Keylane tools 更新日志 检查更新 导出 导入 日志 反馈 分享 changelog updates export import logs feedback")
+    public static let keylaneWindowCapture = SettingsItem(id: "keylane-window-capture", page: "keylane.app-utilities", title: "截取 Keylane 窗口", keywords: "capture window screenshot 窗口截图 剪贴板 Finder")
+    public static let keylaneCamera = SettingsItem(id: "keylane-camera", page: "keylane.app-utilities", title: "相机预览与拍摄", keywords: "open camera camera preview 摄像头 相机 拍照 快门")
     public static let cameraPermission = SettingsItem(id: "camera-permission", page: "permissions", title: "相机权限", keywords: "camera 摄像头 预览")
     public static let automationPermission = SettingsItem(id: "permission-automation", page: "permissions", title: "自动化权限", keywords: "授权 Finder 快捷指令 automation permission")
     public static let pasteboardPermission = SettingsItem(id: "permission-pasteboard", page: "permissions", title: "剪贴板访问", keywords: "权限 授权 读取 clipboard pasteboard permission")
@@ -128,6 +131,7 @@ public struct SettingsItem: Identifiable, Equatable {
         inputMonitoringPermission,
         calendarAccess,
         contactsPermission,
+        keylaneTools, keylaneWindowCapture, keylaneCamera,
         cameraPermission,
         automationPermission,
         folderPermissions,
