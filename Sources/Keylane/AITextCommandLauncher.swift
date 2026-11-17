@@ -11,13 +11,46 @@ enum AITextCommandLauncher {
         AITextCommand.allCases.map { command in
             LauncherModule.Command(declaration: .init(
                 id: .init(rawValue: command.id), title: command.title, detail: "预览选中文本，确认后交给模型处理",
-                symbol: command.icon, keywords: [command.rawValue, "AI", "选中文字"], destination: .action, settingsPage: "ai"
+                symbol: command.icon, keywords: [command.rawValue, "AI", "选中文字"], destination: .action,
+                settingsPage: AIModule.textCommandsItem.page
             ), available: { [weak model] in model?.aiSettings.isAvailable == true }, execute: { [weak model] origin in
                 guard let model else { return }
                 session.prepare(command, selection: selectedText())
                 model.openPage(pageID, origin: origin)
             })
         }
+    }
+
+    static func customCommands(model: Model, session: AITextCommandSession,
+                               library: CustomAICommandLibrary) -> LauncherModule.Provider {
+        .init(namespace: .prefix("ai-command:"), entries: { _ in
+            library.commands.map {
+                Entry(id: $0.commandID, commandID: .init(rawValue: $0.commandID), name: $0.title,
+                      detail: "AI 命令", symbol: "sparkles", aliases: ["AI Command", "AI 命令"])
+            }
+        }, resolve: { [weak model] id, origin in
+            guard let model, let command = library.commandsByID[id.rawValue] else { return nil }
+            return { [weak model] in
+                guard let model else { return }
+                let template = DynamicTemplate(command.prompt, usage: .aiCommand)
+                var context = model.snippets.templateContext()
+                let selection = template.placeholderKinds.contains(.selection) ? selectedText() : nil
+                context.selection = { selection }
+                session.prepare(command, template: template, context: context) { [weak model] in
+                    model?.launcherModules?.isCommandModuleEnabled(id) == true &&
+                        model?.disabledCommands.contains(id.rawValue) == false && library.commandsByID[id.rawValue] == command
+                }
+                model.openPage(pageID, origin: origin)
+            }
+        }, actions: { [weak model] entry in
+            guard let model else { return nil }
+            return [LauncherAction(id: "configure-ai-command", title: "打开 AI 命令设置", icon: "gearshape") {
+                model.openSettings(page: AIModule.textCommandsItem.page)
+            }, model.favoriteAction(for: entry)]
+        }, available: { id in
+            guard let command = library.commandsByID[id.rawValue] else { return false }
+            return AITextCommandSession.connection(for: command, in: session.configuration.state) != nil
+        })
     }
 
     private static func selectedText() -> String? {
@@ -38,6 +71,7 @@ enum AITextCommandLauncher {
         }
         let updates = Publishers.MergeMany([
             ViewObservation.changes(session.configuration.$state),
+            ViewObservation.changes(session.$invocationID),
             session.$input.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 .removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.$command.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -50,6 +84,7 @@ enum AITextCommandLauncher {
                                 AnyView(AITextCommandForm(session: session, configuration: session.configuration,
                                                           back: { model?.goBackInLauncher() }))
                             }, leave: session.clear, submit: send, returnBindings: .init(primary: .command),
+                            actionSelectionID: { session.invocationID.uuidString },
                             primaryTitle: { "发送给模型" }, primaryEnabled: { session.canSend },
                             actions: {
                                 var actions = [LauncherAction(id: "copy-ai-command-result", title: "复制结果",
@@ -61,7 +96,7 @@ enum AITextCommandLauncher {
                                                          perform: session.reply.stop))
                                 }
                                 return actions
-                            }, updates: updates, badgeTitle: { session.command.title })
+                            }, updates: updates, badgeTitle: { session.title })
     }
 }
 
@@ -74,10 +109,10 @@ private struct AITextCommandForm: View {
 
     var body: some View {
         LauncherCreationForm(back: back, spacing: 16) {
-            Text(session.command.title).font(.headline)
+            Text(session.title).font(.headline)
         } fields: {
             VStack(alignment: .leading, spacing: 12) {
-                if session.command == .translate {
+                if session.customCommand == nil, session.command == .translate {
                     Picker("目标语言", selection: $session.language) {
                         ForEach(AITextCommand.Language.allCases) { language in
                             Text(language.rawValue).tag(language)
@@ -86,16 +121,41 @@ private struct AITextCommandForm: View {
                     .fixedSize()
                     .disabled(running)
                 }
-                Text("待处理文本").font(.headline)
-                TextEditor(text: $session.input)
-                    .font(VisualStyle.rowText)
-                    .frame(height: 104)
-                    .focused($inputFocused)
-                    .accessibilityLabel("待处理文本")
-                    .disabled(running)
+                if session.customCommand != nil {
+                    ForEach(session.arguments) { argument in
+                        let value = Binding(get: { session.argumentValues[argument.id] ?? argument.defaultValue ?? "" },
+                                            set: { session.setArgument(argument.id, value: $0) })
+                        if argument.options.isEmpty {
+                            TextField(argument.title, text: value).disabled(running)
+                        } else {
+                            Picker(argument.title, selection: value) {
+                                if argument.defaultValue == nil { Text("请选择").tag("") }
+                                ForEach(argument.options, id: \.self) { Text($0).tag($0) }
+                            }.disabled(running)
+                        }
+                    }
+                    Text("发送预览").font(.headline)
+                    if !session.templateError.isEmpty {
+                        Text(session.templateError).foregroundStyle(.secondary)
+                    } else {
+                        ScrollView { Text(session.input).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+                            .frame(height: 104)
+                    }
+                } else {
+                    Text("待处理文本").font(.headline)
+                    TextEditor(text: $session.input)
+                        .font(VisualStyle.rowText)
+                        .frame(height: 104)
+                        .focused($inputFocused)
+                        .accessibilityLabel("待处理文本")
+                        .disabled(running)
+                }
                 Text(session.destinationChanged ? "模型连接已变化，请返回并重新打开命令。"
-                     : "发送至 \(session.destination)。无法读取选区时，可在此手动输入。")
+                     : "发送至 \(session.destination)。")
                     .font(.caption).foregroundStyle(.secondary)
+                if session.customCommand == nil, session.input.isEmpty {
+                    Text("无法读取选区时，可在此手动输入。").font(.caption).foregroundStyle(.secondary)
+                }
                 AITextCommandResult(reply: session.reply)
             }
             .padding(.horizontal, 26)

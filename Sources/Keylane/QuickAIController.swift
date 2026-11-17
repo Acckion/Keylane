@@ -29,11 +29,13 @@ final class QuickAIController: ObservableObject {
     private(set) var isInChat = false
 
     init(configuration: AIConfiguration, runtime: AIRuntime, history: AIChatHistory? = nil,
+         observesDefaultConnection: Bool = true,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
         self.configuration = configuration
         self.runtime = runtime
         self.history = history
         self.readKey = readKey
+        guard observesDefaultConnection else { return }
         configurationChanges = configuration.$state
             .map { $0.enabled ? $0.selected : nil }.removeDuplicates().dropFirst()
             .sink { [weak self] _ in
@@ -51,9 +53,11 @@ final class QuickAIController: ObservableObject {
     }
 
     @discardableResult
-    func submit(_ input: String, instructions: String? = nil) -> Bool {
-        guard !running, !loadingChat, matchesCurrentModel, configuration.isAvailable,
-              let connection = configuration.selected else { return false }
+    func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil) -> Bool {
+        guard !running, !loadingChat, configuration.state.enabled,
+              let connection = override ?? configuration.selected, connection.isConfigured,
+              configuration.state.connections.contains(connection),
+              conversationModel == nil || conversationModel == AIChatRecord.ModelReference(connection) else { return false }
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return false }
         let maximumQuestionBytes = 32_000

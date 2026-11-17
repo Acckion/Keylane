@@ -234,3 +234,56 @@ precondition(commandSession.reply.turns.isEmpty && !commandSession.reply.running
 commandSession.clear()
 precondition(commandSession.input.isEmpty)
 print("PASS AI text commands: explicit send, empty selection, translation target, source isolation, reply and cancellation")
+
+let library = CustomAICommandLibrary(preferences: prefs)
+var custom = CustomAICommand(title: " 改写 ", prompt: """
+Rewrite {selection} in {argument name="tone" options="formal,casual"}. Reference {clipboard}.
+""", connectionID: otherModel.id)
+try library.save(custom)
+let commandID = custom.commandID
+custom.title = "改写选区"
+try library.save(custom)
+precondition(library.commands == [custom] && library.commands.first?.commandID == commandID)
+let archive = try library.exportData()
+let repeated = try library.importData(archive)
+precondition(repeated == 0)
+precondition(CustomAICommandLibrary(preferences: prefs).commands == [custom])
+precondition(!String(decoding: archive, as: UTF8.self).contains(otherModel.endpoint))
+let importSuite = "org.keylane.ai-commands-import-test." + UUID().uuidString
+let importPreferences = UserDefaults(suiteName: importSuite)!
+defer { importPreferences.removePersistentDomain(forName: importSuite) }
+let imported = CustomAICommandLibrary(preferences: importPreferences)
+let importedCount = try imported.importData(archive)
+precondition(importedCount == 1 && imported.commands == [custom])
+do {
+    _ = try imported.importData(Data("{\"version\":2,\"commands\":[]}".utf8))
+    preconditionFailure("Unsupported archive version was accepted")
+} catch { precondition(imported.commands == [custom]) }
+
+var context = DynamicTemplate.Context()
+context.selection = { "selected fixture" }
+context.clipboard = { _ in "clipboard fixture" }
+let template = DynamicTemplate(custom.prompt, usage: .aiCommand)
+var enabled = true
+commandSession.prepare(custom, template: template, context: context, canInvoke: { enabled })
+precondition(commandSession.arguments.map(\.id) == ["tone"] && !commandSession.canSend)
+commandSession.setArgument("tone", value: "casual")
+precondition(commandSession.canSend && !commandSession.reply.running)
+precondition(commandSession.input.contains("selected fixture") && commandSession.input.contains("clipboard fixture"))
+precondition(commandSession.destination.contains(otherModel.model) && settings.selected?.id == reviewedModel.id)
+enabled = false
+commandSession.send()
+precondition(!commandSession.reply.running)
+enabled = true
+FixtureProtocol.mode = "stream"
+commandSession.send()
+settings.select(legacy.id)
+wait("AI command uses its own connection") { !commandSession.reply.running }
+precondition(commandSession.reply.lastAnswer == "你好")
+var changedModel = otherModel
+changedModel.endpoint = "http://localhost:9001/alternate"
+precondition(settings.save(changedModel))
+precondition(commandSession.destinationChanged && !commandSession.canSend && commandSession.reply.lastAnswer == nil)
+try library.remove(custom)
+precondition(CustomAICommandLibrary(preferences: prefs).commands.isEmpty)
+print("PASS custom AI commands: stable IDs, archive, selection, clipboard, arguments, enablement and model isolation")
