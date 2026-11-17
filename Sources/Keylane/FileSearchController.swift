@@ -939,8 +939,13 @@ final class FileSearchController: ObservableObject {
         }, &context, roots as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 2, FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
         if let watch {
             FSEventStreamSetDispatchQueue(watch, .main)
-            watchLifetime = FileScanCancellation()
-            if !FSEventStreamStart(watch) { stopWatch() }
+            if FSEventStreamStart(watch) {
+                watchLifetime = FileScanCancellation()
+            } else {
+                FSEventStreamInvalidate(watch)
+                FSEventStreamRelease(watch)
+                self.watch = nil
+            }
         }
     }
 
