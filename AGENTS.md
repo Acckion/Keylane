@@ -64,7 +64,7 @@ Alpha 和 Beta 是同一个开发里程碑的两个阶段。需要公开试用�
 - 预发布前确认对应 `dev` 提交的 CI 已通过，使用同一提交的 Apple Development 签名 DMG 和 SHA-256 文件。发布说明列出对应提交、主要改动、测试范围、已知问题、系统要求及签名／公证状态。
 - 每次正式版和预发布在候选提交中保存 `docs/releases/<标签>.md`，参照 [发布说明模板](docs/releases/TEMPLATE.md)。首行用具体发布主题，正文在「新增」「改进」「修复」中按模块逐条写入口、行为或修复场景，省略无内容的分类，并写明「兼容性与已知限制」和「验证」。逐项核对上一个公开版本之后已合入的用户可见改动，注明未验收项。
 - 发布前运行 `python3 scripts/check-release-notes.py <标签>`。正式版 CI 会校验并使用该文件生成 Release 正文；手动预发布也从文件生成正文，并补充实际构建提交、平台、签名／公证状态和工件说明。应用内更新日志读取同一份 GitHub Release 正文。
-- 普通 CI 的 Checks 不使用签名 secrets。需要验证安装包时，同仓库 PR 和 dev/main push 在 Checks 成功后自动用 Apple Development 签名打包，dev/main 也可手动勾选 `validate_installer`。外部 fork 和 Dependabot PR 运行 Checks，合入后从目标分支生成签名包。签名任务使用 `preview-signing` 环境中的 `KEYLANE_PREVIEW_P12`（Base64 编码的 Apple Development .p12，含私钥）和 `KEYLANE_PREVIEW_P12_PASSWORD`，缺少凭据时失败。产物为未公证的 DMG，维护者核对制品后单独创建 GitHub Pre-release。
+- 普通 CI 的 Checks 不使用签名 secrets。需要验证安装包时，dev/main push 或手动运行在 Checks 成功后进入 `preview-signing-auto`；同仓库非 Dependabot PR 进入需维护者审核固定提交并人工批准的 `preview-signing-pr`。外部 fork 和 Dependabot PR 仅运行无密钥 Checks，合入后从目标分支生成签名包。两环境的分支限制、审核者及禁止绕过必须先由用户确认并配置；不得仅依赖 PR 可修改的 YAML 条件。`KEYLANE_PREVIEW_P12` 和 `KEYLANE_PREVIEW_P12_PASSWORD` 只可由用户直接放入受保护环境，不得放入仓库/组织级 Secrets。缺少凭据时失败，不退回临时签名。产物仍未公证，无自动 Release/tag；审批边界与尚未实施的设置详见 `docs/PREVIEW-SIGNING-APPROVAL.md`。
 
 ## 检查与交付
 

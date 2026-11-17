@@ -69,13 +69,16 @@ class ReleaseEntryTests(unittest.TestCase):
 
     def test_ci_keeps_preview_secrets_out_of_checks(self):
         ci = (ROOT / '.github/workflows/ci.yml').read_text()
-        checks, preview = ci.split('  sign-preview:\n', 1)
+        checks, preview = ci.split('  sign-preview-auto:\n', 1)
         self.assertNotIn('secrets.', checks)
         self.assertIn("needs.checks.outputs.installer_required == 'true'", preview)
         self.assertIn('github.event.pull_request.head.repo.full_name == github.repository', preview)
         self.assertIn("github.actor != 'dependabot[bot]'", preview)
         self.assertNotIn('KEYLANE_ALLOW_ADHOC', ci)
-        self.assertIn('environment: preview-signing', preview)
+        self.assertIn('environment: preview-signing-auto', preview)
+        self.assertIn('name: preview-signing-pr', preview)
+        self.assertIn('check-preview-target.py', preview)
+        self.assertEqual(preview.count('ref: ${{ github.sha }}'), 2)
         self.assertIn('needs: checks', preview)
         for forbidden in ['contents: write', 'publish-release.sh', 'workflow_run', 'notarize-dmg']:
             self.assertNotIn(forbidden, ci)
