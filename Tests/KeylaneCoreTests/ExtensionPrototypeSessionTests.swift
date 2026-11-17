@@ -4,6 +4,22 @@ import XCTest
 @testable import KeylaneCore
 
 final class ExtensionPrototypeSessionTests: XCTestCase {
+    func testStorageDirectoryIsBoundToReviewedSlugAndRejectsSymlink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let extensions = root.appendingPathComponent("Extensions")
+        let correct = extensions.appendingPathComponent("sample", isDirectory: true)
+        let other = root.appendingPathComponent("elsewhere", isDirectory: true)
+        try FileManager.default.createDirectory(at: correct, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: false)
+        let path = correct.appendingPathComponent("local-storage.json").path
+        XCTAssertEqual(ReviewedExtensionStateDirectory.localStorageURL(path: path, slug: "sample")?.path, path)
+        XCTAssertNil(ReviewedExtensionStateDirectory.localStorageURL(path: path, slug: "another"))
+        try FileManager.default.removeItem(at: correct)
+        try FileManager.default.createSymbolicLink(at: correct, withDestinationURL: other)
+        XCTAssertNil(ReviewedExtensionStateDirectory.localStorageURL(path: path, slug: "sample"))
+    }
+
     func testStorageLockTimesOutAndAcquiresAfterRelease() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
         let owner = Darwin.open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)

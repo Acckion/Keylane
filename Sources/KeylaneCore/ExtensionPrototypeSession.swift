@@ -653,6 +653,20 @@ final class ExtensionExecutionBudget: @unchecked Sendable {
     }
 }
 
+enum ReviewedExtensionStateDirectory {
+    static func localStorageURL(path: String, slug: String) -> URL? {
+        guard path.hasPrefix("/"), path.utf8.count <= 4_096 else { return nil }
+        let file = URL(fileURLWithPath: path).standardizedFileURL
+        let directory = file.deletingLastPathComponent()
+        let extensions = directory.deletingLastPathComponent()
+        guard file.lastPathComponent == "local-storage.json", directory.lastPathComponent == slug,
+              extensions.lastPathComponent == "Extensions",
+              directory.resolvingSymlinksInPath().path ==
+                extensions.resolvingSymlinksInPath().appendingPathComponent(slug).path else { return nil }
+        return file
+    }
+}
+
 /// Serializes extension storage transactions within the broker's reply budget.
 enum ExtensionStorageLock {
     static func acquire(_ descriptor: Int32, until deadline: ContinuousClock.Instant) throws {

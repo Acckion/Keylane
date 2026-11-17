@@ -770,13 +770,10 @@ struct Host {
               let command = environment["entryPointName"] as? String,
               let app = ApplicationQueries.reviewedLaunchBundle(phase: phase, kernelPath: kernelPath, imagePath: imagePath),
               ApplicationQueries.hasReviewedSignature(app),
+              let artifactSlug = ApplicationQueries.reviewedArtifactSlug(in: app, imagePath: imagePath), slug == artifactSlug,
               let path = ProcessInfo.processInfo.environment["KEYLANE_REVIEWED_LOCAL_STORAGE"],
-              path.hasPrefix("/"), path.utf8.count <= 4_096 else { return nil }
-        let storage = URL(fileURLWithPath: path).standardizedFileURL
-        let installed = storage.deletingLastPathComponent()
-        guard storage.lastPathComponent == "local-storage.json", installed.lastPathComponent == slug,
-              installed.deletingLastPathComponent().lastPathComponent == "Extensions" else { return nil }
-        return ReviewedRaycastCommandMetadata(installationDirectory: installed, command: command)
+              let storage = ReviewedExtensionStateDirectory.localStorageURL(path: path, slug: artifactSlug) else { return nil }
+        return ReviewedRaycastCommandMetadata(installationDirectory: storage.deletingLastPathComponent(), command: command)
     }
 
     static func main() throws {
@@ -1289,6 +1286,18 @@ final class ApplicationQueries {
               image.deletingLastPathComponent().path == assets.path, approved.contains(image.lastPathComponent)
         else { return nil }
         return app
+    }
+
+    fileprivate static func reviewedArtifactSlug(in app: URL, imagePath: String) -> String? {
+        let filename = URL(fileURLWithPath: imagePath).lastPathComponent
+        switch filename {
+        case "view.cpio": return "chmod-lookup"
+        case "menu-bar.cpio": return "work-time-countdown"
+        case "noview.cpio", "uuid-suite.cpio": return "uuid-generator"
+        default:
+            let directory = app.appendingPathComponent("Contents/Resources/ReviewedRaycast")
+            return ReviewedViewArtifact.loadCatalog(in: directory).first { $0.artifactName + ".cpio" == filename }?.slug
+        }
     }
 
     private func canQueryApplications() -> Bool {
@@ -1873,12 +1882,8 @@ final class GuestLocalStorage {
     private var snapshot: (data: Data, operation: Operation)?
     private var nextOffset = 0
     private let file: URL
-    private let app: URL
-    private lazy var signatureIsValid = ApplicationQueries.hasReviewedSignature(app)
-
-    private init(file: URL, app: URL) {
+    private init(file: URL) {
         self.file = file
-        self.app = app
     }
 
     private var keychainQuery: [String: Any] {
@@ -1891,17 +1896,15 @@ final class GuestLocalStorage {
 
     static func make(phase: String, kernelPath: String, imagePath: String) -> GuestLocalStorage? {
         guard let path = ProcessInfo.processInfo.environment["KEYLANE_REVIEWED_LOCAL_STORAGE"],
-              path.hasPrefix("/"), path.utf8.count <= 4_096,
-              let app = ApplicationQueries.reviewedLaunchBundle(phase: phase, kernelPath: kernelPath, imagePath: imagePath)
+              let app = ApplicationQueries.reviewedLaunchBundle(phase: phase, kernelPath: kernelPath, imagePath: imagePath),
+              ApplicationQueries.hasReviewedSignature(app),
+              let slug = ApplicationQueries.reviewedArtifactSlug(in: app, imagePath: imagePath),
+              let file = ReviewedExtensionStateDirectory.localStorageURL(path: path, slug: slug)
         else { return nil }
-        let file = URL(fileURLWithPath: path).standardizedFileURL
-        guard file.lastPathComponent == "local-storage.json" else { return nil }
-        let storage = GuestLocalStorage(file: file, app: app)
-        return storage.signatureIsValid ? storage : nil
+        return GuestLocalStorage(file: file)
     }
 
     func reply(to text: String, deadline: ContinuousClock.Instant) throws -> String {
-        guard signatureIsValid else { throw CocoaError(.featureUnsupported) }
         let data = Data(text.utf8)
         guard data.count <= (Self.uploadChunkSize * 4 / 3) + 256,
               let request = try JSONSerialization.jsonObject(with: data) as? [String: Any],
