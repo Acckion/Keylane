@@ -29,7 +29,9 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
         shutil.copyfile(root / 'Resources' / name, resources / name)
     shutil.copytree(root / 'Resources/ModuleArtwork', resources / 'ModuleArtwork')
     metadata = dict(CFBundleExecutable='Keylane', CFBundleIdentifier='org.keylane.launcher', CFBundleName='Keylane', CFBundlePackageType='APPL', CFBundleShortVersionString=version['version'], CFBundleVersion=str(version['build']), LSMinimumSystemVersion='26.0', LSUIElement=True,
-                    NSCameraUsageDescription="在你打开相机预览时显示实时画面。",
+                    NSCameraUsageDescription="在你打开相机时显示实时画面，并按你的操作拍摄照片。",
+                    NSCameraUseContinuityCameraDeviceType=True,
+                    NSDesktopFolderUsageDescription="将你拍摄的照片保存到桌面。",
                     NSContactsUsageDescription='在 Keylane 中查找联系人并复制电话号码和邮箱。',
                     NSCalendarsFullAccessUsageDescription='读取系统日历，并按你的操作保存日程和提醒。', NSAppleEventsUsageDescription='读取 Finder 信息和快捷指令图标，搜索、新建和打开 Apple 备忘录，定位日程及添加受邀人，或执行你选择的废纸篓、系统外观及电源操作。')
     icon_metadata = pathlib.Path(directory) / 'IconInfo.plist'

@@ -170,7 +170,7 @@ struct Launcher: View {
                     }.id(moduleActivation?.id)
                 }
             }
-            if !compactSurface { VStack(spacing: 0) {
+            if !compactSurface && page?.fullBleed != true { VStack(spacing: 0) {
                 if showsSearchBar {
                     ChromeBlur().frame(height: VisualStyle.launcherTopInset)
                         .mask(LinearGradient(stops: [.init(color: .black.opacity(0.85), location: 0),
@@ -213,8 +213,16 @@ struct Launcher: View {
                 Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             }
             if let shortcutSubmit = page?.shortcutSubmit {
-                Button("") { if page?.optionSubmit != nil { closeMenus() }; shortcutSubmit() }
-                    .keyboardShortcut(.return, modifiers: .command).hidden().accessibilityHidden(true)
+                Button("") {
+                    if page?.submitWithReturn == true {
+                        if primaryActionEnabled || actions || appMenu { run() }
+                    } else {
+                        if page?.optionSubmit != nil { closeMenus() }
+                        shortcutSubmit()
+                    }
+                }
+                .keyboardShortcut(.return, modifiers: page?.submitWithReturn == true ? [] : .command)
+                .hidden().accessibilityHidden(true)
             }
             if let optionSubmit = page?.optionSubmit {
                 Button("") { closeMenus(); optionSubmit() }.keyboardShortcut(.return, modifiers: .option).hidden().accessibilityHidden(true)
@@ -653,7 +661,7 @@ struct Launcher: View {
             ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = rootScriptArguments == nil && (page?.contentPlacement != .form || !menuItems(applicationMenu: false).isEmpty)
         let primaryLabel = LauncherFooterButtonLabel(title: primaryTitle,
-            keys: page?.contentPlacement == .form && page?.shortcutSubmit != nil ? ["⌘", "↩"] : ["↩"])
+            keys: page?.contentPlacement == .form && page?.shortcutSubmit != nil && page?.submitWithReturn != true ? ["⌘", "↩"] : ["↩"])
         let actionsLabel = LauncherFooterButtonLabel(title: "操作", keys: ["⌘", "K"])
         let actionsWidth = showsActions ? actionsLabel.width : 0
         let capsuleInset: CGFloat = 4
@@ -740,7 +748,7 @@ struct Launcher: View {
 
     private func usesPageSubmitShortcut(key: String, modifiers: ArraySlice<String>) -> Bool {
         guard key == "↩" else { return false }
-        return (modifiers.elementsEqual(["⌘"]) && page?.shortcutSubmit != nil)
+        return (modifiers.elementsEqual(["⌘"]) && page?.shortcutSubmit != nil && page?.submitWithReturn != true)
             || (modifiers.elementsEqual(["⌥"]) && page?.optionSubmit != nil)
     }
 

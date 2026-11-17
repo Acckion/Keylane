@@ -78,8 +78,12 @@ enum AppUtilitiesModule {
             model?.pageID = model?.launcherModules?.page(page) == nil ? .root : page
         }
         let start = { if permission.available { camera.start() } }
+        let takePhoto: (CameraPreview.PhotoDestination) -> Void = { [weak model] destination in
+            guard permission.available, let model else { return }
+            camera.takePhoto(destination, aspect: VisualStyle.launcherWidth / model.launcherHeight)
+        }
         let submit: () -> Void = { [weak model] in
-            guard let meeting = camera.meeting else { back(); return }
+            guard let meeting = camera.meeting else { takePhoto(.clipboard); return }
             camera.stop(completion: meeting.join)
             model?.pageID = .root
             (NSApp.delegate as? Delegate)?.hideLauncher()
@@ -89,10 +93,45 @@ enum AppUtilitiesModule {
             content: { AnyView(CameraPreviewPage(camera: camera, back: back)) },
             leave: { camera.stop() }, back: back,
             submit: submit, shortcutSubmit: submit,
-            primaryTitle: { camera.meeting == nil ? "返回" : "加入会议" },
-            updates: camera.$meeting.map { $0 != nil }.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            enter: { _ in start(); return nil }, resume: start
+            primaryTitle: { camera.meeting == nil ? "拍摄并拷贝到剪贴板" : "加入会议" },
+            primaryEnabled: { camera.meeting != nil || camera.canTakePhoto },
+            actions: { cameraActions(camera, takePhoto: takePhoto) },
+            updates: Publishers.MergeMany([
+                camera.$meeting.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+                ViewObservation.changes(camera.$state),
+                ViewObservation.changes(camera.$takingPhoto),
+                ViewObservation.changes(camera.$devices),
+                ViewObservation.changes(camera.$deviceID),
+                ViewObservation.changes(camera.$mirrored),
+                ViewObservation.changes(camera.$shutterEnabled)
+            ]).eraseToAnyPublisher(),
+            enter: { _ in start(); return nil }, resume: start,
+            maximumActionWidth: 330, fullBleed: true, submitWithReturn: true
         )
+    }
+
+    private static func cameraActions(_ camera: CameraPreview,
+                                      takePhoto: @escaping (CameraPreview.PhotoDestination) -> Void) -> [LauncherAction] {
+        let cameras = camera.devices.map { device in
+            LauncherAction(id: device.uniqueID, title: device.localizedName, icon: "camera",
+                           value: device.uniqueID == camera.deviceID && camera.state == .running ? "当前" : nil,
+                           enabled: device.uniqueID != camera.deviceID || camera.state == .failed,
+                           perform: { camera.selectCamera(device) })
+        }
+        return [
+            .init(id: "camera-copy-photo", title: "拍摄并拷贝到剪贴板", icon: "clipboard",
+                  enabled: camera.canTakePhoto, perform: { takePhoto(.clipboard) }),
+            .init(id: "camera-save-desktop", title: "保存到桌面", icon: "square.and.arrow.down",
+                  enabled: camera.canTakePhoto, perform: { takePhoto(.desktop) }),
+            .init(id: "camera-mirror", title: "切换镜像", icon: "arrow.left.and.right.righttriangle.left.righttriangle.right",
+                  value: camera.mirrored ? "已开启" : "已关闭", group: 1, perform: camera.toggleMirroring),
+            .init(id: "camera-switch", title: "切换摄像头", icon: "arrow.triangle.2.circlepath.camera",
+                  submenu: .init(title: "切换摄像头", items: cameras), group: 1,
+                  enabled: !camera.takingPhoto && camera.state != .starting && cameras.contains(where: \.enabled)),
+            .init(id: "camera-shutter", title: camera.shutterEnabled ? "禁用快门声音" : "启用快门声音",
+                  icon: camera.shutterEnabled ? "speaker.slash" : "speaker.wave.2", group: 1,
+                  perform: camera.toggleShutter)
+        ]
     }
 
     private static func command(_ id: String, _ title: String, _ symbol: String, _ keywords: [String],
