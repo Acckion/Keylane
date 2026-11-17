@@ -410,8 +410,10 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         expandedTitle.isHidden = !expanded; sortControl.isHidden = !expanded; viewControl.isHidden = !expanded
         closeControl.image = NSImage(systemSymbolName: expanded ? "chevron.backward" : "xmark", accessibilityDescription: nil)
         closeControl.setAccessibilityLabel(expanded ? "返回收起的暂存架" : "关闭暂存架")
+        closeControl.toolTip = expanded ? "返回收起的暂存架" : "关闭暂存架"
         disclosure.image = NSImage(systemSymbolName: expanded ? "slider.horizontal.3" : "chevron.down", accessibilityDescription: expanded ? "暂存架设置" : "展开暂存内容")
         disclosure.setAccessibilityLabel(expanded ? "暂存架设置" : "展开暂存内容")
+        disclosure.toolTip = expanded ? "暂存架设置" : "展开暂存内容"
         resizeCard()
         makeFirstResponder(expanded ? table : preview)
     }
