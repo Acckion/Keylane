@@ -10,7 +10,8 @@ enum UtilityLauncherModules {
 
     private static func emoji(_ model: Model) -> LauncherModule {
         let controller = model.emoji
-        let pageID = PageID(rawValue: "Emoji")
+        let pageID = EmojiSearchController.pageID
+        let settingsID = "keylane.emoji"
         let title = EmojiCatalog.label("Emoji 与符号", "Emoji & Symbols")
         let use: (EmojiItem, Bool) -> Void = { item, paste in
             let delegate = NSApp.delegate as? Delegate
@@ -26,26 +27,31 @@ enum UtilityLauncherModules {
                 delegate?.showLauncherFeedback(EmojiCatalog.label("已复制字符", "Character copied"), style: .success)
             }
         }
+        let primaryTitle = {
+            controller.primaryAction == .paste ? emojiPasteTitle() : EmojiCatalog.label("复制字符", "Copy Character")
+        }
         var page = LauncherPage(id: pageID,
                                 placeholder: EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"),
                                 badge: (title, "face.smiling"),
                                 contentPlacement: .underChrome,
-                                content: { AnyView(EmojiSearchPage(controller: controller) { use($0, true) }) },
+                                content: { AnyView(EmojiSearchPage(controller: controller) { use($0, controller.primaryAction == .paste) }) },
                                 queryChanged: { controller.query = $0 },
                                 move: { controller.move($0, vertical: true) },
-                                submit: { if let item = controller.selected { use(item, true) } },
-                                primaryTitle: emojiPasteTitle,
+                                submit: { if let item = controller.selected { use(item, controller.primaryAction == .paste) } },
+                                primaryTitle: primaryTitle,
                                 actions: {
                                     guard let item = controller.selected else { return [] }
-                                    return [
-                                        LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
-                                                       keys: ["↩"], perform: { use(item, true) }),
-                                        LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"),
-                                                       icon: "doc.on.doc", keys: ["⌘", "↩"], perform: { use(item, false) })
-                                    ]
+                                    let pasteFirst = controller.primaryAction == .paste
+                                    let paste = LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
+                                                               keys: pasteFirst ? ["↩"] : ["⌘", "↩"], perform: { use(item, true) })
+                                    let copy = LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"),
+                                                               icon: "doc.on.doc", keys: pasteFirst ? ["⌘", "↩"] : ["↩"],
+                                                               perform: { use(item, false) })
+                                    return pasteFirst ? [paste, copy] : [copy, paste]
                                 },
-                                updates: Publishers.Merge(ViewObservation.changes(controller.$selection),
-                                                          ViewObservation.changes(controller.$category)).eraseToAnyPublisher())
+                                updates: Publishers.Merge3(ViewObservation.changes(controller.$selection),
+                                                           ViewObservation.changes(controller.$category),
+                                                           ViewObservation.changes(controller.$primaryAction)).eraseToAnyPublisher())
         page.loading = controller.$isLoading.combineLatest(controller.$isSearching)
             .map { loading, searching in loading || searching }.removeDuplicates().eraseToAnyPublisher()
         page.enter = { query in
@@ -56,7 +62,7 @@ enum UtilityLauncherModules {
         page.leave = controller.stop
         page.resume = controller.start
         page.primaryEnabled = { controller.selected != nil }
-        page.shortcutSubmit = { if let item = controller.selected { use(item, false) } }
+        page.shortcutSubmit = { if let item = controller.selected { use(item, controller.primaryAction == .copy) } }
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
@@ -69,11 +75,18 @@ enum UtilityLauncherModules {
                 searchPlaceholder: EmojiCatalog.label("搜索分类…", "Search categories…")
             ))
         }
-        return .init(id: .init(rawValue: "keylane.emoji"), title: "Emoji 与符号", symbol: "face.smiling", commands: [
+        let settings = LauncherSettingsPage(id: settingsID, title: title, symbol: "face.smiling",
+                                            subtitle: "搜索和插入表情与符号。", order: 65,
+                                            items: SettingsItem.all.filter { $0.page == settingsID },
+                                            centeredHeader: true, content: { [weak model] in
+            guard let model else { return AnyView(EmptyView()) }
+            return AnyView(EmojiPreferences(controller: controller, model: model))
+        })
+        return .init(id: .init(rawValue: settingsID), title: title, symbol: "face.smiling", commands: [
             command("emoji-symbols", EmojiCatalog.label("Emoji 与符号", "Search Emoji & Symbols"),
                     EmojiCatalog.label("搜索并插入表情与符号", "Search and insert emoji and symbols"),
-                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID))
-        ], pages: [page], services: [.init(start: {}, stop: controller.releaseCatalog)])
+                    "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID), settings: settingsID)
+        ], pages: [page], settings: [settings], services: [.init(start: {}, stop: controller.releaseCatalog)])
     }
 
     private static func emojiPasteTitle() -> String {

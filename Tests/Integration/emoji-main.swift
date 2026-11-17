@@ -66,6 +66,19 @@ struct EmojiCheck {
             precondition(board.string(forType: .string)?.unicodeScalars.map(\.value) == glyph.unicodeScalars.map(\.value))
         }
 
+        controller.columns = 10
+        controller.primaryAction = .copy
+        controller.skinTone = 3
+        controller.disablesInlinePicker = true
+        let preferences = EmojiSearchController(defaults: defaults)
+        precondition(preferences.columns == 10 && preferences.primaryAction == .copy)
+        precondition(preferences.skinTone == 3 && preferences.disablesInlinePicker)
+        try await search("👋")
+        let wave = controller.selected!
+        precondition(controller.glyph(for: wave) == "👋🏽")
+        precondition(controller.copy(wave, to: board) != nil && board.string(forType: .string) == "👋🏽")
+        try await search("👩🏽‍💻")
+
         // Rendering uses the real SwiftUI grid in an offscreen AppKit host.
         let host = NSHostingView(rootView: EmojiSearchPage(controller: controller, activate: { _ in }))
         host.frame = NSRect(x: 0, y: 0, width: 740, height: 440)

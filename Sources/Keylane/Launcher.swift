@@ -33,6 +33,7 @@ struct Launcher: View {
     @State private var fileType = "all"
     private enum Menu { case application, actions, filter, sort }
     @State private var menu: Menu?
+    @State private var inlineEmojiTarget: (query: String, range: NSRange)?
     @State private var escapeMonitor: Any?
     private var actions: Bool { menu == .actions }
     private var appMenu: Bool { menu == .application }
@@ -193,6 +194,18 @@ struct Launcher: View {
             if showsSearchBar && showsTypeFilter {
                 typeFilter.frame(maxWidth: .infinity, alignment: .topTrailing)
                     .padding(VisualStyle.launcherEdgeInset)
+            }
+            if let insertion = inlineEmojiTarget {
+                Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() }
+                EmojiInlinePicker(controller: model.emoji, navigation: model.navigation, choose: { glyph in
+                    if model.query == insertion.query, let target = Range(insertion.range, in: model.query) {
+                        model.query.replaceSubrange(target, with: glyph)
+                    }
+                    closeMenus()
+                }, dismiss: closeMenus)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.leading, 48)
+                .padding(.top, VisualStyle.launcherTopInset)
             }
         }
         .frame(width: VisualStyle.launcherWidth, height: model.presentedLauncherHeight, alignment: .top)
@@ -461,6 +474,7 @@ struct Launcher: View {
     }
 
     private func escape() {
+        if inlineEmojiTarget != nil { closeMenus(); return }
         if submenu != nil { dismissSubmenu(); return }
         if rootScriptArguments != nil { cancelRootScriptArguments(); return }
         if argumentTarget != nil { dismissArgumentEditor(); focusToken += 1; return }
@@ -491,11 +505,12 @@ struct Launcher: View {
                 if let display = page?.searchDisplay {
                     display().frame(maxWidth: .infinity, alignment: .leading)
                 } else if page?.showsSearchField != false {
-                    SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
+                    SearchField(text: Binding(get: { model.query }, set: { model.query = $0 }), placeholder: model.pageID == .root ? "搜索应用、文件和命令…" : moduleTitle, focusToken: focusToken, wantsFocus: !actions && !appMenu && !filterOpen && inlineEmojiTarget == nil, navigation: model.navigation, submit: { run() }, move: moveSelection, escape: escape,
                                 back: page?.moveHorizontal.map { move in { move(-1) } },
                                 forward: page?.moveHorizontal.map { move in { move(1) } },
                                 navigateWhileTyping: page?.navigateWhileTyping ?? false,
-                                spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil)
+                                spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil,
+                                insertEmoji: openInlineEmoji)
                         .frame(height: 30)
                 } else {
                     Spacer(minLength: 0)
@@ -948,7 +963,17 @@ struct Launcher: View {
         if open { menu = target }
     }
 
+    private func openInlineEmoji(_ range: NSRange) -> Bool {
+        guard !model.emoji.disablesInlinePicker, model.pageID != EmojiSearchController.pageID,
+              model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.emoji")) == true else { return false }
+        closeMenus()
+        model.compactExpanded = true
+        inlineEmojiTarget = (model.query, range)
+        return true
+    }
+
     private func closeMenus() {
+        inlineEmojiTarget = nil
         menu = nil
         submenu = nil
         actionQuery = ""
