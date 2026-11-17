@@ -84,8 +84,15 @@ final class SystemNavigation {
     }
 
     static func displayFrames(respectingStageManager: Bool = false) -> [CGRect] {
+        screenFrames(respectingStageManager: respectingStageManager).map(\.area)
+    }
+
+    private static func screenFrames(respectingStageManager: Bool) -> [(bounds: CGRect, area: CGRect)] {
         let screens = NSScreen.screens
         let top = screens.first?.frame.maxY ?? 0
+        func windowCoordinates(_ frame: CGRect) -> CGRect {
+            CGRect(x: frame.minX, y: top - frame.maxY, width: frame.width, height: frame.height)
+        }
         let manager = respectingStageManager ? UserDefaults(suiteName: "com.apple.WindowManager") : nil
         let reserveStrip = manager?.bool(forKey: "GloballyEnabled") == true
             && !(manager?.bool(forKey: "AutoHide") ?? false)
@@ -96,8 +103,12 @@ final class SystemNavigation {
                 if !stripOnRight { frame.origin.x += 100 }
                 frame.size.width -= 100
             }
-            return CGRect(x: frame.minX, y: top - frame.maxY, width: frame.width, height: frame.height)
+            return (windowCoordinates(screen.frame), windowCoordinates(frame))
         }
+    }
+
+    static func displayArea(at point: CGPoint?, in screens: [(bounds: CGRect, area: CGRect)]) -> CGRect? {
+        point.flatMap { point in screens.first { $0.bounds.contains(point) }?.area } ?? screens.first?.area
     }
 
     func placeWindow(_ placement: WindowPlacement, in app: NSRunningApplication?, request: NavigationScanRequest = .init(),
@@ -112,19 +123,22 @@ final class SystemNavigation {
             completion(NavigationText.label("请在系统设置中允许 Keylane 使用辅助功能。", "Allow Keylane in Accessibility settings."))
             return
         }
-        let displays = Self.displayFrames(respectingStageManager: options.respectStageManager)
+        let screens = Self.screenFrames(respectingStageManager: options.respectStageManager)
+        let displays = screens.map(\.area)
+        let minimizeDisplay: CGRect?
         let runningApps: [NSRunningApplication]
         if case .minimizeDisplay = operation {
+            minimizeDisplay = Self.displayArea(at: point, in: screens)
             runningApps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
         } else {
+            minimizeDisplay = nil
             runningApps = []
         }
         queue.async {
             guard !request.isCancelled else { return }
             let message: String?
             if case .minimizeDisplay = operation {
-                let display = point.flatMap { point in displays.first { $0.contains(point) } } ?? displays.first
-                message = self.minimizeWindows(on: display, apps: runningApps, request: request)
+                message = self.minimizeWindows(on: minimizeDisplay, apps: runningApps, request: request)
             } else if let app, !app.isTerminated,
                       let target = self.focusedWindow(pid: app.processIdentifier, displays: displays) {
                 if let expected, !CFEqual(expected.window, target.window) {
@@ -319,7 +333,10 @@ final class SystemNavigation {
             var front: (pid: pid_t, window: AXUIElement)?
             var failed = 0
             let visible = Self.visibleWindows()
-            for (entry, pid) in entries {
+            // Assign explicit titles before a wildcard can claim the same AX window.
+            let orderedEntries = entries.filter { !$0.entry.windowTitle.isEmpty }
+                + entries.filter { $0.entry.windowTitle.isEmpty }
+            for (entry, pid) in orderedEntries {
                 guard !request.isCancelled else { return }
                 guard displays.indices.contains(entry.display),
                       let destination = layout.displayFrame(for: entry, in: displays[entry.display], windowGap: options.windowGap,

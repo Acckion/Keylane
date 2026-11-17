@@ -67,9 +67,16 @@ enum WindowManagementModule {
                     capture: controller.captureLayoutEditorWindows, choosePath: controller.chooseLayoutPath,
                     back: back
                 ).id(controller.layoutEditorID))
-            }, leave: controller.leaveLayout, back: back, submit: controller.saveLayoutDraft,
+            }, leave: { [weak model] in
+                controller.leaveLayout()
+                model?.releaseApplicationCatalog(for: .windowLayout)
+            }, back: back, submit: controller.saveLayoutDraft,
             shortcutSubmit: controller.saveLayoutDraft, primaryTitle: { "保存布局" },
-            primaryEnabled: { controller.layoutIsValid }, updates: layoutUpdates
+            primaryEnabled: { controller.layoutIsValid }, updates: layoutUpdates,
+            enter: { [weak model] _ in
+                model?.acquireApplicationCatalog(for: .windowLayout)
+                return nil
+            }
         )
         let coordinates = LauncherPage(
             id: WindowManagementController.coordinatesPage, placeholder: "", badge: ("窗口管理", "macwindow"), contentPlacement: .form,
@@ -117,7 +124,7 @@ enum WindowManagementModule {
                      services: [.init(start: {
                          permission.startObserving()
                          spaceShortcuts.refresh()
-                         permissionObservation = permission.updates.sink {
+                         permissionObservation = permission.updates.receive(on: DispatchQueue.main).sink {
                              spaceShortcuts.refresh()
                              if !permission.available { controller.cancel() }
                          }

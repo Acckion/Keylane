@@ -33,6 +33,16 @@ struct NavigationChecks {
         try checkController()
         try checkMenuExclusions()
 
+        let primary = (bounds: CGRect(x: 0, y: 0, width: 1600, height: 1000),
+                       area: CGRect(x: 0, y: 24, width: 1600, height: 940))
+        let secondary = (bounds: CGRect(x: -1200, y: 80, width: 1200, height: 900),
+                         area: CGRect(x: -1100, y: 110, width: 1100, height: 820))
+        for point in [CGPoint(x: -600, y: 90), CGPoint(x: -600, y: 960), CGPoint(x: -1150, y: 500)] {
+            try require(SystemNavigation.displayArea(at: point, in: [primary, secondary]) == secondary.area,
+                        "Mouse in a secondary display's menu bar, Dock or Stage Manager strip selected the wrong display")
+        }
+        print("Full display bounds select the corresponding window-management area")
+
         guard AXIsProcessTrusted() else {
             print("SKIP native window and menu actions: test runner has no Accessibility access")
             return
@@ -103,6 +113,29 @@ struct NavigationChecks {
         else { throw CheckError.failed("Fixture layout frame unavailable") }
         try require(front.frame == wanted, "The configured layout window was not focused at its new size")
         print("Native layout gaps and configured front window passed")
+
+        var rawWindows: CFTypeRef?
+        var rawTitle: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(fixtureAX, kAXWindowsAttribute as CFString, &rawWindows) == .success,
+              let orderedWindows = rawWindows as? [AXUIElement], orderedWindows.count == 2,
+              let firstWindow = orderedWindows.first,
+              AXUIElementCopyAttributeValue(firstWindow, kAXTitleAttribute as CFString, &rawTitle) == .success,
+              let firstTitle = rawTitle as? String, !firstTitle.isEmpty else {
+            throw CheckError.failed("Could not determine fixture AX window order")
+        }
+        var wildcard = WindowLayoutEntry(bundleID: entry.bundleID)
+        wildcard.geometry = WindowGeometry(region: CGRect(x: 0, y: 0, width: 0.5, height: 1))
+        entry.windowTitle = firstTitle
+        layout.windows = [wildcard, entry]
+        layoutFailures = nil
+        navigation.applyLayout([(wildcard, fixture.processIdentifier), (entry, fixture.processIdentifier)],
+                               layout: layout, otherWindows: .keep, options: tiling, request: .init()) { layoutFailures = $0 }
+        try require(awaitValue(timeout: 6, { layoutFailures }) == 0,
+                    "Wildcard entry took the first AX window reserved by the later titled entry")
+        let targeted = try windowTarget(in: fixture, options: tiling)
+        try require(CFEqual(targeted.window, firstWindow) && targeted.frame == wanted,
+                    "The reserved window did not move to the titled entry's frame")
+        print("Native layout reserves title-matched windows ahead of wildcards")
 
         var menus: NavigationScan?
         _ = navigation.scan(.menus, target: fixture) { menus = $0 }
