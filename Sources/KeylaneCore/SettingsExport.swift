@@ -5,7 +5,7 @@ public enum SettingsExport {
     private static let strings = ["appearance", "placement", "rootSearchSensitivity", "interfaceSize",
                                   "windowMode", "applicationHotkeyAction", "navigation", "windowActivationBehavior",
                                   "launcherEscapeBehavior", "pageNavigationKeys", "doubleTap"]
-    private static let flags = ["rootFileContentSearch", "compactFavorites", "applicationsEnabled",
+    private static let flags = ["rootFileContentSearch", "applicationsEnabled",
                                 "escapeClosesUtilityWindows", "hyperIncludesShift", "replaceHyperKeycaps", "hyperkey"]
 
     public static func data(defaults: UserDefaults) throws -> Data {

@@ -38,9 +38,11 @@ final class ConfigurationArchiveTests: XCTestCase {
         defaults.set("light", forKey: "appearance"); defaults.set(false, forKey: "compactFavorites")
         let modified = try ConfigurationArchive.capture(defaults)
         XCTAssertEqual(modified.preferences["appearance"], .string("light"))
-        XCTAssertEqual(modified.preferences["compactFavorites"], .bool(false))
-        var sparse = ConfigurationArchive(); sparse.preferences = ["appearance": .string("system")]
-        XCTAssertNil(try sparse.plan(current: destination, overwrite: true).changes["navigation"])
+        XCTAssertNil(modified.preferences["compactFavorites"])
+        var sparse = ConfigurationArchive(); sparse.preferences = ["appearance": .string("system"), "compactFavorites": .bool(true)]
+        let sparsePlan = try sparse.plan(current: destination, overwrite: true)
+        XCTAssertNil(sparsePlan.changes["navigation"])
+        XCTAssertNil(sparsePlan.changes["compactFavorites"])
     }
     func testVersionValidationAndLegacy() throws {
         XCTAssertThrowsError(try ConfigurationArchive.decode(Data("{}".utf8)))

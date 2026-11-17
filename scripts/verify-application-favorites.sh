@@ -17,7 +17,8 @@ from pathlib import Path
 
 main = Path(sys.argv[1]) / "Sources/Keylane/main.swift"
 source = main.read_text()
-entry_point = "let delegate = Delegate()\nNSApplication.shared.delegate = delegate\nNSApplication.shared.run()\n"
+entry_point = ("let application = NSApplication.shared\nConfigurationTransfer.finishPending()\n"
+               "let delegate = Delegate()\napplication.delegate = delegate\napplication.run()\n")
 if not source.endswith(entry_point):
     raise SystemExit("Update the fixture for the new Keylane entry point")
 main.write_text(source.removesuffix(entry_point) + "\n" + Path("Tests/Integration/application-favorites-main.swift").read_text())

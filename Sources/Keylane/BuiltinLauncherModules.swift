@@ -8,7 +8,7 @@ import KeylaneCore
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
         let modules = [applications(model), host(model), files(model), clipboard(model), AppleNotesModule.make(model: model),
-                       QuicklinksModule.make(model: model), calculator(model), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model),
+                       QuicklinksModule.make(model: model), CalculatorLauncherModule.make(model: model), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model),
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
@@ -605,57 +605,6 @@ enum BuiltinLauncherModules {
             })
         ], searchUpdates: [updates(controller.$historyCommandEnabled)],
         shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
-    }
-
-    private static func calculator(_ model: Model) -> LauncherModule {
-        let exchange = CalculatorExchangeRates()
-        func result(_ query: String) -> (value: String?, detail: String)? {
-            if let conversion = CalculatorConversion(query) {
-                if let value = conversion.unitResult { return (value, "单位换算") }
-                if let value = exchange.result(conversion) { return value }
-                return (nil, "单位不支持或无法互相换算")
-            }
-            return calculatorResult(query).map { ($0, "回车复制结果") }
-        }
-        let id = CommandID(rawValue: "calculator")
-        let provider = LauncherModule.Provider(namespace: .exact(id), entries: { input in
-            guard let result = result(input.query), let value = result.value else { return [] }
-            return [Entry(id: id.rawValue, commandID: id, name: value, detail: result.detail,
-                          symbol: "equal", rankingKind: .calculator)]
-        }, resolve: { [weak model] command, origin in
-            guard command == id, origin != .shortcut, let query = model?.query, let value = result(query)?.value else { return nil }
-            return {
-                UtilityActions.copy(value, feedback: "已复制计算结果")
-            }
-        }, actions: { [weak model] row in
-            [LauncherAction(id: "calculator-copy", title: "复制结果", icon: "doc.on.doc", keys: ["↩"]) { [weak model] in
-                model?.runCommand(row.commandID, origin: .menu, usageKey: row.id)
-            }]
-        })
-        let hintID = CommandID(rawValue: "calculator-hint")
-        let hint = LauncherModule.Provider(namespace: .exact(hintID), entries: { input in
-            let query = input.query.trimmingCharacters(in: .whitespacesAndNewlines)
-            let outcome = result(query)
-            guard outcome?.value == nil,
-                  outcome != nil || query.folding(options: .widthInsensitive, locale: .current).hasPrefix("=") else { return [] }
-            let message = outcome?.detail ?? (query.count == 1 ? "例如 2 × (3 + 4)、5 km to mi、100 美元转人民币" : "表达式不完整或无法计算")
-            return [Entry(id: hintID.rawValue, commandID: hintID, name: message,
-                          detail: "计算器", symbol: "equal", rankingKind: .calculator)]
-        }, resolve: { _, _ in nil })
-        var module = LauncherModule(id: .init(rawValue: "keylane.calculator"), commands: [
-            command("calculator-help", "计算器", "在搜索框输入表达式", "equal.circle", ["Calculator", "计算"], execute: { [weak model] _ in
-                model?.query = "="
-            })
-        ], providers: [provider, hint], services: [.init(start: {}, stop: exchange.stop)], searchUpdates: [exchange.updates])
-        module.launcherShown = exchange.startPresenting
-        module.launcherHidden = exchange.endPresentation
-        return module
-    }
-
-    private static func calculatorResult(_ query: String) -> String? {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard Calculator.isExpression(trimmed), let value = Calculator.evaluate(trimmed, locale: .current) else { return nil }
-        return Calculator.format(value)
     }
 
     private static func updates<P: Publisher>(_ publisher: P) -> AnyPublisher<Void, Never>

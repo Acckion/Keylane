@@ -72,7 +72,6 @@ struct Launcher: View {
             ViewObservation.changes(model.$compactExpanded),
             ViewObservation.changes(model.footerFeedback.$current),
             ViewObservation.changes(model.$presentedLauncherHeight),
-            ViewObservation.changes(model.$compactFavorites),
             ViewObservation.changes(model.$favorites),
             ViewObservation.changes(model.$favoriteOrder),
             ViewObservation.changes(model.$aliases),
@@ -124,7 +123,7 @@ struct Launcher: View {
         guard selectionIsCurrent, let row = rows.first(where: { $0.commandID == id }) else { return }
         if rootScriptArguments != nil { model.scripts.cancelRootArguments() }
         selection.id = id
-        if !selectOnly { model.perform(row) }
+        if !selectOnly { performRootEntry(row) }
     }
 
     private var launcherSurface: some View {
@@ -186,10 +185,6 @@ struct Launcher: View {
             // Keep the search field interactive while the blur's full-window spacer is inert.
             if showsSearchBar { VStack(spacing: 0) {
                 searchBar
-                if compactSurface && model.compactFavorites {
-                    let favorites = model.compactFavoriteEntries
-                    if !favorites.isEmpty { compactFavoritesBar(favorites) }
-                }
                 Spacer(minLength: 0)
             } }
             if actions || appMenu || filterOpen { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
@@ -443,21 +438,6 @@ struct Launcher: View {
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
     }
 
-    private func compactFavoritesBar(_ favorites: [Entry]) -> some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 12) {
-                ForEach(favorites) { row in
-                    Button { model.perform(row) } label: {
-                        Group {
-                            if let artwork = model.launcherModules?.artwork(for: row) { artwork }
-                            else if row.id.hasSuffix(".app") { WorkspaceItemIcon(path: row.id) }
-                            else { Image(systemName: row.symbol).resizable().scaledToFit() }
-                        }.frame(width: 26, height: 26)
-                    }.buttonStyle(.plain).help(row.name).accessibilityLabel(row.name)
-                }
-            }.padding(.horizontal, 19).frame(height: 42)
-        }.scrollIndicators(.hidden)
-    }
     private var showsTypeFilter: Bool { showsFileResults || page?.typeFilter != nil }
 
     private var searchBar: some View {
@@ -744,6 +724,10 @@ struct Launcher: View {
         } else if page == nil, !appMenu, submenu == nil, argumentTarget == nil,
                   let entry = selectedEntry, entry.commandID.rawValue.hasPrefix("app:") {
             entryActions = model.applicationResultActions.shortcutActions(for: entry, model: model)
+        } else if page == nil, !appMenu, submenu == nil, argumentTarget == nil,
+                  let entry = selectedEntry, entry.id == CalculatorLauncherModule.resultID.rawValue,
+                  entry.detail != CalculatorLauncherModule.colorDetail {
+            entryActions = model.launcherModules?.actions(for: entry) ?? []
         } else {
             entryActions = []
         }
@@ -1017,7 +1001,15 @@ struct Launcher: View {
         }
         if let submit = page?.submit { submit(); return }
         if model.pageID != .root && !showsFileResults { model.pageID = .root; return }
-        if let row = selectedEntry { model.perform(row) }
+        if let row = selectedEntry { performRootEntry(row) }
+    }
+
+    private func performRootEntry(_ row: Entry) {
+        if row.id == CalculatorLauncherModule.resultID.rawValue, row.detail == CalculatorLauncherModule.colorDetail {
+            toggleMenu(application: false)
+        } else {
+            model.perform(row)
+        }
     }
 }
 

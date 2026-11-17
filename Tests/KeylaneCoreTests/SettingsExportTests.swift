@@ -9,6 +9,7 @@ final class SettingsExportTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("dark", forKey: "appearance")
         defaults.set(false, forKey: "compactFavorites")
+        defaults.set(false, forKey: "rootFileContentSearch")
         defaults.set(90, forKey: "launcherReturnDelay")
         defaults.set("secret", forKey: "apiKey")
         defaults.set("private note", forKey: "notes")
@@ -18,9 +19,9 @@ final class SettingsExportTests: XCTestCase {
         let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: SettingsExport.data(defaults: defaults)) as? [String: Any])
         XCTAssertEqual(decoded["schemaVersion"] as? Int, 1)
         let preferences = try XCTUnwrap(decoded["preferences"] as? [String: Any])
-        XCTAssertEqual(Set(preferences.keys), ["appearance", "compactFavorites", "launcherReturnDelay"])
+        XCTAssertEqual(Set(preferences.keys), ["appearance", "rootFileContentSearch", "launcherReturnDelay"])
         XCTAssertEqual(preferences["appearance"] as? String, "dark")
-        XCTAssertEqual(preferences["compactFavorites"] as? Bool, false)
+        XCTAssertEqual(preferences["rootFileContentSearch"] as? Bool, false)
         XCTAssertEqual(preferences["launcherReturnDelay"] as? Int, 90)
     }
 }
