@@ -29,15 +29,20 @@ final class ShelfTestPromise: DropShelfReceiving {
     }
 }
 final class ShelfTestMultiPromise: DropShelfReceiving {
-    var expectedCount: Int { 2 }
-    var names: [String] { ["ordered-one.txt", "ordered-two.txt"] }
+    let producerQueue = OperationQueue()
+    private var registered = false
+    var expectedCount: Int { 1 } // Legacy source: one advertised type, two delivered files.
+    var names: [String] { registered ? ["ordered-one.txt", "ordered-two.txt"] : [] }
     func receive(at destination: URL, queue: OperationQueue, reader: @escaping (URL, Error?) -> Void) {
+        registered = true
         for (index, name) in names.enumerated() {
-            queue.addOperation {
+            producerQueue.addOperation {
                 Thread.sleep(forTimeInterval: index == 0 ? 0.3 : 0.05)
                 let file = destination.appendingPathComponent(name)
-                do { try Data(name.utf8).write(to: file, options: .withoutOverwriting); reader(file, nil) }
-                catch { reader(file, error) }
+                do {
+                    try Data(name.utf8).write(to: file, options: .withoutOverwriting)
+                    queue.addOperation { reader(file, nil) }
+                } catch { queue.addOperation { reader(file, error) } }
             }
         }
     }
@@ -48,10 +53,10 @@ final class ShelfTestDragInfo: NSObject, NSDraggingInfo {
     let draggingPasteboard: NSPasteboard
     var draggingSource: Any? { nil }
     var draggingSourceOperationMask: NSDragOperation { .copy }
-    var draggingLocation: NSPoint { .zero }
+    var draggingLocation: NSPoint = .zero
     var draggedImageLocation: NSPoint { .zero }
     var draggedImage: NSImage? { nil }
-    var draggingSequenceNumber: Int { 4321 }
+    var draggingSequenceNumber = 4321
     var draggingFormation: NSDraggingFormation = .none
     var animatesToDestination = false
     var numberOfValidItemsForDrop = 1
@@ -93,7 +98,7 @@ if CommandLine.arguments.contains("--dark") { window.appearance = NSAppearance(n
 if CommandLine.arguments.contains("--light") { window.appearance = NSAppearance(named: .aqua) }
 func expect(_ value: @autoclosure () -> Bool, _ label: String) { precondition(value(), label); print("PASS " + label) }
 if !CommandLine.arguments.contains("--empty") {
-expect(abs(window.frame.width - window.frame.height) < 1, "compact shelf is square")
+expect(abs(window.frame.width - window.frame.height) < 1, "compact shelf is square: \(window.frame)")
 expect(!window.styleMask.contains(.titled), "no standard titlebar or traffic lights")
 let board = NSPasteboard(name: .init("org.keylane.test.shelf." + UUID().uuidString))
 board.clearContents(); board.writeObjects([source as NSURL])
@@ -330,6 +335,7 @@ let collisionProviders = [
     ShelfTestPromise("invoice.pdf", contents: "third")
 ]
 expect(collisionWindow.receivePromises(collisionProviders), "same-name promise batch begins")
+expect(collisionProviders.allSatisfy { $0.destination != nil }, "every receiver is registered synchronously before acceptance returns")
 for _ in 0..<100 where shelves.store!.shelf(collisionWindow.shelfID)!.items.count < 3 { drain(0.05) }
 let collisionItems = shelves.store!.shelf(collisionWindow.shelfID)!.items
 expect(collisionItems.count == 3 && collisionItems.allSatisfy { $0.title == "invoice.pdf" }, "same-name successes survive partial failure with original names")
@@ -342,11 +348,12 @@ for _ in 0..<100 where shelves.store!.shelf(collisionWindow.shelfID)!.items.coun
 expect(Array(shelves.store!.shelf(collisionWindow.shelfID)!.items.suffix(2)).map(\.title) == ["ordered-one.txt", "ordered-two.txt"], "out-of-order callbacks within a receiver retain declared order")
 let cancelledProviders = [ShelfTestPromise("cancel.pdf", delay: 0.05), ShelfTestPromise("cancel.pdf", delay: 0.4), ShelfTestPromise("cancel.pdf")]
 expect(collisionWindow.receivePromises(cancelledProviders), "multi-receiver cancellation begins")
-for _ in 0..<100 where cancelledProviders[1].destination == nil { drain(0.01) }
-expect(cancelledProviders[1].destination != nil, "cancellation occurs after an earlier receiver has staged its result")
+expect(cancelledProviders.allSatisfy { $0.destination != nil }, "cancelable receivers are all registered within acceptance")
+for _ in 0..<100 where (try? FileManager.default.contentsOfDirectory(atPath: incoming.path).contains { $0.hasSuffix("-staged") }) != true { drain(0.01) }
+expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).contains { $0.hasSuffix("-staged") }) == true, "cancellation occurs after an earlier receiver has staged its result")
 collisionWindow.cancelImports(); drain(0.8)
 expect(shelves.store!.shelf(collisionWindow.shelfID)!.items.count == 5, "cancelled staged results never enter the shelf")
-expect(cancelledProviders[2].destination == nil, "cancellation does not start unrequested remaining receivers")
+expect(cancelledProviders[2].destination != nil, "cancellation revokes commits without assuming native writes can be stopped")
 expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty) == true, "collision success failure and cancellation clean receiving and staging directories")
 collisionWindow.close()
 let droppingWindow = shelves.createForDrag()!
@@ -363,6 +370,19 @@ shelves.finishDragActivation()
 expect(droppingWindow.isVisible && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "completed file drop keeps the populated automatic shelf")
 expect(!droppingWindow.receivingDrag, "completed drop clears pending destination state")
 expect(dropSurface.performDragOperation(dropInfo) && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "repeated perform callback does not duplicate the file")
+droppingWindow.contentView!.layoutSubtreeIfNeeded()
+expect(dropSurface.frame.size == droppingWindow.contentView!.bounds.size, "drop surface fills the entire square card")
+for x in [0.15, 0.5, 0.85] {
+    for y in [0.1, 0.5, 0.9] {
+        dropInfo.draggingLocation = NSPoint(x: droppingWindow.frame.width * x, y: droppingWindow.frame.height * y)
+        dropInfo.draggingSequenceNumber += 1
+        expect(droppingWindow.draggingEntered(dropInfo) == .copy && droppingWindow.prepareForDragOperation(dropInfo), "window fallback accepts top middle and bottom card regions")
+        expect(droppingWindow.performDragOperation(dropInfo), "window fallback receives across the card including footer controls")
+        droppingWindow.concludeDragOperation(dropInfo); droppingWindow.draggingEnded(dropInfo)
+    }
+}
+dropInfo.draggingLocation = NSPoint(x: -5, y: -5)
+expect(droppingWindow.draggingEntered(dropInfo).isEmpty, "window fallback rejects locations outside the card")
 let abandonedWindow = shelves.createForDrag()!
 let abandonedSurface = (abandonedWindow.contentView as! NSGlassEffectView).contentView as! DropShelfDropView
 let abandonedInfo = ShelfTestDragInfo(window: abandonedWindow, board: board)
@@ -371,6 +391,37 @@ abandonedSurface.draggingExited(abandonedInfo); abandonedSurface.draggingEnded(a
 shelves.finishDragActivation()
 expect(!abandonedWindow.isVisible && droppingWindow.isVisible, "cancelled empty drop closes only the empty shelf")
 droppingWindow.close()
+final class ShelfSamplePaper: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.setFill(); bounds.fill()
+        ("KEYLANE\n\nSynthetic document preview\n\n1. Native file icon\n2. Original page proportions\n3. Independent local fixture" as NSString).draw(in: bounds.insetBy(dx: 45, dy: 60), withAttributes: [.font: NSFont.systemFont(ofSize: 24), .foregroundColor: NSColor.black])
+    }
+}
+let paperView = ShelfSamplePaper(frame: NSRect(x: 0, y: 0, width: 595, height: 842))
+let paperURLs = (1...2).map { fixtures.appendingPathComponent("preview-paper-\($0).pdf") }
+for url in paperURLs { try paperView.dataWithPDF(inside: paperView.bounds).write(to: url) }
+let previewFolder = fixtures.appendingPathComponent("Preview Folder", isDirectory: true)
+try FileManager.default.createDirectory(at: previewFolder, withIntermediateDirectories: true)
+let visualWindow = shelves.create()!
+for urls in [[paperURLs[0]], paperURLs, [previewFolder] + paperURLs] {
+    try shelves.store!.remove(visualWindow.shelfID)
+    for url in urls { try shelves.store!.addFile(url, to: visualWindow.shelfID) }
+    visualWindow.refresh(); drain(0.8)
+    visualWindow.contentView!.layoutSubtreeIfNeeded()
+    let visualPreview = descendantViews(visualWindow.contentView!).compactMap { $0 as? DropShelfPreview }.first!
+    let layers = visualPreview.subviews.compactMap { $0 as? NSImageView }.filter { !$0.isHidden && $0.image != nil }
+    expect(layers.count == urls.count, "one two and three items render distinct native preview layers")
+    expect(visualWindow.frame.width == visualWindow.frame.height, "native stacked preview preserves square shelf geometry")
+    let bitmap = visualPreview.bitmapImageRepForCachingDisplay(in: visualPreview.bounds)!
+    visualPreview.cacheDisplay(in: visualPreview.bounds, to: bitmap)
+    let rendered = NSImage(size: visualPreview.bounds.size)
+    rendered.lockFocus()
+    NSColor(calibratedWhite: 0.13, alpha: 1).setFill(); NSRect(origin: .zero, size: rendered.size).fill()
+    bitmap.draw(in: NSRect(origin: .zero, size: rendered.size))
+    rendered.unlockFocus()
+    try NSBitmapImageRep(data: rendered.tiffRepresentation!)!.representation(using: .png, properties: [:])!.write(to: root.appendingPathComponent("native-preview-\(urls.count).png"))
+}
+visualWindow.close()
 print("PASS production shelf integration (synthetic pasteboard, not physical drag acceptance)")
 }
 print("FIXTURE_ROOT " + root.path)

@@ -233,7 +233,7 @@ final class DropShelfImport {
         directory = root.appendingPathComponent("Incoming", isDirectory: true).appendingPathComponent(id.uuidString, isDirectory: true)
         stagingDirectory = root.appendingPathComponent("Incoming", isDirectory: true).appendingPathComponent(id.uuidString + "-staged", isDirectory: true)
         remaining = count
-        queue.maxConcurrentOperationCount = 2
+        queue.maxConcurrentOperationCount = 1
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     }
     func finished() {
@@ -252,10 +252,7 @@ final class DropShelfImport {
         try FileManager.default.moveItem(at: url, to: target)
         return target
     }
-    func discardPartial(_ url: URL) {
-        guard (try? validate(url)) != nil else { return }
-        try? FileManager.default.removeItem(at: url)
-    }
+
 }
 
 final class DropShelfTable: NSTableView {
@@ -269,7 +266,7 @@ final class DropShelfTable: NSTableView {
     }
 }
 
-final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSDraggingDestination {
     let shelfID: UUID
     let store: DropShelfStore
     weak var controller: DropShelfController?
@@ -301,7 +298,19 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private var expanded = false
     private var detailWidth: NSLayoutConstraint?
     private var thumbnailKey: String?
-    private var thumbnailRequest: QLThumbnailGenerator.Request?
+    private var thumbnailRequests: [QLThumbnailGenerator.Request] = []
+    private var previewImages: [NSImage] = []
+    private var dropSurface: DropShelfDropView? { (contentView as? NSGlassEffectView)?.contentView as? DropShelfDropView }
+    func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard contentView?.bounds.contains(sender.draggingLocation) == true else { dropSurface?.draggingExited(sender); return [] }
+        return dropSurface?.draggingEntered(sender) ?? []
+    }
+    func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+    func draggingExited(_ sender: NSDraggingInfo?) { dropSurface?.draggingExited(sender) }
+    func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { dropSurface?.prepareForDragOperation(sender) ?? false }
+    func performDragOperation(_ sender: NSDraggingInfo) -> Bool { dropSurface?.performDragOperation(sender) ?? false }
+    func concludeDragOperation(_ sender: NSDraggingInfo?) { dropSurface?.concludeDragOperation(sender) }
+    func draggingEnded(_ sender: NSDraggingInfo) { dropSurface?.draggingEnded(sender) }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.contains(.command), key(event) { return true }
         return super.performKeyEquivalent(with: event)
@@ -310,6 +319,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     init(id: UUID, store: DropShelfStore, controller: DropShelfController) {
         shelfID = id; self.store = store; self.controller = controller
         super.init(contentRect: NSRect(x: 0, y: 0, width: 210, height: 210), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        // Child controls (including the filename capsule) are not registered destinations.
+        // Register the window as the fallback for the entire card, not only its preview.
+        registerForDraggedTypes(DropShelfController.types)
         title = "Keylane · 暂存架"; isReleasedWhenClosed = false; delegate = self
         level = .floating; collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         hidesOnDeactivate = false; isMovableByWindowBackground = true
@@ -320,6 +332,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         effect.layer?.masksToBounds = true; effect.layer?.borderWidth = 1
         effect.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
         let surface = DropShelfDropView(frame: .zero); effect.contentView = surface; contentView = effect
+        surface.frame = effect.bounds; surface.autoresizingMask = [.width, .height]
         surface.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
         surface.dragActivity = { [weak self] in self?.receivingDrag = $0 }
         configureRound(closeControl, symbol: "xmark", label: "关闭暂存架", action: #selector(closeShelf))
@@ -448,32 +461,37 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     }
     private func updateCompactPreview() {
         filename.title = rows.isEmpty ? "暂存架" : rows.count == 1 ? rows[0].title : contentTitle
+        filename.image = rows.isEmpty ? nil : NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
+        filename.imagePosition = .imageTrailing
         filename.toolTip = rows.map(\.title).joined(separator: "\n")
         preview.placeholder.isHidden = !rows.isEmpty
-        let icons = rows.prefix(3).compactMap { item -> NSImage? in
-            guard let url = try? store.resolve(item) else { return NSImage(systemSymbolName: "doc.text", accessibilityDescription: nil) }
-            return NSWorkspace.shared.icon(forFile: url.path)
-        }
-        preview.setBackingImages(icons)
-        guard let item = rows.first else { preview.imageView.image = nil; thumbnailKey = nil; return }
-        let key = item.id.uuidString + item.title
+        let items = Array(rows.prefix(3))
+        let key = items.map { $0.id.uuidString + $0.title }.joined(separator: ":")
         guard key != thumbnailKey else { return }
         thumbnailKey = key
-        if let thumbnailRequest { QLThumbnailGenerator.shared.cancel(thumbnailRequest) }
-        preview.imageView.image = NSImage(systemSymbolName: item.kind == .link ? "link" : item.kind == .text ? "doc.text" : "doc", accessibilityDescription: item.title)
-        do {
-            guard let url = try store.resolve(item) else { return }
-            let access = DropShelfFileAccess(url)
-            let request = QLThumbnailGenerator.Request(fileAt: url, size: NSSize(width: 110, height: 90), scale: backingScaleFactor, representationTypes: .all)
-            thumbnailRequest = request
-            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self, access] representation, _ in
-                DispatchQueue.main.async {
-                    _ = access
-                    guard let self, self.thumbnailKey == key, let representation else { return }
-                    self.preview.imageView.image = representation.nsImage
+        thumbnailRequests.forEach { QLThumbnailGenerator.shared.cancel($0) }; thumbnailRequests.removeAll()
+        previewImages = items.map { item in
+            if let url = try? store.resolve(item) { return NSWorkspace.shared.icon(forFile: url.path) }
+            return NSImage(systemSymbolName: item.kind == .link ? "link" : "doc.text", accessibilityDescription: item.title)!
+        }
+        preview.setImages(previewImages)
+        for (index, item) in items.enumerated() {
+            do {
+                guard let url = try store.resolve(item) else { continue }
+                let access = DropShelfFileAccess(url)
+                let request = QLThumbnailGenerator.Request(fileAt: url, size: NSSize(width: 140, height: 140), scale: backingScaleFactor, representationTypes: .all)
+                request.iconMode = item.kind != .image
+                thumbnailRequests.append(request)
+                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self, access] representation, _ in
+                    DispatchQueue.main.async {
+                        _ = access
+                        guard let self, self.thumbnailKey == key, let representation else { return }
+                        self.previewImages[index] = representation.nsImage
+                        self.preview.setImages(self.previewImages)
+                    }
                 }
-            }
-        } catch { message(error.localizedDescription, failed: true) }
+            } catch { message(error.localizedDescription, failed: true) }
+        }
     }
     private func beginCompactDrag(_ event: NSEvent) -> [NSDraggingItem] {
         var items: [NSDraggingItem] = []
@@ -554,7 +572,13 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             guard let url = try? store.resolve(item) else { return false }
             return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
         }
-        return "\(rows.count) 个" + (folders ? "文件夹" : "项目")
+        if folders { return "\(rows.count) 个文件夹" }
+        let documents = !rows.isEmpty && rows.allSatisfy { item in
+            if item.kind == .text { return true }
+            guard item.kind == .file, let type = UTType(filenameExtension: (item.title as NSString).pathExtension) else { return false }
+            return type.conforms(to: .text) || type.conforms(to: .pdf)
+        }
+        return "\(rows.count) " + (documents ? "个文档" : "项")
     }
     @objc private func disclosureAction() { if expanded { showShelfOptions() } else { toggleDetails() } }
     @objc private func changeViewMode() {
@@ -658,63 +682,59 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     func receivePromises(_ promises: [DropShelfReceiving]) -> Bool {
         guard !promises.isEmpty else { return false }
         do {
-            let count = promises.reduce(0) { $0 + max(1, $1.expectedCount) }
+            let estimates = promises.map { max(1, $0.expectedCount) }
+            let count = estimates.reduce(0, +)
             guard count + rows.count <= 1000 else { throw DropShelfStore.Failure.limit }
             let batch = try DropShelfImport(root: store.directory, count: count)
             batches[batch.id] = batch; refresh(); message("正在接收文件…")
-            receivePromise(promises, position: 0, batch: batch)
-            return true
-        } catch { message(error.localizedDescription, failed: true); return false }
-    }
-    private func receivePromise(_ promises: [DropShelfReceiving], position: Int, batch: DropShelfImport) {
-        let receiver = promises[position]
-        batch.remaining = max(1, receiver.expectedCount)
-        // AppKit requires the same destination for every receiver. Start the next receiver
-        // only after the current receiver's files have been isolated from that destination.
-        receiver.receive(at: batch.directory, queue: batch.queue) { [weak self, batch, receiver] url, error in
-            DispatchQueue.main.async {
-                batch.results[position, default: []].append((url, error))
-                batch.remaining -= 1
-                guard batch.remaining == 0 else { return }
-                guard let self, batch.valid else { batch.finished(); return }
-                batch.results[position] = batch.results[position, default: []].map { file, error in
+            // Register every request before the native accepting callback returns, always
+            // using one destination. Freeze each result inside its coordinated reader,
+            // before returning control to another writer of the same pathname.
+            for (position, receiver) in promises.enumerated() {
+                receiver.receive(at: batch.directory, queue: batch.queue) { [weak self, batch, receiver] url, error in
+                    let result: (URL, Error?)
                     do {
                         if let error { throw error }
-                        return (try batch.capture(file), nil)
+                        result = (try batch.capture(url), nil)
                     } catch {
-                        batch.discardPartial(file)
-                        return (file, error)
+                        // An error URL may point to nothing, partial data, or an unrelated
+                        // result. Never inspect/delete it; discard the private batch at end.
+                        result = (batch.directory, error)
+                    }
+                    DispatchQueue.main.async {
+                        batch.results[position, default: []].append(result)
+                        batch.remaining -= 1
+                        guard batch.remaining == 0 else { return }
+                        defer {
+                            batch.finished()
+                            self?.batches.removeValue(forKey: batch.id)
+                            self?.refresh()
+                        }
+                        guard let self, batch.valid else { return }
+                        var accepted = 0
+                        var failures: [String] = []
+                        for index in promises.indices {
+                            let names = promises[index].names
+                            let results = (batch.results[index] ?? []).sorted {
+                                (names.firstIndex(of: $0.0.lastPathComponent) ?? 0) < (names.firstIndex(of: $1.0.lastPathComponent) ?? 0)
+                            }
+                            for (file, error) in results {
+                                do {
+                                    if let error { throw error }
+                                    if try self.store.adoptPromise(file, from: batch.stagingDirectory, to: self.shelfID) { accepted += 1 }
+                                } catch { failures.append(error.localizedDescription) }
+                            }
+                        }
+                        _ = receiver
+                        self.message("已接收 \(accepted) 项" + (failures.isEmpty ? "" : "；" + failures.joined(separator: "；")), failed: !failures.isEmpty)
                     }
                 }
-                if position + 1 < promises.count {
-                    self.receivePromise(promises, position: position + 1, batch: batch)
-                    return
-                }
-                defer {
-                    batch.finished()
-                    self.batches.removeValue(forKey: batch.id)
-                    self.refresh()
-                }
-                var accepted = 0
-                var failures: [String] = []
-                // Complete a batch in source order, even if providers finish out of order.
-                for index in promises.indices {
-                    let names = promises[index].names
-                    let results = (batch.results[index] ?? []).sorted {
-                        (names.firstIndex(of: $0.0.lastPathComponent) ?? 0) < (names.firstIndex(of: $1.0.lastPathComponent) ?? 0)
-                    }
-                    for (file, error) in results {
-                        do {
-                            if let error { throw error }
-                            if try self.store.adoptPromise(file, from: batch.stagingDirectory, to: self.shelfID) { accepted += 1 }
-                        } catch { failures.append(error.localizedDescription) }
-                    }
-                }
-                _ = receiver // Keep each provider alive through its asynchronous callback.
-                self.batches.removeValue(forKey: batch.id)
-                self.message("已接收 \(accepted) 项" + (failures.isEmpty ? "" : "；" + failures.joined(separator: "；")), failed: !failures.isEmpty)
+                // Legacy sources may advertise one file type but several names. AppKit
+                // only makes fileNames available after the request has been registered.
+                batch.remaining += max(estimates[position], receiver.names.count) - estimates[position]
             }
-        }
+            return true
+        } catch { message(error.localizedDescription, failed: true); return false }
     }
     @objc func cancelImports() {
         for batch in batches.values { batch.valid = false }
@@ -861,7 +881,11 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         if status.isHidden == show { status.isHidden = !show; resizeCard() }
         filename.toolTip = text
     }
-    func windowWillClose(_ notification: Notification) { cancelImports(); releaseAccess(); FilePreview.shared.dismiss(owner: .dropShelf(shelfID)); controller?.closed(self) }
+    func windowWillClose(_ notification: Notification) {
+        thumbnailKey = nil
+        thumbnailRequests.forEach { QLThumbnailGenerator.shared.cancel($0) }; thumbnailRequests.removeAll()
+        cancelImports(); releaseAccess(); FilePreview.shared.dismiss(owner: .dropShelf(shelfID)); controller?.closed(self)
+    }
 }
 
 private final class DropShelfFileAccess {

@@ -41,7 +41,8 @@ class DropShelfDropView: NSView {
 final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
     let imageView = NSImageView()
     private let backImages = [NSImageView(), NSImageView()]
-    func setBackingImages(_ images: [NSImage]) {
+    func setImages(_ images: [NSImage]) {
+        imageView.image = images.first
         for (index, view) in backImages.enumerated() { view.image = images.count > index + 1 ? images[index + 1] : nil; view.isHidden = view.image == nil }
     }
     let placeholder = NSTextField(wrappingLabelWithString: "拖放到此处")
@@ -59,20 +60,26 @@ final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
     var shortcut: ((NSEvent) -> Bool)?
     override init(frame: NSRect) {
         super.init(frame: frame)
-        imageView.imageScaling = .scaleProportionallyDown
+        imageView.imageScaling = .scaleProportionallyUpOrDown
+        addSubview(imageView); imageView.translatesAutoresizingMaskIntoConstraints = false
         placeholder.alignment = .center; placeholder.textColor = .secondaryLabelColor; placeholder.font = .systemFont(ofSize: 13)
         for (index, image) in backImages.enumerated() {
-            image.imageScaling = .scaleProportionallyDown; addSubview(image); image.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([image.widthAnchor.constraint(equalToConstant: 100), image.heightAnchor.constraint(equalToConstant: 85), image.centerXAnchor.constraint(equalTo: centerXAnchor, constant: index == 0 ? -4 : 4), image.centerYAnchor.constraint(equalTo: centerYAnchor, constant: 3)])
-            image.frameCenterRotation = index == 0 ? 7 : -6
+            image.imageScaling = .scaleProportionallyUpOrDown
+            addSubview(image, positioned: .below, relativeTo: index == 0 ? imageView : backImages[0]); image.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([image.widthAnchor.constraint(equalTo: imageView.widthAnchor), image.heightAnchor.constraint(equalTo: imageView.heightAnchor), image.centerXAnchor.constraint(equalTo: centerXAnchor, constant: index == 0 ? -4 : 5), image.centerYAnchor.constraint(equalTo: centerYAnchor, constant: index == 0 ? 3 : 5)])
+            image.frameCenterRotation = index == 0 ? -4 : 5
         }
-        for view in [imageView, placeholder] { addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false }
+        addSubview(placeholder); placeholder.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             imageView.centerXAnchor.constraint(equalTo: centerXAnchor), imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            imageView.widthAnchor.constraint(equalToConstant: 100), imageView.heightAnchor.constraint(equalToConstant: 85),
+            imageView.widthAnchor.constraint(equalToConstant: 110),
+            imageView.heightAnchor.constraint(lessThanOrEqualToConstant: 104),
+            imageView.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor, constant: -8),
             placeholder.centerXAnchor.constraint(equalTo: centerXAnchor), placeholder.centerYAnchor.constraint(equalTo: centerYAnchor),
             placeholder.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -12)
         ])
+        let imageHeight = imageView.heightAnchor.constraint(equalToConstant: 104)
+        imageHeight.priority = .defaultHigh; imageHeight.isActive = true
         setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel("暂存内容预览，可拖入或拖出")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
