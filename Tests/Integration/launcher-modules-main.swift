@@ -5,6 +5,20 @@ import Foundation
 import SwiftUI
 import KeylaneCore
 
+let formReturn = LauncherPage.ReturnBindings(primary: .command)
+precondition(formReturn.reserves(.init(.return, modifiers: .command)))
+precondition(!formReturn.reserves(.init(.return, modifiers: [])))
+precondition(!formReturn.reserves(.init("r", modifiers: .command)))
+precondition(LauncherPage.ReturnKey.command.shortcut.launcherKeycaps == ["⌘", "↩"])
+
+let clipboardReturns = LauncherPage.ReturnBindings(alternates: [
+    .command: .init(dismissMenu: true) {},
+    .option: .init(dismissMenu: true) {}
+])
+precondition(clipboardReturns.reserves(.init(.return, modifiers: .command)))
+precondition(clipboardReturns.reserves(.init(.return, modifiers: .option)))
+precondition(!clipboardReturns.reserves(.init(.return, modifiers: [.command, .option])))
+
 let pageID = PageID(rawValue: "Clipboard")
 let commandID = CommandID(rawValue: "clipboard")
 let moduleID = ModuleID(rawValue: "keylane.clipboard")

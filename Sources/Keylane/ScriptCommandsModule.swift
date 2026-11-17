@@ -291,7 +291,7 @@ enum ScriptCommandsModule {
                 return AnyView(ScriptCreationPage(controller: controller, back: model.goBackInLauncher,
                                                   cancel: model.cancelLauncherPage))
             },
-            submit: controller.saveDraft, shortcutSubmit: controller.saveDraft,
+            submit: controller.saveDraft, returnBindings: .init(primary: .command),
             primaryTitle: { "创建脚本" },
             primaryEnabled: { controller.canSaveDraft },
             updates: Publishers.Merge(

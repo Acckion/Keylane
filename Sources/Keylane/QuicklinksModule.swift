@@ -173,7 +173,7 @@ enum QuicklinksModule {
                 }
             },
             back: { [weak model] in model?.pageID = controller.editorReturnPage },
-            submit: save, shortcutSubmit: save, primaryTitle: { "保存快捷链接" },
+            submit: save, returnBindings: .init(primary: .command), primaryTitle: { "保存快捷链接" },
             badgeTitle: {
                 controller.links.contains { $0.id == controller.draft?.id } ? "编辑快捷链接" : "创建快捷链接"
             }
@@ -198,7 +198,7 @@ enum QuicklinksModule {
                 if model?.pageID == argumentsID { model?.pageID = argumentsReturn }
             },
             back: { [weak model] in model?.pageID = argumentsReturn },
-            submit: submit, shortcutSubmit: submit, primaryTitle: { "打开链接" }
+            submit: submit, returnBindings: .init(primary: .command), primaryTitle: { "打开链接" }
         )
 
         let commands: [LauncherModule.Command] = Command.allCases.map { command in
