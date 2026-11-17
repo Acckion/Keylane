@@ -859,7 +859,7 @@ struct Launcher: View {
         guard let row = selectedEntry else { return [] }
         if row.isFallback {
             return [
-                MenuAction(id: "run-fallback", title: "运行备选命令", icon: "return", keys: ["↩"]) {
+                MenuAction(id: "run-fallback", title: "运行备选命令", icon: "return", shortcut: .init(.return, modifiers: [])) {
                     model.perform(row)
                 },
                 MenuAction(id: "manage-fallback", title: "管理备选命令…", icon: "gearshape", group: 1) {
