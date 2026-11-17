@@ -968,7 +968,7 @@ package,interface,status
 "@raycast/api","pasteText","partial"
 "@raycast/api","popToRoot","partial"
 "@raycast/api","preferences","partial"
-"@raycast/api","randomId","partial"
+"@raycast/api","randomId","supported"
 "@raycast/api","removeLocalStorageItem","supported"
 "@raycast/api","render","missing"
 "@raycast/api","setLocalStorageItem","partial"

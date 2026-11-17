@@ -34,7 +34,7 @@
 
 已审阅视图命令使用独立的 4 KiB 缓存快照，按扩展目录原子保存。来宾仅能读写当前扩展的快照；敏感提交不携带快照。扩展内导航最多四层，返回时恢复父页面的搜索词与筛选项。隔离回放会重建页面和动作，禁止回放中的宿主操作和持久化写入，包括派生的异步回调。
 
-旧版 `ListItem`、`ListSection`、`FormCheckbox`、`FormDropdown`、`FormDropdownItem`、`CopyToClipboardAction`、`OpenAction` 和 `OpenInBrowserAction` 直接复用对应的现有组件及能力边界。已审阅来宾的 `randomId` 默认生成 21 位 URL 安全随机字符串，允许指定 0 到 4096 位。旧版 Raycast 运行时的具体格式仍待核对。
+旧版 `ListItem`、`ListSection`、`FormCheckbox`、`FormDropdown`、`FormDropdownItem`、`CopyToClipboardAction`、`OpenAction` 和 `OpenInBrowserAction` 直接复用对应的现有组件及能力边界。`randomId(size?)` 按 1.27.0 公开声明生成 URL 安全随机字符串，默认 21 位，显式长度由 Node 的内存与字符串容量限制。扩展虚拟机的内存及输出配额仍独立生效。
 
 旧版 `FormSeparator`、`FormTextArea`、`FormTextField` 和 `ActionPanelItem` 复用已审阅视图的表单与动作组件。`Alert.ActionStyle` 和 `AlertActionStyle` 在视图与无界面来宾中提供相同的样式值，沿用现有确认授权。
 
