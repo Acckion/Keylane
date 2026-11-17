@@ -33,6 +33,7 @@ struct Launcher: View {
     @State private var fileType = "all"
     private enum Menu { case application, actions, filter, sort }
     @State private var menu: Menu?
+    @State private var escapeMonitor: Any?
     private var actions: Bool { menu == .actions }
     private var appMenu: Bool { menu == .application }
     private var filterOpen: Bool { menu == .filter || menu == .sort }
@@ -272,9 +273,14 @@ struct Launcher: View {
         .onAppear {
             updatePresentation(visible: (NSApp.delegate as? Delegate)?.window?.isVisible == true)
             focusToken += 1
+            monitorEscapeWithoutSearchField()
         }
         .onChange(of: model.windowMode) { _, _ in focusToken += 1 }
-        .onDisappear { updatePresentation(visible: false) }
+        .onDisappear {
+            if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+            escapeMonitor = nil
+            updatePresentation(visible: false)
+        }
         .onExitCommand { if !SearchField.isComposing { escape() } }
         .onReceive(model.activePageUpdates) { _ in
             if launcherVisible { pageRevision &+= 1 }
@@ -440,12 +446,27 @@ struct Launcher: View {
             selection.move(by: delta, in: rows, identifiedBy: \.commandID)
         }
     }
+    private func monitorEscapeWithoutSearchField() {
+        guard escapeMonitor == nil else { return }
+        // Read-only pages have no search editor to receive AppKit's Cancel command.
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 53,
+                  event.modifierFlags.intersection([.command, .option, .shift, .control]).isEmpty,
+                  let window = (NSApp.delegate as? Delegate)?.window, window.isKeyWindow,
+                  event.window == nil || event.window === window,
+                  page?.showsSearchField == false, menu == nil else { return event }
+            if !event.isARepeat { escape() }
+            return nil
+        }
+    }
+
     private func escape() {
         if submenu != nil { dismissSubmenu(); return }
         if rootScriptArguments != nil { cancelRootScriptArguments(); return }
         if argumentTarget != nil { dismissArgumentEditor(); focusToken += 1; return }
         if actions || appMenu || filterOpen { closeMenus() }
-        else if model.pageID != .root && model.launcherEscapeBehavior == .backOrClose {
+        else if model.pageID != .root,
+                page?.showsSearchField == false || model.launcherEscapeBehavior == .backOrClose {
             if let back = page?.back { back() } else { model.pageID = .root }
         }
         else { (NSApp.delegate as? Delegate)?.hideLauncher() }
