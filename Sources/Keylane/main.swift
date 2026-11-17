@@ -191,6 +191,28 @@ final class Model: ObservableObject {
     private var appIdentities: [String: ApplicationIdentity] = [:] {
         didSet { applicationEntries = nil; commandSearch.invalidate() }
     }
+    @Published var fallbackCommandIDs = Model.savedFallbackCommands() {
+        didSet {
+            UserDefaults.standard.set(fallbackCommandIDs, forKey: "launcherFallbackCommandIDs")
+            rootSearchUpdates.send()
+        }
+    }
+    private var fallbackPageQuery: (page: PageID, query: String)?
+
+    private static func savedFallbackCommands(from preferences: UserDefaults = .standard) -> [String] {
+        if let ids = preferences.stringArray(forKey: "launcherFallbackCommandIDs") {
+            var seen = Set<String>()
+            return ids.filter { !$0.isEmpty && seen.insert($0).inserted }
+        }
+        guard let legacy = preferences.string(forKey: "scriptCommands.fallback"), !legacy.isEmpty else { return [] }
+        return [legacy]
+    }
+
+    func takeFallbackQuery(for page: PageID) -> String? {
+        defer { fallbackPageQuery = nil }
+        return fallbackPageQuery?.page == page ? fallbackPageQuery?.query : nil
+    }
+
     @Published var favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
     @Published private(set) var favoriteOrder = UserDefaults.standard.stringArray(forKey: "favoriteOrder") ?? []
 
@@ -217,7 +239,7 @@ final class Model: ObservableObject {
         guard !favorites.isEmpty else { return [] }
         if pageID == .root, query.isEmpty { return commands.filter { favorites.contains($0.id) }.map(\.id) }
         let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: aliases, favorites: favorites, usage: usage)
-        let visible = Set(launcherModules?.candidates(for: input).filter { !$0.isFallback }.map(\.id) ?? [])
+        let visible = Set(launcherModules?.candidates(for: input).map(\.id) ?? [])
         return orderedFavoriteIDs.filter { visible.contains($0) }
     }
 
@@ -397,7 +419,23 @@ final class Model: ObservableObject {
     func addRoot() { let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; if panel.runModal() == .OK, let url = panel.url, !roots.contains(url.path) { roots.append(url.path); reloadCatalog() } }
     func setAlias(_ id: String, value: String) { aliases[id] = value.trimmingCharacters(in: .whitespacesAndNewlines); UserDefaults.standard.set(aliases, forKey: "aliases") }
     func perform(_ entry: Entry) {
-        runCommand(entry.commandID, origin: .search, usageKey: entry.id)
+        guard let fallbackQuery = entry.fallbackQuery else {
+            runCommand(entry.commandID, origin: .search, usageKey: entry.id)
+            return
+        }
+        guard pageID == .root, fallbackQuery == query,
+              commands.contains(where: { $0.id == entry.id && $0.fallbackQuery == fallbackQuery }) else { return }
+        launcherModules?.invokeFallback(entry.commandID, query: fallbackQuery) { destination in
+            switch destination {
+            case .action: break
+            case let .page(page):
+                guard launcherModules?.page(page) != nil else { return }
+                fallbackPageQuery = (page, fallbackQuery)
+                openPage(page, origin: .search)
+            case let .settings(page):
+                openSettings(page: page)
+            }
+        }
     }
     func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil, arguments: [String] = []) {
         let queryKey = usageKey != nil && pageID == .root && origin != .shortcut ? SearchUsageHistory.queryKey(query) : nil
@@ -651,7 +689,10 @@ final class Model: ObservableObject {
         let input = LauncherCommandSearch.Input(query: query, page: pageID,
                                                 aliases: aliases, favorites: favorites, usage: usage,
                                                 favoriteOrder: orderedFavoriteIDs, history: pageID == .root ? searchUsage : .init(),
-                                                sensitivity: rootSearchSensitivity, namespace: namespace)
+                                                sensitivity: rootSearchSensitivity, namespace: namespace,
+                                                fallbackOrder: fallbackCommandIDs,
+                                                allowsFallback: !searchesFilesHere ||
+                                                    (!fileSearch.isSearching && fileSearch.lastPublishedQuery == query))
         return commandSearch.results(for: input, registry: launcherModules)
     }
 }

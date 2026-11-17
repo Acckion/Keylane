@@ -72,12 +72,7 @@ struct LauncherBehaviorPreferences: View {
                 }.settingsAnchor(.rootContactsSearch)
             }
 
-            SettingsSectionTitle(title: "备选命令")
-            SettingsGroup {
-                // TODO: Let users select and reorder commands to run with the root query.
-                SettingsActionRow(title: "备选命令", detail: "从主搜索调用备选命令的功能待实现。",
-                                  actionTitle: "添加备选命令") {}.disabled(true)
-            }.settingsAnchor(.launcherFallbackCommands)
+            FallbackCommandPreferences(model: model)
         }
     }
 
@@ -89,5 +84,82 @@ struct LauncherBehaviorPreferences: View {
         case .after5Minutes: "5 分钟后"
         case .never: "从不"
         }
+    }
+}
+
+private struct FallbackCommandPreferences: View {
+    let model: Model
+    @StateObject private var observation: ViewObservation
+    @State private var adding = false
+    @State private var query = ""
+
+    init(model: Model) {
+        self.model = model
+        var changes = [ViewObservation.changes(model.$fallbackCommandIDs),
+                       ViewObservation.changes(model.$disabledCommands)]
+        if let registry = model.launcherModules { changes.append(registry.searchUpdates) }
+        _observation = StateObject(wrappedValue: ViewObservation(changes))
+    }
+
+    var body: some View {
+        let catalog = model.launcherModules?.fallbackCatalog() ?? []
+        let entries = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let configured = model.fallbackCommandIDs
+        SettingsListCard(title: "备选命令", detail: "主搜索没有匹配结果时，按这里的顺序显示。选择命令后，它会接收当前搜索内容。",
+                         anchor: .launcherFallbackCommands) {
+            SettingsIconButton("添加备选命令", symbol: "plus") {
+                query = ""
+                adding.toggle()
+            }
+            .popover(isPresented: $adding, arrowEdge: .bottom) {
+                let options = catalog.filter { !configured.contains($0.id) }
+                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                    .map { ResultFilterOption(id: $0.id, title: $0.name, symbol: $0.symbol,
+                                              subtitle: $0.detail, keywords: $0.aliases) }
+                ResultFilterPanel(selection: "", options: ResultFilterPanel.matches(
+                    options, query: query.trimmingCharacters(in: .whitespacesAndNewlines)
+                ), query: $query, searchPlaceholder: "搜索命令…",
+                   emptyTitle: options.isEmpty ? "没有可添加的命令" : "没有匹配的命令",
+                   navigation: model.navigation, width: 330, maximumVisibleRows: 7,
+                   choose: { option in
+                       if !model.fallbackCommandIDs.contains(option.id) { model.fallbackCommandIDs.append(option.id) }
+                       adding = false
+                   }, dismiss: { adding = false })
+            }
+        } content: {
+            if configured.isEmpty {
+                SettingsListEmptyState(title: "尚未添加备选命令")
+            } else {
+                SettingsCompactList(items: configured, id: \.self) { id in
+                    let entry = entries[id]
+                    let declaration = model.launcherModules?.declaration(.init(rawValue: id))
+                    SettingsCompactItemRow(title: entry?.name ?? declaration?.title ?? unavailableTitle(id),
+                                           symbol: entry?.symbol ?? declaration?.symbol ?? "exclamationmark.circle",
+                                           detail: entry?.detail ?? "当前不可用") {
+                        SettingsIconButton("上移", symbol: "arrow.up", compact: true) { move(id, by: -1) }
+                            .disabled(id == configured.first)
+                        SettingsIconButton("下移", symbol: "arrow.down", compact: true) { move(id, by: 1) }
+                            .disabled(id == configured.last)
+                        SettingsIconButton("移除备选命令", symbol: "minus", compact: true) {
+                            model.fallbackCommandIDs.removeAll { $0 == id }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func move(_ id: String, by offset: Int) {
+        var order = model.fallbackCommandIDs
+        guard let index = order.firstIndex(of: id), order.indices.contains(index + offset) else { return }
+        order.swapAt(index, index + offset)
+        model.fallbackCommandIDs = order
+    }
+
+    private func unavailableTitle(_ id: String) -> String {
+        if id.hasPrefix(ScriptCommand.namespace) {
+            return URL(fileURLWithPath: String(id.dropFirst(ScriptCommand.namespace.count))).lastPathComponent
+        }
+        return "命令已停用或移除"
     }
 }

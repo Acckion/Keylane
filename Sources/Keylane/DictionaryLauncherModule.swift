@@ -43,7 +43,8 @@ enum DictionaryLauncherModule {
         let defaults = UserDefaults.standard
         let command = LauncherModule.Command(declaration: .init(
             id: commandID, title: title, detail: "查找词语释义", symbol: symbol,
-            keywords: ["Dictionary", "Define Word", "字典", "查词"], destination: .page(listID), settingsPage: settingsID))
+            keywords: ["Dictionary", "Define Word", "字典", "查词"], destination: .page(listID), settingsPage: settingsID),
+            acceptsFallbackQuery: true)
         let provider = LauncherModule.Provider(namespace: .exact(queryID), entries: { [weak model] input in
             guard input.page == .root, let model,
                   let term = rootTerm(input.query, model: model, defaults: defaults) else { return [] }

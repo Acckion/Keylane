@@ -150,6 +150,7 @@ enum NavigationLauncherModules {
                                    destination: command == .search ? .page(id) : .action, settingsPage: "screenshots"),
                 settingsEnabled: library.commandEnabledBinding(command),
                 available: { !library.disabledCommands.contains(command.rawValue) }, permission: permission,
+                acceptsFallbackQuery: command == .search,
                 execute: { [weak model] _ in
                     if command == .latest, let model { pasteLatestScreenshot(model) }
                 }

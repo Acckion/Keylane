@@ -13,6 +13,8 @@ final class LauncherCommandSearch {
         var history = SearchUsageHistory()
         var sensitivity: LauncherSearchRanking.Sensitivity = .low
         var namespace: LauncherCommandNamespace?
+        var fallbackOrder: [String] = []
+        var allowsFallback = true
     }
     private var cached: (input: Input, date: Date, results: [Entry])?
     private var preparedNames: [String: SearchRanker.Name] = [:]
@@ -41,7 +43,6 @@ final class LauncherCommandSearch {
             return prepared
         }
         let results = candidates.compactMap { entry -> (Entry, SearchResultRank)? in
-            guard !entry.isFallback else { return nil }
             if let score = entry.matchScore {
                 return (entry, rank.explicitResult(id: entry.id, title: entry.name, score: score))
             }
@@ -62,8 +63,19 @@ final class LauncherCommandSearch {
         }
 
         // File rows form one section, retaining their rank within the section.
-        let grouped = ordered.isEmpty ? candidates.filter(\.isFallback)
-            : ordered.filter { $0.rankingKind != .file } + ordered.filter { $0.rankingKind == .file }
+        let grouped: [Entry]
+        if ordered.isEmpty, input.page == .root, input.namespace == nil, input.allowsFallback,
+           !input.fallbackOrder.isEmpty, !input.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let catalog = Dictionary(registry.fallbackCatalog().map { ($0.id, $0) },
+                                     uniquingKeysWith: { first, _ in first })
+            grouped = input.fallbackOrder.compactMap { id in
+                guard var entry = catalog[id] else { return nil }
+                entry.fallbackQuery = input.query
+                return entry
+            }
+        } else {
+            grouped = ordered.filter { $0.rankingKind != .file } + ordered.filter { $0.rankingKind == .file }
+        }
         if !currentNames.isEmpty { preparedNames = currentNames }
         cached = (input, now, grouped)
         return grouped

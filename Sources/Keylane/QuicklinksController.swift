@@ -181,6 +181,32 @@ final class QuicklinksController: ObservableObject {
         return false
     }
 
+    func acceptsFallbackQuery(_ link: Quicklink) -> Bool {
+        guard let template = try? link.parsedTemplate(context: templateContext()) else { return false }
+        return fallbackParameter(in: template) != nil
+    }
+
+    func openFallback(_ link: Quicklink, query: String) -> Bool {
+        do {
+            let template = try link.parsedTemplate(context: templateContext())
+            guard let parameter = fallbackParameter(in: template) else { return false }
+            try open(template.url(values: [parameter.id: query]), applicationID: link.openingApplicationID)
+            return true
+        } catch {
+            feedback(error.localizedDescription, .failure)
+            return false
+        }
+    }
+
+    private func fallbackParameter(in template: QuicklinkTemplate) -> QuicklinkTemplate.Parameter? {
+        guard let first = template.parameters.first, first.options.isEmpty,
+              template.parameters.dropFirst().allSatisfy({ parameter in
+                  guard let value = parameter.defaultValue else { return false }
+                  return parameter.options.isEmpty || parameter.options.contains(value)
+              }) else { return nil }
+        return first
+    }
+
     func submit() -> Bool {
         guard let pendingTemplate else { return false }
         do {

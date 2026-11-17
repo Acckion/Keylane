@@ -18,9 +18,6 @@ final class ScriptCommandsController: ObservableObject {
             }
         }
     }
-    @Published var fallbackID: String {
-        didSet { preferences.set(fallbackID, forKey: "scriptCommands.fallback") }
-    }
     @Published var searchSelection = 0
     @Published private(set) var folders: [String]
     @Published private(set) var entries: [ScriptCommand] = []
@@ -78,7 +75,6 @@ final class ScriptCommandsController: ObservableObject {
 
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
-        fallbackID = preferences.string(forKey: "scriptCommands.fallback") ?? ""
         enabled = preferences.object(forKey: "scriptCommands.enabled") as? Bool ?? true
         folders = Self.canonicalFolders(preferences.stringArray(forKey: "scriptCommands.folders") ?? [])
         disabled = Set(preferences.stringArray(forKey: "scriptCommands.disabled") ?? [])
@@ -387,10 +383,12 @@ final class ScriptCommandsController: ObservableObject {
         return args.first?.kind == .text && args.dropFirst().allSatisfy { $0.optional == true }
     }
 
-    var fallbackEntries: [ScriptCommand] { entries.filter(acceptsFallbackInput) }
+    var fallbackEntries: [ScriptCommand] {
+        entries.filter { acceptsFallbackInput($0) && canRun($0) }
+    }
 
-    var fallback: ScriptCommand? {
-        guard let script = command(withID: fallbackID), canRun(script), acceptsFallbackInput(script) else { return nil }
+    func fallbackEntry(withID id: String) -> ScriptCommand? {
+        guard let script = command(withID: id), acceptsFallbackInput(script), isAvailable(script) else { return nil }
         return script
     }
 
