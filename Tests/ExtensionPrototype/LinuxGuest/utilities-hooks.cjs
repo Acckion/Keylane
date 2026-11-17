@@ -176,7 +176,7 @@ function utilitiesHooksFor(apiProvider, FormValidation) {
     }
 
     const revalidate = () => runPage();
-    useEffect(() => willRun ? revalidate() : undefined);
+    useEffect(() => willRun ? revalidate() : undefined, [execute, invocation]);
 
     const pagination = execute && !willRun && slot.page ? {
       pageSize: slot.page.pageSize,

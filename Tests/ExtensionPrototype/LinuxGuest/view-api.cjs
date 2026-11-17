@@ -72,6 +72,8 @@ let localStorageAllowed;
 let state;
 let stateVersion = 0;
 let stateIndex;
+let effectIndex;
+let rootEffectSlots;
 let componentFrames;
 let componentFrame;
 let viewIDs;
@@ -128,6 +130,7 @@ function configure(input) {
   clipboardReadAllowed = input.clipboardReadAllowed === true && input.sensitiveFormSubmission !== true;
   windowReadAllowed = input.windowReadAllowed === true && input.sensitiveFormSubmission !== true;
   state = [];
+  rootEffectSlots = [];
   viewIDs = undefined;
   viewIDSeed = undefined;
   stateIndex = 0;
@@ -161,18 +164,21 @@ function renderComponentTree(render) {
       const prior = componentFrames.get(identity);
       const frame = prior?.type === type ? prior : {
         type, identity: createHash("sha256").update(identity).update(Function.prototype.toString.call(type)).digest("hex"),
-        hooks: [], idSlots: new Map(),
+        hooks: [], effectSlots: [], idSlots: new Map(),
       };
       next.set(identity, frame);
       const previousFrame = componentFrame;
       const previousIndex = stateIndex;
+      const previousEffectIndex = effectIndex;
       let rendered;
       try {
         componentFrame = frame;
         stateIndex = 0;
+        effectIndex = 0;
         rendered = type(props);
       } finally {
         stateIndex = previousIndex;
+        effectIndex = previousEffectIndex;
         componentFrame = previousFrame;
       }
       const resolved = resolve(rendered, [...path, frame.identity], depth + 1);
@@ -264,8 +270,19 @@ function useRef(initial) {
   return useState(() => ({ current: initial }))[0];
 }
 
-function useEffect(effect) {
-  if (!routeReplay.getStore() || replayingViewInput) effects?.push(effect);
+function useEffect(effect, dependencies = []) {
+  const index = effectIndex++;
+  if (!effects || (routeReplay.getStore() && !replayingViewInput)) return;
+
+  const slots = componentFrame?.effectSlots ?? rootEffectSlots;
+  const previous = slots[index];
+  if (previous && previous.length === dependencies.length &&
+      previous.every((value, offset) => Object.is(value, dependencies[offset]))) return;
+
+  effects.push(() => {
+    slots[index] = [...dependencies];
+    return effect();
+  });
 }
 
 function component(name) {
@@ -851,6 +868,7 @@ async function renderView(renderPage, input, scope, effectFrame, renderProgress)
   const menuRow = action?.row ?? input.actionMenuRow;
   if (menuRoute.length && (!Number.isSafeInteger(menuRow) || menuRow < -1)) throw new Error("Invalid action submenu target");
   state = [];
+  rootEffectSlots = [];
   componentFrames = new Map();
   effects = [];
   const formCommands = {};
@@ -860,6 +878,7 @@ async function renderView(renderPage, input, scope, effectFrame, renderProgress)
   } : undefined;
   const renderRoot = () => {
     stateIndex = 0;
+    effectIndex = 0;
     const page = renderComponentTree(() => renderPage(query));
     if (dropdownContext) rememberDropdownOptions(page, children, dropdownContext);
     if (!input.sensitiveFormSubmission) mountFormRefs(page, children, formCommands, mountedFormRefs, dropdownContext);
@@ -923,21 +942,21 @@ async function renderView(renderPage, input, scope, effectFrame, renderProgress)
     }
     if (menuSearch && input.dropdownQuery !== appliedQuery) await searchDropdown(input.dropdownQuery);
     if (effects.length) {
-      const initial = effects;
+      let pendingEffects = effects;
       effects = undefined;
-      const runEffects = async () => {
-        for (const [index, effect] of initial.entries()) {
-          const capture = effectFrame ? index === effectFrame.id :
+      const runEffects = async (firstPass) => {
+        for (const [index, effect] of pendingEffects.entries()) {
+          const capture = firstPass && (effectFrame ? index === effectFrame.id :
             input.mountNavigation === true && !action && !input.sensitiveFormSubmission &&
-            !routeReplay.getStore() && !effectNavigation && index < 12;
+            !routeReplay.getStore() && !effectNavigation && index < 12);
           const page = await viewNavigation.runEffect(effect, capture);
           if (page) effectNavigation = { ...page, index };
         }
       };
       const canPublish = renderProgress && !action && !input.sensitiveFormSubmission && !routeReplay.getStore();
       const drain = canPublish ? renderProgress.drain : undefined;
-      const run = async () => {
-        await runEffects();
+      const run = async (firstPass) => {
+        await runEffects(firstPass);
         if (drain) await drain();
       };
       const performEffects = async () => {
@@ -945,15 +964,28 @@ async function renderView(renderPage, input, scope, effectFrame, renderProgress)
           const initialMount = query === "" && input.mountNavigation === true && input.viewRoute === undefined;
           const grant = { active: true, clipboardReadAllowed: initialMount, windowEffectsAllowed: initialMount };
           try {
-            await initialViewEffects.run(grant, () => withSearchClear(run));
+            await initialViewEffects.run(grant, () => withSearchClear(() => run(true)));
           } finally {
             grant.active = false;
           }
         } else {
-          await withSearchClear(run);
+          await withSearchClear(() => run(true));
         }
       };
-      const pending = performEffects();
+      const settleEffects = async () => {
+        for (let pass = 0; pendingEffects.length; pass++) {
+          if (pass === 8) throw new Error("View effects did not settle");
+          if (pass === 0) await performEffects();
+          else await run(false);
+          await new Promise(setImmediate);
+          effects = [];
+          root = renderRoot();
+          pendingEffects = effects;
+          effects = undefined;
+          if (effectNavigation) break;
+        }
+      };
+      const pending = settleEffects();
       if (canPublish) {
         const finished = pending.then(() => true);
         let lastVersion;
@@ -985,8 +1017,6 @@ async function renderView(renderPage, input, scope, effectFrame, renderProgress)
         }
       }
       await pending;
-      await new Promise(setImmediate);
-      root = renderRoot();
     }
     if (formEvents.length) {
       replayingViewInput = true;
@@ -1341,6 +1371,7 @@ async function renderMenuBar(command, input) {
     }
     function renderMenu() {
       stateIndex = 0;
+      effectIndex = 0;
       const menu = renderComponentTree(command);
       if (menu != null && menu.type !== "menuBar") throw new Error("Expected MenuBarExtra");
       return menu;

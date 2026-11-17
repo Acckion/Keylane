@@ -61,6 +61,46 @@ test("usePromise waits for guest work, supports disabling and exposes errors", a
   assert.deepEqual(events, ["test", "TEST", "bad promise"]);
 });
 
+test("chained usePromise operations settle across rerenders", async () => {
+  const calls = [];
+  const command = () => {
+    const first = usePromise(async () => {
+      calls.push("first");
+      return "dependency";
+    });
+    const second = usePromise(async (value) => {
+      calls.push("second:" + value);
+      return value.toUpperCase();
+    }, [first.data], { execute: first.data !== undefined });
+    return Detail({ markdown: second.data, isLoading: second.isLoading });
+  };
+
+  const result = await render(command, {});
+  assert.equal(result.detail.markdown, "DEPENDENCY");
+  assert.equal(result.detail.isLoading, false);
+  assert.deepEqual(calls, ["first", "second:dependency"]);
+});
+
+test("settling reruns changed dependencies and rejects nonsettling effects", async () => {
+  const calls = [];
+  const command = () => {
+    const [index, setIndex] = api.useState(0);
+    api.useEffect(() => calls.push("mount"), []);
+    api.useEffect(() => {
+      calls.push(index);
+      if (index < 2) setIndex(index + 1);
+    }, [index]);
+    return Detail({ markdown: String(index) });
+  };
+  assert.equal((await render(command, {})).detail.markdown, "2");
+  assert.deepEqual(calls, ["mount", 0, 1, 2]);
+  await assert.rejects(render(() => {
+    const [index, setIndex] = api.useState(0);
+    api.useEffect(() => setIndex(index + 1), [index]);
+    return Detail({ markdown: String(index) });
+  }, {}), /View effects did not settle/);
+});
+
 test("usePromise times out and aborts an unfinished operation", async () => {
   const abortable = {};
   let aborted = false;
