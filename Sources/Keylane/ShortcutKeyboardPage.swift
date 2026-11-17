@@ -49,31 +49,13 @@ struct ShortcutKeyboardPage: View {
         let names = Dictionary(catalog.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first })
         let bindingsByShortcut = Dictionary(model.bindings.sorted { $0.key < $1.key }.map { ($0.value, $0.key) },
                                             uniquingKeysWith: { first, _ in first })
-        return LauncherCreationForm(back: back, spacing: 10) { EmptyView() } fields: {
+        return LauncherCreationForm(back: back) {
+            keyboardControls(commandName: owner.map { names[$0] ?? $0 })
+        } fields: {
             keyboard(bindings: bindingsByShortcut, names: names)
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("MacBook Air ANSI 键盘")
                 .padding(.horizontal, 22)
-            HStack(spacing: 12) {
-                SettingsRowLabel(title: shortcut.label, detail: owner.map { names[$0] ?? $0 } ?? "未绑定")
-                Spacer()
-                if let message = feedback ?? validation {
-                    SettingsDescription(message)
-                }
-                if owner != nil {
-                    Button("解除绑定", action: unbind)
-                        .buttonStyle(ContentActionButtonStyle())
-                }
-                Button(owner == nil ? "绑定命令" : "更换命令") {
-                    query = ""
-                    stagedCommand = nil
-                    feedback = nil
-                    choosing = true
-                }
-                .buttonStyle(ContentActionButtonStyle())
-                .disabled(validation != nil)
-            }
-            .padding(.horizontal, 24)
         }
         .overlay {
             if choosing {
@@ -96,6 +78,40 @@ struct ShortcutKeyboardPage: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in closePicker() }
+    }
+
+    private func keyboardControls(commandName: String?) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .trailing, spacing: 2) {
+                HStack(spacing: 8) {
+                    Keycaps(keys: shortcut.keycaps)
+                    Text(commandName ?? "未绑定")
+                        .font(.caption).lineLimit(1).truncationMode(.tail)
+                        .foregroundStyle(.secondary)
+                }
+                if let message = feedback ?? validation {
+                    Text(message)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1).help(message)
+                }
+            }
+            .frame(maxWidth: 345, alignment: .trailing)
+            if commandName != nil {
+                Button("解除绑定", action: unbind)
+                    .buttonStyle(ContentActionButtonStyle())
+                    .fixedSize()
+            }
+            Button(commandName == nil ? "绑定命令" : "更换命令") {
+                query = ""
+                stagedCommand = nil
+                feedback = nil
+                choosing = true
+            }
+            .buttonStyle(ContentActionButtonStyle(active: true))
+            .disabled(validation != nil)
+            .fixedSize()
+        }
+        .frame(minHeight: 36)
     }
 
     private func confirmation(_ proposed: Change, names: [String: String], registry: LauncherModuleRegistry?) -> some View {
@@ -213,13 +229,13 @@ struct ShortcutKeyboardPage: View {
                 .lineLimit(1).minimumScaleFactor(0.7)
             if let name {
                 Text(name).font(.system(size: 9)).lineLimit(1)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 1)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(active || name != nil ? Color.accentColor.opacity(active ? 0.24 : 0.13) : Color.primary.opacity(0.065), in: shape)
-        .overlay { shape.strokeBorder(selected || active ? Color.accentColor : Color.primary.opacity(0.09)) }
+        .background(Color.primary.opacity(active ? 0.23 : name != nil ? 0.12 : 0.065), in: shape)
+        .overlay { shape.strokeBorder(Color.primary.opacity(selected ? 0.58 : active ? 0.24 : 0.09)) }
         .contentShape(shape)
     }
 
