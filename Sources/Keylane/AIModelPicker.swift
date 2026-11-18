@@ -45,6 +45,7 @@ private struct AIModelMenu: View {
     let close: () -> Void
     @State private var query = ""
     @State private var highlighted: AIModelChoice?
+    @State private var scrollTarget: AIModelChoice?
     @FocusState private var searchFocused: Bool
 
     private var models: [AIConnection] {
@@ -87,7 +88,7 @@ private struct AIModelMenu: View {
                             }
                         }.padding(8)
                     }.frame(width: 330, height: 320)
-                        .onChange(of: highlighted) { _, choice in if let choice { reader.scrollTo(choice, anchor: .center) } }
+                        .onChange(of: scrollTarget) { _, choice in if let choice { reader.scrollTo(choice, anchor: .center) } }
                 }
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
@@ -125,6 +126,7 @@ private struct AIModelMenu: View {
         guard !options.isEmpty else { return }
         let index = highlighted.flatMap { options.firstIndex(of: $0) } ?? (step > 0 ? -1 : options.count)
         highlighted = options[min(options.count - 1, max(0, index + step))]
+        scrollTarget = highlighted
     }
     private func row(_ choice: AIModelChoice, title: String, subtitle: String? = nil,
                      symbol: String = "sparkles", enabled: Bool = true) -> some View {
