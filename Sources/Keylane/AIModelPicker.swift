@@ -87,7 +87,7 @@ private struct AIModelMenu: View {
                                 }
                             }
                         }.padding(8)
-                    }.frame(width: 330, height: 320)
+                    }.frame(width: 280, height: 320)
                         .onChange(of: scrollTarget) { _, choice in if let choice { reader.scrollTo(choice, anchor: .center) } }
                 }
                 Divider()
@@ -106,7 +106,7 @@ private struct AIModelMenu: View {
                 }.padding(14).frame(width: 190, alignment: .leading)
             }
         }
-        .frame(width: 535)
+        .frame(width: 485)
         .onAppear { highlighted = selection; searchFocused = true }
         .onChange(of: query) { _, _ in highlighted = choices.first }
         .onKeyPress(.downArrow) { move(1); return .handled }
