@@ -1,8 +1,10 @@
 import AppKit
+import SwiftUI
 import Combine
 import KeylaneCore
 import UniformTypeIdentifiers
 import QuickLookThumbnailing
+import ImageIO
 
 final class DropShelfController: ObservableObject {
     @Published var copyByDefault: Bool { didSet { preferences.set(copyByDefault, forKey: "dropShelf.copy"); updateDragOperations() } }
@@ -272,12 +274,20 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     weak var controller: DropShelfController?
     let table = DropShelfTable()
     private let gridTable = DropShelfTable()
+    private static let gridThumbnailQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.qualityOfService = .userInitiated
+        queue.maxConcurrentOperationCount = 2
+        return queue
+    }()
     private let gridPreviews = NSMapTable<NSUUID, DropShelfPreview>.strongToWeakObjects()
     private let contentScroll = NSScrollView()
-    private let closeControl = NSButton()
+    private let closeControl = DropShelfHoverButton()
     private let expandedTitle = NSTextField(labelWithString: "")
-    private let sortControl = NSButton()
-    private let viewControl = NSSegmentedControl()
+    private let sortControl = DropShelfHoverButton()
+    private let viewControl = NSView()
+    private let gridButton = DropShelfHoverButton()
+    private let listButton = DropShelfHoverButton()
     private var gridMode = true
     private var sortMode = 0
     private let capsule = NSStackView()
@@ -294,7 +304,8 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private let preview = DropShelfPreview(frame: .zero)
     let dropOverlay = DropShelfCaptureOverlay(frame: .zero)
     private let filename = NSButton(title: "暂存架", target: nil, action: nil)
-    private let disclosure = NSButton()
+    private let disclosure = DropShelfHoverButton()
+    private let sortChrome = NSView()
     private let details = NSStackView()
     private var expanded = false
     private var resizeTimer: Timer?
@@ -329,35 +340,32 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         level = .floating; collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         hidesOnDeactivate = false; isMovableByWindowBackground = true
         isOpaque = false; backgroundColor = .clear; hasShadow = true
-        let effect = NSGlassEffectView(); effect.style = .regular; effect.cornerRadius = 28
-        if #available(macOS 27.0, *), effect.responds(to: NSSelectorFromString("setEffectIsInteractive:")) { effect.setValue(false, forKey: "effectIsInteractive") }
-        effect.wantsLayer = true; effect.layer?.cornerRadius = 28; effect.layer?.cornerCurve = .continuous
-        effect.layer?.masksToBounds = true; effect.layer?.borderWidth = 1
-        effect.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
-        let card = NSView(frame: NSRect(x: 0, y: 0, width: 210, height: 210))
-        effect.frame = card.bounds; effect.autoresizingMask = [.width, .height]
-        card.addSubview(effect); contentView = card
-        let surface = DropShelfDropView(frame: .zero); effect.contentView = surface
-        surface.frame = effect.bounds; surface.autoresizingMask = [.width, .height]
+        titlebarAppearsTransparent = true; titleVisibility = .hidden
+        let effect = LauncherGlassView(frame: NSRect(origin: .zero, size: frame.size))
+        let card = NSView(frame: effect.bounds)
+        card.autoresizingMask = [.width, .height]
+        effect.contentView = card
+        contentView = effect
+        let surface = DropShelfDropView(frame: card.bounds)
+        surface.autoresizingMask = [.width, .height]
+        card.addSubview(surface)
         surface.unregisterDraggedTypes()
         dropOverlay.frame = card.bounds; dropOverlay.autoresizingMask = [.width, .height]
         dropOverlay.underlying = surface
         dropOverlay.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
         dropOverlay.dragActivity = { [weak self] in self?.receivingDrag = $0 }
         dropOverlay.setAccessibilityElement(false)
-        card.addSubview(dropOverlay, positioned: .above, relativeTo: effect)
-        configureRound(closeControl, symbol: "xmark", label: "关闭暂存架", action: #selector(closeShelf))
-        configureRound(disclosure, symbol: "chevron.down", label: "展开暂存内容", action: #selector(disclosureAction))
+        card.addSubview(dropOverlay, positioned: .above, relativeTo: surface)
+        let closeChrome = configureRound(closeControl, symbol: "xmark", label: "关闭暂存架", action: #selector(closeShelf))
+        let disclosureChrome = configureRound(disclosure, symbol: "chevron.down", label: "展开暂存内容", action: #selector(disclosureAction))
         let spacer = NSView()
-        configureRound(sortControl, symbol: "arrow.up.arrow.down", label: "排序", action: #selector(showSortMenu))
+        configureRound(sortControl, in: sortChrome, symbol: "arrow.up.arrow.down", label: "排序", action: #selector(showSortMenu))
         expandedTitle.font = .systemFont(ofSize: 13, weight: .semibold)
-        viewControl.segmentCount = 2; viewControl.setImage(NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "网格"), forSegment: 0)
-        viewControl.setImage(NSImage(systemSymbolName: "list.bullet", accessibilityDescription: "列表"), forSegment: 1)
-        viewControl.selectedSegment = 0; viewControl.target = self; viewControl.action = #selector(changeViewMode)
-        viewControl.setAccessibilityLabel("内容显示方式")
-        expandedTitle.isHidden = true; sortControl.isHidden = true; viewControl.isHidden = true
-        let top = NSStackView(views: [closeControl, expandedTitle, spacer, sortControl, viewControl, disclosure]); top.spacing = 6
+        configureViewControl()
+        expandedTitle.isHidden = true; sortChrome.isHidden = true; viewControl.isHidden = true
+        let top = NSStackView(views: [closeChrome, expandedTitle, spacer, disclosureChrome, sortChrome, viewControl]); top.spacing = 6
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        filename.cell = DropShelfCapsuleCell(textCell: "暂存架")
         filename.target = self; filename.action = #selector(toggleDetails); filename.isBordered = false
         filename.font = .systemFont(ofSize: 12, weight: .medium); filename.lineBreakMode = .byTruncatingMiddle
         filename.wantsLayer = true; filename.layer?.cornerRadius = 14
@@ -372,12 +380,14 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         preview.shortcut = { [weak self] in self?.key($0) ?? false }
         let scroll = contentScroll; scroll.hasVerticalScroller = true; scroll.drawsBackground = false
         let column = NSTableColumn(identifier: .init("content")); column.title = "内容"; column.resizingMask = .autoresizingMask; table.addTableColumn(column); table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        table.headerView = nil; table.rowHeight = 40; table.style = .fullWidth; table.backgroundColor = .clear
+        table.autoresizingMask = [.width]
+        table.headerView = nil; table.rowHeight = 35; table.style = .fullWidth; table.backgroundColor = .clear
         table.allowsMultipleSelection = true; table.dataSource = self; table.delegate = self
         table.registerForDraggedTypes(DropShelfController.types + [DropShelfController.marker])
         table.setAccessibilityLabel("暂存内容，可拖出到其他应用")
         table.shortcut = { [weak self] event in self?.key(event) ?? false }
         let gridColumn = NSTableColumn(identifier: .init("grid")); gridColumn.resizingMask = .autoresizingMask; gridTable.addTableColumn(gridColumn); gridTable.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        gridTable.autoresizingMask = [.width]
         gridTable.headerView = nil; gridTable.rowHeight = 132; gridTable.backgroundColor = .clear
         gridTable.style = .fullWidth; gridTable.selectionHighlightStyle = .none
         gridTable.dataSource = self; gridTable.delegate = self
@@ -387,12 +397,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         scroll.documentView = gridTable
         status.font = .systemFont(ofSize: 11); status.textColor = .secondaryLabelColor
         details.orientation = .vertical; details.alignment = .leading; details.spacing = 10
-        let finder = NSButton(title: "在 Finder 中显示", target: self, action: #selector(revealInFinder))
-        finder.image = NSImage(systemSymbolName: "arrowshape.turn.up.right.circle", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 32, weight: .regular))
-        finder.imagePosition = .imageAbove; finder.isBordered = false; finder.font = .systemFont(ofSize: 12)
-        let finderRow = NSStackView(views: [finder, NSView()]); finderRow.alignment = .top
-        finder.heightAnchor.constraint(equalToConstant: 68).isActive = true
-        for view in [scroll, finderRow] { details.addArrangedSubview(view) }
+        details.addArrangedSubview(scroll)
         details.isHidden = true
         for view in [NSView(), filename, NSView()] { capsule.addArrangedSubview(view) }; capsule.distribution = .equalCentering
         let stack = NSStackView(views: [top, preview, capsule, details, status])
@@ -423,7 +428,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             filename.heightAnchor.constraint(equalToConstant: 28),
             filename.widthAnchor.constraint(lessThanOrEqualToConstant: 150),
             filename.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
-            scroll.heightAnchor.constraint(equalToConstant: 155)
+            scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 155)
         ])
         updateDragOperations(); refresh()
     }
@@ -442,21 +447,73 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         updateCompactPreview()
         expandedTitle.stringValue = contentTitle
     }
-    private func configureRound(_ button: NSButton, symbol: String, label: String, action: Selector) {
+    @discardableResult
+    private func configureRound(_ button: DropShelfHoverButton, in chrome: NSView = NSView(), symbol: String, label: String, action: Selector) -> NSView {
+        let diameter: CGFloat = 32
+        let bounds = NSRect(x: 0, y: 0, width: diameter, height: diameter)
+        chrome.frame.size = bounds.size
+        chrome.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            chrome.widthAnchor.constraint(equalToConstant: diameter),
+            chrome.heightAnchor.constraint(equalToConstant: diameter)
+        ])
+        addControlGlass(to: chrome, bounds: bounds, cornerRadius: diameter / 2)
+
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        button.isBordered = true; button.bezelStyle = .glass; button.borderShape = .circle
-        button.imagePosition = .imageOnly; button.title = ""
+        button.imagePosition = .imageOnly; button.title = ""; button.isBordered = false
         button.target = self; button.action = action
         button.contentTintColor = .labelColor; button.toolTip = label; button.setAccessibilityLabel(label)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 32).isActive = true
-        button.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        button.frame = bounds
+        button.autoresizingMask = [.width, .height]
+        button.wantsLayer = true; button.layer?.cornerRadius = diameter / 2
+        chrome.addSubview(button)
+        return chrome
     }
+    private func addControlGlass(to view: NSView, bounds: NSRect, cornerRadius: CGFloat) {
+        let background = NSHostingView(rootView: Color.clear
+            .frame(width: bounds.width, height: bounds.height)
+            .modifier(LauncherMenuSurface(open: false, cornerRadius: cornerRadius))
+            .accessibilityHidden(true))
+        background.frame = bounds
+        background.autoresizingMask = [.width, .height]
+        view.addSubview(background)
+    }
+
+    private func configureViewControl() {
+        let bounds = NSRect(x: 0, y: 0, width: 60, height: 32)
+        viewControl.frame.size = bounds.size
+        viewControl.translatesAutoresizingMaskIntoConstraints = false
+        viewControl.widthAnchor.constraint(equalToConstant: bounds.width).isActive = true
+        viewControl.heightAnchor.constraint(equalToConstant: bounds.height).isActive = true
+        addControlGlass(to: viewControl, bounds: bounds, cornerRadius: 16)
+        for (index, button) in [gridButton, listButton].enumerated() {
+            let label = index == 0 ? "网格" : "列表"
+            button.image = NSImage(systemSymbolName: index == 0 ? "square.grid.2x2" : "list.bullet", accessibilityDescription: label)
+            button.imagePosition = .imageOnly; button.isBordered = false
+            button.toolTip = label; button.setAccessibilityLabel(label)
+            button.setButtonType(.pushOnPushOff)
+            button.title = ""
+            button.contentTintColor = .labelColor
+            button.target = self; button.action = #selector(changeViewMode(_:))
+            button.frame = NSRect(x: 3 + index * 28, y: 3, width: 26, height: 26)
+            button.wantsLayer = true; button.layer?.cornerRadius = 13
+            viewControl.addSubview(button)
+        }
+        updateViewControlSelection()
+    }
+
+    private func updateViewControlSelection() {
+        for (button, selected) in [(gridButton, gridMode), (listButton, !gridMode)] {
+            button.state = selected ? .on : .off
+            button.showsSelection = selected
+        }
+    }
+
     @objc private func closeShelf() { if expanded { toggleDetails() } else { close() } }
     @objc func toggleDetails() {
         expanded.toggle(); details.isHidden = !expanded; detailWidth?.isActive = expanded
         preview.isHidden = expanded; capsule.isHidden = expanded
-        expandedTitle.isHidden = !expanded; sortControl.isHidden = !expanded; viewControl.isHidden = !expanded
+        expandedTitle.isHidden = !expanded; sortChrome.isHidden = !expanded; viewControl.isHidden = !expanded
         closeControl.image = NSImage(systemSymbolName: expanded ? "chevron.backward" : "xmark", accessibilityDescription: nil)
         closeControl.setAccessibilityLabel(expanded ? "返回收起的暂存架" : "关闭暂存架")
         closeControl.toolTip = expanded ? "返回收起的暂存架" : "关闭暂存架"
@@ -556,7 +613,11 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     }
     private func gridRow(_ row: Int) -> NSView {
         let stack = NSStackView(); stack.orientation = .horizontal; stack.spacing = 8; stack.distribution = .fillEqually
-        for index in (row * 3)..<min(row * 3 + 3, rows.count) {
+        for index in (row * 3)..<min(row * 3 + 3, gridItemCount) {
+            if index == rows.count {
+                stack.addArrangedSubview(gridFinderTile())
+                continue
+            }
             let item = rows[index]
             let icon = DropShelfPreview(frame: NSRect(x: 0, y: 0, width: 110, height: 86))
             icon.unregisterDraggedTypes()
@@ -595,8 +656,12 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             let label = NSTextField(labelWithString: item.title); label.alignment = .center; label.lineBreakMode = .byTruncatingMiddle
             label.font = .systemFont(ofSize: 12, weight: .medium)
             let detail = NSTextField(labelWithString: ""); detail.alignment = .center; detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
-            if let url, let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey]) {
+            if let url, let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentTypeKey]) {
                 detail.stringValue = values.isDirectory == true ? "文件夹" : values.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "文件"
+                let type = values.contentType ?? UTType(filenameExtension: url.pathExtension)
+                if values.isDirectory != true, item.kind == .image || type?.conforms(to: .image) == true {
+                    loadGridThumbnail(at: url, into: icon)
+                }
             }
             let tile = DropShelfTile(views: [icon, label, detail]); tile.preview = icon
             tile.orientation = .vertical; tile.spacing = 3; tile.alignment = .centerX
@@ -606,6 +671,40 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         while stack.arrangedSubviews.count < 3 { stack.addArrangedSubview(NSView()) }
         return stack
     }
+    private var gridItemCount: Int { rows.isEmpty ? 0 : rows.count + 1 }
+
+    private func gridFinderTile() -> NSView {
+        let button = NSButton(title: "在 Finder 中显示", target: self, action: #selector(revealInFinder))
+        button.image = NSImage(systemSymbolName: "arrowshape.turn.up.right.circle", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 42, weight: .regular))
+        button.imagePosition = .imageAbove
+        button.isBordered = false
+        button.font = .systemFont(ofSize: 12, weight: .medium)
+        button.contentTintColor = .secondaryLabelColor
+        button.setAccessibilityLabel("在 Finder 中显示")
+        return button
+    }
+
+    private func loadGridThumbnail(at url: URL, into preview: DropShelfPreview) {
+        let maximumPixels = Int(110 * max(1, backingScaleFactor))
+        Self.gridThumbnailQueue.addOperation { [weak preview] in
+            guard preview != nil else { return }
+            let access = DropShelfFileAccess(url)
+            defer { withExtendedLifetime(access) {} }
+            if let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
+               values.isUbiquitousItem == true, values.ubiquitousItemDownloadingStatus == .notDownloaded { return }
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                      kCGImageSourceCreateThumbnailFromImageAlways: true,
+                      kCGImageSourceCreateThumbnailWithTransform: true,
+                      kCGImageSourceThumbnailMaxPixelSize: maximumPixels
+                  ] as CFDictionary) else { return }
+            DispatchQueue.main.async { [weak preview] in
+                preview?.imageView.image = NSImage(cgImage: image, size: .zero)
+            }
+        }
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         for (index, item) in rows.enumerated() {
             gridPreviews.object(forKey: item.id as NSUUID)?.showSelection(table.selectedRowIndexes.contains(index))
@@ -631,10 +730,15 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         return "\(rows.count) " + (documents ? "个文档" : "项")
     }
     @objc private func disclosureAction() { if expanded { showShelfOptions() } else { toggleDetails() } }
-    @objc private func changeViewMode() {
-        gridMode = viewControl.selectedSegment == 0
-        contentScroll.documentView = gridMode ? gridTable : table
+    @objc private func changeViewMode(_ sender: NSButton) {
+        gridMode = sender === gridButton
+        updateViewControlSelection()
+        let content = gridMode ? gridTable : table
+        content.frame.size.width = contentScroll.contentSize.width
+        contentScroll.documentView = content
+        content.sizeLastColumnToFit()
         refresh()
+        makeFirstResponder(content)
     }
     @objc private func showSortMenu() {
         let menu = NSMenu()
@@ -650,7 +754,8 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         let entries: [(String, Selector)] = [
             (store.shelf(shelfID)?.pinned == true ? "取消固定" : "固定暂存架", #selector(pinFromMenu)),
             ("重命名暂存架…", #selector(renameFromMenu)), ("复制内容", #selector(copyContents)),
-            ("粘贴内容", #selector(pasteContents)), ("清空暂存架", #selector(clearContents)),
+            ("粘贴内容", #selector(pasteContents)), ("在 Finder 中显示", #selector(revealInFinder)),
+            ("清空暂存架", #selector(clearContents)),
             ("取消加载", #selector(cancelImports)), ("关闭暂存架", #selector(closeFromMenu))
         ]
         for (title, selector) in entries { let item = NSMenuItem(title: title, action: selector, keyEquivalent: ""); item.target = self; menu.addItem(item) }
@@ -668,23 +773,65 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             do { try self.store.rename(self.shelfID, title: field.stringValue); self.refresh() } catch { self.message(error.localizedDescription, failed: true) }
         }
     }
-    @objc private func revealInFinder() {
+    @objc private func revealInFinder() { revealItemsInFinder(selectedItems) }
+
+    @objc private func revealListItem(_ sender: NSButton) {
+        let row = table.row(for: sender)
+        guard rows.indices.contains(row) else { return }
+        revealItemsInFinder([rows[row]])
+    }
+
+    private func revealItemsInFinder(_ items: [DropShelfStore.Item]) {
         do {
-            let urls = try selectedItems.compactMap { try store.resolve($0) }
+            let urls = try items.compactMap { try store.resolve($0) }
             for url in urls where url.startAccessingSecurityScopedResource() { heldAccess.append(url) }
             guard !urls.isEmpty else { message("文字和链接可从复制菜单获取"); return }
             NSWorkspace.shared.activateFileViewerSelecting(urls)
         } catch { message(error.localizedDescription, failed: true) }
     }
-    func numberOfRows(in tableView: NSTableView) -> Int { tableView === gridTable ? (rows.count + 2) / 3 : rows.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { tableView === gridTable ? (gridItemCount + 2) / 3 : rows.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         if tableView === gridTable { return gridRow(row) }
         let item = rows[row]
         let symbol = item.kind == .image ? "photo" : item.kind == .link ? "link" : item.kind == .text ? "text.alignleft" : "doc"
-        let icon = NSImageView(image: NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!)
-        icon.translatesAutoresizingMaskIntoConstraints = false; icon.widthAnchor.constraint(equalToConstant: 24).isActive = true
-        let label = NSTextField(labelWithString: item.title); label.lineBreakMode = .byTruncatingMiddle; label.font = .systemFont(ofSize: 13)
-        let view = NSStackView(views: [icon, label]); view.spacing = 10; return view
+        let url = try? store.resolve(item)
+        let access = url.map(DropShelfFileAccess.init)
+        defer { withExtendedLifetime(access) {} }
+        let values = try? url?.resourceValues(forKeys: [.localizedNameKey, .isDirectoryKey, .fileSizeKey])
+        let icon = NSImageView(image: url.map { NSWorkspace.shared.icon(forFile: $0.path) }
+            ?? NSImage(systemSymbolName: symbol, accessibilityDescription: nil) ?? NSImage())
+        icon.imageScaling = .scaleProportionallyDown
+        let label = NSTextField(labelWithString: values?.localizedName ?? item.title)
+        label.lineBreakMode = .byTruncatingMiddle
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let view = NSStackView(views: [icon, label, spacer])
+        view.alignment = .centerY; view.spacing = 8
+        view.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+        icon.widthAnchor.constraint(equalToConstant: 20).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 20).isActive = true
+        if let url, url.isFileURL {
+            if let values {
+                let text = values.isDirectory == true ? "文件夹" : values.fileSize.map {
+                    ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file)
+                }
+                if let text {
+                    let detail = NSTextField(labelWithString: text)
+                    detail.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+                    detail.textColor = .secondaryLabelColor
+                    detail.setContentCompressionResistancePriority(.required, for: .horizontal)
+                    view.addArrangedSubview(detail)
+                }
+            }
+            let reveal = NSButton(title: "", target: self, action: #selector(revealListItem(_:)))
+            reveal.image = NSImage(systemSymbolName: "chevron.right.circle.fill", accessibilityDescription: nil)
+            reveal.imagePosition = .imageOnly; reveal.isBordered = false; reveal.contentTintColor = .secondaryLabelColor
+            reveal.toolTip = "在 Finder 中显示"; reveal.setAccessibilityLabel("在 Finder 中显示：\(label.stringValue)")
+            view.addArrangedSubview(reveal)
+        }
+        return view
     }
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         tableView.setDropRow(row, dropOperation: .above)

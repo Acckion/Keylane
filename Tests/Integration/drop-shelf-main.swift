@@ -166,7 +166,8 @@ expect(populatedDragShelf.isVisible, "populated drag-triggered shelf remains ope
 expect(manualEmptyShelf.isVisible, "manually opened empty shelf is not auto-closed")
 populatedDragShelf.close(); manualEmptyShelf.close()
 let glassButtons = descendantViews(window.contentView!).compactMap { $0 as? NSButton }.filter { $0.action == NSSelectorFromString("closeShelf") || $0.action == NSSelectorFromString("disclosureAction") }
-expect(glassButtons.count == 2 && glassButtons.allSatisfy { $0.bezelStyle == .glass && $0.borderShape == .circle && $0.isBordered }, "both corner buttons use native circular glass bezels")
+expect(window.contentView is LauncherGlassView, "shelf uses the shared Launcher window glass at the root")
+expect(glassButtons.count == 2 && glassButtons.allSatisfy { !$0.isBordered && $0.superview?.subviews.count == 2 }, "corner actions overlay the shared glass surface without a second bezel")
 let compactCenter = NSPoint(x: window.frame.midX, y: window.frame.midY)
 window.toggleDetails(); drain(0.06)
 if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -175,6 +176,29 @@ if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
 drain(0.3)
 expect(window.frame.width > window.frame.height, "expanded shelf uses the wide content layout")
 expect(abs(window.frame.midX - compactCenter.x) < 1 && abs(window.frame.midY - compactCenter.y) < 1, "expansion preserves both center coordinates")
+let modeButtons = descendantViews(window.contentView!).compactMap { $0 as? NSButton }.filter { $0.action == NSSelectorFromString("changeViewMode:") }
+let listMode = modeButtons.first { $0.accessibilityLabel() == "列表" }!
+let gridMode = modeButtons.first { $0.accessibilityLabel() == "网格" }!
+listMode.performClick(nil)
+window.contentView!.layoutSubtreeIfNeeded()
+let visibleTable = descendantViews(window.contentView!).compactMap { $0 as? NSTableView }.first!
+expect(listMode.state == .on && gridMode.state == .off && visibleTable.numberOfRows == 6, "list switch selects one segment and presents all shelf items")
+expect(visibleTable.tableColumns[0].width > 300, "file list column fills the visible viewport")
+expect(descendantViews(visibleTable).compactMap { $0 as? NSButton }.contains { $0.action == NSSelectorFromString("revealListItem:") }, "file rows expose the Finder action")
+gridMode.performClick(nil)
+expect(gridMode.state == .on && listMode.state == .off, "switching back activates only the grid segment")
+func hoverShelfButton(_ button: NSButton) {
+    let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+    let event = NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+    window.dropOverlay.mouseMoved(with: event)
+}
+hoverShelfButton(gridMode)
+expect((gridMode as? DropShelfHoverButton)?.isHovered == true, "overlay routes pointer highlight to the grid segment")
+hoverShelfButton(listMode)
+expect((gridMode as? DropShelfHoverButton)?.isHovered == false && (listMode as? DropShelfHoverButton)?.isHovered == true,
+       "pointer entering another segment clears the previous hover")
+
 window.collapseIfOutside(at: compactCenter)
 expect(window.frame.width > window.frame.height, "inside click does not collapse shelf")
 window.collapseIfOutside(at: NSPoint(x: window.frame.maxX + 20, y: window.frame.midY)); drain(0.3)
@@ -338,6 +362,27 @@ expect(gridWindow.table.selectedRowIndexes == IndexSet(integer: 1), "filename in
 nativeGrid.keyDown(with: deleteKey)
 expect(shelves.store!.shelf(gridWindow.shelfID)!.items.map(\.id) == [gridIDs[0], gridIDs[2]], "Delete removes only the filename-selected tile")
 gridWindow.close()
+let screenshotShelf = shelves.create()!
+for index in 1...4 {
+    let url = fixtures.appendingPathComponent("Screenshot-\(index).png")
+    try FileManager.default.copyItem(at: imageURL, to: url)
+    try shelves.store!.addFile(url, to: screenshotShelf.shelfID)
+}
+screenshotShelf.refresh(); screenshotShelf.toggleDetails(); drain(0.3)
+screenshotShelf.contentView!.layoutSubtreeIfNeeded()
+let screenshotGrid = descendantViews(screenshotShelf.contentView!).compactMap { $0 as? DropShelfTable }.first!
+let screenshotRow = screenshotGrid.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSStackView
+let screenshotLastRow = screenshotGrid.view(atColumn: 0, row: 1, makeIfNecessary: true) as! NSStackView
+expect(screenshotGrid.numberOfRows == 2 && screenshotLastRow.arrangedSubviews[0] is DropShelfTile &&
+       (screenshotLastRow.arrangedSubviews[1] as? NSButton)?.title == "在 Finder 中显示", "four files put the Finder action in the fifth grid position")
+let screenshotPreview = (screenshotRow.arrangedSubviews[0] as! DropShelfTile).preview!
+func hasScreenshotAspectRatio() -> Bool {
+    guard let size = screenshotPreview.imageView.image?.size, size.height > 0 else { return false }
+    return abs(size.width / size.height - 1.6) < 0.03
+}
+for _ in 0..<40 where !hasScreenshotAspectRatio() { drain(0.05) }
+expect(hasScreenshotAspectRatio(), "an expanded PNG file tile loads the image thumbnail with its original aspect ratio")
+screenshotShelf.close()
 let collisionWindow = shelves.create()!
 let collisionProviders = [
     ShelfTestPromise("invoice.pdf", delay: 0.3, contents: "first"),

@@ -42,6 +42,8 @@ class DropShelfDropView: NSView {
 final class DropShelfCaptureOverlay: DropShelfDropView {
     weak var underlying: NSView?
     private weak var mouseTarget: NSView?
+    private weak var hoveredButton: DropShelfHoverButton?
+    private var hoverArea: NSTrackingArea?
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -53,8 +55,28 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
         return underlying.hitTest(underlying.superview?.convert(windowPoint, from: nil) ?? windowPoint)
     }
     private func target(_ event: NSEvent) -> NSView? { forwardedView(at: event.locationInWindow) }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverArea = area
+    }
+    override func mouseMoved(with event: NSEvent) { updateHover(target(event) as? DropShelfHoverButton) }
+    override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+    override func mouseExited(with event: NSEvent) { updateHover(nil) }
+
+    private func updateHover(_ button: DropShelfHoverButton?) {
+        guard hoveredButton !== button else { return }
+        hoveredButton?.isHovered = false
+        hoveredButton = button
+        button?.isHovered = true
+    }
+
     override func mouseDown(with event: NSEvent) {
-        guard let target = target(event) else { return }
+        let target = target(event)
+        updateHover(target as? DropShelfHoverButton)
+        guard let target else { return }
         mouseTarget = target
         if target is NSControl || target is DropShelfPreview || target is NSScrollView || target.enclosingScrollView != nil {
             target.mouseDown(with: event)
@@ -129,4 +151,36 @@ final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
     }
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { operations() }
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) { ended?(operation) }
+}
+
+/// Leave breathing room on both sides of the compact title and its chevron.
+final class DropShelfCapsuleCell: NSButtonCell {
+    private let horizontalInset: CGFloat = 10
+
+    override var cellSize: NSSize {
+        var size = super.cellSize
+        size.width += 2 * horizontalInset
+        return size
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: cellFrame.insetBy(dx: horizontalInset, dy: 0), in: controlView)
+    }
+}
+
+final class DropShelfHoverButton: NSButton {
+    var isHovered = false { didSet { updateHighlight() } }
+    var showsSelection = false { didSet { updateHighlight() } }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateHighlight()
+    }
+
+    private func updateHighlight() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = isHovered ? NSColor.tertiaryLabelColor.cgColor
+                : showsSelection ? NSColor.quaternaryLabelColor.cgColor : nil
+        }
+    }
 }
