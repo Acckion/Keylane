@@ -813,3 +813,10 @@ let filteredMenu = AIModelMenuCatalog(connections: mixedProviderModels, selectio
 precondition(filteredMenu.groups.map(\.id) == ["xAI"])
 precondition(filteredMenu.choices(inherits: false, allowsLastUsed: false) == [.model(orderingXAI.id)])
 print("PASS model menu ordering: mixed-case provider groups and keyboard share order; search, hidden selection, disabled items and special choices remain consistent")
+
+precondition(filteredMenu.choices(inherits: true, allowsLastUsed: true) == [.model(orderingXAI.id)])
+let noMatchingMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(orderingOpenAI.id), query: "no-such-fixture-model")
+precondition(noMatchingMenu.groups.isEmpty)
+precondition(noMatchingMenu.choices(inherits: true, allowsLastUsed: true).isEmpty)
+precondition(orderedMenu.choices(inherits: true, allowsLastUsed: true).prefix(2) == [.inherit, .lastUsed])
+print("PASS model menu search: matching models precede Return selection, no matches offer no selection, clearing search restores special choices")

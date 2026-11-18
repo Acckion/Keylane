@@ -65,8 +65,8 @@ private struct AIModelMenu: View {
                 ScrollViewReader { reader in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 3) {
-                            if let inheritTitle { row(.inherit, title: inheritTitle, symbol: "arrow.turn.down.right") }
-                            if allowsLastUsed { row(.lastUsed, title: "上次使用的模型", symbol: "clock") }
+                            if let inheritTitle, !snapshot.isSearching { row(.inherit, title: inheritTitle, symbol: "arrow.turn.down.right") }
+                            if allowsLastUsed && !snapshot.isSearching { row(.lastUsed, title: "上次使用的模型", symbol: "clock") }
                             if snapshot.groups.isEmpty { SettingsDescription("没有匹配的可用模型").padding(12) }
                             ForEach(snapshot.groups) { group in
                                 SettingsDescription(group.id).padding(.top, 10).padding(.horizontal, 10)
@@ -101,7 +101,7 @@ private struct AIModelMenu: View {
         .onKeyPress(.downArrow) { move(1); return .handled }
         .onKeyPress(.upArrow) { move(-1); return .handled }
         .onKeyPress(.return) {
-            guard let highlighted, choices.contains(highlighted) else { return .ignored }
+            guard let highlighted, choices.contains(highlighted) else { return .handled }
             selection = highlighted; close(); return .handled
         }
         .onKeyPress(.escape) { close(); return .handled }
