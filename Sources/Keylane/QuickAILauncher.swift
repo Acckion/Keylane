@@ -45,6 +45,7 @@ enum QuickAILauncher {
 struct AIConversationTranscript: View {
     @ObservedObject var controller: QuickAIController
     var inLauncher = false
+    var showsEmptyHint = true
     @State private var followsBottom = true
     private let bottomID = "quick-ai-bottom"
 
@@ -72,7 +73,7 @@ struct AIConversationTranscript: View {
     private var transcript: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
-                if controller.turns.isEmpty {
+                if controller.turns.isEmpty && showsEmptyHint {
                     Text(inLauncher ? "输入问题，按回车发送。" : "输入问题开始对话。").foregroundStyle(.secondary)
                 }
                 ForEach(controller.turns) { turn in

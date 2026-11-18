@@ -232,7 +232,29 @@ history.perform({ try $0.load(savedID) }) { result in
 }
 wait("Flush completed response to SQLite") { savedRecord?.content.turns.first?.complete == true }
 precondition(settings.state.lastChatModelID == second.id)
+conversation.updateChat(savedID, change: .pin(true))
+conversation.updateChat(savedID, change: .rename("重命名后的对话"))
+conversation.updateChat(savedID, change: .archive(true))
+wait("Chat metadata is persisted independently of generated titles") {
+    conversation.chats.first?.pinned == true && conversation.chats.first?.archived == true &&
+        conversation.chats.first?.title == "重命名后的对话"
+}
+conversation.chatInstructions = "简洁回答，保留技术术语。"
+var instructedRecord: AIChatRecord?
+history.perform({ try $0.load(savedID) }) { instructedRecord = try! $0.get() }
+wait("Additional instructions survive history writes") {
+    instructedRecord?.content.instructions == "简洁回答，保留技术术语。"
+}
+precondition(conversation.chats.first?.title == "重命名后的对话" && conversation.chats.first?.pinned == true)
 conversation.closeChat()
+let archivedRestore = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
+                                       history: history, readKey: { _ in nil })
+archivedRestore.beginChat(restoreLatest: true)
+wait("Archive history loaded") { !archivedRestore.chats.isEmpty && !archivedRestore.loadingChat }
+precondition(archivedRestore.chatID == nil, "Archived chats should not reopen automatically")
+archivedRestore.updateChat(savedID, change: .archive(false))
+wait("Unarchive preserves pin and title") { archivedRestore.chats.first?.archived == false }
+archivedRestore.closeChat()
 
 let reopened = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                  history: AIChatHistory(url: historyURL), readKey: { _ in nil })
@@ -240,6 +262,11 @@ reopened.beginChat(restoreLatest: true)
 wait("Restore most recent chat from SQLite") { !reopened.loadingChat && reopened.chatID == savedID }
 precondition(reopened.turns.first?.id == savedTurnID && reopened.turns.first?.complete == true)
 precondition(reopened.lastAnswer == "你好")
+precondition(reopened.chatInstructions == "简洁回答，保留技术术语。")
+precondition(reopened.chats.first?.pinned == true && reopened.chats.first?.title == "重命名后的对话")
+precondition(reopened.messages(for: "继续", instructions: reopened.chatInstructions).first?.role == .system)
+precondition(!reopened.chooseChatModel(legacy.id), "Existing history must stay bound to its original model")
+
 settings.select(legacy.id)
 precondition(reopened.currentConnection?.id == second.id && reopened.matchesCurrentModel)
 let requestsBeforeChatFollowUp = FixtureProtocol.requests.count
