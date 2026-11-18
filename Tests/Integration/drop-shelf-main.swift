@@ -4,20 +4,68 @@ final class ShelfTestPromise: DropShelfReceiving {
     let name: String
     let fail: Bool
     let delay: TimeInterval
+    let contents: String?
+    let overwrite: Bool
+    private(set) var destination: URL?
     var expectedCount: Int { 1 }
     var names: [String] { [name] }
-    init(_ name: String, fail: Bool = false, delay: TimeInterval = 0.1) { self.name = name; self.fail = fail; self.delay = delay }
+    init(_ name: String, fail: Bool = false, delay: TimeInterval = 0.1, contents: String? = nil, overwrite: Bool = false) {
+        self.name = name; self.fail = fail; self.delay = delay; self.contents = contents; self.overwrite = overwrite
+    }
     func receive(at destination: URL, queue: OperationQueue, reader: @escaping (URL, Error?) -> Void) {
+        self.destination = destination
         queue.addOperation { [self] in
             Thread.sleep(forTimeInterval: delay)
             let url = destination.appendingPathComponent(name)
             do {
-                if fail { throw NSError(domain: "KeylaneSyntheticPromise", code: 1, userInfo: [NSLocalizedDescriptionKey: "synthetic promise failure"]) }
-                try Data(("Synthetic " + name).utf8).write(to: url, options: .withoutOverwriting)
+                if fail {
+                    try Data("partial".utf8).write(to: url)
+                    throw NSError(domain: "KeylaneSyntheticPromise", code: 1, userInfo: [NSLocalizedDescriptionKey: "synthetic promise failure"])
+                }
+                try Data((contents ?? "Synthetic " + name).utf8).write(to: url, options: overwrite ? .atomic : .withoutOverwriting)
                 reader(url, nil)
             } catch { reader(url, error) }
         }
     }
+}
+final class ShelfTestMultiPromise: DropShelfReceiving {
+    let producerQueue = OperationQueue()
+    private var registered = false
+    var expectedCount: Int { 1 } // Legacy source: one advertised type, two delivered files.
+    var names: [String] { registered ? ["ordered-one.txt", "ordered-two.txt"] : [] }
+    func receive(at destination: URL, queue: OperationQueue, reader: @escaping (URL, Error?) -> Void) {
+        registered = true
+        for (index, name) in names.enumerated() {
+            producerQueue.addOperation {
+                Thread.sleep(forTimeInterval: index == 0 ? 0.3 : 0.05)
+                let file = destination.appendingPathComponent(name)
+                do {
+                    try Data(name.utf8).write(to: file, options: .withoutOverwriting)
+                    queue.addOperation { reader(file, nil) }
+                } catch { queue.addOperation { reader(file, error) } }
+            }
+        }
+    }
+}
+// Protocol double for destination callback ordering; not a physical drag session.
+final class ShelfTestDragInfo: NSObject, NSDraggingInfo {
+    var draggingDestinationWindow: NSWindow?
+    let draggingPasteboard: NSPasteboard
+    var draggingSource: Any? { nil }
+    var draggingSourceOperationMask: NSDragOperation { .copy }
+    var draggingLocation: NSPoint = .zero
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingSequenceNumber = 4321
+    var draggingFormation: NSDraggingFormation = .none
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    init(window: NSWindow, board: NSPasteboard) { draggingDestinationWindow = window; draggingPasteboard = board }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func resetSpringLoading() {}
+    func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?, classes: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
 }
 let _ = NSApplication.shared
 NSApp.setActivationPolicy(.regular)
@@ -50,7 +98,7 @@ if CommandLine.arguments.contains("--dark") { window.appearance = NSAppearance(n
 if CommandLine.arguments.contains("--light") { window.appearance = NSAppearance(named: .aqua) }
 func expect(_ value: @autoclosure () -> Bool, _ label: String) { precondition(value(), label); print("PASS " + label) }
 if !CommandLine.arguments.contains("--empty") {
-expect(abs(window.frame.width - window.frame.height) < 1, "compact shelf is square")
+expect(abs(window.frame.width - window.frame.height) < 1, "compact shelf is square: \(window.frame)")
 expect(!window.styleMask.contains(.titled), "no standard titlebar or traffic lights")
 let board = NSPasteboard(name: .init("org.keylane.test.shelf." + UUID().uuidString))
 board.clearContents(); board.writeObjects([source as NSURL])
@@ -107,8 +155,104 @@ window.cancelImports(); drain(0.9)
 expect(shelves.store!.shelf(window.shelfID)!.items.count == 6, "late cancelled callback cannot revive content")
 let incoming = root.appendingPathComponent("Storage/Incoming")
 expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty) == true, "finished and failed promise batches leave no residue")
+let snapScreen = NSRect(x: -800, y: 40, width: 800, height: 600)
+func snapCandidate(_ x: CGFloat, _ y: CGFloat) -> NSRect { NSRect(x: x, y: y, width: 210, height: 210) }
+expect(DropShelfDock.target(for: snapCandidate(-830, 417), in: snapScreen) == nil, "a mostly visible shelf does not dock")
+let leftDock = DropShelfDock.target(for: snapCandidate(-925, 417), in: snapScreen)!
+expect(leftDock.frame(for: snapCandidate(-925, 417)).origin == NSPoint(x: -982, y: 417) && leftDock.edge.symbol == "chevron.right",
+       "the exposed left strip has an inward-facing handle")
+let snapSecondScreen = NSRect(x: 0, y: -60, width: 700, height: 650)
+let rightDock = DropShelfDock.target(for: snapCandidate(630, 0), in: snapSecondScreen)!
+expect(rightDock.frame(for: snapCandidate(630, 0)).minX == 672 && rightDock.edge.symbol == "chevron.left", "the opposite edge mirrors its handle")
+expect(DropShelfDock.target(for: snapCandidate(-925, 417), in: snapScreen,
+                           neighboring: [NSRect(x: -1600, y: 40, width: 800, height: 600)]) == nil,
+       "the seam between displays does not dock a shelf")
+let menuBarSafeArea = NSRect(x: -800, y: 40, width: 800, height: 562)
+let highShelf = snapCandidate(-500, 555)
+let topDock = DropShelfDock.target(for: highShelf, in: snapScreen, usable: menuBarSafeArea)!
+expect(topDock.edge == .top && topDock.frame(for: highShelf).minY == menuBarSafeArea.maxY - DropShelfDock.strip,
+       "top docking keeps the entire visible handle below a tall menu bar")
+
+if let screen = window.screen {
+    let moveShelf = shelves.create()!
+    let area = screen.frame
+    moveShelf.setFrameOrigin(NSPoint(x: area.midX - moveShelf.frame.width / 2, y: area.midY - moveShelf.frame.height / 2))
+    moveShelf.contentView!.layoutSubtreeIfNeeded()
+    let grabPoint = NSPoint(x: moveShelf.frame.width - 10, y: moveShelf.frame.height - 6)
+    func shelfMouse(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                           windowNumber: moveShelf.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+    let emptyPreview = descendantViews(moveShelf.contentView!).compactMap { $0 as? DropShelfPreview }.first!
+    expect(moveShelf.dropOverlay.primaryMouseTarget(at: midpointInWindow(emptyPreview)) == nil,
+           "an empty shelf preview is a window drag region")
+    let start = moveShelf.frame.origin
+    let mouse = moveShelf.convertPoint(toScreen: grabPoint)
+    moveShelf.dropOverlay.mouseDown(with: shelfMouse(.leftMouseDown, at: grabPoint))
+    let partlyOutside = NSPoint(x: mouse.x + area.minX - 40 - start.x, y: mouse.y)
+    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: partlyOutside)))
+    expect(abs(moveShelf.frame.minX - area.minX + 40) < 0.5, "dragging the shelf handle can move the window beyond the screen")
+    let pastThreshold = NSPoint(x: partlyOutside.x - 85, y: partlyOutside.y)
+    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: pastThreshold)))
+    let releaseOrigin = moveShelf.frame.origin
+    expect(abs(releaseOrigin.x - area.minX + 125) < 0.5 && moveShelf.dropOverlay.dock == nil,
+           "crossing the threshold keeps following the pointer until mouse up")
+    moveShelf.dropOverlay.mouseUp(with: shelfMouse(.leftMouseUp, at: moveShelf.convertPoint(fromScreen: pastThreshold)))
+    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        expect(moveShelf.frame.origin == releaseOrigin, "dock animation starts at the mouse-up position")
+        drain(0.06)
+        expect(moveShelf.frame.minX < releaseOrigin.x && moveShelf.frame.maxX > area.minX + 28,
+               "dock animation moves through intermediate positions")
+    }
+    drain(0.3)
+    expect(abs(moveShelf.frame.maxX - area.minX - 28) < 0.5 && moveShelf.dropOverlay.dock?.edge == .left,
+           "animation ends with the shelf docked at the screen edge")
+    let overlay = moveShelf.dropOverlay
+    moveShelf.contentView!.layoutSubtreeIfNeeded()
+    let arrow = overlay.subviews.compactMap { $0 as? NSImageView }.first!
+    expect(overlay.underlying?.isHidden == true && !arrow.isHidden && arrow.image != nil &&
+           abs(arrow.frame.midX - overlay.bounds.maxX + 14) < 0.5 && abs(arrow.frame.midY - overlay.bounds.midY) < 0.5,
+           "the strip shows only a centered inward handle")
+    let handlePoint = midpointInWindow(arrow)
+    overlay.mouseDown(with: shelfMouse(.leftMouseDown, at: handlePoint))
+    overlay.mouseUp(with: shelfMouse(.leftMouseUp, at: handlePoint))
+    drain(0.3)
+    expect(moveShelf.frame.minX >= area.minX && overlay.dock == nil && overlay.underlying?.isHidden == false && arrow.isHidden,
+           "clicking the handle restores the whole shelf and its controls")
+    moveShelf.toggleDetails()
+    let movingGrab = NSPoint(x: moveShelf.frame.midX - moveShelf.frame.minX, y: moveShelf.frame.height - 6)
+    let movingMouse = moveShelf.convertPoint(toScreen: movingGrab)
+    overlay.mouseDown(with: shelfMouse(.leftMouseDown, at: movingGrab))
+    let shiftedMouse = NSPoint(x: movingMouse.x + 50, y: movingMouse.y - 10)
+    overlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: shiftedMouse)))
+    overlay.mouseUp(with: shelfMouse(.leftMouseUp, at: moveShelf.convertPoint(fromScreen: shiftedMouse)))
+    let movedFrame = moveShelf.frame
+    drain(0.3)
+    expect(moveShelf.frame == movedFrame && movedFrame.width == 420, "starting to move an expanding shelf finishes its resize without resetting the dragged position")
+    moveShelf.toggleDetails(); drain(0.3)
+    let usable = screen.visibleFrame
+    moveShelf.setFrameOrigin(NSPoint(x: usable.maxX - moveShelf.frame.width, y: usable.maxY - moveShelf.frame.height))
+    moveShelf.toggleDetails(); drain(0.3)
+    expect(moveShelf.frame.maxY <= usable.maxY && moveShelf.frame.maxX <= usable.maxX,
+           "expanding at the upper-right edge keeps the shelf controls within the visible screen")
+    moveShelf.close()
+}
 let emptyDragShelf = shelves.createForDrag()!
 let populatedDragShelf = shelves.createForDrag()!
+expect(emptyDragShelf.frame.intersection(window.frame).isEmpty &&
+       populatedDragShelf.frame.intersection(window.frame).isEmpty &&
+       populatedDragShelf.frame.intersection(emptyDragShelf.frame).isEmpty,
+       "drag-triggered shelves avoid existing visible shelves and each other")
+let crowded = NSRect(x: -420, y: -100, width: 420, height: 210)
+let neighboring = NSRect(x: 0, y: -100, width: 420, height: 210)
+let obstruction = NSRect(x: -420, y: -100, width: 210, height: 210)
+expect(DropShelfController.dragShelfOrigin(near: NSPoint(x: -410, y: 0), in: [crowded], avoiding: [obstruction]) == NSPoint(x: -210, y: -100),
+       "drag placement uses an exact-fit slot before leaving the pointer display")
+expect(DropShelfController.dragShelfOrigin(near: NSPoint(x: -410, y: 0), in: [crowded, neighboring], avoiding: [crowded]) == NSPoint(x: 10, y: -100),
+       "drag placement can use a neighboring display when the current display is full")
+expect(DropShelfController.dragShelfOrigin(near: NSPoint(x: -410, y: 0), in: [crowded], avoiding: [crowded]) == nil,
+       "drag cannot create an overlapping shelf when all available space is occupied")
+
 try shelves.store!.addFile(source, to: populatedDragShelf.shelfID)
 populatedDragShelf.refresh()
 let manualEmptyShelf = shelves.create()!
@@ -117,10 +261,55 @@ expect(!emptyDragShelf.isVisible, "unused drag-triggered empty shelf closes when
 expect(populatedDragShelf.isVisible, "populated drag-triggered shelf remains open")
 expect(manualEmptyShelf.isVisible, "manually opened empty shelf is not auto-closed")
 populatedDragShelf.close(); manualEmptyShelf.close()
-window.toggleDetails()
+let glassButtons = descendantViews(window.contentView!).compactMap { $0 as? NSButton }.filter { $0.action == NSSelectorFromString("closeShelf") || $0.action == NSSelectorFromString("disclosureAction") }
+expect(window.contentView is LauncherGlassView, "shelf uses the shared Launcher window glass at the root")
+expect(glassButtons.count == 2 && glassButtons.allSatisfy { !$0.isBordered && $0.superview?.subviews.count == 2 }, "corner actions overlay the shared glass surface without a second bezel")
+let compactCenter = NSPoint(x: window.frame.midX, y: window.frame.midY)
+window.toggleDetails(); drain(0.06)
+if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+    expect(window.frame.width > 210 && window.frame.width < 420, "expansion has intermediate animation frames")
+}
+drain(0.3)
 expect(window.frame.width > window.frame.height, "expanded shelf uses the wide content layout")
-window.toggleDetails()
-expect(abs(window.frame.width - window.frame.height) < 1, "returning from expanded mode restores square shelf")
+expect(abs(window.frame.midX - compactCenter.x) < 1 && abs(window.frame.midY - compactCenter.y) < 1, "expansion preserves both center coordinates")
+let modeButtons = descendantViews(window.contentView!).compactMap { $0 as? NSButton }.filter { $0.action == NSSelectorFromString("changeViewMode:") }
+let listMode = modeButtons.first { $0.accessibilityLabel() == "列表" }!
+let gridMode = modeButtons.first { $0.accessibilityLabel() == "网格" }!
+listMode.performClick(nil)
+window.contentView!.layoutSubtreeIfNeeded()
+let visibleTable = descendantViews(window.contentView!).compactMap { $0 as? NSTableView }.first!
+expect(listMode.state == .on && gridMode.state == .off && visibleTable.numberOfRows == 6, "list switch selects one segment and presents all shelf items")
+expect(visibleTable.tableColumns[0].width > 300, "file list column fills the visible viewport")
+expect(descendantViews(visibleTable).compactMap { $0 as? NSButton }.contains { $0.action == NSSelectorFromString("revealListItem:") }, "file rows expose the Finder action")
+let firstListItem = visibleTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as! DropShelfListItemView
+firstListItem.layoutSubtreeIfNeeded()
+func midpointInWindow(_ view: NSView) -> NSPoint {
+    view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+}
+expect(window.dropOverlay.primaryMouseTarget(at: midpointInWindow(firstListItem.arrangedSubviews[1])) === visibleTable,
+       "dragging a list filename uses the native file drag source")
+expect(window.dropOverlay.primaryMouseTarget(at: midpointInWindow(firstListItem.arrangedSubviews[2])) == nil,
+       "empty space beside a list filename moves the shelf")
+
+gridMode.performClick(nil)
+expect(gridMode.state == .on && listMode.state == .off, "switching back activates only the grid segment")
+func hoverShelfButton(_ button: NSButton) {
+    let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+    let event = NSEvent.mouseEvent(with: .mouseMoved, location: point, modifierFlags: [], timestamp: 0,
+                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
+    window.dropOverlay.mouseMoved(with: event)
+}
+hoverShelfButton(gridMode)
+expect((gridMode as? DropShelfHoverButton)?.isHovered == true, "overlay routes pointer highlight to the grid segment")
+hoverShelfButton(listMode)
+expect((gridMode as? DropShelfHoverButton)?.isHovered == false && (listMode as? DropShelfHoverButton)?.isHovered == true,
+       "pointer entering another segment clears the previous hover")
+
+window.collapseIfOutside(at: compactCenter)
+expect(window.frame.width > window.frame.height, "inside click does not collapse shelf")
+window.collapseIfOutside(at: NSPoint(x: window.frame.maxX + 20, y: window.frame.midY)); drain(0.3)
+expect(abs(window.frame.width - window.frame.height) < 1, "outside click restores square shelf")
+expect(abs(window.frame.midX - compactCenter.x) < 1 && abs(window.frame.midY - compactCenter.y) < 1, "collapse preserves both center coordinates")
 let managed = try shelves.store!.create()
 try shelves.store!.rename(managed, title: "Manager fixture")
 try shelves.store!.addText("searchable payload token", to: managed)
@@ -279,6 +468,167 @@ expect(gridWindow.table.selectedRowIndexes == IndexSet(integer: 1), "filename in
 nativeGrid.keyDown(with: deleteKey)
 expect(shelves.store!.shelf(gridWindow.shelfID)!.items.map(\.id) == [gridIDs[0], gridIDs[2]], "Delete removes only the filename-selected tile")
 gridWindow.close()
+let screenshotShelf = shelves.create()!
+for index in 1...4 {
+    let url = fixtures.appendingPathComponent("Screenshot-\(index).png")
+    try FileManager.default.copyItem(at: imageURL, to: url)
+    board.clearContents(); board.writeObjects([url as NSURL])
+    expect(screenshotShelf.receive(board, isDrag: true), "expanded preview fixture imports a PNG through the drag receiver")
+}
+screenshotShelf.refresh(); screenshotShelf.toggleDetails(); drain(0.3)
+screenshotShelf.contentView!.layoutSubtreeIfNeeded()
+let screenshotGrid = descendantViews(screenshotShelf.contentView!).compactMap { $0 as? DropShelfTable }.first!
+let screenshotRow = screenshotGrid.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSStackView
+let screenshotLastRow = screenshotGrid.view(atColumn: 0, row: 1, makeIfNecessary: true) as! NSStackView
+let lastFileTile = screenshotLastRow.arrangedSubviews[0] as! DropShelfTile
+let finderTile = screenshotLastRow.arrangedSubviews[1] as! DropShelfTile
+let finderButton = finderTile.subviews.compactMap { $0 as? NSButton }.first!
+expect(screenshotGrid.numberOfRows == 2 && finderButton.accessibilityLabel() == "在 Finder 中显示", "four files put the Finder action in the fifth grid position")
+screenshotLastRow.layoutSubtreeIfNeeded()
+func centerY(_ view: NSView) -> CGFloat {
+    view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: screenshotLastRow).y
+}
+expect(abs(centerY(lastFileTile.preview!.imageView) - centerY(finderTile.arrangedSubviews[0])) < 0.5 &&
+       abs(centerY(lastFileTile.arrangedSubviews[1]) - centerY(finderTile.arrangedSubviews[1])) < 0.5,
+       "Finder symbol and title align with the neighboring file thumbnail and filename")
+let finderLabel = finderTile.arrangedSubviews[1]
+let finderLabelPoint = finderLabel.convert(NSPoint(x: finderLabel.bounds.midX, y: finderLabel.bounds.midY), to: nil)
+expect(screenshotShelf.dropOverlay.forwardedView(at: finderLabelPoint) === finderButton, "the Finder label remains clickable")
+let screenshotPreview = (screenshotRow.arrangedSubviews[0] as! DropShelfTile).preview!
+func hasScreenshotAspectRatio() -> Bool {
+    guard let size = screenshotPreview.imageView.image?.size, size.height > 0 else { return false }
+    return abs(size.width / size.height - 1.6) < 0.03
+}
+for _ in 0..<40 where !hasScreenshotAspectRatio() { drain(0.05) }
+expect(hasScreenshotAspectRatio(), "an expanded PNG file tile loads the image thumbnail with its original aspect ratio")
+let screenshotPoint = midpointInWindow(screenshotPreview.imageView)
+expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: screenshotPoint) === screenshotPreview,
+       "dragging the visible screenshot uses the file drag source")
+let screenshotTile = screenshotRow.arrangedSubviews[0]
+let gridPadding = screenshotTile.convert(NSPoint(x: screenshotTile.bounds.minX + 2, y: screenshotTile.bounds.midY), to: nil)
+expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: gridPadding) == nil,
+       "padding beside the thumbnail moves the shelf")
+screenshotShelf.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+func clickScreenshotPadding(_ type: NSEvent.EventType) -> NSEvent {
+    NSEvent.mouseEvent(with: type, location: gridPadding, modifierFlags: [], timestamp: 0,
+                      windowNumber: screenshotShelf.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+}
+screenshotShelf.dropOverlay.mouseDown(with: clickScreenshotPadding(.leftMouseDown))
+screenshotShelf.dropOverlay.mouseUp(with: clickScreenshotPadding(.leftMouseUp))
+expect(screenshotShelf.table.selectedRowIndexes.isEmpty, "clicking grid padding through the real overlay clears the old file selection")
+
+expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: finderLabelPoint) === finderButton,
+       "the Finder control still keeps its click action")
+
+screenshotShelf.refreshFiles()
+screenshotShelf.contentView!.layoutSubtreeIfNeeded()
+let rebuiltScreenshotRow = screenshotGrid.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSStackView
+let rebuiltScreenshotPreview = (rebuiltScreenshotRow.arrangedSubviews[0] as! DropShelfTile).preview!
+let rebuiltSize = rebuiltScreenshotPreview.imageView.image!.size
+expect(abs(rebuiltSize.width / rebuiltSize.height - 1.6) < 0.03, "reference polling keeps a decoded screenshot visible immediately after the grid is rebuilt")
+
+screenshotShelf.close()
+let collisionWindow = shelves.create()!
+let collisionProviders = [
+    ShelfTestPromise("invoice.pdf", delay: 0.3, contents: "first"),
+    ShelfTestPromise("invoice.pdf", fail: true),
+    ShelfTestPromise("invoice.pdf", contents: "second", overwrite: true),
+    ShelfTestPromise("invoice.pdf", contents: "third")
+]
+expect(collisionWindow.receivePromises(collisionProviders), "same-name promise batch begins")
+expect(collisionProviders.allSatisfy { $0.destination != nil }, "every receiver is registered synchronously before acceptance returns")
+for _ in 0..<100 where shelves.store!.shelf(collisionWindow.shelfID)!.items.count < 3 { drain(0.05) }
+let collisionItems = shelves.store!.shelf(collisionWindow.shelfID)!.items
+expect(collisionItems.count == 3 && collisionItems.allSatisfy { $0.title == "invoice.pdf" }, "same-name successes survive partial failure with original names")
+let collisionData = try collisionItems.map { try String(contentsOf: shelves.store!.resolve($0)!, encoding: .utf8) }
+expect(collisionData == ["first", "second", "third"], "same-name promises never overwrite earlier bytes and retain source order")
+expect(Set(collisionProviders.compactMap(\.destination)).count == 1 && collisionProviders.allSatisfy { $0.destination != nil }, "all receivers use the same AppKit destination")
+expect(collisionWindow.feedbackText.contains("synthetic promise failure"), "same-name partial failure remains visible")
+expect(collisionWindow.receivePromises([ShelfTestMultiPromise()]), "multi-file receiver begins")
+for _ in 0..<100 where shelves.store!.shelf(collisionWindow.shelfID)!.items.count < 5 { drain(0.05) }
+expect(Array(shelves.store!.shelf(collisionWindow.shelfID)!.items.suffix(2)).map(\.title) == ["ordered-one.txt", "ordered-two.txt"], "out-of-order callbacks within a receiver retain declared order")
+let cancelledProviders = [ShelfTestPromise("cancel.pdf", delay: 0.05), ShelfTestPromise("cancel.pdf", delay: 0.4), ShelfTestPromise("cancel.pdf")]
+expect(collisionWindow.receivePromises(cancelledProviders), "multi-receiver cancellation begins")
+expect(cancelledProviders.allSatisfy { $0.destination != nil }, "cancelable receivers are all registered within acceptance")
+for _ in 0..<100 where (try? FileManager.default.contentsOfDirectory(atPath: incoming.path).contains { $0.hasSuffix("-staged") }) != true { drain(0.01) }
+expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).contains { $0.hasSuffix("-staged") }) == true, "cancellation occurs after an earlier receiver has staged its result")
+collisionWindow.cancelImports(); drain(0.8)
+expect(shelves.store!.shelf(collisionWindow.shelfID)!.items.count == 5, "cancelled staged results never enter the shelf")
+expect(cancelledProviders[2].destination != nil, "cancellation revokes commits without assuming native writes can be stopped")
+expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty) == true, "collision success failure and cancellation clean receiving and staging directories")
+collisionWindow.close()
+let droppingWindow = shelves.createForDrag()!
+let dropSurface = droppingWindow.dropOverlay
+board.clearContents(); board.writeObjects([source as NSURL])
+let dropInfo = ShelfTestDragInfo(window: droppingWindow, board: board)
+expect(dropSurface.registeredDraggedTypes.contains(.fileURL), "whole card surface registers file drops")
+expect(dropSurface.draggingEntered(dropInfo) == .copy && droppingWindow.receivingDrag, "native destination entry marks a pending drop")
+shelves.finishDragActivation()
+expect(droppingWindow.isVisible, "mouse release cleanup cannot close a pending destination before perform")
+expect(dropSurface.prepareForDragOperation(dropInfo) && dropSurface.performDragOperation(dropInfo), "card-wide destination delivers the dropped file")
+dropSurface.concludeDragOperation(dropInfo); dropSurface.draggingEnded(dropInfo)
+shelves.finishDragActivation()
+expect(droppingWindow.isVisible && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "completed file drop keeps the populated automatic shelf")
+expect(!droppingWindow.receivingDrag, "completed drop clears pending destination state")
+expect(dropSurface.performDragOperation(dropInfo) && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "repeated perform callback does not duplicate the file")
+droppingWindow.contentView!.layoutSubtreeIfNeeded()
+expect(dropSurface.frame.size == droppingWindow.contentView!.bounds.size, "drop surface fills the entire square card")
+for x in [0.15, 0.5, 0.85] {
+    for y in [0.1, 0.5, 0.9] {
+        dropInfo.draggingLocation = NSPoint(x: droppingWindow.frame.width * x, y: droppingWindow.frame.height * y)
+        dropInfo.draggingSequenceNumber += 1
+        let content = droppingWindow.contentView!
+        let hit = content.hitTest(content.superview?.convert(dropInfo.draggingLocation, from: nil) ?? dropInfo.draggingLocation)
+        expect(hit === dropSurface, "actual view hit testing selects the same top capture layer across the entire card")
+        expect(droppingWindow.draggingEntered(dropInfo) == .copy && droppingWindow.prepareForDragOperation(dropInfo), "window fallback accepts top middle and bottom card regions")
+        expect(droppingWindow.performDragOperation(dropInfo), "window fallback receives across the card including footer controls")
+        droppingWindow.concludeDragOperation(dropInfo); droppingWindow.draggingEnded(dropInfo)
+    }
+}
+let footerButton = descendantViews(droppingWindow.contentView!).compactMap { $0 as? NSButton }.first { $0.title == source.lastPathComponent }!
+let footerPoint = footerButton.convert(NSPoint(x: footerButton.bounds.midX, y: footerButton.bounds.midY), to: nil)
+expect(droppingWindow.dropOverlay.forwardedView(at: footerPoint) === footerButton, "full capture layer forwards ordinary footer clicks to the real button")
+dropInfo.draggingLocation = NSPoint(x: -5, y: -5)
+expect(droppingWindow.draggingEntered(dropInfo).isEmpty, "window fallback rejects locations outside the card")
+let abandonedWindow = shelves.createForDrag()!
+let abandonedSurface = abandonedWindow.dropOverlay
+let abandonedInfo = ShelfTestDragInfo(window: abandonedWindow, board: board)
+_ = abandonedSurface.draggingEntered(abandonedInfo)
+abandonedSurface.draggingExited(abandonedInfo); abandonedSurface.draggingEnded(abandonedInfo)
+shelves.finishDragActivation()
+expect(!abandonedWindow.isVisible && droppingWindow.isVisible, "cancelled empty drop closes only the empty shelf")
+droppingWindow.close()
+final class ShelfSamplePaper: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.setFill(); bounds.fill()
+        ("KEYLANE\n\nSynthetic document preview\n\n1. Native file icon\n2. Original page proportions\n3. Independent local fixture" as NSString).draw(in: bounds.insetBy(dx: 45, dy: 60), withAttributes: [.font: NSFont.systemFont(ofSize: 24), .foregroundColor: NSColor.black])
+    }
+}
+let paperView = ShelfSamplePaper(frame: NSRect(x: 0, y: 0, width: 595, height: 842))
+let paperURLs = (1...2).map { fixtures.appendingPathComponent("preview-paper-\($0).pdf") }
+for url in paperURLs { try paperView.dataWithPDF(inside: paperView.bounds).write(to: url) }
+let previewFolder = fixtures.appendingPathComponent("Preview Folder", isDirectory: true)
+try FileManager.default.createDirectory(at: previewFolder, withIntermediateDirectories: true)
+let visualWindow = shelves.create()!
+for urls in [[paperURLs[0]], paperURLs, [previewFolder] + paperURLs] {
+    try shelves.store!.remove(visualWindow.shelfID)
+    for url in urls { try shelves.store!.addFile(url, to: visualWindow.shelfID) }
+    visualWindow.refresh(); drain(0.8)
+    visualWindow.contentView!.layoutSubtreeIfNeeded()
+    let visualPreview = descendantViews(visualWindow.contentView!).compactMap { $0 as? DropShelfPreview }.first!
+    let layers = visualPreview.subviews.compactMap { $0 as? NSImageView }.filter { !$0.isHidden && $0.image != nil }
+    expect(layers.count == urls.count, "one two and three items render distinct native preview layers")
+    expect(visualWindow.frame.width == visualWindow.frame.height, "native stacked preview preserves square shelf geometry")
+    let bitmap = visualPreview.bitmapImageRepForCachingDisplay(in: visualPreview.bounds)!
+    visualPreview.cacheDisplay(in: visualPreview.bounds, to: bitmap)
+    let rendered = NSImage(size: visualPreview.bounds.size)
+    rendered.lockFocus()
+    NSColor(calibratedWhite: 0.13, alpha: 1).setFill(); NSRect(origin: .zero, size: rendered.size).fill()
+    bitmap.draw(in: NSRect(origin: .zero, size: rendered.size))
+    rendered.unlockFocus()
+    try NSBitmapImageRep(data: rendered.tiffRepresentation!)!.representation(using: .png, properties: [:])!.write(to: root.appendingPathComponent("native-preview-\(urls.count).png"))
+}
+visualWindow.close()
 print("PASS production shelf integration (synthetic pasteboard, not physical drag acceptance)")
 }
 print("FIXTURE_ROOT " + root.path)
@@ -349,6 +699,20 @@ if CommandLine.arguments.contains("--image-preview") {
     try shelves.store!.remove(window.shelfID)
     try shelves.store!.addFile(imageURL, to: window.shelfID)
     window.refresh()
+}
+if CommandLine.arguments.contains("--region-interactive") {
+    if let screen = NSScreen.main {
+        window.setFrameOrigin(NSPoint(x: 550, y: screen.frame.maxY - 660))
+    }
+    let receive = window.dropOverlay.receive
+    var nativeCount = 0
+    window.dropOverlay.receive = { board in
+        let result = receive?(board) ?? false
+        nativeCount += 1
+        print("NATIVE_DROP count=\(nativeCount) accepted=\(result) point=\(NSEvent.mouseLocation)")
+        return result
+    }
+    print("NATIVE_TARGET frame=\(window.frame)")
 }
 if CommandLine.arguments.contains("--interactive") {
     NSApp.run()

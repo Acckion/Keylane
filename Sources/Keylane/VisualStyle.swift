@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Shared typography and symbol metrics for navigation and action rows.
@@ -16,4 +17,23 @@ enum VisualStyle {
     static let actionIconWidth: CGFloat = 18
     static let actionSpacing: CGFloat = 9
     static let selectionRadius: CGFloat = 10
+}
+
+/// Shared backing for floating Keylane panels. Keep glass at the window's root
+/// so AppKit composites it as the window material.
+final class LauncherGlassView: NSGlassEffectView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        style = .regular
+        cornerRadius = VisualStyle.launcherCornerRadius
+        wantsLayer = true
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
+        if #available(macOS 27.0, *), responds(to: NSSelectorFromString("setEffectIsInteractive:")) {
+            setValue(false, forKey: "effectIsInteractive")
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
