@@ -55,9 +55,11 @@ struct AIChatView: View {
         }
         .task { if column == .conversation { editorFocused = true } }
         .onChange(of: search) { _, value in if !value.isEmpty { showsArchive = true } }
-        .onChange(of: controller.chatID) { old, _ in
-            // The first send allocates an ID without changing the current draft.
-            if old != nil { composer.text = "" }
+        .onReceive(controller.historyOpened) { _ in
+            if column == .conversation { composer.text = "" }
+        }
+        .onChange(of: controller.chatID) { old, current in
+            if old != nil && current == nil { composer.text = "" }
         }
         .onExitCommand {
             if presentation.actionsVisible { presentation.actionsVisible = false }

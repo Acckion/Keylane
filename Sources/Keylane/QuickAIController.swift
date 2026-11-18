@@ -19,6 +19,8 @@ final class QuickAIController: ObservableObject {
     @Published var chatInstructions = "" {
         didSet { if chatInstructions != oldValue && !restoringChat { saveChat() } }
     }
+    /// Emitted after successfully restoring history, independently of first-send ID allocation.
+    let historyOpened = PassthroughSubject<UUID, Never>()
     private var historyRevision = UUID()
     @Published private var conversationModel: AIChatRecord.ModelReference?
     private var restoringChat = false
@@ -178,6 +180,7 @@ final class QuickAIController: ObservableObject {
                 self.chatInstructions = record.content.instructions ?? ""
                 self.status = ""
                 self.historyError = ""
+                self.historyOpened.send(record.id)
             case .success(nil), .failure:
                 self.historyError = "无法读取这段对话。"
             }

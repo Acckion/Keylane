@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import Security
 import KeylaneCore
 
@@ -215,6 +216,8 @@ let historyURL = historyDirectory.appendingPathComponent("history.sqlite")
 let history = AIChatHistory(url: historyURL)
 let conversation = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                      history: history, readKey: { _ in nil })
+var historyOpenEvents: [UUID] = []
+let allocationObserver = conversation.historyOpened.sink { historyOpenEvents.append($0) }
 settings.setDefault(legacy.id, for: .chat)
 precondition(conversation.currentConnection?.id == second.id)
 FixtureProtocol.mode = "stream"
@@ -223,6 +226,8 @@ precondition(!FileManager.default.fileExists(atPath: historyURL.path))
 conversation.beginChat()
 precondition(conversation.currentConnection?.id == second.id)
 let savedID = conversation.chatID!
+precondition(historyOpenEvents.isEmpty, "First-send ID allocation must not be reported as opening history")
+allocationObserver.cancel()
 let savedTurnID = conversation.turns.first!.id
 conversation.leaveLauncher()
 wait("Save handed-off response") { !conversation.running && conversation.chats.first?.id == savedID }
@@ -258,8 +263,13 @@ archivedRestore.closeChat()
 
 let reopened = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                  history: AIChatHistory(url: historyURL), readKey: { _ in nil })
+let historyComposer = AIChatComposer()
+historyComposer.text = "只属于新对话的未发送草稿"
+let draftObserver = reopened.historyOpened.sink { _ in historyComposer.text = "" }
 reopened.beginChat(restoreLatest: true)
 wait("Restore most recent chat from SQLite") { !reopened.loadingChat && reopened.chatID == savedID }
+precondition(historyComposer.text.isEmpty, "Opening history from a new chat must clear its unrelated draft")
+draftObserver.cancel()
 precondition(reopened.turns.first?.id == savedTurnID && reopened.turns.first?.complete == true)
 precondition(reopened.lastAnswer == "你好")
 precondition(reopened.chatInstructions == "简洁回答，保留技术术语。")
