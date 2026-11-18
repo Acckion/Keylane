@@ -64,18 +64,9 @@ struct SearchField: View {
                 return .ignored
             }
             .onExitCommand { if !Self.isComposing { escape() } }
-            .onAppear {
-                guard tab != nil, tabMonitor == nil else { return }
-                tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                    guard event.keyCode == 48, focused, wantsFocus, let tab,
-                          event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
-                          let window = NSApp.keyWindow, window.isKeyWindow,
-                          event.window == nil || event.window === window,
-                          let editor = window.firstResponder as? NSTextView, !editor.hasMarkedText(),
-                          editor.string == text else { return event }
-                    if event.isARepeat { return nil }
-                    return tab(editor.string) ? nil : event
-                }
+            .onAppear { updateTabMonitor() }
+            .onChange(of: "\(focusToken):\(wantsFocus):\(tab != nil)") { _, _ in
+                updateTabMonitor()
             }
             .onDisappear {
                 if let tabMonitor { NSEvent.removeMonitor(tabMonitor) }
@@ -87,6 +78,22 @@ struct SearchField: View {
                 focused = wantsFocus
             }
     }
+    private func updateTabMonitor() {
+        if let tabMonitor { NSEvent.removeMonitor(tabMonitor) }
+        tabMonitor = nil
+        guard tab != nil, wantsFocus else { return }
+        tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == 48, focused, wantsFocus, let tab,
+                  event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                  let window = NSApp.keyWindow, window.isKeyWindow,
+                  event.window == nil || event.window === window,
+                  let editor = window.firstResponder as? NSTextView, !editor.hasMarkedText(),
+                  editor.string == text else { return event }
+            if event.isARepeat { return nil }
+            return tab(editor.string) ? nil : event
+        }
+    }
+
     static var isComposing: Bool { (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() ?? false }
 }
 extension Notification.Name {

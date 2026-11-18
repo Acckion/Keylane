@@ -458,10 +458,10 @@ struct Launcher: View {
         case .enter:
             let explicitQuery = model.takeInitialQuery(for: current)
             let initialQuery = page?.enter?(explicitQuery ?? model.query)
-            if let seed = explicitQuery ?? initialQuery {
+            if let seed = LauncherPagePresentation.entryQuery(explicit: explicitQuery, pageResult: initialQuery,
+                                                              restored: restoredQuery) {
                 if showsFileResults { fileType = "all" }
-                // A page can seed a fresh entry. A return keeps the query saved by the host.
-                if restoredQuery == nil || explicitQuery != nil { model.query = seed }
+                model.query = seed
             }
             refreshActiveQuery()
         case .resume:
