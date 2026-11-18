@@ -292,6 +292,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private var refreshInProgress = false
     private var internalReorder = false
     private let preview = DropShelfPreview(frame: .zero)
+    let dropOverlay = DropShelfCaptureOverlay(frame: .zero)
     private let filename = NSButton(title: "暂存架", target: nil, action: nil)
     private let disclosure = NSButton()
     private let details = NSStackView()
@@ -300,7 +301,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private var thumbnailKey: String?
     private var thumbnailRequests: [QLThumbnailGenerator.Request] = []
     private var previewImages: [NSImage] = []
-    private var dropSurface: DropShelfDropView? { (contentView as? NSGlassEffectView)?.contentView as? DropShelfDropView }
+    private var dropSurface: DropShelfDropView? { dropOverlay }
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard contentView?.bounds.contains(sender.draggingLocation) == true else { dropSurface?.draggingExited(sender); return [] }
         return dropSurface?.draggingEntered(sender) ?? []
@@ -331,10 +332,18 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         effect.wantsLayer = true; effect.layer?.cornerRadius = 28; effect.layer?.cornerCurve = .continuous
         effect.layer?.masksToBounds = true; effect.layer?.borderWidth = 1
         effect.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor
-        let surface = DropShelfDropView(frame: .zero); effect.contentView = surface; contentView = effect
+        let card = NSView(frame: NSRect(x: 0, y: 0, width: 210, height: 210))
+        effect.frame = card.bounds; effect.autoresizingMask = [.width, .height]
+        card.addSubview(effect); contentView = card
+        let surface = DropShelfDropView(frame: .zero); effect.contentView = surface
         surface.frame = effect.bounds; surface.autoresizingMask = [.width, .height]
-        surface.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
-        surface.dragActivity = { [weak self] in self?.receivingDrag = $0 }
+        surface.unregisterDraggedTypes()
+        dropOverlay.frame = card.bounds; dropOverlay.autoresizingMask = [.width, .height]
+        dropOverlay.underlying = surface
+        dropOverlay.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
+        dropOverlay.dragActivity = { [weak self] in self?.receivingDrag = $0 }
+        dropOverlay.setAccessibilityElement(false)
+        card.addSubview(dropOverlay, positioned: .above, relativeTo: effect)
         configureRound(closeControl, symbol: "xmark", label: "关闭暂存架", action: #selector(closeShelf))
         configureRound(disclosure, symbol: "chevron.down", label: "展开暂存内容", action: #selector(disclosureAction))
         let spacer = NSView()
@@ -353,6 +362,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         filename.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
         filename.setAccessibilityLabel("展开暂存内容")
         preview.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
+        preview.unregisterDraggedTypes()
         preview.dragActivity = { [weak self] in self?.receivingDrag = $0 }
         preview.begin = { [weak self] in self?.beginCompactDrag($0) ?? [] }
         preview.ended = { [weak self] in self?.finishDrag($0) }
@@ -503,6 +513,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
                 items.append(drag)
             }
             dragItems = rows.map(\.id)
+            if !items.isEmpty { dropOverlay.isHidden = true }
         } catch { releaseAccess(); message(error.localizedDescription, failed: true); return [] }
         return items
     }
@@ -511,6 +522,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         for index in (row * 3)..<min(row * 3 + 3, rows.count) {
             let item = rows[index]
             let icon = DropShelfPreview(frame: NSRect(x: 0, y: 0, width: 110, height: 86))
+            icon.unregisterDraggedTypes()
             icon.placeholder.isHidden = true
             gridPreviews.setObject(icon, forKey: item.id as NSUUID)
             icon.showSelection(table.selectedRowIndexes.contains(index))
@@ -536,6 +548,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
                         return drag
                     }
                     self.dragItems = selected.map(\.id)
+                    if !items.isEmpty { self.dropOverlay.isHidden = true }
                     return items
                 } catch { self.message(error.localizedDescription, failed: true); return [] }
             }
@@ -781,12 +794,14 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         do { return try writer(rows[row]) } catch { message(error.localizedDescription, failed: true); return nil }
     }
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, willBeginAt screenPoint: NSPoint, forRowIndexes rowIndexes: IndexSet) {
+        dropOverlay.isHidden = true
         dragItems = rowIndexes.compactMap { rows.indices.contains($0) ? rows[$0].id : nil }
     }
     func tableView(_ tableView: NSTableView, draggingSession session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         finishDrag(operation)
     }
     private func finishDrag(_ operation: NSDragOperation) {
+        dropOverlay.isHidden = false
         releaseAccess(); dragItems = []
         if internalReorder { internalReorder = false; message("已调整暂存顺序"); return }
         if !operation.isEmpty {

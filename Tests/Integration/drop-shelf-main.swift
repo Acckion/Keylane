@@ -357,7 +357,7 @@ expect(cancelledProviders[2].destination != nil, "cancellation revokes commits w
 expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty) == true, "collision success failure and cancellation clean receiving and staging directories")
 collisionWindow.close()
 let droppingWindow = shelves.createForDrag()!
-let dropSurface = (droppingWindow.contentView as! NSGlassEffectView).contentView as! DropShelfDropView
+let dropSurface = droppingWindow.dropOverlay
 board.clearContents(); board.writeObjects([source as NSURL])
 let dropInfo = ShelfTestDragInfo(window: droppingWindow, board: board)
 expect(dropSurface.registeredDraggedTypes.contains(.fileURL), "whole card surface registers file drops")
@@ -376,15 +376,21 @@ for x in [0.15, 0.5, 0.85] {
     for y in [0.1, 0.5, 0.9] {
         dropInfo.draggingLocation = NSPoint(x: droppingWindow.frame.width * x, y: droppingWindow.frame.height * y)
         dropInfo.draggingSequenceNumber += 1
+        let content = droppingWindow.contentView!
+        let hit = content.hitTest(content.superview?.convert(dropInfo.draggingLocation, from: nil) ?? dropInfo.draggingLocation)
+        expect(hit === dropSurface, "actual view hit testing selects the same top capture layer across the entire card")
         expect(droppingWindow.draggingEntered(dropInfo) == .copy && droppingWindow.prepareForDragOperation(dropInfo), "window fallback accepts top middle and bottom card regions")
         expect(droppingWindow.performDragOperation(dropInfo), "window fallback receives across the card including footer controls")
         droppingWindow.concludeDragOperation(dropInfo); droppingWindow.draggingEnded(dropInfo)
     }
 }
+let footerButton = descendantViews(droppingWindow.contentView!).compactMap { $0 as? NSButton }.first { $0.title == source.lastPathComponent }!
+let footerPoint = footerButton.convert(NSPoint(x: footerButton.bounds.midX, y: footerButton.bounds.midY), to: nil)
+expect(droppingWindow.dropOverlay.forwardedView(at: footerPoint) === footerButton, "full capture layer forwards ordinary footer clicks to the real button")
 dropInfo.draggingLocation = NSPoint(x: -5, y: -5)
 expect(droppingWindow.draggingEntered(dropInfo).isEmpty, "window fallback rejects locations outside the card")
 let abandonedWindow = shelves.createForDrag()!
-let abandonedSurface = (abandonedWindow.contentView as! NSGlassEffectView).contentView as! DropShelfDropView
+let abandonedSurface = abandonedWindow.dropOverlay
 let abandonedInfo = ShelfTestDragInfo(window: abandonedWindow, board: board)
 _ = abandonedSurface.draggingEntered(abandonedInfo)
 abandonedSurface.draggingExited(abandonedInfo); abandonedSurface.draggingEnded(abandonedInfo)
@@ -492,6 +498,20 @@ if CommandLine.arguments.contains("--image-preview") {
     try shelves.store!.remove(window.shelfID)
     try shelves.store!.addFile(imageURL, to: window.shelfID)
     window.refresh()
+}
+if CommandLine.arguments.contains("--region-interactive") {
+    if let screen = NSScreen.main {
+        window.setFrameOrigin(NSPoint(x: 550, y: screen.frame.maxY - 660))
+    }
+    let receive = window.dropOverlay.receive
+    var nativeCount = 0
+    window.dropOverlay.receive = { board in
+        let result = receive?(board) ?? false
+        nativeCount += 1
+        print("NATIVE_DROP count=\(nativeCount) accepted=\(result) point=\(NSEvent.mouseLocation)")
+        return result
+    }
+    print("NATIVE_TARGET frame=\(window.frame)")
 }
 if CommandLine.arguments.contains("--interactive") {
     NSApp.run()

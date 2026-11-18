@@ -37,6 +37,38 @@ class DropShelfDropView: NSView {
     }
 }
 
+/// The only external drop destination. It sits above glass and controls so that
+/// AppKit sees one full-card rectangle. Ordinary mouse input is forwarded below.
+final class DropShelfCaptureOverlay: DropShelfDropView {
+    weak var underlying: NSView?
+    private weak var mouseTarget: NSView?
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, bounds.contains(convert(point, from: superview)) else { return nil }
+        return self
+    }
+    func forwardedView(at windowPoint: NSPoint) -> NSView? {
+        guard let underlying else { return nil }
+        return underlying.hitTest(underlying.superview?.convert(windowPoint, from: nil) ?? windowPoint)
+    }
+    private func target(_ event: NSEvent) -> NSView? { forwardedView(at: event.locationInWindow) }
+    override func mouseDown(with event: NSEvent) {
+        guard let target = target(event) else { return }
+        mouseTarget = target
+        if target is NSControl || target is DropShelfPreview || target is NSScrollView || target.enclosingScrollView != nil {
+            target.mouseDown(with: event)
+        } else {
+            mouseTarget = nil
+            window?.performDrag(with: event)
+        }
+    }
+    override func mouseDragged(with event: NSEvent) { mouseTarget?.mouseDragged(with: event) }
+    override func mouseUp(with event: NSEvent) { mouseTarget?.mouseUp(with: event); mouseTarget = nil }
+    override func rightMouseDown(with event: NSEvent) { target(event)?.rightMouseDown(with: event) }
+    override func scrollWheel(with event: NSEvent) { target(event)?.scrollWheel(with: event) }
+}
+
 /// Compact preview, serving as both a drop destination and drag source.
 final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
     let imageView = NSImageView()
