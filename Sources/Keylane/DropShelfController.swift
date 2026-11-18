@@ -601,10 +601,14 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         let size = expanded ? NSSize(width: 420, height: 320) : NSSize(width: status.isHidden ? 210 : 246, height: status.isHidden ? 210 : 246)
         let start = frame
         let center = NSPoint(x: start.midX, y: start.midY)
-        let target = NSRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+        var target = NSRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
         if let dock = dropOverlay.dock {
             setFrame(dock.frame(for: target), display: true)
             return
+        }
+        if let area = screen?.visibleFrame {
+            target.origin.x = max(area.minX, min(target.minX, area.maxX - target.width))
+            target.origin.y = max(area.minY, min(target.minY, area.maxY - target.height))
         }
         guard animated, isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             setFrame(target, display: true); return
@@ -616,7 +620,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             let eased = 1 - pow(1 - progress, 3)
             let width = start.width + (size.width - start.width) * eased
             let height = start.height + (size.height - start.height) * eased
-            self.setFrame(NSRect(x: center.x - width / 2, y: center.y - height / 2, width: width, height: height), display: true)
+            let x = start.minX + (target.minX - start.minX) * eased
+            let y = start.minY + (target.minY - start.minY) * eased
+            self.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
             if progress == 1 { timer.invalidate(); self.resizeTimer = nil }
         }
         resizeTimer = timer

@@ -229,6 +229,12 @@ if let screen = window.screen {
     let movedFrame = moveShelf.frame
     drain(0.3)
     expect(moveShelf.frame == movedFrame && movedFrame.width == 420, "starting to move an expanding shelf finishes its resize without resetting the dragged position")
+    moveShelf.toggleDetails(); drain(0.3)
+    let usable = screen.visibleFrame
+    moveShelf.setFrameOrigin(NSPoint(x: usable.maxX - moveShelf.frame.width, y: usable.maxY - moveShelf.frame.height))
+    moveShelf.toggleDetails(); drain(0.3)
+    expect(moveShelf.frame.maxY <= usable.maxY && moveShelf.frame.maxX <= usable.maxX,
+           "expanding at the upper-right edge keeps the shelf controls within the visible screen")
     moveShelf.close()
 }
 let emptyDragShelf = shelves.createForDrag()!
