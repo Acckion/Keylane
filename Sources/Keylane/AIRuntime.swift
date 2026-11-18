@@ -13,6 +13,16 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     var mode: AIResponseMode = .streaming
     var legacyAccount: String?
     var previousEndpoints: [String]?
+    var hiddenFromPicker: Bool?
+    var contextTokens: Int?
+    var supportsImages: Bool?
+    var supportsTools: Bool?
+
+    var displayName: String { name.isEmpty ? model : name }
+    var providerLabel: String {
+        guard let url = baseURL, let host = url.host else { return "无效接口" }
+        return url.port.map { "\(host):\($0)" } ?? host
+    }
 
     var baseURL: URL? { Self.baseURL(for: endpoint) }
 
@@ -26,6 +36,12 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     }
 
     var completionURL: URL? { Self.completionURL(for: endpoint) }
+    var modelsURL: URL? {
+        guard let url = baseURL else { return nil }
+        let prefix = url.path.hasSuffix("/chat/completions")
+            ? url.deletingLastPathComponent().deletingLastPathComponent() : url
+        return prefix.appendingPathComponent("models")
+    }
 
     static func completionURL(for endpoint: String) -> URL? {
         guard let url = baseURL(for: endpoint) else { return nil }
@@ -48,13 +64,18 @@ private final class AIRedirectPolicy: NSObject, URLSessionTaskDelegate {
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         guard let first = task.originalRequest?.url, let next = request.url,
               first.scheme == next.scheme, first.host == next.host, first.port == next.port,
-              next.user == nil, next.password == nil, request.httpMethod == "POST"
+              next.user == nil, next.password == nil, task.originalRequest?.httpMethod == "POST", request.httpMethod == "POST"
         else { completionHandler(nil); return }
         completionHandler(request)
     }
 }
 
 actor AIRuntime {
+    private struct ModelList: Decodable {
+        struct Model: Decodable { let id: String }
+        let data: [Model]
+    }
+
     private struct Payload: Encodable {
         let model: String
         let stream: Bool
@@ -70,6 +91,29 @@ actor AIRuntime {
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 300
         self.configuration = configuration
+    }
+
+    func listModels(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?) async throws -> [String] {
+        guard let url = connection.modelsURL else { throw AIResponseError.invalidResponse }
+        try Task.checkCancellation()
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let key = try readKey(connection), !key.isEmpty { request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization") }
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
+        var body = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard body.count < 1_048_576 else { throw AIResponseError.tooLarge }
+            body.append(byte)
+        }
+        guard let list = try? JSONDecoder().decode(ModelList.self, from: body) else { throw AIResponseError.invalidResponse }
+        return Set(list.data.map(\.id).filter {
+            !$0.isEmpty && $0.utf8.count <= 512 && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                && $0.rangeOfCharacter(from: .controlCharacters) == nil
+        }).sorted()
     }
 
     func generate(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?, messages: [AIMessage],

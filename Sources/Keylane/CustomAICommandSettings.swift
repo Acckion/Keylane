@@ -123,12 +123,14 @@ private struct CustomAICommandEditor: View {
                 }
                 Divider()
                 SettingsPicker("模型连接", selection: $draft.connectionID) {
-                    Text("跟随当前模型").tag(nil as UUID?)
-                    if let id = draft.connectionID, !configuration.state.connections.contains(where: { $0.id == id }) {
+                    Text("跟随 AI 命令默认模型").tag(nil as UUID?)
+                    if let id = draft.connectionID, !configuration.state.connections.contains(where: { $0.id == id && $0.isConfigured }) {
                         Text("连接不可用").tag(Optional(id))
                     }
-                    ForEach(configuration.state.connections) { connection in
-                        Text(connection.name.isEmpty ? connection.model : connection.name).tag(Optional(connection.id))
+                    ForEach(configuration.state.connections.filter {
+                        $0.isConfigured && ($0.hiddenFromPicker != true || $0.id == draft.connectionID)
+                    }) { connection in
+                        Text("\(connection.displayName) · \(connection.providerLabel)").tag(Optional(connection.id))
                     }
                 }
                 Divider()
