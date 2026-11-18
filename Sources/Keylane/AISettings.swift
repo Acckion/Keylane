@@ -9,20 +9,23 @@ enum AIModule {
 
     static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai-text-commands", title: "AI 命令",
                                                keywords: "翻译 润色 摘要 自定义 提示词 导入 快捷键 translate polish summarize")
+    static let interactions = SettingsItem(id: "ai-interactions", page: "ai", title: "Quick AI 与聊天",
+                                           keywords: "Tab 回车 发送 备选命令 窗口置顶")
 
     static func make(model: Model) -> LauncherModule {
         let configuration = model.aiSettings
+        let interaction = model.aiInteraction
         let runtime = model.aiRuntime
         let historyURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Keylane/AI/history.sqlite")
         let quickAI = QuickAIController(configuration: configuration, runtime: runtime,
                                         history: AIChatHistory(url: historyURL))
-        let chat = AIChatWindow(controller: quickAI, configuration: configuration,
+        let chat = AIChatWindow(controller: quickAI, configuration: configuration, interaction: interaction,
                                 appearance: model.$appearance.eraseToAnyPublisher())
-        let openChat: () -> Void = { [weak model] in
+        let openChat: (String?) -> Void = { [weak model] initialQuery in
             guard let model, configuration.state.enabled else { return }
             let fromQuickAI = model.pageID == QuickAILauncher.pageID
-            chat.show(draft: fromQuickAI ? model.query : "", restoreLatest: !fromQuickAI,
+            chat.show(draft: initialQuery ?? (fromQuickAI ? model.query : ""), restoreLatest: !fromQuickAI && initialQuery == nil,
                       activation: model.windowActivationBehavior) {
                 (NSApp.delegate as? Delegate)?.hideLauncher()
                 if fromQuickAI { model.pageID = .root }
@@ -31,24 +34,25 @@ enum AIModule {
         let quickCommand = LauncherModule.Command(declaration: .init(
             id: QuickAILauncher.commandID, title: "Quick AI", detail: "向已配置的模型提问", symbol: "sparkles",
             keywords: ["ask", "AI", "快速问答", "询问 AI"], destination: .action, settingsPage: "ai"
-        ), available: { configuration.state.connection(for: .quick) != nil }, execute: { [weak model] origin in
-            if quickAI.isInChat { openChat() }
-            else { model?.openPage(QuickAILauncher.pageID, origin: origin) }
-        })
+        ), available: { configuration.state.connection(for: .quick) != nil }, acceptsFallbackQuery: true,
+            fallbackAvailable: { interaction.rootFallback }, arguments: .init(count: 0...1) { [weak model] origin, arguments in
+                if quickAI.isInChat { openChat(arguments.first) }
+                else { model?.openPage(QuickAILauncher.pageID, origin: origin, initialQuery: arguments.first) }
+            })
         let chatCommand = LauncherModule.Command(declaration: .init(
             id: .init(rawValue: "ai-chat"), title: "AI Chat", detail: "打开独立聊天窗口", symbol: "bubble.left.and.bubble.right",
             keywords: ["chat", "AI", "聊天", "对话"], destination: .action, settingsPage: "ai"
-        ), available: { configuration.state.enabled }, execute: { _ in openChat() })
+        ), available: { configuration.state.enabled }, execute: { _ in openChat(nil) })
         let textSession = AITextCommandSession(configuration: configuration, runtime: runtime)
         let library = CustomAICommandLibrary()
         let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
                               title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand] + textCommands,
                               providers: [AITextCommandLauncher.customCommands(model: model, session: textSession, library: library)],
-                              pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: openChat),
+                              pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
                                       AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
-                  order: 8, items: [],
+                  order: 8, items: [interactions],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
@@ -74,7 +78,8 @@ enum AIModule {
             ViewObservation.changes(configuration.$state.map(\.isAvailable)),
             ViewObservation.changes(configuration.$state.map(\.enabled)),
             ViewObservation.changes(configuration.$state.map(\.availableConnectionIDs)),
-            ViewObservation.changes(library.$commands)
+            ViewObservation.changes(library.$commands),
+            ViewObservation.changes(interaction.$rootFallback)
         ], dynamicCommandSettings: .init(model: model, items: { library.commands }, title: \.title,
                                         commandID: \.commandID, updates: { [ViewObservation.changes(library.$commands)] },
                                         entry: { $0.settingsEntry(model: $1) }))
@@ -91,6 +96,7 @@ private struct AISettingsHome: View {
                 Divider()
                 link(AIModule.textCommandsItem)
             }
+            AIInteractionSettings(preferences: model.aiInteraction).settingsAnchor(AIModule.interactions)
         }
     }
 
@@ -100,6 +106,31 @@ private struct AISettingsHome: View {
                 Image(systemName: "chevron.forward").imageScale(.small).foregroundStyle(.secondary)
             }.contentShape(Rectangle())
         }.buttonStyle(.plain)
+    }
+}
+
+private struct AIInteractionSettings: View {
+    @ObservedObject var preferences: AIInteractionPreferences
+
+    var body: some View {
+        SettingsGroup("Quick AI 与聊天") {
+            toggle("搜索备选命令", detail: "没有匹配结果时显示 Quick AI。", value: $preferences.rootFallback)
+            Divider()
+            toggle("在主搜索中按 Tab 打开 Quick AI", detail: "将当前搜索文字带入输入框。", value: $preferences.rootTab)
+            Divider()
+            SettingsPicker("AI Chat 发送键", selection: $preferences.chatReturn) {
+                Text("⌘ Return").tag(false)
+                Text("Return").tag(true)
+            }
+            Divider()
+            toggle("AI Chat 窗口置顶", value: $preferences.chatFloating)
+        }
+    }
+
+    private func toggle(_ title: String, detail: String? = nil, value: Binding<Bool>) -> some View {
+        SettingsRow(title, detail: detail) {
+            Toggle(title, isOn: value).labelsHidden().toggleStyle(SettingsSwitchStyle())
+        }
     }
 }
 

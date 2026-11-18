@@ -37,6 +37,7 @@ final class Model: ObservableObject {
     @Published var query = ""
     @Published var pageID = PageID.root
     let aiSettings = AIConfiguration()
+    let aiInteraction = AIInteractionPreferences()
     let aiRuntime = AIRuntime()
     lazy var fileAI: FileAIController = {
         let controller = FileAIController(settings: aiSettings, runtime: aiRuntime)
@@ -204,16 +205,16 @@ final class Model: ObservableObject {
             rootSearchUpdates.send()
         }
     }
-    private var fallbackPageQuery: (page: PageID, query: String)?
+    private var pendingPageQuery: (page: PageID, query: String)?
 
     var fallbackCommandIDs: [String] {
         get { fallbackCommandOrder.custom ?? fallbackCommandOrder.ids(in: launcherModules?.fallbackCatalog() ?? []) }
         set { fallbackCommandOrder.custom = newValue }
     }
 
-    func takeFallbackQuery(for page: PageID) -> String? {
-        defer { fallbackPageQuery = nil }
-        return fallbackPageQuery?.page == page ? fallbackPageQuery?.query : nil
+    func takeInitialQuery(for page: PageID) -> String? {
+        defer { pendingPageQuery = nil }
+        return pendingPageQuery?.page == page ? pendingPageQuery?.query : nil
     }
 
     @Published var favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
@@ -446,15 +447,14 @@ final class Model: ObservableObject {
             switch destination {
             case .action: break
             case let .page(page):
-                guard launcherModules?.page(page) != nil else { return }
-                fallbackPageQuery = (page, fallbackQuery)
-                openPage(page, origin: .search)
+                openPage(page, origin: .search, initialQuery: fallbackQuery)
             case let .settings(page):
                 openSettings(page: page)
             }
         }
     }
-    func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil, arguments: [String] = []) {
+    @discardableResult
+    func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil, arguments: [String] = []) -> Bool {
         let queryKey = usageKey != nil && pageID == .root && origin != .shortcut ? SearchUsageHistory.queryKey(query) : nil
         let admitted = launcherModules?.invoke(id, origin: origin, arguments: arguments) { destination in
             switch destination {
@@ -464,9 +464,11 @@ final class Model: ObservableObject {
             }
         }
         if admitted == true, let usageKey { recordUsage(for: usageKey, queryKey: queryKey) }
+        return admitted == true
     }
-    func openPage(_ page: PageID, origin: LauncherCommandOrigin) {
+    func openPage(_ page: PageID, origin: LauncherCommandOrigin, initialQuery: String? = nil) {
         guard launcherModules?.page(page) != nil else { return }
+        if pageID != page, let initialQuery { pendingPageQuery = (page, initialQuery) }
         pageID = page
         if origin != .search { (NSApp.delegate as? Delegate)?.revealLauncherDestination() }
     }
