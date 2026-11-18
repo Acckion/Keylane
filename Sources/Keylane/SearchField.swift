@@ -18,6 +18,7 @@ struct SearchField: View {
     var navigateWhileTyping = false
     var spaceAtEnd: ((String) -> Bool)? = nil
     var insertEmoji: ((NSRange) -> Bool)? = nil
+    var tab: ((String) -> Bool)? = nil
     @FocusState private var focused: Bool
     var body: some View {
         TextField(placeholder, text: $text)
@@ -29,6 +30,13 @@ struct SearchField: View {
             .focused($focused)
             .accessibilityLabel(placeholder)
             .onSubmit { if !Self.isComposing { submit() } }
+            .onKeyPress(keys: [.tab], phases: .down) { press in
+                guard let tab, press.modifiers.isEmpty, !Self.isComposing,
+                      let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
+                      editor.string == text, editor.selectedRange() == NSRange(location: text.utf16.count, length: 0)
+                else { return .ignored }
+                return tab(text) ? .handled : .ignored
+            }
             .onKeyPress(keys: [.space]) { press in
                 guard let spaceAtEnd, press.modifiers.isEmpty, !Self.isComposing,
                       let editor = NSApp.keyWindow?.firstResponder as? NSTextView,

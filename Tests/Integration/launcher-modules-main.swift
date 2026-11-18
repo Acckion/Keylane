@@ -308,6 +308,31 @@ precondition(scopedRegistry.invokeFallback(.init(rawValue: "fixture-lookup"), qu
 precondition(fallbackDestination == .page(.init(rawValue: "Lookup")))
 print("PASS root fallback ordering, availability, query forwarding and search scope")
 
+var quickFallbackEnabled = false
+var quickCommandEnabled = true
+var quickDraft: String?
+let quickFixtureID = CommandID(rawValue: "fixture-quick-prompt")
+let quickRegistry = try LauncherModuleRegistry(modules: [
+    .init(id: .init(rawValue: "fixture.quick-prompt"), commands: [
+        .init(declaration: .init(id: quickFixtureID, title: "Quick AI", detail: "", symbol: "sparkles",
+                                 keywords: [], destination: .action),
+              available: { quickCommandEnabled }, acceptsFallbackQuery: true, fallbackAvailable: { quickFallbackEnabled },
+              arguments: .init(count: 0...1) { _, arguments in quickDraft = arguments.first })
+    ])
+], preferences: extensionPreferences, commandEnabled: { _ in true })
+precondition(quickRegistry.fallbackCatalog().isEmpty)
+precondition(!quickRegistry.invokeFallback(quickFixtureID, query: noMatch) { _ in preconditionFailure() })
+precondition(quickRegistry.invoke(quickFixtureID, origin: .search, arguments: [noMatch]) { _ in preconditionFailure() })
+precondition(quickDraft == noMatch, "Tab dispatch keeps the draft independent of fallback settings")
+quickFallbackEnabled = true
+precondition(quickRegistry.fallbackCatalog().map(\.commandID) == [quickFixtureID])
+precondition(quickRegistry.invokeFallback(quickFixtureID, query: "新问题") { _ in preconditionFailure() })
+precondition(quickDraft == "新问题")
+quickCommandEnabled = false
+precondition(!quickRegistry.invoke(quickFixtureID, origin: .search, arguments: [noMatch]) { _ in preconditionFailure() })
+precondition(quickRegistry.fallbackCatalog().isEmpty && quickDraft == "新问题")
+print("PASS opt-in Quick AI fallback and direct draft dispatch share command admission")
+
 let dictionaryID = CommandID(rawValue: "fixture-dictionary")
 let scriptID = CommandID(rawValue: "fixture-define-task")
 let explicitRankingRegistry = try LauncherModuleRegistry(modules: [
