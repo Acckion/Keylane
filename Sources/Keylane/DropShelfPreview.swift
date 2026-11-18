@@ -75,35 +75,49 @@ class DropShelfDropView: NSView {
     }
 }
 
-/// Track the pointer's unsnapped position so a window can be pulled away from an edge.
+/// Dock only after most of the window is past an outer display edge.
 struct DropShelfEdgeSnap {
-    private enum Edge { case minimum, maximum }
-    private var horizontal: Edge?
-    private var vertical: Edge?
+    private enum Edge: CaseIterable { case left, right, bottom, top }
+    private var attached: Edge?
     private var previousArea: NSRect?
 
-    mutating func origin(for frame: NSRect, in area: NSRect) -> NSPoint {
-        if previousArea != area {
-            horizontal = nil
-            vertical = nil
-            previousArea = area
+    mutating func origin(for frame: NSRect, in area: NSRect, neighboring: [NSRect] = []) -> NSPoint {
+        if previousArea != area { attached = nil; previousArea = area }
+        let strip: CGFloat = 28
+        func docked(at edge: Edge) -> NSRect {
+            var target = frame
+            switch edge {
+            case .left: target.origin.x = area.minX + strip - frame.width
+            case .right: target.origin.x = area.maxX - strip
+            case .bottom: target.origin.y = area.minY + strip - frame.height
+            case .top: target.origin.y = area.maxY - strip
+            }
+            // Keep the strip on the active display even for diagonal drags.
+            if edge == .left || edge == .right {
+                target.origin.y = max(area.minY, min(target.minY, area.maxY - target.height))
+            } else {
+                target.origin.x = max(area.minX, min(target.minX, area.maxX - target.width))
+            }
+            return target
         }
-        let x = Self.snap(frame.minX, minimum: area.minX, maximum: area.maxX - frame.width, previous: horizontal)
-        let y = Self.snap(frame.minY, minimum: area.minY, maximum: area.maxY - frame.height, previous: vertical)
-        horizontal = x.edge
-        vertical = y.edge
-        return NSPoint(x: x.position, y: y.position)
-    }
-
-    private static func snap(_ position: CGFloat, minimum: CGFloat, maximum: CGFloat, previous: Edge?) -> (position: CGFloat, edge: Edge?) {
-        guard maximum >= minimum else { return (position, nil) }
-        let startDistance = abs(position - minimum)
-        let endDistance = abs(position - maximum)
-        if previous == .minimum && startDistance <= 24 { return (minimum, .minimum) }
-        if previous == .maximum && endDistance <= 24 { return (maximum, .maximum) }
-        if startDistance <= 12 && startDistance <= endDistance { return (minimum, .minimum) }
-        if endDistance <= 12 { return (maximum, .maximum) }
-        return (min(max(position, minimum), maximum), nil)
+        func visibleFraction(at edge: Edge) -> CGFloat {
+            switch edge {
+            case .left: (frame.maxX - area.minX) / frame.width
+            case .right: (area.maxX - frame.minX) / frame.width
+            case .bottom: (frame.maxY - area.minY) / frame.height
+            case .top: (area.maxY - frame.minY) / frame.height
+            }
+        }
+        func available(_ edge: Edge) -> Bool {
+            let target = docked(at: edge)
+            return neighboring.allSatisfy { $0.intersection(target).isEmpty }
+        }
+        if let attached, visibleFraction(at: attached) <= 0.62, available(attached) {
+            return docked(at: attached).origin
+        }
+        attached = Edge.allCases.filter { visibleFraction(at: $0) <= 0.52 && available($0) }
+            .min { visibleFraction(at: $0) < visibleFraction(at: $1) }
+        return attached.map { docked(at: $0).origin } ?? frame.origin
     }
 }
 
@@ -199,7 +213,9 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
                               y: windowDrag.origin.y + mouse.y - windowDrag.mouse.y,
                               width: window.frame.width, height: window.frame.height)
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? window.screen
-        let origin = screen.map { edgeSnap.origin(for: proposed, in: $0.visibleFrame) } ?? proposed.origin
+        let origin = screen.map { active in
+            edgeSnap.origin(for: proposed, in: active.frame, neighboring: NSScreen.screens.filter { $0 != active }.map(\.frame))
+        } ?? proposed.origin
         if window.frame.origin != origin { window.setFrameOrigin(origin) }
     }
     override func mouseUp(with event: NSEvent) {

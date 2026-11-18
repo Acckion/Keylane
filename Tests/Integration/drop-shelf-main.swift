@@ -158,17 +158,18 @@ expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEm
 var edgeSnap = DropShelfEdgeSnap()
 let snapScreen = NSRect(x: -800, y: 40, width: 800, height: 600)
 func snapCandidate(_ x: CGFloat, _ y: CGFloat) -> NSRect { NSRect(x: x, y: y, width: 210, height: 210) }
-expect(edgeSnap.origin(for: snapCandidate(-793, 417), in: snapScreen) == NSPoint(x: -800, y: 417), "shelf snaps to the left edge without moving on the other axis")
-expect(edgeSnap.origin(for: snapCandidate(-782, 421), in: snapScreen) == NSPoint(x: -800, y: 430), "shelf holds the left edge and snaps to the top at a corner")
-expect(edgeSnap.origin(for: snapCandidate(-775, 400), in: snapScreen) == NSPoint(x: -775, y: 400), "moving sufficiently far from the edges releases both axes")
+expect(edgeSnap.origin(for: snapCandidate(-830, 417), in: snapScreen) == NSPoint(x: -830, y: 417), "a partly off-screen shelf still follows the pointer")
+expect(edgeSnap.origin(for: snapCandidate(-925, 417), in: snapScreen) == NSPoint(x: -982, y: 417), "shelf docks after crossing the left threshold and leaves a visible strip")
+expect(edgeSnap.origin(for: snapCandidate(-870, 417), in: snapScreen) == NSPoint(x: -870, y: 417), "pulling the shelf inward releases the dock")
 let snapSecondScreen = NSRect(x: 0, y: -60, width: 700, height: 650)
-expect(edgeSnap.origin(for: snapCandidate(483, -53), in: snapSecondScreen) == NSPoint(x: 490, y: -60), "shelf snaps to the right and bottom edges of the current display")
+expect(edgeSnap.origin(for: snapCandidate(630, 0), in: snapSecondScreen) == NSPoint(x: 672, y: 0), "shelf can dock on the right of the current display")
+expect(edgeSnap.origin(for: snapCandidate(-925, 417), in: snapScreen, neighboring: [NSRect(x: -1600, y: 40, width: 800, height: 600)]) == NSPoint(x: -925, y: 417), "the seam between displays does not dock a shelf")
 if let screen = window.screen {
     let moveShelf = shelves.create()!
-    let area = screen.visibleFrame
+    let area = screen.frame
     moveShelf.setFrameOrigin(NSPoint(x: area.midX - moveShelf.frame.width / 2, y: area.midY - moveShelf.frame.height / 2))
     moveShelf.contentView!.layoutSubtreeIfNeeded()
-    let grabPoint = NSPoint(x: moveShelf.frame.width / 2, y: moveShelf.frame.height - 6)
+    let grabPoint = NSPoint(x: moveShelf.frame.width - 10, y: moveShelf.frame.height - 6)
     func shelfMouse(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
                            windowNumber: moveShelf.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
@@ -179,12 +180,14 @@ if let screen = window.screen {
     let start = moveShelf.frame.origin
     let mouse = moveShelf.convertPoint(toScreen: grabPoint)
     moveShelf.dropOverlay.mouseDown(with: shelfMouse(.leftMouseDown, at: grabPoint))
-    let nearLeft = NSPoint(x: mouse.x + area.minX + 8 - start.x, y: mouse.y)
-    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: nearLeft)))
-    expect(abs(moveShelf.frame.minX - area.minX) < 0.5, "dragging the shelf handle moves its actual window to the display edge")
-    let release = NSPoint(x: nearLeft.x + 25, y: nearLeft.y)
-    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: release)))
-    expect(abs(moveShelf.frame.minX - area.minX - 33) < 0.5, "dragging back from the edge releases the actual window")
+    let partlyOutside = NSPoint(x: mouse.x + area.minX - 40 - start.x, y: mouse.y)
+    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: partlyOutside)))
+    expect(abs(moveShelf.frame.minX - area.minX + 40) < 0.5, "dragging the shelf handle can move the window beyond the screen")
+    let pastThreshold = NSPoint(x: partlyOutside.x - 85, y: partlyOutside.y)
+    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: pastThreshold)))
+    expect(abs(moveShelf.frame.maxX - area.minX - 28) < 0.5, "dragging farther docks the actual window with an exposed strip")
+    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: partlyOutside)))
+    expect(abs(moveShelf.frame.minX - area.minX + 40) < 0.5, "dragging back releases the actual window")
     moveShelf.dropOverlay.mouseUp(with: shelfMouse(.leftMouseUp, at: grabPoint))
     moveShelf.close()
 }
@@ -423,7 +426,8 @@ let screenshotShelf = shelves.create()!
 for index in 1...4 {
     let url = fixtures.appendingPathComponent("Screenshot-\(index).png")
     try FileManager.default.copyItem(at: imageURL, to: url)
-    try shelves.store!.addFile(url, to: screenshotShelf.shelfID)
+    board.clearContents(); board.writeObjects([url as NSURL])
+    expect(screenshotShelf.receive(board, isDrag: true), "expanded preview fixture imports a PNG through the drag receiver")
 }
 screenshotShelf.refresh(); screenshotShelf.toggleDetails(); drain(0.3)
 screenshotShelf.contentView!.layoutSubtreeIfNeeded()
@@ -460,6 +464,13 @@ expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: gridPadding) == nil,
        "padding beside the thumbnail moves the shelf")
 expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: finderLabelPoint) === finderButton,
        "the Finder control still keeps its click action")
+
+screenshotShelf.refreshFiles()
+screenshotShelf.contentView!.layoutSubtreeIfNeeded()
+let rebuiltScreenshotRow = screenshotGrid.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSStackView
+let rebuiltScreenshotPreview = (rebuiltScreenshotRow.arrangedSubviews[0] as! DropShelfTile).preview!
+let rebuiltSize = rebuiltScreenshotPreview.imageView.image!.size
+expect(abs(rebuiltSize.width / rebuiltSize.height - 1.6) < 0.03, "reference polling keeps a decoded screenshot visible immediately after the grid is rebuilt")
 
 screenshotShelf.close()
 let collisionWindow = shelves.create()!

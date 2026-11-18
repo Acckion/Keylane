@@ -321,6 +321,11 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         queue.maxConcurrentOperationCount = 2
         return queue
     }()
+    private static let gridThumbnails: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.totalCostLimit = 24 * 1024 * 1024
+        return cache
+    }()
     private let gridPreviews = NSMapTable<NSUUID, DropShelfPreview>.strongToWeakObjects()
     private let contentScroll = NSScrollView()
     private let closeControl = DropShelfHoverButton()
@@ -694,11 +699,12 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             icon.ended = { [weak self] in self?.finishDrag($0) }
             icon.shortcut = { [weak self] in self?.key($0) ?? false }
             var detail = ""
-            if let url, let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentTypeKey]) {
-                detail = values.isDirectory == true ? "文件夹" : values.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "文件"
-                let type = values.contentType ?? UTType(filenameExtension: url.pathExtension)
-                if values.isDirectory != true, item.kind == .image || type?.conforms(to: .image) == true {
-                    loadGridThumbnail(at: url, into: icon)
+            if let url {
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentTypeKey, .contentModificationDateKey])
+                detail = values?.isDirectory == true ? "文件夹" : values?.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "文件"
+                let imageExtension = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
+                if values?.isDirectory != true, item.kind == .image || imageExtension || values?.contentType?.conforms(to: .image) == true {
+                    loadGridThumbnail(at: url, metadata: values, into: icon)
                 }
             }
             let tile = makeGridTile(visual: icon, title: item.title, detail: detail)
@@ -748,22 +754,52 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         return tile
     }
 
-    private func loadGridThumbnail(at url: URL, into preview: DropShelfPreview) {
+    private func loadGridThumbnail(at url: URL, metadata: URLResourceValues?, into preview: DropShelfPreview) {
         let maximumPixels = Int(110 * max(1, backingScaleFactor))
-        Self.gridThumbnailQueue.addOperation { [weak preview] in
-            guard preview != nil else { return }
-            let access = DropShelfFileAccess(url)
+        let modified = metadata?.contentModificationDate?.timeIntervalSinceReferenceDate ?? 0
+        let size = metadata?.fileSize ?? -1
+        let key = "\(url.absoluteString)|\(modified)|\(size)|\(maximumPixels)" as NSString
+        if let cached = Self.gridThumbnails.object(forKey: key) {
+            preview.imageView.image = cached
+            return
+        }
+        // A recycled table view must not cancel an otherwise useful decode.
+        let access = DropShelfFileAccess(url)
+        Self.gridThumbnailQueue.addOperation { [weak preview, access] in
             defer { withExtendedLifetime(access) {} }
-            if let values = try? url.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]),
-               values.isUbiquitousItem == true, values.ubiquitousItemDownloadingStatus == .notDownloaded { return }
-            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                      kCGImageSourceCreateThumbnailFromImageAlways: true,
-                      kCGImageSourceCreateThumbnailWithTransform: true,
-                      kCGImageSourceThumbnailMaxPixelSize: maximumPixels
-                  ] as CFDictionary) else { return }
-            DispatchQueue.main.async { [weak preview] in
-                preview?.imageView.image = NSImage(cgImage: image, size: .zero)
+            let options = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maximumPixels
+            ] as CFDictionary
+            let direct = CGImageSourceCreateWithURL(access.url as CFURL, nil).flatMap {
+                CGImageSourceCreateThumbnailAtIndex($0, 0, options)
+            }
+            var decoded = direct
+            if decoded == nil, (0...32 * 1024 * 1024).contains(size),
+               let bytes = try? Data(contentsOf: access.url, options: .mappedIfSafe),
+               let source = CGImageSourceCreateWithData(bytes as CFData, nil) {
+                decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, options)
+            }
+            if let decoded {
+                DispatchQueue.main.async { [weak preview] in
+                    let image = NSImage(cgImage: decoded, size: .zero)
+                    Self.gridThumbnails.setObject(image, forKey: key, cost: decoded.bytesPerRow * decoded.height)
+                    preview?.imageView.image = image
+                }
+                return
+            }
+            // Quick Look can handle image encodings and provider URLs that ImageIO cannot open.
+            let scale = CGFloat(maximumPixels) / 110
+            let request = QLThumbnailGenerator.Request(fileAt: access.url, size: CGSize(width: 110, height: 110), scale: scale, representationTypes: .thumbnail)
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak preview, access] representation, _ in
+                _ = access
+                guard let representation else { return }
+                DispatchQueue.main.async { [weak preview] in
+                    let image = representation.nsImage
+                    Self.gridThumbnails.setObject(image, forKey: key, cost: representation.cgImage.bytesPerRow * representation.cgImage.height)
+                    preview?.imageView.image = image
+                }
             }
         }
     }
