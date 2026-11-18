@@ -70,14 +70,14 @@ enum AISubscriptionTransport {
     static func generate(_ connection: AIConnection, messages: [AIMessage],
                          emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         guard connection.isConfigured else { throw AISubscriptionError.failed }
-        let account = try await status(connection)
-        if let expected = connection.subscriptionAccountID, expected != account.accountID {
-            throw AISubscriptionError.failed
-        }
+        guard let expected = connection.subscriptionAccountID, !expected.isEmpty else { throw AISubscriptionError.accountChanged }
         if connection.protocolKind == .codex {
+            // Check in the process that will receive the conversation, not a preflight process.
             _ = try await codex(connection, operation: .generate(messages), emit: emit)
             return nil
         }
+        let account = try await status(connection)
+        guard expected == account.accountID else { throw AISubscriptionError.accountChanged }
         let prompt = transcript(messages)
         let output = try await claude(connection, arguments: [
             "--print", "--output-format", "json", "--model", connection.model, "--tools", "",
@@ -155,12 +155,7 @@ enum AISubscriptionTransport {
                             case .account: method = "account/read"; params = ["refreshToken": false]
                             case .models: method = "model/list"; params = ["limit": 100, "includeHidden": false]
                             case .usage, .reset: method = "account/read"; params = ["refreshToken": false]
-                            case .generate:
-                                method = "thread/start"
-                                params = ["model": connection.model, "modelProvider": "openai", "cwd": directory.path,
-                                          "approvalPolicy": "never", "sandbox": "read-only", "ephemeral": true,
-                                          "baseInstructions": "Answer the supplied conversation using only its text.",
-                                          "config": ["mcp_servers": [:], "web_search": "disabled"]]
+                            case .generate: method = "account/read"; params = ["refreshToken": false]
                             }
                             try process.send(["id": 1, "method": method, "params": params])
                         } else if id == 1 {
@@ -178,13 +173,20 @@ enum AISubscriptionTransport {
                                 checkedAccount = try verifiedAccount(result, expected: expected)
                                 try process.send(["id": 3, "method": "account/rateLimitResetCredit/consume",
                                                   "params": ["idempotencyKey": key]])
-                            } else if case .generate(let messages) = operation {
-                                guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else {
-                                    throw AISubscriptionError.failed
-                                }
-                                try process.send(["id": 2, "method": "turn/start", "params": [
-                                    "threadId": id, "input": [["type": "text", "text": transcript(messages)]]]])
+                            } else if case .generate = operation {
+                                checkedAccount = try verifiedAccount(result, expected: connection.subscriptionAccountID)
+                                try process.send(["id": 4, "method": "thread/start", "params": [
+                                    "model": connection.model, "modelProvider": "openai", "cwd": directory.path,
+                                    "approvalPolicy": "never", "sandbox": "read-only", "ephemeral": true,
+                                    "baseInstructions": "Answer the supplied conversation using only its text.",
+                                    "config": ["mcp_servers": [:], "web_search": "disabled"]]])
                             } else { return result }
+                        } else if id == 4, case .generate(let messages) = operation, checkedAccount != nil {
+                            guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else {
+                                throw AISubscriptionError.failed
+                            }
+                            try process.send(["id": 2, "method": "turn/start", "params": [
+                                "threadId": id, "input": [["type": "text", "text": transcript(messages)]]]])
                         } else if id == 3, let checkedAccount {
                             var response = result
                             response["checkedAccount"] = checkedAccount
@@ -192,6 +194,12 @@ enum AISubscriptionTransport {
                         }
                     } else if let method = message["method"] as? String, let params = message["params"] as? [String: Any] {
                         if message["id"] != nil { throw AISubscriptionError.unsupported }
+                        if method == "account/updated", checkedAccount != nil {
+                            switch operation {
+                            case .generate, .reset: throw AISubscriptionError.accountChanged
+                            default: break
+                            }
+                        }
                         if method == "item/agentMessage/delta", let delta = params["delta"] as? String {
                             receivedText = true
                             pendingText += delta

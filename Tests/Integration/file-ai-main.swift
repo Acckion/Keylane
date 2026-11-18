@@ -564,6 +564,7 @@ elif '--print' in sys.argv:
 else:
     assert sys.argv[1] == 'app-server'
     assert 'features.shell_tool=false' in sys.argv
+    process_account = active_account()
     for line in sys.stdin:
         request = json.loads(line)
         method, rid = request['method'], request.get('id')
@@ -572,7 +573,7 @@ else:
         if method == 'initialize':
             result = {}
         elif method == 'account/read':
-            result = {'account': {'type': 'chatgpt', 'email': active_account(), 'planType': 'plus'}}
+            result = {'account': {'type': 'chatgpt', 'email': process_account, 'planType': 'plus'}}
         elif method == 'model/list':
             result = {'data': [{'model': 'fixture-codex'}]}
         elif method == 'account/rateLimits/read':
@@ -584,6 +585,8 @@ else:
             result = {'outcome': 'reset'}
         elif method == 'thread/start':
             assert request['params']['ephemeral'] and request['params']['sandbox'] == 'read-only'
+            with (root / 'generation-accounts').open('a') as log:
+                log.write(process_account + '\n')
             result = {'thread': {'id': 'fixture-thread'}}
         elif method == 'turn/start':
             if 'slow-fixture' in request['params']['input'][0]['text']:
@@ -595,6 +598,9 @@ else:
             continue
         else:
             raise RuntimeError(method)
+        if method == 'account/read' and (root / 'flip-after-read').exists():
+            (root / 'active-account').write_text('other@example.invalid')
+            (root / 'flip-after-read').unlink()
         send({'id': rid, 'result': result})
 """#.write(to: executable, atomically: true, encoding: .utf8)
 try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
@@ -730,3 +736,23 @@ wait("New conversation uses stable rebound model") { !newAccountChat.running }
 precondition(newAccountChat.lastAnswer == "CLI fixture answer")
 try FileManager.default.removeItem(at: cliDirectory.appendingPathComponent("active-account"))
 print("PASS subscription reconnect: stable sibling/default IDs, no duplicate import, stale snapshot rejection, unavailable models disabled, in-flight cancellation, old/restored history blocked, fresh conversation allowed")
+
+let generationLog = cliDirectory.appendingPathComponent("generation-accounts")
+let generationBeforeFlip = try String(contentsOf: generationLog, encoding: .utf8)
+try "flip".write(to: cliDirectory.appendingPathComponent("flip-after-read"), atomically: true, encoding: .utf8)
+var generationIdentityFinished = false
+Task { @MainActor in
+    _ = try! await AISubscriptionTransport.generate(cliConnection, messages: [.init(role: .user, content: "fixture process-bound account")]) { _ in }
+    precondition(try! String(contentsOf: generationLog, encoding: .utf8) == generationBeforeFlip + "fixture@example.invalid\n")
+    let beforeRejection = try! Data(contentsOf: generationLog)
+    do {
+        _ = try await AISubscriptionTransport.generate(cliConnection, messages: [.init(role: .user, content: "must not reach new account")]) { _ in }
+        preconditionFailure("Generation accepted a different process account")
+    } catch AISubscriptionError.accountChanged { }
+    catch { preconditionFailure("Unexpected account verification error") }
+    precondition(try! Data(contentsOf: generationLog) == beforeRejection)
+    generationIdentityFinished = true
+}
+wait("Generation verifies the actual app-server account") { generationIdentityFinished }
+try FileManager.default.removeItem(at: cliDirectory.appendingPathComponent("active-account"))
+print("PASS Codex generation account identity: login switches between processes cannot bypass verification; mismatched process never starts a thread")
