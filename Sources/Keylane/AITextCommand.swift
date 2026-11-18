@@ -67,7 +67,7 @@ final class AITextCommandSession: ObservableObject {
         reply = QuickAIController(configuration: configuration, runtime: runtime,
                                   observesDefaultConnection: false, readKey: readKey)
         configurationChanges = configuration.$state.dropFirst().sink { [weak self] state in
-            guard let self, self.reviewedConnection != Self.connection(for: self.customCommand, in: state)
+            guard let self, self.reviewedConnection != nil, self.confirmedConnection(in: state) == nil
             else { return }
             self.reply.reset()
         }
@@ -81,7 +81,7 @@ final class AITextCommandSession: ObservableObject {
     }
 
     var destinationChanged: Bool {
-        reviewedConnection == nil || reviewedConnection != Self.connection(for: customCommand, in: configuration.state)
+        confirmedConnection(in: configuration.state) == nil
     }
 
     var title: String { customCommand?.title ?? command.title }
@@ -91,7 +91,14 @@ final class AITextCommandSession: ObservableObject {
         if let id = command?.connectionID {
             return state.connections.first { $0.id == id && $0.isConfigured }
         }
-        return state.selected.flatMap { $0.isConfigured ? $0 : nil }
+        return state.connection(for: .commands)
+    }
+
+    private func confirmedConnection(in state: AIConfiguration.State) -> AIConnection? {
+        guard let reviewedConnection, let current = Self.connection(for: customCommand, in: state),
+              AIChatRecord.ModelReference(reviewedConnection) == AIChatRecord.ModelReference(current),
+              reviewedConnection.mode == current.mode else { return nil }
+        return current
     }
 
     var isInvocationAvailable: Bool { canInvoke() }
@@ -140,10 +147,10 @@ final class AITextCommandSession: ObservableObject {
     }
 
     func send() {
-        guard canSend, let reviewedConnection else { return }
+        guard canSend, let connection = confirmedConnection(in: configuration.state) else { return }
         reply.reset()
         reply.submit(input, instructions: customCommand == nil ? command.instructions(language: language) : nil,
-                     connection: reviewedConnection)
+                     connection: connection)
     }
 
     func clear() {

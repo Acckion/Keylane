@@ -2,13 +2,41 @@ import Combine
 import Foundation
 import Security
 
+enum AIRoute: String, Codable, CaseIterable, Identifiable {
+    case quick, chat, commands
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .quick: "Quick AI"
+        case .chat: "AI Chat"
+        case .commands: "AI 命令"
+        }
+    }
+}
+
 final class AIConfiguration: ObservableObject {
     struct State: Codable, Equatable {
         var enabled = false
         var connections: [AIConnection] = []
         var selectedID: UUID?
+        var defaults: [AIRoute: UUID]?
+        var usesLastChatModel: Bool?
+        var lastChatModelID: UUID?
         var selected: AIConnection? { connections.first { $0.id == selectedID } }
         var isAvailable: Bool { enabled && selected?.isConfigured == true }
+
+        func connection(for route: AIRoute) -> AIConnection? {
+            guard enabled else { return nil }
+            let id = route == .chat && usesLastChatModel == true ? lastChatModelID ?? selectedID
+                : defaults?[route] ?? selectedID
+            return connections.first { $0.id == id && $0.isConfigured }
+        }
+
+        var routeAvailability: [Bool] { AIRoute.allCases.map { connection(for: $0) != nil } }
+        var availableConnectionIDs: Set<UUID> {
+            guard enabled else { return [] }
+            return Set(connections.filter(\.isConfigured).map(\.id))
+        }
     }
 
     @Published private(set) var state: State
@@ -53,8 +81,25 @@ final class AIConfiguration: ObservableObject {
         persist(updated)
     }
 
+    func setDefault(_ id: UUID?, for route: AIRoute, usesLastChatModel: Bool = false) {
+        guard id == nil || state.connections.contains(where: { $0.id == id && $0.isConfigured }) else { return }
+        var updated = state
+        var defaults = updated.defaults ?? [:]
+        defaults[route] = id
+        updated.defaults = defaults
+        if route == .chat { updated.usesLastChatModel = usesLastChatModel }
+        persist(updated)
+    }
+
+    func recordChatModel(_ id: UUID) {
+        guard state.connections.contains(where: { $0.id == id }) else { return }
+        var updated = state
+        updated.lastChatModelID = id
+        persist(updated)
+    }
+
     @discardableResult
-    func save(_ draft: AIConnection) -> Bool {
+    func save(_ draft: AIConnection, selectAsDefault: Bool = true) -> Bool {
         var connection = draft
         connection.endpoint = draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         connection.model = draft.model.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -76,7 +121,7 @@ final class AIConfiguration: ObservableObject {
         } else {
             updated.connections.append(connection)
         }
-        updated.selectedID = connection.id
+        if selectAsDefault || updated.selectedID == nil { updated.selectedID = connection.id }
         persist(updated)
         return true
     }
@@ -86,7 +131,7 @@ final class AIConfiguration: ObservableObject {
         try Self.deleteKey(for: saved, includingPreviousEndpoints: true)
         var updated = state
         updated.connections.removeAll { $0.id == connection.id }
-        if updated.selectedID == connection.id { updated.selectedID = updated.connections.first?.id }
+        if updated.selectedID == connection.id { updated.selectedID = nil }
         persist(updated)
     }
 
@@ -124,6 +169,16 @@ final class AIConfiguration: ObservableObject {
         credentialQueries(for: connection).contains { query in
             SecItemCopyMatching(query as CFDictionary, nil) == errSecSuccess
         }
+    }
+
+    /// Draft credentials are request-local. Never reuse a saved key at another endpoint.
+    static func discoveryKey(for target: AIConnection, original: AIConnection?, enteredKey: String,
+                             readSaved: (AIConnection) throws -> String? = { try key(for: $0) }) throws -> String? {
+        let entered = enteredKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !entered.isEmpty { return entered }
+        guard let original, let endpoint = target.completionURL,
+              endpoint == original.completionURL else { return nil }
+        return try readSaved(original)
     }
 
     static func key(for connection: AIConnection) throws -> String? {

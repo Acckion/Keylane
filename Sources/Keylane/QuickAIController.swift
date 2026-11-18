@@ -36,26 +36,41 @@ final class QuickAIController: ObservableObject {
         self.history = history
         self.readKey = readKey
         guard observesDefaultConnection else { return }
-        configurationChanges = configuration.$state
-            .map { $0.enabled ? $0.selected : nil }.removeDuplicates().dropFirst()
-            .sink { [weak self] _ in
+        configurationChanges = configuration.$state.dropFirst()
+            .sink { [weak self] next in
                 guard let self else { return }
+                let current = self.connection(in: self.configuration.state)
+                let updated = self.connection(in: next)
+                guard current.map(AIChatRecord.ModelReference.init) != updated.map(AIChatRecord.ModelReference.init)
+                    || current?.mode != updated?.mode else { return }
                 if self.isInChat { self.stop() }
                 else { self.reset() }
             }
     }
 
     var lastAnswer: String? { turns.last(where: { !$0.answer.isEmpty })?.answer }
+    var currentConnection: AIConnection? { connection(in: configuration.state) }
+
+    private func connection(in state: AIConfiguration.State) -> AIConnection? {
+        guard state.enabled else { return nil }
+        if isInChat, let conversationModel {
+            return state.connections.first {
+                $0.id == conversationModel.profileID && $0.isConfigured && AIChatRecord.ModelReference($0) == conversationModel
+            }
+        }
+        return state.connection(for: isInChat ? .chat : .quick)
+    }
 
     var matchesCurrentModel: Bool {
         guard let conversationModel else { return true }
-        return configuration.selected.map(AIChatRecord.ModelReference.init) == conversationModel
+        return currentConnection.map(AIChatRecord.ModelReference.init) == conversationModel
     }
 
     @discardableResult
     func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil) -> Bool {
         guard !running, !loadingChat, configuration.state.enabled,
-              let connection = override ?? configuration.selected, connection.isConfigured,
+              !isInChat || override == nil,
+              let connection = override ?? currentConnection, connection.isConfigured,
               configuration.state.connections.contains(connection),
               conversationModel == nil || conversationModel == AIChatRecord.ModelReference(connection) else { return false }
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,6 +102,7 @@ final class QuickAIController: ObservableObject {
                 guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
                 self.turns[index].complete = true
                 self.finish()
+                if self.isInChat { self.configuration.recordChatModel(connection.id) }
                 self.saveChat()
             } catch {
                 guard let self, self.activeID == turn.id else { return }
@@ -125,7 +141,12 @@ final class QuickAIController: ObservableObject {
     func beginChat(restoreLatest: Bool = false) {
         guard !isInChat else { return }
         isInChat = true
-        if !turns.isEmpty { saveChat() }
+        if !turns.isEmpty {
+            if turns.contains(where: \.complete), let connection = currentConnection {
+                configuration.recordChatModel(connection.id)
+            }
+            saveChat()
+        }
         else { refreshHistory(restoreLatest: restoreLatest) }
     }
 

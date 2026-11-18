@@ -15,7 +15,7 @@ enum QuickAILauncher {
                          if controller.submit(model.query) { model.query = "" }
                      }, primaryTitle: { "发送" }, primaryEnabled: { [weak model] in
                          guard let model else { return false }
-                         return model.aiSettings.isAvailable && !controller.running
+                         return controller.currentConnection != nil && !controller.running
                              && !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                      }, actions: { [weak model] in
                          var actions = [LauncherAction(id: "quick-ai-copy", title: "复制回复", icon: "doc.on.doc",
@@ -34,9 +34,10 @@ enum QuickAILauncher {
                                               icon: "bubble.left.and.bubble.right", shortcut: .init("j", modifiers: .command),
                                               perform: openChat))
                          return actions
-                     }, updates: Publishers.Merge(
+                     }, updates: Publishers.Merge3(
                          controller.$running.removeDuplicates().map { _ in () },
-                         controller.$turns.map { $0.contains { !$0.answer.isEmpty } }.removeDuplicates().map { _ in () }
+                         controller.$turns.map { $0.contains { !$0.answer.isEmpty } }.removeDuplicates().map { _ in () },
+                         ViewObservation.changes(model.aiSettings.$state.map { $0.connection(for: .quick) != nil })
                      ).eraseToAnyPublisher(), actionShortcutsEnabled: true)
     }
 }

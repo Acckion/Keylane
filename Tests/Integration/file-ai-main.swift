@@ -24,7 +24,14 @@ final class FixtureProtocol: URLProtocol {
             self.lock.lock(); let stopped = self.stopped; self.lock.unlock(); if stopped { return }
             let code = mode == "error" ? 401 : 200
             let response = HTTPURLResponse(url:self.request.url!,statusCode:code,httpVersion:"HTTP/1.1",headerFields:["Content-Type":"application/json"])!
-            let text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
+            let text: String
+            if self.request.url?.path == "/v1/models" {
+                precondition(self.request.httpMethod == "GET" && self.request.httpBody == nil)
+                precondition(self.request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
+                text = mode == "bad" ? "{}" : #"{"data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":" "}]}"#
+            } else {
+                text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
+            }
             self.client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
             if mode == "stream" || mode == "incomplete" {
                 let first = Data("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\r\n\r\n".utf8)
@@ -84,6 +91,23 @@ FixtureProtocol.mode = "error"; controller.send(); wait("HTTP failure") { !contr
 FixtureProtocol.mode = "bad"; controller.send(); wait("Malformed payload") { !controller.running }; precondition(controller.status.contains("请求未完成"))
 FixtureProtocol.mode = "slow"; controller.send(); RunLoop.current.run(until:Date().addingTimeInterval(0.05)); controller.cancel()
 RunLoop.current.run(until:Date().addingTimeInterval(0.7)); precondition(controller.status == "已取消" && controller.answer.isEmpty)
+FixtureProtocol.mode = "slow"
+controller.send()
+settings.recordChatModel(legacy.id)
+precondition(controller.running, "Chat bookkeeping must not cancel File AI")
+wait("File AI survives chat bookkeeping") { !controller.running }
+precondition(controller.answer == "synthetic answer")
+controller.send()
+var fileConnectionEdit = legacy
+fileConnectionEdit.model = "updated-file-model"
+precondition(settings.save(fileConnectionEdit))
+precondition(!controller.running && controller.status == "已取消")
+precondition(settings.save(legacy))
+controller.send()
+settings.setEnabled(false)
+precondition(!controller.running && controller.status == "已取消")
+settings.setEnabled(true)
+print("PASS File AI configuration isolation: chat bookkeeping survives, file connection and disable cancel")
 var invalid = legacy
 invalid.endpoint = "http://external.example/v1"
 precondition(!settings.save(invalid) && settings.selected == legacy)
@@ -168,10 +192,13 @@ let historyURL = historyDirectory.appendingPathComponent("history.sqlite")
 let history = AIChatHistory(url: historyURL)
 let conversation = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                      history: history, readKey: { _ in nil })
+settings.setDefault(legacy.id, for: .chat)
+precondition(conversation.currentConnection?.id == second.id)
 FixtureProtocol.mode = "stream"
 precondition(conversation.submit("保留这段对话"))
 precondition(!FileManager.default.fileExists(atPath: historyURL.path))
 conversation.beginChat()
+precondition(conversation.currentConnection?.id == second.id)
 let savedID = conversation.chatID!
 let savedTurnID = conversation.turns.first!.id
 conversation.leaveLauncher()
@@ -181,6 +208,7 @@ history.perform({ try $0.load(savedID) }) { result in
     savedRecord = try! result.get()
 }
 wait("Flush completed response to SQLite") { savedRecord?.content.turns.first?.complete == true }
+precondition(settings.state.lastChatModelID == second.id)
 conversation.closeChat()
 
 let reopened = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
@@ -190,11 +218,24 @@ wait("Restore most recent chat from SQLite") { !reopened.loadingChat && reopened
 precondition(reopened.turns.first?.id == savedTurnID && reopened.turns.first?.complete == true)
 precondition(reopened.lastAnswer == "你好")
 settings.select(legacy.id)
+precondition(reopened.currentConnection?.id == second.id && reopened.matchesCurrentModel)
+let requestsBeforeChatFollowUp = FixtureProtocol.requests.count
+precondition(reopened.submit("继续使用原对话模型"))
+wait("Restored chat sends to its original endpoint") { !reopened.running }
+precondition(FixtureProtocol.requests.count == requestsBeforeChatFollowUp + 1)
+precondition(FixtureProtocol.requests.last?.url == second.completionURL)
+var movedModel = second
+movedModel.endpoint = "https://different.example/v1"
+precondition(settings.save(movedModel, selectAsDefault: false))
 precondition(!reopened.matchesCurrentModel && !reopened.submit("do not send history to another endpoint"))
+precondition(FixtureProtocol.requests.count == requestsBeforeChatFollowUp + 1)
+precondition(settings.save(second, selectAsDefault: false))
 settings.select(second.id)
 precondition(reopened.matchesCurrentModel)
 
+settings.setDefault(nil, for: .chat, usesLastChatModel: true)
 reopened.reset()
+precondition(reopened.currentConnection?.id == second.id)
 FixtureProtocol.mode = "slow"
 precondition(reopened.submit("切换时的未完成问题"))
 let interruptedID = reopened.chatID!
@@ -269,7 +310,54 @@ commandSession.clear()
 precondition(commandSession.input.isEmpty)
 print("PASS AI text commands: explicit send, empty selection, translation target, source isolation, reply and cancellation")
 
+settings.setDefault(legacy.id, for: .quick)
+settings.setDefault(otherModel.id, for: .commands)
+let routes = AIConfiguration(preferences: prefs).state
+precondition(routes.connection(for: .quick)?.id == legacy.id)
+precondition(routes.connection(for: .chat)?.id == second.id)
+precondition(routes.connection(for: .commands)?.id == otherModel.id)
+precondition(routes.selectedID == second.id)
+var missing = routes
+missing.connections.removeAll { $0.id == otherModel.id }
+precondition(missing.connection(for: .commands) == nil && missing.connection(for: .quick) != nil)
+commandSession.prepare(.polish, selection: selectedText)
+precondition(commandSession.destination.contains(otherModel.endpoint) && commandSession.canSend)
+
+let discoveryRuntime = AIRuntime(configuration: configuration)
+let discoveryTarget = AIConnection(endpoint: "http://127.0.0.1:11434/v1/chat/completions")
+precondition(discoveryTarget.modelsURL?.absoluteString == "http://127.0.0.1:11434/v1/models")
+precondition(AIConnection(endpoint: "http://remote.example/v1").modelsURL == nil)
+FixtureProtocol.mode = "ok"
+var discovered: [String]?
+Task { @MainActor in discovered = try! await discoveryRuntime.listModels(connection: discoveryTarget) {
+    try AIConfiguration.discoveryKey(for: $0, original: nil, enteredKey: "fixture-key") { _ in
+        preconditionFailure("New connection must not read saved credentials")
+    }
+} }
+var savedReads = 0
+let savedKey = try! AIConfiguration.discoveryKey(for: discoveryTarget, original: discoveryTarget, enteredKey: "") { _ in
+    savedReads += 1; return "saved-fixture"
+}
+precondition(savedKey == "saved-fixture" && savedReads == 1)
+var alternateEndpoint = discoveryTarget
+alternateEndpoint.endpoint = "https://different.example/v1"
+let differentKey = try! AIConfiguration.discoveryKey(for: alternateEndpoint, original: discoveryTarget, enteredKey: "") { _ in
+    preconditionFailure("Endpoint change must not reuse a saved credential")
+}
+precondition(differentKey == nil)
+wait("Discover Ollama model IDs") { discovered != nil }
+precondition(discovered == ["a", "b"])
+FixtureProtocol.mode = "bad"
+var discoveryFailed = false
+Task { @MainActor in
+    do { _ = try await discoveryRuntime.listModels(connection: discoveryTarget) { _ in "fixture-key" } }
+    catch { discoveryFailed = true }
+}
+wait("Reject malformed model list") { discoveryFailed }
+print("PASS AI model catalog: surface routing, missing defaults, pinned chat, last used, Ollama discovery and malformed responses")
+
 let library = CustomAICommandLibrary(preferences: prefs)
+settings.setDefault(legacy.id, for: .commands)
 var custom = CustomAICommand(title: " 改写 ", prompt: """
 Rewrite {selection} in {argument name="tone" options="formal,casual"}. Reference {clipboard}.
 """, connectionID: otherModel.id)
@@ -316,6 +404,7 @@ enabled = true
 FixtureProtocol.mode = "stream"
 commandSession.send()
 settings.select(legacy.id)
+settings.setDefault(second.id, for: .commands)
 wait("AI command uses its own connection") { !commandSession.reply.running }
 precondition(commandSession.reply.lastAnswer == "你好")
 let requestsAfterConfirmation = FixtureProtocol.requests
@@ -328,6 +417,21 @@ precondition(settings.save(changedModel))
 precondition(commandSession.destinationChanged && !commandSession.canSend && commandSession.reply.lastAnswer == nil)
 commandSession.send()
 precondition(!commandSession.reply.running && FixtureProtocol.requests.count == requestsAfterConfirmation.count)
+var followsDefault = custom
+followsDefault.connectionID = nil
+commandSession.prepare(followsDefault, template: template, context: context, canInvoke: { true })
+commandSession.setArgument("tone", value: "formal")
+precondition(commandSession.destination.contains(second.completionURL!.absoluteString) && commandSession.canSend)
+commandSession.send()
+wait("Custom command follows the AI Commands default") { !commandSession.reply.running }
+precondition(FixtureProtocol.requests.count == requestsAfterConfirmation.count + 1)
+precondition(FixtureProtocol.requests.last?.url == second.completionURL)
+settings.setDefault(legacy.id, for: .commands)
+commandSession.send()
+precondition(!commandSession.canSend && FixtureProtocol.requests.count == requestsAfterConfirmation.count + 1)
+var missingOverride = custom
+missingOverride.connectionID = UUID()
+precondition(AITextCommandSession.connection(for: missingOverride, in: settings.state) == nil)
 try library.remove(custom)
 precondition(CustomAICommandLibrary(preferences: prefs).commands.isEmpty)
 print("PASS custom AI commands: stable IDs, archive, selection, clipboard, arguments, enablement and model isolation")
