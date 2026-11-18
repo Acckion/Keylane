@@ -520,7 +520,8 @@ else:
             if 'slow-fixture' in request['params']['input'][0]['text']:
                 time.sleep(3)
             send({'id': rid, 'result': {}})
-            send({'method': 'item/agentMessage/delta', 'params': {'delta': 'CLI fixture answer'}})
+            send({'method': 'item/agentMessage/delta', 'params': {'delta': 'CLI fixture '}})
+            send({'method': 'item/agentMessage/delta', 'params': {'delta': 'answer'}})
             send({'method': 'turn/completed', 'params': {'turn': {'status': 'completed'}}})
             continue
         else:
