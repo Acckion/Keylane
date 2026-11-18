@@ -167,6 +167,12 @@ expect(rightDock.frame(for: snapCandidate(630, 0)).minX == 672 && rightDock.edge
 expect(DropShelfDock.target(for: snapCandidate(-925, 417), in: snapScreen,
                            neighboring: [NSRect(x: -1600, y: 40, width: 800, height: 600)]) == nil,
        "the seam between displays does not dock a shelf")
+let menuBarSafeArea = NSRect(x: -800, y: 40, width: 800, height: 562)
+let highShelf = snapCandidate(-500, 555)
+let topDock = DropShelfDock.target(for: highShelf, in: snapScreen, usable: menuBarSafeArea)!
+expect(topDock.edge == .top && topDock.frame(for: highShelf).minY == menuBarSafeArea.maxY - DropShelfDock.strip,
+       "top docking keeps the entire visible handle below a tall menu bar")
+
 if let screen = window.screen {
     let moveShelf = shelves.create()!
     let area = screen.frame
@@ -213,6 +219,16 @@ if let screen = window.screen {
     drain(0.3)
     expect(moveShelf.frame.minX >= area.minX && overlay.dock == nil && overlay.underlying?.isHidden == false && arrow.isHidden,
            "clicking the handle restores the whole shelf and its controls")
+    moveShelf.toggleDetails()
+    let movingGrab = NSPoint(x: moveShelf.frame.midX - moveShelf.frame.minX, y: moveShelf.frame.height - 6)
+    let movingMouse = moveShelf.convertPoint(toScreen: movingGrab)
+    overlay.mouseDown(with: shelfMouse(.leftMouseDown, at: movingGrab))
+    let shiftedMouse = NSPoint(x: movingMouse.x + 50, y: movingMouse.y - 10)
+    overlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: shiftedMouse)))
+    overlay.mouseUp(with: shelfMouse(.leftMouseUp, at: moveShelf.convertPoint(fromScreen: shiftedMouse)))
+    let movedFrame = moveShelf.frame
+    drain(0.3)
+    expect(moveShelf.frame == movedFrame && movedFrame.width == 420, "starting to move an expanding shelf finishes its resize without resetting the dragged position")
     moveShelf.close()
 }
 let emptyDragShelf = shelves.createForDrag()!
@@ -486,6 +502,15 @@ let screenshotTile = screenshotRow.arrangedSubviews[0]
 let gridPadding = screenshotTile.convert(NSPoint(x: screenshotTile.bounds.minX + 2, y: screenshotTile.bounds.midY), to: nil)
 expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: gridPadding) == nil,
        "padding beside the thumbnail moves the shelf")
+screenshotShelf.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+func clickScreenshotPadding(_ type: NSEvent.EventType) -> NSEvent {
+    NSEvent.mouseEvent(with: type, location: gridPadding, modifierFlags: [], timestamp: 0,
+                      windowNumber: screenshotShelf.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+}
+screenshotShelf.dropOverlay.mouseDown(with: clickScreenshotPadding(.leftMouseDown))
+screenshotShelf.dropOverlay.mouseUp(with: clickScreenshotPadding(.leftMouseUp))
+expect(screenshotShelf.table.selectedRowIndexes.isEmpty, "clicking grid padding through the real overlay clears the old file selection")
+
 expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: finderLabelPoint) === finderButton,
        "the Finder control still keeps its click action")
 

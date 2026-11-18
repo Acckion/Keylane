@@ -398,6 +398,15 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         surface.unregisterDraggedTypes()
         dropOverlay.frame = card.bounds; dropOverlay.autoresizingMask = [.width, .height]
         dropOverlay.underlying = surface
+        dropOverlay.willMoveShelf = { [weak self] in
+            guard let self, self.resizeTimer != nil else { return }
+            self.resizeCard()
+        }
+        dropOverlay.backgroundClick = { [weak self] point in
+            guard let self, self.expanded, self.gridMode else { return }
+            let clip = self.contentScroll.contentView
+            if clip.bounds.contains(clip.convert(point, from: nil)) { self.table.deselectAll(nil) }
+        }
         dropOverlay.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
         dropOverlay.dragActivity = { [weak self] in self?.receivingDrag = $0 }
         dropOverlay.setAccessibilityElement(false)

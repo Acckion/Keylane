@@ -93,24 +93,25 @@ struct DropShelfDock {
     static let strip: CGFloat = 28
     let edge: Edge
     let area: NSRect
+    let usable: NSRect
 
     func frame(for shelf: NSRect) -> NSRect {
         var target = shelf
         switch edge {
-        case .left: target.origin.x = area.minX + Self.strip - shelf.width
-        case .right: target.origin.x = area.maxX - Self.strip
-        case .bottom: target.origin.y = area.minY + Self.strip - shelf.height
-        case .top: target.origin.y = area.maxY - Self.strip
+        case .left: target.origin.x = usable.minX + Self.strip - shelf.width
+        case .right: target.origin.x = usable.maxX - Self.strip
+        case .bottom: target.origin.y = usable.minY + Self.strip - shelf.height
+        case .top: target.origin.y = usable.maxY - Self.strip
         }
         if edge == .left || edge == .right {
-            target.origin.y = max(area.minY, min(target.minY, area.maxY - target.height))
+            target.origin.y = max(usable.minY, min(target.minY, usable.maxY - target.height))
         } else {
-            target.origin.x = max(area.minX, min(target.minX, area.maxX - target.width))
+            target.origin.x = max(usable.minX, min(target.minX, usable.maxX - target.width))
         }
         return target
     }
 
-    static func target(for shelf: NSRect, in area: NSRect, neighboring: [NSRect] = []) -> Self? {
+    static func target(for shelf: NSRect, in area: NSRect, usable: NSRect? = nil, neighboring: [NSRect] = []) -> Self? {
         let visible: [(Edge, CGFloat)] = [
             (.left, (shelf.maxX - area.minX) / shelf.width),
             (.right, (area.maxX - shelf.minX) / shelf.width),
@@ -118,9 +119,10 @@ struct DropShelfDock {
             (.top, (area.maxY - shelf.minY) / shelf.height)
         ]
         for (edge, fraction) in visible.sorted(by: { $0.1 < $1.1 }) where fraction <= 0.52 {
-            let dock = Self(edge: edge, area: area)
-            let target = dock.frame(for: shelf)
-            if neighboring.allSatisfy({ $0.intersection(target).isEmpty }) { return dock }
+            let physicalTarget = Self(edge: edge, area: area, usable: area).frame(for: shelf)
+            if neighboring.allSatisfy({ $0.intersection(physicalTarget).isEmpty }) {
+                return Self(edge: edge, area: area, usable: usable ?? area)
+            }
         }
         return nil
     }
@@ -130,6 +132,8 @@ struct DropShelfDock {
 /// AppKit sees one full-card rectangle. Ordinary mouse input is forwarded below.
 final class DropShelfCaptureOverlay: DropShelfDropView {
     weak var underlying: NSView?
+    var willMoveShelf: (() -> Void)?
+    var backgroundClick: ((NSPoint) -> Void)?
     private weak var mouseTarget: NSView?
     private var windowDrag: (mouse: NSPoint, origin: NSPoint)?
     private var didMoveWindow = false
@@ -182,7 +186,7 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
 
     func restoreDockedShelf(animated: Bool = true) {
         guard let dock, let window else { return }
-        let usable = NSScreen.screens.first { $0.frame == dock.area }?.visibleFrame ?? dock.area
+        let usable = NSScreen.screens.first { $0.frame == dock.area }?.visibleFrame ?? dock.usable
         let frame = window.frame
         let origin = NSPoint(x: max(usable.minX, min(frame.minX, usable.maxX - frame.width)),
                              y: max(usable.minY, min(frame.minY, usable.maxY - frame.height)))
@@ -297,10 +301,15 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
         }
     }
     override func mouseDragged(with event: NSEvent) {
-        guard let windowDrag, let window else { mouseTarget?.mouseDragged(with: event); return }
+        guard var windowDrag, let window else { mouseTarget?.mouseDragged(with: event); return }
         let mouse = window.convertPoint(toScreen: event.locationInWindow)
         guard didMoveWindow || hypot(mouse.x - windowDrag.mouse.x, mouse.y - windowDrag.mouse.y) >= 3 else { return }
-        didMoveWindow = true
+        if !didMoveWindow {
+            willMoveShelf?()
+            windowDrag.origin = window.frame.origin
+            self.windowDrag = windowDrag
+            didMoveWindow = true
+        }
         if dock != nil { showDock(nil) }
         NSCursor.closedHand.set()
         let origin = NSPoint(x: windowDrag.origin.x + mouse.x - windowDrag.mouse.x,
@@ -311,10 +320,12 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
         if windowDrag != nil, let window {
             if !didMoveWindow, dock != nil {
                 restoreDockedShelf()
-            } else if didMoveWindow {
+            } else if !didMoveWindow {
+                backgroundClick?(event.locationInWindow)
+            } else {
                 let mouse = window.convertPoint(toScreen: event.locationInWindow)
                 let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? window.screen
-                if let screen, let target = DropShelfDock.target(for: window.frame, in: screen.frame,
+                if let screen, let target = DropShelfDock.target(for: window.frame, in: screen.frame, usable: screen.visibleFrame,
                         neighboring: NSScreen.screens.filter { $0 != screen }.map(\.frame)) {
                     moveWindow(to: target.frame(for: window.frame).origin) { [weak self] in
                         self?.showDock(target)
