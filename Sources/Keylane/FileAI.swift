@@ -34,7 +34,11 @@ final class FileAIController: NSObject, ObservableObject, NSWindowDelegate {
         self.readKey = readKey
         commandsEnabled = preferences.dictionary(forKey: "fileAICommandsEnabled") as? [String: Bool] ?? [:]
         super.init()
-        settingsChanges = settings.$state.dropFirst().sink { [weak self] _ in self?.cancel() }
+        settingsChanges = settings.$state
+            .map { $0.enabled ? $0.selected : nil }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in self?.cancel() }
     }
 
     func setFiles(_ urls: [URL]) { cancel(); files = Array(urls.prefix(20)); answer = ""; status = ""; includeContents = false; includePaths = false }
