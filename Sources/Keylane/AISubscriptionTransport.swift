@@ -116,7 +116,8 @@ enum AISubscriptionTransport {
             }
             defer { timeout.cancel() }
             try process.send(["id": 0, "method": "initialize", "params": [
-                "clientInfo": ["name": "keylane", "version": "1.0"]]])
+                "clientInfo": ["name": "keylane", "version":
+                    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"]]])
             var buffer = Data()
             var receivedText = false
             var pendingText = ""
