@@ -230,6 +230,7 @@ struct LauncherModule {
         var available: () -> Bool = { true }
         var permission: PermissionFeature?
         var acceptsFallbackQuery = false
+        var fallbackAvailable: () -> Bool = { true }
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
         var arguments: Arguments?
     }
@@ -687,7 +688,7 @@ final class LauncherModuleRegistry {
     }
 
     private func fallbackCommandAvailable(_ command: Owned<LauncherModule.Command>) -> Bool {
-        guard command.value.acceptsFallbackQuery, isCommandEnabled(command),
+        guard command.value.acceptsFallbackQuery, command.value.fallbackAvailable(), isCommandEnabled(command),
               command.value.permission?.available != false else { return false }
         if let arguments = command.value.arguments { return arguments.count.contains(1) }
         guard case .page(let page) = command.value.declaration.destination else { return false }

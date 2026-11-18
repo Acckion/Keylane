@@ -13,6 +13,39 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     var mode: AIResponseMode = .streaming
     var legacyAccount: String?
     var previousEndpoints: [String]?
+    var hiddenFromPicker: Bool?
+    var contextTokens: Int?
+    var supportsImages: Bool?
+    var supportsTools: Bool?
+    var wireProtocol: AIWireProtocol?
+    var providerID: String?
+    var executablePath: String?
+    var accountFolder: String?
+    var subscriptionEnabled: Bool?
+    var customConfigID: String?
+    var additionalParametersJSON: String?
+    var credentialOwnerID: UUID?
+    var subscriptionAccountID: String?
+
+    var protocolKind: AIWireProtocol { wireProtocol ?? .openAI }
+    var destinationLabel: String {
+        if protocolKind.isSubscription {
+            return "\(protocolKind == .codex ? "Codex" : "Claude Code") · \(accountFolder.flatMap { $0.isEmpty ? nil : $0 } ?? "默认账户目录")"
+        }
+        return completionURL?.absoluteString ?? endpoint
+    }
+    var requestIdentity: String {
+        guard protocolKind.isSubscription else { return destinationLabel }
+        return [protocolKind.rawValue, executablePath ?? "", accountFolder ?? "", subscriptionAccountID ?? ""].joined(separator: "\n")
+    }
+
+    var displayName: String { name.isEmpty ? model : name }
+    var providerLabel: String {
+        if protocolKind.isSubscription { return protocolKind == .codex ? "ChatGPT 订阅" : "Claude 订阅" }
+        if let providerID, let preset = AIProviderPreset.all.first(where: { $0.id == providerID }) { return preset.name }
+        guard let url = baseURL, let host = url.host else { return "无效接口" }
+        return url.port.map { "\(host):\($0)" } ?? host
+    }
 
     var baseURL: URL? { Self.baseURL(for: endpoint) }
 
@@ -25,7 +58,21 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
         return url
     }
 
-    var completionURL: URL? { Self.completionURL(for: endpoint) }
+    var completionURL: URL? {
+        guard !protocolKind.isSubscription else { return nil }
+        if protocolKind == .anthropic {
+            guard let url = baseURL else { return nil }
+            return url.path.hasSuffix("/messages") ? url : url.appendingPathComponent("messages")
+        }
+        return Self.completionURL(for: endpoint)
+    }
+    var modelsURL: URL? {
+        guard let url = baseURL else { return nil }
+        let prefix = url.path.hasSuffix("/chat/completions")
+            ? url.deletingLastPathComponent().deletingLastPathComponent()
+            : url.path.hasSuffix("/messages") ? url.deletingLastPathComponent() : url
+        return prefix.appendingPathComponent("models")
+    }
 
     static func completionURL(for endpoint: String) -> URL? {
         guard let url = baseURL(for: endpoint) else { return nil }
@@ -33,7 +80,10 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     }
 
     var isConfigured: Bool {
-        baseURL != nil && !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isValidConfiguration && (!protocolKind.isSubscription || (subscriptionEnabled == true && model != "default"))
+    }
+    var isValidConfiguration: Bool {
+        (protocolKind.isSubscription || baseURL != nil) && !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
@@ -48,13 +98,18 @@ private final class AIRedirectPolicy: NSObject, URLSessionTaskDelegate {
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         guard let first = task.originalRequest?.url, let next = request.url,
               first.scheme == next.scheme, first.host == next.host, first.port == next.port,
-              next.user == nil, next.password == nil, request.httpMethod == "POST"
+              next.user == nil, next.password == nil, task.originalRequest?.httpMethod == "POST", request.httpMethod == "POST"
         else { completionHandler(nil); return }
         completionHandler(request)
     }
 }
 
 actor AIRuntime {
+    private struct ModelList: Decodable {
+        struct Model: Decodable { let id: String }
+        let data: [Model]
+    }
+
     private struct Payload: Encodable {
         let model: String
         let stream: Bool
@@ -72,8 +127,37 @@ actor AIRuntime {
         self.configuration = configuration
     }
 
+    func listModels(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?) async throws -> [String] {
+        if connection.protocolKind.isSubscription {
+            return try await AISubscriptionTransport.models(connection)
+        }
+        guard let url = connection.modelsURL else { throw AIResponseError.invalidResponse }
+        try Task.checkCancellation()
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        authorize(&request, connection: connection, key: try readKey(connection))
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
+        var body = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard body.count < 1_048_576 else { throw AIResponseError.tooLarge }
+            body.append(byte)
+        }
+        guard let list = try? JSONDecoder().decode(ModelList.self, from: body) else { throw AIResponseError.invalidResponse }
+        return Set(list.data.map(\.id).filter {
+            !$0.isEmpty && $0.utf8.count <= 512 && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                && $0.rangeOfCharacter(from: .controlCharacters) == nil
+        }).sorted()
+    }
+
     func generate(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?, messages: [AIMessage],
                   emit: @Sendable (String) async throws -> Void) async throws -> Int? {
+        if connection.protocolKind.isSubscription {
+            return try await AISubscriptionTransport.generate(connection, messages: messages, emit: emit)
+        }
         guard let url = connection.completionURL, connection.isConfigured else { throw AIResponseError.invalidResponse }
         try Task.checkCancellation()
         let streaming = connection.mode == .streaming
@@ -81,8 +165,20 @@ actor AIRuntime {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(streaming ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
-        if let key = try readKey(connection), !key.isEmpty { request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization") }
-        let body = try JSONEncoder().encode(Payload(model: connection.model, stream: streaming, messages: messages))
+        authorize(&request, connection: connection, key: try readKey(connection))
+        var body = connection.protocolKind == .anthropic
+            ? try AnthropicAIProtocol.body(connection: connection, messages: messages)
+            : try JSONEncoder().encode(Payload(model: connection.model, stream: streaming, messages: messages))
+        if let parameters = connection.additionalParametersJSON,
+           let data = parameters.data(using: .utf8),
+           let extra = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           var payload = try JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            guard Set(extra.keys).isDisjoint(with: ["model", "messages", "stream", "tools", "tool_choice", "system"]) else {
+                throw AIResponseError.invalidResponse
+            }
+            payload.merge(extra) { _, added in added }
+            body = try JSONSerialization.data(withJSONObject: payload)
+        }
         guard body.count <= 1_048_576 else { throw AIResponseError.requestTooLarge }
         request.httpBody = body
         try Task.checkCancellation()
@@ -90,6 +186,9 @@ actor AIRuntime {
         defer { bytes.task.cancel() }
         guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
+        if connection.protocolKind == .anthropic {
+            return try await AnthropicAIProtocol.receive(bytes, streaming: streaming, emit: emit)
+        }
         let limit = 1_048_576
         if !streaming {
             var body = Data()
@@ -135,5 +234,14 @@ actor AIRuntime {
         try parser.validateEnd()
         guard receivedText else { throw AIResponseError.invalidResponse }
         return usage
+    }
+
+    private func authorize(_ request: inout URLRequest, connection: AIConnection, key: String?) {
+        if connection.protocolKind == .anthropic {
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            if let key { request.setValue(key, forHTTPHeaderField: "x-api-key") }
+        } else if let key, !key.isEmpty {
+            request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+        }
     }
 }

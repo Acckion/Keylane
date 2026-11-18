@@ -5,13 +5,18 @@ import SwiftUI
 final class AIChatWindow: NSObject, NSWindowDelegate {
     private let controller: QuickAIController
     private let configuration: AIConfiguration
+    private let interaction: AIInteractionPreferences
+    private let composer = AIChatComposer()
     private var window: NSWindow?
     private var appearance: NSAppearance?
     private var appearanceChanges: AnyCancellable?
+    private var floatingChanges: AnyCancellable?
 
-    init(controller: QuickAIController, configuration: AIConfiguration, appearance: AnyPublisher<String, Never>) {
+    init(controller: QuickAIController, configuration: AIConfiguration, interaction: AIInteractionPreferences,
+         appearance: AnyPublisher<String, Never>) {
         self.controller = controller
         self.configuration = configuration
+        self.interaction = interaction
         super.init()
         appearanceChanges = appearance.removeDuplicates().sink { [weak self] value in
             let resolved = value == "dark" ? NSAppearance(named: .darkAqua)
@@ -19,10 +24,14 @@ final class AIChatWindow: NSObject, NSWindowDelegate {
             self?.appearance = resolved
             self?.window?.appearance = resolved
         }
+        floatingChanges = interaction.$chatFloating.removeDuplicates().sink { [weak self] floating in
+            self?.window?.level = floating ? .floating : .normal
+        }
     }
 
     func show(draft: String, restoreLatest: Bool, activation: WindowActivationBehavior, leaveLauncher: () -> Void) {
         controller.beginChat(restoreLatest: restoreLatest)
+        composer.offer(draft)
         leaveLauncher()
         if window == nil {
             let chat = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 730, height: 570),
@@ -30,10 +39,12 @@ final class AIChatWindow: NSObject, NSWindowDelegate {
                                 backing: .buffered, defer: false)
             chat.title = "AI Chat"
             chat.appearance = appearance
+            chat.level = interaction.chatFloating ? .floating : .normal
             chat.minSize = NSSize(width: 620, height: 350)
             chat.isReleasedWhenClosed = false
             chat.delegate = self
-            chat.contentView = NSHostingView(rootView: AIChatView(controller: controller, configuration: configuration, draft: draft))
+            chat.contentView = NSHostingView(rootView: AIChatView(controller: controller, configuration: configuration,
+                                                                 interaction: interaction, composer: composer))
             chat.center()
             window = chat
         }
@@ -47,6 +58,7 @@ final class AIChatWindow: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         guard let closed = notification.object as? NSWindow, closed === window else { return }
         window = nil
+        composer.text = ""
         controller.closeChat()
     }
 }
@@ -54,7 +66,8 @@ final class AIChatWindow: NSObject, NSWindowDelegate {
 private struct AIChatView: View {
     @ObservedObject var controller: QuickAIController
     @ObservedObject var configuration: AIConfiguration
-    @State var draft: String
+    @ObservedObject var interaction: AIInteractionPreferences
+    @ObservedObject var composer: AIChatComposer
     @FocusState private var editorFocused: Bool
     @State private var pendingDeletion: AIChatSummary?
 
@@ -64,7 +77,7 @@ private struct AIChatView: View {
             chat.frame(minWidth: 400)
         }
         .task { editorFocused = true }
-        .onChange(of: controller.chatID) { _, _ in draft = "" }
+        .onChange(of: controller.chatID) { _, _ in composer.text = "" }
         .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
         .confirmationDialog("删除这段对话？", isPresented: Binding(
             get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }
@@ -105,31 +118,39 @@ private struct AIChatView: View {
                 .overlay { if controller.loadingChat { ProgressView("正在读取对话…") } }
             Divider()
             VStack(alignment: .leading, spacing: 10) {
-                if !controller.matchesCurrentModel {
-                    Text("这段对话使用了另一模型或接口。切回原配置，或新建对话。")
+                if !configuration.state.enabled {
+                    Text("请在「设置 → AI」中启用 AI。")
                         .font(.caption).foregroundStyle(.secondary)
-                } else if let connection = configuration.selected, configuration.isAvailable {
-                    Text(connection.name.isEmpty ? connection.model : connection.name)
+                } else if !controller.matchesCurrentModel {
+                    Text("这段对话的原模型或接口不可用。恢复原连接，或新建对话。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let connection = controller.currentConnection {
+                    Text(connection.displayName)
                         .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text("请在「设置 → AI」中启用并配置模型。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                TextEditor(text: $draft)
+                TextEditor(text: $composer.text)
                     .frame(height: 76)
                     .focused($editorFocused)
                     .disabled(controller.loadingChat || !controller.matchesCurrentModel)
                     .accessibilityLabel("问题")
+                    .onKeyPress(keys: [.return], phases: .down) { press in
+                        guard interaction.chatReturn, press.modifiers.isEmpty, !SearchField.isComposing else { return .ignored }
+                        submit()
+                        return .handled
+                    }
                 HStack {
                     Button("新对话", action: newChat)
                     Button("复制回复") { AIConversationTranscript.copy(controller.lastAnswer) }
                         .disabled(controller.lastAnswer == nil)
                     Spacer()
                     Button("发送", action: submit)
-                        .keyboardShortcut(.return, modifiers: .command)
+                        .keyboardShortcut(interaction.chatReturn ? nil : KeyboardShortcut(.return, modifiers: .command))
                         .buttonStyle(ContentActionButtonStyle())
-                        .disabled(controller.running || controller.loadingChat || !controller.matchesCurrentModel || !configuration.isAvailable
-                                  || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(controller.running || controller.loadingChat || !controller.matchesCurrentModel || controller.currentConnection == nil
+                                  || composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }.padding(16)
         }
@@ -137,12 +158,12 @@ private struct AIChatView: View {
 
     private func newChat() {
         controller.reset()
-        draft = ""
+        composer.text = ""
         editorFocused = true
     }
 
     private func submit() {
         guard !SearchField.isComposing else { return }
-        if controller.submit(draft) { draft = "" }
+        if controller.submit(composer.text) { composer.text = "" }
     }
 }
