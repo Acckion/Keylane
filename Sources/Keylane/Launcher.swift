@@ -133,7 +133,7 @@ struct Launcher: View {
     private var launcherSurface: some View {
         let results = rows
         let selectedIndex = selectionIndex(in: results)
-        let showsSearchBar = argumentTarget == nil && page?.contentPlacement != .form
+        let showsSearchBar = argumentTarget == nil && page?.contentPlacement != .form && page?.contentPlacement != .conversation
         let compactSurface = model.isCompact && model.presentedLauncherHeight <= model.launcherHeight + 0.5
         return ZStack(alignment: .top) {
             if let target = argumentTarget { argumentEditor(target) }
@@ -177,6 +177,10 @@ struct Launcher: View {
                             .launcherScrollInsets()
                             .launcherScrollEdgeFade()
                         case .form: content()
+                        case .conversation:
+                            content()
+                                .environment(\.conversationInputEnabled, menu == nil)
+                                .environment(\.conversationInputFocusToken, focusToken)
                         case .inset, .fileResults:
                             content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
                         }
@@ -223,6 +227,21 @@ struct Launcher: View {
         .overlay(alignment: .top) {
             if launcherVisible, argumentTarget == nil, let loading {
                 WindowLoadingIndicator(loading: loading).id(model.pageID)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if page?.contentPlacement == .conversation, menu == nil, let feedback = model.footerFeedback.current {
+                NativeHoverButton(title: feedback.label, action: {
+                    if feedback.actionTitle != nil { model.footerFeedback.performAction() }
+                    else { model.footerFeedback.clear() }
+                }) {
+                    LauncherFooterFeedbackLabel(feedback: feedback)
+                }
+                .frame(width: LauncherFooterFeedbackLabel.width(for: feedback.label),
+                       height: VisualStyle.launcherControlDiameter)
+                .modifier(LauncherMenuSurface(open: false, tint: feedback.style.color.opacity(0.16)))
+                .padding(.horizontal, VisualStyle.launcherEdgeInset)
+                .padding(.bottom, VisualStyle.launcherBottomInset + 6)
             }
         }
         .scaleEffect(model.interfaceScale)
@@ -717,13 +736,15 @@ struct Launcher: View {
         }.padding(.horizontal, VisualStyle.launcherEdgeInset).padding(.bottom, VisualStyle.launcherEdgeInset)
     }
     private func expandingControl(application: Bool) -> some View {
+        let conversation = page?.contentPlacement == .conversation
         let secondary = page?.badge != nil
         let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
         let badgeSymbol = page?.badge?.symbol ?? ""
         let menuTitle = page?.badgeActions == nil ? "Keylane 菜单" : "\(badgeTitle)菜单"
-        let feedback = application ? model.footerFeedback.current : nil
-        let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
-            ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
+        let feedback = application && !conversation ? model.footerFeedback.current : nil
+        let preferredApplicationWidth = conversation ? VisualStyle.launcherControlDiameter
+            : feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
+                ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = rootScriptArguments == nil && (page?.contentPlacement != .form || !rootMenuItems(applicationMenu: false).isEmpty)
         let primaryLabel = LauncherFooterButtonLabel(title: primaryTitle,
             keys: (page?.returnBindings.primary ?? .plain).shortcut.launcherKeycaps)
@@ -732,7 +753,7 @@ struct Launcher: View {
         let capsuleInset: CGFloat = 4
         let maximumActionWidth: CGFloat = page?.maximumActionWidth ?? (showsActions ? 196 : 126)
         let primaryWidth = min(primaryLabel.width, max(0, maximumActionWidth - actionsWidth - 2 * capsuleInset))
-        let actionWidth = primaryWidth + actionsWidth + 2 * capsuleInset
+        let actionWidth = conversation ? VisualStyle.launcherControlDiameter : primaryWidth + actionsWidth + 2 * capsuleInset
         let rightWidth = actions ? Self.footerMenuWidth : actionWidth
         let availableApplicationWidth = VisualStyle.launcherWidth - 2 * VisualStyle.launcherEdgeInset
             - Self.footerMinimumGap - rightWidth
@@ -747,6 +768,14 @@ struct Launcher: View {
                 menuPanel(applicationMenu: application, items: items)
                     .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
+            } else if conversation {
+                NativeHoverButton(title: application ? "对话选项" : "操作", action: { toggleMenu(application: application) }) {
+                    Image(systemName: application ? "plus" : "command")
+                        .font(.system(size: 18))
+                        .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
+                }
+                .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
+                .transition(.opacity)
             } else if let feedback {
                 NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开\(menuTitle)" : feedback.label, action: {
                     if feedback.actionTitle != nil { model.footerFeedback.performAction() }
