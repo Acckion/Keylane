@@ -44,6 +44,22 @@ final class FixtureProtocol: URLProtocol {
 let suite = "org.keylane.file-ai-test."+UUID().uuidString
 let prefs = UserDefaults(suiteName:suite)!
 defer { prefs.removePersistentDomain(forName:suite) }
+let interaction = AIInteractionPreferences(preferences: prefs)
+precondition(!interaction.rootTab && !interaction.rootFallback && !interaction.chatReturn && !interaction.chatFloating)
+interaction.rootTab = true
+interaction.rootFallback = true
+interaction.chatReturn = true
+interaction.chatFloating = true
+let reloadedInteraction = AIInteractionPreferences(preferences: prefs)
+precondition(reloadedInteraction.rootTab && reloadedInteraction.rootFallback &&
+             reloadedInteraction.chatReturn && reloadedInteraction.chatFloating)
+let composer = AIChatComposer()
+composer.offer("   ")
+precondition(composer.text.isEmpty)
+composer.offer(" 初始问题 ")
+composer.offer("另一个入口的问题")
+precondition(composer.text == " 初始问题 ", "Opening a second entry preserves the existing unsent draft")
+print("PASS Quick AI and chat settings persistence and non-destructive draft handoff")
 let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FixtureProtocol.self]
 let fresh = AIConfiguration(preferences: prefs)
 precondition(!fresh.isAvailable && fresh.selected == nil)

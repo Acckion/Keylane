@@ -434,12 +434,12 @@ struct Launcher: View {
         }
         switch change.activation {
         case .enter:
-            let fallbackQuery = model.takeFallbackQuery(for: current)
-            let initialQuery = page?.enter?(fallbackQuery ?? model.query)
-            if let seed = fallbackQuery ?? initialQuery {
+            let explicitQuery = model.takeInitialQuery(for: current)
+            let initialQuery = page?.enter?(explicitQuery ?? model.query)
+            if let seed = explicitQuery ?? initialQuery {
                 if showsFileResults { fileType = "all" }
                 // A page can seed a fresh entry. A return keeps the query saved by the host.
-                if restoredQuery == nil || fallbackQuery != nil { model.query = seed }
+                if restoredQuery == nil || explicitQuery != nil { model.query = seed }
             }
             refreshActiveQuery()
         case .resume:
@@ -516,7 +516,8 @@ struct Launcher: View {
                                 forward: page?.moveHorizontal.map { move in { move(1) } },
                                 navigateWhileTyping: page?.navigateWhileTyping ?? false,
                                 spaceAtEnd: model.pageID == .root ? { ScriptCommandsModule.focusArguments(forAlias: $0, model: model) } : nil,
-                                insertEmoji: openInlineEmoji)
+                                insertEmoji: openInlineEmoji,
+                                tab: model.pageID == .root ? openQuickAI : nil)
                         .frame(height: 30)
                 case .none:
                     Spacer(minLength: 0)
@@ -529,6 +530,13 @@ struct Launcher: View {
         }.padding(.horizontal, model.pageID == .root ? 19 : VisualStyle.launcherEdgeInset)
             .frame(height: model.pageID == .root ? 61 : VisualStyle.launcherControlDiameter + 2 * VisualStyle.launcherEdgeInset)
             .frame(height: 61, alignment: .top)
+    }
+
+    private func openQuickAI(_ query: String) -> Bool {
+        guard presentation.page == .root, model.pageID == .root, model.aiInteraction.rootTab,
+              menu == nil, inlineEmojiTarget == nil, argumentTarget == nil, rootScriptArguments == nil,
+              !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return model.runCommand(QuickAILauncher.commandID, origin: .search, arguments: [query])
     }
     @ViewBuilder private var typeFilter: some View {
         if showsFileResults {
