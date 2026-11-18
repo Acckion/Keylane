@@ -100,6 +100,7 @@ let settings = AIConfiguration(preferences: prefs)
 let legacy = settings.selected!
 precondition(settings.isAvailable && legacy.mode == .complete && legacy.legacyAccount == "http://localhost/v1")
 precondition(AIConfiguration(preferences: prefs).selected == legacy)
+precondition(AIRoute.allCases.allSatisfy { settings.state.defaults?[$0] == legacy.id })
 let controller = FileAIController(settings: settings, runtime: AIRuntime(configuration: configuration),
                                   preferences: prefs, readKey: { _ in nil })
 func wait(_ label:String,_ condition:()->Bool) {
@@ -137,6 +138,7 @@ invalid.endpoint = "http://external.example/v1"
 precondition(!settings.save(invalid) && settings.selected == legacy)
 let second = AIConnection(name: "second", endpoint: "http://127.0.0.1/v1", model: "fixture-model")
 precondition(settings.save(second))
+for route in AIRoute.allCases { settings.setDefault(second.id, for: route) }
 FixtureProtocol.mode = "stream"
 controller.send(); wait("Streaming response") { !controller.running }
 precondition(controller.answer == "你好" && controller.status.contains("5 tokens"))
@@ -191,10 +193,12 @@ quick.stop()
 RunLoop.current.run(until: Date().addingTimeInterval(0.7))
 precondition(quick.status == "已停止。" && quick.turns.last?.answer.isEmpty == true)
 settings.select(legacy.id)
+settings.setDefault(legacy.id, for: .quick)
 precondition(quick.turns.isEmpty && !quick.running)
 print("PASS Quick AI: initial prompt, complete-turn follow-up, single active request, cancellation and model isolation")
 
 settings.select(second.id)
+settings.setDefault(second.id, for: .quick)
 FixtureProtocol.mode = "stream"
 precondition(quick.submit("handoff"))
 let transferredTurn = quick.turns.first!.id
@@ -341,10 +345,12 @@ let reviewedModel = settings.selected!
 let reviewedDestination = commandSession.destination
 let otherModel = AIConnection(endpoint: "http://localhost:9000/alternate", model: "another-model")
 precondition(settings.save(otherModel))
+settings.setDefault(otherModel.id, for: .commands)
 precondition(commandSession.destinationChanged && commandSession.destination == reviewedDestination)
 commandSession.send()
 precondition(!commandSession.reply.running && commandSession.reply.turns.isEmpty)
 settings.select(reviewedModel.id)
+settings.setDefault(reviewedModel.id, for: .commands)
 precondition(commandSession.canSend)
 settings.setEnabled(false)
 commandSession.send()
@@ -793,3 +799,61 @@ Task { @MainActor in
 wait("Generation verifies the actual app-server account") { generationIdentityFinished }
 try FileManager.default.removeItem(at: cliDirectory.appendingPathComponent("active-account"))
 print("PASS Codex generation account identity: login switches between processes cannot bypass verification; mismatched process never starts a thread")
+
+let independentPrefs = UserDefaults(suiteName: suite + ".independent-defaults")!
+defer { independentPrefs.removePersistentDomain(forName: suite + ".independent-defaults") }
+let independentConfig = AIConfiguration(preferences: independentPrefs)
+let defaultA = AIConnection(endpoint: "http://127.0.0.1/v1", model: "file-model-a", mode: .complete)
+let defaultB = AIConnection(endpoint: "http://127.0.0.1/v1", model: "file-model-b", mode: .complete)
+precondition(independentConfig.save(defaultA) && independentConfig.save(defaultB, selectAsDefault: false))
+independentConfig.setEnabled(true)
+independentConfig.setDefault(defaultB.id, for: .files)
+precondition(independentConfig.state.connection(for: .quick)?.id == defaultA.id)
+precondition(independentConfig.state.connection(for: .files)?.id == defaultB.id)
+let persistedIndependent = AIConfiguration(preferences: independentPrefs)
+precondition(persistedIndependent.state.defaults == independentConfig.state.defaults)
+let independentFile = FileAIController(settings: independentConfig, runtime: AIRuntime(configuration: configuration), preferences: independentPrefs, readKey: { _ in nil })
+independentFile.question = "fixture independent file route"
+FixtureProtocol.mode = "slow"
+independentFile.send()
+RunLoop.current.run(until: Date().addingTimeInterval(0.06))
+precondition(independentFile.running)
+independentConfig.setDefault(defaultB.id, for: .quick)
+precondition(independentFile.running, "Quick AI default must not cancel a file request")
+independentConfig.setDefault(defaultA.id, for: .files)
+precondition(!independentFile.running && independentFile.status == "已取消")
+print("PASS independent model defaults: legacy selection expanded, per-route persistence, File AI routing and cancellation isolation")
+
+let orderingOpenAI = AIProviderPreset.all.first { $0.id == "openai" }!.connection
+let orderingXAI = AIProviderPreset.all.first { $0.id == "xai" }!.connection
+let orderingZAI = AIProviderPreset.all.first { $0.id == "zai" }!.connection
+var hiddenMenuModel = orderingOpenAI
+hiddenMenuModel.id = UUID()
+hiddenMenuModel.name = "Hidden menu model"
+hiddenMenuModel.hiddenFromPicker = true
+var disabledMenuModel = orderingZAI
+disabledMenuModel.id = UUID()
+disabledMenuModel.name = "Unavailable selected model"
+disabledMenuModel.endpoint = "invalid"
+let mixedProviderModels = [orderingZAI, hiddenMenuModel, orderingXAI, disabledMenuModel, orderingOpenAI]
+let orderedMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(orderingOpenAI.id), query: "")
+precondition(orderedMenu.groups.map(\.id) == ["OpenAI", "xAI", "Z.AI"])
+precondition(orderedMenu.choices(inherits: true, allowsLastUsed: true) ==
+             [.inherit, .lastUsed, .model(orderingOpenAI.id), .model(orderingXAI.id), .model(orderingZAI.id)])
+let hiddenSelectedMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(hiddenMenuModel.id), query: "Hidden")
+precondition(hiddenSelectedMenu.groups.flatMap(\.models).map(\.id) == [hiddenMenuModel.id])
+precondition(hiddenSelectedMenu.choices(inherits: false, allowsLastUsed: false) == [.model(hiddenMenuModel.id)])
+let unavailableSelectedMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(disabledMenuModel.id), query: "")
+precondition(unavailableSelectedMenu.groups.flatMap(\.models).contains { $0.id == disabledMenuModel.id })
+precondition(!unavailableSelectedMenu.choices(inherits: false, allowsLastUsed: false).contains(.model(disabledMenuModel.id)))
+let filteredMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(orderingOpenAI.id), query: "xAI")
+precondition(filteredMenu.groups.map(\.id) == ["xAI"])
+precondition(filteredMenu.choices(inherits: false, allowsLastUsed: false) == [.model(orderingXAI.id)])
+print("PASS model menu ordering: mixed-case provider groups and keyboard share order; search, hidden selection, disabled items and special choices remain consistent")
+
+precondition(filteredMenu.choices(inherits: true, allowsLastUsed: true) == [.model(orderingXAI.id)])
+let noMatchingMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(orderingOpenAI.id), query: "no-such-fixture-model")
+precondition(noMatchingMenu.groups.isEmpty)
+precondition(noMatchingMenu.choices(inherits: true, allowsLastUsed: true).isEmpty)
+precondition(orderedMenu.choices(inherits: true, allowsLastUsed: true).prefix(2) == [.inherit, .lastUsed])
+print("PASS model menu search: matching models precede Return selection, no matches offer no selection, clearing search restores special choices")

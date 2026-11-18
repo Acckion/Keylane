@@ -141,19 +141,8 @@ private struct AIModelSettings: View {
 
     var body: some View {
         SettingsPageSections {
+            AIModelDefaultsSettings(configuration: configuration).settingsAnchor(AIModule.models)
             SettingsGroup {
-                SettingsPicker("共用模型连接", detail: "用于询问文件，以及跟随共用连接的 AI 入口。", selection: Binding<UUID?>(
-                    get: { configuration.state.selectedID },
-                    set: { if let id = $0 { configuration.select(id) } }
-                )) {
-                    if configuration.selected == nil { Text("尚未选择").tag(nil as UUID?) }
-                    ForEach(configuration.state.connections.filter {
-                        $0.hiddenFromPicker != true || $0.id == configuration.state.selectedID
-                    }) { connection in
-                        Text(connection.name.isEmpty ? connection.model : connection.name).tag(Optional(connection.id))
-                    }
-                }
-                Divider()
                 SettingsRow("模型与提供方", detail: "支持 OpenAI 兼容接口，可以添加多个连接。") {
                     HStack {
                         Button("添加 Ollama") {
@@ -162,7 +151,7 @@ private struct AIModelSettings: View {
                         SettingsIconButton("添加连接", symbol: "plus") { editingConnection = AIConnection() }
                     }
                 }
-            }.settingsAnchor(AIModule.models)
+            }
 
             AIProviderSetupSettings(configuration: configuration, runtime: runtime)
             AICustomProviderSettings(configuration: configuration)

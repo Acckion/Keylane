@@ -3,22 +3,11 @@ import SwiftUI
 struct AIModelCatalogSettings: View {
     @ObservedObject var configuration: AIConfiguration
     let edit: (AIConnection) -> Void
-    @State private var expanded = Set<String>()
     @State private var query = ""
     @State private var groupByBrand = false
 
-    private enum Choice: Hashable {
-        case shared, lastUsed, connection(UUID)
-    }
-
     var body: some View {
         SettingsPageSections {
-            SettingsGroup("默认模型") {
-                ForEach(AIRoute.allCases) { route in
-                    if route != .quick { Divider() }
-                    defaults(for: route)
-                }
-            }
             SettingsGroup {
                 SettingsPicker("管理模型", selection: $groupByBrand) {
                     Text("按提供商分组").tag(false)
@@ -35,60 +24,67 @@ struct AIModelCatalogSettings: View {
             let byProvider = Dictionary(grouping: filtered, by: { groupByBrand ? brand($0) : $0.providerLabel })
             ForEach(byProvider.keys.sorted(), id: \.self) { provider in
                 if let connections = byProvider[provider] {
-                    SettingsCard(layout: .flush) {
-                        VStack(spacing: 0) {
-                            SettingsDisclosureRow(title: "\(provider) · \(connections.count)", expanded: Binding(
-                                get: { expanded.contains(provider) || !query.isEmpty },
-                                set: { if $0 { expanded.insert(provider) } else { expanded.remove(provider) } }
-                            ))
-                            if expanded.contains(provider) || !query.isEmpty {
-                                modelColumns
-                                LazyVStack(spacing: 0) {
-                                    ForEach(connections.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }) { connection in
-                                        modelRow(connection)
-                                        if connection.id != connections.last?.id { Divider().opacity(0.4) }
-                                    }
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 18)
-                    }
+                    AIModelProviderGroup(provider: provider, connections: connections.sorted {
+                        $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+                    }, forceExpanded: !query.isEmpty, configuration: configuration, edit: edit)
                 }
             }
             if filtered.isEmpty { SettingsListEmptyState(title: "没有匹配的模型。") }
         }
     }
 
-    private func defaults(for route: AIRoute) -> some View {
-        let current = choice(for: route)
-        let selected = configuration.state.defaults?[route]
-        let connections = configuration.state.connections.filter {
-            $0.isConfigured && ($0.hiddenFromPicker != true || $0.id == selected)
+    private func brand(_ connection: AIConnection) -> String {
+        let model = connection.model.lowercased()
+        for (prefix, name) in [("gpt", "OpenAI"), ("o3", "OpenAI"), ("o4", "OpenAI"),
+                               ("claude", "Anthropic"), ("gemini", "Google"), ("qwen", "Alibaba"),
+                               ("deepseek", "DeepSeek"), ("glm", "Z.AI"), ("grok", "xAI"),
+                               ("mistral", "Mistral"), ("llama", "Meta")] {
+            if model.hasPrefix(prefix) || model.contains("/" + prefix) { return name }
         }
-        let resolved = configuration.state.connection(for: route)
-        let detail = resolved.map { "\($0.model) · \($0.destinationLabel)" }
-            ?? (configuration.state.enabled ? "此入口的默认连接不可用，请选择可用连接。" : nil)
-        return SettingsPicker(route.title, detail: detail, selection: Binding(get: { choice(for: route) }, set: { value in
-            switch value {
-            case .shared: configuration.setDefault(nil, for: route)
-            case .lastUsed: configuration.setDefault(nil, for: route, usesLastChatModel: true)
-            case .connection(let id): configuration.setDefault(id, for: route)
-            }
-        })) {
-            Text("跟随共用连接").tag(Choice.shared)
-            if route == .chat { Text("上次使用的模型").tag(Choice.lastUsed) }
-            if case .connection(let id) = current, !connections.contains(where: { $0.id == id }) {
-                Text("原连接不可用").tag(current)
-            }
-            ForEach(connections) { connection in
-                Text("\(connection.displayName) · \(connection.providerLabel)").tag(Choice.connection(connection.id))
-            }
+        return "其他 · " + connection.providerLabel
+    }
+}
+
+private struct AIModelProviderGroup: View {
+    let provider: String
+    let connections: [AIConnection]
+    let forceExpanded: Bool
+    @ObservedObject var configuration: AIConfiguration
+    let edit: (AIConnection) -> Void
+    @State private var expanded = false
+    @State private var opened = false
+    private var isExpanded: Bool { expanded || forceExpanded }
+
+    var body: some View {
+        SettingsCard(layout: .flush) {
+            VStack(spacing: 0) {
+                SettingsDisclosureRow(title: "\(provider) · \(connections.count)", expanded: Binding(
+                    get: { isExpanded }, set: { expanded = $0; if $0 { opened = true } }
+                ))
+                .frame(minHeight: SettingsRowsLayout.rowHeight)
+                .padding(.vertical, 4)
+                if opened || forceExpanded {
+                    VStack(spacing: 0) {
+                        modelColumns
+                        if connections.count <= 40 {
+                            VStack(spacing: 0) { rows }
+                        } else {
+                            LazyVStack(spacing: 0) { rows }
+                        }
+                    }
+                    .frame(height: isExpanded ? nil : 0, alignment: .top)
+                    .clipped().opacity(isExpanded ? 1 : 0)
+                    .allowsHitTesting(isExpanded).accessibilityHidden(!isExpanded)
+                }
+            }.padding(.horizontal, 18)
         }
     }
 
-    private func choice(for route: AIRoute) -> Choice {
-        if route == .chat && configuration.state.usesLastChatModel == true { return .lastUsed }
-        return configuration.state.defaults?[route].map(Choice.connection) ?? .shared
+    private var rows: some View {
+        ForEach(connections) { connection in
+            modelRow(connection)
+            if connection.id != connections.last?.id { Divider().opacity(0.4) }
+        }
     }
 
     private func description(for connection: AIConnection) -> String {
@@ -131,16 +127,6 @@ struct AIModelCatalogSettings: View {
         }.padding(.vertical, 12)
     }
 
-    private func brand(_ connection: AIConnection) -> String {
-        let model = connection.model.lowercased()
-        for (prefix, name) in [("gpt", "OpenAI"), ("o3", "OpenAI"), ("o4", "OpenAI"),
-                               ("claude", "Anthropic"), ("gemini", "Google"), ("qwen", "Alibaba"),
-                               ("deepseek", "DeepSeek"), ("glm", "Z.AI"), ("grok", "xAI"),
-                               ("mistral", "Mistral"), ("llama", "Meta")] {
-            if model.hasPrefix(prefix) || model.contains("/" + prefix) { return name }
-        }
-        return "其他 · " + connection.providerLabel
-    }
 }
 
 struct AIModelDiscoveryList: View {
