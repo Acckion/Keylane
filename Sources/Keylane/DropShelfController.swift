@@ -187,7 +187,7 @@ final class DropShelfController: ObservableObject {
         }
         window.refresh()
         window.orderFrontRegardless()
-        if activate { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); window.focusContents() }
+        if activate { window.dropOverlay.restoreDockedShelf(animated: false); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); window.focusContents() }
         return window
     }
     func closed(_ window: DropShelfWindow) {
@@ -593,6 +593,10 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         let start = frame
         let center = NSPoint(x: start.midX, y: start.midY)
         let target = NSRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+        if let dock = dropOverlay.dock {
+            setFrame(dock.frame(for: target), display: true)
+            return
+        }
         guard animated, isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
             setFrame(target, display: true); return
         }
@@ -1180,6 +1184,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         filename.toolTip = text
     }
     func windowWillClose(_ notification: Notification) {
+        dropOverlay.cancelDockAnimation()
         resizeTimer?.invalidate(); resizeTimer = nil
         outsideMonitors.forEach(NSEvent.removeMonitor); outsideMonitors.removeAll()
         thumbnailKey = nil

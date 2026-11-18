@@ -155,15 +155,18 @@ window.cancelImports(); drain(0.9)
 expect(shelves.store!.shelf(window.shelfID)!.items.count == 6, "late cancelled callback cannot revive content")
 let incoming = root.appendingPathComponent("Storage/Incoming")
 expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty) == true, "finished and failed promise batches leave no residue")
-var edgeSnap = DropShelfEdgeSnap()
 let snapScreen = NSRect(x: -800, y: 40, width: 800, height: 600)
 func snapCandidate(_ x: CGFloat, _ y: CGFloat) -> NSRect { NSRect(x: x, y: y, width: 210, height: 210) }
-expect(edgeSnap.origin(for: snapCandidate(-830, 417), in: snapScreen) == NSPoint(x: -830, y: 417), "a partly off-screen shelf still follows the pointer")
-expect(edgeSnap.origin(for: snapCandidate(-925, 417), in: snapScreen) == NSPoint(x: -982, y: 417), "shelf docks after crossing the left threshold and leaves a visible strip")
-expect(edgeSnap.origin(for: snapCandidate(-870, 417), in: snapScreen) == NSPoint(x: -870, y: 417), "pulling the shelf inward releases the dock")
+expect(DropShelfDock.target(for: snapCandidate(-830, 417), in: snapScreen) == nil, "a mostly visible shelf does not dock")
+let leftDock = DropShelfDock.target(for: snapCandidate(-925, 417), in: snapScreen)!
+expect(leftDock.frame(for: snapCandidate(-925, 417)).origin == NSPoint(x: -982, y: 417) && leftDock.edge.symbol == "chevron.right",
+       "the exposed left strip has an inward-facing handle")
 let snapSecondScreen = NSRect(x: 0, y: -60, width: 700, height: 650)
-expect(edgeSnap.origin(for: snapCandidate(630, 0), in: snapSecondScreen) == NSPoint(x: 672, y: 0), "shelf can dock on the right of the current display")
-expect(edgeSnap.origin(for: snapCandidate(-925, 417), in: snapScreen, neighboring: [NSRect(x: -1600, y: 40, width: 800, height: 600)]) == NSPoint(x: -925, y: 417), "the seam between displays does not dock a shelf")
+let rightDock = DropShelfDock.target(for: snapCandidate(630, 0), in: snapSecondScreen)!
+expect(rightDock.frame(for: snapCandidate(630, 0)).minX == 672 && rightDock.edge.symbol == "chevron.left", "the opposite edge mirrors its handle")
+expect(DropShelfDock.target(for: snapCandidate(-925, 417), in: snapScreen,
+                           neighboring: [NSRect(x: -1600, y: 40, width: 800, height: 600)]) == nil,
+       "the seam between displays does not dock a shelf")
 if let screen = window.screen {
     let moveShelf = shelves.create()!
     let area = screen.frame
@@ -185,10 +188,31 @@ if let screen = window.screen {
     expect(abs(moveShelf.frame.minX - area.minX + 40) < 0.5, "dragging the shelf handle can move the window beyond the screen")
     let pastThreshold = NSPoint(x: partlyOutside.x - 85, y: partlyOutside.y)
     moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: pastThreshold)))
-    expect(abs(moveShelf.frame.maxX - area.minX - 28) < 0.5, "dragging farther docks the actual window with an exposed strip")
-    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: partlyOutside)))
-    expect(abs(moveShelf.frame.minX - area.minX + 40) < 0.5, "dragging back releases the actual window")
-    moveShelf.dropOverlay.mouseUp(with: shelfMouse(.leftMouseUp, at: grabPoint))
+    let releaseOrigin = moveShelf.frame.origin
+    expect(abs(releaseOrigin.x - area.minX + 125) < 0.5 && moveShelf.dropOverlay.dock == nil,
+           "crossing the threshold keeps following the pointer until mouse up")
+    moveShelf.dropOverlay.mouseUp(with: shelfMouse(.leftMouseUp, at: moveShelf.convertPoint(fromScreen: pastThreshold)))
+    if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+        expect(moveShelf.frame.origin == releaseOrigin, "dock animation starts at the mouse-up position")
+        drain(0.06)
+        expect(moveShelf.frame.minX < releaseOrigin.x && moveShelf.frame.maxX > area.minX + 28,
+               "dock animation moves through intermediate positions")
+    }
+    drain(0.3)
+    expect(abs(moveShelf.frame.maxX - area.minX - 28) < 0.5 && moveShelf.dropOverlay.dock?.edge == .left,
+           "animation ends with the shelf docked at the screen edge")
+    let overlay = moveShelf.dropOverlay
+    moveShelf.contentView!.layoutSubtreeIfNeeded()
+    let arrow = overlay.subviews.compactMap { $0 as? NSImageView }.first!
+    expect(overlay.underlying?.isHidden == true && !arrow.isHidden && arrow.image != nil &&
+           abs(arrow.frame.midX - overlay.bounds.maxX + 14) < 0.5 && abs(arrow.frame.midY - overlay.bounds.midY) < 0.5,
+           "the strip shows only a centered inward handle")
+    let handlePoint = midpointInWindow(arrow)
+    overlay.mouseDown(with: shelfMouse(.leftMouseDown, at: handlePoint))
+    overlay.mouseUp(with: shelfMouse(.leftMouseUp, at: handlePoint))
+    drain(0.3)
+    expect(moveShelf.frame.minX >= area.minX && overlay.dock == nil && overlay.underlying?.isHidden == false && arrow.isHidden,
+           "clicking the handle restores the whole shelf and its controls")
     moveShelf.close()
 }
 let emptyDragShelf = shelves.createForDrag()!
