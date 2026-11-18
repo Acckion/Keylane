@@ -16,7 +16,7 @@ struct AISubscriptionStatus: Sendable {
 
 enum AISubscriptionTransport {
     enum Operation {
-        case account, models, usage, reset(String), generate([AIMessage])
+        case account, models, usage, reset(String, expectedAccountID: String), generate([AIMessage])
     }
 
     static func models(_ connection: AIConnection) async throws -> [String] {
@@ -45,7 +45,8 @@ enum AISubscriptionTransport {
             return AISubscriptionStatus(account: fields.isEmpty ? "已登录" : fields.joined(separator: " · "),
                                         accountID: account["email"] as? String ?? "")
         }
-        var status = AISubscriptionStatus()
+        let account = result["checkedAccount"] as? [String: Any] ?? [:]
+        var status = AISubscriptionStatus(account: account["email"] as? String ?? "", accountID: account["email"] as? String ?? "")
         if let limits = result["rateLimits"] as? [String: Any] {
             for (key, label) in [("primary", "主要额度"), ("secondary", "周期额度")] {
                 if let window = limits[key] as? [String: Any], let used = window["usedPercent"] as? Double {
@@ -58,8 +59,11 @@ enum AISubscriptionTransport {
         return status
     }
 
-    static func reset(_ connection: AIConnection, idempotencyKey: String) async throws {
-        let result = try await codex(connection, operation: .reset(idempotencyKey)) { _ in }
+    static func reset(_ connection: AIConnection, expectedAccountID: String, idempotencyKey: String) async throws {
+        guard !expectedAccountID.isEmpty, connection.subscriptionAccountID == expectedAccountID else {
+            throw AISubscriptionError.accountChanged
+        }
+        let result = try await codex(connection, operation: .reset(idempotencyKey, expectedAccountID: expectedAccountID)) { _ in }
         guard ["reset", "alreadyRedeemed"].contains(result["outcome"] as? String ?? "") else { throw AISubscriptionError.failed }
     }
 
@@ -88,8 +92,14 @@ enum AISubscriptionTransport {
             throw AISubscriptionError.failed
         }
         try await emit(text)
-        let usage = result["usage"] as? [String: Int]
-        return usage.map { ($0["input_tokens"] ?? 0) + ($0["output_tokens"] ?? 0) }
+        return AnthropicAIProtocol.tokenTotal(result["usage"])
+    }
+
+    private static func verifiedAccount(_ result: [String: Any], expected: String?) throws -> [String: Any] {
+        guard let account = result["account"] as? [String: Any], account["type"] as? String == "chatgpt",
+              let id = account["email"] as? String, !id.isEmpty,
+              expected == nil || expected == id else { throw AISubscriptionError.accountChanged }
+        return account
     }
 
     private static func transcript(_ messages: [AIMessage]) -> String {
@@ -118,6 +128,7 @@ enum AISubscriptionTransport {
             try process.send(["id": 0, "method": "initialize", "params": [
                 "clientInfo": ["name": "keylane", "version":
                     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"]]])
+            var checkedAccount: [String: Any]?
             var buffer = Data()
             var receivedText = false
             var pendingText = ""
@@ -143,8 +154,7 @@ enum AISubscriptionTransport {
                             switch operation {
                             case .account: method = "account/read"; params = ["refreshToken": false]
                             case .models: method = "model/list"; params = ["limit": 100, "includeHidden": false]
-                            case .usage: method = "account/rateLimits/read"
-                            case .reset(let key): method = "account/rateLimitResetCredit/consume"; params = ["idempotencyKey": key]
+                            case .usage, .reset: method = "account/read"; params = ["refreshToken": false]
                             case .generate:
                                 method = "thread/start"
                                 params = ["model": connection.model, "modelProvider": "openai", "cwd": directory.path,
@@ -161,6 +171,13 @@ enum AISubscriptionTransport {
                                     try process.send(["id": 1, "method": "model/list",
                                                       "params": ["limit": 100, "includeHidden": false, "cursor": cursor]])
                                 } else { return ["data": modelPages] }
+                            } else if case .usage = operation {
+                                checkedAccount = try verifiedAccount(result, expected: nil)
+                                try process.send(["id": 3, "method": "account/rateLimits/read", "params": [:]])
+                            } else if case .reset(let key, let expected) = operation {
+                                checkedAccount = try verifiedAccount(result, expected: expected)
+                                try process.send(["id": 3, "method": "account/rateLimitResetCredit/consume",
+                                                  "params": ["idempotencyKey": key]])
                             } else if case .generate(let messages) = operation {
                                 guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else {
                                     throw AISubscriptionError.failed
@@ -168,6 +185,10 @@ enum AISubscriptionTransport {
                                 try process.send(["id": 2, "method": "turn/start", "params": [
                                     "threadId": id, "input": [["type": "text", "text": transcript(messages)]]]])
                             } else { return result }
+                        } else if id == 3, let checkedAccount {
+                            var response = result
+                            response["checkedAccount"] = checkedAccount
+                            return response
                         }
                     } else if let method = message["method"] as? String, let params = message["params"] as? [String: Any] {
                         if message["id"] != nil { throw AISubscriptionError.unsupported }

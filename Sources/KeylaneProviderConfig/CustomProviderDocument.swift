@@ -2,6 +2,11 @@ import Foundation
 import Yams
 
 public struct CustomProviderDocument: Decodable {
+    /// Length-prefix UTF-8 components so IDs containing delimiters cannot alias.
+    public static func modelIdentity(providerID: String, modelID: String) -> String {
+        "\(providerID.utf8.count):\(providerID)\(modelID.utf8.count):\(modelID)"
+    }
+
     public struct Provider: Decodable {
         public let id: String
         public let name: String

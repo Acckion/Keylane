@@ -196,6 +196,7 @@ private struct AIConnectionEditor: View {
     @State private var test: Task<Void, Never>?
     @State private var discovery: Task<Void, Never>?
     @State private var discoveredModels: [String] = []
+    @State private var discoveredConnection: AIConnection?
     @State private var showsModels = false
     @State private var contextTokens: String
     @State private var confirmRemoval = false
@@ -294,8 +295,9 @@ private struct AIConnectionEditor: View {
         .onDisappear { cancelTest(); cancelDiscovery(); key = "" }
         .sheet(isPresented: $showsModels) {
             AIModelDiscoveryList(models: discoveredModels, choose: { draft.model = $0 },
-                                 chooseAll: isNew ? nil : {
-                let count = configuration.addProviderModels(discoveredModels, from: connection)
+                                 chooseAll: isNew || discoveredConnection != connection || draft != connection ? nil : {
+                guard let target = discoveredConnection else { return }
+                let count = configuration.addProviderModels(discoveredModels, from: connection, discoveredUsing: target)
                 status = "已加入 \(count) 个模型。"
             })
         }
@@ -344,6 +346,8 @@ private struct AIConnectionEditor: View {
     }
 
     private func cancelDiscovery() {
+        discoveredConnection = nil
+        showsModels = false
         guard let discovery else { return }
         discovery.cancel()
         self.discovery = nil
@@ -362,6 +366,8 @@ private struct AIConnectionEditor: View {
                 }
                 guard !Task.isCancelled else { return }
                 discoveredModels = models
+                // A draft key is only valid for this discovery, not for saved bulk clones.
+                discoveredConnection = enteredKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? target : nil
                 showsModels = !models.isEmpty
                 status = models.isEmpty ? "接口未返回可选模型，可手动填写模型 ID。" : "已找到 \(models.count) 个模型。"
             } catch {

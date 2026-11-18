@@ -65,7 +65,7 @@ struct AISubscriptionSettings: View {
                     configured.model = model
                 }
                 _ = configuration.save(configured, selectAsDefault: false)
-                _ = configuration.addProviderModels(models, from: configured)
+                _ = configuration.addProviderModels(models, from: configured, discoveredUsing: configured)
                 guard !Task.isCancelled else { return }
                 status[kind] = account.account
             } catch {
@@ -171,6 +171,7 @@ private struct AISubscriptionUsage: View {
     @State private var status = ""
     @State private var task: Task<Void, Never>?
     @State private var confirmReset = false
+    @State private var resetAccountID: String?
     @State private var resetKey = UUID().uuidString
 
     var body: some View {
@@ -185,10 +186,10 @@ private struct AISubscriptionUsage: View {
                 }
                 if let resets = usage.availableResets {
                     SettingsRow("可用额度重置", detail: "\(resets) available") {
-                        Button("Use reset") { confirmReset = true }.disabled(resets == 0 || task != nil)
+                        Button("Use reset") { resetAccountID = usage.accountID; confirmReset = true }.disabled(resets == 0 || task != nil)
                     }
                 }
-                SettingsDescription("更新于 " + usage.updated.formatted())
+                SettingsDescription(usage.account + " · 更新于 " + usage.updated.formatted())
             }
             if !status.isEmpty { SettingsDescription(status) }
             HStack {
@@ -201,17 +202,20 @@ private struct AISubscriptionUsage: View {
         .padding(20).frame(width: 480).frame(minHeight: 240)
         .task { refresh() }
         .onDisappear { task?.cancel() }
-        .confirmationDialog("使用一个账户额度重置？", isPresented: $confirmReset, titleVisibility: .visible) {
+        .confirmationDialog("为 \(resetAccountID ?? "此账户") 使用一个额度重置？", isPresented: $confirmReset, titleVisibility: .visible) {
             Button("使用重置") {
+                guard let confirmedAccount = resetAccountID, confirmedAccount == usage?.accountID, !confirmedAccount.isEmpty else { return }
                 task = Task { @MainActor in
                     do {
-                        try await AISubscriptionTransport.reset(connection, idempotencyKey: resetKey)
+                        try await AISubscriptionTransport.reset(connection, expectedAccountID: confirmedAccount, idempotencyKey: resetKey)
                         resetKey = UUID().uuidString
                         let updated = try await AISubscriptionTransport.status(connection, usage: true)
                         guard !Task.isCancelled else { return }
                         usage = updated
                     } catch {
                         guard !Task.isCancelled else { return }
+                        usage = nil
+                        resetKey = UUID().uuidString
                         status = error.localizedDescription
                     }
                     task = nil
@@ -225,6 +229,10 @@ private struct AISubscriptionUsage: View {
             status = "Claude CLI 当前未提供账户总额度查询接口。可在 Claude 账户页面查看用量。"
             return
         }
+        usage = nil
+        confirmReset = false
+        resetAccountID = nil
+        resetKey = UUID().uuidString
         task = Task { @MainActor in
             do {
                 let updated = try await AISubscriptionTransport.status(connection, usage: true)

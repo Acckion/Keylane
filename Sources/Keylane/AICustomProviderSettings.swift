@@ -74,7 +74,7 @@ struct AICustomProviderSettings: View {
         var imported = [(AIConnection, String?)]()
         for provider in document.providers {
             for model in provider.models {
-                let sourceID = provider.id + "::" + model.id
+                let sourceID = CustomProviderDocument.modelIdentity(providerID: provider.id, modelID: model.id)
                 let digest = SHA256.hash(data: Data(("keylane.custom." + sourceID).utf8))
                 let id = UUID(uuid: Array(digest).withUnsafeBytes { $0.loadUnaligned(as: uuid_t.self) })
                 var connection = AIConnection(id: id, name: model.name ?? model.id, endpoint: provider.base_url, model: model.id)

@@ -2,13 +2,14 @@ import Darwin
 import Foundation
 
 enum AISubscriptionError: LocalizedError {
-    case missingExecutable, invalidFolder, failed, timeout, unsupported
+    case missingExecutable, invalidFolder, failed, timeout, unsupported, accountChanged
     var errorDescription: String? {
         switch self {
         case .missingExecutable: "找不到 CLI。请先安装并登录，或在 Advanced 中选择可执行文件。"
         case .invalidFolder: "账户目录须为有效的绝对目录路径。"
         case .failed: "CLI 请求失败。请检查版本、订阅登录状态和所选模型。"
         case .timeout: "CLI 响应超时。"
+        case .accountChanged: "账户已变化，请重新连接账户、刷新用量并再次确认。"
         case .unsupported: "当前 CLI 未提供此功能，请更新后重试。"
         }
     }

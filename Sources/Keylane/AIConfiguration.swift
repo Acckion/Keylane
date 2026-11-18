@@ -105,8 +105,8 @@ final class AIConfiguration: ObservableObject {
         persist(updated)
     }
 
-    func addProviderModels(_ models: [String], from connection: AIConnection) -> Int {
-        guard state.connections.contains(connection) else { return 0 }
+    func addProviderModels(_ models: [String], from connection: AIConnection, discoveredUsing target: AIConnection) -> Int {
+        guard target == connection, state.connections.contains(connection) else { return 0 }
         var updated = state
         let existing = Set(state.connections.filter {
             ($0.credentialOwnerID ?? $0.id) == (connection.credentialOwnerID ?? connection.id)
@@ -140,11 +140,19 @@ final class AIConfiguration: ObservableObject {
     }
 
     func applyCustomProviders(_ models: [(AIConnection, String?)]) async throws {
+        // Reject incoming collisions before touching credentials or publishing any state.
+        let ids = models.map { $0.0.id }
+        guard Set(ids).count == ids.count,
+              Set(state.connections.filter { $0.customConfigID == nil }.map(\.id)).isDisjoint(with: ids) else {
+            throw CredentialError.invalidCatalog
+        }
         try await Task.detached(priority: .utility) {
             try Self.stageCustomProviderKeys(models)
         }.value
         var updated = state
-        let existing = Dictionary(uniqueKeysWithValues: state.connections.map { ($0.id, $0) })
+        // Older imports may already contain duplicate IDs. Reload must not trap.
+        var existing = [UUID: AIConnection]()
+        for connection in state.connections where existing[connection.id] == nil { existing[connection.id] = connection }
         updated.connections.removeAll { $0.customConfigID != nil }
         updated.connections += models.map { connection, _ in
             var result = connection
@@ -221,9 +229,13 @@ final class AIConfiguration: ObservableObject {
     }
 
     enum CredentialError: Error, LocalizedError {
-        case unavailable, invalidKey
+        case unavailable, invalidKey, invalidCatalog
         var errorDescription: String? {
-            self == .unavailable ? "无法访问此连接的钥匙串密钥。" : "请输入一行有效的 API 密钥。"
+            switch self {
+            case .unavailable: "无法访问此连接的钥匙串密钥。"
+            case .invalidKey: "请输入一行有效的 API 密钥。"
+            case .invalidCatalog: "模型配置存在重复标识，之前的有效配置继续可用。"
+            }
         }
     }
 

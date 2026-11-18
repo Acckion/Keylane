@@ -32,13 +32,13 @@ final class FixtureProtocol: URLProtocol {
                 if mode == "anthropic-stream" {
                     text = """
                     event: message_start
-                    data: {"type":"message_start","message":{"usage":{"input_tokens":2,"output_tokens":0}}}
+                    data: {"type":"message_start","message":{"usage":{"input_tokens":2,"output_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0},"service_tier":"standard"}}}
 
                     event: content_block_delta
                     data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"你好"}}
 
                     event: message_delta
-                    data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+                    data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3,"service_tier":"standard"}}
 
                     event: message_stop
                     data: {"type":"message_stop"}
@@ -46,7 +46,7 @@ final class FixtureProtocol: URLProtocol {
 
                     """
                 } else {
-                    text = #"{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"你好"}],"usage":{"input_tokens":2,"output_tokens":3}}"#
+                    text = #"{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"你好"}],"usage":{"input_tokens":2,"output_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":0},"service_tier":"standard"}}"#
                 }
             } else if self.request.url?.path == "/v1/models" {
                 precondition(self.request.httpMethod == "GET" && self.request.httpBody == nil)
@@ -497,8 +497,14 @@ precondition(nativeAnswer == "你好" && nativeTokens == 5)
 precondition(Set(AIProviderPreset.all.map(\.id)).count == AIProviderPreset.all.count)
 precondition(AIProviderPreset.all.allSatisfy { $0.connection.isConfigured && $0.connection.endpoint.hasPrefix("https://") })
 let sharedCredential = settings.selected!
-let addedModels = settings.addProviderModels(["fixture-added-one", "fixture-added-two"], from: sharedCredential)
+let addedModels = settings.addProviderModels(["fixture-added-one", "fixture-added-two"], from: sharedCredential, discoveredUsing: sharedCredential)
 precondition(addedModels == 2)
+var discoveredElsewhere = sharedCredential
+discoveredElsewhere.endpoint = "https://another-provider.invalid/v1"
+let modelCountBeforeMismatch = settings.state.connections.count
+precondition(settings.addProviderModels(["wrong-provider-model"], from: sharedCredential, discoveredUsing: discoveredElsewhere) == 0)
+precondition(settings.state.connections.count == modelCountBeforeMismatch)
+precondition(!settings.state.connections.contains { $0.model == "wrong-provider-model" })
 let sharedChild = settings.state.connections.first { $0.model == "fixture-added-one" }!
 precondition(AIConfiguration.credentialQueries(for: sharedChild) as NSArray ==
              AIConfiguration.credentialQueries(for: sharedCredential) as NSArray)
@@ -508,13 +514,42 @@ precondition(settings.state.connections.first { $0.id == sharedChild.id }?.hidde
 precondition(settings.state.selectedID == selectedBeforeHiding)
 print("PASS provider presets, native Anthropic streaming/complete, shared credentials and model visibility")
 
+// Reject duplicate incoming identities before any Keychain access; recover legacy duplicates without a trap.
+let collisionPrefs = UserDefaults(suiteName: suite + ".collisions")!
+defer { collisionPrefs.removePersistentDomain(forName: suite + ".collisions") }
+var duplicateCustom = sharedCredential
+duplicateCustom.customConfigID = "legacy-collision"
+let collisionState = AIConfiguration.State(enabled: true, connections: [duplicateCustom, duplicateCustom], selectedID: duplicateCustom.id)
+collisionPrefs.set(try JSONEncoder().encode(collisionState), forKey: "aiConnections.v1")
+let collisionConfig = AIConfiguration(preferences: collisionPrefs)
+var collisionFinished = false
+Task { @MainActor in
+    let before = collisionConfig.state
+    do {
+        try await collisionConfig.applyCustomProviders([(duplicateCustom, "not-a-real-key"), (duplicateCustom, "not-a-real-key")])
+        preconditionFailure("Duplicate incoming identity accepted")
+    } catch AIConfiguration.CredentialError.invalidCatalog { }
+    catch { preconditionFailure("Unexpected error") }
+    precondition(collisionConfig.state == before)
+    try! await collisionConfig.applyCustomProviders([])
+    precondition(collisionConfig.state.connections.isEmpty)
+    collisionFinished = true
+}
+wait("Custom provider collision rejection and legacy reload") { collisionFinished }
+print("PASS custom provider identity collision rejection preserves state; legacy duplicate reload recovers without Keychain access")
+
 let cliDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-cli-fixture-" + UUID().uuidString)
 try FileManager.default.createDirectory(at: cliDirectory, withIntermediateDirectories: false)
 defer { try? FileManager.default.removeItem(at: cliDirectory) }
 let executable = cliDirectory.appendingPathComponent("fixture-cli")
 try #"""
 #!/usr/bin/python3
-import sys, json, time
+import sys, json, time, pathlib
+
+root = pathlib.Path(__file__).parent
+def active_account():
+    file = root / "active-account"
+    return file.read_text() if file.exists() else "fixture@example.invalid"
 
 def send(value):
     print(json.dumps(value), flush=True)
@@ -537,13 +572,15 @@ else:
         if method == 'initialize':
             result = {}
         elif method == 'account/read':
-            result = {'account': {'type': 'chatgpt', 'email': 'fixture@example.invalid', 'planType': 'plus'}}
+            result = {'account': {'type': 'chatgpt', 'email': active_account(), 'planType': 'plus'}}
         elif method == 'model/list':
             result = {'data': [{'model': 'fixture-codex'}]}
         elif method == 'account/rateLimits/read':
             result = {'rateLimits': {'primary': {'usedPercent': 42, 'resetsAt': 1800000000}}, 'rateLimitResetCredits': {'availableCount': 2}}
         elif method == 'account/rateLimitResetCredit/consume':
             assert request['params']['idempotencyKey']
+            with (root / 'reset-consumes').open('a') as log:
+                log.write(active_account() + '\n')
             result = {'outcome': 'reset'}
         elif method == 'thread/start':
             assert request['params']['ephemeral'] and request['params']['sandbox'] == 'read-only'
@@ -571,10 +608,38 @@ Task { @MainActor in
     let status = try! await AISubscriptionTransport.status(cliConnection)
     precondition(status.account.contains("fixture@example.invalid"))
     let usage = try! await AISubscriptionTransport.status(cliConnection, usage: true)
-    precondition(usage.windows.first?.usedPercent == 42 && usage.availableResets == 2)
+    precondition(usage.windows.first?.usedPercent == 42 && usage.availableResets == 2 && usage.accountID == cliConnection.subscriptionAccountID)
     let models = try! await AISubscriptionTransport.models(cliConnection)
     precondition(models == ["fixture-codex"])
-    try! await AISubscriptionTransport.reset(cliConnection, idempotencyKey: UUID().uuidString)
+    try! await AISubscriptionTransport.reset(cliConnection, expectedAccountID: usage.accountID, idempotencyKey: UUID().uuidString)
+    let consumeLog = cliDirectory.appendingPathComponent("reset-consumes")
+    let consumesBeforeChange = try! Data(contentsOf: consumeLog)
+    let accountFile = cliDirectory.appendingPathComponent("active-account")
+    try! "other@example.invalid".write(to: accountFile, atomically: true, encoding: .utf8)
+    do {
+        try await AISubscriptionTransport.reset(cliConnection, expectedAccountID: usage.accountID, idempotencyKey: UUID().uuidString)
+        preconditionFailure("Reset consumed after active account changed")
+    } catch AISubscriptionError.accountChanged { }
+    catch { preconditionFailure("Unexpected reset error") }
+    precondition(try! Data(contentsOf: consumeLog) == consumesBeforeChange)
+    let refreshed = try! await AISubscriptionTransport.status(cliConnection, usage: true)
+    precondition(refreshed.accountID == "other@example.invalid")
+    do {
+        try await AISubscriptionTransport.reset(cliConnection, expectedAccountID: refreshed.accountID, idempotencyKey: UUID().uuidString)
+        preconditionFailure("Reset accepted without reconnecting changed account")
+    } catch AISubscriptionError.accountChanged { }
+    catch { preconditionFailure("Unexpected reset error") }
+    var reconnected = cliConnection
+    reconnected.subscriptionAccountID = refreshed.accountID
+    do {
+        try await AISubscriptionTransport.reset(reconnected, expectedAccountID: usage.accountID, idempotencyKey: UUID().uuidString)
+        preconditionFailure("Reset accepted stale confirmation after reconnect")
+    } catch AISubscriptionError.accountChanged { }
+    catch { preconditionFailure("Unexpected reset error") }
+    precondition(try! Data(contentsOf: consumeLog) == consumesBeforeChange)
+    try! await AISubscriptionTransport.reset(reconnected, expectedAccountID: refreshed.accountID, idempotencyKey: UUID().uuidString)
+    precondition(try! String(contentsOf: consumeLog, encoding: .utf8) == "fixture@example.invalid\nother@example.invalid\n")
+    try! FileManager.default.removeItem(at: accountFile)
     _ = try! await AISubscriptionTransport.generate(cliConnection, messages: [.init(role: .user, content: "fixture prompt")]) { delta in
         await MainActor.run { cliAnswer += delta }
     }

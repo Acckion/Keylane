@@ -3,6 +3,15 @@ import KeylaneProviderConfig
 import XCTest
 
 final class CustomProviderDocumentTests: XCTestCase {
+    func testCompositeModelIdentityIsUnambiguous() throws {
+        let first = CustomProviderDocument.modelIdentity(providerID: "a::b", modelID: "c")
+        let second = CustomProviderDocument.modelIdentity(providerID: "a", modelID: "b::c")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(first, CustomProviderDocument.modelIdentity(providerID: "a::b", modelID: "c"))
+        let unicode = CustomProviderDocument.modelIdentity(providerID: "提供商", modelID: "模型::a")
+        XCTAssertNotEqual(unicode, CustomProviderDocument.modelIdentity(providerID: "提供商::模型", modelID: "a"))
+    }
+
     func testProviderMappingAndAdditionalParameters() throws {
         let yaml = """
         providers:

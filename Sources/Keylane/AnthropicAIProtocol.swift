@@ -31,8 +31,7 @@ enum AnthropicAIProtocol {
             let text = content.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
             guard !text.isEmpty else { throw AIResponseError.invalidResponse }
             try await emit(text)
-            let usage = event["usage"] as? [String: Int]
-            return usage.map { ($0["input_tokens"] ?? 0) + ($0["output_tokens"] ?? 0) }
+            return tokenTotal(event["usage"])
         }
         var line = Data()
         var dataLines = [String]()
@@ -63,9 +62,9 @@ enum AnthropicAIProtocol {
             case "error": throw AIResponseError.serviceError
             case "message_start":
                 let message = event["message"] as? [String: Any]
-                let usage = message?["usage"] as? [String: Int]
-                inputTokens = usage?["input_tokens"]
-                outputTokens = usage?["output_tokens"]
+                let usage = message?["usage"] as? [String: Any]
+                inputTokens = usage?["input_tokens"] as? Int
+                outputTokens = usage?["output_tokens"] as? Int
             case "content_block_start":
                 let block = event["content_block"] as? [String: Any]
                 if block?["type"] as? String == "text", let text = block?["text"] as? String { pending += text }
@@ -74,7 +73,7 @@ enum AnthropicAIProtocol {
                 if delta?["type"] as? String == "text_delta", let text = delta?["text"] as? String { pending += text }
             case "message_delta":
                 stopReason = (event["delta"] as? [String: Any])?["stop_reason"] as? String
-                outputTokens = (event["usage"] as? [String: Int])?["output_tokens"] ?? outputTokens
+                outputTokens = (event["usage"] as? [String: Any])?["output_tokens"] as? Int ?? outputTokens
             case "message_stop": ended = true
             default: break
             }
@@ -89,7 +88,16 @@ enum AnthropicAIProtocol {
         if !pending.isEmpty { receivedText = true; try await emit(pending) }
         guard ended, stopReason == "end_turn" else { throw AIResponseError.incomplete }
         guard receivedText else { throw AIResponseError.invalidResponse }
-        return inputTokens.flatMap { input in outputTokens.map { input + $0 } }
+        guard let inputTokens, let outputTokens else { return nil }
+        return tokenTotal(["input_tokens": inputTokens, "output_tokens": outputTokens])
+    }
+
+    static func tokenTotal(_ value: Any?) -> Int? {
+        guard let usage = value as? [String: Any],
+              let input = usage["input_tokens"] as? Int, let output = usage["output_tokens"] as? Int,
+              input >= 0, output >= 0 else { return nil }
+        let (total, overflow) = input.addingReportingOverflow(output)
+        return overflow ? nil : total
     }
 
     private static func object(_ data: Data) throws -> [String: Any] {
