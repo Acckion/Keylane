@@ -2,6 +2,21 @@ import XCTest
 @testable import KeylaneCore
 
 final class DropShelfTests: XCTestCase {
+    func testReorderingBeforeItselfPreservesOrderWithoutPersistingAChange() throws {
+        try fixture { _, store in
+            let id = try store.create()
+            for value in ["first", "second", "third"] { try store.addText(value, to: id) }
+            let items = store.shelf(id)!.items
+            var changes = 0
+            store.didChange = { changes += 1 }
+            try store.reorder(id, item: items[0].id, before: items[0].id)
+            XCTAssertEqual(store.shelf(id)!.items, items)
+            XCTAssertEqual(changes, 0)
+            XCTAssertEqual(try DropShelfStore(directory: store.directory).shelf(id)!.items, items)
+            try store.reorder(id, item: items[2].id, before: items[0].id)
+            XCTAssertEqual(store.shelf(id)!.items.map(\.id), [items[2].id, items[0].id, items[1].id])
+        }
+    }
     private func fixture(_ run: (URL, DropShelfStore) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneShelfTests-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

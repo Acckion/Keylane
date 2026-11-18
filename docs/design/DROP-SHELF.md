@@ -21,6 +21,8 @@
 - [5.2.5 变更](https://dropoverapp.com/whats-new/5.2.5)：提到拖出后保持窗口选项，以及外部文件变更和临时文件清理改进；这些是需要显式验证的边界。
 - [Apple NSFilePromiseReceiver](https://developer.apple.com/documentation/appkit/nsfilepromisereceiver)：通过原生 pasteboard 读取文件承诺，接收可涉及多个文件，不能假定一个 receiver 恰好对应一个文件。
 - [Apple receivePromisedFiles](https://developer.apple.com/documentation/appkit/nsfilepromisereceiver/receivepromisedfiles(atdestination:options:operationqueue:reader:))：异步交付回调；同次拖动的接收器使用相同目的目录，需处理错误与不完整文件。
+
+2026-11-17 再核对接收 API、Apple 示例和本机 SDK 的 NSFilePromiseReceiver.h：同次拖动共用目的目录；fileNames 在调用接收方法后才填充；原生提供方的 reader 被文件协调读包裹。51dbbb2 曾顺序启动接收器，后续审查指出延迟原生请求的时机风险。当前修订在接受回调返回前同步登记全部请求，后台串行 reader 内立即把成功输出隔离至私有暂存目录，不再等主线程回调才捕获，也不声称 reader 队列能控制来源的写入队列。错误回调的 URL 不读取或删除，整个私有接收目录在批次完成后统一清理。按登记后的文件名数量修正 legacy 计数，最后按来源和声明文件顺序提交。取消只撤销提交资格，不假设已请求的来源会停止写入；真实跨应用承诺仍未验收。
 - [Apple 文件承诺示例](https://developer.apple.com/documentation/appkit/supporting-collection-view-drag-and-drop-through-file-promises)：原生拖入/拖出接入参考，仅参考公开 API 契约。
 - [Apple 文件 URL 读取选项](https://developer.apple.com/documentation/appkit/nspasteboard/readingoptionkey/urlreadingfileurlsonly)：将本地文件和普通链接分开解析。
 

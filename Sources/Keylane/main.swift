@@ -1040,20 +1040,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
         window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isMovableByWindowBackground = true
-        let glass = NSGlassEffectView()
-        glass.style = .regular; glass.cornerRadius = 28
-        // Clip the actual AppKit backing surface, including hosted overlays and key bindings.
-        // A SwiftUI-only clip leaves the enclosing rectangular surface in the window shadow.
-        glass.wantsLayer = true
-        glass.layer?.cornerRadius = 28
-        glass.layer?.cornerCurve = .continuous
-        glass.layer?.masksToBounds = true
-        glass.layer?.borderWidth = 0
-        // Detect the macOS 27 setter at runtime so the macOS 26 SDK can build this.
-        if #available(macOS 27.0, *),
-           glass.responds(to: NSSelectorFromString("setEffectIsInteractive:")) {
-            glass.setValue(false, forKey: "effectIsInteractive")
-        }
+        let glass = LauncherGlassView(frame: .zero)
         glass.contentView = NSHostingView(rootView: Launcher(model: model))
         window.contentView = glass; window.isReleasedWhenClosed = false; window.center()
         window.delegate = self
