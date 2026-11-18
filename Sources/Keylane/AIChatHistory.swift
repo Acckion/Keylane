@@ -5,6 +5,8 @@ struct AIChatSummary: Identifiable, Equatable, Sendable {
     let id: UUID
     let title: String
     let updated: Date
+    var pinned = false
+    var archived = false
 }
 
 struct AIChatRecord: Sendable {
@@ -23,6 +25,7 @@ struct AIChatRecord: Sendable {
     struct Content: Codable, Sendable {
         let model: ModelReference
         let turns: [QuickAIController.Turn]
+        var instructions: String?
     }
 
     let id: UUID
@@ -46,7 +49,7 @@ final class AIChatHistory: @unchecked Sendable {
     }
 
     func list() throws -> [AIChatSummary] {
-        try withStatement("SELECT id, title, updated FROM chats ORDER BY updated DESC, id", values: []) { stmt in
+        try withStatement("SELECT c.id, COALESCE(m.title, c.title), c.updated, COALESCE(m.pinned, 0), COALESCE(m.archived, 0) FROM chats c LEFT JOIN chat_metadata m ON c.id = m.id ORDER BY c.updated DESC, c.id", values: []) { stmt in
             var result: [AIChatSummary] = []
             while true {
                 let status = sqlite3_step(stmt)
@@ -55,7 +58,8 @@ final class AIChatHistory: @unchecked Sendable {
                       let id = sqlite3_column_text(stmt, 0), let uuid = UUID(uuidString: String(cString: id)),
                       let title = sqlite3_column_text(stmt, 1) else { throw DatabaseError.read }
                 result.append(.init(id: uuid, title: String(cString: title),
-                                    updated: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2))))
+                                    updated: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
+                                    pinned: sqlite3_column_int(stmt, 3) != 0, archived: sqlite3_column_int(stmt, 4) != 0))
             }
         }
     }
@@ -78,6 +82,27 @@ final class AIChatHistory: @unchecked Sendable {
             INSERT INTO chats(id, title, content, updated) VALUES(?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET content=excluded.content, updated=excluded.updated
             """, values: [record.id.uuidString, title, payload, String(Date().timeIntervalSince1970)]) { stmt in
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
+        }
+    }
+
+    enum Change: Sendable {
+        case pin(Bool), archive(Bool), rename(String)
+    }
+
+    func update(_ id: UUID, change: Change) throws {
+        let column: String
+        let value: String
+        switch change {
+        case .pin(let pinned): column = "pinned"; value = pinned ? "1" : "0"
+        case .archive(let archived): column = "archived"; value = archived ? "1" : "0"
+        case .rename(let title):
+            let trimmed = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+            guard !trimmed.isEmpty else { return }
+            column = "title"; value = trimmed
+        }
+        try withStatement("INSERT INTO chat_metadata(id, \(column)) SELECT id, ? FROM chats WHERE id = ? ON CONFLICT(id) DO UPDATE SET \(column)=excluded.\(column)",
+                          values: [value, id.uuidString]) { stmt in
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
         }
     }
@@ -105,10 +130,15 @@ final class AIChatHistory: @unchecked Sendable {
         sqlite3_busy_timeout(db, 2_000)
         guard sqlite3_exec(db, """
             PRAGMA secure_delete=ON;
+            PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS chats(
               id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, updated REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS chats_updated ON chats(updated DESC);
+            CREATE TABLE IF NOT EXISTS chat_metadata(
+              id TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+              title TEXT, pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0
+            );
             """, nil, nil, nil) == SQLITE_OK else { throw DatabaseError.open }
         var prepared: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &prepared, nil) == SQLITE_OK, let prepared else {

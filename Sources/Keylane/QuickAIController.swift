@@ -16,8 +16,14 @@ final class QuickAIController: ObservableObject {
     @Published private(set) var chatID: UUID?
     @Published private(set) var loadingChat = false
     @Published private(set) var historyError = ""
+    @Published var chatInstructions = "" {
+        didSet { if chatInstructions != oldValue && !restoringChat { saveChat() } }
+    }
+    /// Emitted after successfully restoring history, independently of first-send ID allocation.
+    let historyOpened = PassthroughSubject<UUID, Never>()
     private var historyRevision = UUID()
-    private var conversationModel: AIChatRecord.ModelReference?
+    @Published private var conversationModel: AIChatRecord.ModelReference?
+    private var restoringChat = false
     private let history: AIChatHistory?
     private let configuration: AIConfiguration
     private let runtime: AIRuntime
@@ -81,7 +87,7 @@ final class QuickAIController: ObservableObject {
             return false
         }
 
-        let requestMessages = messages(for: question, instructions: instructions)
+        let requestMessages = messages(for: question, instructions: instructions ?? (isInChat && !chatInstructions.isEmpty ? chatInstructions : nil))
         if !isInChat && turns.count >= turnLimit { turns.removeFirst(turns.count - turnLimit + 1) }
         let turn = Turn(question: question)
         conversationModel = AIChatRecord.ModelReference(connection)
@@ -166,11 +172,15 @@ final class QuickAIController: ObservableObject {
             self.loadingChat = false
             switch result {
             case .success(let record?):
+                self.restoringChat = true
+                defer { self.restoringChat = false }
                 self.chatID = record.id
                 self.conversationModel = record.content.model
                 self.turns = record.content.turns
+                self.chatInstructions = record.content.instructions ?? ""
                 self.status = ""
                 self.historyError = ""
+                self.historyOpened.send(record.id)
             case .success(nil), .failure:
                 self.historyError = "无法读取这段对话。"
             }
@@ -187,6 +197,21 @@ final class QuickAIController: ObservableObject {
         history.perform({ store in try store.remove(id); return try store.list() }) { [weak self] result in
             self?.applyHistory(result)
         }
+    }
+
+    func updateChat(_ id: UUID, change: AIChatHistory.Change) {
+        guard isInChat, let history else { return }
+        history.perform({ store in try store.update(id, change: change); return try store.list() }) { [weak self] result in
+            self?.applyHistory(result)
+        }
+    }
+
+    @discardableResult
+    func chooseChatModel(_ id: UUID) -> Bool {
+        guard isInChat, turns.isEmpty, !loadingChat, configuration.state.enabled,
+              let connection = configuration.state.connections.first(where: { $0.id == id && $0.isConfigured }) else { return false }
+        conversationModel = AIChatRecord.ModelReference(connection)
+        return true
     }
 
     func leaveLauncher() {
@@ -207,6 +232,7 @@ final class QuickAIController: ObservableObject {
         chatID = nil
         conversationModel = nil
         turns = []
+        chatInstructions = ""
         status = ""
     }
 
@@ -214,7 +240,7 @@ final class QuickAIController: ObservableObject {
         guard isInChat, let history, let conversationModel, !turns.isEmpty else { return }
         let id = chatID ?? UUID()
         chatID = id
-        let record = AIChatRecord(id: id, content: .init(model: conversationModel, turns: turns))
+        let record = AIChatRecord(id: id, content: .init(model: conversationModel, turns: turns, instructions: chatInstructions.isEmpty ? nil : chatInstructions))
         history.perform({ store in try store.save(record); return try store.list() }) { [weak self] result in
             self?.applyHistory(result)
         }
@@ -229,7 +255,7 @@ final class QuickAIController: ObservableObject {
             self.applyHistory(result)
             guard self.historyRevision == revision else { return }
             self.loadingChat = false
-            if restoreLatest, let latest = self.chats.first { self.openChat(latest.id) }
+            if restoreLatest, let latest = self.chats.first(where: { !$0.archived }) { self.openChat(latest.id) }
         }
     }
 
