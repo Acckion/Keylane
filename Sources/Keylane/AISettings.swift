@@ -259,20 +259,24 @@ private struct AIConnectionEditor: View {
                     Button("保存连接", action: saveConnection)
                 }
             }
-            if !isNew {
+            Group {
                 Divider()
                 SettingsRow("API 密钥", detail: "保存在本机钥匙串。本机服务可留空。") {
                     HStack {
                         SecureField(hasKey ? "已保存，可输入新密钥" : "输入密钥", text: $key).frame(width: 150)
-                        Button("保存") { withStatus("密钥已保存。") { try AIConfiguration.saveKey(key, for: connection) } }
-                            .disabled(key.isEmpty || draft != connection)
+                        if !isNew {
+                            Button("保存") { withStatus("密钥已保存。") { try AIConfiguration.saveKey(key, for: connection) } }
+                                .disabled(key.isEmpty || draft != connection)
+                        }
                         if hasKey { Button("删除…") { confirmKeyDeletion = true }.disabled(draft != connection) }
                     }
                 }
-                Divider()
-                SettingsRow("测试连接", detail: "发送一条简短测试消息，可能计入提供方用量。") {
-                    if test != nil { Button("停止") { cancelTest() } }
-                    else { Button("发送测试") { startTest() }.disabled(!configuration.state.enabled || draft != connection || discovery != nil) }
+                if !isNew {
+                    Divider()
+                    SettingsRow("测试连接", detail: "发送一条简短测试消息，可能计入提供方用量。") {
+                        if test != nil { Button("停止") { cancelTest() } }
+                        else { Button("发送测试") { startTest() }.disabled(!configuration.state.enabled || draft != connection || discovery != nil) }
+                    }
                 }
             }
             if !status.isEmpty {
@@ -285,7 +289,8 @@ private struct AIConnectionEditor: View {
             cancelTest()
             if !state.enabled { cancelDiscovery(); showsModels = false }
         }
-        .onChange(of: draft.endpoint) { _, _ in cancelDiscovery() }
+        .onChange(of: draft.endpoint) { _, _ in cancelDiscovery(); key = "" }
+        .onChange(of: key) { _, _ in cancelDiscovery() }
         .onDisappear { cancelTest(); cancelDiscovery(); key = "" }
         .sheet(isPresented: $showsModels) {
             AIModelDiscoveryList(models: discoveredModels, choose: { draft.model = $0 },
@@ -313,8 +318,14 @@ private struct AIConnectionEditor: View {
         }
         var edited = draft
         edited.contextTokens = Int(tokens)
+        guard edited.isConfigured else { status = "请填写有效的接口地址和模型 ID。"; return }
+        if isNew && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            do { try AIConfiguration.saveKey(key, for: edited) }
+            catch { status = error.localizedDescription; return }
+        }
         guard configuration.save(edited, selectAsDefault: false),
               let saved = configuration.state.connections.first(where: { $0.id == edited.id }) else {
+            if isNew { try? AIConfiguration.deleteKey(for: edited) }
             status = "请填写有效的接口地址和模型 ID。"
             return
         }
@@ -341,13 +352,13 @@ private struct AIConnectionEditor: View {
 
     private func discoverModels() {
         let target = draft
-        let useSavedCredential = !isNew && target.completionURL == connection.completionURL
+        let original = isNew ? nil : connection
+        let enteredKey = key
         status = "正在同步模型…"
         discovery = Task { @MainActor in
             do {
                 let models = try await runtime.listModels(connection: target) {
-                    guard useSavedCredential else { return nil }
-                    return try AIConfiguration.key(for: $0)
+                    try AIConfiguration.discoveryKey(for: $0, original: original, enteredKey: enteredKey)
                 }
                 guard !Task.isCancelled else { return }
                 discoveredModels = models

@@ -251,6 +251,16 @@ final class AIConfiguration: ObservableObject {
         }
     }
 
+    /// Draft credentials are request-local. Never reuse a saved key at another endpoint.
+    static func discoveryKey(for target: AIConnection, original: AIConnection?, enteredKey: String,
+                             readSaved: (AIConnection) throws -> String? = { try key(for: $0) }) throws -> String? {
+        let entered = enteredKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !entered.isEmpty { return entered }
+        guard let original, let endpoint = target.completionURL,
+              endpoint == original.completionURL else { return nil }
+        return try readSaved(original)
+    }
+
     static func key(for connection: AIConnection) throws -> String? {
         for var query in credentialQueries(for: connection) {
             query[kSecReturnData as String] = true

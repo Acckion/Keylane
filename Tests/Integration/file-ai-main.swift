@@ -114,6 +114,23 @@ FixtureProtocol.mode = "error"; controller.send(); wait("HTTP failure") { !contr
 FixtureProtocol.mode = "bad"; controller.send(); wait("Malformed payload") { !controller.running }; precondition(controller.status.contains("请求未完成"))
 FixtureProtocol.mode = "slow"; controller.send(); RunLoop.current.run(until:Date().addingTimeInterval(0.05)); controller.cancel()
 RunLoop.current.run(until:Date().addingTimeInterval(0.7)); precondition(controller.status == "已取消" && controller.answer.isEmpty)
+FixtureProtocol.mode = "slow"
+controller.send()
+settings.recordChatModel(legacy.id)
+precondition(controller.running, "Chat bookkeeping must not cancel File AI")
+wait("File AI survives chat bookkeeping") { !controller.running }
+precondition(controller.answer == "synthetic answer")
+controller.send()
+var fileConnectionEdit = legacy
+fileConnectionEdit.model = "updated-file-model"
+precondition(settings.save(fileConnectionEdit))
+precondition(!controller.running && controller.status == "已取消")
+precondition(settings.save(legacy))
+controller.send()
+settings.setEnabled(false)
+precondition(!controller.running && controller.status == "已取消")
+settings.setEnabled(true)
+print("PASS File AI configuration isolation: chat bookkeeping survives, file connection and disable cancel")
 var invalid = legacy
 invalid.endpoint = "http://external.example/v1"
 precondition(!settings.save(invalid) && settings.selected == legacy)
@@ -335,7 +352,22 @@ precondition(discoveryTarget.modelsURL?.absoluteString == "http://127.0.0.1:1143
 precondition(AIConnection(endpoint: "http://remote.example/v1").modelsURL == nil)
 FixtureProtocol.mode = "ok"
 var discovered: [String]?
-Task { @MainActor in discovered = try! await discoveryRuntime.listModels(connection: discoveryTarget) { _ in "fixture-key" } }
+Task { @MainActor in discovered = try! await discoveryRuntime.listModels(connection: discoveryTarget) {
+    try AIConfiguration.discoveryKey(for: $0, original: nil, enteredKey: "fixture-key") { _ in
+        preconditionFailure("New connection must not read saved credentials")
+    }
+} }
+var savedReads = 0
+let savedKey = try! AIConfiguration.discoveryKey(for: discoveryTarget, original: discoveryTarget, enteredKey: "") { _ in
+    savedReads += 1; return "saved-fixture"
+}
+precondition(savedKey == "saved-fixture" && savedReads == 1)
+var alternateEndpoint = discoveryTarget
+alternateEndpoint.endpoint = "https://different.example/v1"
+let differentKey = try! AIConfiguration.discoveryKey(for: alternateEndpoint, original: discoveryTarget, enteredKey: "") { _ in
+    preconditionFailure("Endpoint change must not reuse a saved credential")
+}
+precondition(differentKey == nil)
 wait("Discover Ollama model IDs") { discovered != nil }
 precondition(discovered == ["a", "b"])
 FixtureProtocol.mode = "bad"
