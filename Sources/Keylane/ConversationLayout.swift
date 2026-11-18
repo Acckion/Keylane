@@ -67,13 +67,32 @@ struct ConversationComposer<Leading: View, Input: View, Trailing: View>: View {
     var body: some View {
         HStack(spacing: 8) {
             leading().frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
-                .modifier(LauncherMenuSurface(open: false))
             input()
                 .padding(.horizontal, 14)
                 .frame(height: VisualStyle.launcherControlDiameter)
                 .modifier(LauncherMenuSurface(open: false))
             trailing().frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
-                .modifier(LauncherMenuSurface(open: false))
         }
+    }
+}
+
+
+private struct ConversationInputEnabledKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+private struct ConversationInputFocusTokenKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
+extension EnvironmentValues {
+    var conversationInputEnabled: Bool {
+        get { self[ConversationInputEnabledKey.self] }
+        set { self[ConversationInputEnabledKey.self] = newValue }
+    }
+
+    var conversationInputFocusToken: Int {
+        get { self[ConversationInputFocusTokenKey.self] }
+        set { self[ConversationInputFocusTokenKey.self] = newValue }
     }
 }

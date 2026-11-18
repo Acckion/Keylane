@@ -176,7 +176,11 @@ struct Launcher: View {
                             }
                             .launcherScrollInsets()
                             .launcherScrollEdgeFade()
-                        case .form, .conversation: content()
+                        case .form: content()
+                        case .conversation:
+                            content()
+                                .environment(\.conversationInputEnabled, menu == nil)
+                                .environment(\.conversationInputFocusToken, focusToken)
                         case .inset, .fileResults:
                             content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
                         }
@@ -201,7 +205,7 @@ struct Launcher: View {
                 Spacer(minLength: 0)
             } }
             if actions || appMenu || filterOpen { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
-            if !compactSurface && page?.contentPlacement != .conversation { footer.frame(maxHeight: .infinity, alignment: .bottom) }
+            if !compactSurface { footer.frame(maxHeight: .infinity, alignment: .bottom) }
             if showsSearchBar && showsTypeFilter {
                 typeFilter.frame(maxWidth: .infinity, alignment: .topTrailing)
                     .padding(VisualStyle.launcherEdgeInset)
@@ -234,9 +238,7 @@ struct Launcher: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: appMenu)
         .background {
             if rootScriptArguments == nil {
-                if page?.contentPlacement != .conversation {
-                    Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
-                }
+                Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
                 Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             }
             if let page {
@@ -719,13 +721,15 @@ struct Launcher: View {
         }.padding(.horizontal, VisualStyle.launcherEdgeInset).padding(.bottom, VisualStyle.launcherEdgeInset)
     }
     private func expandingControl(application: Bool) -> some View {
+        let conversation = page?.contentPlacement == .conversation
         let secondary = page?.badge != nil
         let badgeTitle = page?.badgeTitle?() ?? page?.badge?.title ?? ""
         let badgeSymbol = page?.badge?.symbol ?? ""
         let menuTitle = page?.badgeActions == nil ? "Keylane 菜单" : "\(badgeTitle)菜单"
-        let feedback = application ? model.footerFeedback.current : nil
-        let preferredApplicationWidth = feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
-            ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
+        let feedback = application && !conversation ? model.footerFeedback.current : nil
+        let preferredApplicationWidth = conversation ? VisualStyle.launcherControlDiameter
+            : feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
+                ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = rootScriptArguments == nil && (page?.contentPlacement != .form || !rootMenuItems(applicationMenu: false).isEmpty)
         let primaryLabel = LauncherFooterButtonLabel(title: primaryTitle,
             keys: (page?.returnBindings.primary ?? .plain).shortcut.launcherKeycaps)
@@ -734,7 +738,7 @@ struct Launcher: View {
         let capsuleInset: CGFloat = 4
         let maximumActionWidth: CGFloat = page?.maximumActionWidth ?? (showsActions ? 196 : 126)
         let primaryWidth = min(primaryLabel.width, max(0, maximumActionWidth - actionsWidth - 2 * capsuleInset))
-        let actionWidth = primaryWidth + actionsWidth + 2 * capsuleInset
+        let actionWidth = conversation ? VisualStyle.launcherControlDiameter : primaryWidth + actionsWidth + 2 * capsuleInset
         let rightWidth = actions ? Self.footerMenuWidth : actionWidth
         let availableApplicationWidth = VisualStyle.launcherWidth - 2 * VisualStyle.launcherEdgeInset
             - Self.footerMinimumGap - rightWidth
@@ -749,6 +753,14 @@ struct Launcher: View {
                 menuPanel(applicationMenu: application, items: items)
                     .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
+            } else if conversation {
+                NativeHoverButton(title: application ? "对话选项" : "操作", action: { toggleMenu(application: application) }) {
+                    Image(systemName: application ? "plus" : "command")
+                        .font(.system(size: 18))
+                        .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
+                }
+                .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
+                .transition(.opacity)
             } else if let feedback {
                 NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开\(menuTitle)" : feedback.label, action: {
                     if feedback.actionTitle != nil { model.footerFeedback.performAction() }

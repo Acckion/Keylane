@@ -26,6 +26,10 @@ enum QuickAILauncher {
                                                        enabled: controller.lastAnswer != nil) {
                              AIConversationTranscript.copy(controller.lastAnswer)
                          }]
+                         actions.append(.init(id: "quick-ai-paste", title: "粘贴回复", icon: "doc.on.clipboard",
+                                              enabled: controller.lastAnswer != nil && !controller.running) {
+                             useResponse(controller)
+                         })
                          if controller.running {
                              actions.append(.init(id: "quick-ai-stop", title: "停止生成", icon: "stop.fill",
                                                   perform: controller.stop))
@@ -43,6 +47,18 @@ enum QuickAILauncher {
                          controller.$turns.map { $0.contains { !$0.answer.isEmpty } }.removeDuplicates().map { _ in () },
                          ViewObservation.changes(model.aiSettings.$state.map { $0.connection(for: .quick) != nil })
                      ).eraseToAnyPublisher(), actionShortcutsEnabled: true)
+        page.badgeActions = { [weak model] in
+            [
+                .init(id: "quick-ai-new", title: "新对话", icon: "plus",
+                      shortcut: .init("n", modifiers: .command)) {
+                    controller.reset()
+                    model?.query = ""
+                },
+                .init(id: "quick-ai-settings", title: "AI 设置", icon: "gearshape") {
+                    model?.openSettings(page: "ai")
+                }
+            ]
+        }
         page.fullBleed = true
         return page
     }
@@ -142,7 +158,8 @@ private struct QuickAIConversationPage: View {
     @ObservedObject var controller: QuickAIController
     let openChat: () -> Void
     @State private var input = ""
-    @State private var focusToken = 0
+    @Environment(\.conversationInputEnabled) private var inputEnabled
+    @Environment(\.conversationInputFocusToken) private var inputFocusToken
 
     var body: some View {
         ConversationLayout(title: controller.turns.first?.question ?? "新对话",
@@ -152,21 +169,10 @@ private struct QuickAIConversationPage: View {
             AIConversationTranscript(controller: controller, inLauncher: true)
         } composer: {
             ConversationComposer {
-                Menu {
-                    Button("新对话", systemImage: "plus") {
-                        controller.reset()
-                        input = ""
-                        focusToken += 1
-                    }
-                    Button("AI 设置", systemImage: "gearshape") { model.openSettings(page: "ai") }
-                } label: {
-                    Image(systemName: "plus").font(.system(size: 18))
-                }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                .accessibilityLabel("对话选项")
+                Color.clear.allowsHitTesting(false)
             } input: {
                 HStack(spacing: 8) {
-                    SearchField(text: $input, placeholder: "向 AI 提问…", focusToken: focusToken, compact: true,
+                    SearchField(text: $input, placeholder: "向 AI 提问…", focusToken: inputFocusToken, wantsFocus: inputEnabled, compact: true,
                                 submit: submit, move: { _ in },
                                 escape: {
                                     if controller.running { controller.stop() }
@@ -191,33 +197,20 @@ private struct QuickAIConversationPage: View {
                     }
                 }
             } trailing: {
-                Menu {
-                    Button("复制回复", systemImage: "doc.on.doc") {
-                        AIConversationTranscript.copy(controller.lastAnswer)
-                    }.disabled(controller.lastAnswer == nil)
-                    Button("粘贴回复", systemImage: "doc.on.clipboard", action: paste)
-                        .disabled(controller.lastAnswer == nil || controller.running)
-                    Button("在 AI Chat 中继续", systemImage: "arrow.up.forward.app", action: openChat)
-                    if controller.running { Button("停止生成", systemImage: "stop.fill", action: controller.stop) }
-                } label: {
-                    Image(systemName: "command").font(.system(size: 18))
-                }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                .keyboardShortcut("k", modifiers: .command)
-                .accessibilityLabel("对话操作")
+                Color.clear.allowsHitTesting(false)
             }
         } trailing: {
             NativeHoverButton(title: "在 AI Chat 中继续", action: openChat) {
                 Image(systemName: "arrow.up.forward.app").font(.system(size: 18))
             }.frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
         }
-        .onAppear { input = model.query; focusToken += 1 }
+        .onAppear { input = model.query }
         .onChange(of: input) { _, value in if model.query != value { model.query = value } }
         .onReceive(model.$query) { value in if input != value { input = value } }
     }
 
     private var responseTitle: String {
-        if let app = (NSApp.delegate as? Delegate)?.pasteTargetName { return "粘贴到 (app)" }
+        if let app = (NSApp.delegate as? Delegate)?.pasteTargetName { return "粘贴到 \(app)" }
         return "复制回复"
     }
 
