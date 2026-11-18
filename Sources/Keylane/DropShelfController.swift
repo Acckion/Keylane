@@ -297,6 +297,8 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private let disclosure = NSButton()
     private let details = NSStackView()
     private var expanded = false
+    private var resizeTimer: Timer?
+    private var outsideMonitors: [Any] = []
     private var detailWidth: NSLayoutConstraint?
     private var thumbnailKey: String?
     private var thumbnailRequests: [QLThumbnailGenerator.Request] = []
@@ -442,9 +444,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     }
     private func configureRound(_ button: NSButton, symbol: String, label: String, action: Selector) {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        button.isBordered = false; button.target = self; button.action = action
-        button.wantsLayer = true; button.layer?.cornerRadius = 16
-        button.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+        button.isBordered = true; button.bezelStyle = .glass; button.borderShape = .circle
+        button.imagePosition = .imageOnly; button.title = ""
+        button.target = self; button.action = action
         button.contentTintColor = .labelColor; button.toolTip = label; button.setAccessibilityLabel(label)
         button.translatesAutoresizingMaskIntoConstraints = false
         button.widthAnchor.constraint(equalToConstant: 32).isActive = true
@@ -461,13 +463,48 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         disclosure.image = NSImage(systemSymbolName: expanded ? "slider.horizontal.3" : "chevron.down", accessibilityDescription: expanded ? "暂存架设置" : "展开暂存内容")
         disclosure.setAccessibilityLabel(expanded ? "暂存架设置" : "展开暂存内容")
         disclosure.toolTip = expanded ? "暂存架设置" : "展开暂存内容"
-        resizeCard()
+        updateOutsideMonitors()
+        resizeCard(animated: true)
         makeFirstResponder(expanded ? table : preview)
     }
     func focusContents() { makeFirstResponder(expanded ? table : preview) }
-    private func resizeCard() {
+    private func updateOutsideMonitors() {
+        outsideMonitors.forEach(NSEvent.removeMonitor); outsideMonitors.removeAll()
+        guard expanded else { return }
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            self?.collapseIfOutside(at: NSEvent.mouseLocation)
+            return event
+        }) { outsideMonitors.append(monitor) }
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
+            self?.collapseIfOutside(at: NSEvent.mouseLocation)
+        }) { outsideMonitors.append(monitor) }
+    }
+    func collapseIfOutside(at point: NSPoint) {
+        guard expanded, isVisible, !frame.contains(point) else { return }
+        toggleDetails()
+    }
+    private func resizeCard(animated: Bool = false) {
+        resizeTimer?.invalidate(); resizeTimer = nil
         let size = expanded ? NSSize(width: 420, height: 320) : NSSize(width: status.isHidden ? 210 : 246, height: status.isHidden ? 210 : 246)
-        setFrame(NSRect(x: frame.minX, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
+        let start = frame
+        let center = NSPoint(x: start.midX, y: start.midY)
+        let target = NSRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
+        guard animated, isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            setFrame(target, display: true); return
+        }
+        let began = ProcessInfo.processInfo.systemUptime
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            let progress = min(1, (ProcessInfo.processInfo.systemUptime - began) / 0.22)
+            let eased = 1 - pow(1 - progress, 3)
+            let width = start.width + (size.width - start.width) * eased
+            let height = start.height + (size.height - start.height) * eased
+            self.setFrame(NSRect(x: center.x - width / 2, y: center.y - height / 2, width: width, height: height), display: true)
+            if progress == 1 { timer.invalidate(); self.resizeTimer = nil }
+        }
+        resizeTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
     private func updateCompactPreview() {
         filename.title = rows.isEmpty ? "暂存架" : rows.count == 1 ? rows[0].title : contentTitle
@@ -897,6 +934,8 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         filename.toolTip = text
     }
     func windowWillClose(_ notification: Notification) {
+        resizeTimer?.invalidate(); resizeTimer = nil
+        outsideMonitors.forEach(NSEvent.removeMonitor); outsideMonitors.removeAll()
         thumbnailKey = nil
         thumbnailRequests.forEach { QLThumbnailGenerator.shared.cancel($0) }; thumbnailRequests.removeAll()
         cancelImports(); releaseAccess(); FilePreview.shared.dismiss(owner: .dropShelf(shelfID)); controller?.closed(self)
