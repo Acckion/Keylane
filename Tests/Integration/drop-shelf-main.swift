@@ -155,8 +155,55 @@ window.cancelImports(); drain(0.9)
 expect(shelves.store!.shelf(window.shelfID)!.items.count == 6, "late cancelled callback cannot revive content")
 let incoming = root.appendingPathComponent("Storage/Incoming")
 expect((try? FileManager.default.contentsOfDirectory(atPath: incoming.path).isEmpty) == true, "finished and failed promise batches leave no residue")
+var edgeSnap = DropShelfEdgeSnap()
+let snapScreen = NSRect(x: -800, y: 40, width: 800, height: 600)
+func snapCandidate(_ x: CGFloat, _ y: CGFloat) -> NSRect { NSRect(x: x, y: y, width: 210, height: 210) }
+expect(edgeSnap.origin(for: snapCandidate(-793, 417), in: snapScreen) == NSPoint(x: -800, y: 417), "shelf snaps to the left edge without moving on the other axis")
+expect(edgeSnap.origin(for: snapCandidate(-782, 421), in: snapScreen) == NSPoint(x: -800, y: 430), "shelf holds the left edge and snaps to the top at a corner")
+expect(edgeSnap.origin(for: snapCandidate(-775, 400), in: snapScreen) == NSPoint(x: -775, y: 400), "moving sufficiently far from the edges releases both axes")
+let snapSecondScreen = NSRect(x: 0, y: -60, width: 700, height: 650)
+expect(edgeSnap.origin(for: snapCandidate(483, -53), in: snapSecondScreen) == NSPoint(x: 490, y: -60), "shelf snaps to the right and bottom edges of the current display")
+if let screen = window.screen {
+    let moveShelf = shelves.create()!
+    let area = screen.visibleFrame
+    moveShelf.setFrameOrigin(NSPoint(x: area.midX - moveShelf.frame.width / 2, y: area.midY - moveShelf.frame.height / 2))
+    moveShelf.contentView!.layoutSubtreeIfNeeded()
+    let grabPoint = NSPoint(x: moveShelf.frame.width / 2, y: moveShelf.frame.height - 6)
+    func shelfMouse(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
+        NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                           windowNumber: moveShelf.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+    }
+    let emptyPreview = descendantViews(moveShelf.contentView!).compactMap { $0 as? DropShelfPreview }.first!
+    expect(moveShelf.dropOverlay.primaryMouseTarget(at: midpointInWindow(emptyPreview)) == nil,
+           "an empty shelf preview is a window drag region")
+    let start = moveShelf.frame.origin
+    let mouse = moveShelf.convertPoint(toScreen: grabPoint)
+    moveShelf.dropOverlay.mouseDown(with: shelfMouse(.leftMouseDown, at: grabPoint))
+    let nearLeft = NSPoint(x: mouse.x + area.minX + 8 - start.x, y: mouse.y)
+    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: nearLeft)))
+    expect(abs(moveShelf.frame.minX - area.minX) < 0.5, "dragging the shelf handle moves its actual window to the display edge")
+    let release = NSPoint(x: nearLeft.x + 25, y: nearLeft.y)
+    moveShelf.dropOverlay.mouseDragged(with: shelfMouse(.leftMouseDragged, at: moveShelf.convertPoint(fromScreen: release)))
+    expect(abs(moveShelf.frame.minX - area.minX - 33) < 0.5, "dragging back from the edge releases the actual window")
+    moveShelf.dropOverlay.mouseUp(with: shelfMouse(.leftMouseUp, at: grabPoint))
+    moveShelf.close()
+}
 let emptyDragShelf = shelves.createForDrag()!
 let populatedDragShelf = shelves.createForDrag()!
+expect(emptyDragShelf.frame.intersection(window.frame).isEmpty &&
+       populatedDragShelf.frame.intersection(window.frame).isEmpty &&
+       populatedDragShelf.frame.intersection(emptyDragShelf.frame).isEmpty,
+       "drag-triggered shelves avoid existing visible shelves and each other")
+let crowded = NSRect(x: -420, y: -100, width: 420, height: 210)
+let neighboring = NSRect(x: 0, y: -100, width: 420, height: 210)
+let obstruction = NSRect(x: -420, y: -100, width: 210, height: 210)
+expect(DropShelfController.dragShelfOrigin(near: NSPoint(x: -410, y: 0), in: [crowded], avoiding: [obstruction]) == NSPoint(x: -210, y: -100),
+       "drag placement uses an exact-fit slot before leaving the pointer display")
+expect(DropShelfController.dragShelfOrigin(near: NSPoint(x: -410, y: 0), in: [crowded, neighboring], avoiding: [crowded]) == NSPoint(x: 10, y: -100),
+       "drag placement can use a neighboring display when the current display is full")
+expect(DropShelfController.dragShelfOrigin(near: NSPoint(x: -410, y: 0), in: [crowded], avoiding: [crowded]) == nil,
+       "drag cannot create an overlapping shelf when all available space is occupied")
+
 try shelves.store!.addFile(source, to: populatedDragShelf.shelfID)
 populatedDragShelf.refresh()
 let manualEmptyShelf = shelves.create()!
@@ -185,6 +232,16 @@ let visibleTable = descendantViews(window.contentView!).compactMap { $0 as? NSTa
 expect(listMode.state == .on && gridMode.state == .off && visibleTable.numberOfRows == 6, "list switch selects one segment and presents all shelf items")
 expect(visibleTable.tableColumns[0].width > 300, "file list column fills the visible viewport")
 expect(descendantViews(visibleTable).compactMap { $0 as? NSButton }.contains { $0.action == NSSelectorFromString("revealListItem:") }, "file rows expose the Finder action")
+let firstListItem = visibleTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as! DropShelfListItemView
+firstListItem.layoutSubtreeIfNeeded()
+func midpointInWindow(_ view: NSView) -> NSPoint {
+    view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+}
+expect(window.dropOverlay.primaryMouseTarget(at: midpointInWindow(firstListItem.arrangedSubviews[1])) === visibleTable,
+       "dragging a list filename uses the native file drag source")
+expect(window.dropOverlay.primaryMouseTarget(at: midpointInWindow(firstListItem.arrangedSubviews[2])) == nil,
+       "empty space beside a list filename moves the shelf")
+
 gridMode.performClick(nil)
 expect(gridMode.state == .on && listMode.state == .off, "switching back activates only the grid segment")
 func hoverShelfButton(_ button: NSButton) {
@@ -373,8 +430,20 @@ screenshotShelf.contentView!.layoutSubtreeIfNeeded()
 let screenshotGrid = descendantViews(screenshotShelf.contentView!).compactMap { $0 as? DropShelfTable }.first!
 let screenshotRow = screenshotGrid.view(atColumn: 0, row: 0, makeIfNecessary: true) as! NSStackView
 let screenshotLastRow = screenshotGrid.view(atColumn: 0, row: 1, makeIfNecessary: true) as! NSStackView
-expect(screenshotGrid.numberOfRows == 2 && screenshotLastRow.arrangedSubviews[0] is DropShelfTile &&
-       (screenshotLastRow.arrangedSubviews[1] as? NSButton)?.title == "在 Finder 中显示", "four files put the Finder action in the fifth grid position")
+let lastFileTile = screenshotLastRow.arrangedSubviews[0] as! DropShelfTile
+let finderTile = screenshotLastRow.arrangedSubviews[1] as! DropShelfTile
+let finderButton = finderTile.subviews.compactMap { $0 as? NSButton }.first!
+expect(screenshotGrid.numberOfRows == 2 && finderButton.accessibilityLabel() == "在 Finder 中显示", "four files put the Finder action in the fifth grid position")
+screenshotLastRow.layoutSubtreeIfNeeded()
+func centerY(_ view: NSView) -> CGFloat {
+    view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: screenshotLastRow).y
+}
+expect(abs(centerY(lastFileTile.preview!.imageView) - centerY(finderTile.arrangedSubviews[0])) < 0.5 &&
+       abs(centerY(lastFileTile.arrangedSubviews[1]) - centerY(finderTile.arrangedSubviews[1])) < 0.5,
+       "Finder symbol and title align with the neighboring file thumbnail and filename")
+let finderLabel = finderTile.arrangedSubviews[1]
+let finderLabelPoint = finderLabel.convert(NSPoint(x: finderLabel.bounds.midX, y: finderLabel.bounds.midY), to: nil)
+expect(screenshotShelf.dropOverlay.forwardedView(at: finderLabelPoint) === finderButton, "the Finder label remains clickable")
 let screenshotPreview = (screenshotRow.arrangedSubviews[0] as! DropShelfTile).preview!
 func hasScreenshotAspectRatio() -> Bool {
     guard let size = screenshotPreview.imageView.image?.size, size.height > 0 else { return false }
@@ -382,6 +451,16 @@ func hasScreenshotAspectRatio() -> Bool {
 }
 for _ in 0..<40 where !hasScreenshotAspectRatio() { drain(0.05) }
 expect(hasScreenshotAspectRatio(), "an expanded PNG file tile loads the image thumbnail with its original aspect ratio")
+let screenshotPoint = midpointInWindow(screenshotPreview.imageView)
+expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: screenshotPoint) === screenshotPreview,
+       "dragging the visible screenshot uses the file drag source")
+let screenshotTile = screenshotRow.arrangedSubviews[0]
+let gridPadding = screenshotTile.convert(NSPoint(x: screenshotTile.bounds.minX + 2, y: screenshotTile.bounds.midY), to: nil)
+expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: gridPadding) == nil,
+       "padding beside the thumbnail moves the shelf")
+expect(screenshotShelf.dropOverlay.primaryMouseTarget(at: finderLabelPoint) === finderButton,
+       "the Finder control still keeps its click action")
+
 screenshotShelf.close()
 let collisionWindow = shelves.create()!
 let collisionProviders = [

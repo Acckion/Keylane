@@ -1,11 +1,49 @@
 import AppKit
 
-/// Labels and tile padding use the icon's selection and drag handling as well.
+/// Match the drawn image or text instead of the full layout rectangle around it.
+private enum DropShelfContentHit {
+    static func image(_ view: NSImageView, at windowPoint: NSPoint) -> Bool {
+        guard !view.isHiddenOrHasHiddenAncestor, let image = view.image,
+              image.size.width > 0, image.size.height > 0, !view.bounds.isEmpty else { return false }
+        let fit = min(view.bounds.width / image.size.width, view.bounds.height / image.size.height)
+        let scale = view.imageScaling == .scaleProportionallyDown ? min(1, fit) : fit
+        let width = image.size.width * scale
+        let height = image.size.height * scale
+        let drawing = NSRect(x: view.bounds.midX - width / 2, y: view.bounds.midY - height / 2, width: width, height: height)
+        return drawing.contains(view.convert(windowPoint, from: nil))
+    }
+
+    static func text(_ field: NSTextField, at windowPoint: NSPoint) -> Bool {
+        guard !field.isHiddenOrHasHiddenAncestor, !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let width = min(field.bounds.width, field.intrinsicContentSize.width)
+        let x = field.alignment == .center ? field.bounds.midX - width / 2 : field.bounds.minX
+        let drawing = NSRect(x: x, y: field.bounds.minY, width: width, height: field.bounds.height)
+        return drawing.contains(field.convert(windowPoint, from: nil))
+    }
+}
+
+/// Keep the thumbnail and filename on the same drag source; leave tile padding free.
 final class DropShelfTile: NSStackView {
     weak var preview: DropShelfPreview?
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard super.hitTest(point) != nil else { return nil }
-        return preview
+        guard let hit = super.hitTest(point) else { return nil }
+        guard let preview else { return hit }
+        let windowPoint = superview?.convert(point, to: nil) ?? point
+        if preview.containsImage(at: windowPoint) || arrangedSubviews.contains(where: {
+            guard let field = $0 as? NSTextField else { return false }
+            return DropShelfContentHit.text(field, at: windowPoint)
+        }) { return preview }
+        return self
+    }
+}
+
+final class DropShelfListItemView: NSStackView {
+    func containsFile(at point: NSPoint) -> Bool {
+        arrangedSubviews.contains {
+            if let image = $0 as? NSImageView { return DropShelfContentHit.image(image, at: point) }
+            if let field = $0 as? NSTextField { return DropShelfContentHit.text(field, at: point) }
+            return false
+        }
     }
 }
 
@@ -37,11 +75,45 @@ class DropShelfDropView: NSView {
     }
 }
 
+/// Track the pointer's unsnapped position so a window can be pulled away from an edge.
+struct DropShelfEdgeSnap {
+    private enum Edge { case minimum, maximum }
+    private var horizontal: Edge?
+    private var vertical: Edge?
+    private var previousArea: NSRect?
+
+    mutating func origin(for frame: NSRect, in area: NSRect) -> NSPoint {
+        if previousArea != area {
+            horizontal = nil
+            vertical = nil
+            previousArea = area
+        }
+        let x = Self.snap(frame.minX, minimum: area.minX, maximum: area.maxX - frame.width, previous: horizontal)
+        let y = Self.snap(frame.minY, minimum: area.minY, maximum: area.maxY - frame.height, previous: vertical)
+        horizontal = x.edge
+        vertical = y.edge
+        return NSPoint(x: x.position, y: y.position)
+    }
+
+    private static func snap(_ position: CGFloat, minimum: CGFloat, maximum: CGFloat, previous: Edge?) -> (position: CGFloat, edge: Edge?) {
+        guard maximum >= minimum else { return (position, nil) }
+        let startDistance = abs(position - minimum)
+        let endDistance = abs(position - maximum)
+        if previous == .minimum && startDistance <= 24 { return (minimum, .minimum) }
+        if previous == .maximum && endDistance <= 24 { return (maximum, .maximum) }
+        if startDistance <= 12 && startDistance <= endDistance { return (minimum, .minimum) }
+        if endDistance <= 12 { return (maximum, .maximum) }
+        return (min(max(position, minimum), maximum), nil)
+    }
+}
+
 /// The only external drop destination. It sits above glass and controls so that
 /// AppKit sees one full-card rectangle. Ordinary mouse input is forwarded below.
 final class DropShelfCaptureOverlay: DropShelfDropView {
     weak var underlying: NSView?
     private weak var mouseTarget: NSView?
+    private var windowDrag: (mouse: NSPoint, origin: NSPoint)?
+    private var edgeSnap = DropShelfEdgeSnap()
     private weak var hoveredButton: DropShelfHoverButton?
     private var hoverArea: NSTrackingArea?
     override var mouseDownCanMoveWindow: Bool { false }
@@ -54,6 +126,33 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
         guard let underlying else { return nil }
         return underlying.hitTest(underlying.superview?.convert(windowPoint, from: nil) ?? windowPoint)
     }
+    func primaryMouseTarget(at point: NSPoint) -> NSView? {
+        var view = forwardedView(at: point)
+        while let hit = view {
+            if let preview = hit as? DropShelfPreview { return preview }
+            if hit is NSButton || hit is NSScroller { return hit }
+            // NSTableView can return itself from hitTest even when a cell is visible.
+            if let table = hit as? NSTableView {
+                let row = table.row(at: table.convert(point, from: nil))
+                guard row >= 0, let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) else { return nil }
+                let cellHit = cell.hitTest(cell.superview?.convert(point, from: nil) ?? point)
+                if let control = cellHit as? NSButton { return control }
+                if let preview = cellHit as? DropShelfPreview { return preview }
+                return (cell as? DropShelfListItemView)?.containsFile(at: point) == true ? table : nil
+            }
+            if let row = hit as? DropShelfListItemView {
+                guard row.containsFile(at: point) else { return nil }
+                var parent = row.superview
+                while let ancestor = parent {
+                    if ancestor is NSTableView { return ancestor }
+                    parent = ancestor.superview
+                }
+                return nil
+            }
+            view = hit.superview
+        }
+        return nil
+    }
     private func target(_ event: NSEvent) -> NSView? { forwardedView(at: event.locationInWindow) }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -62,9 +161,16 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
         addTrackingArea(area)
         hoverArea = area
     }
-    override func mouseMoved(with event: NSEvent) { updateHover(target(event) as? DropShelfHoverButton) }
+    override func mouseMoved(with event: NSEvent) {
+        let target = primaryMouseTarget(at: event.locationInWindow)
+        updateHover(target as? DropShelfHoverButton)
+        (target == nil ? NSCursor.openHand : .arrow).set()
+    }
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
-    override func mouseExited(with event: NSEvent) { updateHover(nil) }
+    override func mouseExited(with event: NSEvent) {
+        updateHover(nil)
+        NSCursor.arrow.set()
+    }
 
     private func updateHover(_ button: DropShelfHoverButton?) {
         guard hoveredButton !== button else { return }
@@ -74,19 +180,34 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        let target = target(event)
+        windowDrag = nil
+        let target = primaryMouseTarget(at: event.locationInWindow)
         updateHover(target as? DropShelfHoverButton)
-        guard let target else { return }
         mouseTarget = target
-        if target is NSControl || target is DropShelfPreview || target is NSScrollView || target.enclosingScrollView != nil {
+        if let target {
             target.mouseDown(with: event)
-        } else {
-            mouseTarget = nil
-            window?.performDrag(with: event)
+        } else if let window {
+            edgeSnap = DropShelfEdgeSnap()
+            windowDrag = (window.convertPoint(toScreen: event.locationInWindow), window.frame.origin)
         }
     }
-    override func mouseDragged(with event: NSEvent) { mouseTarget?.mouseDragged(with: event) }
-    override func mouseUp(with event: NSEvent) { mouseTarget?.mouseUp(with: event); mouseTarget = nil }
+    override func mouseDragged(with event: NSEvent) {
+        guard let windowDrag, let window else { mouseTarget?.mouseDragged(with: event); return }
+        NSCursor.closedHand.set()
+        let mouse = window.convertPoint(toScreen: event.locationInWindow)
+        let proposed = NSRect(x: windowDrag.origin.x + mouse.x - windowDrag.mouse.x,
+                              y: windowDrag.origin.y + mouse.y - windowDrag.mouse.y,
+                              width: window.frame.width, height: window.frame.height)
+        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? window.screen
+        let origin = screen.map { edgeSnap.origin(for: proposed, in: $0.visibleFrame) } ?? proposed.origin
+        if window.frame.origin != origin { window.setFrameOrigin(origin) }
+    }
+    override func mouseUp(with event: NSEvent) {
+        if windowDrag != nil { mouseMoved(with: event) }
+        windowDrag = nil
+        mouseTarget?.mouseUp(with: event)
+        mouseTarget = nil
+    }
     override func rightMouseDown(with event: NSEvent) { target(event)?.rightMouseDown(with: event) }
     override func scrollWheel(with event: NSEvent) { target(event)?.scrollWheel(with: event) }
 }
@@ -137,7 +258,14 @@ final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
         setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel("暂存内容预览，可拖入或拖出")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) == nil ? nil : self }
+    func containsImage(at point: NSPoint) -> Bool {
+        ([imageView] + backImages).contains { DropShelfContentHit.image($0, at: point) }
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard super.hitTest(point) != nil else { return nil }
+        let windowPoint = superview?.convert(point, to: nil) ?? point
+        return containsImage(at: windowPoint) ? self : nil
+    }
     override func mouseDown(with event: NSEvent) { window?.makeFirstResponder(self); selected?(event) }
     override func mouseDragged(with event: NSEvent) {
         guard let items = begin?(event), !items.isEmpty else { return }

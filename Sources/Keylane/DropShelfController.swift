@@ -63,10 +63,49 @@ final class DropShelfController: ObservableObject {
     private var timer: Timer?
     private var automaticShelves = Set<UUID>()
     @discardableResult func createForDrag() -> DropShelfWindow? {
-        guard let window = create(activate: false) else { return nil }
+        let mouse = NSEvent.mouseLocation
+        let screens = NSScreen.screens
+        let current = screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
+        let areas = [current].compactMap { $0?.visibleFrame }
+            + screens.filter { $0 != current }.map(\.visibleFrame)
+        let occupied = windows.values.filter { $0.isVisible && !$0.isMiniaturized }.map(\.frame)
+        guard let origin = Self.dragShelfOrigin(near: mouse, in: areas, avoiding: occupied),
+              let window = create(activate: false, origin: origin) else { return nil }
         automaticShelves.insert(window.shelfID)
         return window
     }
+    static func dragShelfOrigin(near mouse: NSPoint, in areas: [NSRect], avoiding occupied: [NSRect]) -> NSPoint? {
+        let size = DropShelfWindow.compactSize
+        let preferred = NSPoint(x: mouse.x + 25, y: mouse.y - size.height / 2)
+        for area in areas where area.width >= size.width && area.height >= size.height {
+            func clampX(_ x: CGFloat) -> CGFloat { min(max(x, area.minX), area.maxX - size.width) }
+            func clampY(_ y: CGFloat) -> CGFloat { min(max(y, area.minY), area.maxY - size.height) }
+            for gap: CGFloat in [10, 0] {
+                let obstacles = occupied.map { $0.insetBy(dx: -gap, dy: -gap) }.filter { $0.intersects(area) }
+                // Closest legal placements lie on the preferred axes, a screen edge,
+                // or the edge of a shelf that blocks the preferred position.
+                let xs = Set([area.minX, area.maxX - size.width, clampX(preferred.x)]
+                    + obstacles.flatMap { [clampX($0.minX - size.width), clampX($0.maxX)] })
+                let ys = Set([area.minY, area.maxY - size.height, clampY(preferred.y)]
+                    + obstacles.flatMap { [clampY($0.minY - size.height), clampY($0.maxY)] })
+                var best: NSPoint?
+                var bestDistance = CGFloat.infinity
+                for x in xs.sorted() {
+                    for y in ys.sorted() {
+                        let distance = hypot(x - preferred.x, y - preferred.y)
+                        guard distance < bestDistance else { continue }
+                        let candidate = NSRect(origin: NSPoint(x: x, y: y), size: size)
+                        guard obstacles.allSatisfy({ $0.intersection(candidate).isEmpty }) else { continue }
+                        best = candidate.origin
+                        bestDistance = distance
+                    }
+                }
+                if let best { return best }
+            }
+        }
+        return nil
+    }
+
     func finishDragActivation() {
         for id in Array(automaticShelves) {
             if windows[id]?.receivingDrag == true { continue }
@@ -111,7 +150,7 @@ final class DropShelfController: ObservableObject {
         registry.register(id: Self.menuID, owner: "keylane.drop-shelf", title: "暂存架", defaultVisible: true,
                           presentation: .init(symbol: "tray", toolTip: "拖入内容创建暂存架")) { [weak self] in self?.menu() ?? [] }
         registry.setDropHandler(id: Self.menuID, types: Self.types) { [weak self] board in
-            guard let self, let window = self.create(activate: false) else { return false }
+            guard let self, let window = self.createForDrag() else { return false }
             return window.receive(board, isDrag: true)
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.tick() }
@@ -124,12 +163,12 @@ final class DropShelfController: ObservableObject {
         registry?.unregister(owner: "keylane.drop-shelf"); registry = nil
         // Keep the store until promise callbacks finish; old windows revoke their import batches.
     }
-    @discardableResult func create(activate: Bool = true) -> DropShelfWindow? {
+    @discardableResult func create(activate: Bool = true, origin: NSPoint? = nil) -> DropShelfWindow? {
         guard active, let store else { return nil }
-        do { let id = try store.create(); return reveal(id, activate: activate) }
+        do { let id = try store.create(); return reveal(id, activate: activate, origin: origin) }
         catch { report(error); return nil }
     }
-    @discardableResult func reveal(_ id: UUID, activate: Bool = true) -> DropShelfWindow? {
+    @discardableResult func reveal(_ id: UUID, activate: Bool = true, origin: NSPoint? = nil) -> DropShelfWindow? {
         guard active, let store, store.shelf(id) != nil else { return nil }
         let window: DropShelfWindow
         if let existing = windows[id] { window = existing }
@@ -139,7 +178,8 @@ final class DropShelfController: ObservableObject {
             window.appearance = appearance
             let mouse = NSEvent.mouseLocation
             let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-            if let frame = screen?.visibleFrame {
+            if let origin { window.setFrameOrigin(origin) }
+            else if let frame = screen?.visibleFrame {
                 let x = min(max(mouse.x + 25, frame.minX), frame.maxX - window.frame.width)
                 let y = min(max(mouse.y - window.frame.height / 2, frame.minY), frame.maxY - window.frame.height)
                 window.setFrameOrigin(NSPoint(x: x, y: y))
@@ -269,6 +309,7 @@ final class DropShelfTable: NSTableView {
 }
 
 final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate, NSDraggingDestination {
+    static let compactSize = NSSize(width: 210, height: 210)
     let shelfID: UUID
     let store: DropShelfStore
     weak var controller: DropShelfController?
@@ -332,7 +373,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     override var canBecomeKey: Bool { true }
     init(id: UUID, store: DropShelfStore, controller: DropShelfController) {
         shelfID = id; self.store = store; self.controller = controller
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 210, height: 210), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        super.init(contentRect: NSRect(origin: .zero, size: Self.compactSize), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         // Child controls (including the filename capsule) are not registered destinations.
         // Register the window as the fallback for the entire card, not only its preview.
         registerForDraggedTypes(DropShelfController.types)
@@ -612,14 +653,14 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         return items
     }
     private func gridRow(_ row: Int) -> NSView {
-        let stack = NSStackView(); stack.orientation = .horizontal; stack.spacing = 8; stack.distribution = .fillEqually
+        let stack = NSStackView(); stack.orientation = .horizontal; stack.alignment = .top; stack.spacing = 8; stack.distribution = .fillEqually
         for index in (row * 3)..<min(row * 3 + 3, gridItemCount) {
             if index == rows.count {
                 stack.addArrangedSubview(gridFinderTile())
                 continue
             }
             let item = rows[index]
-            let icon = DropShelfPreview(frame: NSRect(x: 0, y: 0, width: 110, height: 86))
+            let icon = DropShelfPreview(frame: NSRect(x: 0, y: 0, width: 110, height: 82))
             icon.unregisterDraggedTypes()
             icon.placeholder.isHidden = true
             gridPreviews.setObject(icon, forKey: item.id as NSUUID)
@@ -652,20 +693,16 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             }
             icon.ended = { [weak self] in self?.finishDrag($0) }
             icon.shortcut = { [weak self] in self?.key($0) ?? false }
-            icon.heightAnchor.constraint(equalToConstant: 86).isActive = true
-            let label = NSTextField(labelWithString: item.title); label.alignment = .center; label.lineBreakMode = .byTruncatingMiddle
-            label.font = .systemFont(ofSize: 12, weight: .medium)
-            let detail = NSTextField(labelWithString: ""); detail.alignment = .center; detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
+            var detail = ""
             if let url, let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentTypeKey]) {
-                detail.stringValue = values.isDirectory == true ? "文件夹" : values.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "文件"
+                detail = values.isDirectory == true ? "文件夹" : values.fileSize.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "文件"
                 let type = values.contentType ?? UTType(filenameExtension: url.pathExtension)
                 if values.isDirectory != true, item.kind == .image || type?.conforms(to: .image) == true {
                     loadGridThumbnail(at: url, into: icon)
                 }
             }
-            let tile = DropShelfTile(views: [icon, label, detail]); tile.preview = icon
-            tile.orientation = .vertical; tile.spacing = 3; tile.alignment = .centerX
-            label.widthAnchor.constraint(lessThanOrEqualToConstant: 115).isActive = true
+            let tile = makeGridTile(visual: icon, title: item.title, detail: detail)
+            tile.preview = icon
             stack.addArrangedSubview(tile)
         }
         while stack.arrangedSubviews.count < 3 { stack.addArrangedSubview(NSView()) }
@@ -673,16 +710,42 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     }
     private var gridItemCount: Int { rows.isEmpty ? 0 : rows.count + 1 }
 
+    private func makeGridTile(visual: NSView, title: String, detail: String) -> DropShelfTile {
+        let label = NSTextField(labelWithString: title)
+        label.alignment = .center; label.lineBreakMode = .byTruncatingMiddle
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        let subtitle = NSTextField(labelWithString: detail)
+        subtitle.alignment = .center; subtitle.font = .systemFont(ofSize: 10); subtitle.textColor = .secondaryLabelColor
+        let tile = DropShelfTile(views: [visual, label, subtitle])
+        tile.orientation = .vertical; tile.spacing = 3; tile.alignment = .centerX
+        tile.setCustomSpacing(0, after: visual)
+        NSLayoutConstraint.activate([
+            visual.heightAnchor.constraint(equalToConstant: 82),
+            label.widthAnchor.constraint(lessThanOrEqualToConstant: 115)
+        ])
+        return tile
+    }
+
     private func gridFinderTile() -> NSView {
-        let button = NSButton(title: "在 Finder 中显示", target: self, action: #selector(revealInFinder))
-        button.image = NSImage(systemSymbolName: "arrowshape.turn.up.right.circle", accessibilityDescription: nil)?
+        let title = "在 Finder 中显示"
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: "arrowshape.turn.up.right.circle", accessibilityDescription: nil)?
             .withSymbolConfiguration(.init(pointSize: 42, weight: .regular))
-        button.imagePosition = .imageAbove
+        icon.imageScaling = .scaleNone
+        icon.contentTintColor = .secondaryLabelColor
+        let tile = makeGridTile(visual: icon, title: title, detail: " ")
+        let button = NSButton(title: "", target: self, action: #selector(revealInFinder))
         button.isBordered = false
-        button.font = .systemFont(ofSize: 12, weight: .medium)
-        button.contentTintColor = .secondaryLabelColor
-        button.setAccessibilityLabel("在 Finder 中显示")
-        return button
+        button.setAccessibilityLabel(title)
+        tile.addSubview(button)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            button.leadingAnchor.constraint(equalTo: tile.leadingAnchor),
+            button.trailingAnchor.constraint(equalTo: tile.trailingAnchor),
+            button.topAnchor.constraint(equalTo: tile.topAnchor),
+            button.bottomAnchor.constraint(equalTo: tile.bottomAnchor)
+        ])
+        return tile
     }
 
     private func loadGridThumbnail(at url: URL, into preview: DropShelfPreview) {
@@ -807,7 +870,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let view = NSStackView(views: [icon, label, spacer])
+        let view = DropShelfListItemView(views: [icon, label, spacer])
         view.alignment = .centerY; view.spacing = 8
         view.edgeInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
         icon.widthAnchor.constraint(equalToConstant: 20).isActive = true
