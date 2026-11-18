@@ -98,13 +98,89 @@ final class AIConfiguration: ObservableObject {
         persist(updated)
     }
 
+    func setModelVisible(_ id: UUID, visible: Bool) {
+        var updated = state
+        guard let index = updated.connections.firstIndex(where: { $0.id == id }) else { return }
+        updated.connections[index].hiddenFromPicker = visible ? nil : true
+        persist(updated)
+    }
+
+    func addProviderModels(_ models: [String], from connection: AIConnection) -> Int {
+        guard state.connections.contains(connection) else { return 0 }
+        var updated = state
+        let existing = Set(state.connections.filter {
+            ($0.credentialOwnerID ?? $0.id) == (connection.credentialOwnerID ?? connection.id)
+                && $0.requestIdentity == connection.requestIdentity
+        }.map(\.model))
+        var added = 0
+        for model in Set(models).sorted() where !existing.contains(model) {
+            var copy = connection
+            copy.id = UUID()
+            copy.model = model
+            copy.name = connection.providerLabel + " · " + model
+            copy.contextTokens = nil
+            copy.supportsImages = nil
+            copy.supportsTools = nil
+            copy.credentialOwnerID = connection.credentialOwnerID ?? connection.id
+            updated.connections.append(copy)
+            added += 1
+        }
+        persist(updated)
+        return added
+    }
+
+    func setSubscriptionEnabled(_ connection: AIConnection, enabled: Bool) {
+        var updated = state
+        let owner = connection.credentialOwnerID ?? connection.id
+        if !updated.connections.contains(where: { $0.id == connection.id }) { updated.connections.append(connection) }
+        for index in updated.connections.indices where (updated.connections[index].credentialOwnerID ?? updated.connections[index].id) == owner {
+            updated.connections[index].subscriptionEnabled = enabled
+        }
+        persist(updated)
+    }
+
+    func applyCustomProviders(_ models: [(AIConnection, String?)]) async throws {
+        try await Task.detached(priority: .utility) {
+            try Self.stageCustomProviderKeys(models)
+        }.value
+        var updated = state
+        let existing = Dictionary(uniqueKeysWithValues: state.connections.map { ($0.id, $0) })
+        updated.connections.removeAll { $0.customConfigID != nil }
+        updated.connections += models.map { connection, _ in
+            var result = connection
+            result.hiddenFromPicker = existing[connection.id]?.hiddenFromPicker
+            return result
+        }
+        persist(updated)
+    }
+
+    private static func stageCustomProviderKeys(_ models: [(AIConnection, String?)]) throws {
+        var previousKeys = [(AIConnection, String?)]()
+        do {
+            for (connection, key) in models {
+                guard connection.isValidConfiguration else { throw CredentialError.unavailable }
+                let previous = try Self.key(for: connection)
+                previousKeys.append((connection, previous))
+                if key == previous { continue }
+                if let key, !key.isEmpty { try Self.saveKey(key, for: connection) }
+                else { try Self.deleteKey(for: connection) }
+            }
+        } catch {
+            for (connection, key) in previousKeys.reversed() {
+                if let key { try? Self.saveKey(key, for: connection) }
+                else { try? Self.deleteKey(for: connection) }
+            }
+            throw error
+        }
+    }
+
     @discardableResult
     func save(_ draft: AIConnection, selectAsDefault: Bool = true) -> Bool {
         var connection = draft
         connection.endpoint = draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         connection.model = draft.model.trimmingCharacters(in: .whitespacesAndNewlines)
         connection.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard connection.isConfigured else { return false }
+        guard connection.isValidConfiguration else { return false }
         var updated = state
         if let index = updated.connections.firstIndex(where: { $0.id == connection.id }) {
             let original = updated.connections[index]
@@ -128,7 +204,10 @@ final class AIConfiguration: ObservableObject {
 
     func remove(_ connection: AIConnection) throws {
         guard let saved = state.connections.first(where: { $0.id == connection.id }) else { return }
-        try Self.deleteKey(for: saved, includingPreviousEndpoints: true)
+        let credentialOwner = saved.credentialOwnerID ?? saved.id
+        if !state.connections.contains(where: { $0.id != saved.id && ($0.credentialOwnerID ?? $0.id) == credentialOwner }) {
+            try Self.deleteKey(for: saved, includingPreviousEndpoints: true)
+        }
         var updated = state
         updated.connections.removeAll { $0.id == connection.id }
         if updated.selectedID == connection.id { updated.selectedID = nil }
@@ -149,6 +228,7 @@ final class AIConfiguration: ObservableObject {
     }
 
     static func credentialQueries(for connection: AIConnection, includingPreviousEndpoints: Bool = false) -> [[String: Any]] {
+        guard !connection.protocolKind.isSubscription else { return [] }
         func query(service: String, account: String) -> [String: Any] {
             [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
              kSecAttrAccount as String: account]
@@ -157,7 +237,7 @@ final class AIConfiguration: ObservableObject {
         let currentURL = connection.completionURL
         var endpoints = currentURL.map { [$0.absoluteString] } ?? []
         if includingPreviousEndpoints { endpoints.append(contentsOf: connection.previousEndpoints ?? []) }
-        var result = endpoints.map { query(service: service, account: connection.id.uuidString + "|" + $0) }
+        var result = endpoints.map { query(service: service, account: (connection.credentialOwnerID ?? connection.id).uuidString + "|" + $0) }
         if let account = connection.legacyAccount,
            includingPreviousEndpoints || (currentURL != nil && currentURL == AIConnection.completionURL(for: account)) {
             result.append(query(service: legacyService, account: account))

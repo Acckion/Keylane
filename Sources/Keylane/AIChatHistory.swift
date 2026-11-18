@@ -15,7 +15,7 @@ struct AIChatRecord: Sendable {
 
         init(_ connection: AIConnection) {
             profileID = connection.id
-            endpoint = connection.completionURL?.absoluteString ?? ""
+            endpoint = connection.requestIdentity
             model = connection.model
         }
     }

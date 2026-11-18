@@ -164,16 +164,21 @@ private struct AIModelSettings: View {
                 }
             }.settingsAnchor(AIModule.models)
 
+            AIProviderSetupSettings(configuration: configuration, runtime: runtime)
+            AICustomProviderSettings(configuration: configuration)
             AIModelCatalogSettings(configuration: configuration) { editingConnection = $0 }
         }
         .sheet(item: $editingConnection) { draft in
-            ScrollView {
+            if draft.protocolKind.isSubscription {
+                AISubscriptionAdvanced(connection: draft, configuration: configuration)
+            } else { ScrollView {
                 let saved = configuration.state.connections.first { $0.id == draft.id }
                 AIConnectionEditor(configuration: configuration, runtime: runtime, connection: saved ?? draft,
                                    isNew: saved == nil) { editingConnection = nil }
                     .id(saved != nil)
                     .padding(16)
             }.frame(width: 550, height: 560)
+            }
         }
     }
 }
@@ -283,7 +288,11 @@ private struct AIConnectionEditor: View {
         .onChange(of: draft.endpoint) { _, _ in cancelDiscovery() }
         .onDisappear { cancelTest(); cancelDiscovery(); key = "" }
         .sheet(isPresented: $showsModels) {
-            AIModelDiscoveryList(models: discoveredModels) { draft.model = $0 }
+            AIModelDiscoveryList(models: discoveredModels, choose: { draft.model = $0 },
+                                 chooseAll: isNew ? nil : {
+                let count = configuration.addProviderModels(discoveredModels, from: connection)
+                status = "已加入 \(count) 个模型。"
+            })
         }
         .confirmationDialog("移除此连接及其钥匙串密钥？", isPresented: $confirmRemoval, titleVisibility: .visible) {
             Button("移除连接", role: .destructive) {
