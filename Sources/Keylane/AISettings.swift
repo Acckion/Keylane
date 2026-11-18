@@ -114,9 +114,9 @@ private struct AIInteractionSettings: View {
 
     var body: some View {
         SettingsGroup("Quick AI 与聊天") {
-            toggle("搜索备选命令", detail: "没有匹配结果时显示 Quick AI。", value: $preferences.rootFallback)
+            toggle("在主搜索中显示 Quick AI 提示", detail: "显示右侧入口，并在没有匹配结果时提供备选命令。", value: $preferences.rootFallback)
             Divider()
-            toggle("在主搜索中按 Tab 打开 Quick AI", detail: "将当前搜索文字带入输入框。", value: $preferences.rootTab)
+            toggle("在主搜索中按 Tab 打开 Quick AI", detail: "直接使用搜索文字提问，有匹配结果时同样可用。", value: $preferences.rootTab)
             Divider()
             SettingsPicker("AI Chat 发送键", selection: $preferences.chatReturn) {
                 Text("⌘ Return").tag(false)

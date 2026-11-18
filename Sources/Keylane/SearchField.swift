@@ -19,6 +19,7 @@ struct SearchField: View {
     var spaceAtEnd: ((String) -> Bool)? = nil
     var insertEmoji: ((NSRange) -> Bool)? = nil
     var tab: ((String) -> Bool)? = nil
+    @State private var tabMonitor: Any?
     @FocusState private var focused: Bool
     var body: some View {
         TextField(placeholder, text: $text)
@@ -30,13 +31,6 @@ struct SearchField: View {
             .focused($focused)
             .accessibilityLabel(placeholder)
             .onSubmit { if !Self.isComposing { submit() } }
-            .onKeyPress(keys: [.tab], phases: .down) { press in
-                guard let tab, press.modifiers.isEmpty, !Self.isComposing,
-                      let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
-                      editor.string == text, editor.selectedRange() == NSRange(location: text.utf16.count, length: 0)
-                else { return .ignored }
-                return tab(text) ? .handled : .ignored
-            }
             .onKeyPress(keys: [.space]) { press in
                 guard let spaceAtEnd, press.modifiers.isEmpty, !Self.isComposing,
                       let editor = NSApp.keyWindow?.firstResponder as? NSTextView,
@@ -70,6 +64,23 @@ struct SearchField: View {
                 return .ignored
             }
             .onExitCommand { if !Self.isComposing { escape() } }
+            .onAppear {
+                guard tab != nil, tabMonitor == nil else { return }
+                tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    guard event.keyCode == 48, focused, wantsFocus, let tab,
+                          event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                          let window = NSApp.keyWindow, window.isKeyWindow,
+                          event.window == nil || event.window === window,
+                          let editor = window.firstResponder as? NSTextView, !editor.hasMarkedText(),
+                          editor.string == text else { return event }
+                    if event.isARepeat { return nil }
+                    return tab(editor.string) ? nil : event
+                }
+            }
+            .onDisappear {
+                if let tabMonitor { NSEvent.removeMonitor(tabMonitor) }
+                tabMonitor = nil
+            }
             .task(id: "\(focusToken):\(wantsFocus)") {
                 await Task.yield()
                 guard !Task.isCancelled else { return }

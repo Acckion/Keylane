@@ -67,6 +67,9 @@ struct Launcher: View {
     init(model: Model) {
         self.model = model
         _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.aiInteraction.$rootTab),
+            ViewObservation.changes(model.aiInteraction.$rootFallback),
+            ViewObservation.changes(model.aiSettings.$state),
             ViewObservation.changes(model.$pageID),
             ViewObservation.changes(model.$query),
             ViewObservation.changes(model.scripts.$rootArgumentScript),
@@ -541,6 +544,18 @@ struct Launcher: View {
                 case .none:
                     Spacer(minLength: 0)
                 }
+                if model.pageID == .root, model.aiInteraction.rootFallback, quickAIEntryEnabled,
+                   !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button { _ = launchQuickAI(model.query) } label: {
+                        HStack(spacing: 6) {
+                            Text("Quick AI")
+                            if model.aiInteraction.rootTab { Keycap(text: "⇥") }
+                        }.font(.system(size: 13)).foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("使用搜索文字询问 AI")
+                    .accessibilityLabel("询问 Quick AI")
+                }
                 if showsTypeFilter {
                     Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
                         .accessibilityHidden(true)
@@ -555,8 +570,23 @@ struct Launcher: View {
         guard presentation.page == .root, model.pageID == .root, model.aiInteraction.rootTab,
               menu == nil, inlineEmojiTarget == nil, argumentTarget == nil, rootScriptArguments == nil,
               !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return launchQuickAI(query)
+    }
+    private var quickAIEntryEnabled: Bool {
+        model.aiSettings.state.enabled
+            && !model.disabledCommands.contains(QuickAILauncher.commandID.rawValue)
+            && model.launcherModules?.isCommandModuleEnabled(QuickAILauncher.commandID) == true
+    }
+
+    private func launchQuickAI(_ query: String) -> Bool {
+        guard quickAIEntryEnabled else { return false }
+        guard model.aiSettings.state.connection(for: .quick) != nil else {
+            model.openSettings(page: AIModule.models.page)
+            return true
+        }
         return model.runCommand(QuickAILauncher.commandID, origin: .search, arguments: [query])
     }
+
     @ViewBuilder private var typeFilter: some View {
         if showsFileResults {
             HStack(alignment: .top, spacing: 8) {

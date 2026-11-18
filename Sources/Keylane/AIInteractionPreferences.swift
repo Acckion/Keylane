@@ -17,8 +17,8 @@ final class AIInteractionPreferences: ObservableObject {
 
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
-        rootFallback = preferences.bool(forKey: Key.rootFallback)
-        rootTab = preferences.bool(forKey: Key.rootTab)
+        rootFallback = preferences.object(forKey: Key.rootFallback) as? Bool ?? true
+        rootTab = preferences.object(forKey: Key.rootTab) as? Bool ?? true
         chatReturn = preferences.bool(forKey: Key.chatReturn)
         chatFloating = preferences.bool(forKey: Key.chatFloating)
     }

@@ -76,7 +76,11 @@ let suite = "org.keylane.file-ai-test."+UUID().uuidString
 let prefs = UserDefaults(suiteName:suite)!
 defer { prefs.removePersistentDomain(forName:suite) }
 let interaction = AIInteractionPreferences(preferences: prefs)
-precondition(!interaction.rootTab && !interaction.rootFallback && !interaction.chatReturn && !interaction.chatFloating)
+precondition(interaction.rootTab && interaction.rootFallback && !interaction.chatReturn && !interaction.chatFloating)
+interaction.rootTab = false
+interaction.rootFallback = false
+let disabledQuickEntry = AIInteractionPreferences(preferences: prefs)
+precondition(!disabledQuickEntry.rootTab && !disabledQuickEntry.rootFallback)
 interaction.rootTab = true
 interaction.rootFallback = true
 interaction.chatReturn = true
