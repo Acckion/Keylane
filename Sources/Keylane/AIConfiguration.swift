@@ -3,13 +3,14 @@ import Foundation
 import Security
 
 enum AIRoute: String, Codable, CaseIterable, Identifiable {
-    case quick, chat, commands
+    case quick, chat, commands, files
     var id: Self { self }
     var title: String {
         switch self {
         case .quick: "Quick AI"
         case .chat: "AI Chat"
         case .commands: "AI 命令"
+        case .files: "询问文件"
         }
     }
 }
@@ -23,12 +24,12 @@ final class AIConfiguration: ObservableObject {
         var usesLastChatModel: Bool?
         var lastChatModelID: UUID?
         var selected: AIConnection? { connections.first { $0.id == selectedID } }
-        var isAvailable: Bool { enabled && selected?.isConfigured == true }
+        var isAvailable: Bool { connection(for: .files) != nil }
 
         func connection(for route: AIRoute) -> AIConnection? {
             guard enabled else { return nil }
-            let id = route == .chat && usesLastChatModel == true ? lastChatModelID ?? selectedID
-                : defaults?[route] ?? selectedID
+            let fallback = defaults?[route] ?? selectedID
+            let id = route == .chat && usesLastChatModel == true ? lastChatModelID ?? fallback : fallback
             return connections.first { $0.id == id && $0.isConfigured }
         }
 
@@ -62,6 +63,13 @@ final class AIConfiguration: ObservableObject {
                 state = State(enabled: connection.isConfigured, connections: [connection], selectedID: connection.id)
                 if let data = try? JSONEncoder().encode(state) { preferences.set(data, forKey: Self.storageKey) }
             }
+        }
+        // Expand the former shared selection into explicit per-surface defaults.
+        if let selected = state.selectedID {
+            var defaults = state.defaults ?? [:]
+            for route in AIRoute.allCases where defaults[route] == nil { defaults[route] = selected }
+            state.defaults = defaults
+            if let data = try? JSONEncoder().encode(state) { preferences.set(data, forKey: Self.storageKey) }
         }
     }
 
@@ -156,6 +164,9 @@ final class AIConfiguration: ObservableObject {
         }
         updated.connections.removeAll { aliases[$0.id] != nil }
         if updated.selectedID == nil { updated.selectedID = aliases[snapshot.id] ?? snapshot.id }
+        var defaults = updated.defaults ?? [:]
+        for route in AIRoute.allCases where defaults[route] == nil { defaults[route] = aliases[snapshot.id] ?? snapshot.id }
+        updated.defaults = defaults
         if let selected = updated.selectedID { updated.selectedID = aliases[selected] ?? selected }
         updated.defaults = updated.defaults?.mapValues { aliases[$0] ?? $0 }
         if let last = updated.lastChatModelID { updated.lastChatModelID = aliases[last] ?? last }
@@ -254,6 +265,9 @@ final class AIConfiguration: ObservableObject {
             updated.connections.append(connection)
         }
         if selectAsDefault || updated.selectedID == nil { updated.selectedID = connection.id }
+        var defaults = updated.defaults ?? [:]
+        for route in AIRoute.allCases where defaults[route] == nil { defaults[route] = connection.id }
+        updated.defaults = defaults
         persist(updated)
         return true
     }

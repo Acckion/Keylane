@@ -122,16 +122,11 @@ private struct CustomAICommandEditor: View {
                     TextField("命令名称", text: $draft.title).frame(width: 250)
                 }
                 Divider()
-                SettingsPicker("模型连接", selection: $draft.connectionID) {
-                    Text("跟随 AI 命令默认模型").tag(nil as UUID?)
-                    if let id = draft.connectionID, !configuration.state.connections.contains(where: { $0.id == id && $0.isConfigured }) {
-                        Text("连接不可用").tag(Optional(id))
-                    }
-                    ForEach(configuration.state.connections.filter {
-                        $0.isConfigured && ($0.hiddenFromPicker != true || $0.id == draft.connectionID)
-                    }) { connection in
-                        Text("\(connection.displayName) · \(connection.providerLabel)").tag(Optional(connection.id))
-                    }
+                SettingsRow("模型连接") {
+                    AIModelPicker(configuration: configuration, selection: Binding(
+                        get: { draft.connectionID.map(AIModelChoice.model) ?? .inherit },
+                        set: { if case .model(let id) = $0 { draft.connectionID = id } else { draft.connectionID = nil } }
+                    ), inheritTitle: "跟随 AI 命令默认模型")
                 }
                 Divider()
                 SettingsRow("提示词", detail: "可使用 {selection}、{clipboard} 和 {argument name=\"参数名\"}。") {

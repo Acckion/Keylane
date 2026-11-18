@@ -35,7 +35,7 @@ final class FileAIController: NSObject, ObservableObject, NSWindowDelegate {
         commandsEnabled = preferences.dictionary(forKey: "fileAICommandsEnabled") as? [String: Bool] ?? [:]
         super.init()
         settingsChanges = settings.$state
-            .map { $0.enabled ? $0.selected : nil }
+            .map { $0.connection(for: .files) }
             .removeDuplicates()
             .dropFirst()
             .sink { [weak self] _ in self?.cancel() }
@@ -81,7 +81,7 @@ final class FileAIController: NSObject, ObservableObject, NSWindowDelegate {
     func cancel() { generation += 1; task?.cancel(); task = nil; if running { status = "已取消" }; running = false }
     func send() {
         cancel()
-        guard settings.state.enabled, let connection = settings.selected, connection.isConfigured else {
+        guard settings.state.enabled, let connection = settings.state.connection(for: .files), connection.isConfigured else {
             status = "请在设置的「AI」中启用并配置模型。"
             return
         }

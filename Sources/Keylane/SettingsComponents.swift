@@ -92,6 +92,59 @@ extension SettingsRow where Label == SettingsRowLabel {
     }
 }
 
+/// Account/service rows reserve room for the title and switch, moving actions below
+/// when the available width cannot accommodate them without compressing the label.
+struct SettingsAccountRow<Actions: View>: View {
+    let title: String
+    let symbol: String
+    let detail: String
+    @Binding var enabled: Bool
+    @ViewBuilder let actions: () -> Actions
+
+    private var heading: some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol).foregroundStyle(.secondary).accessibilityHidden(true)
+            SettingsTitle(title).fixedSize()
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    heading
+                    actions().fixedSize()
+                    Spacer(minLength: 12)
+                    SettingsInlineSwitch(title: title, isOn: $enabled)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        heading
+                        Spacer(minLength: 12)
+                        SettingsInlineSwitch(title: title, isOn: $enabled)
+                    }
+                    actions()
+                }
+            }
+            SettingsDescription(detail).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(VisualStyle.rowText)
+        .padding(.vertical, 4)
+    }
+}
+
+struct SettingsInlineSwitch: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(title, isOn: $isOn)
+            .labelsHidden().toggleStyle(.switch).controlSize(.small)
+            .accessibilityLabel(title)
+            .fixedSize()
+    }
+}
+
 /// Keeps dependent controls with their parent as one row in a settings group.
 struct SettingsRowWithSuboptions<Row: View, Suboptions: View>: View {
     @ViewBuilder let row: () -> Row
