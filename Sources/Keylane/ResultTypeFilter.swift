@@ -245,10 +245,11 @@ struct LauncherMenuRow<Trailing: View>: View {
 struct LauncherMenuSurface: ViewModifier {
     let open: Bool
     var tint: Color? = nil
+    var cornerRadius: CGFloat = 18
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: open ? 21 : 18)
+        let shape = RoundedRectangle(cornerRadius: open ? 21 : cornerRadius)
         content
             .clipShape(shape)
             .glassEffect(tint.map { Glass.regular.tint($0) } ?? .regular, in: shape)

@@ -90,6 +90,7 @@ public final class DropShelfStore {
         try change { shelves.removeAll { $0.id == id } }
     }
     public func reorder(_ id: UUID, item: UUID, before: UUID?) throws {
+        guard item != before else { return }
         try change {
             guard let index = index(id), let old = shelves[index].items.firstIndex(where: { $0.id == item }) else { return }
             let value = shelves[index].items.remove(at: old)
