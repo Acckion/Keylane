@@ -21,27 +21,31 @@ struct AISubscriptionSettings: View {
             ForEach([AIWireProtocol.codex, .claudeCode], id: \.self) { kind in
                 if kind == .claudeCode { Divider() }
                 let connection = configured(kind)
-                SettingsRow(kind == .codex ? "ChatGPT Account" : "Claude Account",
-                            detail: status[kind] ?? "通过官方 CLI 登录订阅后启用。") {
-                    HStack {
-                        Link("连接方法", destination: URL(string: kind == .codex
-                            ? "https://developers.openai.com/codex/auth/" : "https://code.claude.com/docs/en/authentication")!)
-                        Button("Advanced") { editing = connection }
-                        Button("Show Usage") { usageTarget = connection }
-                            .disabled(connection.subscriptionEnabled != true)
-                        Toggle("启用订阅", isOn: Binding(get: { connection.subscriptionEnabled == true }, set: { enabled in
-                            configuration.setSubscriptionEnabled(connection, enabled: enabled)
-                            var changed = connection
-                            changed.subscriptionEnabled = enabled
-                            if enabled { check(changed) } else { checks[kind]?.cancel(); status[kind] = "已停用。" }
-                        })).labelsHidden().toggleStyle(SettingsSwitchStyle())
+                SettingsAccountRow(title: kind == .codex ? "ChatGPT 账户" : "Claude 账户",
+                                   symbol: kind == .codex ? "bubble.left.and.bubble.right" : "sparkle",
+                                   detail: status[kind] ?? (connection.subscriptionEnabled == true
+                                       ? connection.subscriptionAccountID ?? "请检查账户登录状态。"
+                                       : "通过官方 CLI 登录订阅后启用。"),
+                                   enabled: Binding(get: { connection.subscriptionEnabled == true }, set: { enabled in
+                    configuration.setSubscriptionEnabled(connection, enabled: enabled)
+                    var changed = connection
+                    changed.subscriptionEnabled = enabled
+                    if enabled { check(changed) } else { checks[kind]?.cancel(); status[kind] = "已停用。" }
+                })) {
+                    HStack(spacing: 8) {
+                        Link(destination: URL(string: kind == .codex
+                            ? "https://developers.openai.com/codex/auth/" : "https://code.claude.com/docs/en/authentication")!) {
+                            Label("连接方法", systemImage: "info.circle")
+                        }
+                        Button("高级设置", systemImage: "gearshape") { editing = connection }
+                        if connection.subscriptionEnabled == true {
+                            Button("查看用量", systemImage: "gauge.with.dots.needle.33percent") { usageTarget = connection }
+                            if checks[kind] != nil { ProgressView().controlSize(.small) }
+                            else { Button("检查账户", systemImage: "arrow.clockwise") { check(connection) } }
+                        }
                     }
-                }
-                if connection.subscriptionEnabled == true {
-                    SettingsRow("账户状态") {
-                        if checks[kind] != nil { ProgressView().controlSize(.small) }
-                        else { Button("检查账户") { check(connection) } }
-                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
             }
         }
