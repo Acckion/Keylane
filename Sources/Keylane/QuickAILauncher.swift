@@ -176,7 +176,7 @@ private struct QuickAIConversationPage: View {
                                 submit: submit, move: { _ in },
                                 escape: {
                                     if controller.running { controller.stop() }
-                                    else { model.goBackInLauncher() }
+                                    else { model.cancelLauncherPage() }
                                 })
                     if controller.running {
                         NativeHoverButton(title: "停止生成", action: controller.stop) {

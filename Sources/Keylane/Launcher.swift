@@ -229,6 +229,21 @@ struct Launcher: View {
                 WindowLoadingIndicator(loading: loading).id(model.pageID)
             }
         }
+        .overlay(alignment: .bottomLeading) {
+            if page?.contentPlacement == .conversation, menu == nil, let feedback = model.footerFeedback.current {
+                NativeHoverButton(title: feedback.label, action: {
+                    if feedback.actionTitle != nil { model.footerFeedback.performAction() }
+                    else { model.footerFeedback.clear() }
+                }) {
+                    LauncherFooterFeedbackLabel(feedback: feedback)
+                }
+                .frame(width: LauncherFooterFeedbackLabel.width(for: feedback.label),
+                       height: VisualStyle.launcherControlDiameter)
+                .modifier(LauncherMenuSurface(open: false, tint: feedback.style.color.opacity(0.16)))
+                .padding(.horizontal, VisualStyle.launcherEdgeInset)
+                .padding(.bottom, VisualStyle.launcherBottomInset + 6)
+            }
+        }
         .scaleEffect(model.interfaceScale)
         .frame(width: VisualStyle.launcherWidth * model.interfaceScale, height: model.presentedLauncherHeight * model.interfaceScale)
         .scrollIndicators(.visible, axes: .vertical)
