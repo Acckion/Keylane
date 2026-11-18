@@ -98,13 +98,145 @@ final class AIConfiguration: ObservableObject {
         persist(updated)
     }
 
+    func setModelVisible(_ id: UUID, visible: Bool) {
+        var updated = state
+        guard let index = updated.connections.firstIndex(where: { $0.id == id }) else { return }
+        updated.connections[index].hiddenFromPicker = visible ? nil : true
+        persist(updated)
+    }
+
+    func addProviderModels(_ models: [String], from connection: AIConnection, discoveredUsing target: AIConnection) -> Int {
+        guard target == connection, state.connections.contains(connection) else { return 0 }
+        var updated = state
+        let existing = Set(state.connections.filter {
+            ($0.credentialOwnerID ?? $0.id) == (connection.credentialOwnerID ?? connection.id)
+                && $0.requestIdentity == connection.requestIdentity
+        }.map(\.model))
+        var added = 0
+        for model in Set(models).sorted() where !existing.contains(model) {
+            var copy = connection
+            copy.id = UUID()
+            copy.model = model
+            copy.name = connection.providerLabel + " · " + model
+            copy.contextTokens = nil
+            copy.supportsImages = nil
+            copy.supportsTools = nil
+            copy.credentialOwnerID = connection.credentialOwnerID ?? connection.id
+            updated.connections.append(copy)
+            added += 1
+        }
+        persist(updated)
+        return added
+    }
+
+    /// Publish a whole subscription catalog together. IDs/defaults survive account changes,
+    /// while requestIdentity changes so old conversations and in-flight work cannot follow.
+    func reconnectSubscription(_ snapshot: AIConnection, accountID: String, models: [String]) -> (added: Int, unavailable: Int)? {
+        let supported = Set(models.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        guard snapshot.protocolKind.isSubscription, !accountID.isEmpty, !supported.isEmpty,
+              state.connections.contains(snapshot) else { return nil }
+        let owner = snapshot.credentialOwnerID ?? snapshot.id
+        var updated = state
+        var retained = [String: UUID]()
+        var aliases = [UUID: UUID]()
+        var unavailable = 0
+        for index in updated.connections.indices {
+            var member = updated.connections[index]
+            guard (member.credentialOwnerID ?? member.id) == owner,
+                  member.protocolKind == snapshot.protocolKind else { continue }
+            if member.model == "default", member.id == snapshot.id { member.model = supported.sorted()[0] }
+            if let existing = retained[member.model] { aliases[member.id] = existing; continue }
+            retained[member.model] = member.id
+            member.subscriptionAccountID = accountID
+            member.executablePath = snapshot.executablePath
+            member.accountFolder = snapshot.accountFolder
+            member.subscriptionEnabled = snapshot.subscriptionEnabled == true && supported.contains(member.model)
+            if !supported.contains(member.model) { member.hiddenFromPicker = true; unavailable += 1 }
+            updated.connections[index] = member
+        }
+        updated.connections.removeAll { aliases[$0.id] != nil }
+        if updated.selectedID == nil { updated.selectedID = aliases[snapshot.id] ?? snapshot.id }
+        if let selected = updated.selectedID { updated.selectedID = aliases[selected] ?? selected }
+        updated.defaults = updated.defaults?.mapValues { aliases[$0] ?? $0 }
+        if let last = updated.lastChatModelID { updated.lastChatModelID = aliases[last] ?? last }
+        var added = 0
+        for model in supported.sorted() where retained[model] == nil {
+            var member = snapshot
+            member.id = UUID()
+            member.model = model
+            member.name = snapshot.providerLabel + " · " + model
+            member.credentialOwnerID = owner
+            member.subscriptionAccountID = accountID
+            member.contextTokens = nil
+            member.supportsImages = nil
+            member.supportsTools = nil
+            updated.connections.append(member)
+            added += 1
+        }
+        persist(updated)
+        return (added, unavailable)
+    }
+
+    func setSubscriptionEnabled(_ connection: AIConnection, enabled: Bool) {
+        var updated = state
+        let owner = connection.credentialOwnerID ?? connection.id
+        if !updated.connections.contains(where: { $0.id == connection.id }) { updated.connections.append(connection) }
+        for index in updated.connections.indices where (updated.connections[index].credentialOwnerID ?? updated.connections[index].id) == owner {
+            updated.connections[index].subscriptionEnabled = enabled
+        }
+        persist(updated)
+    }
+
+    func applyCustomProviders(_ models: [(AIConnection, String?)]) async throws {
+        // Reject incoming collisions before touching credentials or publishing any state.
+        let ids = models.map { $0.0.id }
+        guard Set(ids).count == ids.count,
+              Set(state.connections.filter { $0.customConfigID == nil }.map(\.id)).isDisjoint(with: ids) else {
+            throw CredentialError.invalidCatalog
+        }
+        try await Task.detached(priority: .utility) {
+            try Self.stageCustomProviderKeys(models)
+        }.value
+        var updated = state
+        // Older imports may already contain duplicate IDs. Reload must not trap.
+        var existing = [UUID: AIConnection]()
+        for connection in state.connections where existing[connection.id] == nil { existing[connection.id] = connection }
+        updated.connections.removeAll { $0.customConfigID != nil }
+        updated.connections += models.map { connection, _ in
+            var result = connection
+            result.hiddenFromPicker = existing[connection.id]?.hiddenFromPicker
+            return result
+        }
+        persist(updated)
+    }
+
+    private static func stageCustomProviderKeys(_ models: [(AIConnection, String?)]) throws {
+        var previousKeys = [(AIConnection, String?)]()
+        do {
+            for (connection, key) in models {
+                guard connection.isValidConfiguration else { throw CredentialError.unavailable }
+                let previous = try Self.key(for: connection)
+                previousKeys.append((connection, previous))
+                if key == previous { continue }
+                if let key, !key.isEmpty { try Self.saveKey(key, for: connection) }
+                else { try Self.deleteKey(for: connection) }
+            }
+        } catch {
+            for (connection, key) in previousKeys.reversed() {
+                if let key { try? Self.saveKey(key, for: connection) }
+                else { try? Self.deleteKey(for: connection) }
+            }
+            throw error
+        }
+    }
+
     @discardableResult
     func save(_ draft: AIConnection, selectAsDefault: Bool = true) -> Bool {
         var connection = draft
         connection.endpoint = draft.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         connection.model = draft.model.trimmingCharacters(in: .whitespacesAndNewlines)
         connection.name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard connection.isConfigured else { return false }
+        guard connection.isValidConfiguration else { return false }
         var updated = state
         if let index = updated.connections.firstIndex(where: { $0.id == connection.id }) {
             let original = updated.connections[index]
@@ -128,7 +260,10 @@ final class AIConfiguration: ObservableObject {
 
     func remove(_ connection: AIConnection) throws {
         guard let saved = state.connections.first(where: { $0.id == connection.id }) else { return }
-        try Self.deleteKey(for: saved, includingPreviousEndpoints: true)
+        let credentialOwner = saved.credentialOwnerID ?? saved.id
+        if !state.connections.contains(where: { $0.id != saved.id && ($0.credentialOwnerID ?? $0.id) == credentialOwner }) {
+            try Self.deleteKey(for: saved, includingPreviousEndpoints: true)
+        }
         var updated = state
         updated.connections.removeAll { $0.id == connection.id }
         if updated.selectedID == connection.id { updated.selectedID = nil }
@@ -142,13 +277,18 @@ final class AIConfiguration: ObservableObject {
     }
 
     enum CredentialError: Error, LocalizedError {
-        case unavailable, invalidKey
+        case unavailable, invalidKey, invalidCatalog
         var errorDescription: String? {
-            self == .unavailable ? "无法访问此连接的钥匙串密钥。" : "请输入一行有效的 API 密钥。"
+            switch self {
+            case .unavailable: "无法访问此连接的钥匙串密钥。"
+            case .invalidKey: "请输入一行有效的 API 密钥。"
+            case .invalidCatalog: "模型配置存在重复标识，之前的有效配置继续可用。"
+            }
         }
     }
 
     static func credentialQueries(for connection: AIConnection, includingPreviousEndpoints: Bool = false) -> [[String: Any]] {
+        guard !connection.protocolKind.isSubscription else { return [] }
         func query(service: String, account: String) -> [String: Any] {
             [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
              kSecAttrAccount as String: account]
@@ -157,7 +297,7 @@ final class AIConfiguration: ObservableObject {
         let currentURL = connection.completionURL
         var endpoints = currentURL.map { [$0.absoluteString] } ?? []
         if includingPreviousEndpoints { endpoints.append(contentsOf: connection.previousEndpoints ?? []) }
-        var result = endpoints.map { query(service: service, account: connection.id.uuidString + "|" + $0) }
+        var result = endpoints.map { query(service: service, account: (connection.credentialOwnerID ?? connection.id).uuidString + "|" + $0) }
         if let account = connection.legacyAccount,
            includingPreviousEndpoints || (currentURL != nil && currentURL == AIConnection.completionURL(for: account)) {
             result.append(query(service: legacyService, account: account))

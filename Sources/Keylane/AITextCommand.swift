@@ -74,10 +74,10 @@ final class AITextCommandSession: ObservableObject {
     }
 
     var destination: String {
-        guard let connection = reviewedConnection, let endpoint = connection.completionURL else {
+        guard let connection = reviewedConnection else {
             return "尚未配置模型"
         }
-        return "\(connection.model) · \(endpoint.absoluteString)"
+        return "\(connection.model) · \(connection.destinationLabel)"
     }
 
     var destinationChanged: Bool {

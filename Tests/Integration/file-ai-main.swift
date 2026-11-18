@@ -25,7 +25,30 @@ final class FixtureProtocol: URLProtocol {
             let code = mode == "error" ? 401 : 200
             let response = HTTPURLResponse(url:self.request.url!,statusCode:code,httpVersion:"HTTP/1.1",headerFields:["Content-Type":"application/json"])!
             let text: String
-            if self.request.url?.path == "/v1/models" {
+            if self.request.url?.path == "/v1/messages" {
+                precondition(self.request.value(forHTTPHeaderField: "x-api-key") == "fixture-anthropic-key")
+                precondition(self.request.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01")
+                precondition(self.request.value(forHTTPHeaderField: "Authorization") == nil)
+                if mode == "anthropic-stream" {
+                    text = """
+                    event: message_start
+                    data: {"type":"message_start","message":{"usage":{"input_tokens":2,"output_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0},"service_tier":"standard"}}}
+
+                    event: content_block_delta
+                    data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"你好"}}
+
+                    event: message_delta
+                    data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3,"service_tier":"standard"}}
+
+                    event: message_stop
+                    data: {"type":"message_stop"}
+
+
+                    """
+                } else {
+                    text = #"{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"你好"}],"usage":{"input_tokens":2,"output_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":0},"service_tier":"standard"}}"#
+                }
+            } else if self.request.url?.path == "/v1/models" {
                 precondition(self.request.httpMethod == "GET" && self.request.httpBody == nil)
                 precondition(self.request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
                 text = mode == "bad" ? "{}" : #"{"data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":" "}]}"#
@@ -435,3 +458,301 @@ precondition(AITextCommandSession.connection(for: missingOverride, in: settings.
 try library.remove(custom)
 precondition(CustomAICommandLibrary(preferences: prefs).commands.isEmpty)
 print("PASS custom AI commands: stable IDs, archive, selection, clipboard, arguments, enablement and model isolation")
+
+let anthropic = AIConnection(endpoint: "http://127.0.0.1/v1", model: "fixture-claude", wireProtocol: .anthropic)
+let nativePayload = try AnthropicAIProtocol.body(connection: anthropic, messages: [
+    .init(role: .system, content: "fixture instructions"), .init(role: .user, content: "fixture prompt")
+])
+let nativeObject = try JSONSerialization.jsonObject(with: nativePayload) as! [String: Any]
+precondition(nativeObject["system"] as? String == "fixture instructions")
+precondition((nativeObject["messages"] as? [[String: Any]])?.count == 1)
+FixtureProtocol.mode = "anthropic-stream"
+let anthropicRuntime = AIRuntime(configuration: configuration)
+var nativeDone = false
+var nativeAnswer = ""
+var nativeTokens: Int?
+Task { @MainActor in
+    nativeTokens = try! await anthropicRuntime.generate(connection: anthropic, readKey: { _ in "fixture-anthropic-key" },
+                                                       messages: [.init(role: .user, content: "native fixture")]) { delta in
+        await MainActor.run { nativeAnswer += delta }
+    }
+    nativeDone = true
+}
+wait("Anthropic native Unicode SSE") { nativeDone }
+precondition(nativeAnswer == "你好" && nativeTokens == 5)
+var completeAnthropic = anthropic
+completeAnthropic.mode = .complete
+FixtureProtocol.mode = "anthropic-complete"
+nativeDone = false
+nativeAnswer = ""
+Task { @MainActor in
+    nativeTokens = try! await anthropicRuntime.generate(connection: completeAnthropic, readKey: { _ in "fixture-anthropic-key" },
+                                                       messages: [.init(role: .user, content: "native fixture")]) { delta in
+        await MainActor.run { nativeAnswer += delta }
+    }
+    nativeDone = true
+}
+wait("Anthropic native complete response") { nativeDone }
+precondition(nativeAnswer == "你好" && nativeTokens == 5)
+precondition(Set(AIProviderPreset.all.map(\.id)).count == AIProviderPreset.all.count)
+precondition(AIProviderPreset.all.allSatisfy { $0.connection.isConfigured && $0.connection.endpoint.hasPrefix("https://") })
+let sharedCredential = settings.selected!
+let addedModels = settings.addProviderModels(["fixture-added-one", "fixture-added-two"], from: sharedCredential, discoveredUsing: sharedCredential)
+precondition(addedModels == 2)
+var discoveredElsewhere = sharedCredential
+discoveredElsewhere.endpoint = "https://another-provider.invalid/v1"
+let modelCountBeforeMismatch = settings.state.connections.count
+precondition(settings.addProviderModels(["wrong-provider-model"], from: sharedCredential, discoveredUsing: discoveredElsewhere) == 0)
+precondition(settings.state.connections.count == modelCountBeforeMismatch)
+precondition(!settings.state.connections.contains { $0.model == "wrong-provider-model" })
+let sharedChild = settings.state.connections.first { $0.model == "fixture-added-one" }!
+precondition(AIConfiguration.credentialQueries(for: sharedChild) as NSArray ==
+             AIConfiguration.credentialQueries(for: sharedCredential) as NSArray)
+let selectedBeforeHiding = settings.state.selectedID
+settings.setModelVisible(sharedChild.id, visible: false)
+precondition(settings.state.connections.first { $0.id == sharedChild.id }?.hiddenFromPicker == true)
+precondition(settings.state.selectedID == selectedBeforeHiding)
+print("PASS provider presets, native Anthropic streaming/complete, shared credentials and model visibility")
+
+// Reject duplicate incoming identities before any Keychain access; recover legacy duplicates without a trap.
+let collisionPrefs = UserDefaults(suiteName: suite + ".collisions")!
+defer { collisionPrefs.removePersistentDomain(forName: suite + ".collisions") }
+var duplicateCustom = sharedCredential
+duplicateCustom.customConfigID = "legacy-collision"
+let collisionState = AIConfiguration.State(enabled: true, connections: [duplicateCustom, duplicateCustom], selectedID: duplicateCustom.id)
+collisionPrefs.set(try JSONEncoder().encode(collisionState), forKey: "aiConnections.v1")
+let collisionConfig = AIConfiguration(preferences: collisionPrefs)
+var collisionFinished = false
+Task { @MainActor in
+    let before = collisionConfig.state
+    do {
+        try await collisionConfig.applyCustomProviders([(duplicateCustom, "not-a-real-key"), (duplicateCustom, "not-a-real-key")])
+        preconditionFailure("Duplicate incoming identity accepted")
+    } catch AIConfiguration.CredentialError.invalidCatalog { }
+    catch { preconditionFailure("Unexpected error") }
+    precondition(collisionConfig.state == before)
+    try! await collisionConfig.applyCustomProviders([])
+    precondition(collisionConfig.state.connections.isEmpty)
+    collisionFinished = true
+}
+wait("Custom provider collision rejection and legacy reload") { collisionFinished }
+print("PASS custom provider identity collision rejection preserves state; legacy duplicate reload recovers without Keychain access")
+
+let cliDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-cli-fixture-" + UUID().uuidString)
+try FileManager.default.createDirectory(at: cliDirectory, withIntermediateDirectories: false)
+defer { try? FileManager.default.removeItem(at: cliDirectory) }
+let executable = cliDirectory.appendingPathComponent("fixture-cli")
+try #"""
+#!/usr/bin/python3
+import sys, json, time, pathlib
+
+root = pathlib.Path(__file__).parent
+def active_account():
+    file = root / "active-account"
+    return file.read_text() if file.exists() else "fixture@example.invalid"
+
+def send(value):
+    print(json.dumps(value), flush=True)
+
+if sys.argv[1:3] == ['auth', 'status']:
+    send({'loggedIn': True, 'authMethod': 'claude.ai', 'email': 'fixture@example.invalid'})
+elif '--print' in sys.argv:
+    assert '--tools' in sys.argv and sys.argv[sys.argv.index('--tools')+1] == ''
+    prompt = sys.stdin.read()
+    assert 'fixture' in prompt
+    send({'is_error': False, 'result': 'CLI fixture answer', 'usage': {'input_tokens': 2, 'output_tokens': 3}})
+else:
+    assert sys.argv[1] == 'app-server'
+    assert 'features.shell_tool=false' in sys.argv
+    process_account = active_account()
+    for line in sys.stdin:
+        request = json.loads(line)
+        method, rid = request['method'], request.get('id')
+        if method == 'initialized':
+            continue
+        if method == 'initialize':
+            result = {}
+        elif method == 'account/read':
+            result = {'account': {'type': 'chatgpt', 'email': process_account, 'planType': 'plus'}}
+        elif method == 'model/list':
+            result = {'data': [{'model': 'fixture-codex'}]}
+        elif method == 'account/rateLimits/read':
+            result = {'rateLimits': {'primary': {'usedPercent': 42, 'resetsAt': 1800000000}}, 'rateLimitResetCredits': {'availableCount': 2}}
+        elif method == 'account/rateLimitResetCredit/consume':
+            assert request['params']['idempotencyKey']
+            with (root / 'reset-consumes').open('a') as log:
+                log.write(active_account() + '\n')
+            result = {'outcome': 'reset'}
+        elif method == 'thread/start':
+            assert request['params']['ephemeral'] and request['params']['sandbox'] == 'read-only'
+            with (root / 'generation-accounts').open('a') as log:
+                log.write(process_account + '\n')
+            result = {'thread': {'id': 'fixture-thread'}}
+        elif method == 'turn/start':
+            if 'slow-fixture' in request['params']['input'][0]['text']:
+                time.sleep(3)
+            send({'id': rid, 'result': {}})
+            send({'method': 'item/agentMessage/delta', 'params': {'delta': 'CLI fixture '}})
+            send({'method': 'item/agentMessage/delta', 'params': {'delta': 'answer'}})
+            send({'method': 'turn/completed', 'params': {'turn': {'status': 'completed'}}})
+            continue
+        else:
+            raise RuntimeError(method)
+        if method == 'account/read' and (root / 'flip-after-read').exists():
+            (root / 'active-account').write_text('other@example.invalid')
+            (root / 'flip-after-read').unlink()
+        send({'id': rid, 'result': result})
+"""#.write(to: executable, atomically: true, encoding: .utf8)
+try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+let cliConnection = AIConnection(name: "Fixture subscription", model: "fixture-codex", wireProtocol: .codex,
+                                 executablePath: executable.path, accountFolder: cliDirectory.path,
+                                 subscriptionEnabled: true, subscriptionAccountID: "fixture@example.invalid")
+precondition(cliConnection.isConfigured && AIConfiguration.credentialQueries(for: cliConnection).isEmpty)
+var cliFinished = false
+var cliAnswer = ""
+Task { @MainActor in
+    let status = try! await AISubscriptionTransport.status(cliConnection)
+    precondition(status.account.contains("fixture@example.invalid"))
+    let usage = try! await AISubscriptionTransport.status(cliConnection, usage: true)
+    precondition(usage.windows.first?.usedPercent == 42 && usage.availableResets == 2 && usage.accountID == cliConnection.subscriptionAccountID)
+    let models = try! await AISubscriptionTransport.models(cliConnection)
+    precondition(models == ["fixture-codex"])
+    try! await AISubscriptionTransport.reset(cliConnection, expectedAccountID: usage.accountID, idempotencyKey: UUID().uuidString)
+    let consumeLog = cliDirectory.appendingPathComponent("reset-consumes")
+    let consumesBeforeChange = try! Data(contentsOf: consumeLog)
+    let accountFile = cliDirectory.appendingPathComponent("active-account")
+    try! "other@example.invalid".write(to: accountFile, atomically: true, encoding: .utf8)
+    do {
+        try await AISubscriptionTransport.reset(cliConnection, expectedAccountID: usage.accountID, idempotencyKey: UUID().uuidString)
+        preconditionFailure("Reset consumed after active account changed")
+    } catch AISubscriptionError.accountChanged { }
+    catch { preconditionFailure("Unexpected reset error") }
+    precondition(try! Data(contentsOf: consumeLog) == consumesBeforeChange)
+    let refreshed = try! await AISubscriptionTransport.status(cliConnection, usage: true)
+    precondition(refreshed.accountID == "other@example.invalid")
+    do {
+        try await AISubscriptionTransport.reset(cliConnection, expectedAccountID: refreshed.accountID, idempotencyKey: UUID().uuidString)
+        preconditionFailure("Reset accepted without reconnecting changed account")
+    } catch AISubscriptionError.accountChanged { }
+    catch { preconditionFailure("Unexpected reset error") }
+    var reconnected = cliConnection
+    reconnected.subscriptionAccountID = refreshed.accountID
+    do {
+        try await AISubscriptionTransport.reset(reconnected, expectedAccountID: usage.accountID, idempotencyKey: UUID().uuidString)
+        preconditionFailure("Reset accepted stale confirmation after reconnect")
+    } catch AISubscriptionError.accountChanged { }
+    catch { preconditionFailure("Unexpected reset error") }
+    precondition(try! Data(contentsOf: consumeLog) == consumesBeforeChange)
+    try! await AISubscriptionTransport.reset(reconnected, expectedAccountID: refreshed.accountID, idempotencyKey: UUID().uuidString)
+    precondition(try! String(contentsOf: consumeLog, encoding: .utf8) == "fixture@example.invalid\nother@example.invalid\n")
+    try! FileManager.default.removeItem(at: accountFile)
+    _ = try! await AISubscriptionTransport.generate(cliConnection, messages: [.init(role: .user, content: "fixture prompt")]) { delta in
+        await MainActor.run { cliAnswer += delta }
+    }
+    precondition(cliAnswer == "CLI fixture answer")
+    var otherAccount = cliConnection
+    otherAccount.subscriptionAccountID = "different@example.invalid"
+    do {
+        _ = try await AISubscriptionTransport.generate(otherAccount, messages: [.init(role: .user, content: "fixture")]) { _ in }
+        preconditionFailure("Changed subscription account was accepted")
+    } catch { }
+    var claude = cliConnection
+    claude.wireProtocol = .claudeCode
+    let account = try! await AISubscriptionTransport.status(claude)
+    precondition(account.account.contains("fixture@example.invalid"))
+    cliAnswer = ""
+    _ = try! await AISubscriptionTransport.generate(claude, messages: [.init(role: .user, content: "fixture")]) { delta in
+        await MainActor.run { cliAnswer += delta }
+    }
+    precondition(cliAnswer == "CLI fixture answer")
+    cliFinished = true
+}
+wait("Official CLI protocol fixture") { cliFinished }
+print("PASS subscription fixture: account selection, models, usage, reset outcome, account isolation and text-only generation; no real accounts")
+
+var cancelledCLI = false
+let slowCLITask = Task { @MainActor in
+    do {
+        _ = try await AISubscriptionTransport.generate(cliConnection, messages: [.init(role: .user, content: "slow-fixture")]) { _ in }
+        preconditionFailure("Cancelled CLI request completed")
+    } catch { cancelledCLI = true }
+}
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+slowCLITask.cancel()
+wait("Cancel owned CLI process") { cancelledCLI }
+print("PASS subscription cancellation terminates the owned request")
+
+let reconnectPrefs = UserDefaults(suiteName: suite + ".reconnect")!
+defer { reconnectPrefs.removePersistentDomain(forName: suite + ".reconnect") }
+let reconnectConfig = AIConfiguration(preferences: reconnectPrefs)
+precondition(reconnectConfig.save(cliConnection))
+reconnectConfig.setEnabled(true)
+precondition(reconnectConfig.addProviderModels(["fixture-second", "obsolete-model"], from: cliConnection, discoveredUsing: cliConnection) == 2)
+let secondSubscription = reconnectConfig.state.connections.first { $0.model == "fixture-second" }!
+let unavailableSubscription = reconnectConfig.state.connections.first { $0.model == "obsolete-model" }!
+reconnectConfig.select(secondSubscription.id)
+for route in AIRoute.allCases { reconnectConfig.setDefault(secondSubscription.id, for: route) }
+reconnectConfig.recordChatModel(secondSubscription.id)
+let oldReference = AIChatRecord.ModelReference(secondSubscription)
+let reconnectHistory = AIChatHistory(url: cliDirectory.appendingPathComponent("reconnect-history.sqlite"))
+let oldChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration), history: reconnectHistory)
+oldChat.beginChat()
+wait("Prepare old subscription chat") { !oldChat.loadingChat }
+precondition(oldChat.submit("fixture old-account conversation"))
+wait("Save old subscription conversation") { !oldChat.running && oldChat.chatID != nil && !oldChat.chats.isEmpty }
+let oldChatID = oldChat.chatID!
+precondition(oldChat.submit("slow-fixture old-account in-flight turn"))
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(oldChat.running)
+let reconnectResult = reconnectConfig.reconnectSubscription(cliConnection, accountID: "other@example.invalid",
+                                                           models: ["fixture-codex", "fixture-second", "fixture-third"])!
+precondition(reconnectResult.added == 1 && reconnectResult.unavailable == 1)
+precondition(!oldChat.running && !oldChat.matchesCurrentModel && oldChat.currentConnection == nil)
+precondition(!oldChat.submit("must not send old history to the new account"))
+precondition(reconnectConfig.state.selectedID == secondSubscription.id)
+precondition(reconnectConfig.state.lastChatModelID == secondSubscription.id)
+precondition(AIRoute.allCases.allSatisfy { reconnectConfig.state.defaults?[$0] == secondSubscription.id })
+let reconnectedSecond = reconnectConfig.state.connections.first { $0.id == secondSubscription.id }!
+precondition(reconnectedSecond.subscriptionAccountID == "other@example.invalid" && reconnectedSecond.isConfigured)
+precondition(AIChatRecord.ModelReference(reconnectedSecond) != oldReference)
+precondition(reconnectConfig.state.connections.allSatisfy { $0.subscriptionAccountID == "other@example.invalid" })
+precondition(reconnectConfig.state.connections.first { $0.id == unavailableSubscription.id }?.subscriptionEnabled == false)
+let reconnectedRoot = reconnectConfig.state.connections.first { $0.id == cliConnection.id }!
+let repeatedReconnect = reconnectConfig.reconnectSubscription(reconnectedRoot, accountID: "other@example.invalid",
+                                                    models: ["fixture-codex", "fixture-second", "fixture-third"])!
+precondition(repeatedReconnect.added == 0 && reconnectConfig.state.connections.count == 4)
+precondition(Set(reconnectConfig.state.connections.map(\.model)).count == 4)
+precondition(reconnectConfig.reconnectSubscription(cliConnection, accountID: "stale@example.invalid", models: ["fixture-codex"]) == nil)
+let restoredOldChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration), history: reconnectHistory)
+restoredOldChat.beginChat()
+wait("Load subscription chat list") { !restoredOldChat.loadingChat }
+restoredOldChat.openChat(oldChatID)
+wait("Load old subscription conversation") { !restoredOldChat.loadingChat && restoredOldChat.chatID == oldChatID }
+precondition(!restoredOldChat.matchesCurrentModel && !restoredOldChat.submit("must not redirect restored history"))
+try "other@example.invalid".write(to: cliDirectory.appendingPathComponent("active-account"), atomically: true, encoding: .utf8)
+let newAccountChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration))
+precondition(newAccountChat.submit("fixture fresh new-account conversation"))
+wait("New conversation uses stable rebound model") { !newAccountChat.running }
+precondition(newAccountChat.lastAnswer == "CLI fixture answer")
+try FileManager.default.removeItem(at: cliDirectory.appendingPathComponent("active-account"))
+print("PASS subscription reconnect: stable sibling/default IDs, no duplicate import, stale snapshot rejection, unavailable models disabled, in-flight cancellation, old/restored history blocked, fresh conversation allowed")
+
+let generationLog = cliDirectory.appendingPathComponent("generation-accounts")
+let generationBeforeFlip = try String(contentsOf: generationLog, encoding: .utf8)
+try "flip".write(to: cliDirectory.appendingPathComponent("flip-after-read"), atomically: true, encoding: .utf8)
+var generationIdentityFinished = false
+Task { @MainActor in
+    _ = try! await AISubscriptionTransport.generate(cliConnection, messages: [.init(role: .user, content: "fixture process-bound account")]) { _ in }
+    precondition(try! String(contentsOf: generationLog, encoding: .utf8) == generationBeforeFlip + "fixture@example.invalid\n")
+    let beforeRejection = try! Data(contentsOf: generationLog)
+    do {
+        _ = try await AISubscriptionTransport.generate(cliConnection, messages: [.init(role: .user, content: "must not reach new account")]) { _ in }
+        preconditionFailure("Generation accepted a different process account")
+    } catch AISubscriptionError.accountChanged { }
+    catch { preconditionFailure("Unexpected account verification error") }
+    precondition(try! Data(contentsOf: generationLog) == beforeRejection)
+    generationIdentityFinished = true
+}
+wait("Generation verifies the actual app-server account") { generationIdentityFinished }
+try FileManager.default.removeItem(at: cliDirectory.appendingPathComponent("active-account"))
+print("PASS Codex generation account identity: login switches between processes cannot bypass verification; mismatched process never starts a thread")
