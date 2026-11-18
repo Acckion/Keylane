@@ -66,6 +66,7 @@ struct LauncherPage {
         case readingDetail
         case fileResults
         case form
+        case conversation
     }
 
     enum ReturnKey: CaseIterable {

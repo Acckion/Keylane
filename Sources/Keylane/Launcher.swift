@@ -133,7 +133,7 @@ struct Launcher: View {
     private var launcherSurface: some View {
         let results = rows
         let selectedIndex = selectionIndex(in: results)
-        let showsSearchBar = argumentTarget == nil && page?.contentPlacement != .form
+        let showsSearchBar = argumentTarget == nil && page?.contentPlacement != .form && page?.contentPlacement != .conversation
         let compactSurface = model.isCompact && model.presentedLauncherHeight <= model.launcherHeight + 0.5
         return ZStack(alignment: .top) {
             if let target = argumentTarget { argumentEditor(target) }
@@ -176,7 +176,7 @@ struct Launcher: View {
                             }
                             .launcherScrollInsets()
                             .launcherScrollEdgeFade()
-                        case .form: content()
+                        case .form, .conversation: content()
                         case .inset, .fileResults:
                             content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
                         }
@@ -201,7 +201,7 @@ struct Launcher: View {
                 Spacer(minLength: 0)
             } }
             if actions || appMenu || filterOpen { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
-            if !compactSurface { footer.frame(maxHeight: .infinity, alignment: .bottom) }
+            if !compactSurface && page?.contentPlacement != .conversation { footer.frame(maxHeight: .infinity, alignment: .bottom) }
             if showsSearchBar && showsTypeFilter {
                 typeFilter.frame(maxWidth: .infinity, alignment: .topTrailing)
                     .padding(VisualStyle.launcherEdgeInset)
@@ -234,7 +234,9 @@ struct Launcher: View {
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: appMenu)
         .background {
             if rootScriptArguments == nil {
-                Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
+                if page?.contentPlacement != .conversation {
+                    Button("") { toggleMenu(application: false) }.keyboardShortcut("k", modifiers: .command).hidden().accessibilityHidden(true)
+                }
                 Button("") { closeMenus(); model.runCommand(.init(rawValue: "settings"), origin: .menu) }.keyboardShortcut(",", modifiers: .command).hidden().accessibilityHidden(true)
             }
             if let page {
