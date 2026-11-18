@@ -786,3 +786,30 @@ precondition(independentFile.running, "Quick AI default must not cancel a file r
 independentConfig.setDefault(defaultA.id, for: .files)
 precondition(!independentFile.running && independentFile.status == "已取消")
 print("PASS independent model defaults: legacy selection expanded, per-route persistence, File AI routing and cancellation isolation")
+
+let orderingOpenAI = AIProviderPreset.all.first { $0.id == "openai" }!.connection
+let orderingXAI = AIProviderPreset.all.first { $0.id == "xai" }!.connection
+let orderingZAI = AIProviderPreset.all.first { $0.id == "zai" }!.connection
+var hiddenMenuModel = orderingOpenAI
+hiddenMenuModel.id = UUID()
+hiddenMenuModel.name = "Hidden menu model"
+hiddenMenuModel.hiddenFromPicker = true
+var disabledMenuModel = orderingZAI
+disabledMenuModel.id = UUID()
+disabledMenuModel.name = "Unavailable selected model"
+disabledMenuModel.endpoint = "invalid"
+let mixedProviderModels = [orderingZAI, hiddenMenuModel, orderingXAI, disabledMenuModel, orderingOpenAI]
+let orderedMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(orderingOpenAI.id), query: "")
+precondition(orderedMenu.groups.map(\.id) == ["OpenAI", "xAI", "Z.AI"])
+precondition(orderedMenu.choices(inherits: true, allowsLastUsed: true) ==
+             [.inherit, .lastUsed, .model(orderingOpenAI.id), .model(orderingXAI.id), .model(orderingZAI.id)])
+let hiddenSelectedMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(hiddenMenuModel.id), query: "Hidden")
+precondition(hiddenSelectedMenu.groups.flatMap(\.models).map(\.id) == [hiddenMenuModel.id])
+precondition(hiddenSelectedMenu.choices(inherits: false, allowsLastUsed: false) == [.model(hiddenMenuModel.id)])
+let unavailableSelectedMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(disabledMenuModel.id), query: "")
+precondition(unavailableSelectedMenu.groups.flatMap(\.models).contains { $0.id == disabledMenuModel.id })
+precondition(!unavailableSelectedMenu.choices(inherits: false, allowsLastUsed: false).contains(.model(disabledMenuModel.id)))
+let filteredMenu = AIModelMenuCatalog(connections: mixedProviderModels, selection: .model(orderingOpenAI.id), query: "xAI")
+precondition(filteredMenu.groups.map(\.id) == ["xAI"])
+precondition(filteredMenu.choices(inherits: false, allowsLastUsed: false) == [.model(orderingXAI.id)])
+print("PASS model menu ordering: mixed-case provider groups and keyboard share order; search, hidden selection, disabled items and special choices remain consistent")

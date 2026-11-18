@@ -1,9 +1,5 @@
 import SwiftUI
 
-enum AIModelChoice: Hashable {
-    case model(UUID), lastUsed, inherit
-}
-
 /// Shared searchable model menu for every AI surface. Special choices belong to
 /// the calling surface; models, visibility, keyboard handling and metadata do not.
 struct AIModelPicker: View {
@@ -48,18 +44,11 @@ private struct AIModelMenu: View {
     @State private var scrollTarget: AIModelChoice?
     @FocusState private var searchFocused: Bool
 
-    private var models: [AIConnection] {
-        configuration.state.connections.filter {
-            ($0.isConfigured && $0.hiddenFromPicker != true || selection == .model($0.id)) &&
-                (query.isEmpty || ($0.displayName + " " + $0.model + " " + $0.providerLabel).localizedCaseInsensitiveContains(query))
-        }.sorted {
-            $0.providerLabel == $1.providerLabel
-                ? $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
-                : $0.providerLabel.localizedStandardCompare($1.providerLabel) == .orderedAscending
-        }
+    private var catalog: AIModelMenuCatalog {
+        AIModelMenuCatalog(connections: configuration.state.connections, selection: selection, query: query)
     }
     private var choices: [AIModelChoice] {
-        (inheritTitle == nil ? [] : [.inherit]) + (allowsLastUsed ? [.lastUsed] : []) + models.filter(\.isConfigured).map { .model($0.id) }
+        catalog.choices(inherits: inheritTitle != nil, allowsLastUsed: allowsLastUsed)
     }
     private var inspected: AIConnection? {
         guard case .model(let id) = highlighted ?? selection else { return nil }
@@ -67,6 +56,7 @@ private struct AIModelMenu: View {
     }
 
     var body: some View {
+        let snapshot = catalog
         VStack(spacing: 0) {
             TextField("搜索模型、提供商…", text: $query).textFieldStyle(.plain)
                 .focused($searchFocused).padding(14)
@@ -77,11 +67,10 @@ private struct AIModelMenu: View {
                         LazyVStack(alignment: .leading, spacing: 3) {
                             if let inheritTitle { row(.inherit, title: inheritTitle, symbol: "arrow.turn.down.right") }
                             if allowsLastUsed { row(.lastUsed, title: "上次使用的模型", symbol: "clock") }
-                            if models.isEmpty { SettingsDescription("没有匹配的可用模型").padding(12) }
-                            let groups = Dictionary(grouping: models, by: \.providerLabel)
-                            ForEach(groups.keys.sorted(), id: \.self) { provider in
-                                SettingsDescription(provider).padding(.top, 10).padding(.horizontal, 10)
-                                ForEach(groups[provider] ?? []) { model in
+                            if snapshot.groups.isEmpty { SettingsDescription("没有匹配的可用模型").padding(12) }
+                            ForEach(snapshot.groups) { group in
+                                SettingsDescription(group.id).padding(.top, 10).padding(.horizontal, 10)
+                                ForEach(group.models) { model in
                                     row(.model(model.id), title: model.displayName, subtitle: model.model,
                                         enabled: model.isConfigured)
                                 }
