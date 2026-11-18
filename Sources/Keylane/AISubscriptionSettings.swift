@@ -7,6 +7,14 @@ struct AISubscriptionSettings: View {
     @State private var usageTarget: AIConnection?
     @State private var status: [AIWireProtocol: String] = [:]
     @State private var checks: [AIWireProtocol: Task<Void, Never>] = [:]
+    private struct Reconnection: Identifiable {
+        let id = UUID()
+        let connection: AIConnection
+        let account: AISubscriptionStatus
+        let models: [String]
+    }
+    @State private var reconnection: Reconnection?
+    @State private var confirmReconnection = false
 
     var body: some View {
         SettingsGroup("本地 AI 订阅") {
@@ -41,13 +49,55 @@ struct AISubscriptionSettings: View {
             AISubscriptionAdvanced(connection: draft, configuration: configuration)
         }
         .sheet(item: $usageTarget) { connection in AISubscriptionUsage(connection: connection) }
-        .onDisappear { for check in checks.values { check.cancel() }; checks = [:] }
+        .onDisappear { for check in checks.values { check.cancel() }; checks = [:]; reconnection = nil }
+        .confirmationDialog("切换订阅账户到 \(reconnection?.account.accountID ?? "")？", isPresented: $confirmReconnection,
+                            titleVisibility: .visible) {
+            Button("切换账户") {
+                guard let pending = reconnection else { return }
+                confirm(pending)
+                reconnection = nil
+            }
+            Button("取消", role: .cancel) {
+                if let pending = reconnection { status[pending.connection.protocolKind] = "账户切换已取消，原连接保持原账户。" }
+                reconnection = nil
+            }
+        } message: {
+            Text("现有模型和默认设置将绑定新账户。在途请求会取消，旧聊天不能向新账户续发，请新建对话。旧用量和重置确认须重新获取。")
+        }
     }
 
     private func configured(_ kind: AIWireProtocol) -> AIConnection {
-        configuration.state.connections.first { $0.protocolKind == kind } ??
+        configuration.state.connections.first { $0.protocolKind == kind && $0.subscriptionEnabled == true } ??
+            configuration.state.connections.first { $0.protocolKind == kind } ??
             AIConnection(name: kind == .codex ? "ChatGPT Account" : "Claude Account",
                          model: kind == .codex ? "default" : "sonnet", wireProtocol: kind)
+    }
+
+    private func confirm(_ pending: Reconnection) {
+        let kind = pending.connection.protocolKind
+        checks[kind]?.cancel()
+        checks[kind] = Task { @MainActor in
+            do {
+                let active = try await AISubscriptionTransport.status(pending.connection)
+                guard !Task.isCancelled else { return }
+                guard active.accountID == pending.account.accountID else { throw AISubscriptionError.accountChanged }
+                apply(pending)
+            } catch {
+                guard !Task.isCancelled else { return }
+                status[kind] = error.localizedDescription
+            }
+            checks[kind] = nil
+        }
+    }
+
+    private func apply(_ pending: Reconnection) {
+        let kind = pending.connection.protocolKind
+        guard let result = configuration.reconnectSubscription(pending.connection, accountID: pending.account.accountID,
+                                                               models: pending.models) else {
+            status[kind] = "配置已变化，请重新检查账户。"
+            return
+        }
+        status[kind] = pending.account.account + (result.unavailable == 0 ? "" : " · \(result.unavailable) 个旧模型不可用，已停用。")
     }
 
     private func check(_ connection: AIConnection) {
@@ -58,16 +108,13 @@ struct AISubscriptionSettings: View {
                 let account = try await AISubscriptionTransport.status(connection)
                 let models = try await AISubscriptionTransport.models(connection)
                 guard !Task.isCancelled else { return }
-                var configured = connection
-                configured.subscriptionAccountID = account.accountID
-                if kind == .codex && configured.model == "default" {
-                    guard let model = models.first else { throw AISubscriptionError.failed }
-                    configured.model = model
-                }
-                _ = configuration.save(configured, selectAsDefault: false)
-                _ = configuration.addProviderModels(models, from: configured, discoveredUsing: configured)
-                guard !Task.isCancelled else { return }
-                status[kind] = account.account
+                guard !account.accountID.isEmpty, !models.isEmpty else { throw AISubscriptionError.failed }
+                let pending = Reconnection(connection: connection, account: account, models: models)
+                if let previous = connection.subscriptionAccountID, !previous.isEmpty, previous != account.accountID {
+                    reconnection = pending
+                    confirmReconnection = true
+                    status[kind] = "账户已变化，等待确认切换。"
+                } else { apply(pending) }
             } catch {
                 guard !Task.isCancelled else { return }
                 status[kind] = error.localizedDescription

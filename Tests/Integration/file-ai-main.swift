@@ -675,3 +675,58 @@ RunLoop.current.run(until: Date().addingTimeInterval(0.15))
 slowCLITask.cancel()
 wait("Cancel owned CLI process") { cancelledCLI }
 print("PASS subscription cancellation terminates the owned request")
+
+let reconnectPrefs = UserDefaults(suiteName: suite + ".reconnect")!
+defer { reconnectPrefs.removePersistentDomain(forName: suite + ".reconnect") }
+let reconnectConfig = AIConfiguration(preferences: reconnectPrefs)
+precondition(reconnectConfig.save(cliConnection))
+reconnectConfig.setEnabled(true)
+precondition(reconnectConfig.addProviderModels(["fixture-second", "obsolete-model"], from: cliConnection, discoveredUsing: cliConnection) == 2)
+let secondSubscription = reconnectConfig.state.connections.first { $0.model == "fixture-second" }!
+let unavailableSubscription = reconnectConfig.state.connections.first { $0.model == "obsolete-model" }!
+reconnectConfig.select(secondSubscription.id)
+for route in AIRoute.allCases { reconnectConfig.setDefault(secondSubscription.id, for: route) }
+reconnectConfig.recordChatModel(secondSubscription.id)
+let oldReference = AIChatRecord.ModelReference(secondSubscription)
+let reconnectHistory = AIChatHistory(url: cliDirectory.appendingPathComponent("reconnect-history.sqlite"))
+let oldChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration), history: reconnectHistory)
+oldChat.beginChat()
+wait("Prepare old subscription chat") { !oldChat.loadingChat }
+precondition(oldChat.submit("fixture old-account conversation"))
+wait("Save old subscription conversation") { !oldChat.running && oldChat.chatID != nil && !oldChat.chats.isEmpty }
+let oldChatID = oldChat.chatID!
+precondition(oldChat.submit("slow-fixture old-account in-flight turn"))
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(oldChat.running)
+let reconnectResult = reconnectConfig.reconnectSubscription(cliConnection, accountID: "other@example.invalid",
+                                                           models: ["fixture-codex", "fixture-second", "fixture-third"])!
+precondition(reconnectResult.added == 1 && reconnectResult.unavailable == 1)
+precondition(!oldChat.running && !oldChat.matchesCurrentModel && oldChat.currentConnection == nil)
+precondition(!oldChat.submit("must not send old history to the new account"))
+precondition(reconnectConfig.state.selectedID == secondSubscription.id)
+precondition(reconnectConfig.state.lastChatModelID == secondSubscription.id)
+precondition(AIRoute.allCases.allSatisfy { reconnectConfig.state.defaults?[$0] == secondSubscription.id })
+let reconnectedSecond = reconnectConfig.state.connections.first { $0.id == secondSubscription.id }!
+precondition(reconnectedSecond.subscriptionAccountID == "other@example.invalid" && reconnectedSecond.isConfigured)
+precondition(AIChatRecord.ModelReference(reconnectedSecond) != oldReference)
+precondition(reconnectConfig.state.connections.allSatisfy { $0.subscriptionAccountID == "other@example.invalid" })
+precondition(reconnectConfig.state.connections.first { $0.id == unavailableSubscription.id }?.subscriptionEnabled == false)
+let reconnectedRoot = reconnectConfig.state.connections.first { $0.id == cliConnection.id }!
+let repeatedReconnect = reconnectConfig.reconnectSubscription(reconnectedRoot, accountID: "other@example.invalid",
+                                                    models: ["fixture-codex", "fixture-second", "fixture-third"])!
+precondition(repeatedReconnect.added == 0 && reconnectConfig.state.connections.count == 4)
+precondition(Set(reconnectConfig.state.connections.map(\.model)).count == 4)
+precondition(reconnectConfig.reconnectSubscription(cliConnection, accountID: "stale@example.invalid", models: ["fixture-codex"]) == nil)
+let restoredOldChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration), history: reconnectHistory)
+restoredOldChat.beginChat()
+wait("Load subscription chat list") { !restoredOldChat.loadingChat }
+restoredOldChat.openChat(oldChatID)
+wait("Load old subscription conversation") { !restoredOldChat.loadingChat && restoredOldChat.chatID == oldChatID }
+precondition(!restoredOldChat.matchesCurrentModel && !restoredOldChat.submit("must not redirect restored history"))
+try "other@example.invalid".write(to: cliDirectory.appendingPathComponent("active-account"), atomically: true, encoding: .utf8)
+let newAccountChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration))
+precondition(newAccountChat.submit("fixture fresh new-account conversation"))
+wait("New conversation uses stable rebound model") { !newAccountChat.running }
+precondition(newAccountChat.lastAnswer == "CLI fixture answer")
+try FileManager.default.removeItem(at: cliDirectory.appendingPathComponent("active-account"))
+print("PASS subscription reconnect: stable sibling/default IDs, no duplicate import, stale snapshot rejection, unavailable models disabled, in-flight cancellation, old/restored history blocked, fresh conversation allowed")

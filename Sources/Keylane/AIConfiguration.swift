@@ -129,6 +129,54 @@ final class AIConfiguration: ObservableObject {
         return added
     }
 
+    /// Publish a whole subscription catalog together. IDs/defaults survive account changes,
+    /// while requestIdentity changes so old conversations and in-flight work cannot follow.
+    func reconnectSubscription(_ snapshot: AIConnection, accountID: String, models: [String]) -> (added: Int, unavailable: Int)? {
+        let supported = Set(models.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        guard snapshot.protocolKind.isSubscription, !accountID.isEmpty, !supported.isEmpty,
+              state.connections.contains(snapshot) else { return nil }
+        let owner = snapshot.credentialOwnerID ?? snapshot.id
+        var updated = state
+        var retained = [String: UUID]()
+        var aliases = [UUID: UUID]()
+        var unavailable = 0
+        for index in updated.connections.indices {
+            var member = updated.connections[index]
+            guard (member.credentialOwnerID ?? member.id) == owner,
+                  member.protocolKind == snapshot.protocolKind else { continue }
+            if member.model == "default", member.id == snapshot.id { member.model = supported.sorted()[0] }
+            if let existing = retained[member.model] { aliases[member.id] = existing; continue }
+            retained[member.model] = member.id
+            member.subscriptionAccountID = accountID
+            member.executablePath = snapshot.executablePath
+            member.accountFolder = snapshot.accountFolder
+            member.subscriptionEnabled = snapshot.subscriptionEnabled == true && supported.contains(member.model)
+            if !supported.contains(member.model) { member.hiddenFromPicker = true; unavailable += 1 }
+            updated.connections[index] = member
+        }
+        updated.connections.removeAll { aliases[$0.id] != nil }
+        if updated.selectedID == nil { updated.selectedID = aliases[snapshot.id] ?? snapshot.id }
+        if let selected = updated.selectedID { updated.selectedID = aliases[selected] ?? selected }
+        updated.defaults = updated.defaults?.mapValues { aliases[$0] ?? $0 }
+        if let last = updated.lastChatModelID { updated.lastChatModelID = aliases[last] ?? last }
+        var added = 0
+        for model in supported.sorted() where retained[model] == nil {
+            var member = snapshot
+            member.id = UUID()
+            member.model = model
+            member.name = snapshot.providerLabel + " · " + model
+            member.credentialOwnerID = owner
+            member.subscriptionAccountID = accountID
+            member.contextTokens = nil
+            member.supportsImages = nil
+            member.supportsTools = nil
+            updated.connections.append(member)
+            added += 1
+        }
+        persist(updated)
+        return (added, unavailable)
+    }
+
     func setSubscriptionEnabled(_ connection: AIConnection, enabled: Bool) {
         var updated = state
         let owner = connection.credentialOwnerID ?? connection.id
