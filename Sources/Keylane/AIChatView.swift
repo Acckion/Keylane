@@ -3,13 +3,6 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
-final class AIChatPresentation: ObservableObject {
-    @Published var sidebarVisible = true
-    @Published var settingsVisible = false
-    @Published var actionsVisible = false
-    @Published var fullWidth = false
-}
-
 struct AIChatView: View {
     enum Column { case sidebar, conversation, settings }
     var column: Column = .conversation

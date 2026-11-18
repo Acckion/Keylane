@@ -2,6 +2,13 @@ import AppKit
 import Combine
 import SwiftUI
 
+final class AIChatPresentation: ObservableObject {
+    @Published var sidebarVisible = true
+    @Published var settingsVisible = false
+    @Published var actionsVisible = false
+    @Published var fullWidth = false
+}
+
 final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private let controller: QuickAIController
     private let configuration: AIConfiguration
@@ -68,8 +75,8 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
             chat.center()
             window = chat
             updateWindowTitle()
-            inspectorChanges = presentation.$settingsVisible.removeDuplicates().dropFirst().sink { [weak self] _ in
-                self?.updateToolbarSections()
+            inspectorChanges = presentation.$settingsVisible.removeDuplicates().dropFirst().sink { [weak self] visible in
+                self?.updateToolbarSections(settingsVisible: visible)
             }
         }
         guard let window else { return }
@@ -80,10 +87,14 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarItemIdentifiers(settingsVisible: presentation.settingsVisible)
+    }
+
+    private func toolbarItemIdentifiers(settingsVisible: Bool) -> [NSToolbarItem.Identifier] {
         var items: [NSToolbarItem.Identifier] = [.init("chat.sidebar"), .flexibleSpace, .init("chat.new"),
             .init("chat.history-separator"), .flexibleSpace,
             .init("chat.actions"), .init("chat.settings")]
-        if presentation.settingsVisible {
+        if settingsVisible {
             items += [.init("chat.inspector-separator"), .init("chat.inspector-title"), .flexibleSpace, .init("chat.inspector-close")]
         }
         return items
@@ -132,9 +143,9 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
         if window?.subtitle != subtitle { window?.subtitle = subtitle }
     }
 
-    private func updateToolbarSections() {
+    private func updateToolbarSections(settingsVisible: Bool) {
         guard let toolbar = window?.toolbar else { return }
-        let desired = toolbarDefaultItemIdentifiers(toolbar)
+        let desired = toolbarItemIdentifiers(settingsVisible: settingsVisible)
         guard toolbar.items.map(\.itemIdentifier) != desired else { return }
         while !toolbar.items.isEmpty { toolbar.removeItem(at: 0) }
         for (index, identifier) in desired.enumerated() { toolbar.insertItem(withItemIdentifier: identifier, at: index) }
