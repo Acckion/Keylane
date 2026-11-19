@@ -46,12 +46,7 @@ enum QuickAILauncher {
         let board = NSPasteboard.general
         board.clearContents()
         guard board.setString(answer, forType: .string) else { return }
-        if formatted {
-            let attributed = (try? AttributedString(markdown: answer)).map(NSAttributedString.init) ?? NSAttributedString(string: answer)
-            if let data = try? attributed.data(from: NSRange(location: 0, length: attributed.length), documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
-                board.setData(data, forType: .rtf)
-            }
-        }
+        if formatted, let data = AIResponseFormatting.rtf(answer) { board.setData(data, forType: .rtf) }
         if !copyOnly, let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil {
             delegate.pasteIntoPreviousApplication(clipboardGeneration: board.changeCount)
         }

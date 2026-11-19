@@ -243,6 +243,21 @@ RunLoop.current.run(until: Date().addingTimeInterval(0.7))
 precondition(!quick.isInChat && !quick.running && quick.turns.isEmpty)
 print("PASS AI Chat handoff: same active turn after launcher leaves; closing discards the session and late results")
 
+let formattedResponse = AIResponseFormatting.attributed("# Heading\n**bold** and *italic* with `code` and [link](https://example.invalid)\n- item")
+let richString = formattedResponse.string as NSString
+let boldFont = formattedResponse.attribute(.font, at: richString.range(of: "bold").location, effectiveRange: nil) as! NSFont
+let italicFont = formattedResponse.attribute(.font, at: richString.range(of: "italic").location, effectiveRange: nil) as! NSFont
+let codeFont = formattedResponse.attribute(.font, at: richString.range(of: "code").location, effectiveRange: nil) as! NSFont
+precondition(NSFontManager.shared.traits(of: boldFont).contains(.boldFontMask))
+precondition(NSFontManager.shared.traits(of: italicFont).contains(.italicFontMask))
+precondition(codeFont.fontDescriptor.symbolicTraits.contains(.monoSpace))
+precondition(formattedResponse.string.contains("• item"))
+precondition(formattedResponse.attribute(.link, at: richString.range(of: "link").location, effectiveRange: nil) as? URL == URL(string: "https://example.invalid"))
+let richData = AIResponseFormatting.rtf("**rich text**")!
+let richRoundTrip = try NSAttributedString(data: richData, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+precondition(richRoundTrip.string == "rich text")
+print("PASS formatted paste: real heading/bold/italic/code/link styles and RTF round trip")
+
 // Video parity: real file parsing and an isolated, simulated conversation lifecycle.
 let videoDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-video-" + UUID().uuidString)
 try FileManager.default.createDirectory(at: videoDirectory, withIntermediateDirectories: true)
