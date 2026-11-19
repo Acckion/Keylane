@@ -59,10 +59,7 @@ enum QuickAILauncher {
                 }
             ]
         }
-        page.enter = { query in
-            guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return controller.submit(query) ? "" : query
-        }
+        page.enter = controller.consumeEntry
         page.fullBleed = true
         return page
     }

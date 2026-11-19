@@ -80,7 +80,12 @@ precondition(interaction.rootTab && interaction.rootFallback && !interaction.cha
 interaction.rootTab = false
 interaction.rootFallback = false
 let disabledQuickEntry = AIInteractionPreferences(preferences: prefs)
-precondition(!disabledQuickEntry.rootTab && !disabledQuickEntry.rootFallback)
+precondition(!disabledQuickEntry.rootTab && !disabledQuickEntry.rootFallback && !disabledQuickEntry.showsRootHint)
+interaction.rootTab = true
+precondition(interaction.showsRootHint, "Tab must advertise itself even when fallback results are disabled")
+interaction.rootTab = false
+interaction.rootFallback = true
+precondition(interaction.showsRootHint, "The standalone hint remains available without Tab")
 interaction.rootTab = true
 interaction.rootFallback = true
 interaction.chatReturn = true
@@ -182,7 +187,8 @@ settings.select(second.id)
 let quick = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), readKey: { _ in nil })
 FixtureProtocol.mode = "stream"
 precondition(!quick.submit("  "))
-precondition(quick.submit("first") && !quick.submit("while busy"))
+precondition(quick.consumeEntry("   ") == nil)
+precondition(quick.consumeEntry("first") == "" && quick.consumeEntry("while busy") == "while busy")
 wait("Quick AI first answer") { !quick.running }
 precondition(quick.turns.count == 1 && quick.turns[0].complete && quick.lastAnswer == "你好")
 let followUp = quick.messages(for: "second")
@@ -211,6 +217,17 @@ quick.leaveLauncher()
 precondition(quick.isInChat && quick.running && quick.turns.first?.id == transferredTurn)
 wait("AI Chat receives active Quick AI answer") { !quick.running }
 precondition(quick.turns.count == 1 && quick.turns.first?.id == transferredTurn && quick.lastAnswer == "你好")
+let previousTurnCount = quick.turns.count
+precondition(quick.consumeEntry("Tab after opening chat") == "")
+precondition(quick.turns.count == previousTurnCount + 1 && quick.turns.last?.question == "Tab after opening chat")
+precondition(quick.consumeEntry("retain rejected draft") == "retain rejected draft")
+precondition(quick.turns.count == previousTurnCount + 1, "A busy submission must not create a duplicate turn")
+wait("Tab immediately sends into the existing chat") { !quick.running }
+precondition(quick.turns.last?.complete == true)
+let oversizedDraft = String(repeating: "a", count: 32_001)
+precondition(quick.consumeEntry(oversizedDraft) == oversizedDraft)
+precondition(quick.turns.count == previousTurnCount + 1)
+print("PASS Quick AI entry: immediate send, clear on acceptance, preserve on busy/oversize rejection, including an existing chat")
 FixtureProtocol.mode = "slow"
 precondition(quick.submit("close while generating"))
 quick.closeChat()

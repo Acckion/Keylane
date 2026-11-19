@@ -36,8 +36,11 @@ enum AIModule {
             keywords: ["ask", "AI", "快速问答", "询问 AI"], destination: .action, settingsPage: "ai"
         ), available: { configuration.state.connection(for: .quick) != nil }, acceptsFallbackQuery: true,
             fallbackAvailable: { interaction.rootFallback }, arguments: .init(count: 0...1) { [weak model] origin, arguments in
-                if quickAI.isInChat { openChat(arguments.first) }
-                else { model?.openPage(QuickAILauncher.pageID, origin: origin, initialQuery: arguments.first) }
+                if quickAI.isInChat {
+                    let draft = arguments.first.flatMap(quickAI.consumeEntry)
+                    if draft == "" { model?.query = "" }
+                    openChat(draft)
+                } else { model?.openPage(QuickAILauncher.pageID, origin: origin, initialQuery: arguments.first) }
             })
         let chatCommand = LauncherModule.Command(declaration: .init(
             id: .init(rawValue: "ai-chat"), title: "AI Chat", detail: "打开独立聊天窗口", symbol: "bubble.left.and.bubble.right",
@@ -79,7 +82,8 @@ enum AIModule {
             ViewObservation.changes(configuration.$state.map(\.enabled)),
             ViewObservation.changes(configuration.$state.map(\.availableConnectionIDs)),
             ViewObservation.changes(library.$commands),
-            ViewObservation.changes(interaction.$rootFallback)
+            ViewObservation.changes(interaction.$rootFallback),
+            ViewObservation.changes(interaction.$rootTab)
         ], dynamicCommandSettings: .init(model: model, items: { library.commands }, title: \.title,
                                         commandID: \.commandID, updates: { [ViewObservation.changes(library.$commands)] },
                                         entry: { $0.settingsEntry(model: $1) }))
@@ -114,9 +118,9 @@ private struct AIInteractionSettings: View {
 
     var body: some View {
         SettingsGroup("Quick AI 与聊天") {
-            toggle("在主搜索中显示 Quick AI 提示", detail: "显示右侧入口，并在没有匹配结果时提供备选命令。", value: $preferences.rootFallback)
+            toggle("在主搜索中显示 Quick AI 提示", detail: "没有匹配结果时提供备选命令；启用 Tab 时始终显示右侧快捷提示。", value: $preferences.rootFallback)
             Divider()
-            toggle("在主搜索中按 Tab 打开 Quick AI", detail: "直接使用搜索文字提问，有匹配结果时同样可用。", value: $preferences.rootTab)
+            toggle("在主搜索中按 Tab 询问 Quick AI", detail: "直接发送搜索文字，无需再次按回车；有匹配结果时同样可用。", value: $preferences.rootTab)
             Divider()
             SettingsPicker("AI Chat 发送键", selection: $preferences.chatReturn) {
                 Text("⌘ Return").tag(false)

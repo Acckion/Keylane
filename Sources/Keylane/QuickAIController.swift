@@ -72,6 +72,12 @@ final class QuickAIController: ObservableObject {
         return currentConnection.map(AIChatRecord.ModelReference.init) == conversationModel
     }
 
+    /// A nonempty entry is a submission, not a composer prefill. Keep it only if rejected.
+    func consumeEntry(_ input: String) -> String? {
+        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return submit(input) ? "" : input
+    }
+
     @discardableResult
     func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil) -> Bool {
         guard !running, !loadingChat, configuration.state.enabled,

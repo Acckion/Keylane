@@ -544,13 +544,14 @@ struct Launcher: View {
                 case .none:
                     Spacer(minLength: 0)
                 }
-                if model.pageID == .root, model.aiInteraction.rootFallback, quickAIEntryEnabled,
+                if model.pageID == .root, model.aiInteraction.showsRootHint, quickAIEntryEnabled,
                    !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Button { _ = launchQuickAI(model.query) } label: {
                         HStack(spacing: 6) {
                             Text("Quick AI")
                             if model.aiInteraction.rootTab { Keycap(text: "⇥") }
                         }.font(.system(size: 13)).foregroundStyle(.secondary)
+                        .fixedSize()
                     }
                     .buttonStyle(.plain)
                     .help("使用搜索文字询问 AI")

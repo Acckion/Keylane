@@ -9,6 +9,8 @@ final class AIInteractionPreferences: ObservableObject {
         static let chatFloating = "ai.chat.floating"
     }
 
+    var showsRootHint: Bool { rootTab || rootFallback }
+
     @Published var rootFallback: Bool { didSet { preferences.set(rootFallback, forKey: Key.rootFallback) } }
     @Published var rootTab: Bool { didSet { preferences.set(rootTab, forKey: Key.rootTab) } }
     @Published var chatReturn: Bool { didSet { preferences.set(chatReturn, forKey: Key.chatReturn) } }
