@@ -65,8 +65,13 @@ struct AIChatView: View {
             if column == .conversation, !transcriptSearch.isEmpty { updateSearch(turns) }
         }
         .onChange(of: transcriptSearch) { _, _ in searchIndex = 0; updateSearch(controller.turns) }
+        .onReceive(composer.focusRequested) { _ in
+            if column == .conversation { editorFocused = true }
+        }
         .onReceive(controller.historyOpened) { _ in
-            if column == .conversation { composer.text = ""; transcriptSearch = ""; searchIndex = 0 }
+            if column == .conversation {
+                composer.text = ""; transcriptSearch = ""; searchIndex = 0; editorFocused = true
+            }
         }
         .onChange(of: controller.chatID) { old, current in
             if old != nil && current == nil { composer.text = "" }
@@ -155,7 +160,7 @@ struct AIChatView: View {
             List(selection: Binding<UUID?>(get: { controller.chatID }, set: { id in
                 guard let id else { return }
                 controller.openChat(id)
-                editorFocused = true
+                composer.focusRequested.send()
             })) {
                 let pinned = visibleChats.filter { $0.pinned && !$0.archived }
                 if !pinned.isEmpty {
@@ -387,7 +392,7 @@ struct AIChatView: View {
         composer.text = ""
         transcriptSearch = ""
         presentation.actionsVisible = false
-        editorFocused = true
+        composer.focusRequested.send()
     }
 
     private func newChat() {
@@ -396,7 +401,7 @@ struct AIChatView: View {
         searchMatches = []
         searchIndex = 0
         composer.text = ""
-        editorFocused = true
+        composer.focusRequested.send()
         presentation.actionsVisible = false
     }
     private func submit() {
@@ -414,7 +419,7 @@ struct AIChatView: View {
             return
         }
         composer.text += (composer.text.isEmpty ? "" : "\n\n") + text
-        editorFocused = true
+        composer.focusRequested.send()
     }
     private func addTextFile() {
         let panel = NSOpenPanel()

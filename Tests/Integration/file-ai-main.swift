@@ -90,6 +90,13 @@ precondition(composer.text.isEmpty)
 composer.offer(" 初始问题 ")
 composer.offer("另一个入口的问题")
 precondition(composer.text == " 初始问题 ", "Opening a second entry preserves the existing unsent draft")
+let focusComposer = AIChatComposer()
+var focusRequests = 0
+let focusObserver = focusComposer.focusRequested.sink { focusRequests += 1 }
+focusComposer.text = "保留草稿"
+focusComposer.focusRequested.send()
+precondition(focusRequests == 1 && focusComposer.text == "保留草稿")
+focusObserver.cancel()
 print("PASS Quick AI and chat settings persistence and non-destructive draft handoff")
 let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FixtureProtocol.self]
 let fresh = AIConfiguration(preferences: prefs)

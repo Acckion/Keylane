@@ -26,6 +26,8 @@ final class AIInteractionPreferences: ObservableObject {
 
 final class AIChatComposer: ObservableObject {
     @Published var text = ""
+    /// Native toolbar and separate hosting columns request focus in the actual composer column.
+    let focusRequested = PassthroughSubject<Void, Never>()
 
     func offer(_ prompt: String) {
         guard text.isEmpty, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }

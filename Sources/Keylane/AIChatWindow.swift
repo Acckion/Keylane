@@ -157,7 +157,12 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
     @objc private func toggleSidebar() { presentation.sidebarVisible.toggle() }
     @objc private func toggleSettings() { presentation.settingsVisible.toggle(); presentation.actionsVisible = false }
     @objc private func toggleActions() { presentation.actionsVisible.toggle() }
-    @objc private func newChat() { controller.reset(); composer.text = ""; presentation.actionsVisible = false }
+    @objc private func newChat() {
+        controller.reset()
+        composer.text = ""
+        presentation.actionsVisible = false
+        composer.focusRequested.send()
+    }
 
     func windowWillClose(_ notification: Notification) {
         guard let closed = notification.object as? NSWindow, closed === window else { return }
