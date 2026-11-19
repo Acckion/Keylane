@@ -20,6 +20,12 @@ struct AIChatView: View {
     @State private var renamedTitle = ""
     @State private var pendingModel: UUID?
     @State private var attachmentError: String?
+    @State private var editingTurn: QuickAIController.Turn?
+    @State private var editedQuestion = ""
+    @State private var transcriptSearch = ""
+    @State private var searchIndex = 0
+    @State private var searchMatches: [UUID] = []
+    @FocusState private var transcriptSearchFocused: Bool
 
     private var visibleChats: [AIChatSummary] {
         controller.chats.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
@@ -55,20 +61,26 @@ struct AIChatView: View {
         }
         .task { if column == .conversation { editorFocused = true } }
         .onChange(of: search) { _, value in if !value.isEmpty { showsArchive = true } }
+        .onReceive(controller.$turns.throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)) { turns in
+            if column == .conversation, !transcriptSearch.isEmpty { updateSearch(turns) }
+        }
+        .onChange(of: transcriptSearch) { _, _ in searchIndex = 0; updateSearch(controller.turns) }
         .onReceive(controller.historyOpened) { _ in
-            if column == .conversation { composer.text = "" }
+            if column == .conversation { composer.text = ""; transcriptSearch = ""; searchIndex = 0 }
         }
         .onChange(of: controller.chatID) { old, current in
             if old != nil && current == nil { composer.text = "" }
         }
         .onExitCommand {
             if presentation.actionsVisible { presentation.actionsVisible = false }
+            else if presentation.searchVisible { presentation.searchVisible = false }
             else if presentation.settingsVisible { presentation.settingsVisible = false }
             else { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
         }
         .background {
             if column == .conversation { Group {
                 Button("新对话", action: newChat).keyboardShortcut("n", modifiers: .command)
+                Button("搜索当前对话") { presentation.searchVisible.toggle() }.keyboardShortcut("f", modifiers: .command)
                 Button("操作") { presentation.actionsVisible.toggle() }.keyboardShortcut("k", modifiers: .command)
                 Button("聊天设置") { presentation.settingsVisible.toggle() }.keyboardShortcut(",", modifiers: [.command, .shift])
                 Button("发送", action: submit).keyboardShortcut(.return, modifiers: .command).disabled(!canSubmit)
@@ -98,6 +110,27 @@ struct AIChatView: View {
                 renaming = nil
             }
             Button("取消", role: .cancel) { renaming = nil }
+        }
+        .sheet(item: $editingTurn) { turn in
+            VStack(alignment: .leading, spacing: 16) {
+                Text("编辑问题").font(.headline)
+                Text("发送后创建新分支，原对话和后续消息会保留。")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $editedQuestion).font(.body).frame(minHeight: 140)
+                    .padding(8).background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+                    .accessibilityLabel("编辑问题")
+                HStack {
+                    Spacer()
+                    Button("取消") { editingTurn = nil }.keyboardShortcut(.cancelAction)
+                    Button("创建分支并发送") {
+                        if controller.resubmit(turn.id, question: editedQuestion) {
+                            editingTurn = nil
+                            branchCreated()
+                        }
+                    }.keyboardShortcut(.defaultAction)
+                        .disabled(!controller.canRevise || editedQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || editedQuestion.utf8.count > 32_000)
+                }
+            }.padding(24).frame(width: 520)
         }
         .alert("无法添加附件", isPresented: Binding(
             get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } }
@@ -175,8 +208,11 @@ struct AIChatView: View {
 
     private var conversation: some View {
         VStack(spacing: 0) {
+            if presentation.searchVisible { transcriptSearchBar }
             ZStack {
-                AIConversationTranscript(controller: controller, showsEmptyHint: false)
+                AIConversationTranscript(controller: controller, showsEmptyHint: false,
+                    editTurn: { editingTurn = $0; editedQuestion = $0.question },
+                    didBranch: branchCreated, searchTarget: searchTarget)
                     .id(controller.chatID)
                     .frame(maxWidth: presentation.fullWidth ? .infinity : 820)
                 if controller.turns.isEmpty, !controller.loadingChat {
@@ -253,31 +289,19 @@ struct AIChatView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     VStack(alignment: .leading, spacing: 9) {
+                        Text("标题").font(.subheadline).foregroundStyle(.secondary)
+                        TextField("新对话", text: Binding(get: { controller.chatTitle }, set: controller.renameCurrentChat))
+                            .textFieldStyle(.roundedBorder).disabled(controller.loadingChat)
+                    }
+                    VStack(alignment: .leading, spacing: 9) {
                         Text("模型").font(.subheadline).foregroundStyle(.secondary)
-                        Menu {
-                            ForEach(configuration.state.connections.filter { $0.isConfigured && $0.hiddenFromPicker != true }) { connection in
-                                Button {
-                                    guard controller.currentConnection?.id != connection.id else { return }
-                                    if !controller.chooseChatModel(connection.id) { pendingModel = connection.id }
-                                } label: {
-                                    if controller.currentConnection?.id == connection.id {
-                                        Label(connection.displayName, systemImage: "checkmark")
-                                    } else { Text(connection.displayName) }
-                                }
-                            }
-                        } label: {
-                            HStack {
-                                Image(systemName: "cube")
-                                Text(controller.currentConnection?.displayName ?? "选择模型").lineLimit(2)
-                                Spacer()
-                                Image(systemName: "chevron.down").font(.caption)
-                            }
-                        }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden)
-                        .disabled(controller.loadingChat || !configuration.state.enabled)
-                        .padding(12)
-                        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
-                        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.primary.opacity(0.15)) }
+                        AIModelPicker(configuration: configuration, selection: Binding(
+                            get: { controller.currentConnection.map { .model($0.id) } ?? .inherit },
+                            set: { choice in
+                                guard case .model(let id) = choice, controller.currentConnection?.id != id else { return }
+                                if !controller.chooseChatModel(id) { pendingModel = id }
+                            }))
+                            .disabled(controller.running || controller.loadingChat || !configuration.state.enabled)
                         if let connection = controller.currentConnection {
                             Text(connection.providerLabel).font(.caption).foregroundStyle(.secondary)
                         }
@@ -325,8 +349,52 @@ struct AIChatView: View {
         return items
     }
 
+    private func updateSearch(_ turns: [QuickAIController.Turn]) {
+        searchMatches = transcriptSearch.isEmpty ? [] : turns.filter {
+            $0.question.localizedCaseInsensitiveContains(transcriptSearch) || $0.answer.localizedCaseInsensitiveContains(transcriptSearch)
+        }.map(\.id)
+        searchIndex = min(searchIndex, max(0, searchMatches.count - 1))
+    }
+
+    private var searchTarget: UUID? {
+        let matches = searchMatches
+        guard presentation.searchVisible, !transcriptSearch.isEmpty, !matches.isEmpty else { return nil }
+        return matches[min(searchIndex, matches.count - 1)]
+    }
+
+    private var transcriptSearchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("搜索当前对话…", text: $transcriptSearch).textFieldStyle(.plain)
+                .focused($transcriptSearchFocused)
+                .onSubmit { moveSearch(1) }
+            Text(searchMatches.isEmpty ? "0" : "\(min(searchIndex + 1, searchMatches.count))/\(searchMatches.count)")
+                .font(.caption).foregroundStyle(.secondary)
+            Button("上一个", systemImage: "chevron.up") { moveSearch(-1) }.labelStyle(.iconOnly)
+            Button("下一个", systemImage: "chevron.down") { moveSearch(1) }.labelStyle(.iconOnly)
+            Button("关闭搜索", systemImage: "xmark") { presentation.searchVisible = false }.labelStyle(.iconOnly)
+        }.buttonStyle(.bordered).padding(12)
+            .onAppear { transcriptSearchFocused = true }
+    }
+
+    private func moveSearch(_ step: Int) {
+        let count = searchMatches.count
+        guard count > 0 else { return }
+        searchIndex = (searchIndex + step + count) % count
+    }
+
+    private func branchCreated() {
+        composer.text = ""
+        transcriptSearch = ""
+        presentation.actionsVisible = false
+        editorFocused = true
+    }
+
     private func newChat() {
         controller.reset()
+        transcriptSearch = ""
+        searchMatches = []
+        searchIndex = 0
         composer.text = ""
         editorFocused = true
         presentation.actionsVisible = false

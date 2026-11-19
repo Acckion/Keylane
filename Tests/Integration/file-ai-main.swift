@@ -205,6 +205,7 @@ let transferredTurn = quick.turns.first!.id
 quick.beginChat()
 quick.leaveLauncher()
 precondition(quick.isInChat && quick.running && quick.turns.first?.id == transferredTurn)
+precondition(quick.chatTitle == "handoff")
 wait("AI Chat receives active Quick AI answer") { !quick.running }
 precondition(quick.turns.count == 1 && quick.turns.first?.id == transferredTurn && quick.lastAnswer == "你好")
 FixtureProtocol.mode = "slow"
@@ -249,6 +250,7 @@ wait("Chat metadata is persisted independently of generated titles") {
         conversation.chats.first?.title == "重命名后的对话"
 }
 conversation.chatInstructions = "简洁回答，保留技术术语。"
+RunLoop.current.run(until: Date().addingTimeInterval(0.45))
 var instructedRecord: AIChatRecord?
 history.perform({ try $0.load(savedID) }) { instructedRecord = try! $0.get() }
 wait("Additional instructions survive history writes") {
@@ -318,6 +320,66 @@ precondition(recordsOnDisk.map(\.id) == [savedID])
 let permissions = try FileManager.default.attributesOfItem(atPath: historyURL.path)[.posixPermissions] as? NSNumber
 precondition(permissions?.intValue == 0o600)
 print("PASS AI Chat history: lazy SQLite, handoff, reopen, model isolation, interrupted turns, deletion and file permissions")
+
+// A separate database keeps revision tests independent from existing history fixtures.
+let revisionStore = AIChatHistory(url: historyDirectory.appendingPathComponent("revisions.sqlite"))
+let revisions = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
+                                 history: revisionStore, readKey: { _ in nil })
+revisions.beginChat()
+revisions.renameCurrentChat("预先命名 ")
+precondition(revisions.chatTitle == "预先命名 ", "Typing spaces must not collapse the title draft")
+revisions.renameCurrentChat("预先命名")
+revisions.chatInstructions = "仅使用本对话的指令"
+FixtureProtocol.mode = "stream"
+precondition(revisions.chooseChatModel(second.id))
+precondition(revisions.submit("第一问"))
+wait("Revision first turn") { !revisions.running }
+precondition(revisions.submit("第二问"))
+wait("Revision second turn") { !revisions.running }
+let revisionOriginalID = revisions.chatID!
+let originalFirstTurn = revisions.turns[0].id
+let originalSecondTurn = revisions.turns[1].id
+precondition(!revisions.resubmit(originalFirstTurn, question: " "))
+precondition(!revisions.resubmit(originalFirstTurn, question: String(repeating: "a", count: 32_001)))
+precondition(revisions.chatID == revisionOriginalID && revisions.turns.count == 2)
+precondition(revisions.branch(after: originalFirstTurn))
+let explicitBranchID = revisions.chatID!
+precondition(explicitBranchID != revisionOriginalID && revisions.turns.count == 1)
+precondition(revisions.chatInstructions == "仅使用本对话的指令" && revisions.currentConnection?.id == second.id)
+precondition(revisions.submit("分支的追问"))
+precondition(!revisions.branch(after: originalFirstTurn) && !revisions.resubmit(originalFirstTurn))
+wait("Branch follow-up") { !revisions.running }
+precondition(revisions.resubmit(originalFirstTurn, question: "修改后的第一问"))
+let editedBranchID = revisions.chatID!
+precondition(editedBranchID != explicitBranchID && revisions.turns.count == 1)
+precondition(revisions.turns[0].question == "修改后的第一问")
+wait("Edited first turn") { !revisions.running }
+precondition(revisions.messages(for: "下一问").map(\.content) == ["修改后的第一问", "你好", "下一问"])
+revisions.openChat(revisionOriginalID)
+wait("Restore original after editing branch") { !revisions.loadingChat && revisions.chatID == revisionOriginalID }
+precondition(revisions.chatTitle == "预先命名" && revisions.turns.count == 2)
+precondition(revisions.turns[0].id == originalFirstTurn && revisions.turns[1].id == originalSecondTurn)
+precondition(revisions.resubmit(originalSecondTurn))
+let retryBranchID = revisions.chatID!
+precondition(revisions.turns.count == 2 && revisions.turns[0].id == originalFirstTurn)
+wait("Retry second turn in branch") { !revisions.running }
+revisions.renameCurrentChat("重试后的分支")
+var retriedRecord: AIChatRecord?
+revisionStore.perform({ try $0.load(retryBranchID) }) { retriedRecord = try! $0.get() }
+wait("Persist retry branch") { retriedRecord?.content.turns.last?.complete == true }
+precondition(retriedRecord?.content.model == AIChatRecord.ModelReference(second))
+precondition(retriedRecord?.content.instructions == "仅使用本对话的指令")
+let preservedOriginal = try revisionStore.load(revisionOriginalID)
+precondition(preservedOriginal?.content.turns.count == 2)
+let revisionList = try revisionStore.list()
+precondition(revisionList.count == 4)
+precondition(settings.save(movedModel, selectAsDefault: false))
+let invalidRevisionID = revisions.chatID
+precondition(!revisions.resubmit(originalFirstTurn) && !revisions.branch(after: originalFirstTurn))
+precondition(revisions.chatID == invalidRevisionID)
+precondition(settings.save(second, selectAsDefault: false))
+revisions.closeChat()
+print("PASS AI Chat revisions: edit/retry branches, prefix context, original history, names, instructions, busy/invalid/model isolation and persistence")
 
 let commandSession = AITextCommandSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                            readKey: { "fixture-" + $0.id.uuidString })

@@ -16,8 +16,9 @@ final class QuickAIController: ObservableObject {
     @Published private(set) var chatID: UUID?
     @Published private(set) var loadingChat = false
     @Published private(set) var historyError = ""
+    @Published private(set) var chatTitle = ""
     @Published var chatInstructions = "" {
-        didSet { if chatInstructions != oldValue && !restoringChat { saveChat() } }
+        didSet { if chatInstructions != oldValue && !restoringChat { scheduleChatSave() } }
     }
     /// Emitted after successfully restoring history, independently of first-send ID allocation.
     let historyOpened = PassthroughSubject<UUID, Never>()
@@ -30,6 +31,7 @@ final class QuickAIController: ObservableObject {
     private let readKey: @Sendable (AIConnection) throws -> String?
     private var configurationChanges: AnyCancellable?
     private var task: Task<Void, Never>?
+    private var pendingSave: Task<Void, Never>?
     private var activeID: UUID?
     private let turnLimit = 24
     private(set) var isInChat = false
@@ -92,6 +94,9 @@ final class QuickAIController: ObservableObject {
         let turn = Turn(question: question)
         conversationModel = AIChatRecord.ModelReference(connection)
         turns.append(turn)
+        if isInChat, chatTitle.isEmpty {
+            chatTitle = String(question.split(whereSeparator: \.isNewline).first?.prefix(72) ?? "")
+        }
         activeID = turn.id
         running = true
         status = ""
@@ -148,6 +153,7 @@ final class QuickAIController: ObservableObject {
         guard !isInChat else { return }
         isInChat = true
         if !turns.isEmpty {
+            if chatTitle.isEmpty { chatTitle = String(turns[0].question.split(whereSeparator: \.isNewline).first?.prefix(72) ?? "") }
             if turns.contains(where: \.complete), let connection = currentConnection {
                 configuration.recordChatModel(connection.id)
             }
@@ -164,6 +170,7 @@ final class QuickAIController: ObservableObject {
             return
         }
         stop()
+        saveChat()
         let revision = UUID()
         historyRevision = revision
         loadingChat = true
@@ -174,6 +181,7 @@ final class QuickAIController: ObservableObject {
             case .success(let record?):
                 self.restoringChat = true
                 defer { self.restoringChat = false }
+                self.chatTitle = self.chats.first { $0.id == record.id }?.title ?? ""
                 self.chatID = record.id
                 self.conversationModel = record.content.model
                 self.turns = record.content.turns
@@ -201,6 +209,9 @@ final class QuickAIController: ObservableObject {
 
     func updateChat(_ id: UUID, change: AIChatHistory.Change) {
         guard isInChat, let history else { return }
+        if id == chatID, case .rename(let title) = change {
+            chatTitle = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        }
         history.perform({ store in try store.update(id, change: change); return try store.list() }) { [weak self] result in
             self?.applyHistory(result)
         }
@@ -208,10 +219,50 @@ final class QuickAIController: ObservableObject {
 
     @discardableResult
     func chooseChatModel(_ id: UUID) -> Bool {
-        guard isInChat, turns.isEmpty, !loadingChat, configuration.state.enabled,
+        guard isInChat, turns.isEmpty, !running, !loadingChat, configuration.state.enabled,
               let connection = configuration.state.connections.first(where: { $0.id == id && $0.isConfigured }) else { return false }
         conversationModel = AIChatRecord.ModelReference(connection)
         return true
+    }
+
+    /// Edits and retries create a new conversation so later messages and the
+    /// original answer remain available in history. All forks retain the exact
+    /// model/account reference; they cannot bypass unavailable-model checks.
+    @discardableResult
+    func resubmit(_ turnID: UUID, question: String? = nil) -> Bool {
+        guard canRevise, let index = turns.firstIndex(where: { $0.id == turnID }) else { return false }
+        let input = (question ?? turns[index].question).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !input.isEmpty, input.utf8.count <= 32_000 else { return false }
+        startBranch(with: Array(turns.prefix(index)))
+        return submit(input)
+    }
+
+    @discardableResult
+    func branch(after turnID: UUID) -> Bool {
+        guard canRevise, let index = turns.firstIndex(where: { $0.id == turnID }), turns[index].complete else { return false }
+        startBranch(with: Array(turns.prefix(index + 1)))
+        saveChat()
+        return true
+    }
+
+    var canRevise: Bool {
+        isInChat && !running && !loadingChat && matchesCurrentModel && currentConnection != nil
+    }
+
+    func renameCurrentChat(_ title: String) {
+        guard isInChat, !loadingChat else { return }
+        chatTitle = String(title.prefix(120))
+        scheduleChatSave()
+    }
+
+    private func startBranch(with prefix: [Turn]) {
+        saveChat()
+        historyRevision = UUID()
+        let sourceTitle = chatTitle.isEmpty ? String(turns.first?.question.prefix(72) ?? "") : chatTitle
+        chatID = nil
+        chatTitle = String((sourceTitle + " · 分支").prefix(120))
+        turns = prefix
+        status = ""
     }
 
     func leaveLauncher() {
@@ -227,21 +278,41 @@ final class QuickAIController: ObservableObject {
 
     func reset() {
         stop()
+        saveChat()
         historyRevision = UUID()
         loadingChat = false
         chatID = nil
         conversationModel = nil
         turns = []
+        chatTitle = ""
+        restoringChat = true
         chatInstructions = ""
+        restoringChat = false
         status = ""
     }
 
+    private func scheduleChatSave() {
+        pendingSave?.cancel()
+        pendingSave = Task { @MainActor [weak self] in
+            do { try await Task.sleep(nanoseconds: 350_000_000) }
+            catch { return }
+            self?.saveChat()
+        }
+    }
+
     private func saveChat() {
+        pendingSave?.cancel()
+        pendingSave = nil
         guard isInChat, let history, let conversationModel, !turns.isEmpty else { return }
         let id = chatID ?? UUID()
         chatID = id
         let record = AIChatRecord(id: id, content: .init(model: conversationModel, turns: turns, instructions: chatInstructions.isEmpty ? nil : chatInstructions))
-        history.perform({ store in try store.save(record); return try store.list() }) { [weak self] result in
+        let title = chatTitle
+        history.perform({ store in
+            try store.save(record)
+            if !title.isEmpty { try store.update(id, change: .rename(title)) }
+            return try store.list()
+        }) { [weak self] result in
             self?.applyHistory(result)
         }
     }

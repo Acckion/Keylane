@@ -9,6 +9,7 @@ final class QuickAIController: ObservableObject {
     struct Connection { let displayName: String }
     @Published var chats: [Summary] = []
     @Published var chatID: UUID?
+    @Published var chatTitle = ""
     let currentConnection: Connection? = .init(displayName: "Fixture model")
     func beginChat(restoreLatest: Bool) {}
     func reset() {}
@@ -34,7 +35,8 @@ app.setActivationPolicy(.prohibited)
 let suite = "org.keylane.ai-chat-toolbar-test.\(UUID().uuidString)"
 let preferences = UserDefaults(suiteName: suite)!
 defer { preferences.removePersistentDomain(forName: suite) }
-let owner = AIChatWindow(controller: QuickAIController(), configuration: AIConfiguration(),
+let controller = QuickAIController()
+let owner = AIChatWindow(controller: controller, configuration: AIConfiguration(),
                          interaction: AIInteractionPreferences(preferences: preferences),
                          appearance: Just("dark").eraseToAnyPublisher())
 func show() -> NSWindow {
@@ -54,6 +56,14 @@ func check(_ window: NSWindow, visible: Bool) {
 }
 let window = show()
 check(window, visible: false)
+let searchItem = window.toolbar!.items.first { $0.itemIdentifier.rawValue == "chat.search" }!
+precondition(app.sendAction(searchItem.action!, to: searchItem.target, from: searchItem))
+precondition(presentation.searchVisible)
+precondition(app.sendAction(searchItem.action!, to: searchItem.target, from: searchItem))
+precondition(!presentation.searchVisible)
+controller.chatTitle = "Fixture renamed chat"
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+precondition(window.title == "Fixture renamed chat")
 for _ in 0..<8 {
     presentation.settingsVisible = true
     check(window, visible: true)
@@ -68,4 +78,4 @@ check(reopened, visible: true)
 presentation.settingsVisible = false
 check(reopened, visible: false)
 reopened.performClose(nil)
-print("PASS native AI Chat toolbar: initial state, immediate open/close, rapid toggles and reopen while visible")
+print("PASS native AI Chat toolbar: title changes, search action, initial state, immediate open/close, rapid toggles and reopen while visible")

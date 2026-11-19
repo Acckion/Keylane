@@ -78,6 +78,9 @@ struct AIConversationTranscript: View {
     @ObservedObject var controller: QuickAIController
     var inLauncher = false
     var showsEmptyHint = true
+    var editTurn: ((QuickAIController.Turn) -> Void)?
+    var didBranch: (() -> Void)?
+    var searchTarget: UUID?
     @State private var followsBottom = true
     private let bottomID = "quick-ai-bottom"
 
@@ -89,6 +92,11 @@ struct AIConversationTranscript: View {
                     followsBottom = context.geometry.contentSize.height + context.geometry.contentInsets.bottom
                         - context.geometry.visibleRect.maxY < 48
                 }
+            }
+            .onChange(of: searchTarget) { _, id in
+                guard let id else { return }
+                followsBottom = false
+                proxy.scrollTo(id, anchor: .top)
             }
             .onReceive(controller.$turns) { _ in
                 guard followsBottom else { return }
@@ -124,8 +132,17 @@ struct AIConversationTranscript: View {
                         if !turn.complete && (!controller.running || turn.id != controller.turns.last?.id) {
                             Text("回复未完成").font(.caption).foregroundStyle(.secondary)
                         }
+                        if let editTurn {
+                            AIChatMessageActions(turn: turn, enabled: controller.canRevise,
+                                edit: { editTurn(turn) },
+                                retry: { if controller.resubmit(turn.id) { didBranch?() } },
+                                branch: { if controller.branch(after: turn.id) { didBranch?() } })
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(searchTarget == turn.id ? Color.accentColor.opacity(0.06) : .clear,
+                                in: RoundedRectangle(cornerRadius: 10))
+                    .id(turn.id)
                 }
                 if controller.running {
                     HStack {
