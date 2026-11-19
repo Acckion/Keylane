@@ -115,19 +115,23 @@ struct AIConversationTranscript: View {
                                 .padding(.horizontal, 14).padding(.vertical, 9)
                                 .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
                         }
+                        if let progress = turn.progress,
+                           progress.active || !progress.activities.isEmpty || progress.phase == .failed || progress.phase == .cancelled {
+                            AIResponseProgressView(progress: progress).padding(.top, 8)
+                        }
                         if !turn.answer.isEmpty {
                             ReleaseNotesBody(notes: turn.answer, textScale: controller.textScale).font(.system(size: 14 * controller.textScale))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.top, 8)
                         }
-                        if !turn.complete && (!controller.running || turn.id != controller.turns.last?.id) {
+                        if turn.progress == nil && !turn.complete && (!controller.running || turn.id != controller.turns.last?.id) {
                             Text("回复未完成").font(.caption).foregroundStyle(.secondary)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .id(turn.id)
                 }
-                if controller.running {
+                if controller.running && controller.turns.last?.progress == nil {
                     HStack {
                         ProgressView().controlSize(.small).accessibilityLabel("正在生成")
                         Text("正在生成回复…").foregroundStyle(.secondary)
@@ -136,7 +140,7 @@ struct AIConversationTranscript: View {
                         }
                     }
                 }
-                if !controller.status.isEmpty {
+                if !controller.status.isEmpty && (controller.status != "已停止。" || controller.turns.last?.progress == nil) {
                     Text(controller.status).foregroundStyle(.secondary)
                 }
                 if !controller.historyError.isEmpty { Text(controller.historyError).foregroundStyle(.secondary) }

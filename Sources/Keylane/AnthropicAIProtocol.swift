@@ -15,6 +15,7 @@ enum AnthropicAIProtocol {
     }
 
     static func receive(_ bytes: URLSession.AsyncBytes, streaming: Bool,
+                        progress: @Sendable (AIResponseEvent) async -> Void = { _ in },
                         emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         if !streaming {
             var data = Data()
@@ -24,10 +25,21 @@ enum AnthropicAIProtocol {
                 data.append(byte)
             }
             let event = try object(data)
-            guard event["type"] as? String == "message", event["stop_reason"] as? String == "end_turn" else {
-                throw AIResponseError.incomplete
-            }
+            guard event["type"] as? String == "message" else { throw AIResponseError.incomplete }
             let content = event["content"] as? [[String: Any]] ?? []
+            var requestedTool = false
+            for (index, block) in content.enumerated() {
+                if block["type"] as? String == "thinking" {
+                    await progress(.thinking(id: "anthropic-\(index)", delta: block["thinking"] as? String ?? ""))
+                } else if block["type"] as? String == "tool_use" {
+                    requestedTool = true
+                    let data = try JSONSerialization.data(withJSONObject: block["input"] as? [String: Any] ?? [:], options: [.sortedKeys])
+                    await progress(.tool(id: "anthropic-\(index)", name: block["name"] as? String ?? "工具请求",
+                                         arguments: String(data: data, encoding: .utf8) ?? "", state: .requested))
+                }
+            }
+            if requestedTool || event["stop_reason"] as? String == "tool_use" { throw AIResponseError.toolsUnavailable }
+            guard event["stop_reason"] as? String == "end_turn" else { throw AIResponseError.incomplete }
             let text = content.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
             guard !text.isEmpty else { throw AIResponseError.invalidResponse }
             try await emit(text)
@@ -42,6 +54,10 @@ enum AnthropicAIProtocol {
         var outputTokens: Int?
         var pending = ""
         var receivedText = false
+        var blockTypes: [Int: String] = [:]
+        var toolNames: [Int: String] = [:]
+        var toolArguments: [Int: String] = [:]
+        var requestedTool = false
         let clock = ContinuousClock()
         var nextUpdate = clock.now
         for try await byte in bytes {
@@ -67,10 +83,30 @@ enum AnthropicAIProtocol {
                 outputTokens = usage?["output_tokens"] as? Int
             case "content_block_start":
                 let block = event["content_block"] as? [String: Any]
+                let index = event["index"] as? Int ?? 0
+                guard (0..<64).contains(index) else { throw AIResponseError.tooLarge }
+                blockTypes[index] = block?["type"] as? String
                 if block?["type"] as? String == "text", let text = block?["text"] as? String { pending += text }
+                else if block?["type"] as? String == "thinking" || block?["type"] as? String == "redacted_thinking" {
+                    await progress(.thinking(id: "anthropic-\(index)", delta: block?["thinking"] as? String ?? ""))
+                } else if block?["type"] as? String == "tool_use" {
+                    requestedTool = true
+                    toolNames[index] = block?["name"] as? String ?? "工具请求"
+                    toolArguments[index] = ""
+                    let data = try JSONSerialization.data(withJSONObject: block?["input"] as? [String: Any] ?? [:], options: [.sortedKeys])
+                    await progress(.tool(id: "anthropic-\(index)", name: toolNames[index]!, arguments: String(data: data, encoding: .utf8) ?? "", state: .requested))
+                }
             case "content_block_delta":
                 let delta = event["delta"] as? [String: Any]
+                let index = event["index"] as? Int ?? 0
                 if delta?["type"] as? String == "text_delta", let text = delta?["text"] as? String { pending += text }
+                else if delta?["type"] as? String == "thinking_delta", blockTypes[index] == "thinking", let text = delta?["thinking"] as? String {
+                    await progress(.thinking(id: "anthropic-\(index)", delta: text))
+                } else if delta?["type"] as? String == "input_json_delta", let text = delta?["partial_json"] as? String, let name = toolNames[index] {
+                    toolArguments[index, default: ""] += text
+                    guard toolArguments[index]!.utf8.count <= 16_000 else { throw AIResponseError.tooLarge }
+                    await progress(.tool(id: "anthropic-\(index)", name: name, arguments: toolArguments[index]!, state: .requested))
+                }
             case "message_delta":
                 stopReason = (event["delta"] as? [String: Any])?["stop_reason"] as? String
                 outputTokens = (event["usage"] as? [String: Any])?["output_tokens"] as? Int ?? outputTokens
@@ -86,6 +122,7 @@ enum AnthropicAIProtocol {
             if ended { break }
         }
         if !pending.isEmpty { receivedText = true; try await emit(pending) }
+        if requestedTool || stopReason == "tool_use" { throw AIResponseError.toolsUnavailable }
         guard ended, stopReason == "end_turn" else { throw AIResponseError.incomplete }
         guard receivedText else { throw AIResponseError.invalidResponse }
         guard let inputTokens, let outputTokens else { return nil }

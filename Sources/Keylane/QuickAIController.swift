@@ -1,4 +1,5 @@
 import AppKit
+import KeylaneCore
 import Combine
 import Foundation
 
@@ -9,6 +10,7 @@ final class QuickAIController: ObservableObject {
         var answer = ""
         var complete = false
         var files: [AIFileAttachment]?
+        var progress: AIResponseProgress?
         var requestQuestion: String { AIFileAttachment.prompt(question, files: files ?? []) }
     }
 
@@ -118,7 +120,7 @@ final class QuickAIController: ObservableObject {
 
         let requestMessages = messages(for: requestQuestion, instructions: instructions ?? (isInChat && !chatInstructions.isEmpty ? chatInstructions : nil))
         if !isInChat && turns.count >= turnLimit { turns.removeFirst(turns.count - turnLimit + 1) }
-        let turn = Turn(question: question, files: pendingFiles.isEmpty ? nil : pendingFiles)
+        let turn = Turn(question: question, files: pendingFiles.isEmpty ? nil : pendingFiles, progress: .init())
         pendingFiles = []
         fileError = ""
         revealedMessage = nil
@@ -130,20 +132,28 @@ final class QuickAIController: ObservableObject {
         saveChat()
         task = Task { @MainActor [weak self, runtime, readKey] in
             do {
-                _ = try await runtime.generate(connection: connection, readKey: readKey, messages: requestMessages) { [weak self] delta in
+                _ = try await runtime.generate(connection: connection, readKey: readKey, messages: requestMessages, progress: { [weak self] event in
+                    await MainActor.run { [weak self] in
+                        guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
+                        self.turns[index].progress?.apply(event)
+                    }
+                }) { [weak self] delta in
                     try await MainActor.run { [weak self] in
                         guard let self, self.activeID == turn.id, let index = self.turns.indices.last
                         else { throw CancellationError() }
+                        self.turns[index].progress?.apply(.writing)
                         self.turns[index].answer += delta
                     }
                 }
                 guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
+                self.turns[index].progress?.apply(.completed)
                 self.turns[index].complete = true
                 self.finish()
                 if self.isInChat { self.configuration.recordChatModel(connection.id) }
                 self.saveChat()
             } catch {
                 guard let self, self.activeID == turn.id else { return }
+                if let index = self.turns.indices.last { self.turns[index].progress?.apply(.failed) }
                 self.finish()
                 self.saveChat()
                 self.status = error.localizedDescription
@@ -171,6 +181,7 @@ final class QuickAIController: ObservableObject {
     func stop() {
         guard running else { return }
         task?.cancel()
+        if let index = turns.indices.last { turns[index].progress?.apply(.cancelled) }
         finish()
         status = "已停止。"
         saveChat()
@@ -208,7 +219,14 @@ final class QuickAIController: ObservableObject {
                 defer { self.restoringChat = false }
                 self.chatID = record.id
                 self.conversationModel = record.content.model
-                self.turns = record.content.turns
+                self.turns = record.content.turns.map { stored in
+                    var turn = stored
+                    if var trace = turn.progress, trace.active {
+                        trace.apply(turn.complete ? .completed : .cancelled)
+                        turn.progress = trace
+                    }
+                    return turn
+                }
                 self.pendingFiles = []
                 self.fileError = ""
                 self.fileLoadRevision = UUID()

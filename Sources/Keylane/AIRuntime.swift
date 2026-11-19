@@ -154,9 +154,10 @@ actor AIRuntime {
     }
 
     func generate(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?, messages: [AIMessage],
+                  progress: @Sendable (AIResponseEvent) async -> Void = { _ in },
                   emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         if connection.protocolKind.isSubscription {
-            return try await AISubscriptionTransport.generate(connection, messages: messages, emit: emit)
+            return try await AISubscriptionTransport.generate(connection, messages: messages, progress: progress, emit: emit)
         }
         guard let url = connection.completionURL, connection.isConfigured else { throw AIResponseError.invalidResponse }
         try Task.checkCancellation()
@@ -187,7 +188,7 @@ actor AIRuntime {
         guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
         if connection.protocolKind == .anthropic {
-            return try await AnthropicAIProtocol.receive(bytes, streaming: streaming, emit: emit)
+            return try await AnthropicAIProtocol.receive(bytes, streaming: streaming, progress: progress, emit: emit)
         }
         let limit = 1_048_576
         if !streaming {
@@ -199,13 +200,18 @@ actor AIRuntime {
             }
             let reply = try JSONDecoder().decode(AICompletionEnvelope.self, from: body)
             guard !reply.failed else { throw AIResponseError.serviceError }
-            guard let text = reply.choices?.first?.message?.content else { throw AIResponseError.invalidResponse }
+            guard let message = reply.choices?.first?.message else { throw AIResponseError.invalidResponse }
+            var progressBuffer = OpenAIProgressBuffer()
+            for event in try progressBuffer.events(message, delta: false) { await progress(event) }
+            if progressBuffer.requestedTools { throw AIResponseError.toolsUnavailable }
+            guard let text = message.content else { throw AIResponseError.invalidResponse }
             try Task.checkCancellation()
             try await emit(text)
             return reply.usage?.totalTokens
         }
 
         var parser = AIStreamDecoder()
+        var progressBuffer = OpenAIProgressBuffer()
         var count = 0
         var usage: Int?
         var pending = ""
@@ -218,6 +224,9 @@ actor AIRuntime {
             guard count <= limit else { throw AIResponseError.tooLarge }
             if let event = try parser.consume(byte) {
                 usage = event.usage?.totalTokens ?? usage
+                if let metadata = event.choices?.first?.delta {
+                    for update in try progressBuffer.events(metadata, delta: true) { await progress(update) }
+                }
                 if let delta = event.choices?.first?.delta?.content, !delta.isEmpty {
                     receivedText = true
                     pending += delta
@@ -232,6 +241,7 @@ actor AIRuntime {
         }
         if !pending.isEmpty { try await emit(pending) }
         try parser.validateEnd()
+        if progressBuffer.requestedTools { throw AIResponseError.toolsUnavailable }
         guard receivedText else { throw AIResponseError.invalidResponse }
         return usage
     }

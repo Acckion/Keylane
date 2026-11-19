@@ -59,7 +59,39 @@ final class FixtureProtocol: URLProtocol {
                 text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             }
             self.client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-            if mode == "stream" || mode == "incomplete" {
+            if mode == "reasoning-stream" || mode == "reasoning-pause" {
+                let thought = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Provider reasoning summary\"}}]}\n\n"
+                self.client?.urlProtocol(self, didLoad: Data(thought.utf8))
+                let finish = { [self] in
+                    self.lock.lock(); let stopped = self.stopped; self.lock.unlock(); if stopped { return }
+                    let end = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                    self.client?.urlProtocol(self, didLoad: Data(end.utf8))
+                    self.client?.urlProtocolDidFinishLoading(self)
+                }
+                if mode == "reasoning-pause" { DispatchQueue.global().asyncAfter(deadline: .now() + 0.5, execute: finish) }
+                else { finish() }
+                return
+            } else if mode == "tool-stream" {
+                let event: [String: Any] = ["choices": [["delta": ["tool_calls": [["index": 0, "id": "request-1", "function": ["name": "Read", "arguments": "{\"path\":\"/Example\",\"token\":\"private\"}"]]]], "finish_reason": "tool_calls"]]]
+                let payload = try! JSONSerialization.data(withJSONObject: event)
+                self.client?.urlProtocol(self, didLoad: Data("data: ".utf8) + payload + Data("\n\ndata: [DONE]\n\n".utf8))
+            } else if mode == "reasoning-complete" {
+                self.client?.urlProtocol(self, didLoad: Data(#"{"choices":[{"message":{"content":"final answer","reasoning_content":"Complete response summary"}}]}"#.utf8))
+            } else if mode == "anthropic-thinking-stream" {
+                let events: [[String: Any]] = [
+                    ["type": "message_start", "message": ["usage": ["input_tokens": 2]]],
+                    ["type": "content_block_start", "index": 0, "content_block": ["type": "thinking", "thinking": ""]],
+                    ["type": "content_block_delta", "index": 0, "delta": ["type": "thinking_delta", "thinking": "Anthropic visible summary"]],
+                    ["type": "content_block_delta", "index": 0, "delta": ["type": "signature_delta", "signature": "must-not-display"]],
+                    ["type": "content_block_delta", "index": 1, "delta": ["type": "text_delta", "text": "你好"]],
+                    ["type": "message_delta", "delta": ["stop_reason": "end_turn"], "usage": ["output_tokens": 3]],
+                    ["type": "message_stop"]
+                ]
+                for event in events {
+                    let payload = try! JSONSerialization.data(withJSONObject: event)
+                    self.client?.urlProtocol(self, didLoad: Data("data: ".utf8) + payload + Data("\n\n".utf8))
+                }
+            } else if mode == "stream" || mode == "incomplete" {
                 let first = Data("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\r\n\r\n".utf8)
                 for byte in first { self.client?.urlProtocol(self, didLoad: Data([byte])) }
                 if mode == "stream" {
@@ -258,6 +290,81 @@ let richRoundTrip = try NSAttributedString(data: richData, options: [.documentTy
 precondition(richRoundTrip.string == "rich text")
 print("PASS formatted paste: real heading/bold/italic/code/link styles and RTF round trip")
 
+// Progress is driven by public provider data, not timers or fabricated tool execution.
+func progressFixture(_ connection: AIConnection) throws -> QuickAIController {
+    let name = "org.keylane.progress-fixture." + UUID().uuidString
+    let preferences = UserDefaults(suiteName: name)!
+    defer { preferences.removePersistentDomain(forName: name) }
+    preferences.set(try JSONEncoder().encode(AIConfiguration.State(enabled: true, connections: [connection], selectedID: connection.id)), forKey: "aiConnections.v1")
+    return QuickAIController(configuration: AIConfiguration(preferences: preferences), runtime: AIRuntime(configuration: configuration),
+                             observesDefaultConnection: false, readKey: { connection in connection.protocolKind == .anthropic ? "fixture-anthropic-key" : nil })
+}
+var progressConnection = second
+progressConnection.mode = .streaming
+let progressQuick = try progressFixture(progressConnection)
+FixtureProtocol.mode = "reasoning-stream"
+precondition(progressQuick.submit("Progress fixture"))
+wait("Reasoning stream completes") { !progressQuick.running }
+precondition(progressQuick.lastAnswer == "你好")
+precondition(progressQuick.turns.last?.progress?.phase == .completed)
+precondition(progressQuick.turns.last?.progress?.activities.count == 1)
+precondition(progressQuick.turns.last?.progress?.activities.first?.text == "Provider reasoning summary")
+let previousProgressID = progressQuick.turns.last!.id
+precondition(progressQuick.regenerate())
+wait("Regeneration gets a fresh progress trace") { !progressQuick.running }
+precondition(progressQuick.turns.count == 1 && progressQuick.turns.last?.id != previousProgressID)
+precondition(progressQuick.turns.last?.progress?.activities.count == 1)
+progressQuick.reset()
+FixtureProtocol.mode = "reasoning-pause"
+precondition(progressQuick.submit("Cancel while thinking"))
+wait("Thinking appears before answer") { progressQuick.turns.last?.progress?.phase == .thinking }
+progressQuick.stop()
+precondition(progressQuick.turns.last?.progress?.phase == .cancelled)
+FixtureProtocol.mode = "stream"
+precondition(progressQuick.submit("New request after cancellation"))
+wait("Next reply completes") { !progressQuick.running }
+RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+precondition(progressQuick.turns.first?.progress?.phase == .cancelled)
+precondition(progressQuick.turns.last?.progress?.activities.isEmpty == true && progressQuick.lastAnswer == "你好")
+progressQuick.reset()
+FixtureProtocol.mode = "tool-stream"
+let requestsBeforeTool = FixtureProtocol.requests.count
+precondition(progressQuick.submit("Tool request fixture"))
+wait("Unsupported tool request is reported") { !progressQuick.running }
+precondition(progressQuick.turns.last?.progress?.activities.count == 1)
+precondition(progressQuick.turns.last?.progress?.activities.first?.state == .notExecuted)
+precondition(progressQuick.turns.last?.progress?.completedToolCount == 0)
+precondition(progressQuick.status.contains("没有执行"))
+precondition(FixtureProtocol.requests.count == requestsBeforeTool + 1, "Displaying a tool request must not execute it or create extra model requests")
+precondition(progressQuick.turns.last?.progress?.activities.first?.arguments.contains("private") == false)
+progressConnection.mode = .complete
+let completeProgress = try progressFixture(progressConnection)
+FixtureProtocol.mode = "reasoning-complete"
+precondition(completeProgress.submit("Complete fixture"))
+wait("Complete response metadata") { !completeProgress.running }
+precondition(completeProgress.turns.last?.progress?.hasThinking == true && completeProgress.lastAnswer == "final answer")
+progressConnection.wireProtocol = .anthropic
+progressConnection.mode = .streaming
+let anthropicProgress = try progressFixture(progressConnection)
+FixtureProtocol.mode = "anthropic-thinking-stream"
+precondition(anthropicProgress.submit("Anthropic fixture"))
+wait("Anthropic reasoning metadata") { !anthropicProgress.running }
+precondition(anthropicProgress.lastAnswer == "你好")
+precondition(anthropicProgress.turns.last?.progress?.activities.first?.text == "Anthropic visible summary")
+precondition(anthropicProgress.turns.last?.progress?.activities.first?.text.contains("must-not-display") == false)
+let nativeThought = CodexProgressAdapter.events(method: "item/reasoning/summaryTextDelta", params: ["itemId": "reasoning", "delta": "Public summary"])
+precondition(nativeThought == [.thinking(id: "codex-reasoning", delta: "Public summary")])
+precondition(CodexProgressAdapter.events(method: "item/reasoning/textDelta", params: ["itemId": "private", "delta": "hidden"]).isEmpty)
+let nativeTool = CodexProgressAdapter.events(method: "item/completed", params: ["item": ["id": "tool", "type": "mcpToolCall", "tool": "Read", "status": "completed", "arguments": ["path": "/Example"]]])
+var nativeTrace = AIResponseProgress()
+for event in nativeTool { nativeTrace.apply(event) }
+precondition(nativeTrace.completedToolCount == 1)
+let nativeFailed = CodexProgressAdapter.events(method: "item/completed", params: ["item": ["id": "failed", "type": "dynamicToolCall", "tool": "Read", "success": false]])
+if let event = nativeFailed.first, case let .tool(_, _, _, state) = event { precondition(state == .failed) } else { fatalError("Missing failed tool event") }
+let nativeSearch = CodexProgressAdapter.events(method: "item/completed", params: ["item": ["id": "search", "type": "webSearch", "query": "fixture", "action": NSNull()]])
+if let event = nativeSearch.first, case let .tool(_, _, arguments, _) = event { precondition(arguments.contains("fixture")) } else { fatalError("Missing search event") }
+print("PASS progress UI data: OpenAI streaming/complete and Anthropic thinking, reasoning-only phase, regeneration, cancellation/late events, tool-request redaction/non-execution and public Codex activity adapters")
+
 // Video parity: real file parsing and an isolated, simulated conversation lifecycle.
 let videoDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-video-" + UUID().uuidString)
 try FileManager.default.createDirectory(at: videoDirectory, withIntermediateDirectories: true)
@@ -335,6 +442,17 @@ wait("Quick chat deletion") { video.chatID == nil && video.chats.count == 1 }
 let persistedTurn = try JSONDecoder().decode(QuickAIController.Turn.self, from: JSONEncoder().encode(video.turns.first ?? QuickAIController.Turn(question: "legacy")))
 precondition(persistedTurn.files == nil)
 print("PASS Quick AI video workflow: text/PDF files, bounded reads, symlink/binary rejection, attachment context, regeneration/model switching, draft preservation, persistent previous/next chats, deletion and deep links")
+
+let interruptedHistory = AIChatHistory(url: videoDirectory.appendingPathComponent("interrupted.sqlite"))
+let interruptedRecord = AIChatRecord(id: UUID(), content: .init(model: .init(second), turns: [QuickAIController.Turn(question: "Interrupted", progress: .init())]))
+var interruptedSaved = false
+interruptedHistory.perform({ try $0.save(interruptedRecord) }) { _ in interruptedSaved = true }
+wait("Interrupted trace fixture stored") { interruptedSaved }
+let interruptedQuick = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: interruptedHistory, readKey: { _ in nil })
+interruptedQuick.openChat(interruptedRecord.id)
+wait("Interrupted trace restored") { !interruptedQuick.loadingChat && interruptedQuick.chatID == interruptedRecord.id }
+precondition(!interruptedQuick.running && interruptedQuick.turns.first?.progress?.phase == .cancelled, "Restoring an interrupted trace must not display a permanently running status")
+print("PASS interrupted history progress is restored as stopped, not a phantom active request")
 
 let historyDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-history-" + UUID().uuidString)
 defer { try? FileManager.default.removeItem(at: historyDirectory) }
