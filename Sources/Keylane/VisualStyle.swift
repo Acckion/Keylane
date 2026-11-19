@@ -19,12 +19,19 @@ enum VisualStyle {
     static let selectionRadius: CGFloat = 10
 }
 
+/// Shared C material for the compact bar and floating panels.
+enum LauncherGlassMaterial {
+    static var tintColor: NSColor { NSColor.gray.withAlphaComponent(0.12) }
+    static var swiftUI: Glass { .regular.tint(Color(nsColor: tintColor)) }
+}
+
 /// Shared backing for floating Keylane panels. Keep glass at the window's root
 /// so AppKit composites it as the window material.
 final class LauncherGlassView: NSGlassEffectView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         style = .regular
+        tintColor = LauncherGlassMaterial.tintColor
         cornerRadius = VisualStyle.launcherCornerRadius
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
