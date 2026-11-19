@@ -193,36 +193,25 @@ struct Launcher: View {
                         Group {
                             switch page.contentPlacement {
                             case .underChrome: content()
+                            case .readingDetail:
+                                ScrollView {
+                                    content()
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 20)
+                                        .padding(.bottom, VisualStyle.launcherEdgeInset)
+                                }
+                                .launcherScrollInsets()
+                                .launcherScrollEdgeFade()
                             case .form: content()
+                            case .conversation:
+                                content()
+                                    .environment(\.conversationInputEnabled, menu == nil)
+                                    .environment(\.conversationInputFocusToken, focusToken)
                             case .inset, .fileResults:
                                 content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
                             }
                         }.id(moduleActivation?.id)
                     }
-                } else if model.pageID == .root {
-                    commandList(results, selectedIndex: selectedIndex).frame(height: 470, alignment: .top)
-                } else if let page, let content = page.content {
-                    Group {
-                        switch page.contentPlacement {
-                        case .underChrome: content()
-                        case .readingDetail:
-                            ScrollView {
-                                content()
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 20)
-                                    .padding(.bottom, VisualStyle.launcherEdgeInset)
-                            }
-                            .launcherScrollInsets()
-                            .launcherScrollEdgeFade()
-                        case .form: content()
-                        case .conversation:
-                            content()
-                                .environment(\.conversationInputEnabled, menu == nil)
-                                .environment(\.conversationInputFocusToken, focusToken)
-                        case .inset, .fileResults:
-                            content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
-                        }
-                    }.id(moduleActivation?.id)
                 }
             }
             .opacity(reveal)
@@ -742,10 +731,10 @@ struct Launcher: View {
 
     private func launcherSearchBar(compactSurface: Bool) -> some View {
         let split = compactSurface && model.isCompact
-        let glass = model.windowMode == "compact" && model.presentedLauncherHeight <= 82
+        let glass = model.windowMode == "compact" ? 1 - model.launcherBackdropOpacity : 0
         let separation = split ? 1 : 1 - model.compactBarMergeProgress
         return CompactLauncherBar(model: model, separation: separation,
-                                  interactive: split, showsGlass: glass) {
+                                  interactive: split, glassOpacity: glass) {
             searchBar
         }
         .animation(reduceMotion ? nil : .spring(duration: split ? 0.46 : 0.24, bounce: split ? 0.18 : 0),

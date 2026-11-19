@@ -130,6 +130,7 @@ struct CompactLauncherBar<Search: View>: View, Animatable {
                     .help(button.title)
                     .accessibilityLabel(button.title)
                     .scaleEffect(button.scale)
+                    .opacity(button.opacity)
                     .offset(x: button.offset)
                     .disabled(model.launcherModules?.isRegisteredCommandEnabled(button.id) == false)
                     .allowsHitTesting(interactive)
