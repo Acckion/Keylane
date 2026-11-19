@@ -1041,7 +1041,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isMovableByWindowBackground = true
         let glass = LauncherGlassView(frame: .zero)
-        glass.contentView = NSHostingView(rootView: Launcher(model: model))
+        let hosting = NSHostingView(rootView: Launcher(model: model))
+        // The panel owns the viewport, including fractional interface scales.
+        hosting.sizingOptions = []
+        glass.contentView = hosting
         window.contentView = glass; window.isReleasedWhenClosed = false; window.center()
         window.delegate = self
         dragGuides = LauncherDragGuides(window: window)
@@ -1316,8 +1319,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
         let scale = model.interfaceScale
+        // AppKit may round a scaled hosting view's width by an extra point.
+        let sameInterfaceWidth = abs(start.width - target.width) <= 1 + tolerance
         guard animated, window.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              abs(start.height - target.height) > 1, abs(start.width - target.width) < tolerance else {
+              abs(start.height - target.height) > 1, sameInterfaceWidth else {
             model.presentedLauncherHeight = model.launcherHeight
             window.setFrame(target, display: true)
             return
@@ -1332,8 +1337,9 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let height = start.height + (target.height - start.height) * eased
             let top = start.maxY + (target.maxY - start.maxY) * eased
             let x = start.minX + (target.minX - start.minX) * eased
+            let width = start.width + (target.width - start.width) * eased
             self.model.presentedLauncherHeight = progress == 1 ? self.model.launcherHeight : height / scale
-            self.window.setFrame(NSRect(x: x, y: top - height, width: target.width, height: height), display: true)
+            self.window.setFrame(NSRect(x: x, y: top - height, width: width, height: height), display: true)
             if progress == 1 {
                 timer.invalidate()
                 self.resizeTimer = nil
