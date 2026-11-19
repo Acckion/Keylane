@@ -45,40 +45,51 @@ struct TranslatorView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let columnWidth = geometry.size.width / 2
+            let inset = VisualStyle.launcherEdgeInset
+            let columnWidth = max(0, geometry.size.width / 2 - inset)
+            let contentHeight = max(0, geometry.size.height - inset - VisualStyle.launcherBottomInset)
             HStack(spacing: 0) {
                 sourceColumn
-                    .frame(width: columnWidth)
-                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 18))
-                targetColumn.frame(width: columnWidth)
+                    .frame(width: columnWidth, height: contentHeight)
+                    .background {
+                        Color.primary.opacity(0.035)
+                            .clipShape(RoundedRectangle(cornerRadius: 18))
+                            .mask {
+                                Rectangle().overlay(alignment: .trailing) {
+                                    Circle().frame(width: 48, height: 48)
+                                        .offset(x: 24)
+                                        .blendMode(.destinationOut)
+                                }.compositingGroup()
+                            }
+                    }
+                targetColumn.frame(width: columnWidth, height: contentHeight)
             }
-            .padding(.top, 8)
-            .padding(.bottom, VisualStyle.launcherBottomInset)
-            .overlay {
-                Button(action: controller.swap) {
-                    Image(systemName: "arrow.left.arrow.right").font(.system(size: 15, weight: .medium))
-                        .frame(width: 34, height: 34)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .disabled(!controller.canUseOutput)
-                .help("交换语言（⌘S）")
-                .accessibilityLabel("交换语言")
-                .offset(y: -VisualStyle.launcherBottomInset / 2)
+            .padding(.leading, inset)
+            .padding(.top, inset)
+            LauncherBackButton(action: back)
+                .padding(inset)
+            Button(action: controller.swap) {
+                Image(systemName: "arrow.left.arrow.right").font(.system(size: 15, weight: .medium))
+                    .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
             }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .disabled(!controller.canUseOutput)
+            .help("交换语言（⌘S）")
+            .accessibilityLabel("交换语言")
+            .position(x: geometry.size.width / 2, y: inset + contentHeight / 2)
         }
     }
 
     private var sourceColumn: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                LauncherBackButton(action: back)
-                Spacer(minLength: 5)
+                Spacer(minLength: 48)
                 TranslatorLanguagePicker(value: controller.source, title: controller.sourceTitle,
                                          allowsDetection: true, navigation: navigation, open: sourceMenu) {
                     controller.selectLanguage($0, isSource: true)
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: 48)
             }
             .frame(height: 42)
             TranslatorInput(text: $controller.input, enabled: inputEnabled && controller.languageMenu == nil, focusToken: focusToken, escape: {
@@ -88,7 +99,7 @@ struct TranslatorView: View {
                 .overlay(alignment: .topLeading) {
                     if controller.input.isEmpty {
                         Text("输入要翻译的文字…").font(.system(size: 23)).foregroundStyle(.tertiary)
-                            .padding(.horizontal, 20).padding(.top, 8).allowsHitTesting(false)
+                            .padding(.horizontal, 13).padding(.top, 8).allowsHitTesting(false)
                     }
                 }
                 .padding(.horizontal, 12)
@@ -115,7 +126,7 @@ struct TranslatorView: View {
             }.frame(height: 42)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    if controller.loading {
+                    if controller.loading && controller.output.isEmpty {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Text(controller.output).font(.system(size: 23)).textSelection(.enabled)

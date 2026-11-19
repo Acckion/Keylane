@@ -4,6 +4,7 @@ import KeylaneCore
 final class TranslatorFixtureProtocol: URLProtocol {
     static var requests: [URLRequest] = []
     static var mode = "normal"
+    private var completion: DispatchWorkItem?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -25,6 +26,21 @@ final class TranslatorFixtureProtocol: URLProtocol {
             let status = Self.mode == "error" ? 401 : 200
             let response = HTTPURLResponse(url: self.request.url!, statusCode: status, httpVersion: "HTTP/1.1",
                                            headerFields: ["Content-Type": "application/json"])!
+            if Self.mode == "hang" {
+                self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                return
+            }
+            if Self.mode == "stream" {
+                self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                self.client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n".utf8))
+                let completion = DispatchWorkItem {
+                    self.client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\ndata: [DONE]\n\n".utf8))
+                    self.client?.urlProtocolDidFinishLoading(self)
+                }
+                self.completion = completion
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: completion)
+                return
+            }
             let body = self.request.url?.path.contains("completions") == true
                 ? #"{"choices":[{"message":{"content":"AI result"},"finish_reason":"stop"}]}"#
                 : #"{"data":{"translations":[{"translatedText":"你好","detectedSourceLanguage":"en"}]}}"#
@@ -33,7 +49,7 @@ final class TranslatorFixtureProtocol: URLProtocol {
             self.client?.urlProtocolDidFinishLoading(self)
         }
     }
-    override func stopLoading() {}
+    override func stopLoading() { completion?.cancel() }
 }
 
 let domain = "org.keylane.test.translator." + UUID().uuidString
@@ -96,7 +112,33 @@ controller.preferences.modelID = connection.id
 controller.begin(text: "AI translation")
 wait("AI translation uses shared runtime", until: { controller.canUseOutput })
 precondition(controller.output == "AI result")
-controller.input = "discard on model disable"
+var streaming = connection
+streaming.mode = .streaming
+precondition(ai.save(streaming))
+TranslatorFixtureProtocol.mode = "stream"
+controller.begin(text: "stream translation")
+wait("AI output appears before generation completes", until: { controller.output == "你" && controller.loading })
+precondition(!controller.canUseOutput)
+wait("AI stream completes with combined translation", until: { controller.canUseOutput })
+precondition(controller.output == "你好")
+controller.begin(text: "cancel partial stream")
+wait("partial stream started", until: { controller.output == "你" && controller.loading })
+controller.stop()
+precondition(controller.output.isEmpty)
+drain(0.5)
+precondition(controller.output.isEmpty && !controller.loading)
+
+TranslatorFixtureProtocol.mode = "hang"
+let bounded = TranslatorController(ai: ai, runtime: runtime, defaults: defaults, requestTimeout: .milliseconds(1100), readAIKey: { _ in nil })
+bounded.begin(text: "no response")
+wait("stalled AI request stops loading with retryable timeout", until: { !bounded.loading })
+precondition(bounded.error.contains("超时") && !bounded.canUseOutput)
+TranslatorFixtureProtocol.mode = "stream"
+bounded.retry()
+wait("retry succeeds after AI timeout", until: { bounded.canUseOutput })
+bounded.stop()
+TranslatorFixtureProtocol.mode = "normal"
+controller.begin(text: "discard on model disable")
 ai.setEnabled(false)
 wait("model disable prevents translation", until: { !controller.error.isEmpty })
 precondition(!controller.canUseOutput)

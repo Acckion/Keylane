@@ -66,7 +66,7 @@ enum TranslatorModule {
         }))
         let copy = { use(controller, paste: controller.preferences.pastePrimary) }
         var page = LauncherPage(id: pageID, placeholder: "", badge: ("翻译", "translate"),
-                                contentPlacement: .conversation, content: { [weak model] in
+                                contentPlacement: .form, content: { [weak model] in
             AnyView(TranslatorView(controller: controller, back: { model?.goBackInLauncher() }, navigation: model?.navigation ?? "arrows"))
         }, leave: controller.stop, submit: copy, returnBindings: .init(primary: .command),
                                 primaryTitle: { controller.preferences.pastePrimary ? "粘贴译文" : "复制译文" },
