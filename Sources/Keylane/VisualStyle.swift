@@ -37,3 +37,36 @@ final class LauncherGlassView: NSGlassEffectView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
+
+/// Overlay content may be clipped, but the material's optical rim must not be
+/// clipped by an enclosing layer. Compact and expanded Launcher share this host.
+final class LauncherGlassHostView: NSView {
+    let glass = LauncherGlassView(frame: .zero)
+
+    init(content: NSView) {
+        super.init(frame: .zero)
+        // The glass owns its rounded shape; an additional rounded parent mask
+        // cuts off the system's edge highlight at the same boundary.
+        wantsLayer = true
+        layer?.masksToBounds = false
+        let contentClip = NSView()
+        contentClip.wantsLayer = true
+        contentClip.layer?.cornerRadius = VisualStyle.launcherCornerRadius
+        contentClip.layer?.cornerCurve = .continuous
+        contentClip.layer?.masksToBounds = true
+        addSubview(glass)
+        addSubview(contentClip)
+        contentClip.addSubview(content)
+        for (child, parent) in [(glass as NSView, self), (contentClip, self), (content, contentClip)] {
+            child.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                child.leadingAnchor.constraint(equalTo: parent.leadingAnchor),
+                child.trailingAnchor.constraint(equalTo: parent.trailingAnchor),
+                child.topAnchor.constraint(equalTo: parent.topAnchor),
+                child.bottomAnchor.constraint(equalTo: parent.bottomAnchor)
+            ])
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
