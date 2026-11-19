@@ -3,6 +3,21 @@ import AppKit
 import Combine
 import KeylaneCore
 
+@Observable
+private final class LauncherSwipeMotion {
+    var offset: CGFloat = 0
+}
+
+private struct LauncherSwipeOffset: ViewModifier {
+    let motion: LauncherSwipeMotion
+    var spacing: CGFloat = 0
+    var isSettled = false
+
+    func body(content: Content) -> some View {
+        content.offset(x: isSettled ? 0 : motion.offset + spacing)
+    }
+}
+
 struct Launcher: View {
     let model: Model
     @StateObject private var observation: ViewObservation
@@ -17,6 +32,14 @@ struct Launcher: View {
         model.launcherModules?.activation(forPage: model.pageID)
     }
     @State private var surfaceMounted = false
+    @State private var pageSwipeMotion = LauncherSwipeMotion()
+    @State private var pageSwipeNeighbor: PageID?
+    @State private var pageSwipeDirection = 1
+    @State private var swipeFiles: [SpotlightFile]?
+    @State private var swipeClips: [ClipItem]?
+    @State private var pageSwipeTransition: UUID?
+    @State private var pageSwipeAwaitingContent = false
+    @State private var pageSwipePreviewOpacity = 1.0
     @State private var dispatchedQuery: String?
     private var launcherVisible: Bool { presentation.visible }
     private var page: LauncherPage? { model.activeLauncherPage }
@@ -76,6 +99,7 @@ struct Launcher: View {
             ViewObservation.changes(model.$compactExpanded),
             ViewObservation.changes(model.footerFeedback.$current),
             ViewObservation.changes(model.$presentedLauncherHeight),
+            ViewObservation.changes(model.$compactBarMergeProgress),
             ViewObservation.changes(model.$favorites),
             ViewObservation.changes(model.$favoriteOrder),
             ViewObservation.changes(model.$aliases),
@@ -134,32 +158,46 @@ struct Launcher: View {
         let results = rows
         let selectedIndex = selectionIndex(in: results)
         let showsSearchBar = argumentTarget == nil && page?.contentPlacement != .form && page?.contentPlacement != .conversation
-        let compactSurface = model.isCompact && model.presentedLauncherHeight <= model.launcherHeight + 0.5
+        let compactSurface = model.presentedLauncherHeight <= VisualStyle.launcherTopInset + 0.5
+        let reveal = model.launcherBackdropOpacity
         return ZStack(alignment: .top) {
-            if let target = argumentTarget { argumentEditor(target) }
-            else if compactSurface { Color.clear }
-            else {
-                if showsFileResults {
-                    ResultDetailLayout(hasResults: !results.isEmpty) {
-                        commandList(results, selectedIndex: selectedIndex)
-                    } detail: {
-                        FileSearchDetail(url: selectedIndex.map { URL(fileURLWithPath: results[$0].id) })
-                    } emptyState: {
-                        if model.fileSearch.isSearching {
-                            Text(showsRecentFiles ? "正在载入最近使用的文件…" : "正在搜索文件…")
-                                .font(VisualStyle.rowText).foregroundStyle(.secondary)
-                        } else {
-                            VStack(spacing: 12) {
-                                let filtered = fileType != "all" && !model.fileResults.isEmpty
-                                ResultDetailEmptyState(title: showsRecentFiles ? "最近使用" : "没有匹配结果",
-                                                       message: filtered ? "没有符合当前类型的文件。" : model.fileSearchStatus)
-                                if !filtered {
-                                    Button("选择搜索文件夹…", systemImage: "folder") {
-                                        model.chooseFileSearchFolder(returnToLauncher: true)
-                                    }.buttonStyle(ContentActionButtonStyle())
+            Group {
+                if let target = argumentTarget { argumentEditor(target) }
+                else if compactSurface { Color.clear }
+                else {
+                    if showsFileResults {
+                        ResultDetailLayout(hasResults: !results.isEmpty) {
+                            commandList(results, selectedIndex: selectedIndex)
+                        } detail: {
+                            FileSearchDetail(url: selectedIndex.map { URL(fileURLWithPath: results[$0].id) })
+                        } emptyState: {
+                            if model.fileSearch.isSearching {
+                                Text(showsRecentFiles ? "正在载入最近使用的文件…" : "正在搜索文件…")
+                                    .font(VisualStyle.rowText).foregroundStyle(.secondary)
+                            } else {
+                                VStack(spacing: 12) {
+                                    let filtered = fileType != "all" && !model.fileResults.isEmpty
+                                    ResultDetailEmptyState(title: showsRecentFiles ? "最近使用" : "没有匹配结果",
+                                                           message: filtered ? "没有符合当前类型的文件。" : model.fileSearchStatus)
+                                    if !filtered {
+                                        Button("选择搜索文件夹…", systemImage: "folder") {
+                                            model.chooseFileSearchFolder(returnToLauncher: true)
+                                        }.buttonStyle(ContentActionButtonStyle())
+                                    }
                                 }
                             }
                         }
+                    } else if model.pageID == .root {
+                        commandList(results, selectedIndex: selectedIndex).frame(height: 470, alignment: .top)
+                    } else if let page, let content = page.content {
+                        Group {
+                            switch page.contentPlacement {
+                            case .underChrome: content()
+                            case .form: content()
+                            case .inset, .fileResults:
+                                content().padding(.top, VisualStyle.launcherTopInset).padding(.bottom, VisualStyle.launcherBottomInset)
+                            }
+                        }.id(moduleActivation?.id)
                     }
                 } else if model.pageID == .root {
                     commandList(results, selectedIndex: selectedIndex).frame(height: 470, alignment: .top)
@@ -187,6 +225,7 @@ struct Launcher: View {
                     }.id(moduleActivation?.id)
                 }
             }
+            .opacity(reveal)
             if !compactSurface && page?.fullBleed != true { VStack(spacing: 0) {
                 if showsSearchBar {
                     ChromeBlur().frame(height: VisualStyle.launcherTopInset)
@@ -198,14 +237,17 @@ struct Launcher: View {
                 Spacer(minLength: 0)
                 ChromeBlur().frame(height: 78)
                     .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black.opacity(0.55), location: 0.5), .init(color: .black.opacity(0.8), location: 1)], startPoint: .top, endPoint: .bottom))
-            }.allowsHitTesting(false) }
+            }.opacity(reveal).allowsHitTesting(false) }
             // Keep the search field interactive while the blur's full-window spacer is inert.
             if showsSearchBar { VStack(spacing: 0) {
-                searchBar
+                launcherSearchBar(compactSurface: compactSurface)
                 Spacer(minLength: 0)
             } }
             if actions || appMenu || filterOpen { Color.clear.contentShape(Rectangle()).onTapGesture { closeMenus() } }
-            if !compactSurface { footer.frame(maxHeight: .infinity, alignment: .bottom) }
+            if model.presentedLauncherHeight >= VisualStyle.launcherTopInset + VisualStyle.launcherBottomInset {
+                footer.frame(maxHeight: .infinity, alignment: .bottom)
+                    .opacity(reveal)
+            }
             if showsSearchBar && showsTypeFilter {
                 typeFilter.frame(maxWidth: .infinity, alignment: .topTrailing)
                     .padding(VisualStyle.launcherEdgeInset)
@@ -223,7 +265,20 @@ struct Launcher: View {
                 .padding(.top, VisualStyle.launcherTopInset)
             }
         }
+        .modifier(LauncherSwipeOffset(motion: pageSwipeMotion))
+        .opacity(pageSwipeAwaitingContent ? 1 - pageSwipePreviewOpacity : 1)
+        .overlay(alignment: .topLeading) {
+            if let pageSwipeNeighbor {
+                pageSwipePreview(pageSwipeNeighbor)
+                    .frame(width: VisualStyle.launcherWidth, height: model.presentedLauncherHeight)
+                    .modifier(LauncherSwipeOffset(motion: pageSwipeMotion,
+                                                  spacing: CGFloat(pageSwipeDirection) * pageSwipeStride,
+                                                  isSettled: pageSwipeAwaitingContent))
+                    .opacity(pageSwipePreviewOpacity)
+            }
+        }
         .frame(width: VisualStyle.launcherWidth, height: model.presentedLauncherHeight, alignment: .top)
+        .clipped()
         .overlay(alignment: .top) {
             if launcherVisible, argumentTarget == nil, let loading {
                 WindowLoadingIndicator(loading: loading).id(model.pageID)
@@ -248,7 +303,7 @@ struct Launcher: View {
         .frame(width: VisualStyle.launcherWidth * model.interfaceScale, height: model.presentedLauncherHeight * model.interfaceScale)
         .scrollIndicators(.visible, axes: .vertical)
 
-        .background { if reduceTransparency { Color(nsColor: .windowBackgroundColor) } }
+        .background { if reduceTransparency && !compactSurface { Color(nsColor: .windowBackgroundColor) } }
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: actions)
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: appMenu)
         .background {
@@ -298,6 +353,16 @@ struct Launcher: View {
                 Color.clear
             }
         }
+        .task(id: launcherVisible ? model.pageID : nil) {
+            guard launcherVisible, !showsFileResults else { return }
+            let files = await model.fileSearch.recentForLauncherSwipe()
+            if !Task.isCancelled { swipeFiles = files }
+        }
+        .task(id: launcherVisible && !model.isCompact) {
+            guard launcherVisible, !model.isCompact else { return }
+            let clips = await model.clipboard.recentForLauncherSwipe()
+            if !Task.isCancelled { swipeClips = clips }
+        }
         .task(id: launcherVisible) {
             guard !launcherVisible, surfaceMounted, model.pageID == .root || showsFileResults else { return }
             // Keep fast hotkey toggles warm. The outer view retains query,
@@ -307,6 +372,20 @@ struct Launcher: View {
             // Secondary pages keep their own scroll and editing state.
             guard !launcherVisible, model.pageID == .root || showsFileResults else { return }
             surfaceMounted = false
+        }
+        .task(id: pageSwipeReadyToReveal ? pageSwipeTransition : nil) {
+            guard pageSwipeReadyToReveal, let transition = pageSwipeTransition else { return }
+            // Give the result selection update a turn before revealing the active page.
+            await Task.yield()
+            guard !Task.isCancelled, pageSwipeTransition == transition, pageSwipeReadyToReveal else { return }
+            withAnimation(.easeOut(duration: 0.08), completionCriteria: .logicallyComplete) {
+                pageSwipePreviewOpacity = 0
+            } completion: {
+                if pageSwipeTransition == transition { clearPageSwipe() }
+            }
+        }
+        .onReceive(model.clipboard.$searching.combineLatest(model.clipboard.$loadingDetail)) { _ in
+            if pageSwipeAwaitingContent, pageSwipeNeighbor == model.pageID { pageRevision &+= 1 }
         }
         .onAppear {
             updatePresentation(visible: (NSApp.delegate as? Delegate)?.window?.isVisible == true)
@@ -323,6 +402,7 @@ struct Launcher: View {
             updatePresentation(visible: false)
         }
         .onExitCommand { if !SearchField.isComposing { escape() } }
+        .onReceive(model.launcherPageSwipes, perform: handlePageSwipe)
         .onReceive(model.activePageUpdates) { _ in
             if launcherVisible { pageRevision &+= 1 }
         }
@@ -349,6 +429,9 @@ struct Launcher: View {
             cancelRootScriptArguments()
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in
+            clearPageSwipe()
+            swipeFiles = nil
+            swipeClips = nil
             updatePresentation(visible: false)
         }
     }
@@ -384,9 +467,151 @@ struct Launcher: View {
         .onChange(of: menuContext == nil ? nil : currentMenuContext) { _, value in
             if menuContext != nil, menuContext != value { closeMenus() }
         }
-        .onChange(of: model.pageID) { _, _ in updatePresentation(visible: launcherVisible) }
+        .onChange(of: model.pageID) { _, _ in
+            if pageSwipeAwaitingContent, pageSwipeNeighbor != model.pageID {
+                clearPageSwipe()
+            } else if pageSwipeTransition == nil, pageSwipeMotion.offset != 0 {
+                settlePageSwipe()
+            }
+            updatePresentation(visible: launcherVisible)
+        }
         .onChange(of: rootScriptArguments) { _, _ in closeMenus() }
         .onChange(of: moduleActivation?.id) { _, _ in updatePresentation(visible: launcherVisible) }
+    }
+
+    private func handlePageSwipe(_ event: Model.LauncherPageSwipe) {
+        guard launcherVisible, presentation.page == model.pageID, pageSwipeTransition == nil else { return }
+        guard menu == nil, argumentTarget == nil, rootScriptArguments == nil else {
+            settlePageSwipe()
+            return
+        }
+        let destinations = model.swipeDestinations
+        guard let current = destinations.firstIndex(where: { $0.page == model.pageID }) else { return }
+        switch event {
+        case let .drag(distance):
+            guard !reduceMotion else { return }
+            let step = distance < 0 ? 1 : -1
+            let next = current + step
+            let points = distance / model.interfaceScale
+            let neighbor = destinations.indices.contains(next) ? destinations[next].page : nil
+            if pageSwipeDirection != step { pageSwipeDirection = step }
+            if pageSwipeNeighbor != neighbor { pageSwipeNeighbor = neighbor }
+            withTransaction(Transaction(animation: nil)) {
+                pageSwipeMotion.offset = neighbor == nil
+                    ? points / (4 + abs(points) / 35)
+                    : min(pageSwipeStride, max(-pageSwipeStride, points))
+            }
+        case let .finish(step, velocity):
+            guard let step, destinations.indices.contains(current + step) else {
+                settlePageSwipe()
+                return
+            }
+            let destination = destinations[current + step]
+            if reduceMotion {
+                openSwipeDestination(destination)
+                return
+            }
+            let transition = UUID()
+            let source = model.pageID
+            pageSwipeTransition = transition
+            pageSwipeDirection = step
+            pageSwipeNeighbor = destination.page
+            let target = CGFloat(-step) * pageSwipeStride
+            let remaining = abs(target - pageSwipeMotion.offset)
+            let releaseSpeed = max(0, velocity / model.interfaceScale * CGFloat(-step))
+            let duration = min(0.23, max(0.095, Double(remaining / (3_000 + releaseSpeed * 0.5))))
+            let controlY = min(0.82, 0.38 + Double(releaseSpeed) / 6_000)
+            withAnimation(.timingCurve(0.25, controlY, 0.42, 1, duration: duration),
+                          completionCriteria: .logicallyComplete) {
+                pageSwipeMotion.offset = target
+            } completion: {
+                guard pageSwipeTransition == transition else { return }
+                withTransaction(Transaction(animation: nil)) {
+                    guard model.pageID == source else { clearPageSwipe(); return }
+                    pageSwipeAwaitingContent = true
+                    pageSwipeMotion.offset = 0
+                    openSwipeDestination(destination)
+                    if model.pageID != destination.page { clearPageSwipe() }
+                }
+            }
+        }
+    }
+
+    private var pageSwipeReadyToReveal: Bool {
+        guard pageSwipeAwaitingContent, launcherVisible,
+              let destination = pageSwipeNeighbor, destination == model.pageID,
+              presentation.page == destination else { return false }
+        switch model.swipeDestinations.first(where: { $0.page == destination })?.command?.rawValue {
+        case CompactLauncherShortcut.clipboard.rawValue:
+            return !model.clipboard.searching && !model.clipboard.loadingDetail
+        case CompactLauncherShortcut.files.rawValue:
+            return !model.fileSearch.isSearching
+        default:
+            return destination != .root || !model.searchesFilesHere || !model.fileSearch.isSearching
+        }
+    }
+
+    private func clearPageSwipe() {
+        pageSwipeTransition = nil
+        pageSwipeNeighbor = nil
+        pageSwipeMotion.offset = 0
+        pageSwipeAwaitingContent = false
+        pageSwipePreviewOpacity = 1
+    }
+
+    private var pageSwipeStride: CGFloat { VisualStyle.launcherWidth + 10 }
+
+    private func pageSwipePreview(_ pageID: PageID) -> some View {
+        let destination = model.launcherModules?.page(pageID)
+        let shortcut = model.swipeDestinations.first(where: { $0.page == pageID })?.command
+        let rows: [LauncherSwipePreview.Row]
+        let detail: String?
+        let emptyTitle: String
+        switch shortcut?.rawValue {
+        case CompactLauncherShortcut.files.rawValue:
+            let files = swipeFiles ?? []
+            rows = files.map { .init(id: $0.id, title: $0.name, detail: $0.url.path, symbol: "doc") }
+            detail = files.first?.url.path
+            emptyTitle = swipeFiles == nil ? "正在载入最近使用的文件…" : "没有最近使用的文件"
+        case CompactLauncherShortcut.snippets.rawValue:
+            let snippets = model.snippets.entries.prefix(12)
+            rows = snippets.map { .init(id: $0.id, title: $0.title, detail: $0.keyword, symbol: $0.icon ?? "text.alignleft") }
+            detail = snippets.first?.text
+            emptyTitle = "没有文字片段"
+        case CompactLauncherShortcut.clipboard.rawValue:
+            let clips = swipeClips ?? Array(model.clipboard.items.prefix(12))
+            rows = clips.map { .init(id: $0.id, title: $0.preview, detail: $0.source, symbol: "clipboard") }
+            detail = clips.first?.preview
+            emptyTitle = swipeClips == nil && clips.isEmpty ? "正在载入剪贴板…" : "没有剪贴板记录"
+        default:
+            let commands = model.commands(in: nil, query: mainSearchQuery, page: .root).prefix(12)
+            rows = commands.map { .init(id: $0.id, title: $0.name, detail: $0.detail, symbol: $0.symbol) }
+            detail = nil
+            emptyTitle = "没有匹配结果"
+        }
+        return LauncherSwipePreview(title: destination?.placeholder ?? (mainSearchQuery.isEmpty ? "搜索应用、文件和命令…" : mainSearchQuery),
+                                    badge: destination?.badge, rows: rows, detail: detail, emptyTitle: emptyTitle)
+    }
+
+    private func openSwipeDestination(_ destination: (page: PageID, command: CommandID?)) {
+        if let command = destination.command {
+            model.runCommand(command, origin: .search, usageKey: command.rawValue)
+            if command == CompactLauncherShortcut.files.id, model.pageID == destination.page {
+                model.fileSearch.usePreparedRecentsOnNextSearch()
+            }
+        } else {
+            mainSearchExpanded = true
+            model.compactExpanded = true
+            model.pageID = .root
+        }
+    }
+
+    private func settlePageSwipe() {
+        withAnimation(reduceMotion ? nil : .timingCurve(0.2, 0.72, 0.44, 1, duration: 0.17), completionCriteria: .logicallyComplete) {
+            pageSwipeMotion.offset = 0
+        } completion: {
+            if pageSwipeMotion.offset == 0, pageSwipeTransition == nil { pageSwipeNeighbor = nil }
+        }
     }
 
     private func updatePresentation(visible: Bool) {
@@ -514,6 +739,18 @@ struct Launcher: View {
     }
 
     private var showsTypeFilter: Bool { showsFileResults || page?.typeFilter != nil }
+
+    private func launcherSearchBar(compactSurface: Bool) -> some View {
+        let split = compactSurface && model.isCompact
+        let glass = model.windowMode == "compact" && model.presentedLauncherHeight <= 82
+        let separation = split ? 1 : 1 - model.compactBarMergeProgress
+        return CompactLauncherBar(model: model, separation: separation,
+                                  interactive: split, showsGlass: glass) {
+            searchBar
+        }
+        .animation(reduceMotion ? nil : .spring(duration: split ? 0.46 : 0.24, bounce: split ? 0.18 : 0),
+                   value: split)
+    }
 
     private var searchBar: some View {
         HStack(spacing: 12) {
