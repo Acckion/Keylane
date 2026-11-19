@@ -544,8 +544,7 @@ struct Launcher: View {
                 case .none:
                     Spacer(minLength: 0)
                 }
-                if model.pageID == .root, model.aiInteraction.showsRootHint, quickAIEntryEnabled,
-                   !model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if model.pageID == .root, model.aiInteraction.showsRootHint, quickAIEntryEnabled {
                     Button { _ = launchQuickAI(model.query) } label: {
                         HStack(spacing: 6) {
                             Text("Quick AI")
@@ -569,8 +568,7 @@ struct Launcher: View {
 
     private func openQuickAI(_ query: String) -> Bool {
         guard presentation.page == .root, model.pageID == .root, model.aiInteraction.rootTab,
-              menu == nil, inlineEmojiTarget == nil, argumentTarget == nil, rootScriptArguments == nil,
-              !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+              menu == nil, inlineEmojiTarget == nil, argumentTarget == nil, rootScriptArguments == nil else { return false }
         return launchQuickAI(query)
     }
     private var quickAIEntryEnabled: Bool {
@@ -585,7 +583,7 @@ struct Launcher: View {
             model.openSettings(page: AIModule.models.page)
             return true
         }
-        return model.runCommand(QuickAILauncher.commandID, origin: .search, arguments: [query])
+        return model.runCommand(QuickAILauncher.commandID, origin: .search, arguments: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [query])
     }
 
     @ViewBuilder private var typeFilter: some View {

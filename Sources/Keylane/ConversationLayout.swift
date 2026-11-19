@@ -6,6 +6,7 @@ struct ConversationLayout<Content: View, Composer: View, Trailing: View>: View {
     let title: String
     let subtitle: String
     let isEmpty: Bool
+    var contextPreview: String? = nil
     var emptyTitle = "随时提问"
     var emptyDescription = "直接在启动器中向 AI 提问。"
     let back: () -> Void
@@ -43,6 +44,9 @@ struct ConversationLayout<Content: View, Composer: View, Trailing: View>: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                         Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                        if let contextPreview, !contextPreview.isEmpty {
+                            Text(contextPreview).font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                        }
                     }
                     Spacer(minLength: 8)
                     trailing()
@@ -60,16 +64,17 @@ struct ConversationLayout<Content: View, Composer: View, Trailing: View>: View {
 }
 
 struct ConversationComposer<Leading: View, Input: View, Trailing: View>: View {
+    var inputHeight: CGFloat = VisualStyle.launcherControlDiameter
     @ViewBuilder let leading: () -> Leading
     @ViewBuilder let input: () -> Input
     @ViewBuilder let trailing: () -> Trailing
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .bottom, spacing: 8) {
             leading().frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
             input()
                 .padding(.horizontal, 14)
-                .frame(height: VisualStyle.launcherControlDiameter)
+                .frame(height: inputHeight)
                 .modifier(LauncherMenuSurface(open: false))
             trailing().frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
         }

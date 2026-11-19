@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import CoreText
 import Combine
 import Security
 import KeylaneCore
@@ -93,6 +95,12 @@ interaction.chatFloating = true
 let reloadedInteraction = AIInteractionPreferences(preferences: prefs)
 precondition(reloadedInteraction.rootTab && reloadedInteraction.rootFallback &&
              reloadedInteraction.chatReturn && reloadedInteraction.chatFloating)
+interaction.primaryAction = .copy
+interaction.modelPreference = .fast
+let preferredModel = UUID()
+interaction.preferenceModels[QuickAIModelPreference.fast.rawValue] = preferredModel.uuidString
+let videoPreferences = AIInteractionPreferences(preferences: prefs)
+precondition(videoPreferences.primaryAction == .copy && videoPreferences.modelPreference == .fast && videoPreferences.preferredModelID == preferredModel)
 let composer = AIChatComposer()
 composer.offer("   ")
 precondition(composer.text.isEmpty)
@@ -235,6 +243,84 @@ RunLoop.current.run(until: Date().addingTimeInterval(0.7))
 precondition(!quick.isInChat && !quick.running && quick.turns.isEmpty)
 print("PASS AI Chat handoff: same active turn after launcher leaves; closing discards the session and late results")
 
+// Video parity: real file parsing and an isolated, simulated conversation lifecycle.
+let videoDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-video-" + UUID().uuidString)
+try FileManager.default.createDirectory(at: videoDirectory, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: videoDirectory) }
+let textURL = videoDirectory.appendingPathComponent("fixture.md")
+try Data("Attachment fixture content".utf8).write(to: textURL)
+let attachment = try AIFileAttachment.read(textURL)
+precondition(attachment.name == "fixture.md" && attachment.text == "Attachment fixture content")
+let symlink = videoDirectory.appendingPathComponent("alias.md")
+try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: textURL)
+do { _ = try AIFileAttachment.read(symlink); fatalError("Symbolic-link attachment was accepted") } catch {}
+do { _ = try AIFileAttachment.read(videoDirectory); fatalError("Directory attachment was accepted") } catch {}
+let binaryURL = videoDirectory.appendingPathComponent("binary.bin")
+try Data([0, 255, 0, 255]).write(to: binaryURL)
+do { _ = try AIFileAttachment.read(binaryURL); fatalError("Binary attachment was accepted") } catch {}
+let largeURL = videoDirectory.appendingPathComponent("large.txt")
+try Data(repeating: 65, count: 32_001).write(to: largeURL)
+do { _ = try AIFileAttachment.read(largeURL); fatalError("Oversize attachment was accepted") } catch {}
+let pdfURL = videoDirectory.appendingPathComponent("fixture.pdf")
+var mediaBox = CGRect(x: 0, y: 0, width: 300, height: 200)
+let pdfContext = CGContext(consumer: CGDataConsumer(url: pdfURL as CFURL)!, mediaBox: &mediaBox, nil)!
+pdfContext.beginPDFPage(nil)
+pdfContext.textPosition = CGPoint(x: 20, y: 100)
+CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: "PDF fixture", attributes: [.font: NSFont.systemFont(ofSize: 14)])), pdfContext)
+pdfContext.endPDFPage(); pdfContext.closePDF()
+let pdfAttachment = try AIFileAttachment.read(pdfURL)
+precondition(pdfAttachment.text.contains("PDF fixture"))
+let videoHistory = AIChatHistory(url: videoDirectory.appendingPathComponent("history.sqlite"))
+let preferredQuick = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), preferredQuickModel: { legacy.id }, readKey: { _ in nil })
+precondition(preferredQuick.currentConnection?.id == legacy.id)
+precondition(preferredQuick.chooseQuickModel(second.id) && preferredQuick.currentConnection?.id == second.id)
+preferredQuick.reset()
+precondition(preferredQuick.currentConnection?.id == legacy.id, "New questions must keep the configured automatic model preference")
+let video = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: videoHistory, readKey: { _ in nil })
+FixtureProtocol.mode = "stream"
+video.pendingFiles = [attachment]
+precondition(video.submit("Summarize the attachment"))
+precondition(video.pendingFiles.isEmpty && video.turns.last?.files == [attachment])
+wait("Attached prompt completes") { !video.running }
+precondition(video.messages(for: "follow up").contains { $0.content.contains("Attachment fixture content") })
+precondition(video.turns.first?.question == "Summarize the attachment", "UI question must not expose the extracted file body")
+video.pendingFiles = [attachment]
+precondition(video.regenerate())
+precondition(video.pendingFiles == [attachment], "Regenerate must preserve a newly drafted attachment")
+wait("Regenerated answer") { !video.running }
+precondition(video.turns.count == 1 && video.turns.first?.files == [attachment])
+precondition(video.chooseQuickModel(legacy.id))
+precondition(video.currentConnection?.id == legacy.id && video.turns.count == 1)
+precondition(video.regenerate(modelID: second.id))
+wait("Regenerate with another model") { !video.running }
+precondition(video.currentConnection?.id == second.id && video.turns.count == 1)
+let firstVideoChat = video.chatID!
+wait("First quick conversation saved") { video.chats.contains { $0.id == firstVideoChat } }
+video.reset()
+precondition(video.pendingFiles.isEmpty && video.submit("Second conversation"))
+wait("Second quick conversation saved") { !video.running && video.chats.count == 2 }
+let secondVideoChat = video.chatID!
+precondition(video.neighboringChat(-1) == firstVideoChat)
+video.navigateChat(-1)
+wait("Restore previous quick conversation") { !video.loadingChat && video.chatID == firstVideoChat }
+precondition(video.turns.first?.files == [attachment] && video.neighboringChat(1) == secondVideoChat)
+let restartedQuick = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: videoHistory, readKey: { _ in nil })
+wait("New controller loads local quick history") { restartedQuick.chats.count == 2 }
+restartedQuick.openChat(firstVideoChat)
+wait("Local Quick AI recovery after controller restart") { !restartedQuick.loadingChat && restartedQuick.chatID == firstVideoChat }
+precondition(restartedQuick.turns.first?.files == [attachment])
+let link = URL(string: AIChatLink.make(firstVideoChat))!
+precondition(AIChatLink.parse(link) == firstVideoChat)
+precondition(AIChatLink.parse(URL(string: "keylane://ai/chat/" + firstVideoChat.uuidString + "?prompt=unsafe")!) == nil)
+precondition(AIChatLink.parse(URL(string: "https://ai/chat/" + firstVideoChat.uuidString)!) == nil)
+video.navigateChat(1)
+wait("Restore next quick conversation") { !video.loadingChat && video.chatID == secondVideoChat }
+video.deleteChat(secondVideoChat)
+wait("Quick chat deletion") { video.chatID == nil && video.chats.count == 1 }
+let persistedTurn = try JSONDecoder().decode(QuickAIController.Turn.self, from: JSONEncoder().encode(video.turns.first ?? QuickAIController.Turn(question: "legacy")))
+precondition(persistedTurn.files == nil)
+print("PASS Quick AI video workflow: text/PDF files, bounded reads, symlink/binary rejection, attachment context, regeneration/model switching, draft preservation, persistent previous/next chats, deletion and deep links")
+
 let historyDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-history-" + UUID().uuidString)
 defer { try? FileManager.default.removeItem(at: historyDirectory) }
 let historyURL = historyDirectory.appendingPathComponent("history.sqlite")
@@ -247,7 +333,7 @@ settings.setDefault(legacy.id, for: .chat)
 precondition(conversation.currentConnection?.id == second.id)
 FixtureProtocol.mode = "stream"
 precondition(conversation.submit("保留这段对话"))
-precondition(!FileManager.default.fileExists(atPath: historyURL.path))
+wait("Quick AI persists before transfer to AI Chat") { conversation.chatID != nil && FileManager.default.fileExists(atPath: historyURL.path) }
 conversation.beginChat()
 precondition(conversation.currentConnection?.id == second.id)
 let savedID = conversation.chatID!

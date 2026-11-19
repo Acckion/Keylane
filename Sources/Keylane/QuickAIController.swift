@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 
@@ -7,9 +8,19 @@ final class QuickAIController: ObservableObject {
         let question: String
         var answer = ""
         var complete = false
+        var files: [AIFileAttachment]?
+        var requestQuestion: String { AIFileAttachment.prompt(question, files: files ?? []) }
     }
 
     @Published private(set) var turns: [Turn] = []
+    @Published var pendingFiles: [AIFileAttachment] = []
+    @Published private(set) var loadingFiles = false
+    @Published var fileError = ""
+    @Published var textScale: Double = 1
+    @Published private(set) var quickModelIsAutomatic = true
+    let revealMessage = PassthroughSubject<UUID, Never>()
+    private var revealedMessage: UUID?
+    private var fileLoadRevision = UUID()
     @Published private(set) var running = false
     @Published private(set) var status = ""
     @Published private(set) var chats: [AIChatSummary] = []
@@ -27,6 +38,7 @@ final class QuickAIController: ObservableObject {
     private let history: AIChatHistory?
     private let configuration: AIConfiguration
     private let runtime: AIRuntime
+    private let preferredQuickModel: (() -> UUID?)?
     private let readKey: @Sendable (AIConnection) throws -> String?
     private var configurationChanges: AnyCancellable?
     private var task: Task<Void, Never>?
@@ -35,19 +47,26 @@ final class QuickAIController: ObservableObject {
     private(set) var isInChat = false
 
     init(configuration: AIConfiguration, runtime: AIRuntime, history: AIChatHistory? = nil,
-         observesDefaultConnection: Bool = true,
+         observesDefaultConnection: Bool = true, preferredQuickModel: (() -> UUID?)? = nil,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
         self.configuration = configuration
         self.runtime = runtime
         self.history = history
         self.readKey = readKey
+        self.preferredQuickModel = preferredQuickModel
+        refreshHistory(restoreLatest: false)
         guard observesDefaultConnection else { return }
         configurationChanges = configuration.$state.dropFirst()
             .sink { [weak self] next in
                 guard let self else { return }
                 let current = self.connection(in: self.configuration.state)
                 let updated = self.connection(in: next)
-                guard current.map(AIChatRecord.ModelReference.init) != updated.map(AIChatRecord.ModelReference.init)
+                let oldDefault = self.configuration.state.connection(for: .quick)
+                let newDefault = next.connection(for: .quick)
+                let changedAutomaticDefault = !self.isInChat && self.quickModelIsAutomatic &&
+                    (oldDefault.map(AIChatRecord.ModelReference.init) != newDefault.map(AIChatRecord.ModelReference.init)
+                     || oldDefault?.mode != newDefault?.mode)
+                guard changedAutomaticDefault || current.map(AIChatRecord.ModelReference.init) != updated.map(AIChatRecord.ModelReference.init)
                     || current?.mode != updated?.mode else { return }
                 if self.isInChat { self.stop() }
                 else { self.reset() }
@@ -59,11 +78,13 @@ final class QuickAIController: ObservableObject {
 
     private func connection(in state: AIConfiguration.State) -> AIConnection? {
         guard state.enabled else { return nil }
-        if isInChat, let conversationModel {
+        if let conversationModel {
             return state.connections.first {
                 $0.id == conversationModel.profileID && $0.isConfigured && AIChatRecord.ModelReference($0) == conversationModel
             }
         }
+        if !isInChat, let id = preferredQuickModel?(),
+           let connection = state.connections.first(where: { $0.id == id && $0.isConfigured }) { return connection }
         return state.connection(for: isInChat ? .chat : .quick)
     }
 
@@ -80,22 +101,27 @@ final class QuickAIController: ObservableObject {
 
     @discardableResult
     func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil) -> Bool {
-        guard !running, !loadingChat, configuration.state.enabled,
+        guard !running, !loadingChat, !loadingFiles, configuration.state.enabled,
               !isInChat || override == nil,
               let connection = override ?? currentConnection, connection.isConfigured,
               configuration.state.connections.contains(connection),
               conversationModel == nil || conversationModel == AIChatRecord.ModelReference(connection) else { return false }
-        let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let question = raw.isEmpty && !pendingFiles.isEmpty ? "请查看附加文件。" : raw
         guard !question.isEmpty else { return false }
         let maximumQuestionBytes = 32_000
-        guard question.utf8.count <= maximumQuestionBytes else {
+        let requestQuestion = AIFileAttachment.prompt(question, files: pendingFiles)
+        guard requestQuestion.utf8.count <= maximumQuestionBytes else {
             status = "问题太长，请缩短后重试。"
             return false
         }
 
-        let requestMessages = messages(for: question, instructions: instructions ?? (isInChat && !chatInstructions.isEmpty ? chatInstructions : nil))
+        let requestMessages = messages(for: requestQuestion, instructions: instructions ?? (isInChat && !chatInstructions.isEmpty ? chatInstructions : nil))
         if !isInChat && turns.count >= turnLimit { turns.removeFirst(turns.count - turnLimit + 1) }
-        let turn = Turn(question: question)
+        let turn = Turn(question: question, files: pendingFiles.isEmpty ? nil : pendingFiles)
+        pendingFiles = []
+        fileError = ""
+        revealedMessage = nil
         conversationModel = AIChatRecord.ModelReference(connection)
         turns.append(turn)
         activeID = turn.id
@@ -130,10 +156,10 @@ final class QuickAIController: ObservableObject {
         var history = [AIMessage]()
         var remaining = 64_000 - question.utf8.count
         for previous in turns.reversed() where previous.complete {
-            let size = previous.question.utf8.count + previous.answer.utf8.count
+            let size = previous.requestQuestion.utf8.count + previous.answer.utf8.count
             guard size <= remaining else { break }
             history.append(AIMessage(role: .assistant, content: previous.answer))
-            history.append(AIMessage(role: .user, content: previous.question))
+            history.append(AIMessage(role: .user, content: previous.requestQuestion))
             remaining -= size
         }
         var messages = instructions.map { [AIMessage(role: .system, content: $0)] } ?? []
@@ -163,7 +189,7 @@ final class QuickAIController: ObservableObject {
     }
 
     func openChat(_ id: UUID) {
-        guard isInChat, let history else { return }
+        guard let history else { return }
         if chatID == id {
             historyRevision = UUID()
             loadingChat = false
@@ -174,7 +200,7 @@ final class QuickAIController: ObservableObject {
         historyRevision = revision
         loadingChat = true
         history.perform({ try $0.load(id) }) { [weak self] result in
-            guard let self, self.isInChat, self.historyRevision == revision else { return }
+            guard let self, self.historyRevision == revision else { return }
             self.loadingChat = false
             switch result {
             case .success(let record?):
@@ -183,6 +209,12 @@ final class QuickAIController: ObservableObject {
                 self.chatID = record.id
                 self.conversationModel = record.content.model
                 self.turns = record.content.turns
+                self.pendingFiles = []
+                self.fileError = ""
+                self.fileLoadRevision = UUID()
+                self.loadingFiles = false
+                self.revealedMessage = nil
+                self.quickModelIsAutomatic = false
                 self.chatInstructions = record.content.instructions ?? ""
                 self.status = ""
                 self.historyError = ""
@@ -194,7 +226,7 @@ final class QuickAIController: ObservableObject {
     }
 
     func deleteChat(_ id: UUID) {
-        guard isInChat, let history else { return }
+        guard let history else { return }
         if chatID == id { reset() }
         else if loadingChat {
             historyRevision = UUID()
@@ -238,12 +270,18 @@ final class QuickAIController: ObservableObject {
         chatID = nil
         conversationModel = nil
         turns = []
+        pendingFiles = []
+        fileError = ""
+        fileLoadRevision = UUID()
+        loadingFiles = false
+        revealedMessage = nil
+        quickModelIsAutomatic = true
         chatInstructions = ""
         status = ""
     }
 
     private func saveChat() {
-        guard isInChat, let history, let conversationModel, !turns.isEmpty else { return }
+        guard let history, let conversationModel, !turns.isEmpty else { return }
         let id = chatID ?? UUID()
         chatID = id
         let record = AIChatRecord(id: id, content: .init(model: conversationModel, turns: turns, instructions: chatInstructions.isEmpty ? nil : chatInstructions))
@@ -254,10 +292,11 @@ final class QuickAIController: ObservableObject {
 
     private func refreshHistory(restoreLatest: Bool) {
         guard let history else { return }
-        let revision = historyRevision
+        let revision = UUID()
+        historyRevision = revision
         loadingChat = restoreLatest
         history.perform({ try $0.list() }) { [weak self] result in
-            guard let self, self.isInChat else { return }
+            guard let self else { return }
             self.applyHistory(result)
             guard self.historyRevision == revision else { return }
             self.loadingChat = false
@@ -266,7 +305,6 @@ final class QuickAIController: ObservableObject {
     }
 
     private func applyHistory(_ result: Result<[AIChatSummary], Error>) {
-        guard isInChat else { return }
         switch result {
         case .success(let summaries): chats = summaries; historyError = ""
         case .failure: historyError = "无法更新本地对话历史。"
@@ -277,5 +315,127 @@ final class QuickAIController: ObservableObject {
         activeID = nil
         task = nil
         running = false
+    }
+}
+
+extension QuickAIController {
+    var conversationTitle: String {
+        let title = chats.first(where: { $0.id == chatID })?.title ?? turns.first?.question ?? "新对话"
+        return String(title.split(separator: "\n").first.map(String.init)?.prefix(60) ?? "新对话")
+    }
+    var canRegenerate: Bool { !running && !loadingChat && !loadingFiles && !turns.isEmpty }
+
+    @discardableResult
+    func chooseQuickModel(_ id: UUID, automatic: Bool = false) -> Bool {
+        guard !running, !loadingChat, !isInChat, configuration.state.enabled,
+              let connection = configuration.state.connections.first(where: { $0.id == id && $0.isConfigured }) else { return false }
+        guard turns.isEmpty || currentConnection != nil else {
+            status = "这段历史的原模型不可用，请先新建对话。"
+            return false
+        }
+        conversationModel = AIChatRecord.ModelReference(connection)
+        quickModelIsAutomatic = automatic
+        saveChat()
+        return true
+    }
+
+    @discardableResult
+    func regenerate(modelID: UUID? = nil) -> Bool {
+        guard canRegenerate, let last = turns.last else { return false }
+        let oldModel = conversationModel
+        let oldAutomatic = quickModelIsAutomatic
+        let oldFiles = pendingFiles
+        if let modelID, !chooseQuickModel(modelID) { return false }
+        turns.removeLast()
+        pendingFiles = last.files ?? []
+        if submit(last.question) { pendingFiles = oldFiles; return true }
+        turns.append(last)
+        pendingFiles = oldFiles
+        conversationModel = oldModel
+        quickModelIsAutomatic = oldAutomatic
+        saveChat()
+        return false
+    }
+
+    func neighboringChat(_ direction: Int) -> UUID? {
+        let ids = chats.filter { !$0.archived }.sorted { $0.updated < $1.updated }.map(\.id)
+        guard !ids.isEmpty else { return nil }
+        guard let chatID, let index = ids.firstIndex(of: chatID) else { return direction < 0 ? ids.last : nil }
+        let next = index + (direction < 0 ? -1 : 1)
+        return ids.indices.contains(next) ? ids[next] : nil
+    }
+
+    func navigateChat(_ direction: Int) {
+        guard !running, let id = neighboringChat(direction) else { return }
+        openChat(id)
+    }
+
+    func previousMessage() {
+        guard !turns.isEmpty else { return }
+        let index = revealedMessage.flatMap { id in turns.firstIndex { $0.id == id } } ?? turns.count
+        let target = turns[max(0, index - 1)].id
+        revealedMessage = target
+        revealMessage.send(target)
+    }
+
+    func chooseFiles() {
+        guard !loadingFiles, !loadingChat else { return }
+        let revision = UUID()
+        fileLoadRevision = revision
+        let panel = NSOpenPanel()
+        panel.title = "附加文件"
+        panel.message = "支持 UTF-8 文本、代码和有文字的 PDF。文件仅在发送问题时交给所选模型。"
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.begin { [weak self] response in
+            guard response == .OK, let self, self.fileLoadRevision == revision else { return }
+            let urls = panel.urls
+            guard self.pendingFiles.count + urls.count <= 5 else { self.fileError = "每条消息最多附加 5 个文件。"; return }
+            self.loadingFiles = true
+            Task { @MainActor [weak self] in
+                let result = await Task.detached(priority: .userInitiated) {
+                    Result { try urls.map(AIFileAttachment.read) }
+                }.value
+                guard let self, self.fileLoadRevision == revision else { return }
+                self.loadingFiles = false
+                switch result {
+                case .success(let files):
+                    let combined = self.pendingFiles + files
+                    guard AIFileAttachment.prompt("", files: combined).utf8.count <= 30_000 else {
+                        self.fileError = "附件文字总量超过 30,000 字节，请减少附件。"; return
+                    }
+                    self.pendingFiles = combined
+                    self.fileError = ""
+                case .failure(let error): self.fileError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func copyChatData() {
+        struct Export: Encodable { let version = 1; let title: String; let turns: [Turn] }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        guard let data = try? encoder.encode(Export(title: conversationTitle, turns: turns)),
+              let text = String(data: data, encoding: .utf8) else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func copyDeeplink() {
+        guard let chatID else { return }
+        let text = AIChatLink.make(chatID)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    func confirmDelete() {
+        guard let chatID else { reset(); return }
+        let alert = NSAlert()
+        alert.messageText = "删除这段对话？"
+        alert.informativeText = "这会移除本机保存的这段对话。"
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn { deleteChat(chatID) }
     }
 }

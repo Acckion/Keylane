@@ -156,3 +156,14 @@ final class AIChatHistory: @unchecked Sendable {
         return try body(prepared)
     }
 }
+
+/// Local history IDs only; links never carry prompts, credentials or file paths.
+enum AIChatLink {
+    static func make(_ id: UUID) -> String { "keylane://ai/chat/" + id.uuidString.lowercased() }
+    static func parse(_ url: URL) -> UUID? {
+        guard url.scheme?.lowercased() == "keylane", url.host?.lowercased() == "ai",
+              url.user == nil, url.password == nil, url.port == nil, url.query == nil, url.fragment == nil,
+              url.pathComponents.count == 3, url.pathComponents[1] == "chat" else { return nil }
+        return UUID(uuidString: url.pathComponents[2])
+    }
+}
