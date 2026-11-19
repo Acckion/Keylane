@@ -26,13 +26,45 @@ final class Model: ObservableObject {
         didSet { UserDefaults.standard.set(rootFileContentSearch, forKey: "rootFileContentSearch") }
     }
     @Published var interfaceSize = UserDefaults.standard.string(forKey: "interfaceSize") ?? "medium" { didSet { UserDefaults.standard.set(interfaceSize, forKey: "interfaceSize") } }
-    @Published var windowMode = UserDefaults.standard.string(forKey: "windowMode") ?? "expanded" { didSet { UserDefaults.standard.set(windowMode, forKey: "windowMode") } }
+    @Published var windowMode = UserDefaults.standard.string(forKey: "windowMode") ?? "expanded" {
+        didSet {
+            UserDefaults.standard.set(windowMode, forKey: "windowMode")
+            if windowMode == "compact", pageID == .root, query.isEmpty { compactExpanded = false }
+        }
+    }
     @Published var compactExpanded = false
     let footerFeedback = LauncherFooterFeedbackPresenter()
     var interfaceScale: CGFloat { interfaceSize == "small" ? 0.9 : interfaceSize == "large" ? 1.1 : 1 }
     var isCompact: Bool { windowMode == "compact" && pageID == .root && query.isEmpty && !compactExpanded && footerFeedback.current == nil }
     @Published var presentedLauncherHeight: CGFloat = 470
-    var launcherHeight: CGFloat { isCompact ? 61 : 470 }
+    @Published var compactBarMergeProgress: CGFloat = 1
+    enum LauncherPageSwipe {
+        case drag(CGFloat)
+        case finish(Int?, velocity: CGFloat)
+    }
+    let launcherPageSwipes = PassthroughSubject<LauncherPageSwipe, Never>()
+
+    var swipeDestinations: [(page: PageID, command: CommandID?)] {
+        var destinations: [(page: PageID, command: CommandID?)] = [(.root, nil)]
+        guard let registry = launcherModules else { return destinations }
+        for shortcut in CompactLauncherShortcut.allCases {
+            guard registry.isRegisteredCommandEnabled(shortcut.id),
+                  let declaration = registry.declaration(shortcut.id),
+                  case let .page(page) = declaration.destination else { continue }
+            destinations.append((page, shortcut.id))
+        }
+        return destinations
+    }
+
+    var launcherHeight: CGFloat { isCompact ? VisualStyle.launcherTopInset : 470 }
+    var launcherBackdropOpacity: CGFloat {
+        Self.launcherBackdropOpacity(at: presentedLauncherHeight)
+    }
+
+    static func launcherBackdropOpacity(at height: CGFloat) -> CGFloat {
+        let progress = min(1, max(0, (height - VisualStyle.launcherTopInset) / 210))
+        return progress * progress * (3 - 2 * progress)
+    }
     var colorScheme: ColorScheme? { appearance == "dark" ? .dark : appearance == "light" ? .light : nil }
     @Published var query = ""
     @Published var pageID = PageID.root
@@ -704,10 +736,14 @@ final class Model: ObservableObject {
     var commands: [Entry] { commands(in: nil) }
 
     func commands(in namespace: LauncherCommandNamespace?) -> [Entry] {
+        commands(in: namespace, query: query, page: pageID)
+    }
+
+    func commands(in namespace: LauncherCommandNamespace?, query: String, page: PageID) -> [Entry] {
         guard let launcherModules else { return [] }
-        let input = LauncherCommandSearch.Input(query: query, page: pageID,
+        let input = LauncherCommandSearch.Input(query: query, page: page,
                                                 aliases: aliases, favorites: favorites, usage: usage,
-                                                favoriteOrder: orderedFavoriteIDs, history: pageID == .root ? searchUsage : .init(),
+                                                favoriteOrder: orderedFavoriteIDs, history: page == .root ? searchUsage : .init(),
                                                 sensitivity: rootSearchSensitivity, namespace: namespace,
                                                 fallbackOrder: fallbackCommandOrder,
                                                 allowsFallback: !searchesFilesHere ||
@@ -719,7 +755,11 @@ final class LauncherPanel: NSPanel {
     var dragHandler: ((NSEvent) -> Void)?
     var cancelWithoutFocusedView: (() -> Bool)?
 
+    var pageScrollHandler: ((NSEvent) -> Bool)?
+    var isCompactShortcutPoint: ((CGPoint) -> Bool)?
+
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .scrollWheel, pageScrollHandler?(event) == true { return }
         if event.type == .keyDown, event.keyCode == 53, isKeyWindow, attachedSheet == nil,
            event.modifierFlags.intersection([.command, .option, .shift, .control]).isEmpty {
             if event.isARepeat { return }
@@ -732,7 +772,8 @@ final class LauncherPanel: NSPanel {
         let point = event.locationInWindow
         if event.type == .leftMouseDown, dragHandler != nil,
            point.y >= frame.height - 10, point.y < frame.height,
-           point.x >= 28, point.x <= frame.width - 28 {
+           point.x >= 28, point.x <= frame.width - 28,
+           isCompactShortcutPoint?(point) != true {
             performDrag(with: event)
             return
         }
@@ -1017,6 +1058,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let modifiers = ModifierShortcuts()
     var outsideMonitor: Any?
     var localMonitor: Any?
+    private var outsidePageScrollMonitor: Any?
     let windowDiagnostics = WindowDiagnostics()
     var hotkeyStatus: Int32 = 0
     private var errorSubscription: AnyCancellable?
@@ -1028,6 +1070,16 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var launcherHiddenAt: TimeInterval?
     private var idleMemoryTrim: DispatchWorkItem?
     private var restingLauncherFrame: NSRect?
+    private var launcherGlassSubscription: AnyCancellable?
+    private var pageScroll = HorizontalScrollSelection()
+    private var pageScrollSample: TimeInterval?
+    private var pageScrollVelocity: CGFloat = 0
+
+    private func resetPageScroll() {
+        pageScroll.reset()
+        pageScrollSample = nil
+        pageScrollVelocity = 0
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         FileActionsWindow.shared.onEscape = { [weak self] in self?.closeUtilityWindowOnEscape() }
@@ -1041,14 +1093,38 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isMovableByWindowBackground = true
         let glass = LauncherGlassView(frame: .zero)
+        let backing = NSView()
+        backing.wantsLayer = true
+        backing.layer?.cornerRadius = VisualStyle.launcherCornerRadius
+        backing.layer?.cornerCurve = .continuous
+        backing.layer?.masksToBounds = true
         let hosting = NSHostingView(rootView: Launcher(model: model))
-        // The panel owns the viewport, including fractional interface scales.
+        // The panel owns the viewport. SwiftUI's scaled ideal size can differ
+        // from it by a point and must not feed back into AppKit window sizing.
         hosting.sizingOptions = []
-        glass.contentView = hosting
-        window.contentView = glass; window.isReleasedWhenClosed = false; window.center()
+        for view in [glass as NSView, hosting as NSView] {
+            backing.addSubview(view)
+            view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: backing.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: backing.trailingAnchor),
+                view.topAnchor.constraint(equalTo: backing.topAnchor),
+                view.bottomAnchor.constraint(equalTo: backing.bottomAnchor)
+            ])
+        }
+        launcherGlassSubscription = model.$presentedLauncherHeight.sink { [weak glass] height in
+            glass?.alphaValue = Model.launcherBackdropOpacity(at: height)
+        }
+        window.contentView = backing; window.isReleasedWhenClosed = false; window.center()
         window.delegate = self
         dragGuides = LauncherDragGuides(window: window)
         (window as? LauncherPanel)?.dragHandler = { [weak self] event in self?.dragGuides?.performDrag(with: event) }
+        (window as? LauncherPanel)?.isCompactShortcutPoint = { [weak self] point in
+            self?.compactShortcut(at: point) != nil
+        }
+        (window as? LauncherPanel)?.pageScrollHandler = { [weak self] event in
+            self?.handlePageScroll(event) ?? false
+        }
         window.autorecalculatesKeyViewLoop = true
         appearanceSubscription = model.$appearance.sink { [weak self] value in
             let appearance = value == "dark" ? NSAppearance(named: .darkAqua) : value == "light" ? NSAppearance(named: .aqua) : nil
@@ -1070,13 +1146,22 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         .debounce(for: .zero, scheduler: DispatchQueue.main)
         .sink { [weak self] _ in self?.updateLauncherGeometry() }
         updateLauncherGeometry()
-        outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+        outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             guard let self, self.window.attachedSheet == nil else { return }
+            if self.routeCompactShortcutClick(event, at: NSEvent.mouseLocation) { return }
             self.hideLauncher(reason: "outsideClick")
+        }
+        // Scroll events follow the pointer. A key launcher is often opened
+        // by shortcut while the pointer is still over the previous app.
+        outsidePageScrollMonitor = NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, self.window.isVisible, self.window.isKeyWindow else { return }
+            _ = self.handlePageScroll(event)
         }
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             if let self, event.window !== self.window, self.window.attachedSheet == nil,
                !FilePreview.shared.owns(event.window) {
+                let location = event.window?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
+                if self.routeCompactShortcutClick(event, at: location) { return nil }
                 self.hideLauncher(reason: "otherWindow")
             }
             return event
@@ -1190,6 +1275,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.menuBar.shutdown()
         if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
+        if let outsidePageScrollMonitor { NSEvent.removeMonitor(outsidePageScrollMonitor) }
         shortcuts.stop(); modifiers.stop()
         model.updates.installOnQuit()
     }
@@ -1261,6 +1347,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if model.placement == "remember" { window.saveFrame(usingName: "KeylaneLauncher") }
         launcherHiddenAt = ProcessInfo.processInfo.systemUptime
         window.orderOut(nil)
+        if model.windowMode == "compact", model.pageID == .root, model.query.isEmpty {
+            model.compactExpanded = false
+        }
+        pageScroll.reset()
         model.footerFeedback.clear()
         NotificationCenter.default.post(name: .launcherHidden, object: nil)
         windowDiagnostics.record("hidden:" + reason, launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
@@ -1290,6 +1380,71 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: trim)
     }
 
+    private func compactShortcut(at windowPoint: CGPoint) -> CompactLauncherShortcut? {
+        guard window.isVisible, model.isCompact,
+              model.presentedLauncherHeight <= VisualStyle.launcherTopInset + 0.5 else { return nil }
+        let scale = model.interfaceScale
+        return CompactLauncherButtonGeometry.shortcut(at: CGPoint(
+            x: windowPoint.x / scale, y: (window.frame.height - windowPoint.y) / scale
+        ))
+    }
+
+    private func routeCompactShortcutClick(_ event: NSEvent, at screenPoint: CGPoint) -> Bool {
+        // The WindowServer can assign a click on a glass rim to the window
+        // behind it. Use the same circular geometry as the visible button.
+        guard event.type == .leftMouseDown,
+              let shortcut = compactShortcut(at: window.convertPoint(fromScreen: screenPoint)) else { return false }
+        if model.launcherModules?.isRegisteredCommandEnabled(shortcut.id) == true {
+            model.runCommand(shortcut.id, origin: .search, usageKey: shortcut.id.rawValue)
+        }
+        return true
+    }
+
+    private func handlePageScroll(_ event: NSEvent) -> Bool {
+        guard !model.isCompact, model.presentedLauncherHeight > VisualStyle.launcherTopInset + 0.5,
+              model.swipeDestinations.contains(where: { $0.page == model.pageID }),
+              !SearchField.isComposing else {
+            resetPageScroll()
+            return false
+        }
+        let horizontal = event.scrollingDeltaX
+        let vertical = event.scrollingDeltaY
+        let phase = event.phase
+        let isHorizontal = HorizontalScrollSelection.isHorizontal(horizontal, vertical)
+        if !event.momentumPhase.isEmpty { return isHorizontal }
+        if phase.contains(.began) { resetPageScroll() }
+        if phase.contains(.cancelled) {
+            resetPageScroll()
+            model.launcherPageSwipes.send(.finish(nil, velocity: 0))
+            return isHorizontal
+        }
+        if phase.isEmpty {
+            guard isHorizontal else { return false }
+            let threshold: Double = event.hasPreciseScrollingDeltas ? 8 : 1
+            if let distance = pageScroll.drag(horizontal: horizontal, vertical: vertical), abs(distance) >= threshold,
+               let direction = pageScroll.finish(threshold: threshold) {
+                model.launcherPageSwipes.send(.finish(direction, velocity: 0))
+            }
+            return true
+        }
+        if let distance = pageScroll.drag(horizontal: horizontal, vertical: vertical) {
+            if let previous = pageScrollSample {
+                let interval = max(1.0 / 120, event.timestamp - previous)
+                pageScrollVelocity = pageScrollVelocity * 0.35 + horizontal / interval * 0.65
+            }
+            pageScrollSample = event.timestamp
+            model.launcherPageSwipes.send(.drag(CGFloat(distance)))
+        }
+        if phase.contains(.ended) {
+            let sampleAge = event.timestamp - (pageScrollSample ?? 0)
+            let velocity = sampleAge < 0.08 ? pageScrollVelocity : 0
+            let direction = pageScroll.finish(threshold: 32)
+            resetPageScroll()
+            model.launcherPageSwipes.send(.finish(direction, velocity: velocity))
+        }
+        return isHorizontal
+    }
+
     func updateLauncherGeometry(animated: Bool = true) {
         guard window != nil, restingLauncherFrame == nil else { return }
         let backingScale = max(1, window.backingScaleFactor)
@@ -1316,6 +1471,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         guard abs(start.width - size.width) >= tolerance || abs(start.height - size.height) >= tolerance else {
             model.presentedLauncherHeight = model.launcherHeight
+            model.compactBarMergeProgress = model.isCompact ? 0 : 1
             return
         }
         let scale = model.interfaceScale
@@ -1324,26 +1480,42 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         guard animated, window.isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
               abs(start.height - target.height) > 1, sameInterfaceWidth else {
             model.presentedLauncherHeight = model.launcherHeight
+            model.compactBarMergeProgress = model.isCompact ? 0 : 1
             window.setFrame(target, display: true)
             return
         }
         resizeTarget = target
+        let expands = target.height > start.height
+        let startsAtCompactHeight = start.height / scale <= VisualStyle.launcherTopInset + 0.5
+        let initialMerge = model.compactBarMergeProgress
+        let mergeDuration = expands && startsAtCompactHeight ? 0.16 * (1 - initialMerge) : 0
         let began = ProcessInfo.processInfo.systemUptime
-        let duration = target.height > start.height ? 0.22 : 0.18
+        let duration = expands ? 0.34 : 0.23
         let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
             guard let self else { timer.invalidate(); return }
-            let progress = min(1, (ProcessInfo.processInfo.systemUptime - began) / duration)
-            let eased = 1 - pow(1 - progress, 3)
+            let elapsed = ProcessInfo.processInfo.systemUptime - began
+            if elapsed < mergeDuration {
+                let phase = elapsed / mergeDuration
+                self.model.compactBarMergeProgress = initialMerge + (1 - initialMerge) * phase
+                return
+            }
+            let progress = min(1, (elapsed - mergeDuration) / duration)
+            let merge: CGFloat = progress == 1 && self.model.isCompact ? 0 : 1
+            if self.model.compactBarMergeProgress != merge {
+                self.model.compactBarMergeProgress = merge
+            }
+            let eased = progress * progress * (3 - 2 * progress)
             let height = start.height + (target.height - start.height) * eased
             let top = start.maxY + (target.maxY - start.maxY) * eased
             let x = start.minX + (target.minX - start.minX) * eased
             let width = start.width + (target.width - start.width) * eased
             self.model.presentedLauncherHeight = progress == 1 ? self.model.launcherHeight : height / scale
-            self.window.setFrame(NSRect(x: x, y: top - height, width: width, height: height), display: true)
+            self.window.setFrame(NSRect(x: x, y: top - height, width: width, height: height), display: false)
             if progress == 1 {
                 timer.invalidate()
                 self.resizeTimer = nil
                 self.resizeTarget = nil
+                self.window.invalidateShadow()
             }
         }
         resizeTimer = timer

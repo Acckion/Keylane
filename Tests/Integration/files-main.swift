@@ -344,6 +344,17 @@ wait("System recents merge in time order and respect file, scope and ignore rule
 precondition(resultStatus == "最近使用" && recentQueryScopes.last == [scope.path, localScope.path])
 precondition(prefs.stringArray(forKey: "fileSearchRecentPaths") == [special.path, newer.path],
              "System recents should not be copied into saved local history")
+let expectedRecents = results.map(\.id)
+var preparedSwipeIDs: [String]?
+Task { preparedSwipeIDs = await controller.recentForLauncherSwipe().map(\.id) }
+wait("Swipe preparation uses the same recent ordering") { preparedSwipeIDs == expectedRecents }
+let afterPreparation = recentQueryScopes.count
+controller.usePreparedRecentsOnNextSearch()
+controller.search(" ")
+wait("Swipe activation immediately reuses prepared recents") {
+    !controller.isSearching && results.map(\.id) == expectedRecents
+}
+precondition(recentQueryScopes.count == afterPreparation, "Swipe activation started another Spotlight query")
 controller.cancel()
 results = []
 controller.search("  ")
