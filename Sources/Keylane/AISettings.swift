@@ -8,7 +8,7 @@ enum AIModule {
                                      keywords: "AI 模型 提供方 接口 API 密钥 Keychain 流式 Ollama")
 
     static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai-text-commands", title: "AI 命令",
-                                               keywords: "翻译 润色 摘要 自定义 提示词 导入 快捷键 translate polish summarize")
+                                               keywords: "润色 摘要 自定义 提示词 导入 快捷键 polish summarize")
     static let interactions = SettingsItem(id: "ai-interactions", page: "ai", title: "Quick AI 与聊天",
                                            keywords: "Tab 回车 发送 备选命令 窗口置顶")
 
