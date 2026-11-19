@@ -42,7 +42,7 @@ enum AIModule {
         let chatCommand = LauncherModule.Command(declaration: .init(
             id: .init(rawValue: "ai-chat"), title: "AI Chat", detail: "打开独立聊天窗口", symbol: "bubble.left.and.bubble.right",
             keywords: ["chat", "AI", "聊天", "对话"], destination: .action, settingsPage: "ai"
-        ), available: { configuration.state.enabled }, execute: { _ in openChat(nil) })
+        ), available: { configuration.state.enabled }, arguments: .init(count: 0...1) { _, arguments in openChat(arguments.first) })
         let textSession = AITextCommandSession(configuration: configuration, runtime: runtime)
         let library = CustomAICommandLibrary()
         let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)

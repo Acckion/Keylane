@@ -7,7 +7,7 @@ import KeylaneCore
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
     static func make(model: Model) -> [LauncherModule] {
-        let modules = [applications(model), host(model), AIModule.make(model: model), files(model), clipboard(model), AppleNotesModule.make(model: model),
+        let modules = [applications(model), host(model), AIModule.make(model: model), TranslatorModule.make(model: model), files(model), clipboard(model), AppleNotesModule.make(model: model),
                        QuicklinksModule.make(model: model), CalculatorLauncherModule.make(model: model), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model),
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model), DropShelfModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
