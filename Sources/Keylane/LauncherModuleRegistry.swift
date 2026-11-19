@@ -633,6 +633,10 @@ final class LauncherModuleRegistry {
         return permissionAllowsExecution(permission) ? nil : permission
     }
 
+    func isRegisteredCommandEnabled(_ id: CommandID) -> Bool {
+        byID[id].map { isCommandEnabled($0) } ?? false
+    }
+
     private func isCommandEnabled(_ command: Owned<LauncherModule.Command>) -> Bool {
         let value = command.value
         return isCommandEnabled(value.declaration.id, in: command.module) &&

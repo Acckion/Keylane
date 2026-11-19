@@ -261,10 +261,30 @@ final class ClipboardController: ObservableObject {
 
     deinit { timer?.invalidate(); detailRequest?.cancel(); pendingReload?.cancel() }
     func feedback(_ text: String) { status = text }
+    func recentForLauncherSwipe() async -> [ClipItem] {
+        guard let runtime else { return [] }
+        let category = ClipboardCategory(rawValue: kind)
+        let pins = pinnedOnly
+        return await withCheckedContinuation { continuation in
+            worker.async { [weak self] in
+                guard !runtime.cancelled, let store = self?.store else {
+                    continuation.resume(returning: [])
+                    return
+                }
+                continuation.resume(returning: (try? store.list(category: category, pinnedOnly: pins, limit: 12)) ?? [])
+            }
+        }
+    }
+
     func search(_ value: String) {
         guard runtime != nil else { return }
+        let opening = !presentationActive
         presentationActive = true
         query = value; searching = true; pendingSearch?.cancel(); pendingReload?.cancel(); generation += 1
+        if opening {
+            reload()
+            return
+        }
         let work = DispatchWorkItem { [weak self] in self?.reload() }; pendingSearch = work
         DispatchQueue.main.asyncAfter(deadline:.now()+0.06,execute:work)
     }
