@@ -56,6 +56,15 @@ func check(_ window: NSWindow, visible: Bool) {
 }
 let window = show()
 check(window, visible: false)
+let composer = Mirror(reflecting: owner).children.first { $0.label == "composer" }!.value as! AIChatComposer
+var composerFocusRequests = 0
+let focusObserver = composer.focusRequested.sink { composerFocusRequests += 1 }
+composer.text = "An unsent draft"
+let newItem = window.toolbar!.items.first { $0.itemIdentifier.rawValue == "chat.new" }!
+precondition(app.sendAction(newItem.action!, to: newItem.target, from: newItem))
+precondition(composer.text.isEmpty && composerFocusRequests == 1,
+             "The native New Chat action must clear the draft and focus the real composer column")
+focusObserver.cancel()
 let searchItem = window.toolbar!.items.first { $0.itemIdentifier.rawValue == "chat.search" }!
 precondition(app.sendAction(searchItem.action!, to: searchItem.target, from: searchItem))
 precondition(presentation.searchVisible)
