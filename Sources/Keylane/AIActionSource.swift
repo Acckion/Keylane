@@ -7,4 +7,3 @@ struct AIActionSource {
     let load: () async throws -> AIActionContext
     let isCurrent: (AIActionContext) async throws -> Bool
 }
-
