@@ -2,7 +2,7 @@ import Foundation
 
 /// Query-specific ranking policy shared by launcher command providers.
 public struct LauncherSearchRanking {
-    public enum Kind { case command, file, calculator, systemSetting }
+    public enum Kind: Equatable { case command, file, calculator, systemSetting }
 
     public enum Sensitivity: String, CaseIterable {
         case low, medium, high
