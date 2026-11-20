@@ -1,10 +1,12 @@
 import Combine
 import SwiftUI
+import KeylaneCore
 
 /// A window-edge activity indicator driven by an asynchronous loading state.
 struct WindowLoadingIndicator: View {
     let loading: AnyPublisher<Bool, Never>
 
+    @Environment(\.keylaneTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var loadingID: UUID?
     @State private var startedAt: Date?
@@ -53,11 +55,12 @@ struct WindowLoadingIndicator: View {
     }
 
     private func streak(width: CGFloat) -> some View {
+        let color = theme.flatMap { $0.usesSystemMaterial ? nil : $0.color(.loader).swiftUI } ?? Color.primary
         let light = LinearGradient(stops: [
             .init(color: .clear, location: 0),
-            .init(color: .primary.opacity(0.28), location: 0.46),
-            .init(color: .primary.opacity(0.62), location: 0.72),
-            .init(color: .primary.opacity(0.95), location: 0.88),
+            .init(color: color.opacity(0.28), location: 0.46),
+            .init(color: color.opacity(0.62), location: 0.72),
+            .init(color: color.opacity(0.95), location: 0.88),
             .init(color: .clear, location: 1)
         ], startPoint: .leading, endPoint: .trailing)
 

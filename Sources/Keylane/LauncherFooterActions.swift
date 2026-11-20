@@ -7,13 +7,14 @@ struct LauncherFooterActionBar: View {
     let keys: [String]
     let enabled: Bool
     let showsActions: Bool
+    var actionsTitle = "操作"
     let perform: () -> Void
     let showActions: () -> Void
 
     static let maximumWidth: CGFloat = 360
     private static let inset: CGFloat = 4
     private var primary: LauncherFooterButtonLabel { .init(title: title, keys: keys) }
-    private var actions: LauncherFooterButtonLabel { .init(title: "操作", keys: ["⌘", "K"]) }
+    private var actions: LauncherFooterButtonLabel { .init(title: actionsTitle, keys: ["⌘", "K"]) }
     private var actionsWidth: CGFloat { showsActions ? actions.width : 0 }
     var width: CGFloat { min(Self.maximumWidth, primary.width + actionsWidth + Self.inset * 2) }
     var primaryWidth: CGFloat { width - actionsWidth - Self.inset * 2 }

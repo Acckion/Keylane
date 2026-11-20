@@ -84,18 +84,12 @@ struct CompactLauncherBar<Search: View>: View, Animatable {
             GlassEffectContainer(spacing: 12) {
                 ZStack(alignment: .topLeading) {
                     if glassOpacity > 0 {
-                        Capsule()
-                            .fill(reduceTransparency ? Color(nsColor: .windowBackgroundColor) : .clear)
-                            .frame(width: searchWidth, height: diameter)
-                            .glassEffect(reduceTransparency ? .identity : LauncherGlassMaterial.swiftUI, in: Capsule())
+                        CompactLauncherMaterial(shape: Capsule(), width: searchWidth, height: diameter, reduceTransparency: reduceTransparency)
                             .opacity(glassOpacity)
                     }
                     if progress > 0 {
                         ForEach(buttons) { button in
-                            Circle()
-                                .fill(reduceTransparency ? Color(nsColor: .windowBackgroundColor) : .clear)
-                                .frame(width: diameter, height: diameter)
-                                .glassEffect(reduceTransparency ? .identity : LauncherGlassMaterial.swiftUI, in: Circle())
+                            CompactLauncherMaterial(shape: Circle(), width: diameter, height: diameter, reduceTransparency: reduceTransparency)
                                 .scaleEffect(button.scale)
                                 .opacity(button.opacity)
                                 .offset(x: button.offset)
@@ -153,5 +147,24 @@ struct CompactLauncherBar<Search: View>: View, Animatable {
 
     private func range(_ value: CGFloat, from start: CGFloat, to end: CGFloat) -> CGFloat {
         min(1, max(0, (value - start) / (end - start)))
+    }
+}
+
+/// Each compact control owns its fill; the enclosing frame stays transparent.
+struct CompactLauncherMaterial<S: Shape>: View {
+    let shape: S
+    let width: CGFloat
+    let height: CGFloat
+    let reduceTransparency: Bool
+    @Environment(\.keylaneTheme) private var theme
+    var body: some View {
+        shape.fill(reduceTransparency ? Color(nsColor: .windowBackgroundColor) : .clear)
+            .frame(width: width, height: height)
+            .overlay {
+                if let theme, !theme.usesSystemMaterial {
+                    ThemeBackgroundView(theme: theme).clipShape(shape)
+                }
+            }
+            .glassEffect(reduceTransparency ? .identity : LauncherGlassMaterial.swiftUI, in: shape)
     }
 }
