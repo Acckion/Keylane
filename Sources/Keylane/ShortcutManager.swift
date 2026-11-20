@@ -142,7 +142,7 @@ final class ShortcutManager {
         nextID += 1
         let result = RegisterEventHotKey(shortcut.key, shortcut.modifiers, EventHotKeyID(signature: 0x4B4C414E, id: id),
                                          GetApplicationEventTarget(), 0, &reference)
-        guard result == noErr, let reference else { throw Failure("快捷键已被系统或其他应用占用（\(result)）。") }
+        guard result == noErr, let reference else { throw Failure(ShortcutMapConversion.registrationError(result)) }
         return Registration(id: id, reference: reference, shortcut: shortcut, scope: scope)
     }
 

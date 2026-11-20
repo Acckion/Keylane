@@ -274,11 +274,11 @@ struct ThemePreview: View {
         let open = state.menu == (application ? .application : .actions)
         let bar = LauncherFooterActionBar(title: state.primaryTitle, keys: ["↩"], enabled: true, showsActions: true, actionsTitle: "Actions",
                                          perform: state.submit, showActions: { state.toggle(.actions) })
-        let width = open ? LauncherActionMenuPanel.width : application
+        let width = open ? LauncherActionListPanel.width : application
             ? state.feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) } ?? SecondaryPageBadge.width(for: "Theme Studio Preview") : bar.width
         return ZStack(alignment: application ? .bottomLeading : .bottomTrailing) {
             if open {
-                LauncherActionMenuPanel(title: state.menuTitle, items: state.items, selectedID: state.selectedAction?.id,
+                LauncherActionListPanel(title: state.menuTitle, items: state.items, selectedID: state.selectedAction?.id,
                     query: Binding(get: { state.menuQuery }, set: { state.menuQuery = $0; state.menuSelection = nil }),
                     focusToken: state.focusToken, wantsFocus: true, navigation: "arrows", activate: state.activate,
                     highlight: { state.menuSelection = $0 }, submit: state.submit, move: state.move, escape: state.back,
@@ -291,7 +291,7 @@ struct ThemePreview: View {
                 }
             } else { bar }
         }
-        .frame(width: width, height: open ? LauncherActionMenuPanel.rowsHeight(state.items) + 87 : VisualStyle.launcherControlDiameter,
+        .frame(width: width, height: open ? LauncherActionListPanel.rowsHeight(state.items) + 87 : VisualStyle.launcherControlDiameter,
                alignment: application ? .bottomLeading : .bottomTrailing)
         .modifier(LauncherMenuSurface(open: open))
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: open)

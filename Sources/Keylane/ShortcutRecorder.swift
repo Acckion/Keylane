@@ -12,6 +12,9 @@ struct ShortcutRecorder: View {
     var icon: () -> AnyView = { AnyView(Image(systemName: "keyboard")) }
     var presentation: Presentation = .popover
     let changed: (Shortcut?) -> Void
+    @StateObject private var map = ShortcutMapController()
+    @State private var confirming: [ShortcutMapEntry]?
+    @State private var checking = false
     @State private var recording = false
     @State private var hovering = false
     @State private var monitor: Any?
@@ -36,6 +39,7 @@ struct ShortcutRecorder: View {
                 .onReceive(NotificationCenter.default.publisher(for: .launcherHidden)) { _ in finish() }
             }
         }
+        .onChange(of: draft) { _, _ in confirming = nil }
         .onChange(of: recording) { _, active in if !active { finish() } }
         .onDisappear { finish() }
     }
@@ -93,6 +97,18 @@ struct ShortcutRecorder: View {
                     Text("等待输入…").font(.title3).foregroundStyle(.tertiary).frame(height: 48)
                 }
                 Text("点击修饰键可继续调整").font(.caption).foregroundStyle(.secondary)
+                if let draft {
+                    ForEach(map.overlaps(draft)) { item in
+                        Text("\(item.source == .system ? "系统占用" : "应用快捷键重叠")：\(item.title)")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    Text(map.loading ? "正在读取快捷键…" : map.overlaps(draft).isEmpty ? "未发现已知外部冲突" : "继续绑定可能影响上述操作")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(map.coverage).font(.caption).foregroundStyle(.secondary)
+                if confirming != nil {
+                    Text("再次点击“仍然绑定”以确认。").font(.caption).foregroundStyle(.orange)
+                }
             }.frame(maxWidth: .infinity).padding(28)
             Divider()
             HStack {
@@ -101,7 +117,7 @@ struct ShortcutRecorder: View {
                 Spacer()
                 Button("取消") { finish() }.buttonStyle(.plain)
                 Keycap(text: "Esc")
-                Button("完成", action: commitDraft).buttonStyle(.plain)
+                Button(checking ? "检查中…" : confirming == nil ? "完成" : "仍然绑定", action: commitDraft).buttonStyle(.plain).disabled(checking)
                 Keycap(text: "↩")
             }.padding(16)
         }
@@ -111,6 +127,8 @@ struct ShortcutRecorder: View {
     private func start() {
         guard !recording else { return }
         draft = shortcut
+        confirming = nil
+        map.load(ShortcutMapController.previousApplication)
         liveModifiers = []; keyHeld = false
         (NSApp.delegate as? Delegate)?.shortcuts.suspend(); recording = true
         resignObserver = NotificationCenter.default.addObserver(forName: NSApplication.willResignActiveNotification,
@@ -137,15 +155,25 @@ struct ShortcutRecorder: View {
         }
     }
     private func commitDraft() {
-        let value = draft
-        finish()
-        changed(value)
+        guard !checking else { return }
+        guard let value = draft else { finish(); changed(nil); return }
+        checking = true
+        map.load(map.target) {
+            checking = false
+            guard recording, draft == value else { confirming = nil; return }
+            let evidence = map.overlaps(value)
+            if !evidence.isEmpty && confirming != evidence { confirming = evidence; return }
+            finish()
+            changed(value)
+        }
     }
 
     private func finish() {
         guard recording || monitor != nil || resignObserver != nil else { return }
         if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
         resignObserver = nil
+        map.stop()
+        checking = false; confirming = nil
         draft = nil
         liveModifiers = []; keyHeld = false
         if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
