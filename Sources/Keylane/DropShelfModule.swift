@@ -72,6 +72,7 @@ enum DropShelfModule {
             actionShortcutsEnabled: true
         )
         page.moveHorizontal = { controller.moveShelf($0) }
+        page.navigateWhileTyping = true
         let anchor = SettingsItem(id: "dropShelf.behavior", page: settingsID, title: "暂存架交互", keywords: "晃动 摇晃 灵敏度 按键 快捷键 刘海 默认位置 添加文件 忽略应用 复制 拖出 最近 固定")
         return .init(id: .init(rawValue: settingsID), title: "暂存架", symbol: "tray", commands: commands, pages: [page],
                      settings: [.init(id: settingsID, title: "暂存架", symbol: "tray", subtitle: "收集文件、图片、链接与文字，再拖到目标应用。", order: 85,

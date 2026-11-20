@@ -80,6 +80,25 @@ final class DropShelfTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: asset.path))
         }
     }
+    func testExplicitlyPreservedEmptyShelfSurvivesRestartAndHistoryTrim() throws {
+        try fixture { _, store in
+            let preserved = try store.create()
+            try store.rename(preserved, title: "Empty shelf to keep")
+            try store.preserveEmptyShelf(preserved)
+            let transient = try store.create()
+            let reloaded = try DropShelfStore(directory: store.directory)
+            for index in 0..<11 {
+                let id = try reloaded.create()
+                try reloaded.addText("history \(index)", to: id)
+            }
+            try reloaded.trimHistory()
+            XCTAssertEqual(reloaded.shelf(preserved)?.title, "Empty shelf to keep")
+            XCTAssertEqual(reloaded.shelf(preserved)?.pinned, false)
+            XCTAssertNil(reloaded.shelf(transient))
+            XCTAssertEqual(reloaded.shelves.filter { !$0.items.isEmpty }.count, 10)
+        }
+    }
+
     func testClosingEmptyShelfDoesNotEvictRecentHistory() throws {
         try fixture { _, store in
             var saved: [UUID] = []

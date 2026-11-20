@@ -19,6 +19,8 @@ public final class DropShelfStore {
         public var title: String
         public var pinned: Bool
         public var items: [Item]
+        // Optional so archives written before this option still decode as transient.
+        fileprivate var preservedWhenEmpty: Bool? = nil
     }
     private struct Archive: Codable { var version = 1; var shelves: [Shelf] }
     public enum Failure: LocalizedError {
@@ -68,12 +70,17 @@ public final class DropShelfStore {
         try change { moveToFront(index) }
     }
 
+    public func preserveEmptyShelf(_ id: UUID) throws {
+        guard let index = index(id), shelves[index].items.isEmpty, shelves[index].preservedWhenEmpty != true else { return }
+        try change { shelves[index].preservedWhenEmpty = true }
+    }
+
     /// Preserve the use order while limiting closed, unpinned history.
     public func trimHistory(keeping open: Set<UUID> = []) throws {
         var recent = 0
         let retained = shelves.filter { shelf in
             if shelf.pinned || open.contains(shelf.id) { return true }
-            guard !shelf.items.isEmpty else { return false }
+            guard !shelf.items.isEmpty else { return shelf.preservedWhenEmpty == true }
             recent += 1
             return recent <= 10
         }

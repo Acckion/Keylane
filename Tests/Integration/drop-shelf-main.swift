@@ -365,6 +365,15 @@ expect(shelves.isShelfOpen(managed), "opening a saved card normally also activat
 shelves.shelfFilter = "all"
 shelves.renameManagedShelf(managed, title: "Renamed manager fixture")
 expect(shelves.selectedShelf?.title == "Renamed manager fixture", "manager rename refreshes snapshots")
+let emptySavedWindow = shelves.create()!
+let emptySavedID = emptySavedWindow.shelfID
+shelves.renameManagedShelf(emptySavedID, title: "Saved empty fixture")
+shelves.toggleManagedPin(emptySavedID); drain(0.25)
+expect(!shelves.isShelfOpen(emptySavedID), "unpinning a named empty shelf closes its window")
+shelves.closeManagedShelf(managed); drain(0.25)
+let afterClose = try DropShelfStore(directory: shelves.store!.directory)
+expect(afterClose.shelf(emptySavedID)?.title == "Saved empty fixture", "a later window close and reopening the archive preserve a saved empty shelf")
+shelves.removeManagedShelf(emptySavedID)
 shelves.searchShelves("unmatched manager query")
 expect(shelves.managedShelves.isEmpty && shelves.selectedShelfID == nil, "empty search clears stale selection")
 shelves.searchShelves("")
@@ -793,6 +802,20 @@ if CommandLine.arguments.contains("--manager-preview") {
     }
     previewModel.runCommand(.init(rawValue: "drop-shelf-history"), origin: .search)
     expect(previewModel.pageID == PageID(rawValue: "DropShelfHistory"), "registered manager command opens Launcher page")
+    guard let managerPage = previewModel.activeLauncherPage else { fatalError("manager page registration missing") }
+    do {
+        let controller = previewModel.dropShelf
+        let matches = Array(folderShelfIDs.prefix(3))
+        for id in matches { try managerStore.rename(id, title: "Keyboard fixture match") }
+        controller.managementGridColumns = 4
+        controller.searchShelves("Keyboard fixture match")
+        let filtered = controller.managedShelves.map(\.id)
+        expect(filtered.count == 3 && managerPage.navigateWhileTyping, "search field enables Option-arrow navigation for a single filtered row")
+        controller.selectedShelfID = filtered[0]
+        managerPage.moveHorizontal?(1)
+        expect(controller.selectedShelfID == filtered[1], "horizontal movement reaches the neighboring filtered card")
+        controller.searchShelves("")
+    }
     let previewWindow = LauncherPanel(contentRect: NSRect(x: 100, y: 100, width: 760, height: 470), styleMask: [.borderless], backing: .buffered, defer: false)
     previewDelegate.window = previewWindow
     previewWindow.title = "Keylane Shelf Manager — Isolated Preview"

@@ -118,15 +118,11 @@ final class DropShelfController: ObservableObject {
         do { try store?.markUsed(id) } catch { report(error) }
     }
     func closeManagedShelf(_ id: UUID) {
-        guard let window = windows[id], let shelf = store?.shelf(id) else { return }
-        // Explicitly closing this card leaves even an empty saved shelf available to reopen.
-        if shelf.items.isEmpty && !shelf.pinned {
-            windows.removeValue(forKey: id)
-            window.close()
-            syncDisplayedShelves()
-        } else {
+        guard let window = windows[id], let store else { return }
+        do {
+            try store.preserveEmptyShelf(id)
             window.dismissAnimated()
-        }
+        } catch { report(error) }
     }
     func removeManagedShelf(_ id: UUID) {
         guard store?.shelf(id) != nil else { return }
