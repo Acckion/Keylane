@@ -18,7 +18,6 @@ struct AIConversationComposerMenu: View {
     var menuTitle = "AI Chat"
     let activate: (Item) -> Void
     let dismiss: () -> Void
-    @FocusState private var searchFocused: Bool
 
     static func height(items: [Item], searchable: Bool) -> CGFloat {
         if searchable { return min(320, CGFloat(max(items.count, 1)) * 39) + 87 }
@@ -33,12 +32,9 @@ struct AIConversationComposerMenu: View {
                     menuRows(compact: false)
                         .frame(height: min(320, CGFloat(max(items.count, 1)) * 39))
                 } search: {
-                    TextField("搜索操作…", text: $query).textFieldStyle(.plain)
-                        .font(.system(size: 14)).focused($searchFocused)
-                        .onSubmit { if let item = items.first(where: { $0.id == selection }) { activate(item) } }
-                        .onKeyPress(.downArrow) { move(1); return .handled }
-                        .onKeyPress(.upArrow) { move(-1); return .handled }
-                        .onExitCommand(perform: dismiss)
+                    SearchField(text: $query, placeholder: "搜索操作…", focusToken: 0, compact: true,
+                        submit: { if let item = items.first(where: { $0.id == selection }) { activate(item) } },
+                        move: move, escape: dismiss)
                 }
                 .modifier(LauncherMenuSurface(open: true))
             } else {
@@ -49,7 +45,7 @@ struct AIConversationComposerMenu: View {
             }
         }
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
-        .onAppear { searchFocused = searchable; selection = items.first?.id }
+        .onAppear { selection = items.first?.id }
         .onChange(of: items.map(\.id)) { _, ids in if !ids.contains(selection ?? "") { selection = ids.first } }
     }
 
