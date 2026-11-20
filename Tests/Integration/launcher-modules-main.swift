@@ -765,6 +765,39 @@ Task { @MainActor in
         _ = try LauncherModuleRegistry(modules: [toolModule, LauncherModule(id: ModuleID(rawValue: "fixture.other"), aiTools: [contribution])], preferences: extensionPreferences)
         preconditionFailure("Duplicate tool name accepted")
     } catch AIToolContractError.duplicateTool { } catch { preconditionFailure("Unexpected duplicate error") }
+    // Freeze both the provider feature lease (#217) and catalog activation (#223).
+    var featureGeneration = 1
+    var snapshotCount = 0
+    let owner = ModuleID(rawValue: "fixture.transaction-tools")
+    let changes = PassthroughSubject<Void, Never>()
+    var enabled = true
+    let leased = AIToolRegistration(definition: definition, snapshotAvailability: {
+        snapshotCount += 1
+        let captured = featureGeneration
+        return { featureGeneration == captured }
+    }, performInRun: { _, _ in try .init(text: "synthetic") })
+    let registered = LauncherModule(id: owner, aiTools: [leased],
+        registration: .init(isPresent: { true }, updates: changes.eraseToAnyPublisher(), isEnabled: { enabled }))
+    let directory = try! LauncherModuleRegistry(modules: [], preferences: extensionPreferences)
+    try! directory.install(registered)
+    precondition(snapshotCount == 0, "Catalog preparation must not capture provider leases")
+    let originalTool = directory.availableAITools[0]
+    precondition(snapshotCount == 1 && originalTool.snapshotAvailability == nil && originalTool.available())
+    featureGeneration += 1
+    precondition(!originalTool.available(), "Provider generation revokes an otherwise active module tool")
+    let beforeReplacement = directory.availableAITools[0]
+    try! directory.install(registered)
+    precondition(!beforeReplacement.available(), "Same-ID replacement revokes the old tool")
+    let beforeDisable = directory.availableAITools[0]
+    enabled = false; changes.send()
+    enabled = true; changes.send()
+    precondition(!beforeDisable.available(), "Registration reenable cannot revive the old tool")
+    let beforeRemoval = directory.availableAITools[0]
+    try! directory.uninstall(owner)
+    precondition(!beforeRemoval.available() && directory.availableAITools.isEmpty)
+    try! directory.install(registered)
+    precondition(!originalTool.available() && !beforeReplacement.available() && !beforeDisable.available() && !beforeRemoval.available())
+    precondition(directory.availableAITools[0].available())
     toolRegistryFinished = true
 }
 let toolRegistryDeadline = Date().addingTimeInterval(3)

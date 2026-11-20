@@ -93,7 +93,8 @@ final class ClipboardController: ObservableObject {
     @Published var sequenceAddsNewline: Bool {
         didSet { preferences.set(sequenceAddsNewline, forKey: "clipboardSequenceAddsNewline") }
     }
-    @Published var historyCommandEnabled: Bool { didSet { preferences.set(historyCommandEnabled, forKey: "clipboardHistoryCommandEnabled") } }
+    private(set) var aiAccessRevision = UUID()
+    @Published var historyCommandEnabled: Bool { didSet { if oldValue != historyCommandEnabled { aiAccessRevision = UUID() }; preferences.set(historyCommandEnabled, forKey: "clipboardHistoryCommandEnabled") } }
     @Published var retentionDays: Int { didSet { preferences.set(retentionDays, forKey: "clipboardRetentionDays"); updateLimits() } }
     @Published var maxItems: Int { didSet { preferences.set(maxItems, forKey: "clipboardMaxItems"); updateLimits() } }
     @Published var excludedApps: Set<String> { didSet { preferences.set(Array(excludedApps), forKey: "clipboardExcludedApps") } }
@@ -198,6 +199,19 @@ final class ClipboardController: ObservableObject {
         }
     }
 
+    /// Text-only read; content IDs are immutable hashes of the captured payload.
+    func aiReadText(id: String) async throws -> String {
+        try await withCheckedThrowingContinuation { reply in
+            worker.async { [weak self] in
+                do {
+                    guard let detail = try self?.store?.detail(id: id), detail.item.kind == .text,
+                          detail.text.utf8.count <= 24_000 else { throw AIToolContractError.unavailable }
+                    reply.resume(returning: detail.text)
+                } catch { reply.resume(throwing: error) }
+            }
+        }
+    }
+
     func startRuntime() {
         guard runtime == nil else { return }
         let token = ImageTextRecognitionWork()
@@ -220,6 +234,7 @@ final class ClipboardController: ObservableObject {
     }
 
     func stopRuntime() {
+        aiAccessRevision = UUID()
         guard let runtime else { return }
         runtime.cancel()
         self.runtime = nil
