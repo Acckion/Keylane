@@ -16,6 +16,8 @@ struct ScreenshotPreferences: View {
             ViewObservation.changes(model.$bindings),
             ViewObservation.changes(library.$enabled),
             ViewObservation.changes(library.$columns),
+            ViewObservation.changes(library.$autoShelf),
+            ViewObservation.changes(library.$shelfError),
             ViewObservation.changes(library.$scopes),
             ViewObservation.changes(library.$unavailableScopePaths),
             ViewObservation.changes(library.$includeAll),
@@ -48,6 +50,12 @@ struct ScreenshotPreferences: View {
                     SettingsCaption(title: "包含所有媒体", detail: "搜索指定文件夹中的全部图片和视频。")
                 }
             }
+            SettingsCard {
+                SettingsRow("新截图自动加入暂存架", detail: "复用截图管理的搜索范围与监听。仅加入开启后新出现的截图和录屏，已有文件不会弹出；暂存架需已启用。") {
+                    Toggle("自动加入", isOn: binding(\.autoShelf)).labelsHidden()
+                }
+                if !library.shelfError.isEmpty { SettingsDescription(library.shelfError) }
+            }.disabled(!library.enabled)
             SettingsCard(anchor: .screenshotText) {
                 Toggle(isOn: binding(\.recognizesText)) {
                     SettingsCaption(title: "文字识别", detail: "使用本机文字识别，在搜索框输入 text: 或「文字:」查找图片内容。")

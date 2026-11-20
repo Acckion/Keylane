@@ -302,6 +302,15 @@ final class DropShelfController: ObservableObject {
         syncDisplayedShelves()
         do { try store?.trimHistory(keeping: Set(windows.keys)) } catch { report(error) }
     }
+    /// Shared integration entry: use a private pasteboard and existing receiving/bookmark logic.
+    /// Never replaces the user's clipboard or enables a disabled module.
+    @discardableResult func addFiles(_ urls: [URL]) -> Bool {
+        guard active, !urls.isEmpty else { return false }
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        guard board.writeObjects(urls.map { $0 as NSURL }) else { return false }
+        return addContents(board, dragging: false)
+    }
     func clipboardShelf() { _ = addContents(.general, dragging: false) }
     @discardableResult func addContents(_ board: NSPasteboard, dragging: Bool) -> Bool {
         let existing = addBehavior == .existingWindow ? NSApp.orderedWindows.compactMap { $0 as? DropShelfWindow }
