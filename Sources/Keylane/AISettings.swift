@@ -39,7 +39,8 @@ enum AIModule {
                 return
             }
             if prefersChat || quickAI.isInChat {
-                openChat(nil)
+                // An explicit empty seed opens the current draft without asynchronously restoring history.
+                openChat("")
             } else {
                 let draft = quickAI.composer
                 _ = draft.appendDictation(text, for: draft.draftID)

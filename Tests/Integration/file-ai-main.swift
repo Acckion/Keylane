@@ -135,6 +135,9 @@ final class FixtureProtocol: URLProtocol {
     override func stopLoading() { lock.lock(); stopped = true; lock.unlock() }
 }
 let suite = "org.keylane.file-ai-test."+UUID().uuidString
+try verifyDictatedChatKeepsDraft()
+if ProcessInfo.processInfo.environment["KEYLANE_DICTATED_CHAT_ONLY"] == "1" { exit(0) }
+
 let prefs = UserDefaults(suiteName:suite)!
 defer { prefs.removePersistentDomain(forName:suite) }
 let interaction = AIInteractionPreferences(preferences: prefs)
@@ -214,6 +217,39 @@ precondition(!contextLoad.loading && !contextLoad.complete(cancelledContextReque
 print("PASS review calendar context: searched results selectable, denied access releases loading, stale completion and cancellation")
 
 print("PASS Quick AI and chat settings persistence and non-destructive draft handoff")
+func verifyDictatedChatKeepsDraft() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let suite = "KeylaneSyntheticDictatedChat-" + UUID().uuidString
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let history = AIConversationRepository(url: folder.appendingPathComponent("history.sqlite"))
+    let connection = AIConnection(endpoint: "https://example.invalid/v1", model: "synthetic-text")
+    let archivedID = UUID()
+    try history.save(.init(id: archivedID, content: .init(model: .init(connection), turns: [])))
+    let urlConfig = URLSessionConfiguration.ephemeral
+    urlConfig.protocolClasses = [FixtureProtocol.self]
+    let chat = AIConversationSession(configuration: AIConfiguration(preferences: preferences),
+        runtime: AIRuntime(configuration: urlConfig), history: history,
+        readKey: { _ in fatalError("Dictation draft opening cannot use credentials") })
+    chat.composer.offer("已有未发草稿")
+    let draftID = chat.composer.draftID
+    let attachment = AIConversationAttachment(title: "Fixture", text: "synthetic", symbol: "doc")
+    chat.composer.attachments = [attachment]
+    let requests = FixtureProtocol.requests.count
+    chat.beginChat(restoreLatest: false)
+    precondition(chat.composer.appendDictation("NASA 转写", for: draftID))
+    wait("Chat sidebar loads without replacing the dictated draft") {
+        chat.chats.contains(where: { $0.id == archivedID }) && !chat.loadingChat
+    }
+    precondition(chat.chatID == nil && chat.composer.draftID == draftID)
+    precondition(chat.composer.text == "已有未发草稿 NASA 转写" && chat.composer.attachments == [attachment])
+    precondition(FixtureProtocol.requests.count == requests)
+    chat.closeChat()
+    print("PASS dictated Chat draft: load sidebar only, retain transcript and attachments, no model submission")
+}
+
 let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FixtureProtocol.self]
 let fresh = AIConfiguration(preferences: prefs)
 precondition(!fresh.isAvailable && fresh.selected == nil)

@@ -65,7 +65,7 @@ struct DictationPreferences: View {
                 Divider()
                 toggle("录音时降低系统音量", detail: "结束或取消时恢复；你手动调整音量后不再覆盖。", path: \.lowerAudio)
                 Divider()
-                toggle("根据光标周围文字调整空格和大小写", path: \.contextAwarePaste)
+                toggle("根据光标周围文字调整空格", path: \.contextAwarePaste)
                 Divider()
                 SettingsPicker("粘贴后自动提交", selection: settings.binding(\.submit)) {
                     ForEach(DictationSubmit.allCases, id: \.self) { Text($0.title).tag($0) }

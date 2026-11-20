@@ -165,8 +165,7 @@ final class DictationController: ObservableObject {
             hideLauncher()
             if let original, NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier { original.activate() }
         }
-        panel.show()
-        keyMonitor?.watchSession()
+        showActiveSession()
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self, self.session.accepts(token), self.phase == .starting else { return }
             self.fail(Failure("麦克风未能启动，请检查设备连接后重试。"), token: token)
@@ -354,7 +353,9 @@ final class DictationController: ObservableObject {
         activeRecord = record; activeRecord?.error = nil
         activeStyle = record.styleName.flatMap { name in activeOptions.styles.first { $0.name == name } }
         destination = .application
-        let token = session.begin(borrowingRecording: true); updatePhase(.transcribing, token: token); panel.show()
+        let token = session.begin(borrowingRecording: true)
+        updatePhase(.transcribing, token: token)
+        showActiveSession()
         task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -365,6 +366,11 @@ final class DictationController: ObservableObject {
             } catch { fail(error, token: token) }
         }
     }
+    private func showActiveSession() {
+        panel.show()
+        keyMonitor?.watchSession()
+    }
+
     func loadHistory() { Task { @MainActor in await reloadHistory() } }
     func loadLastTranscription() {
         Task { @MainActor in

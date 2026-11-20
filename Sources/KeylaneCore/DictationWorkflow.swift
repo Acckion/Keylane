@@ -138,13 +138,7 @@ public enum DictationText {
     public static func contextual(_ text: String, before: String, after: String) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { return result }
-        let prefix = before.trimmingCharacters(in: .whitespaces)
-        if let last = prefix.last, let first = result.first, latinWord(first) {
-            let boundary = ".!?。！？\n".contains(last)
-            result.replaceSubrange(result.startIndex...result.startIndex,
-                                   with: boundary ? String(first).uppercased() : String(first).lowercased())
-        }
-        if before.isEmpty, let first = result.first { result.replaceSubrange(result.startIndex...result.startIndex, with: String(first).uppercased()) }
+        // Only adjust spacing; local casing heuristics cannot distinguish names, acronyms or “I”.
         if let left = before.last, let first = result.first, latinWord(left), latinWord(first) { result = " " + result }
         if let right = after.first, let last = result.last, latinWord(right), latinWord(last) { result += " " }
         return result

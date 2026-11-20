@@ -140,10 +140,13 @@ final class DictationWorkflowTests: XCTestCase {
         XCTAssertFalse(DictationText.submission("你好，发送。", options: options).submit)
     }
 
-    func testContextAwareSpacingDoesNotInsertSpacesIntoChinese() {
-        XCTAssertEqual(DictationText.contextual("World", before: "hello", after: ""), " world")
-        XCTAssertEqual(DictationText.contextual("world", before: "Hello.\n", after: ""), "World")
-        XCTAssertEqual(DictationText.contextual("world", before: "", after: ""), "World")
+    func testContextAwareSpacingPreservesTranscriptCaseAndChineseSpacing() {
+        XCTAssertEqual(DictationText.contextual("World", before: "hello", after: ""), " World")
+        XCTAssertEqual(DictationText.contextual("world", before: "Hello.\n", after: ""), "world")
+        XCTAssertEqual(DictationText.contextual("world", before: "", after: ""), "world")
+        XCTAssertEqual(DictationText.contextual("I met Alice at NASA", before: "then", after: "today"), " I met Alice at NASA ")
+        XCTAssertEqual(DictationText.contextual("NASA", before: "with ", after: "."), "NASA")
+        XCTAssertEqual(DictationText.contextual("iPhone", before: "", after: ""), "iPhone")
         XCTAssertEqual(DictationText.contextual("世界", before: "你好", after: "。"), "世界")
     }
 
