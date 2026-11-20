@@ -25,3 +25,10 @@ struct AIContextCandidate: Identifiable {
     let detail: String
     let source: AIActionSource
 }
+
+/// Separate human-readable output from the validated argument passed to a result command.
+struct AIActionOutput {
+    let text: String
+    let commandArgument: String?
+    init(_ text: String, commandArgument: String? = nil) { self.text = text; self.commandArgument = commandArgument }
+}

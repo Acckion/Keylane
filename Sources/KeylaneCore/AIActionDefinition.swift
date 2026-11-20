@@ -7,22 +7,33 @@ public struct AIActionDefinition: Equatable, Sendable {
     public let title: String
     public let instructions: String
     public let maximumInputBytes: Int
+    public struct ResultDestination: Equatable, Sendable {
+        public let commandID: CommandID
+        public let title: String
+        public init(commandID: CommandID, title: String) { self.commandID = commandID; self.title = title }
+    }
     public let acceptsQuestion: Bool
-    public init(commandID: CommandID, title: String, instructions: String, maximumInputBytes: Int = 32_000, acceptsQuestion: Bool = false) {
+    public let questionPlaceholder: String
+    public let showsSourcePreview: Bool
+    public let resultDestination: ResultDestination?
+    public init(commandID: CommandID, title: String, instructions: String, maximumInputBytes: Int = 32_000, acceptsQuestion: Bool = false, questionPlaceholder: String = "输入关于所选内容的问题…", showsSourcePreview: Bool = true, resultDestination: ResultDestination? = nil) {
         self.commandID = commandID; self.title = title; self.instructions = instructions
         self.maximumInputBytes = maximumInputBytes; self.acceptsQuestion = acceptsQuestion
+        self.questionPlaceholder = questionPlaceholder; self.showsSourcePreview = showsSourcePreview; self.resultDestination = resultDestination
     }
     public func validate() throws {
         guard !commandID.rawValue.isEmpty, !title.isEmpty, title.utf8.count <= 256,
               !instructions.isEmpty, instructions.utf8.count <= 16_384,
-              (1...64_000).contains(maximumInputBytes) else { throw AIActionError.invalidDefinition }
+              (1...64_000).contains(maximumInputBytes), questionPlaceholder.utf8.count <= 512,
+              resultDestination.map({ !$0.commandID.rawValue.isEmpty && !$0.title.isEmpty && $0.title.utf8.count <= 256 }) ?? true else { throw AIActionError.invalidDefinition }
     }
 }
 
 public enum AIActionError: LocalizedError {
-    case invalidDefinition, unavailable, staleSource, inputTooLarge, emptyInput
+    case invalidDefinition, unavailable, staleSource, inputTooLarge, emptyInput, invalidResult
     public var errorDescription: String? {
         switch self {
+        case .invalidResult: "模型结果未通过校验，请重试或更换模型。"
         case .invalidDefinition: "AI 动作声明无效。"
         case .unavailable: "命令、权限或模型已变化，请重新打开。"
         case .staleSource: "来源内容已变化或已移除，请重新选择。"

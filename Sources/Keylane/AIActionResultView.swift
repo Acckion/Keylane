@@ -8,7 +8,7 @@ struct AIActionResultView: View {
     var body: some View {
         AIResultContent(answer: session.answer, status: statusOverride ?? session.status,
                         running: session.running, progress: session.progress,
-                        continueAction: !session.preparing && !session.running ? continueAction : nil)
+                        continueAction: session.canUseResult ? continueAction : nil)
     }
 }
 

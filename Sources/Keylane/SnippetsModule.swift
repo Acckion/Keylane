@@ -104,6 +104,13 @@ enum SnippetsModule {
                         .init(id: "snippet-delete", title: "删除片段", icon: "trash", group: 1, destructive: true,
                               perform: { snippets.delete(selected) })
                     ]
+                    if let model {
+                        actions.append(SnippetAIActions.menu(selected, model: model))
+                        actions.append(.init(id: "snippet-ai-attach", title: "附加到 AI 聊天", icon: "sparkles", enabled: model.canAttachModuleAIContext() && !model.disabledCommands.contains(SnippetAIActions.attachID.rawValue)) { [weak model] in
+                            guard let model else { return }
+                            _ = model.runCommand(SnippetAIActions.attachID, origin: .menu, aiSource: SnippetAIActions.source(selected, controller: snippets))
+                        })
+                    }
                 }
                 return actions
             },
@@ -168,7 +175,8 @@ enum SnippetsModule {
         }
         return .init(
             id: .init(rawValue: "keylane.snippets"),
-            commands: commands,
+            commands: commands + SnippetAIActions.commands(model: model),
+            aiActions: SnippetAIActions.definitions,
             pages: [list, editor, argumentsPage],
             settings: [
                 .init(id: settingsID, title: "文字片段", symbol: symbol, subtitle: "管理常用文字与缩写展开。",
@@ -196,7 +204,7 @@ enum SnippetsModule {
                 if model?.pageID == argumentsID { model?.pageID = .root }
             },
             applicationFocused: { _ in snippets.applicationFocused() }
-        )
+        ).withAIContexts([SnippetAIActions.context(model: model)])
     }
 }
 

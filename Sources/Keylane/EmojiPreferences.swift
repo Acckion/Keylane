@@ -58,6 +58,9 @@ struct EmojiPreferences: View {
                     SettingsIcon(symbol: "face.smiling", artwork: ModuleArtwork.command(id, settingsPage: "keylane.emoji"))
                 }
             }
+            SettingsSectionTitle(title: "AI 扩展")
+            ExtensionCommandPreferences(model: model, commands: model.launcherModules?.aiCommands(in: EmojiAIActions.moduleID) ?? [])
+            SettingsDescription("推荐由你主动运行，不会随每次输入请求模型。结果只使用本地目录中的字符。")
         }
     }
 }

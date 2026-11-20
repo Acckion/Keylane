@@ -94,7 +94,9 @@ enum AITextCommandLauncher {
                 .removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.$command.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.reply.$running.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            session.reply.$turns.map { $0.last?.answer.isEmpty == false }
+            session.reply.$turns.map { turns in
+                turns.last.map { $0.complete && $0.progress?.phase == .completed && !$0.answer.isEmpty } ?? false
+            }
                 .removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ]).eraseToAnyPublisher()
         return LauncherPage(id: pageID, placeholder: "", badge: ("AI 命令", "sparkles"),
@@ -107,14 +109,14 @@ enum AITextCommandLauncher {
                             primaryTitle: { "发送给模型" }, primaryEnabled: { session.canSend },
                             actions: {
                                 var actions = [LauncherAction(id: "copy-ai-command-result", title: "复制结果",
-                                                               icon: "doc.on.doc", enabled: session.reply.lastAnswer != nil) {
-                                    AIConversationHostActions.copyText(session.reply.lastAnswer)
+                                                               icon: "doc.on.doc", enabled: session.completedResult != nil) {
+                                    guard let result = session.completedResult else { return }
+                                    AIConversationHostActions.copyText(result.answer)
                                 }]
                                 actions.append(.init(id: "continue-ai-command", title: "继续到 Quick AI", icon: "bubble.left.and.bubble.right",
-                                                     enabled: !session.reply.running && session.reply.lastAnswer != nil) { [weak model] in
-                                    guard let answer = session.reply.lastAnswer else { return }
-                                    let context = AIActionContext(sourceID: session.invocationID.uuidString, title: session.title, text: session.input)
-                                    if model?.continueModuleAIAction?(context, answer) != true {
+                                                     enabled: session.completedResult != nil) { [weak model] in
+                                    guard let result = session.completedResult else { return }
+                                    if model?.continueModuleAIAction?(result.context, result.answer) != true {
                                         (NSApp.delegate as? Delegate)?.showLauncherFeedback("无法加入草稿，请等待附件处理完成或缩小内容范围。", style: .failure)
                                     }
                                 })
@@ -181,7 +183,7 @@ private struct AITextCommandForm: View {
                 if session.customCommand == nil, session.input.isEmpty {
                     Text("无法读取选区时，可在此手动输入。").font(.caption).foregroundStyle(.secondary)
                 }
-                AITextCommandResult(reply: session.reply)
+                AITextCommandResult(session: session, reply: session.reply)
             }
             .padding(.horizontal, 26)
         }
@@ -197,6 +199,7 @@ private struct AITextCommandForm: View {
 }
 
 private struct AITextCommandResult: View {
+    @ObservedObject var session: AITextCommandSession
     @ObservedObject var reply: AIConversationSession
 
     var body: some View {
@@ -206,8 +209,11 @@ private struct AITextCommandResult: View {
                 Text("结果").font(.headline)
                 Spacer()
                 if reply.running { Button("停止", action: reply.stop) }
-                if let answer = reply.lastAnswer {
-                    Button("复制") { AIConversationHostActions.copyText(answer) }
+                if reply.lastAnswer != nil {
+                    Button("复制") {
+                        guard let result = session.completedResult else { return }
+                        AIConversationHostActions.copyText(result.answer)
+                    }.disabled(session.completedResult == nil)
                 }
             }
             AIResultContent(answer: reply.lastAnswer ?? "", status: reply.status,
