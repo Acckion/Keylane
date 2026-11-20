@@ -91,8 +91,14 @@ final class FixtureProtocol: URLProtocol {
                 text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             }
             self.client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-            if mode == "held-stream" {
+            if mode == "held-stream" || mode == "partial-error" {
                 self.client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{\"content\":\"visible streaming fragment\"}}]}\n\n".utf8))
+                if mode == "partial-error" {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+                        self.lock.lock(); let stopped = self.stopped; self.lock.unlock()
+                        if !stopped { self.client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)) }
+                    }
+                }
                 return // Deliberately leave the synthetic stream open until stop/cancellation.
             }
             if mode == "reasoning-stream" || mode == "reasoning-pause" {
@@ -2244,6 +2250,41 @@ preservedSession.leaveLauncher()
 precondition(preservedSession.composer.text.isEmpty && preservedSession.composer.attachments.isEmpty)
 print("PASS AI command navigation: scoped conversation preservation retains draft and attachments; normal leave still clears")
 
+// PR212: attachments use the actual Quick AI/AI Chat session, never the file route.
+do {
+    let suite = "KeylaneAttachmentDestination-" + UUID().uuidString
+    let prefs = UserDefaults(suiteName: suite)!
+    defer { prefs.removePersistentDomain(forName: suite) }
+    let quickModel = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "quick-fixture")
+    let chatModel = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "chat-fixture")
+    let unavailableModel = AIConnection(endpoint: "", model: "")
+    var state = AIConfiguration.State(enabled: true, connections: [quickModel, chatModel, unavailableModel], selectedID: unavailableModel.id,
+        defaults: [.quick: quickModel.id, .chat: chatModel.id, .files: unavailableModel.id], usesLastChatModel: false)
+    prefs.set(try JSONEncoder().encode(state), forKey: "aiConnections.v1")
+    let config = AIConfiguration(preferences: prefs)
+    let session = AIConversationSession(configuration: config, runtime: actionRuntime, readKey: { _ in preconditionFailure("Availability cannot read credentials") })
+    precondition(!config.isAvailable && session.currentConnection?.id == quickModel.id && session.canAttachModuleContext)
+    session.beginChat()
+    precondition(session.currentConnection?.id == chatModel.id && session.canAttachModuleContext)
+    session.closeChat()
+    session.composer.loadAttachments { try? await Task.sleep(for: .milliseconds(50)); return [] }
+    precondition(!session.canAttachModuleContext)
+    wait("Attachment destination import finished") { !session.composer.loadingFiles }
+    precondition(session.canAttachModuleContext)
+
+    state.defaults = [.quick: unavailableModel.id, .chat: unavailableModel.id, .files: quickModel.id]
+    prefs.set(try JSONEncoder().encode(state), forKey: "aiConnections.v1")
+    let fileOnlyConfig = AIConfiguration(preferences: prefs)
+    let fileOnlySession = AIConversationSession(configuration: fileOnlyConfig, runtime: actionRuntime, readKey: { _ in nil })
+    precondition(fileOnlyConfig.isAvailable && !fileOnlySession.canAttachModuleContext)
+    fileOnlySession.beginChat()
+    precondition(!fileOnlySession.canAttachModuleContext)
+    let preferredQuick = AIConversationSession(configuration: fileOnlyConfig, runtime: actionRuntime, preferredQuickModel: { quickModel.id }, readKey: { _ in nil })
+    precondition(preferredQuick.currentConnection?.id == quickModel.id && preferredQuick.canAttachModuleContext)
+    precondition(FixtureProtocol.requests.count == requestsBeforeQuestion + 1)
+    print("PASS PR212 attachment destination: Quick/Chat remain available with broken files route; files-only cannot enable attachments; explicit Quick model and busy import respected; zero model requests")
+}
+
 let cancelledAttachmentComposer = AIConversationComposer()
 cancelledAttachmentComposer.text = "Keep this draft"
 let attachmentAvailability = PassthroughSubject<Bool, Never>()
@@ -2339,3 +2380,46 @@ precondition(validatedAction.context != nil && validatedAction.invocationID == c
 validatedAction.clear(for: questionSource.moduleID)
 precondition(validatedAction.context == nil && validatedAction.invocationID != cleanupInvocation)
 print("PASS module-scoped AI cleanup: stopping another extension preserves the active invocation")
+
+
+// PR214: cancelled/failed fragments are display-only; successful results carry their submitted source.
+let continuationSuite = "KeylaneTextContinuation-" + UUID().uuidString
+let continuationPrefs = UserDefaults(suiteName: continuationSuite)!
+defer { continuationPrefs.removePersistentDomain(forName: continuationSuite) }
+continuationPrefs.set("http://127.0.0.1:43991/v1", forKey: "fileAIEndpoint")
+continuationPrefs.set("fixture", forKey: "fileAIModel")
+let continuationConfiguration = AIConfiguration(preferences: continuationPrefs)
+var continuationProfile = continuationConfiguration.selected!
+continuationProfile.mode = .streaming
+precondition(continuationConfiguration.save(continuationProfile))
+let continuationCommand = AITextCommandSession(configuration: continuationConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+FixtureProtocol.mode = "held-stream"
+continuationCommand.prepare(.polish, selection: "Originally submitted source")
+continuationCommand.send()
+wait("Text command partial result") { continuationCommand.reply.running && continuationCommand.reply.lastAnswer != nil }
+precondition(continuationCommand.completedResult == nil)
+continuationCommand.reply.stop()
+precondition(continuationCommand.reply.lastAnswer != nil && continuationCommand.completedResult == nil)
+FixtureProtocol.mode = "partial-error"
+continuationCommand.prepare(.polish, selection: "Failing source")
+continuationCommand.send()
+wait("Text command failed partial result") { !continuationCommand.reply.running }
+precondition(continuationCommand.reply.lastAnswer != nil && continuationCommand.completedResult == nil)
+FixtureProtocol.mode = "stream"
+continuationCommand.prepare(.polish, selection: "Submitted before editor changed")
+continuationCommand.send()
+continuationCommand.input = "Unsubmitted edit while running"
+wait("Text command successful result") { !continuationCommand.reply.running }
+precondition(continuationCommand.completedResult?.context.text == "Submitted before editor changed")
+precondition(continuationCommand.completedResult?.answer == continuationCommand.reply.turns.last?.answer)
+continuationCommand.input = "Edited after success"
+precondition(continuationCommand.completedResult == nil)
+let customContinuation = CustomAICommand(title: "Continuation fixture", prompt: #"Tone: {argument name="tone"}"#, connectionID: nil)
+continuationCommand.prepare(customContinuation, template: DynamicTemplate(customContinuation.prompt, usage: .aiCommand), context: .init(), canInvoke: { true })
+continuationCommand.setArgument("tone", value: "formal")
+continuationCommand.send()
+wait("Custom command successful result") { !continuationCommand.reply.running }
+precondition(continuationCommand.completedResult?.context.text.contains("formal") == true)
+continuationCommand.setArgument("tone", value: "casual")
+precondition(continuationCommand.completedResult == nil)
+print("PASS PR214 result actions: running/stopped/failed partial outputs rejected, successful output bound to submitted source, subsequent input and template edits revoke result")

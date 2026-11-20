@@ -60,7 +60,7 @@ enum ClipboardAIActions {
         }
         let attach = LauncherModule.Command(declaration: .init(id: attachID, title: "附加剪贴板文本到 AI 聊天",
             detail: "仅附加所选文本，不自动发送", symbol: "sparkles", keywords: ["AI", "剪贴板", "聊天"], destination: .action, settingsPage: "clipboard"),
-            available: { [weak model] in model?.clipboard.historyCommandEnabled == true && model?.aiSettings.isAvailable == true },
+            available: { [weak model] in model?.clipboard.historyCommandEnabled == true && model?.canAttachModuleAIContext() == true },
             isAICommand: true, aiExecute: { [weak model] origin, provided in
                 guard let model else { return }
                 guard let selected = provided ?? model.clipboard.selectedID.flatMap({ id in

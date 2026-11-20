@@ -32,10 +32,10 @@ enum AIModule {
                 if fromQuickAI { model.pageID = .root }
             }
         }
+        model.canAttachModuleAIContext = { [weak quickAI] in quickAI?.canAttachModuleContext == true }
         model.attachModuleAIContext = { [weak model, weak quickAI] source, commandID in
             guard let model, let quickAI, let registry = model.launcherModules,
-                  configuration.state.connection(for: quickAI.isInChat ? .chat : .quick) != nil,
-                  !quickAI.loadingChat, !quickAI.composer.loadingFiles,
+                  model.canAttachModuleAIContext(),
                   registry.moduleOwningCommand(commandID) == source.moduleID, !model.disabledCommands.contains(commandID.rawValue) else { return false }
             let guarded = registry.guardedAIContextSource(source)
             let availability = Publishers.Merge3(

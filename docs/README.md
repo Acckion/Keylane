@@ -4,7 +4,8 @@
 
 ## 开发与维护
 
-- [开发计划与功能进度](TODO.md)
+- [全仓库功能跟踪与 Raycast 对照](FEATURE-STATUS.md)
+- [开发计划、细项差异与历史进度](TODO.md)
 - [启动器与设置模块架构](LAUNCHER-ARCHITECTURE.md)
 - [构建、CI 与发布](CI-RELEASE.md) · [签名与升级权限](SIGNING.md)
 - [发布说明模板](releases/TEMPLATE.md)

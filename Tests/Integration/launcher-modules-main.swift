@@ -810,6 +810,30 @@ Task { @MainActor in
         contextAvailability.send(false); contextAvailability.send(true)
         do { _ = try await freshRows[0].source.load(); preconditionFailure("Feature off/on revived an old candidate") } catch { }
         precondition(reads == 1)
+        // Suspend precisely inside the source version check, after the first generation check.
+        for revocation in ["feature-off", "feature-off-on", "module-off-on"] {
+            var validation: CheckedContinuation<Bool, Never>?
+            let slow = AIActionSource(moduleID: owner, load: {
+                .init(sourceID: "deferred", title: "Fixture", text: "Must not enter a draft")
+            }, isCurrent: { _ in await withCheckedContinuation { validation = $0 } })
+            let guarded = registry.guardedAIContextSource(slow)
+            let pending = Task { @MainActor in try await guarded.load() }
+            let deadline = ContinuousClock.now + .seconds(2)
+            while validation == nil && ContinuousClock.now < deadline { await Task.yield() }
+            precondition(validation != nil, "Fixture did not suspend inside asynchronous validation")
+            if revocation == "module-off-on" {
+                _ = registry.setModuleEnabled(owner, false)
+                _ = registry.setModuleEnabled(owner, true)
+            } else {
+                contextAvailability.send(false)
+                if revocation == "feature-off-on" { contextAvailability.send(true) }
+            }
+            validation?.resume(returning: true)
+            do { _ = try await pending.value; preconditionFailure("Late validated context survived \(revocation)") }
+            catch AIActionError.staleSource { }
+            contextAvailability.send(true)
+        }
+        print("PASS PR212 context validation race: feature off, off/on and module off/on reject a read suspended inside isCurrent")
     } catch { preconditionFailure("Context fixture failed: \(error)") }
     do {
         _ = try LauncherModuleRegistry(modules: [LauncherModule(id: owner, aiContexts: [registration, registration])], preferences: defaults)
@@ -851,3 +875,58 @@ do {
     } catch { }
 }
 print("PASS AI result routing: validated target, normal command admission, hidden internal action, shortcut denial and module revocation")
+
+// A module refresh must update its own rows without re-scoring an unchanged catalog.
+let appOwner = ModuleID(rawValue: "fixture.apps")
+let fileOwner = ModuleID(rawValue: "fixture.files")
+let appRefresh = PassthroughSubject<Void, Never>()
+let fileRefresh = PassthroughSubject<Void, Never>()
+var fileTitle = "Demo file"
+var includeFile = true
+var appAvailable = true
+let performanceRegistry = try LauncherModuleRegistry(modules: [
+    .init(id: appOwner, providers: [.init(namespace: .prefix("sample-app:"), entries: { _ in
+        (0..<2000).map { Entry(id: "sample-app:\($0)", commandID: .init(rawValue: "sample-app:\($0)"),
+                              name: "Demo app \($0)", detail: "", symbol: "app") }
+    }, resolve: { _, _ in nil }, available: { _ in appAvailable })], searchUpdates: [appRefresh.eraseToAnyPublisher()]),
+    .init(id: fileOwner, providers: [.init(namespace: .prefix("sample-file:"), entries: { _ in
+        includeFile ? [Entry(id: "sample-file:1", commandID: .init(rawValue: "sample-file:1"),
+                             name: fileTitle, detail: "", symbol: "doc")] : []
+    }, resolve: { _, _ in nil })], searchUpdates: [fileRefresh.eraseToAnyPublisher()])
+], preferences: extensionPreferences)
+let performanceSearch = LauncherCommandSearch()
+let performanceChanges = performanceRegistry.searchInvalidations.sink { performanceSearch.invalidate(module: $0) }
+let performanceInput = LauncherCommandSearch.Input(query: "Demo", page: .root, aliases: [:], favorites: [], usage: [:])
+let baselineRows = performanceSearch.results(for: performanceInput, registry: performanceRegistry)
+let coldDiagnostics = performanceSearch.diagnostics
+precondition(coldDiagnostics.scored == 2001)
+precondition(performanceSearch.results(for: performanceInput, registry: performanceRegistry).map(\.id) == baselineRows.map(\.id))
+precondition(performanceSearch.diagnostics.cacheHit)
+fileTitle = "Demo changed file"
+fileRefresh.send()
+let refreshedRows = performanceSearch.results(for: performanceInput, registry: performanceRegistry)
+let refreshedDiagnostics = performanceSearch.diagnostics
+precondition(refreshedDiagnostics.scored == 1 && refreshedDiagnostics.reused == 2000)
+precondition(refreshedRows.contains { $0.name == fileTitle })
+let oracle = LauncherCommandSearch().results(for: performanceInput, registry: performanceRegistry)
+precondition(refreshedRows.map(\.id) == oracle.map(\.id))
+// Availability is checked on every enumerated candidate, including cached scores.
+appAvailable = false
+includeFile = false
+fileRefresh.send()
+precondition(performanceSearch.results(for: performanceInput, registry: performanceRegistry).isEmpty)
+appAvailable = true
+appRefresh.send()
+precondition(performanceSearch.results(for: performanceInput, registry: performanceRegistry).count == 2000)
+precondition(performanceSearch.diagnostics.scored == 2000)
+print("Scoped search: cold scored=\(coldDiagnostics.scored), refresh scored=\(refreshedDiagnostics.scored), reused=\(refreshedDiagnostics.reused), cold_ms=\(coldDiagnostics.duration * 1000), refresh_ms=\(refreshedDiagnostics.duration * 1000)")
+
+performanceRegistry.availabilityChanges.send()
+_ = performanceSearch.results(for: performanceInput, registry: performanceRegistry)
+precondition(performanceSearch.diagnostics.scored == 2000 && performanceSearch.diagnostics.reused == 0)
+var newRankingInput = performanceInput
+// Input is immutable for query/usage; use a different query to exercise full cache invalidation.
+newRankingInput = .init(query: "Other", page: .root, aliases: [:], favorites: [], usage: [:])
+precondition(performanceSearch.results(for: newRankingInput, registry: performanceRegistry).isEmpty)
+precondition(performanceSearch.diagnostics.scored == 2000)
+print("PASS global invalidation and query changes discard scoped scores")
