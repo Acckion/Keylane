@@ -20,6 +20,7 @@ enum AIModule {
             .appendingPathComponent("Keylane/AI/history.sqlite")
         let quickAI = AIConversationSession(configuration: configuration, runtime: runtime,
                                         history: AIConversationRepository(url: historyURL), preferredQuickModel: { interaction.preferredModelID })
+        quickAI.configureTools(preferences: interaction) { [weak model] in model?.launcherModules?.availableAITools ?? [] }
         let chat = AIChatWindow(controller: quickAI, configuration: configuration, interaction: interaction,
                                 appearance: model.$appearance.eraseToAnyPublisher())
         let openChat: (String?) -> Void = { [weak model] initialQuery in
@@ -30,6 +31,24 @@ enum AIModule {
                 (NSApp.delegate as? Delegate)?.hideLauncher()
                 if fromQuickAI { model.pageID = .root }
             }
+        }
+        model.dictation.deliverAI = { [weak model, weak quickAI] text, prefersChat in
+            guard let model, let quickAI else { return }
+            guard configuration.state.enabled, configuration.state.connection(for: .quick) != nil || prefersChat || quickAI.isInChat else {
+                _ = DictationDelivery.copy(text)
+                model.openSettings(page: "ai-models")
+                return
+            }
+            if prefersChat || quickAI.isInChat {
+                // An explicit empty seed opens the current draft without asynchronously restoring history.
+                openChat("")
+            } else {
+                let draft = quickAI.composer
+                _ = draft.appendDictation(text, for: draft.draftID)
+                model.openPageWithExistingDraft(QuickAILauncher.pageID)
+                return
+            }
+            _ = quickAI.composer.appendDictation(text, for: quickAI.composer.draftID)
         }
         model.openAIChatLink = { [weak model, weak quickAI] id in
             guard let model, let quickAI, configuration.state.enabled,
@@ -161,6 +180,8 @@ private struct AIInteractionSettings: View {
             }
             Divider()
             toggle("AI Chat 窗口置顶", value: $preferences.chatFloating)
+            Divider()
+            toggle("允许 AI 调用基础工具", detail: "可查询时间、计算、应用名称、已授权文件名与日程。结果发送给所选模型；打开应用逐次确认。", value: $preferences.toolsEnabled)
         }
     }
 

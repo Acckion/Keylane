@@ -73,6 +73,20 @@ public struct LauncherPagePresentation {
         return pageConsumesEntryQuery ? pageResult ?? explicit : explicit ?? pageResult
     }
 
+    /// Existing drafts are restored locally without invoking entry actions.
+    public enum EntryIntent: Equatable {
+        case standard, query(String), existingDraft
+
+        public func resolve(current: String, restored: String?, pageConsumesEntryQuery: Bool,
+                            existingDraft: () -> String?, enter: (String) -> String?) -> String? {
+            if self == .existingDraft { return existingDraft() }
+            let explicit: String?
+            if case .query(let query) = self { explicit = query } else { explicit = nil }
+            return LauncherPagePresentation.entryQuery(explicit: explicit, pageResult: enter(explicit ?? current),
+                restored: restored, pageConsumesEntryQuery: pageConsumesEntryQuery)
+        }
+    }
+
     public enum Activation: Equatable { case enter, resume }
 
     public struct Change {

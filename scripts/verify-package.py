@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from versioning import ROOT, load_version
+from app_intents import METADATA_FILES, validate_metadata
 
 APPLE_EVENTS_ENTITLEMENT = "com.apple.security.automation.apple-events"
 DEVELOPER_ID_REQUIREMENT = '-R=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
@@ -22,6 +23,8 @@ def verify_app(app, image, version, distribution):
         'Contents/Resources/Keylane.icns',
         'Contents/_CodeSignature/CodeResources',
     }
+    validate_metadata(app / 'Contents/Resources/Metadata.appintents')
+    expected.update('Contents/Resources/Metadata.appintents/' + name for name in METADATA_FILES)
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
         relative = f'Contents/Resources/{name}'
         expected.add(relative)
@@ -62,6 +65,8 @@ def verify_app(app, image, version, distribution):
     entitlements = plistlib.loads(entitlement_data) if entitlement_data else {}
     if not info.get('NSCameraUsageDescription') or entitlements.get('com.apple.security.device.camera') is not True:
         raise SystemExit('Missing camera usage description or entitlement')
+    if not info.get('NSMicrophoneUsageDescription') or entitlements.get('com.apple.security.device.audio-input') is not True:
+        raise SystemExit('Missing microphone usage description or entitlement')
     if distribution:
         if entitlements.get(APPLE_EVENTS_ENTITLEMENT) is not True:
             raise SystemExit('Distribution app is missing the Apple Events entitlement')

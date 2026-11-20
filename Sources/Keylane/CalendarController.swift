@@ -330,6 +330,30 @@ final class CalendarController: ObservableObject {
         let rows = filteredEvents
         if !rows.contains(where: { $0.id == selectedID }) { selectedID = rows.first?.id }
     }
+    /// Uses the existing serial EventKit owner; does not select a date or request access.
+    @MainActor func aiEvents(start: Date, end: Date, limit: Int) async throws -> [String] {
+        guard enabled, readAccess() == .allowed, let runtime, !runtime.isCancelled, (1...20).contains(limit),
+              end > start, end.timeIntervalSince(start) <= 7 * 86400 else { throw AIToolContractError.unavailable }
+        let selected = selectedCalendarIDs
+        let rows: [String] = try await withCheckedThrowingContinuation { continuation in
+            worker.async(execute: DispatchWorkItem { [weak self] in
+                guard let self, !runtime.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+                let store = self.eventStore ?? EKEventStore()
+                self.eventStore = store
+                let calendars = store.calendars(for: .event).filter { selected?.contains($0.calendarIdentifier) ?? true }
+                let events = calendars.isEmpty ? [] : store.events(matching: store.predicateForEvents(withStart: start, end: end, calendars: calendars))
+                let formatter = ISO8601DateFormatter()
+                let rows = events.filter { $0.status != .canceled }.sorted { $0.startDate < $1.startDate }.prefix(limit).map {
+                    String(($0.title ?? "无标题").prefix(512)) + " | " + formatter.string(from: $0.startDate) + " | " + formatter.string(from: $0.endDate)
+                }
+                continuation.resume(returning: rows)
+            })
+        }
+        try Task.checkCancellation()
+        guard enabled, readAccess() == .allowed, !runtime.isCancelled, selectedCalendarIDs == selected else { throw AIToolContractError.unavailable }
+        return rows
+    }
+
     func setCalendar(_ id: String, enabled: Bool) {
         var ids = selectedCalendarIDs ?? Set(calendars.map(\.id))
         if enabled { ids.insert(id) } else { ids.remove(id) }; selectedCalendarIDs = ids

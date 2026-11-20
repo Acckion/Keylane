@@ -88,7 +88,7 @@ private struct AIModelProviderGroup: View {
     }
 
     private func description(for connection: AIConnection) -> String {
-        var details = [connection.model]
+        var details = [connection.model, connection.taskKind.title]
         if let tokens = connection.contextTokens {
             details.append("已登记上下文 \(tokens.formatted()) tokens")
         }

@@ -22,6 +22,7 @@ final class AICLIProcess: @unchecked Sendable {
     private let output = Pipe()
     private let errors = Pipe()
     private let lock = NSLock()
+    private let inputLock = NSLock()
     private var continuation: AsyncThrowingStream<Data, Error>.Continuation?
     private var stopped = false
     private var bytes = 0
@@ -94,7 +95,7 @@ final class AICLIProcess: @unchecked Sendable {
     func send(_ object: [String: Any]) throws {
         var data = try JSONSerialization.data(withJSONObject: object)
         data.append(10)
-        try input.fileHandleForWriting.write(contentsOf: data)
+        try inputLock.withLock { try input.fileHandleForWriting.write(contentsOf: data) }
     }
 
     func sendText(_ text: String) throws {

@@ -7,6 +7,7 @@ struct AIModelPicker: View {
     @Binding var selection: AIModelChoice
     var inheritTitle: String? = nil
     var allowsLastUsed = false
+    var purpose: AIModelPurpose = .text
     @State private var showing = false
 
     private var title: String {
@@ -28,7 +29,7 @@ struct AIModelPicker: View {
         .accessibilityLabel("选择模型：" + title)
         .popover(isPresented: $showing, arrowEdge: .bottom) {
             AIModelMenu(configuration: configuration, selection: $selection, inheritTitle: inheritTitle,
-                        allowsLastUsed: allowsLastUsed) { showing = false }
+                        allowsLastUsed: allowsLastUsed, purpose: purpose) { showing = false }
         }
     }
 }
@@ -38,6 +39,7 @@ private struct AIModelMenu: View {
     @Binding var selection: AIModelChoice
     let inheritTitle: String?
     let allowsLastUsed: Bool
+    let purpose: AIModelPurpose
     let close: () -> Void
     @State private var query = ""
     @State private var highlighted: AIModelChoice?
@@ -45,7 +47,7 @@ private struct AIModelMenu: View {
     @FocusState private var searchFocused: Bool
 
     private var catalog: AIModelMenuCatalog {
-        AIModelMenuCatalog(connections: configuration.state.connections, selection: selection, query: query)
+        AIModelMenuCatalog(connections: configuration.state.connections, selection: selection, query: query, purpose: purpose)
     }
     private var choices: [AIModelChoice] {
         catalog.choices(inherits: inheritTitle != nil, allowsLastUsed: allowsLastUsed)
@@ -72,7 +74,7 @@ private struct AIModelMenu: View {
                                 SettingsDescription(group.id).padding(.top, 10).padding(.horizontal, 10)
                                 ForEach(group.models) { model in
                                     row(.model(model.id), title: model.displayName, subtitle: model.model,
-                                        enabled: model.isConfigured)
+                                        enabled: model.isConfigured && purpose.accepts(model))
                                 }
                             }
                         }.padding(8)
@@ -84,11 +86,13 @@ private struct AIModelMenu: View {
                     if let model = inspected {
                         SettingsTitle(model.displayName)
                         SettingsDescription(model.providerLabel)
+                        SettingsDescription(model.taskKind.title)
                         Divider()
                         SettingsDescription(model.contextTokens.map { "上下文：\($0.formatted()) tokens" } ?? "上下文：未提供")
                         SettingsDescription(capability("图像输入", model.supportsImages))
                         SettingsDescription(capability("工具调用", model.supportsTools))
                         if !model.isConfigured { SettingsDescription("连接不可用，请先检查提供商设置。") }
+                        else if !purpose.accepts(model) { SettingsDescription("此模型不支持当前用途，请选择其他模型。") }
                     } else {
                         SettingsDescription("选择模型查看已登记的能力。")
                     }
