@@ -597,6 +597,15 @@ precondition(contextPromotion.composer.attachments.isEmpty && !contextPromotion.
 contextPromotion.closeChat()
 print("PASS shared asynchronous context: presentation changes retain import; resetting the common draft rejects late OCR-like results")
 
+let contextSheetComposer = AIConversationComposer()
+let oldContextSheet = contextSheetComposer.contextRequest("synthetic calendar picker")
+contextSheetComposer.clear()
+precondition(!contextSheetComposer.appendAttachment(.init(title: "Old picker result", text: "stale"), from: oldContextSheet))
+precondition(contextSheetComposer.attachments.isEmpty)
+let newContextSheet = contextSheetComposer.contextRequest("synthetic clipboard picker")
+precondition(contextSheetComposer.appendAttachment(.init(title: "New picker result", text: "current"), from: newContextSheet))
+print("PASS shared context pickers: presented requests retain their opening draft; old calendar/clipboard selections cannot populate another conversation")
+
 let link = URL(string: AIChatLink.make(firstVideoChat))!
 precondition(AIChatLink.parse(link) == firstVideoChat)
 precondition(AIChatLink.parse(URL(string: "keylane://ai/chat/" + firstVideoChat.uuidString + "?prompt=unsafe")!) == nil)

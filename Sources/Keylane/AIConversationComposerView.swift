@@ -29,7 +29,7 @@ struct AIConversationComposerView: View {
     @State private var menuSelection: String?
     @State private var menuScrollTarget: String?
     @State private var suppressedCompletion: AIChatCompletionToken?
-    @State private var contextSource: AIChatContextSheet.Source?
+    @State private var contextRequest: AIConversationDraftContextRequest<AIChatContextSheet.Source>?
     @State private var capability: AIChatCapabilityInfo?
 
     var body: some View {
@@ -40,7 +40,7 @@ struct AIConversationComposerView: View {
             .alert("无法读取附件", isPresented: Binding(get: { !composer.fileError.isEmpty }, set: { if !$0 { composer.fileError = "" } })) {
                 Button("好") { composer.fileError = "" }
             } message: { Text(composer.fileError) }
-            .onChange(of: composer.draftID) { _, _ in dismissComposerMenu() }
+            .onChange(of: composer.draftID) { _, _ in contextRequest = nil; dismissComposerMenu() }
             .onReceive(composer.contextRequested) { request in
                 switch request {
                 case .file: addTextFile()
@@ -48,8 +48,14 @@ struct AIConversationComposerView: View {
                 }
             }
             .sheet(item: $capability) { AIChatCapabilityInfoView(feature: $0) }
-            .sheet(item: $contextSource) { source in
-                AIChatContextSheet(source: source) { attachment in addAttachment(attachment) }
+            .sheet(item: $contextRequest) { request in
+                AIChatContextSheet(source: request.source) { attachment in
+                    if composer.appendAttachment(attachment, from: request) {
+                        composer.focusRequested.send()
+                    } else if composer.draftID == request.draftID {
+                        attachmentError = "问题与上下文合计不能超过 32,000 字节，且最多 5 项。"
+                    }
+                }
             }
             .alert("无法添加上下文", isPresented: Binding(
                 get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } }
@@ -186,10 +192,10 @@ struct AIConversationComposerView: View {
         } else {
             items = [
                 Item(id: "file", section: "上下文", title: "添加文件…", symbol: "doc", action: addTextFile),
-                Item(id: "clipboard-history", section: "上下文", title: "剪贴板历史…", symbol: "clipboard") { contextSource = .clipboard },
+                Item(id: "clipboard-history", section: "上下文", title: "剪贴板历史…", symbol: "clipboard") { contextRequest = composer.contextRequest(AIChatContextSheet.Source.clipboard) },
                 Item(id: "clipboard", section: "上下文", title: "当前剪贴板文字", symbol: "doc.on.clipboard", action: insertClipboard),
                 Item(id: "screenshot", section: "上下文", title: "截图文字…", symbol: "viewfinder", action: addImageText),
-                Item(id: "calendar", section: "上下文", title: "日历日程…", symbol: "calendar") { contextSource = .calendar },
+                Item(id: "calendar", section: "上下文", title: "日历日程…", symbol: "calendar") { contextRequest = composer.contextRequest(AIChatContextSheet.Source.calendar) },
                 Item(id: "selection", section: "上下文", title: "选中文字", symbol: "text.cursor", action: insertSelectedText)
             ]
             if !contextMenuOpen {

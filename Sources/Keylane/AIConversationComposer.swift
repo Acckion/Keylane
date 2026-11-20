@@ -78,6 +78,15 @@ final class AIConversationComposer: ObservableObject {
         return true
     }
 
+    func contextRequest<Source>(_ source: Source) -> AIConversationDraftContextRequest<Source> {
+        .init(draftID: draftID, source: source)
+    }
+
+    @discardableResult
+    func appendAttachment<Source>(_ attachment: AIConversationAttachment, from request: AIConversationDraftContextRequest<Source>) -> Bool {
+        appendAttachment(attachment, for: request.draftID)
+    }
+
     /// Native toolbar and separate hosting columns request focus in the actual composer column.
     let focusRequested = PassthroughSubject<Void, Never>()
     enum ContextRequest { case file, clipboard }
@@ -131,3 +140,10 @@ struct AIConversationAttachment: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+
+/// Every presented picker carries the identity of the draft that opened it.
+struct AIConversationDraftContextRequest<Source>: Identifiable {
+    let id = UUID()
+    let draftID: UUID
+    let source: Source
+}
