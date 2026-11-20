@@ -50,6 +50,8 @@ final class FileSearchController: ObservableObject {
     private var recentOpenDates: [String: Date]
     private let recentSpotlightSearch: (([String], @escaping ([RecentlyUsedFile]) -> Void) -> Void)?
     private var recentlyRemoved = Set<String>()
+    private var preparedRecents: (roots: [String], expires: ContinuousClock.Instant, files: [RecentlyUsedFile])?
+    private var usePreparedRecents = false
     private var localQueryResolved = false
     private var didStart = false
     private var indexFailure: String?
@@ -459,6 +461,66 @@ final class FileSearchController: ObservableObject {
         search(query, includeContents: includesQueryContents, standalone: standalone, showPathItself: showPathItself)
     }
 
+    func recentForLauncherSwipe() async -> [SpotlightFile] {
+        guard options.enabled else { return [] }
+        let config = authorizedOptions
+        let paths = recentPaths
+        let dates = recentOpenDates
+        let exclusions = automaticExclusions.map(\.path)
+        let restored = restored
+        let removed = recentlyRemoved
+        // The visible search cancels its own Spotlight query when entering a page.
+        let previewSpotlight = SpotlightSearch()
+        defer { withExtendedLifetime(previewSpotlight) {} }
+        let search = recentSpotlightSearch ?? previewSpotlight.recentlyUsed
+        let system: [RecentlyUsedFile] = await withCheckedContinuation { continuation in
+            search(config.roots) { continuation.resume(returning: $0) }
+        }
+        guard !Task.isCancelled else { return [] }
+        preparedRecents = (config.roots, ContinuousClock.now + .seconds(10), system)
+        return await withCheckedContinuation { continuation in
+            reader.async {
+                let files = Self.recentFiles(paths: paths, dates: dates, system: system, config: config,
+                                             exclusions: exclusions, restored: restored, removed: removed, limit: 12)
+                continuation.resume(returning: files)
+            }
+        }
+    }
+
+    func usePreparedRecentsOnNextSearch() {
+        usePreparedRecents = true
+    }
+
+    private nonisolated static func recentFiles(
+        paths: [String], dates: [String: Date], system: [RecentlyUsedFile],
+        config: FileSearchOptions, exclusions: [String], restored: Set<String>, removed: Set<String>,
+        limit: Int, cancellation: FileScanCancellation? = nil
+    ) -> [SpotlightFile] {
+        var used = dates
+        for file in system where file.date > (used[file.path] ?? .distantPast) {
+            used[file.path] = file.date
+        }
+        let newest = used.keys.sorted { a, b in
+            let first = used[a] ?? .distantPast
+            let second = used[b] ?? .distantPast
+            return first == second ? a < b : first > second
+        }
+        let candidates = newest + paths.filter { used[$0] == nil }
+        var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
+        var seen = Set<String>()
+        var files: [SpotlightFile] = []
+        for path in candidates {
+            if cancellation?.cancelled == true { return [] }
+            guard path.hasPrefix("/"), !removed.contains(where: { FileSearchLocation.contains(path, in: $0) }),
+                  let file = try? locations.item(at: URL(fileURLWithPath: path)), !file.isDirectory,
+                  let canonical = FileSearchLocation.canonicalPath(file.id),
+                  seen.insert(canonical).inserted else { continue }
+            files.append(file)
+            if files.count == limit { break }
+        }
+        return files
+    }
+
     private func searchRecentFiles() {
         stopSearchJobs()
         let cancellation = FileScanCancellation()
@@ -477,35 +539,23 @@ final class FileSearchController: ObservableObject {
             guard let self, !cancellation.cancelled else { return }
             self.reader.async { [weak self] in
                 guard !cancellation.cancelled else { return }
-                var used = dates
-                for file in system where file.date > (used[file.path] ?? .distantPast) {
-                    used[file.path] = file.date
-                }
-                let newest = used.keys.sorted { a, b in
-                    let first = used[a] ?? .distantPast
-                    let second = used[b] ?? .distantPast
-                    return first == second ? a < b : first > second
-                }
-                let candidates = newest + paths.filter { used[$0] == nil }
-                var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
-                var seen = Set<String>()
-                var files: [SpotlightFile] = []
-                for path in candidates {
-                    if cancellation.cancelled { return }
-                    guard path.hasPrefix("/"), !removed.contains(where: { FileSearchLocation.contains(path, in: $0) }),
-                          let file = try? locations.item(at: URL(fileURLWithPath: path)), !file.isDirectory,
-                          let canonical = FileSearchLocation.canonicalPath(file.id),
-                          seen.insert(canonical).inserted else { continue }
-                    files.append(file)
-                    if files.count == 30 { break }
-                }
+                let files = Self.recentFiles(paths: paths, dates: dates, system: system, config: config,
+                                             exclusions: exclusions, restored: restored, removed: removed,
+                                             limit: 30, cancellation: cancellation)
                 DispatchQueue.main.async {
                     guard let self, self.queryVersion == ticket, self.isRunning, self.options.enabled, !cancellation.cancelled,
                           finished || !files.isEmpty else { return }
                     self.emit(files, files.isEmpty ? "最近打开的文件会显示在这里。" : "最近使用")
-                    self.isSearching = false
+                    self.isSearching = !finished
                 }
             }
+        }
+        let usePrepared = usePreparedRecents
+        usePreparedRecents = false
+        if usePrepared, let preparedRecents, preparedRecents.roots == config.roots,
+           preparedRecents.expires > ContinuousClock.now {
+            publish(preparedRecents.files, true)
+            return
         }
         if !paths.isEmpty { publish([], false) }
         let search = recentSpotlightSearch ?? spotlight.recentlyUsed

@@ -8,7 +8,7 @@ enum AIModule {
                                      keywords: "AI 模型 提供方 接口 API 密钥 Keychain 流式 Ollama")
 
     static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai-text-commands", title: "AI 命令",
-                                               keywords: "翻译 润色 摘要 自定义 提示词 导入 快捷键 translate polish summarize")
+                                               keywords: "润色 摘要 自定义 提示词 导入 快捷键 polish summarize")
     static let interactions = SettingsItem(id: "ai-interactions", page: "ai", title: "Quick AI 与聊天",
                                            keywords: "Tab 回车 发送 备选命令 窗口置顶")
 
@@ -45,7 +45,7 @@ enum AIModule {
         let chatCommand = LauncherModule.Command(declaration: .init(
             id: .init(rawValue: "ai-chat"), title: "AI Chat", detail: "打开独立聊天窗口", symbol: "bubble.left.and.bubble.right",
             keywords: ["chat", "AI", "聊天", "对话"], destination: .action, settingsPage: "ai"
-        ), available: { configuration.state.enabled }, execute: { _ in openChat(nil) })
+        ), available: { configuration.state.enabled }, arguments: .init(count: 0...1) { _, arguments in openChat(arguments.first) })
         let textSession = AITextCommandSession(configuration: configuration, runtime: runtime)
         let library = CustomAICommandLibrary()
         let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)
@@ -146,17 +146,6 @@ private struct AIModelSettings: View {
     var body: some View {
         SettingsPageSections {
             AIModelDefaultsSettings(configuration: configuration).settingsAnchor(AIModule.models)
-            SettingsGroup {
-                SettingsRow("模型与提供方", detail: "支持 OpenAI 兼容接口，可以添加多个连接。") {
-                    HStack {
-                        Button("添加 Ollama") {
-                            editingConnection = AIConnection(name: "Ollama", endpoint: "http://127.0.0.1:11434/v1")
-                        }
-                        SettingsIconButton("添加连接", symbol: "plus") { editingConnection = AIConnection() }
-                    }
-                }
-            }
-
             AIProviderSetupSettings(configuration: configuration, runtime: runtime)
             AICustomProviderSettings(configuration: configuration)
             AIModelCatalogSettings(configuration: configuration) { editingConnection = $0 }

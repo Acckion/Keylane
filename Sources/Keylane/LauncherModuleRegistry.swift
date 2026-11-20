@@ -135,7 +135,6 @@ struct LauncherPage {
     var typeFilter: ((Binding<Bool>) -> AnyView)?
     var badgeTitle: (() -> String)?
     var badgeActions: (() -> [LauncherAction])?
-    var maximumActionWidth: CGFloat?
     var releasePreview: (() -> Void)?
     var actionShortcutsEnabled = false
     var loading: AnyPublisher<Bool, Never>?
@@ -631,6 +630,10 @@ final class LauncherModuleRegistry {
             return nil
         }
         return permissionAllowsExecution(permission) ? nil : permission
+    }
+
+    func isRegisteredCommandEnabled(_ id: CommandID) -> Bool {
+        byID[id].map { isCommandEnabled($0) } ?? false
     }
 
     private func isCommandEnabled(_ command: Owned<LauncherModule.Command>) -> Bool {

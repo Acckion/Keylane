@@ -79,6 +79,15 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
         return url.path.hasSuffix("/chat/completions") ? url : url.appendingPathComponent("chat/completions")
     }
 
+    /// Credential checks must not depend on access to a particular model.
+    var keyVerificationURL: URL? {
+        guard providerID == "openrouter", protocolKind == .openAI,
+              let base = baseURL, base.scheme == "https", base.host == "openrouter.ai",
+              base.port == nil || base.port == 443,
+              base.path == "/api/v1" || base.path == "/api/v1/" else { return nil }
+        return base.appendingPathComponent("key")
+    }
+
     var isConfigured: Bool {
         isValidConfiguration && (!protocolKind.isSubscription || (subscriptionEnabled == true && model != "default"))
     }
@@ -127,6 +136,39 @@ actor AIRuntime {
         self.configuration = configuration
     }
 
+    func verifyAPIKey(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?) async throws {
+        guard let url = connection.keyVerificationURL else {
+            _ = try await generate(connection: connection, readKey: readKey,
+                                   messages: [.init(role: .user, content: "Reply with OK.")]) { _ in }
+            return
+        }
+        try Task.checkCancellation()
+        guard let key = try readKey(connection), !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw AIResponseError.invalidResponse
+        }
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        authorize(&request, connection: connection, key: key)
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
+        var body = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard body.count < 65_536 else { throw AIResponseError.tooLarge }
+            body.append(byte)
+        }
+        struct KeyEnvelope: Decodable {
+            struct Info: Decodable { let label: String }
+            let data: Info
+        }
+        guard (try? JSONDecoder().decode(KeyEnvelope.self, from: body)) != nil else {
+            throw AIResponseError.invalidResponse
+        }
+        try Task.checkCancellation()
+    }
+
     func listModels(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?) async throws -> [String] {
         if connection.protocolKind.isSubscription {
             return try await AISubscriptionTransport.models(connection)
@@ -154,9 +196,9 @@ actor AIRuntime {
     }
 
     func generate(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?, messages: [AIMessage],
-                  emit: @Sendable (String) async throws -> Void) async throws -> Int? {
+                  subscriptionReasoningEffort: String? = nil, emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         if connection.protocolKind.isSubscription {
-            return try await AISubscriptionTransport.generate(connection, messages: messages, emit: emit)
+            return try await AISubscriptionTransport.generate(connection, messages: messages, effort: subscriptionReasoningEffort, emit: emit)
         }
         guard let url = connection.completionURL, connection.isConfigured else { throw AIResponseError.invalidResponse }
         try Task.checkCancellation()
