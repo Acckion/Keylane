@@ -75,10 +75,18 @@ final class FixtureProtocol: URLProtocol {
                 } else {
                     text = #"{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"你好"}],"usage":{"input_tokens":2,"output_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":0},"service_tier":"standard"}}"#
                 }
-            } else if self.request.url?.path == "/v1/models" {
+            } else if self.request.url?.path == "/v1/models" || self.request.url?.path == "/api/v1/models" {
                 precondition(self.request.httpMethod == "GET" && self.request.httpBody == nil)
                 precondition(self.request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
-                text = mode == "bad" ? "{}" : #"{"data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":" "}]}"#
+                if mode == "catalog-large" {
+                    let models: [[String: Any]] = (0..<300).map { index in
+                        ["id": "fixture/model-\(index)", "name": "Fixture Model \(index)",
+                         "context_length": 131072, "architecture": ["input_modalities": ["text", "image"]],
+                         "supported_parameters": ["tools"], "description": String(repeating: "x", count: 4200)]
+                    }
+                    text = String(data: try! JSONSerialization.data(withJSONObject: ["data": models]), encoding: .utf8)!
+                } else if mode == "catalog-empty" { text = #"{"data":[]}"# }
+                else { text = mode == "bad" ? "{}" : #"{"data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":" "}]}"# }
             } else {
                 text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             }
@@ -133,6 +141,10 @@ final class FixtureProtocol: URLProtocol {
         }
     }
     override func stopLoading() { lock.lock(); stopped = true; lock.unlock() }
+}
+if ProcessInfo.processInfo.environment["KEYLANE_PROVIDER_CATALOG_ONLY"] == "1" {
+    verifyProviderCatalog()
+    exit(0)
 }
 let suite = "org.keylane.file-ai-test."+UUID().uuidString
 try verifyDictatedChatKeepsDraft()
@@ -1950,3 +1962,129 @@ let reloadedSpeechConfig = AIConfiguration(preferences: sharedSpeechDefaults)
 precondition(reloadedSpeechConfig.state.connections.first { $0.id == sharedSpeech.id } == sharedSpeech)
 precondition(AIProviderPreset.all.first { $0.id == "elevenlabs" }!.connection.taskKind == .elevenLabsTranscription)
 print("PASS shared dictation models: common catalog and model picker, sibling credential reuse, endpoint isolation, explicit capabilities and unchanged text defaults")
+
+
+verifyProviderCatalog()
+
+// Provider catalog sync publishes one durable snapshot, independently of UI lifetime.
+func verifyProviderCatalog() {
+    func wait(_ label: String, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(condition(), label)
+    }
+let catalogSuite = "org.keylane.synthetic-catalog.\(UUID())"
+let catalogPreferences = UserDefaults(suiteName: catalogSuite)!
+let catalogConfiguration = AIConfiguration(preferences: catalogPreferences)
+var catalogOwner = AIProviderPreset.all.first { $0.id == "openrouter" }!.connection
+catalogOwner.model = "fixture/model-0"
+precondition(catalogConfiguration.save(catalogOwner))
+catalogConfiguration.setEnabled(true)
+let catalogURLConfig = URLSessionConfiguration.ephemeral
+catalogURLConfig.protocolClasses = [FixtureProtocol.self]
+let catalogRuntime = AIRuntime(configuration: catalogURLConfig)
+var catalogClock = Date(timeIntervalSince1970: 2_000_000_000)
+var catalogSync: AIProviderCatalogSync?
+var catalogTaskDone = false
+FixtureProtocol.mode = "catalog-large"
+Task { @MainActor in
+    catalogSync = AIProviderCatalogSync(configuration: catalogConfiguration, runtime: catalogRuntime,
+                                       now: { catalogClock }, readKey: { _ in "fixture-key" })
+    catalogSync!.start()
+    catalogTaskDone = true
+}
+wait("Start automatic provider discovery") { catalogTaskDone }
+wait("Catalog over 1 MiB merges without opening settings") { catalogConfiguration.state.connections.count == 300 }
+let firstCatalog = catalogConfiguration.state
+let visionModel = firstCatalog.connections.first { $0.model == "fixture/model-1" }!
+precondition(visionModel.contextTokens == 131072 && visionModel.supportsImages == true && visionModel.supportsTools == true)
+precondition(visionModel.credentialOwnerID == catalogOwner.id)
+precondition(firstCatalog.selectedID == catalogOwner.id)
+precondition(firstCatalog.defaults?[.quick] == catalogOwner.id)
+catalogConfiguration.setModelVisible(visionModel.id, visible: false)
+var renamedCatalogModel = catalogConfiguration.state.connections.first { $0.id == visionModel.id }!
+renamedCatalogModel.name = "My saved model name"
+precondition(catalogConfiguration.save(renamedCatalogModel, selectAsDefault: false))
+let requestsBeforeCachedMenu = FixtureProtocol.requests.count
+let restoredCatalog = AIConfiguration(preferences: catalogPreferences)
+let cachedMenu = AIModelMenuCatalog(connections: restoredCatalog.state.connections, selection: .model(catalogOwner.id), query: "", purpose: .text)
+precondition(cachedMenu.groups.flatMap(\.models).count == 299)
+precondition(restoredCatalog.state.providerCatalogs == catalogConfiguration.state.providerCatalogs)
+Task { @MainActor in catalogSync!.refresh() }
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(FixtureProtocol.requests.count == requestsBeforeCachedMenu)
+// Force refresh updates existing IDs and does not reset hidden/default selections.
+Task { @MainActor in catalogSync!.refresh(force: true) }
+wait("Force provider refresh") { FixtureProtocol.requests.count > requestsBeforeCachedMenu }
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+precondition(catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.hiddenFromPicker == true)
+precondition(catalogConfiguration.state.connections.count == 300)
+precondition(catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.name == "My saved model name")
+precondition(catalogConfiguration.state.selectedID == catalogOwner.id)
+// A catalog refresh makes removed models unavailable without losing defaults or hidden flags.
+let currentOwner = catalogConfiguration.state.connections.first { $0.id == catalogOwner.id }!
+precondition(catalogConfiguration.applyProviderCatalog([.init(id: currentOwner.model)], snapshot: currentOwner, at: catalogClock))
+precondition(catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.isConfigured == false)
+precondition(catalogConfiguration.state.selectedID == catalogOwner.id)
+Task { @MainActor in catalogSync!.refresh(force: true) }
+wait("Rediscovered models recover the same identity") {
+    catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.isConfigured == true
+}
+precondition(catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.hiddenFromPicker == true)
+// Expiry refreshes in the service. A denied or empty response keeps the last valid catalog.
+let validCatalogState = catalogConfiguration.state
+FixtureProtocol.mode = "error"
+let beforeDeniedCatalog = FixtureProtocol.requests.count
+catalogClock.addTimeInterval(AIProviderCatalogSync.cacheLifetime + 1)
+Task { @MainActor in catalogSync!.refresh() }
+wait("Expired cache refreshes in background") { FixtureProtocol.requests.count > beforeDeniedCatalog }
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(catalogConfiguration.state == validCatalogState)
+FixtureProtocol.mode = "catalog-empty"
+Task { @MainActor in catalogSync!.refresh(force: true) }
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(catalogConfiguration.state == validCatalogState)
+FixtureProtocol.mode = "ok"
+var newlySaved = catalogOwner
+newlySaved.id = UUID()
+newlySaved.model = "a"
+precondition(catalogConfiguration.save(newlySaved, selectAsDefault: false))
+wait("Saving a new provider automatically schedules discovery") {
+    catalogConfiguration.state.connections.contains { $0.catalogIdentity == newlySaved.catalogIdentity && $0.model == "b" }
+}
+let beforeDisabledCatalog = catalogConfiguration.state.connections
+// Disabling AI cancels outstanding catalog work and discards late results.
+FixtureProtocol.mode = "slow"
+Task { @MainActor in
+    catalogSync!.refresh(force: true)
+    catalogConfiguration.setEnabled(false)
+    catalogSync!.refresh()
+}
+RunLoop.current.run(until: Date().addingTimeInterval(0.65))
+precondition(catalogConfiguration.state.connections == beforeDisabledCatalog)
+Task { @MainActor in catalogSync = nil }
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+var staleCatalogOwner = catalogOwner
+staleCatalogOwner.endpoint = "https://different.example/v1"
+precondition(catalogConfiguration.save(staleCatalogOwner))
+catalogConfiguration.setEnabled(true)
+precondition(!catalogConfiguration.applyProviderCatalog([.init(id: "stale-model")], snapshot: catalogOwner, at: catalogClock))
+precondition(!catalogConfiguration.state.connections.contains { $0.model == "stale-model" })
+catalogPreferences.removePersistentDomain(forName: catalogSuite)
+print("PASS provider catalog: large payload, metadata, persistence, shared cached picker, IDs/defaults/visibility, expiry, failure and cancellation")
+
+if ProcessInfo.processInfo.environment["KEYLANE_VERIFY_OPENROUTER_PUBLIC_CATALOG"] == "1" {
+    var completed = false
+    Task { @MainActor in
+        do {
+            let publicCatalog = try await AIRuntime().listModelCatalog(connection: catalogOwner, readKey: { _ in nil })
+            precondition(publicCatalog.count > 1 && publicCatalog.contains { $0.contextLength != nil })
+            print("PASS live OpenRouter public directory: \(publicCatalog.count) models; no account Key or generation request")
+        } catch { preconditionFailure("Public OpenRouter directory: \(error)") }
+        completed = true
+    }
+    let deadline = Date().addingTimeInterval(35)
+    while !completed, Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    precondition(completed)
+}
+}

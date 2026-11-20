@@ -49,6 +49,8 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     var credentialOwnerID: UUID?
     var subscriptionAccountID: String?
     var modelTask: AIModelTask?
+    var catalogUnavailable: Bool?
+    var catalogName: String?
 
     var taskKind: AIModelTask {
         if protocolKind != .openAI { return .text }
@@ -139,7 +141,7 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     }
 
     var isConfigured: Bool {
-        isValidConfiguration && (!protocolKind.isSubscription || (subscriptionEnabled == true && model != "default"))
+        catalogUnavailable != true && isValidConfiguration && (!protocolKind.isSubscription || (subscriptionEnabled == true && model != "default"))
     }
     var isValidConfiguration: Bool {
         (protocolKind.isSubscription || baseURL != nil) && !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -164,10 +166,26 @@ private final class AIRedirectPolicy: NSObject, URLSessionTaskDelegate {
     }
 }
 
+struct AIProviderModel: Decodable, Sendable {
+    let id: String
+    var name: String?
+    var contextLength: Int?
+    var architecture: Architecture?
+    var supportedParameters: [String]?
+
+    struct Architecture: Decodable, Sendable {
+        var inputModalities: [String]?
+        enum CodingKeys: String, CodingKey { case inputModalities = "input_modalities" }
+    }
+    enum CodingKeys: String, CodingKey {
+        case id, name, architecture
+        case contextLength = "context_length", supportedParameters = "supported_parameters"
+    }
+}
+
 actor AIRuntime {
     private struct ModelList: Decodable {
-        struct Model: Decodable { let id: String }
-        let data: [Model]
+        let data: [AIProviderModel]
     }
 
     private struct Payload: Encodable {
@@ -220,37 +238,41 @@ actor AIRuntime {
     }
 
     func listModels(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?) async throws -> [String] {
+        try await listModelCatalog(connection: connection, readKey: readKey).map(\.id)
+    }
+
+    func listModelCatalog(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?) async throws -> [AIProviderModel] {
         if connection.protocolKind.isSubscription {
-            return try await AISubscriptionTransport.models(connection)
+            return try await AISubscriptionTransport.models(connection).map { AIProviderModel(id: $0) }
         }
         guard let url = connection.modelsURL else { throw AIResponseError.invalidResponse }
         try Task.checkCancellation()
-        var request = URLRequest(url: url, timeoutInterval: 15)
+        var request = URLRequest(url: url, timeoutInterval: 30)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         authorize(&request, connection: connection, key: try readKey(connection))
-        let (bytes, response) = try await session.bytes(for: request)
-        defer { bytes.task.cancel() }
+        // Catalogs are finite JSON documents. Avoid one async iteration per byte;
+        // OpenRouter's complete catalog can also exceed the old 1 MiB ceiling.
+        let (body, response) = try await session.data(for: request)
+        try Task.checkCancellation()
         guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
-        var body = Data()
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            guard body.count < 1_048_576 else { throw AIResponseError.tooLarge }
-            body.append(byte)
-        }
-        let models: [String]
+        guard body.count <= 16 * 1_048_576 else { throw AIResponseError.tooLarge }
+        let models: [AIProviderModel]
         if connection.taskKind == .elevenLabsTranscription {
             struct ElevenModel: Decodable { let model_id: String }
             guard let list = try? JSONDecoder().decode([ElevenModel].self, from: body) else { throw AIResponseError.invalidResponse }
-            models = list.map(\.model_id).filter { $0.hasPrefix("scribe_") }
+            models = list.filter { $0.model_id.hasPrefix("scribe_") }.map { AIProviderModel(id: $0.model_id) }
         } else {
             guard let list = try? JSONDecoder().decode(ModelList.self, from: body) else { throw AIResponseError.invalidResponse }
-            models = list.data.map(\.id)
+            models = list.data
         }
-        return Set(models.filter {
-            !$0.isEmpty && $0.utf8.count <= 512 && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                && $0.rangeOfCharacter(from: .controlCharacters) == nil
-        }).sorted()
+        var unique = [String: AIProviderModel]()
+        for model in models where !model.id.isEmpty && model.id.utf8.count <= 512
+            && model.id == model.id.trimmingCharacters(in: .whitespacesAndNewlines)
+            && model.id.rangeOfCharacter(from: .controlCharacters) == nil {
+            if unique[model.id] == nil { unique[model.id] = model }
+        }
+        return unique.keys.sorted().compactMap { unique[$0] }
     }
 
     /// Audio and text requests share the same configured models, credentials, session and cancellation policy.

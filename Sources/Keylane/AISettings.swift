@@ -309,7 +309,7 @@ private struct AIConnectionEditor: View {
                     HStack {
                         SecureField(hasKey ? "已保存，可输入新密钥" : "输入密钥", text: $key).frame(width: 150)
                         if !isNew {
-                            Button("保存") { withStatus("密钥已保存。") { try AIConfiguration.saveKey(key, for: connection) } }
+                            Button("保存") { withStatus("密钥已保存。") { try AIConfiguration.saveKey(key, for: connection); configuration.refreshModelCatalogs(runtime: runtime, connection: connection) } }
                                 .disabled(key.isEmpty || draft != connection)
                         }
                         if hasKey { Button("删除…") { confirmKeyDeletion = true }.disabled(draft != connection) }
