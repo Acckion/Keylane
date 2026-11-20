@@ -53,7 +53,6 @@ struct SettingsView: View {
         .navigationTitle(headerScrolledAway || !showsPageHeader ? (page?.title ?? "设置") : "")
         .toolbarBackground(.regularMaterial, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
-        .keylaneTheme()
         .preferredColorScheme(state.colorScheme)
         .onExitCommand { (NSApp.delegate as? Delegate)?.closeUtilityWindowOnEscape() }
         .onAppear {
