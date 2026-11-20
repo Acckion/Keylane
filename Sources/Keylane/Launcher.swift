@@ -90,6 +90,9 @@ struct Launcher: View {
     init(model: Model) {
         self.model = model
         _observation = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(model.aiInteraction.$rootTab),
+            ViewObservation.changes(model.aiInteraction.$rootFallback),
+            ViewObservation.changes(model.aiSettings.$state),
             ViewObservation.changes(model.$pageID),
             ViewObservation.changes(model.$query),
             ViewObservation.changes(model.scripts.$rootArgumentScript),
@@ -668,10 +671,11 @@ struct Launcher: View {
         case .enter:
             let explicitQuery = model.takeInitialQuery(for: current)
             let initialQuery = page?.enter?(explicitQuery ?? model.query)
-            if let seed = explicitQuery ?? initialQuery {
+            if let seed = LauncherPagePresentation.entryQuery(explicit: explicitQuery, pageResult: initialQuery,
+                                                              restored: restoredQuery,
+                                                              pageConsumesEntryQuery: page?.consumesEntryQuery == true) {
                 if showsFileResults { fileType = "all" }
-                // A page can seed a fresh entry. A return keeps the query saved by the host.
-                if restoredQuery == nil || explicitQuery != nil { model.query = seed }
+                model.query = seed
             }
             refreshActiveQuery()
         case .resume:
@@ -766,6 +770,18 @@ struct Launcher: View {
                 case .none:
                     Spacer(minLength: 0)
                 }
+                if model.pageID == .root, model.aiInteraction.showsRootHint, quickAIEntryEnabled {
+                    Button { _ = launchQuickAI(model.query) } label: {
+                        HStack(spacing: 6) {
+                            Text("Quick AI")
+                            if model.aiInteraction.rootTab { Keycap(text: "⇥") }
+                        }.font(.system(size: 13)).foregroundStyle(.secondary)
+                        .fixedSize()
+                    }
+                    .buttonStyle(.plain)
+                    .help("使用搜索文字询问 AI")
+                    .accessibilityLabel("询问 Quick AI")
+                }
                 if showsTypeFilter {
                     Color.clear.frame(width: showsFileResults && model.fileSearch.browsingDirectory != nil ? 312 : page?.typeFilterWidth ?? 138, height: 36)
                         .accessibilityHidden(true)
@@ -778,10 +794,24 @@ struct Launcher: View {
 
     private func openQuickAI(_ query: String) -> Bool {
         guard presentation.page == .root, model.pageID == .root, model.aiInteraction.rootTab,
-              menu == nil, inlineEmojiTarget == nil, argumentTarget == nil, rootScriptArguments == nil,
-              !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        return model.runCommand(QuickAILauncher.commandID, origin: .search, arguments: [query])
+              menu == nil, inlineEmojiTarget == nil, argumentTarget == nil, rootScriptArguments == nil else { return false }
+        return launchQuickAI(query)
     }
+    private var quickAIEntryEnabled: Bool {
+        model.aiSettings.state.enabled
+            && !model.disabledCommands.contains(QuickAILauncher.commandID.rawValue)
+            && model.launcherModules?.isCommandModuleEnabled(QuickAILauncher.commandID) == true
+    }
+
+    private func launchQuickAI(_ query: String) -> Bool {
+        guard quickAIEntryEnabled else { return false }
+        guard model.aiSettings.state.connection(for: .quick) != nil else {
+            model.openSettings(page: AIModule.models.page)
+            return true
+        }
+        return model.runCommand(QuickAILauncher.commandID, origin: .search, arguments: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [query])
+    }
+
     @ViewBuilder private var typeFilter: some View {
         if showsFileResults {
             HStack(alignment: .top, spacing: 8) {

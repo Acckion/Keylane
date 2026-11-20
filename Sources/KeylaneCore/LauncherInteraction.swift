@@ -65,6 +65,14 @@ public enum LauncherActionSelection {
 /// One logical page can enter, suspend while hidden, and resume on the same
 /// route. Showing an already active page and hiding twice have no side effects.
 public struct LauncherPagePresentation {
+    /// Only an opted-in page may replace an explicitly supplied query with its entry result.
+    /// Returning to a page preserves its saved draft unless the caller supplied a new query.
+    public static func entryQuery(explicit: String?, pageResult: String?, restored: String?,
+                                  pageConsumesEntryQuery: Bool = false) -> String? {
+        guard restored == nil || explicit != nil else { return nil }
+        return pageConsumesEntryQuery ? pageResult ?? explicit : explicit ?? pageResult
+    }
+
     public enum Activation: Equatable { case enter, resume }
 
     public struct Change {

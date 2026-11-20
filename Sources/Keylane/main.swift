@@ -70,6 +70,7 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let aiSettings = AIConfiguration()
     let aiInteraction = AIInteractionPreferences()
+    var openAIChatLink: ((UUID) -> Void)?
     let aiRuntime = AIRuntime()
     lazy var fileAI: FileAIController = {
         let controller = FileAIController(settings: aiSettings, runtime: aiRuntime)
@@ -1219,6 +1220,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NotificationCenter.default.post(name: .launcherShown, object: nil)
         }
     }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let id = urls.compactMap(AIChatLink.parse).first else { return }
+        model.openAIChatLink?(id)
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if onboarding.isVisible { onboarding.bringToFront() }
         else if !window.isVisible { show() }

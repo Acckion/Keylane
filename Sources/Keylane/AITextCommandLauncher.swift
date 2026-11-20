@@ -57,12 +57,12 @@ enum AITextCommandLauncher {
         })
     }
 
-    private static func selectedText() -> String? {
+    static func selectedText() -> String? {
         let delegate = NSApp.delegate as? Delegate
         let frontmost = NSWorkspace.shared.frontmostApplication
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let target = frontmost?.processIdentifier == ownPID
-            ? (delegate?.window?.isKeyWindow == true ? delegate?.previousApplication : nil)
+            ? delegate?.previousApplication
             : frontmost
         guard let target, let element = SnippetTextTarget.focused(in: target) else { return nil }
         return SnippetTextTarget.attribute(kAXSelectedTextAttribute, of: element) as? String
@@ -99,7 +99,7 @@ enum AITextCommandLauncher {
                             actions: {
                                 var actions = [LauncherAction(id: "copy-ai-command-result", title: "复制结果",
                                                                icon: "doc.on.doc", enabled: session.reply.lastAnswer != nil) {
-                                    AIConversationTranscript.copy(session.reply.lastAnswer)
+                                    AIConversationHostActions.copyText(session.reply.lastAnswer)
                                 }]
                                 if session.reply.running {
                                     actions.append(.init(id: "stop-ai-command", title: "停止生成", icon: "stop.fill",
@@ -180,7 +180,7 @@ private struct AITextCommandForm: View {
 }
 
 private struct AITextCommandResult: View {
-    @ObservedObject var reply: QuickAIController
+    @ObservedObject var reply: AIConversationSession
 
     var body: some View {
         if reply.running || !reply.status.isEmpty || reply.lastAnswer != nil {
@@ -190,7 +190,7 @@ private struct AITextCommandResult: View {
                 Spacer()
                 if reply.running { Button("停止", action: reply.stop) }
                 if let answer = reply.lastAnswer {
-                    Button("复制") { AIConversationTranscript.copy(answer) }
+                    Button("复制") { AIConversationHostActions.copyText(answer) }
                 }
             }
             if let answer = reply.lastAnswer { Text(answer).textSelection(.enabled) }

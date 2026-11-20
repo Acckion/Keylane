@@ -132,12 +132,13 @@ enum AISubscriptionTransport {
     }
 
     static func generate(_ connection: AIConnection, messages: [AIMessage], effort: String? = nil,
+                         progress: @Sendable (AIResponseEvent) async -> Void = { _ in },
                          emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         guard connection.isConfigured else { throw AISubscriptionError.failed }
         guard let expected = connection.subscriptionAccountID, !expected.isEmpty else { throw AISubscriptionError.accountChanged }
         if connection.protocolKind == .codex {
             // Check in the process that will receive the conversation, not a preflight process.
-            _ = try await codex(connection, operation: .generate(messages, effort: effort), emit: emit)
+            _ = try await codex(connection, operation: .generate(messages, effort: effort), progress: progress, emit: emit)
             return nil
         }
         let account = try await status(connection)
@@ -171,6 +172,7 @@ enum AISubscriptionTransport {
     }
 
     private static func codex(_ connection: AIConnection, operation: Operation,
+                              progress: @Sendable (AIResponseEvent) async -> Void = { _ in },
                               emit: @Sendable (String) async throws -> Void) async throws -> [String: Any] {
         let fastTranslation: Bool
         if case .generate(_, let effort) = operation { fastTranslation = effort != nil }
@@ -296,6 +298,9 @@ enum AISubscriptionTransport {
                             }
                             if fastTranslation, method == "item/agentMessage/delta" || method == "turn/completed" {
                                 guard let currentThread, params["threadId"] as? String == currentThread else { continue }
+                            }
+                            if case .generate = operation, checkedAccount != nil {
+                                for event in CodexProgressAdapter.events(method: method, params: params) { await progress(event) }
                             }
                             if method == "item/agentMessage/delta", let delta = params["delta"] as? String {
                                 receivedText = true
