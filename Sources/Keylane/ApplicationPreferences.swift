@@ -57,6 +57,7 @@ struct ApplicationPreferences: View {
     private var allApplications: some View {
         let visibleApplications = filteredApplications ?? catalog.items
         return SettingsPageSections {
+            IPhoneApplicationPreferences(model: model, phone: model.iPhoneApplications)
             SettingsGroup {
                 Button {
                     model.settingsPage = SettingsItem.applicationAutoQuit.page
