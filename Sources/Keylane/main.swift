@@ -97,7 +97,7 @@ final class Model: ObservableObject {
     }()
     private var moduleSearchChanges: AnyCancellable?
     private var moduleActivationRevocations: AnyCancellable?
-    private var registeredPageCleanup: (page: PageID, activation: LauncherModuleRegistry.Activation, leave: () -> Void)?
+    private var registeredPageCleanup: (page: PageID, activation: LauncherModuleRegistry.Activation, session: LauncherPageSession)?
     let rootSearchUpdates = PassthroughSubject<Void, Never>()
     let clipboard = ClipboardController(startTimer: false, presentationActive: false, startStorage: false)
     let screenshots = ScreenshotLibrary()
@@ -230,18 +230,25 @@ final class Model: ObservableObject {
     var activeLauncherPage: LauncherPage? { launcherModules?.page(pageID) }
 
     func trackRegisteredPage(_ page: LauncherPage, activation: LauncherModuleRegistry.Activation) {
+        if let current = registeredPageCleanup, current.page == page.id, current.activation == activation { return }
+        let previous = registeredPageCleanup
+        registeredPageCleanup = nil
+        previous?.session.end()
+        let session = LauncherPageSession()
         let owner = FilePresentationOwner.extensionActivation(activation.id)
-        registeredPageCleanup = (page.id, activation, {
+        session.onEnd {
             page.leave()
             page.releasePreview?()
             FilePreview.shared.dismiss(owner: owner)
-        })
+        }
+        registeredPageCleanup = (page.id, activation, session)
+        page.startSession?(session)
     }
 
     func leaveRegisteredPage(_ page: PageID, activation: LauncherModuleRegistry.Activation) {
         guard let cleanup = registeredPageCleanup, cleanup.page == page, cleanup.activation == activation else { return }
         registeredPageCleanup = nil
-        cleanup.leave()
+        cleanup.session.end()
     }
     lazy var activePageUpdates: AnyPublisher<Void, Never> = {
         $pageID.removeDuplicates().map { [weak self] pageID in

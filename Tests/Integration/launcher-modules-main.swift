@@ -12,8 +12,8 @@ precondition(!formReturn.reserves(.init("r", modifiers: .command)))
 precondition(LauncherPage.ReturnKey.command.shortcut.launcherKeycaps == ["⌘", "↩"])
 
 let clipboardReturns = LauncherPage.ReturnBindings(alternates: [
-    .command: .init(dismissMenu: true) {},
-    .option: .init(dismissMenu: true) {}
+    .command: .init(dismissMenu: true, actionID: { "fixture" }),
+    .option: .init(dismissMenu: true, actionID: { "fixture" })
 ])
 precondition(clipboardReturns.reserves(.init(.return, modifiers: .command)))
 precondition(clipboardReturns.reserves(.init(.return, modifiers: .option)))
@@ -787,3 +787,29 @@ actionReady = true
 precondition(snapshotPage.actionSnapshot?().primary.invoke() == true)
 precondition(snapshotPage.resolvedActions.first?.invoke() == true && actionRuns == 2)
 print("PASS shared action snapshot, disabled invocation, live state and primary/menu identity")
+
+var endedWork = 0
+let visit = LauncherPageSession()
+visit.onEnd { endedWork += 1; visit.end() }
+let ownedTask = Task<Void, Never> { try? await Task.sleep(nanoseconds: 60_000_000_000) }
+visit.own(ownedTask)
+visit.end(); visit.end()
+precondition(visit.ended && ownedTask.isCancelled && endedWork == 1)
+visit.onEnd { endedWork += 1 }
+precondition(endedWork == 2)
+print("PASS page session cancels owned work and releases once, including reentrant/late cleanup")
+
+var returnPage = snapshotPage
+returnPage.returnBindings.alternates[.command] = .init(actionID: { "save" })
+actionReady = false
+precondition(returnPage.action(for: .command)?.invoke() == false)
+actionReady = true
+precondition(returnPage.action(for: .command)?.invoke() == true)
+returnPage.returnBindings.alternates[.option] = .init(actionID: { "removed" })
+precondition(returnPage.action(for: .option) == nil)
+var stalePublishes = 0
+precondition(!visit.publish { stalePublishes += 1 } && stalePublishes == 0)
+let nextVisit = LauncherPageSession()
+precondition(nextVisit.publish { stalePublishes += 1 } && stalePublishes == 1)
+nextVisit.end()
+print("PASS alternate Return resolves current action and rejects disabled/missing actions; ended visits cannot publish")
