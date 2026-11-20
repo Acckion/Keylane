@@ -977,7 +977,7 @@ struct Launcher: View {
         return "命令"
     }
     private func iconColor(_ id: String) -> ThemeColorStyle { switch id { case "clipboard": return .init(role: .orange); case "screenshot": return .init(role: .purple); case "quicklink": return .init(role: .blue); default: return .text } }
-    private static let footerMenuWidth: CGFloat = 345
+    private static let footerMenuWidth = LauncherActionMenuPanel.width
     private static let footerMinimumGap: CGFloat = 24
 
     private var footer: some View {
@@ -1221,9 +1221,7 @@ struct Launcher: View {
     }
 
     private func menuRowsHeight(_ items: [MenuAction]) -> CGFloat {
-        guard !items.isEmpty else { return 48 }
-        let breaks = zip(items, items.dropFirst()).filter { $0.group != $1.group }.count
-        return min(320, CGFloat(items.count * 39 + breaks * 9))
+        LauncherActionMenuPanel.rowsHeight(items)
     }
 
     private func menuPanel(applicationMenu: Bool, items: [MenuAction]) -> some View {
@@ -1240,66 +1238,17 @@ struct Launcher: View {
         }
         let focus = focusToken
         let selectedID = selectedAction(in: items)?.id
-        return VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
-            if items.isEmpty {
-                Text("没有匹配的操作").font(.caption).foregroundStyle(.secondary).padding(16)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                                if index > 0, items[index - 1].group != item.group {
-                                    Divider().padding(.horizontal, 16).frame(height: 9)
-                                }
-                                LauncherMenuRow(title: item.title, symbol: item.icon, selected: item.id == selectedID,
-                                                enabled: item.enabled, destructive: item.destructive, artwork: item.artwork,
-                                                activate: { activateMenuItem(item.id, applicationMenu: applicationMenu, focus: focus) },
-                                                highlight: { if focus == focusToken { actionSelectionID = item.id } }) {
-                                    if let value = item.value {
-                                        Text(value).font(VisualStyle.rowText).foregroundStyle(.secondary)
-                                            .lineLimit(1).help(value)
-                                    }
-                                    if !item.displayedKeys.isEmpty { Keycaps(keys: item.displayedKeys) }
-                                    if item.submenu != nil {
-                                        Image(systemName: "chevron.right")
-                                            .font(.system(size: 10, weight: .semibold)).foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .padding(.horizontal, 8)
-                                .id(item.id)
-                            }
-                        }
-                    }
-                    .scrollIndicators(.automatic)
-                    .frame(height: menuRowsHeight(items))
-                    .onChange(of: selectedID) { _, id in
-                        if let id { proxy.scrollTo(id) }
-                    }
-                    .onChange(of: actionQuery) { _, _ in
-                        if let first = items.first { proxy.scrollTo(first.id, anchor: .top) }
-                    }
-                }
-            }
-            Divider().padding(.top, 9)
-            SearchField(text: Binding(get: { actionQuery }, set: { query in
+        return LauncherActionMenuPanel(title: title, items: items, selectedID: selectedID,
+            query: Binding(get: { actionQuery }, set: { query in
                 guard actionQuery != query else { return }
-                actionQuery = query
-                actionSelectionID = nil
-            }), placeholder: "搜索操作…", focusToken: focusToken, wantsFocus: actions || appMenu, compact: true,
-                        navigation: model.navigation, submit: {
-                activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus)
-            }, move: moveSelection, escape: escape, back: { escape() }, forward: {
-                activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus, requiresSubmenu: true)
-            }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10)
-                .onChange(of: items.filter(\.enabled).map(\.id), initial: true) { _, enabledIDs in
-                    actionSelectionID = LauncherActionSelection.reconcile(actionSelectionID, enabledIDs: enabledIDs)
-                }
-        }.frame(width: Self.footerMenuWidth)
+                actionQuery = query; actionSelectionID = nil
+            }), focusToken: focusToken, wantsFocus: actions || appMenu, navigation: model.navigation,
+            activate: { activateMenuItem($0, applicationMenu: applicationMenu, focus: focus) },
+            highlight: { if focus == focusToken { actionSelectionID = $0 } },
+            submit: { activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus) },
+            move: moveSelection, escape: escape,
+            forward: { activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus, requiresSubmenu: true) },
+            reconcile: { actionSelectionID = LauncherActionSelection.reconcile(actionSelectionID, enabledIDs: $0) })
     }
     private func toggleMenu(application: Bool) {
         if rootScriptArguments != nil {

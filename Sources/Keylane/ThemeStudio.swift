@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 final class ThemeStudio: NSObject, ObservableObject, NSWindowDelegate {
     let store: ThemeStore
     let undo = UndoManager()
+    let preview = ThemePreviewState()
     @Published var selectedID = ThemeDefinition.darkID
     @Published private(set) var drafts: [UUID: ThemeDefinition] = [:]
     @Published private(set) var draftOrder: [UUID] = []
@@ -173,7 +174,9 @@ struct ThemeStudioView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     Text("实时预览").font(.title3.bold())
-                    ThemePreview(theme: studio.selected)
+                    ThemePreview(theme: studio.selected, state: studio.preview)
+                    Text("输入搜索文字不会改变示例结果；菜单操作只在预览内生效。")
+                        .font(.callout).foregroundStyle(.secondary)
                     Text(studio.selected.isBuiltin ? "内置主题只读，复制后即可编辑。" : "编辑只影响此预览。保存后，点击“应用主题”更新 Keylane。")
                         .font(.callout).foregroundStyle(.secondary)
                     HStack {

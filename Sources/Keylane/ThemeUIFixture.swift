@@ -54,9 +54,15 @@ enum ThemeUIFixture {
         if ProcessInfo.processInfo.environment["KEYLANE_THEME_CAPTURE_WINDOW"] == "1" {
             studio.select(theme.id)
             try studio.captureWindow(to: directory.appendingPathComponent("window-dark.png"), appearance: .darkAqua)
+            studio.preview.toggle(.application)
+            try studio.captureWindow(to: directory.appendingPathComponent("window-application-menu.png"), appearance: .darkAqua)
+            studio.preview.toggle(.actions)
+            try studio.captureWindow(to: directory.appendingPathComponent("window-actions-menu.png"), appearance: .darkAqua)
+            studio.preview.closeMenu()
             studio.select(ThemeDefinition.builtins[5].id)
             try studio.captureWindow(to: directory.appendingPathComponent("window-light.png"), appearance: .aqua)
         }
+        try verifyPreviewInteraction(theme: theme)
         let corruptDomain = domain + ".corrupt"
         let corrupt = UserDefaults(suiteName: corruptDomain)!
         defer { corrupt.removePersistentDomain(forName: corruptDomain) }
@@ -68,6 +74,60 @@ enum ThemeUIFixture {
         guard refusedOverwrite else { throw ThemeError.invalid("损坏主题库被静默覆盖。") }
         guard corrupt.data(forKey: "themes.library.v1") == corruptData else { throw ThemeError.invalid("损坏数据未保留。") }
         print("Theme Studio: draft isolation, undo, validation, persistence, appearance slots and five UI renders passed.")
+    }
+    private static func verifyPreviewInteraction(theme: ThemeDefinition) throws {
+        let state = ThemePreviewState()
+        let ids = ThemePreviewState.rows.map(\.id)
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 760, height: 470), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        let hosting = NSHostingView(rootView: ThemePreview(theme: theme, state: state))
+        hosting.sizingOptions = []; window.contentView = hosting
+        hosting.frame = NSRect(x: 0, y: 0, width: 760, height: 470)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close() }
+        func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.12)); hosting.layoutSubtreeIfNeeded() }
+        func click(_ point: NSPoint) {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1) { window.sendEvent(event) }
+            }
+            pump()
+        }
+        pump()
+        click(NSPoint(x: 28, y: 28))
+        guard state.menu == .application else { throw ThemeError.invalid("预览左下角按钮无法打开菜单。") }
+        state.menuQuery = "退出"; state.submit(); pump()
+        guard state.menu == nil, state.feedback != nil else { throw ThemeError.invalid("预览应用菜单未模拟操作。") }
+        state.feedback = nil
+        click(NSPoint(x: 700, y: 28))
+        guard state.menu == .actions else { throw ThemeError.invalid("预览右下角操作按钮无法打开菜单。") }
+        state.activate("disabled")
+        guard state.menu == .actions else { throw ThemeError.invalid("禁用操作被执行。") }
+        state.activate("open-with")
+        guard state.submenu != nil else { throw ThemeError.invalid("预览子菜单未打开。") }
+        state.back(); state.activate("favorite")
+        guard state.favorites.contains("calendar") else { throw ThemeError.invalid("预览收藏未更新。") }
+        state.feedback = nil
+        click(NSPoint(x: 605, y: 28))
+        guard state.feedback != nil else { throw ThemeError.invalid("预览主操作按钮无法点击。") }
+        state.feedback = nil
+        click(NSPoint(x: 160, y: 440))
+        if let editor = window.firstResponder as? NSTextView { editor.insertText("fixed example", replacementRange: editor.selectedRange()) }
+        else { throw ThemeError.invalid("预览搜索栏无法输入。") }
+        pump()
+        guard state.query == "fixed example", ThemePreviewState.rows.map(\.id) == ids else { throw ThemeError.invalid("预览搜索改变了固定示例结果。") }
+        if let down = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{f701}", charactersIgnoringModifiers: "\u{f701}", isARepeat: false, keyCode: 125) { window.sendEvent(down) }
+        pump()
+        guard state.selectedID == "clipboard" else { throw ThemeError.invalid("预览列表键盘导航失败。") }
+        state.select("unavailable")
+        guard state.selectedID == "clipboard" else { throw ThemeError.invalid("禁用示例可被选中。") }
+        if let command = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, characters: "k", charactersIgnoringModifiers: "k", isARepeat: false, keyCode: 40) { window.sendEvent(command) }
+        pump()
+        guard state.menu == .actions else { throw ThemeError.invalid("预览 ⌘K 未打开操作菜单。") }
+        print("Theme preview: native footer clicks, search editing with fixed results, selection, disabled action, submenu and favorites passed.")
     }
     private static func render<V: View>(_ content: V, name: String, scheme: ColorScheme, size: NSSize, directory: URL) throws {
         let view = NSHostingView(rootView: content.environment(\.colorScheme, scheme).background(Color(nsColor: .windowBackgroundColor)))
