@@ -13,6 +13,8 @@ struct AIConversationTextInput: NSViewRepresentable {
     let moveMenu: (Int) -> Void
     let chooseMenu: () -> Void
     let dismissMenu: () -> Void
+    var placeholder = "输入问题…"
+    var minimumHeight: CGFloat = 36
     var escape: (() -> Void)? = nil
     var commandReturn: (() -> Void)? = nil
     var optionReturn: (() -> Void)? = nil
@@ -25,20 +27,21 @@ struct AIConversationTextInput: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
-        let input = Input(frame: NSRect(x: 0, y: 0, width: 400, height: 36))
+        let input = Input(frame: NSRect(x: 0, y: 0, width: 400, height: minimumHeight))
         input.isRichText = false
         input.allowsUndo = true
         input.drawsBackground = false
         input.font = .systemFont(ofSize: 14)
         input.textColor = .labelColor
         input.insertionPointColor = .labelColor
-        input.textContainerInset = NSSize(width: 0, height: 7)
+        input.placeholder = placeholder
+        _ = configureMetrics(input)
         input.textContainer?.lineFragmentPadding = 0
         input.textContainer?.widthTracksTextView = true
         input.isHorizontallyResizable = false
         input.isVerticallyResizable = true
         input.autoresizingMask = [.width]
-        input.minSize = NSSize(width: 0, height: 36)
+        input.minSize = NSSize(width: 0, height: minimumHeight)
         input.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         input.setAccessibilityLabel("聊天输入框")
         input.delegate = context.coordinator
@@ -58,6 +61,8 @@ struct AIConversationTextInput: NSViewRepresentable {
         context.coordinator.parent = self
         guard let input = scroll.documentView as? Input else { return }
         input.isEditable = enabled
+        input.placeholder = placeholder
+        let metricsChanged = configureMetrics(input)
         if context.coordinator.draftID != composer.draftID {
             context.coordinator.draftID = composer.draftID
             input.undoManager?.removeAllActions()
@@ -69,7 +74,17 @@ struct AIConversationTextInput: NSViewRepresentable {
             input.setSelectedRange(NSRange(location: min(range.location, input.string.utf16.count),
                                            length: min(range.length, max(0, input.string.utf16.count - range.location))))
         }
-        if textChanged { context.coordinator.resize() }
+        if textChanged || metricsChanged { context.coordinator.resize() }
+    }
+
+    @discardableResult private func configureMetrics(_ input: Input) -> Bool {
+        let lineHeight = ceil(input.layoutManager?.defaultLineHeight(for: input.font ?? .systemFont(ofSize: 14)) ?? 18)
+        let inset = NSSize(width: 0, height: max(0, (minimumHeight - lineHeight) / 2))
+        let minimum = NSSize(width: 0, height: minimumHeight)
+        let changed = input.textContainerInset != inset || input.minSize != minimum
+        if input.textContainerInset != inset { input.textContainerInset = inset }
+        if input.minSize != minimum { input.minSize = minimum }
+        return changed
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -99,7 +114,7 @@ struct AIConversationTextInput: NSViewRepresentable {
         func resize() {
             guard let input, let manager = input.layoutManager, let container = input.textContainer else { return }
             manager.ensureLayout(for: container)
-            let height = min(150, max(36, ceil(manager.usedRect(for: container).height) + 14))
+            let height = min(150, max(parent.minimumHeight, ceil(manager.usedRect(for: container).height) + input.textContainerInset.height * 2))
             guard abs(parent.height - height) > 0.5 else { return }
             DispatchQueue.main.async { [weak self] in self?.parent.height = height }
         }
@@ -107,6 +122,22 @@ struct AIConversationTextInput: NSViewRepresentable {
 
     final class Input: NSTextView {
         weak var owner: Coordinator?
+        var placeholder = "" { didSet { if placeholder != oldValue { needsDisplay = true } } }
+        var showsPlaceholder: Bool { string.isEmpty && !hasMarkedText() }
+        override var string: String { didSet { needsDisplay = true } }
+        override func draw(_ rect: NSRect) {
+            super.draw(rect)
+            guard showsPlaceholder else { return }
+            (placeholder as NSString).draw(at: textContainerOrigin, withAttributes: [
+                .font: font ?? NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.placeholderTextColor
+            ])
+        }
+        override func didChangeText() { super.didChangeText(); needsDisplay = true }
+        override func setMarkedText(_ value: Any, selectedRange: NSRange, replacementRange: NSRange) {
+            super.setMarkedText(value, selectedRange: selectedRange, replacementRange: replacementRange)
+            needsDisplay = true
+        }
+        override func unmarkText() { super.unmarkText(); needsDisplay = true }
         override func setFrameSize(_ newSize: NSSize) {
             let widthChanged = abs(frame.width - newSize.width) > 0.5
             super.setFrameSize(newSize)

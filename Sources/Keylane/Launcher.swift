@@ -1012,19 +1012,15 @@ struct Launcher: View {
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
         let items = open ? filteredMenu(applicationMenu: application) : []
         let menuHeight = menuRowsHeight(items) + 87
-        return ZStack(alignment: alignment) {
-            if open {
-                menuPanel(applicationMenu: application, items: items)
-                    .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
-                    .transition(.opacity)
-            } else if conversation {
-                NativeHoverButton(title: application ? "对话选项" : "操作", action: { toggleMenu(application: application) }) {
-                    Image(systemName: application ? "plus" : "command")
-                        .font(.system(size: 18))
-                        .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
+        return LauncherExpandingMenu(open: open,
+            closedSize: CGSize(width: application ? applicationWidth : actionWidth, height: 36),
+            menuSize: CGSize(width: Self.footerMenuWidth, height: menuHeight), alignment: alignment,
+            tint: open ? nil : feedback?.style.color.opacity(0.16)) {
+            if conversation {
+                ConversationFooterButton(title: application ? "对话选项" : "操作",
+                                         symbol: application ? "plus" : "command") {
+                    toggleMenu(application: application)
                 }
-                .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
-                .transition(.opacity)
             } else if let feedback {
                 NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开\(menuTitle)" : feedback.label, action: {
                     if feedback.actionTitle != nil { model.footerFeedback.performAction() }
@@ -1033,24 +1029,21 @@ struct Launcher: View {
                     LauncherFooterFeedbackLabel(feedback: feedback)
                 }
                 .frame(width: applicationWidth, height: 36)
-                .transition(.opacity)
             } else if application && secondary {
                 NativeHoverButton(title: "打开\(menuTitle)", action: { toggleMenu(application: true) }) {
                     SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol,
                                        artwork: model.launcherModules?.module(forPage: model.pageID).flatMap(ModuleArtwork.module))
-                }.frame(width: applicationWidth, height: 36).transition(.opacity)
+                }.frame(width: applicationWidth, height: 36)
             } else if application {
                 NativeHoverButton(title: "Keylane 菜单", action: { toggleMenu(application: true) }) {
                     Image(systemName: "text.menu").font(.system(size: 16)).frame(width: 36, height: 36)
-                }.frame(width: 36, height: 36).clipShape(Circle()).transition(.opacity)
+                }.frame(width: 36, height: 36).clipShape(Circle())
             } else {
-                actionBar.transition(.opacity)
+                actionBar
             }
+        } menu: {
+            menuPanel(applicationMenu: application, items: items)
         }
-        // The container remains in the same hierarchy. Only its size changes; its bottom
-        // corner stays fixed. No matched-position or automatic glass transition can slide it.
-        .frame(width: open ? Self.footerMenuWidth : (application ? applicationWidth : actionWidth), height: open ? menuHeight : 36, alignment: alignment)
-        .modifier(LauncherMenuSurface(open: open, tint: open ? nil : feedback?.style.color.opacity(0.16)))
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
     private var shortcutActions: [LauncherAction] {
@@ -1239,12 +1232,7 @@ struct Launcher: View {
         }
         let focus = focusToken
         let selectedID = selectedAction(in: items)?.id
-        return VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
+        return LauncherActionMenuPanel(title: title) {
             if items.isEmpty {
                 Text("没有匹配的操作").font(.caption).foregroundStyle(.secondary).padding(16)
             } else {
@@ -1284,7 +1272,7 @@ struct Launcher: View {
                     }
                 }
             }
-            Divider().padding(.top, 9)
+        } search: {
             SearchField(text: Binding(get: { actionQuery }, set: { query in
                 guard actionQuery != query else { return }
                 actionQuery = query
@@ -1294,11 +1282,11 @@ struct Launcher: View {
                 activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus)
             }, move: moveSelection, escape: escape, back: { escape() }, forward: {
                 activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus, requiresSubmenu: true)
-            }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10)
+            })
                 .onChange(of: items.filter(\.enabled).map(\.id), initial: true) { _, enabledIDs in
                     actionSelectionID = LauncherActionSelection.reconcile(actionSelectionID, enabledIDs: enabledIDs)
                 }
-        }.frame(width: Self.footerMenuWidth)
+        }
     }
     private func toggleMenu(application: Bool) {
         if rootScriptArguments != nil {
