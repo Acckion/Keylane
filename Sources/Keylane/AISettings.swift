@@ -31,6 +31,16 @@ enum AIModule {
                 if fromQuickAI { model.pageID = .root }
             }
         }
+        model.continueModuleAIAction = { [weak model, weak quickAI] context, answer in
+            guard let model, let quickAI, configuration.state.enabled, !quickAI.loadingChat,
+                  quickAI.composer.attachActionResult(context, answer: answer) else { return false }
+            if quickAI.isInChat { openChat(nil) }
+            else {
+                if model.pageID != QuickAILauncher.pageID { quickAI.preserveDraftForModuleActionEntry() }
+                model.openPage(QuickAILauncher.pageID, origin: .menu, initialQuery: quickAI.composer.text)
+            }
+            return true
+        }
         model.openAIChatLink = { [weak model, weak quickAI] id in
             guard let model, let quickAI, configuration.state.enabled,
                   !model.disabledCommands.contains(QuickAILauncher.commandID.rawValue),
@@ -68,7 +78,7 @@ enum AIModule {
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
                               title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand] + textCommands,
                               providers: [AITextCommandLauncher.customCommands(model: model, session: textSession, library: library)],
-                              pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
+                              pages: [AIActionLauncher.page(model: model), QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
                                       AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
                   order: 8, items: [interactions],

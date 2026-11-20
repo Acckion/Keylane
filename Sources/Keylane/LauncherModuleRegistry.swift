@@ -232,6 +232,7 @@ struct LauncherModule {
         var permission: PermissionFeature?
         var acceptsFallbackQuery = false
         var fallbackAvailable: () -> Bool = { true }
+        var aiExecute: ((LauncherCommandOrigin, AIActionSource?) -> Void)?
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
         var arguments: Arguments?
     }
@@ -277,6 +278,7 @@ struct LauncherModule {
     var title: String? = nil
     var symbol: String? = nil
     var commands: [Command] = []
+    var aiActions: [AIActionDefinition] = []
     var providers: [Provider] = []
     var pages: [LauncherPage] = []
     var settings: [LauncherSettingsPage] = []
@@ -374,6 +376,7 @@ final class LauncherModuleRegistry {
                               origins: settingsOrigins)
     }
     var settings: [LauncherSettingsPage] { settingsCatalog.pages }
+    var aiActions: [AIActionDefinition] { modules.filter { isModuleEnabled($0.id) }.flatMap(\.aiActions) }
     private let modules: [LauncherModule]
     private let disableableModules: Set<ModuleID>
     private let preferences: UserDefaults
@@ -400,6 +403,13 @@ final class LauncherModuleRegistry {
                                       pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
                                       providers: $0.providers.map(\.namespace))
         })
+        for module in modules {
+            guard Set(module.aiActions.map(\.commandID)).count == module.aiActions.count else { throw AIActionError.invalidDefinition }
+            for definition in module.aiActions {
+                try definition.validate()
+                guard module.commands.contains(where: { $0.declaration.id == definition.commandID }) else { throw AIActionError.invalidDefinition }
+            }
+        }
         moduleRegistrations = Dictionary(uniqueKeysWithValues: modules.compactMap { module in
             module.registration.map { (module.id, $0) }
         })
@@ -735,10 +745,14 @@ final class LauncherModuleRegistry {
     /// Resolve and run at the point of invocation. Providers consult their current records here,
     /// so a menu or queued callback cannot retain a handler for a removed command.
     @discardableResult
-    func invoke(_ id: CommandID, origin: LauncherCommandOrigin, arguments: [String] = [],
+    func invoke(_ id: CommandID, origin: LauncherCommandOrigin, arguments: [String] = [], aiSource: AIActionSource? = nil,
                 navigate: (LauncherCommandDeclaration.Destination) -> Void) -> Bool {
         guard let action = currentAction(for: id, origin: origin, arguments: arguments) else { return false }
-        action.perform()
+        if let aiSource {
+            guard let owned = byID[id], owned.module == aiSource.moduleID,
+                  let execute = owned.value.aiExecute else { return false }
+            execute(origin, aiSource)
+        } else { action.perform() }
         if let destination = action.destination { navigate(destination) }
         return true
     }
@@ -764,6 +778,7 @@ final class LauncherModuleRegistry {
                   permissionAllowsExecution(command.permission) else { return nil }
             let perform = {
                 if let handler = command.arguments { handler.execute(origin, arguments) }
+                else if let execute = command.aiExecute { execute(origin, nil) }
                 else { command.execute(origin) }
             }
             let destination = command.declaration.destination

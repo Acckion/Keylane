@@ -722,3 +722,27 @@ if CommandLine.arguments.contains("--verify-system-shortcuts") {
     manager.stop()
     print("PASS Carbon registration, queued event revocation, slot release, conflict retry and recorder resume")
 }
+
+// AI descriptors are a projection of the ordinary catalog, never another dispatch authority.
+do {
+    let definition = AIActionDefinition(commandID: .init(rawValue: "owned-ai"), title: "Owned AI", instructions: "Summarize")
+    let missing = LauncherModule(id: .init(rawValue: "bad-ai"), aiActions: [definition])
+    do { _ = try LauncherModuleRegistry(modules: [missing], preferences: UserDefaults(suiteName: "keylane-ai-missing-" + UUID().uuidString)!); preconditionFailure("Missing command accepted") }
+    catch { }
+    var invoked = 0
+    let owner = ModuleID(rawValue: "owned-ai-module")
+    let command = LauncherModule.Command(declaration: .init(id: definition.commandID, title: "AI", detail: "", symbol: "sparkles", keywords: []),
+        aiExecute: { _, _ in invoked += 1 })
+    let module = LauncherModule(id: owner, commands: [command], aiActions: [definition])
+    let registry = try LauncherModuleRegistry(modules: [module], preferences: UserDefaults(suiteName: "keylane-ai-registry-" + UUID().uuidString)!)
+    precondition(registry.aiActions == [definition] && invoked == 0)
+    let wrong = AIActionSource(moduleID: .init(rawValue: "other-module"), load: { preconditionFailure("Catalog must not read a source") }, isCurrent: { _ in true })
+    precondition(!registry.invoke(definition.commandID, origin: .menu, aiSource: wrong) { _ in })
+    precondition(invoked == 0)
+    precondition(registry.invoke(definition.commandID, origin: .shortcut) { _ in })
+    precondition(invoked == 1)
+    _ = registry.setModuleEnabled(owner, false)
+    precondition(!registry.invoke(definition.commandID, origin: .menu) { _ in })
+    precondition(registry.aiActions.isEmpty && invoked == 1)
+}
+print("PASS module AI metadata, exact source ownership and all command origins share admission")
