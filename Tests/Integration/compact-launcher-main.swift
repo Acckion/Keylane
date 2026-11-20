@@ -3,10 +3,6 @@ import AppKit
 import KeylaneCore
 
 // Inert dependencies: exercise the production bar without services or user data.
-enum VisualStyle {
-    static let launcherTopInset: CGFloat = 61
-    static let launcherWidth: CGFloat = 760
-}
 final class Registry {
     func isRegisteredCommandEnabled(_ id: CommandID) -> Bool { true }
 }
