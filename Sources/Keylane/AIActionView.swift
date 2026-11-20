@@ -59,6 +59,8 @@ struct AIActionForm: View {
             Text("发送至 \(session.destination)").font(.caption).foregroundStyle(.secondary)
             Text("仅在发送后处理以上所选内容，结果不会自动修改原记录。").font(.caption).foregroundStyle(.secondary)
             AIActionResultView(session: session)
-        }.task(id: session.invocationID) { questionFocused = session.acceptsQuestion }
+        }.task(id: session.acceptsQuestion && !session.preparing && !session.running) {
+            questionFocused = session.acceptsQuestion && !session.preparing && !session.running
+        }
     }
 }

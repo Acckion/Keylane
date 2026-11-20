@@ -31,8 +31,19 @@ private final class ModelFixtureProtocol: URLProtocol {
                 let session = AIActionSession(configuration: config, runtime: runtime, readKey: { _ in nil })
                 for definition in ClipboardAIActions.definitions + ScreenshotAIActions.definitions {
                     let source = AIActionSource(moduleID: .init(rawValue: "keylane.clipboard"),
-                        load: { .init(sourceID: "fixture", title: "合成剪贴板记录", text: "Keylane brings your commands together. This is sample text for the shared AI action UI.") }, isCurrent: { _ in true })
+                        load: {
+                            if definition.acceptsQuestion { try await Task.sleep(for: .milliseconds(150)) }
+                            return .init(sourceID: "fixture", title: "合成剪贴板记录", text: "Keylane brings your commands together. This is sample text for the shared AI action UI.")
+                        }, isCurrent: { _ in true })
                     session.prepare(definition, source: source, allowed: { true })
+                    if definition.acceptsQuestion {
+                        try await display(AnyView(LauncherCreationForm(back: {}, spacing: 16) {
+                            Text(definition.title).font(.headline)
+                        } fields: { AIActionForm(session: session).padding(.horizontal, 26) }), name: "clipboard-question-preview")
+                        guard let editor = window?.firstResponder as? NSTextView, editor.isEditable, editor.string.isEmpty else {
+                            throw CocoaError(.validationMissingMandatoryProperty)
+                        }
+                    }
                     try await wait { !session.preparing }
                     if definition.acceptsQuestion { session.question = "这条记录介绍了什么？" }
                     try await wait { session.canSend }; session.send()
@@ -59,7 +70,7 @@ private final class ModelFixtureProtocol: URLProtocol {
                 }
                 try await display(AnyView(AIChatContextSheet(source: context, add: { _ in })), name: "module-context-picker")
                 try await display(AnyView(AIResultContent(answer: "## 合成结果\n\n- **统一 Markdown**\n- 保留原始数据", status: "合成验证完成", running: false, progress: .init()).padding(26)), name: "shared-text-result")
-                print("PASS eight production AI windows: five module actions, file question, generic context picker and shared text result; synthetic transport only, no real history")
+                print("PASS eight production AI UI cases: five module actions, file question, generic context picker and shared text result; synthetic transport only, no real history")
                 prefs.removePersistentDomain(forName: suite)
                 NSApp.terminate(nil)
             } catch { fputs("Module AI window fixture failed: \(error)\n", stderr); exit(1) }
