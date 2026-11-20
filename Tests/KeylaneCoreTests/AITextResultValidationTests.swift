@@ -13,7 +13,7 @@ final class AITextResultValidationTests: XCTestCase {
     func testPlaceholderValidationUsesTheTemplateLexerForQuotedBraces() throws {
         let source = #"Code: {argument name="code" default="{value}"}"#
         XCTAssertEqual(try AITextResultValidation.preservingPlaceholders(source: source, result: source), source)
-        XCTAssertThrowsError(try AITextResultValidation.preservingPlaceholders(source: source, result: #"Code: {argument name="code" default="changed"}"#))
+        XCTAssertThrowsError(try AITextResultValidation.preservingPlaceholders(source: source, result: #"Code: {argument name="code" default="{changed}"}"#))
     }
     func testPlaceholderAttributesPreserveExactUnicodeBytes() {
         let source = "{argument name=\"é\"}"
