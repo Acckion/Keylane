@@ -30,18 +30,16 @@ struct AIChatCapabilitySection: View {
 }
 
 enum AIChatCapabilityInfo: String, Identifiable {
-    case tools, skills, voice
+    case skills, voice
     var id: Self { self }
     var title: String {
         switch self {
-        case .tools: "扩展工具"
         case .skills: "技能"
         case .voice: "语音输入"
         }
     }
     var description: String {
         switch self {
-        case .tools: "当前支持用户手动选择上下文。模型自动调用扩展工具、操作系统和执行轨迹尚未接入，本入口不会运行命令或获取额外权限。"
         case .skills: "技能目录、自动发现与执行属于下一批运行层接入。当前可通过 / 菜单使用文本命令；本入口不会加载或执行本地技能。"
         case .voice: "语音识别尚未接入。本入口不会启用麦克风或申请权限；请继续输入文字。"
         }

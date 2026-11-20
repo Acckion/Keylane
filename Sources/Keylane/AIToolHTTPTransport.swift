@@ -171,6 +171,7 @@ enum AIToolHTTPTransport {
         var blocks = [Int: [String: Any]]()
         var closedBlocks = Set<Int>()
         var arguments = [Int: String]()
+        var reasoningDetails = [Int: [String: Any]]()
         var stop: String?
         var usage: [String: Any]?
         var ended = false
@@ -186,7 +187,19 @@ enum AIToolHTTPTransport {
                 let delta = choice["delta"] as? [String: Any] ?? [:]
                 let text = delta["content"] as? String ?? ""
                 lastThinking = delta["reasoning_content"] as? String ?? delta["reasoning"] as? String
-                for (key, value) in delta where key != "tool_calls" {
+                for (position, detail) in (delta["reasoning_details"] as? [[String: Any]] ?? []).enumerated() {
+                    let index = detail["index"] as? Int ?? position
+                    guard (0..<64).contains(index) else { throw AIResponseError.tooLarge }
+                    var current = reasoningDetails[index] ?? [:]
+                    for (key, value) in detail {
+                        if ["text", "data", "signature", "summary"].contains(key), let text = value as? String {
+                            current[key] = (current[key] as? String ?? "") + text
+                        } else { current[key] = value }
+                    }
+                    reasoningDetails[index] = current
+                }
+                if !reasoningDetails.isEmpty { message["reasoning_details"] = reasoningDetails.keys.sorted().compactMap { reasoningDetails[$0] } }
+                for (key, value) in delta where key != "tool_calls" && key != "reasoning_details" {
                     if let string = value as? String { message[key] = (message[key] as? String ?? "") + string }
                     else { message[key] = value }
                 }

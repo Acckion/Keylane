@@ -1,5 +1,11 @@
 
 // Tool tests use synthetic HTTP/CLI data and never load an account, real file or calendar.
+@MainActor final class ToolFixtureOutput {
+    var text = ""
+    func append(_ delta: String) { text += delta }
+}
+@MainActor final class ToolFixtureAvailability { var allowed = true }
+
 final class ToolFixtureProtocol: URLProtocol {
     static var bodies: [[String: Any]] = []
     static var rounds = 0
@@ -78,8 +84,8 @@ var toolsFinished = false
 Task { @MainActor in
     do {
         var performed = 0
-        var allowed = true
-        let registration = AIToolRegistration(definition: toolDefinition, available: { allowed }) { arguments in
+        let availability = ToolFixtureAvailability()
+        let registration = AIToolRegistration(definition: toolDefinition, available: { availability.allowed }) { arguments in
             performed += 1
             guard case .number(21) = arguments["number"] else { throw AIToolContractError.invalidArguments }
             return try .init(text: "42")
@@ -95,9 +101,9 @@ Task { @MainActor in
                 let endpoint = proto == .anthropic ? "https://synthetic.invalid/v1" : (stream ? "http://127.0.0.1:11434/v1" : "https://custom.invalid/advanced/v1")
                 var connection = AIConnection(endpoint: endpoint, model: "synthetic", mode: stream ? .streaming : .complete, wireProtocol: proto)
                 connection.additionalParametersJSON = "{\"temperature\":0.2}"
-                var text = ""
-                let tokens = try await runtime.generate(connection: connection, readKey: { _ in "synthetic-key" }, messages: [.init(role: .user, content: "fixture")], tools: run()) { text += $0 }
-                precondition(text == "verified answer" && tokens == 6 && ToolFixtureProtocol.rounds == 2)
+                let output = ToolFixtureOutput()
+                let tokens = try await runtime.generate(connection: connection, readKey: { _ in "synthetic-key" }, messages: [.init(role: .user, content: "fixture")], tools: run()) { await output.append($0) }
+                precondition(output.text == "verified answer" && tokens == 6 && ToolFixtureProtocol.rounds == 2)
                 precondition(ToolFixtureProtocol.bodies[0]["temperature"] as? Double == 0.2)
             }
         }
@@ -108,11 +114,11 @@ Task { @MainActor in
         let badArguments = try AIToolCall(id: "bad", name: "fixture_add", arguments: ["number": .number(21), "extra": .bool(true)])
         let badResult = try await run().execute(badArguments, scope: "fixture", progress: { _ in })
         precondition(badResult.isError && performed == 4)
-        allowed = false
+        availability.allowed = false
         let call = try AIToolCall(id: "once", name: "fixture_add", arguments: ["number": .number(21)])
         let disabled = try await run().execute(call, scope: "fixture", progress: { _ in })
         precondition(disabled.isError && performed == 4)
-        allowed = true
+        availability.allowed = true
         var action = registration; action.requiresConfirmation = true
         let denied = try AIToolRun(registrations: [action], isCurrent: { true }, approve: { _, _ in false })
         let deniedResult = try await denied.execute(call, scope: "fixture", progress: { _ in })
@@ -143,7 +149,15 @@ Task { @MainActor in
         var collector = AIToolHTTPTransport.StreamCollector(anthropic: false)
         _ = try collector.consume(["choices": [["delta": ["tool_calls": [["index": 0, "id": "fragment", "type": "function", "function": ["name": "fixture_", "arguments": "{\"num"]]]]]]])
         _ = try collector.consume(["choices": [["delta": ["tool_calls": [["index": 0, "function": ["name": "add", "arguments": "ber\":21}"]]]], "finish_reason": "tool_calls"]]])
+        _ = try collector.consume(["choices": [["delta": ["reasoning_details": [
+            ["index": 0, "type": "reasoning.text", "text": "First "],
+            ["index": 1, "type": "reasoning.encrypted", "data": "opaque-"]]]]]])
+        _ = try collector.consume(["choices": [["delta": ["reasoning_details": [
+            ["index": 0, "type": "reasoning.text", "text": "second"],
+            ["index": 1, "type": "reasoning.encrypted", "data": "signature"]]]]]])
         let fragmented = try collector.finish()
+        let continuation = fragmented.assistant["reasoning_details"] as! [[String: Any]]
+        precondition(continuation[0]["text"] as? String == "First second" && continuation[1]["data"] as? String == "opaque-signature")
         precondition(fragmented.calls.first?.name == "fixture_add" && fragmented.calls.first?.arguments["number"] == .number(21))
         do { _ = try AIToolHTTPTransport.decode(["choices": [["message": ["content": "cut"], "finish_reason": "length"]]], anthropic: false); preconditionFailure("Truncation accepted") }
         catch AIResponseError.incomplete { }
@@ -227,9 +241,9 @@ Task { @MainActor in
             let tools = try AIToolRun(registrations: [.init(definition: toolDefinition) { _ in count += 1; return try .init(text: "42") }], isCurrent: { true }, approve: { _, _ in true })
             let connection = AIConnection(model: "synthetic", wireProtocol: proto, executablePath: toolCLIExecutable.path,
                 accountFolder: cliDirectory.path, subscriptionEnabled: true, subscriptionAccountID: "fixture@example.invalid")
-            var text = ""
-            _ = try await AISubscriptionTransport.generate(connection, messages: [.init(role: .user, content: "Synthetic tool fixture")], tools: tools) { text += $0 }
-            precondition(text == "CLI tool answer" && count == 1)
+            let output = ToolFixtureOutput()
+            _ = try await AISubscriptionTransport.generate(connection, messages: [.init(role: .user, content: "Synthetic tool fixture")], tools: tools) { await output.append($0) }
+            precondition(output.text == "CLI tool answer" && count == 1)
         }
         print("PASS subscription tools: Codex dynamic-tool RPC and Claude SDK MCP initialize/list/call/results, native tools disabled, same host executor")
     } catch { fatalError("CLI tool fixture failed: \(error)") }
