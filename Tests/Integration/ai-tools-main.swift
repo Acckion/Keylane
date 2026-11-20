@@ -113,8 +113,16 @@ Task { @MainActor in
         precondition(discoveryNames == [toolDefinition.name])
         capabilitySession.setToolCapability(firstOwner, enabled: false)
         precondition(capabilitySession.availableTools.isEmpty)
+        capabilityInteraction.toolsEnabled = true
+        let noRequestedTools = try capabilitySession.toolRegistrationsForRequest(supportsTools: false)
+        precondition(noRequestedTools.isEmpty)
         capabilitySession.resetToolCapabilities()
         precondition(capabilitySession.availableTools.count == 3)
+        do { _ = try capabilitySession.toolRegistrationsForRequest(supportsTools: false); preconditionFailure("Unsupported model received tools") }
+        catch AIResponseError.toolsUnavailable { }
+        capabilityInteraction.toolsEnabled = false
+        let globallyDisabledTools = try capabilitySession.toolRegistrationsForRequest(supportsTools: false)
+        precondition(globallyDisabledTools.isEmpty)
         print("PASS session module selection, explicit empty catalog and discovery restricted to selected capabilities")
         var performed = 0
         let availability = ToolFixtureAvailability()

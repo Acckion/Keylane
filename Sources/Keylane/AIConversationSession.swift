@@ -39,6 +39,12 @@ final class AIConversationSession: ObservableObject {
         guard !tools.isEmpty, let toolDiscovery else { return tools }
         return tools + [toolDiscovery(tools)]
     }
+    @MainActor func toolRegistrationsForRequest(supportsTools: Bool?) throws -> [AIToolRegistration] {
+        guard toolEnabled() else { return [] }
+        let selected = selectedTools()
+        guard selected.isEmpty || supportsTools != false else { throw AIResponseError.toolsUnavailable }
+        return selected.map { $0.forRun() }
+    }
     @MainActor var availableTools: [AIToolDefinition] { selectedTools().map(\.definition) }
 
     func configureTools(preferences: AIInteractionPreferences,
@@ -205,9 +211,10 @@ final class AIConversationSession: ObservableObject {
         saveChat()
         task = AIRunHandle.start(runtime: runtime, connection: connection, readKey: readKey, messages: requestMessages,
             prepareTools: { [weak self] in
-                guard let self, self.toolEnabled() else { return nil }
-                guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
-                return try AIToolRun(registrations: self.selectedTools().map { $0.forRun() }, recipient: connection.toolRecipient, isCurrent: { [weak self] in
+                guard let self else { return nil }
+                let registrations = try self.toolRegistrationsForRequest(supportsTools: connection.supportsTools)
+                guard !registrations.isEmpty else { return nil }
+                return try AIToolRun(registrations: registrations, recipient: connection.toolRecipient, isCurrent: { [weak self] in
                     guard let self else { return false }
                     return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
                         self.currentConnection == connection
