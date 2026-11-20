@@ -115,8 +115,7 @@ final class EmojiSearchController: ObservableObject {
         let loaded = try await Task.detached(priority: .userInitiated) { try EmojiCatalog.load() }.value
         try Task.checkCancellation()
         guard generation == catalogGeneration else { throw CancellationError() }
-        items = loaded; grouped = Dictionary(grouping: loaded, by: \.category)
-        itemsByID = Dictionary(loaded.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        installCatalog(loaded)
     }
     private func aiKey(_ query: String) -> String { aiModelIdentity + "\u{1f}" + category + "\u{1f}" + query.trimmingCharacters(in: .whitespacesAndNewlines) }
     func showAIRecommendations(_ result: String, description: String, now: Date = .now) throws {
@@ -172,17 +171,22 @@ final class EmojiSearchController: ObservableObject {
                 self.loadTask = nil
                 self.isLoading = false
                 guard let loaded else { self.loadFailed = true; return }
-                let keywords = self.defaults.dictionary(forKey: "emojiCustomKeywords") as? [String:[String]] ?? [:]
-                let enriched = loaded.map { item in
-                    EmojiItem(glyph: item.glyph, category: item.category, english: item.english, chinese: item.chinese,
-                              searchTerms: item.searchTerms + " " + (keywords[item.glyph] ?? []).joined(separator: " ").lowercased())
-                }
-                self.items = enriched
-                self.grouped = Dictionary(grouping: enriched, by: \.category)
-                self.itemsByID = Dictionary(enriched.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                self.installCatalog(loaded)
                 self.refresh()
             }
         }
+    }
+
+    /// Both explicit AI preparation and normal browsing populate the same enriched search state.
+    @MainActor private func installCatalog(_ loaded: [EmojiItem]) {
+        let keywords = defaults.dictionary(forKey: "emojiCustomKeywords") as? [String: [String]] ?? [:]
+        let enriched = loaded.map { item in
+            EmojiItem(glyph: item.glyph, category: item.category, english: item.english, chinese: item.chinese,
+                      searchTerms: item.searchTerms + " " + (keywords[item.glyph] ?? []).joined(separator: " ").lowercased())
+        }
+        items = enriched
+        grouped = Dictionary(grouping: enriched, by: \.category)
+        itemsByID = Dictionary(enriched.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
     func copy(_ item: EmojiItem, to pasteboard: NSPasteboard = .general) -> Int? {
