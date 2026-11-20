@@ -1084,3 +1084,127 @@ catch LauncherModuleRegistry.CatalogUpdateError.immutableModule(let owner) where
 catch { preconditionFailure("Unexpected protection error") }
 precondition(adapterRegistry.catalogRevision == protectedRevision)
 print("PASS registered adapter cannot replace or uninstall a protected built-in")
+
+// Registration events emitted by lifecycle callbacks must survive catalog admission.
+for phase in ["start", "shown"] {
+    for change in ["disable", "remove", "replace", "off-on"] {
+        let owner = ModuleID(rawValue: "fixture.lifecycle.\(phase).\(change)")
+        let command = CommandID(rawValue: "extension:lifecycle.\(phase).\(change)")
+        let events = PassthroughSubject<Void, Never>()
+        var present = true, enabled = true, didChange = false
+        var generation: UInt64 = 1
+        var starts = 0, stops = 0, runs = 0
+        var revoked: [UUID] = []
+        var captured: [() -> Void] = []
+        let runtime = try LauncherModuleRegistry(modules: [], preferences: extensionPreferences)
+        let observation = runtime.activationRevocations.sink { event in
+            revoked.append(event.activation.id)
+            precondition(runtime.activation(for: owner) == nil)
+        }
+        let changeRegistration = {
+            guard !didChange else { return }
+            didChange = true
+            switch change {
+            case "disable": enabled = false
+            case "remove": present = false
+            case "off-on": enabled = false; events.send(); enabled = true
+            default: generation += 1
+            }
+            events.send()
+            if change == "off-on" {
+                captured.first?()
+                precondition(runs == 0, "Transient revocation revived execution inside a lifecycle callback")
+            }
+        }
+        let contribution = LauncherModule(id: owner, commands: [
+            .init(declaration: .init(id: command, title: "Synthetic lifecycle", detail: "", symbol: "gear", keywords: []),
+                  execute: { _ in runs += 1 })
+        ], services: [.init(start: {
+            starts += 1
+            if let callback = runtime.resolve(command, origin: .shortcut, navigate: { _ in }) { captured.append(callback) }
+            if phase == "start" { changeRegistration() }
+        }, stop: { stops += 1 })], launcherShown: {
+            if phase == "shown" { changeRegistration() }
+        }, registration: .init(isPresent: { present }, updates: events.eraseToAnyPublisher(),
+                              isEnabled: { enabled }, generation: { generation }))
+        runtime.startServices()
+        if phase == "shown" { runtime.launcherShown() }
+        try runtime.install(contribution)
+        precondition(stops == 1 && revoked.count == 1, "\(phase)-\(change): lifecycle registration change was lost")
+        captured.first?()
+        precondition(runs == 0, "Retired lifecycle callback executed")
+        if change == "replace" || change == "off-on" {
+            precondition(starts == 2 && runtime.activation(for: owner)?.generation == (change == "replace" ? 2 : 1))
+            precondition(runtime.activation(for: owner)?.id != revoked[0])
+            precondition(runtime.invoke(command, origin: .search, navigate: { _ in }))
+            precondition(runs == 1)
+        } else {
+            precondition(starts == 1 && runtime.activation(for: owner) == nil)
+            precondition(runtime.resolve(command, origin: .search, navigate: { _ in }) == nil)
+        }
+        runtime.stopServices()
+        precondition(stops == starts)
+        withExtendedLifetime(observation) {}
+    }
+}
+print("PASS catalog lifecycle: startup/visibility disable, removal and generation replacement revoke old activation, stop services and reject stale execution")
+
+// Drain changes caused by another module's cleanup, not just the newly installed ID.
+do {
+    let runtime = try LauncherModuleRegistry(modules: [], preferences: extensionPreferences)
+    let a = ModuleID(rawValue: "fixture.chain.a"), b = ModuleID(rawValue: "fixture.chain.b")
+    let aEvents = PassthroughSubject<Void, Never>(), bEvents = PassthroughSubject<Void, Never>()
+    var aEnabled = true, bEnabled = true
+    var aStops = 0, bStops = 0
+    let first = LauncherModule(id: b, services: [.init(start: {}, stop: {
+        bStops += 1; aEnabled = false; aEvents.send()
+    })], registration: .init(isPresent: { true }, updates: bEvents.eraseToAnyPublisher(), isEnabled: { bEnabled }))
+    try runtime.install(first)
+    runtime.startServices()
+    try runtime.install(.init(id: a, services: [.init(start: {
+        bEnabled = false; bEvents.send()
+    }, stop: { aStops += 1 })], registration: .init(isPresent: { true }, updates: aEvents.eraseToAnyPublisher(), isEnabled: { aEnabled })))
+    precondition(aStops == 1 && bStops == 1)
+    precondition(runtime.activation(for: a) == nil && runtime.activation(for: b) == nil)
+    runtime.stopServices()
+    precondition(aStops == 1 && bStops == 1)
+}
+// Public observers can update metadata too; repeated unchanged notifications must terminate.
+do {
+    let runtime = try LauncherModuleRegistry(modules: [], preferences: extensionPreferences)
+    let owner = ModuleID(rawValue: "fixture.publication")
+    let events = PassthroughSubject<Void, Never>()
+    var enabled = true, stops = 0, notifications = 0
+    let observation = runtime.registrationUpdates.sink {
+        notifications += 1
+        if notifications == 1 { enabled = false }
+        events.send()
+    }
+    runtime.startServices()
+    try runtime.install(.init(id: owner, services: [.init(start: {}, stop: { stops += 1 })],
+        registration: .init(isPresent: { true }, updates: events.eraseToAnyPublisher(), isEnabled: { enabled })))
+    precondition(stops == 1 && notifications == 2 && runtime.activation(for: owner) == nil)
+    runtime.stopServices()
+    withExtendedLifetime(observation) {}
+}
+print("PASS queued registration cascades reach stable state; publication changes reconcile without no-op notification loops")
+
+// Keep observing unchanged modules while a retiring module runs its stop hook.
+do {
+    let runtime = try LauncherModuleRegistry(modules: [], preferences: extensionPreferences)
+    let a = ModuleID(rawValue: "fixture.retiring.a"), b = ModuleID(rawValue: "fixture.retiring.b")
+    let bEvents = PassthroughSubject<Void, Never>()
+    var bEnabled = true, bStarts = 0, bStops = 0
+    try runtime.install(.init(id: b, services: [.init(start: { bStarts += 1 }, stop: { bStops += 1 })],
+        registration: .init(isPresent: { true }, updates: bEvents.eraseToAnyPublisher(), isEnabled: { bEnabled })))
+    try runtime.install(.init(id: a, services: [.init(start: {}, stop: {
+        bEnabled = false; bEvents.send(); bEnabled = true; bEvents.send()
+    })], registration: .init(isPresent: { true }, updates: Empty().eraseToAnyPublisher())))
+    runtime.startServices()
+    let oldB = runtime.activation(for: b)!
+    try runtime.install(.init(id: a, registration: .init(isPresent: { true }, updates: Empty().eraseToAnyPublisher())))
+    precondition(bStarts == 2 && bStops == 1 && runtime.activation(for: b)?.id != oldB.id)
+    runtime.stopServices()
+    precondition(bStops == bStarts)
+}
+print("PASS retiring-module stop preserves another module's transient registration revocation")
