@@ -135,7 +135,7 @@ struct MenuMotionPreview: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             LauncherExpandingMenu(open: state.open, closedSize: CGSize(width: 48, height: 48),
-                                  menuSize: CGSize(width: 345, height: 126)) {
+                                  menuSize: CGSize(width: 345, height: 126), dismiss: { state.open = false }) {
                 ConversationFooterButton(title: "添加", symbol: "plus", diameter: 48, action: {})
             } menu: {
                 LauncherActionMenuPanel(title: "AI Chat") {
@@ -144,17 +144,31 @@ struct MenuMotionPreview: View {
             }
             .background(Probe(name: "expanding-surface"))
             .frame(width: 48, height: 48, alignment: .bottomLeading).zIndex(1)
-            Color.clear.frame(width: 300, height: 48).background(Probe(name: "stationary-input"))
+            Text("输入问题…").font(.system(size: 14)).foregroundStyle(.secondary)
+                .frame(width: 704, height: 48)
+                .background(.regularMaterial, in: Capsule()).background(Probe(name: "stationary-input"))
         }.padding(20)
     }
 }
 let motionState = MenuMotionState()
-let motionHost = NSHostingView(rootView: MenuMotionPreview(state: motionState))
-let motionWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 396, height: 260),
+let motionHost = NSHostingView(rootView: MenuMotionPreview(state: motionState).frame(width: 800, height: 300, alignment: .bottomLeading))
+let motionWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 300),
     styleMask: [.borderless], backing: .buffered, defer: false)
 motionWindow.isReleasedWhenClosed = false
 motionWindow.contentView = motionHost
+motionWindow.appearance = NSAppearance(named: .darkAqua)
+motionWindow.backgroundColor = .windowBackgroundColor
+motionWindow.center()
 motionWindow.orderFrontRegardless()
+func captureMotion(_ phase: String) throws {
+    guard ProcessInfo.processInfo.environment["KEYLANE_COMPOSER_CAPTURE"] == "1" else { return }
+    let capture = Process()
+    capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    capture.arguments = ["-x", "-o", "-l", String(motionWindow.windowNumber),
+        output.appendingPathComponent("motion-" + phase + ".png").path]
+    try capture.run(); capture.waitUntilExit()
+    precondition(capture.terminationStatus == 0)
+}
 func motionRect(_ name: String) -> NSRect {
     motionHost.layoutSubtreeIfNeeded()
     let view = descendants(motionHost).first { $0.identifier?.rawValue == name }!
@@ -163,8 +177,12 @@ func motionRect(_ name: String) -> NSRect {
 RunLoop.current.run(until: Date().addingTimeInterval(0.05))
 let closedSurface = motionRect("expanding-surface")
 let stationaryInput = motionRect("stationary-input")
+try captureMotion("closed")
 motionState.open = true
+RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+try captureMotion("opening")
 RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+try captureMotion("open")
 let openSurface = motionRect("expanding-surface")
 precondition(abs(openSurface.width - 345) < 0.5 && abs(openSurface.height - 126) < 0.5)
 precondition(abs(openSurface.minX - closedSurface.minX) < 0.5)
@@ -173,7 +191,82 @@ precondition(abs((motionHost.isFlipped ? openSurface.maxY : openSurface.minY) -
              "The bottom corner must stay fixed while the menu expands")
 precondition(motionRect("stationary-input") == stationaryInput, "Menu expansion must not move the input")
 motionState.open = false
+RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+try captureMotion("closing")
 RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+try captureMotion("collapsed")
 precondition(motionRect("expanding-surface") == closedSurface)
+motionState.open = true
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+let integratedBoundary = descendants(motionHost).compactMap { $0 as? MenuOutsideClickDismissal.BoundaryView }.first!
+precondition(integratedBoundary.monitoring)
+fixtureClick(motionWindow, point: integratedBoundary.convert(NSPoint(x: 10, y: integratedBoundary.bounds.maxY - 10), to: nil))
+precondition(motionState.open, "The expanded region above the closed button must count as inside the menu")
+fixtureClick(motionWindow, point: motionHost.convert(NSPoint(x: stationaryInput.maxX - 2, y: stationaryInput.midY), to: nil))
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+precondition(!motionState.open && !integratedBoundary.monitoring)
+precondition(motionRect("expanding-surface") == closedSurface)
+precondition(motionRect("stationary-input") == stationaryInput)
 motionWindow.close()
+print("PASS integrated expanding menu: full expanded hit boundary, outside-click collapse and fixed input")
 print("PASS shared expanding surface: anchored bottom corner, 48pt/345pt open-close sizes, stationary input and reversible collapse")
+
+// Synthetic events remain inside this fixture process; no pointer or global input events.
+final class MenuClickTarget: NSView {
+    var clicks = 0
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    override func mouseDown(with event: NSEvent) { clicks += 1; window?.makeFirstResponder(self) }
+    override func rightMouseDown(with event: NSEvent) { clicks += 1 }
+}
+func fixtureClick(_ window: NSWindow, point: NSPoint, type: NSEvent.EventType = .leftMouseDown) {
+    let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+        context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+    NSApp.sendEvent(event)
+}
+let clickWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+    styleMask: [.borderless], backing: .buffered, defer: false)
+clickWindow.isReleasedWhenClosed = false
+let clickRoot = MenuClickTarget(frame: NSRect(x: 0, y: 0, width: 400, height: 240))
+clickWindow.contentView = clickRoot
+let insideTarget = MenuClickTarget(frame: NSRect(x: 20, y: 20, width: 120, height: 100))
+let outsideTarget = MenuClickTarget(frame: NSRect(x: 200, y: 20, width: 100, height: 100))
+clickRoot.addSubview(insideTarget); clickRoot.addSubview(outsideTarget)
+let boundary = MenuOutsideClickDismissal.BoundaryView(frame: insideTarget.frame)
+clickRoot.addSubview(boundary)
+clickWindow.orderFrontRegardless()
+var dismissals = 0
+func presentBoundary() { boundary.configure(presented: true) { dismissals += 1 } }
+presentBoundary()
+precondition(boundary.monitoring)
+fixtureClick(clickWindow, point: NSPoint(x: 60, y: 60))
+precondition(dismissals == 0 && insideTarget.clicks == 1, "Inside clicks must remain interactive without dismissing")
+fixtureClick(clickWindow, point: NSPoint(x: 240, y: 60))
+precondition(dismissals == 1 && !boundary.monitoring, "Outside click must dismiss and release its monitor")
+precondition(outsideTarget.clicks == 1 && clickWindow.firstResponder === outsideTarget,
+             "The outside click must reach and focus its original target")
+fixtureClick(clickWindow, point: NSPoint(x: 240, y: 60))
+precondition(dismissals == 1 && outsideTarget.clicks == 2, "Collapsed menus must stop observing clicks")
+presentBoundary()
+let otherWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
+    styleMask: [.borderless], backing: .buffered, defer: false)
+otherWindow.isReleasedWhenClosed = false
+otherWindow.contentView = MenuClickTarget(frame: clickRoot.bounds)
+fixtureClick(otherWindow, point: NSPoint(x: 240, y: 60))
+precondition(dismissals == 1, "A local click in a different window must not be mistaken for a boundary hit")
+fixtureClick(clickWindow, point: NSPoint(x: 240, y: 60), type: .rightMouseDown)
+precondition(dismissals == 2 && outsideTarget.clicks == 3)
+presentBoundary()
+NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: clickWindow)
+NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: clickWindow)
+precondition(dismissals == 3 && !boundary.monitoring, "Losing key status must close only once")
+presentBoundary()
+boundary.removeFromSuperview()
+precondition(!boundary.monitoring, "Removing the menu view must release its listeners")
+clickRoot.addSubview(boundary)
+precondition(boundary.monitoring)
+boundary.configure(presented: false) { dismissals += 1 }
+precondition(!boundary.monitoring)
+otherWindow.close(); clickWindow.close()
+print("PASS native outside dismissal: inside/outside and right clicks, click forwarding, window isolation, resign-key, collapse and detachment cleanup")

@@ -27,6 +27,7 @@ struct LauncherExpandingMenu<Closed: View, MenuContent: View>: View {
     let menuSize: CGSize
     var alignment: Alignment = .bottomLeading
     var tint: Color? = nil
+    var dismiss: (() -> Void)? = nil
     @ViewBuilder let closed: () -> Closed
     @ViewBuilder let menu: () -> MenuContent
 
@@ -41,6 +42,9 @@ struct LauncherExpandingMenu<Closed: View, MenuContent: View>: View {
         }
         .frame(width: open ? menuSize.width : closedSize.width,
                height: open ? menuSize.height : closedSize.height, alignment: alignment)
+        .background {
+            if let dismiss { MenuOutsideClickDismissal(presented: open, dismiss: dismiss) }
+        }
         .modifier(LauncherMenuSurface(open: open, tint: tint, cornerRadius: closedSize.height / 2))
     }
 }

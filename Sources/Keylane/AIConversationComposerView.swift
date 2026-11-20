@@ -136,7 +136,8 @@ struct AIConversationComposerView: View {
             } addButton: {
                 LauncherExpandingMenu(open: contextMenuOpen,
                     closedSize: CGSize(width: style.controlDiameter, height: style.controlDiameter),
-                    menuSize: CGSize(width: 345, height: AIConversationComposerMenu.height(items: composerMenuItems, searchable: true))) {
+                    menuSize: CGSize(width: 345, height: AIConversationComposerMenu.height(items: composerMenuItems, searchable: true)),
+                    dismiss: closeComposerMenu) {
                     ConversationFooterButton(title: "添加上下文（@）", symbol: "plus", diameter: style.controlDiameter) {
                         contextMenuOpen.toggle()
                         menuQuery = ""
@@ -243,10 +244,14 @@ struct AIConversationComposerView: View {
     }
 
     private func dismissComposerMenu() {
+        closeComposerMenu()
+        composer.focusRequested.send()
+    }
+
+    private func closeComposerMenu() {
         suppressedCompletion = composer.completion
         contextMenuOpen = false
         menuSelection = nil
-        composer.focusRequested.send()
     }
 
     private func insertSelectedText() {
