@@ -333,7 +333,7 @@ struct Launcher: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: VisualStyle.launcherCornerRadius, style: .continuous))
-        .keylaneTheme()
+        .keylaneTheme(backgroundOpacity: model.launcherBackdropOpacity)
         .preferredColorScheme(model.colorScheme)
     }
 

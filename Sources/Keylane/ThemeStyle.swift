@@ -56,15 +56,22 @@ struct ThemeBackgroundView: View {
 
 private struct KeylaneThemeModifier: ViewModifier {
     @ObservedObject var store: ThemeStore
+    let backgroundOpacity: CGFloat
     @Environment(\.colorScheme) private var scheme
     func body(content: Content) -> some View {
         let theme = store.library.theme(for: scheme == .dark ? .dark : .light)
         content.environment(\.keylaneTheme, theme)
             .foregroundStyle(theme.usesSystemMaterial ? Color.primary : theme.color(.text).swiftUI)
             .tint(theme.usesSystemMaterial ? Color.accentColor : theme.color(.selection).swiftUI)
-            .background { if !theme.usesSystemMaterial { ThemeBackgroundView(theme: theme) } }
+            .background {
+                if !theme.usesSystemMaterial {
+                    ThemeBackgroundView(theme: theme).opacity(backgroundOpacity)
+                }
+            }
     }
 }
 extension View {
-    func keylaneTheme(store: ThemeStore = .shared) -> some View { modifier(KeylaneThemeModifier(store: store)) }
+    func keylaneTheme(store: ThemeStore = .shared, backgroundOpacity: CGFloat = 1) -> some View {
+        modifier(KeylaneThemeModifier(store: store, backgroundOpacity: backgroundOpacity))
+    }
 }
