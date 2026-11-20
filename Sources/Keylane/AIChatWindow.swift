@@ -8,6 +8,7 @@ final class AIChatPresentation: ObservableObject {
     @Published var actionsVisible = false
     @Published var fullWidth = false
     @Published var searchVisible = false
+    let createProjectRequested = PassthroughSubject<Void, Never>()
 }
 
 final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
@@ -92,9 +93,9 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
     }
 
     private func toolbarItemIdentifiers(settingsVisible: Bool) -> [NSToolbarItem.Identifier] {
-        var items: [NSToolbarItem.Identifier] = [.init("chat.sidebar"), .flexibleSpace, .init("chat.new"),
+        var items: [NSToolbarItem.Identifier] = [.init("chat.sidebar"), .flexibleSpace, .init("chat.project"), .init("chat.new"),
             .init("chat.history-separator"), .flexibleSpace,
-            .init("chat.search"), .init("chat.actions"), .init("chat.settings")]
+            .init("chat.search"), .space, .init("chat.actions"), .init("chat.settings")]
         if settingsVisible {
             items += [.init("chat.inspector-separator"), .init("chat.inspector-title"), .flexibleSpace, .init("chat.inspector-close")]
         }
@@ -122,6 +123,7 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
         let action: Selector
         switch identifier.rawValue {
         case "chat.sidebar": title = "切换侧栏"; symbol = "sidebar.left"; action = #selector(toggleSidebar)
+        case "chat.project": title = "创建项目"; symbol = "folder.badge.plus"; action = #selector(createProject)
         case "chat.new": title = "新对话"; symbol = "square.and.pencil"; action = #selector(newChat)
         case "chat.search": title = "搜索当前对话"; symbol = "magnifyingglass"; action = #selector(toggleSearch)
         case "chat.actions": title = "操作"; symbol = "command"; action = #selector(toggleActions)
@@ -157,9 +159,10 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
     @objc private func toggleSidebar() { presentation.sidebarVisible.toggle() }
     @objc private func toggleSettings() { presentation.settingsVisible.toggle(); presentation.actionsVisible = false }
     @objc private func toggleActions() { presentation.actionsVisible.toggle() }
+    @objc private func createProject() { presentation.createProjectRequested.send() }
     @objc private func newChat() {
-        controller.reset()
-        composer.text = ""
+        controller.reset(projectID: controller.currentProjectID)
+        composer.clear()
         presentation.actionsVisible = false
         composer.focusRequested.send()
     }
@@ -169,7 +172,7 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
         window = nil
         splitController = nil
         inspectorChanges = nil
-        composer.text = ""
+        composer.clear()
         controller.closeChat()
     }
 }

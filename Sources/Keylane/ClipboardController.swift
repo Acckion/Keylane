@@ -182,6 +182,22 @@ final class ClipboardController: ObservableObject {
         if startTimer { startMonitoring() }
     }
 
+    /// Explicit AI context browsing uses the storage worker, without changing
+    /// the clipboard page's query, selection, preview or collection setting.
+    func aiTextContexts(query: String, completion: @escaping ([ClipItem]) -> Void) {
+        worker.async { [weak self] in
+            let rows = (try? self?.store?.list(query: query, kind: .text, limit: 80)) ?? []
+            DispatchQueue.main.async { completion(rows) }
+        }
+    }
+
+    func aiTextContext(id: String, completion: @escaping (String?) -> Void) {
+        worker.async { [weak self] in
+            let text = try? self?.store?.detail(id: id)?.text
+            DispatchQueue.main.async { completion(text) }
+        }
+    }
+
     func startRuntime() {
         guard runtime == nil else { return }
         let token = ImageTextRecognitionWork()

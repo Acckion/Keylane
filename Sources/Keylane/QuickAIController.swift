@@ -7,11 +7,21 @@ final class QuickAIController: ObservableObject {
         let question: String
         var answer = ""
         var complete = false
+        var attachments: [AIChatAttachment]?
+        var requestText: String { AIChatAttachment.requestText(question: question, attachments: attachments ?? []) }
     }
 
     @Published private(set) var turns: [Turn] = []
     @Published private(set) var running = false
     @Published private(set) var status = ""
+    @Published private(set) var projects: [AIChatProject] = []
+    @Published private(set) var currentProjectID: UUID?
+    @Published private(set) var projectError = ""
+    var currentProject: AIChatProject? { projects.first { $0.id == currentProjectID } }
+    var effectiveInstructions: String? {
+        let parts = [currentProject?.instructions ?? "", chatInstructions].filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+    }
     @Published private(set) var chats: [AIChatSummary] = []
     @Published private(set) var chatID: UUID?
     @Published private(set) var loadingChat = false
@@ -56,6 +66,22 @@ final class QuickAIController: ObservableObject {
             }
     }
 
+    enum ViewScope { case sidebar, conversation, settings }
+
+    func viewUpdates(_ scope: ViewScope) -> [AnyPublisher<Void, Never>] {
+        func changes<P: Publisher>(_ source: P) -> AnyPublisher<Void, Never> where P.Output: Equatable, P.Failure == Never {
+            source.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher()
+        }
+        switch scope {
+        case .conversation: return [objectWillChange.eraseToAnyPublisher()]
+        case .sidebar:
+            return [changes($chats), changes($projects), changes($chatID), changes($currentProjectID), changes($historyError), changes($loadingChat)]
+        case .settings:
+            return [changes($conversationModel), changes($chatTitle), changes($chatInstructions), changes($projects),
+                    changes($currentProjectID), changes($loadingChat), changes($running)]
+        }
+    }
+
     var lastAnswer: String? { turns.last(where: { !$0.answer.isEmpty })?.answer }
     var currentConnection: AIConnection? { connection(in: configuration.state) }
 
@@ -75,7 +101,7 @@ final class QuickAIController: ObservableObject {
     }
 
     @discardableResult
-    func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil) -> Bool {
+    func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil, attachments: [AIChatAttachment] = []) -> Bool {
         guard !running, !loadingChat, configuration.state.enabled,
               !isInChat || override == nil,
               let connection = override ?? currentConnection, connection.isConfigured,
@@ -84,14 +110,17 @@ final class QuickAIController: ObservableObject {
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return false }
         let maximumQuestionBytes = 32_000
-        guard question.utf8.count <= maximumQuestionBytes else {
+        let requestText = AIChatAttachment.requestText(question: question, attachments: attachments)
+        guard requestText.utf8.count <= maximumQuestionBytes else {
             status = "问题太长，请缩短后重试。"
             return false
         }
 
-        let requestMessages = messages(for: question, instructions: instructions ?? (isInChat && !chatInstructions.isEmpty ? chatInstructions : nil))
+        let system = instructions ?? (isInChat ? effectiveInstructions : nil)
+        guard (system?.utf8.count ?? 0) <= 32_000 else { status = "项目与会话指令过长，请缩短后重试。"; return false }
+        let requestMessages = messages(for: requestText, instructions: system)
         if !isInChat && turns.count >= turnLimit { turns.removeFirst(turns.count - turnLimit + 1) }
-        let turn = Turn(question: question)
+        let turn = Turn(question: question, attachments: attachments.isEmpty ? nil : attachments)
         conversationModel = AIChatRecord.ModelReference(connection)
         turns.append(turn)
         if isInChat, chatTitle.isEmpty {
@@ -129,10 +158,10 @@ final class QuickAIController: ObservableObject {
         var history = [AIMessage]()
         var remaining = 64_000 - question.utf8.count
         for previous in turns.reversed() where previous.complete {
-            let size = previous.question.utf8.count + previous.answer.utf8.count
+            let size = previous.requestText.utf8.count + previous.answer.utf8.count
             guard size <= remaining else { break }
             history.append(AIMessage(role: .assistant, content: previous.answer))
-            history.append(AIMessage(role: .user, content: previous.question))
+            history.append(AIMessage(role: .user, content: previous.requestText))
             remaining -= size
         }
         var messages = instructions.map { [AIMessage(role: .system, content: $0)] } ?? []
@@ -152,6 +181,7 @@ final class QuickAIController: ObservableObject {
     func beginChat(restoreLatest: Bool = false) {
         guard !isInChat else { return }
         isInChat = true
+        refreshProjects()
         if !turns.isEmpty {
             if chatTitle.isEmpty { chatTitle = String(turns[0].question.split(whereSeparator: \.isNewline).first?.prefix(72) ?? "") }
             if turns.contains(where: \.complete), let connection = currentConnection {
@@ -181,6 +211,7 @@ final class QuickAIController: ObservableObject {
             case .success(let record?):
                 self.restoringChat = true
                 defer { self.restoringChat = false }
+                self.currentProjectID = self.chats.first { $0.id == record.id }?.projectID
                 self.chatTitle = self.chats.first { $0.id == record.id }?.title ?? ""
                 self.chatID = record.id
                 self.conversationModel = record.content.model
@@ -217,6 +248,33 @@ final class QuickAIController: ObservableObject {
         }
     }
 
+    func duplicateChat(_ id: UUID) {
+        guard isInChat, let history else { return }
+        let revision = historyRevision
+        let title = chats.first { $0.id == id }?.title ?? "对话"
+        let projectID = chats.first { $0.id == id }?.projectID
+        history.perform({ store -> UUID? in
+            guard let record = try store.load(id) else { return nil }
+            let copy = AIChatRecord(id: UUID(), content: record.content)
+            try store.save(copy)
+            try store.update(copy.id, change: .rename(title + " · 分支"))
+            try store.update(copy.id, change: .project(projectID))
+            return copy.id
+        }) { [weak self] result in
+            guard let self, self.isInChat, self.historyRevision == revision else { return }
+            if case .success(let id?) = result { self.openChat(id) }
+            else { self.historyError = "无法创建对话分支。" }
+        }
+    }
+
+    func transcript(_ id: UUID, completion: @escaping (String?) -> Void) {
+        guard let history else { completion(nil); return }
+        history.perform({ try $0.load(id) }) { result in
+            guard case .success(let record?) = result else { completion(nil); return }
+            completion(record.content.turns.map { "## 用户\n\n" + $0.requestText + "\n\n## 助手\n\n" + $0.answer }.joined(separator: "\n\n"))
+        }
+    }
+
     @discardableResult
     func chooseChatModel(_ id: UUID) -> Bool {
         guard isInChat, turns.isEmpty, !running, !loadingChat, configuration.state.enabled,
@@ -233,8 +291,10 @@ final class QuickAIController: ObservableObject {
         guard canRevise, let index = turns.firstIndex(where: { $0.id == turnID }) else { return false }
         let input = (question ?? turns[index].question).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty, input.utf8.count <= 32_000 else { return false }
+        let attachments = turns[index].attachments ?? []
+        guard AIChatAttachment.requestText(question: input, attachments: attachments).utf8.count <= 32_000 else { return false }
         startBranch(with: Array(turns.prefix(index)))
-        return submit(input)
+        return submit(input, attachments: attachments)
     }
 
     @discardableResult
@@ -265,6 +325,49 @@ final class QuickAIController: ObservableObject {
         status = ""
     }
 
+    func setProject(_ id: UUID?) {
+        guard isInChat, !loadingChat, id == nil || projects.contains(where: { $0.id == id }) else { return }
+        if currentProjectID == id { return }
+        stop()
+        currentProjectID = id
+        saveChat()
+    }
+
+    func moveChat(_ id: UUID, to projectID: UUID?) {
+        guard projectID == nil || projects.contains(where: { $0.id == projectID }) else { return }
+        if id == chatID { setProject(projectID) }
+        else { updateChat(id, change: .project(projectID)) }
+    }
+
+    func saveProject(_ project: AIChatProject, completion: @escaping (Bool) -> Void) {
+        guard let history else { completion(false); return }
+        history.perform({ store in try store.saveProject(project); return try store.projects() }) { [weak self] result in
+            guard let self, self.isInChat else { completion(false); return }
+            switch result {
+            case .success(let projects): self.projects = projects; self.projectError = ""; completion(true)
+            case .failure: self.projectError = "无法保存项目。"; completion(false)
+            }
+        }
+    }
+
+    func removeProject(_ id: UUID) {
+        guard let history else { return }
+        if currentProjectID == id { setProject(nil) }
+        history.perform({ store in try store.removeProject(id); return (try store.projects(), try store.list()) }) { [weak self] result in
+            guard let self, self.isInChat else { return }
+            if case .success(let (projects, chats)) = result { self.projects = projects; self.chats = chats; self.projectError = "" }
+            else { self.projectError = "无法移除项目。" }
+        }
+    }
+
+    private func refreshProjects() {
+        history?.perform({ try $0.projects() }) { [weak self] result in
+            guard let self, self.isInChat else { return }
+            if case .success(let projects) = result { self.projects = projects }
+            else { self.projectError = "无法读取项目。" }
+        }
+    }
+
     func leaveLauncher() {
         if !isInChat { reset() }
     }
@@ -273,15 +376,17 @@ final class QuickAIController: ObservableObject {
         reset()
         isInChat = false
         chats = []
+        projects = []
         historyError = ""
     }
 
-    func reset() {
+    func reset(projectID: UUID? = nil) {
         stop()
         saveChat()
         historyRevision = UUID()
         loadingChat = false
         chatID = nil
+        currentProjectID = projectID.flatMap { id in projects.contains { $0.id == id } ? id : nil }
         conversationModel = nil
         turns = []
         chatTitle = ""
@@ -308,9 +413,11 @@ final class QuickAIController: ObservableObject {
         chatID = id
         let record = AIChatRecord(id: id, content: .init(model: conversationModel, turns: turns, instructions: chatInstructions.isEmpty ? nil : chatInstructions))
         let title = chatTitle
+        let projectID = currentProjectID
         history.perform({ store in
             try store.save(record)
             if !title.isEmpty { try store.update(id, change: .rename(title)) }
+            try store.update(id, change: .project(projectID))
             return try store.list()
         }) { [weak self] result in
             self?.applyHistory(result)

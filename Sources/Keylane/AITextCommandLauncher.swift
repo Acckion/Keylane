@@ -57,12 +57,12 @@ enum AITextCommandLauncher {
         })
     }
 
-    private static func selectedText() -> String? {
+    static func selectedText() -> String? {
         let delegate = NSApp.delegate as? Delegate
         let frontmost = NSWorkspace.shared.frontmostApplication
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let target = frontmost?.processIdentifier == ownPID
-            ? (delegate?.window?.isKeyWindow == true ? delegate?.previousApplication : nil)
+            ? delegate?.previousApplication
             : frontmost
         guard let target, let element = SnippetTextTarget.focused(in: target) else { return nil }
         return SnippetTextTarget.attribute(kAXSelectedTextAttribute, of: element) as? String

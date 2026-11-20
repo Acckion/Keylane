@@ -6,13 +6,13 @@ import UniformTypeIdentifiers
 struct AIChatView: View {
     enum Column { case sidebar, conversation, settings }
     var column: Column = .conversation
-    @ObservedObject var controller: QuickAIController
+    let controller: QuickAIController
+    @StateObject private var observation: ViewObservation
     @ObservedObject var configuration: AIConfiguration
     @ObservedObject var interaction: AIInteractionPreferences
-    @ObservedObject var composer: AIChatComposer
+    let composer: AIChatComposer
     @ObservedObject var presentation: AIChatPresentation
     @Environment(\.colorScheme) private var colorScheme
-    @FocusState private var editorFocused: Bool
     @State private var search = ""
     @State private var showsArchive = false
     @State private var pendingDeletion: AIChatSummary?
@@ -20,19 +20,36 @@ struct AIChatView: View {
     @State private var renamedTitle = ""
     @State private var pendingModel: UUID?
     @State private var attachmentError: String?
+    @State private var usageTarget: AIConnection?
+    @State private var editingProject: AIChatProject?
+    @State private var deletingProject: AIChatProject?
+    @State private var collapsedProjects = Set<UUID>()
     @State private var editingTurn: QuickAIController.Turn?
-    @State private var editedQuestion = ""
     @State private var transcriptSearch = ""
     @State private var searchIndex = 0
     @State private var searchMatches: [UUID] = []
     @FocusState private var transcriptSearchFocused: Bool
+
+    init(column: Column = .conversation, controller: QuickAIController, configuration: AIConfiguration,
+         interaction: AIInteractionPreferences, composer: AIChatComposer, presentation: AIChatPresentation) {
+        self.column = column
+        self.controller = controller
+        self.configuration = configuration
+        self.interaction = interaction
+        self.composer = composer
+        self.presentation = presentation
+        let scope: QuickAIController.ViewScope = column == .sidebar ? .sidebar : column == .settings ? .settings : .conversation
+        var inputs = controller.viewUpdates(scope)
+        if column == .conversation { inputs.append(composer.objectWillChange.eraseToAnyPublisher()) }
+        _observation = StateObject(wrappedValue: ViewObservation(inputs))
+    }
 
     private var visibleChats: [AIChatSummary] {
         controller.chats.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
     }
     private var canSubmit: Bool {
         !controller.running && !controller.loadingChat && controller.matchesCurrentModel &&
-        controller.currentConnection != nil && !composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        controller.currentConnection != nil && (!composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachments.isEmpty)
     }
 
     var body: some View {
@@ -59,22 +76,22 @@ struct AIChatView: View {
                     .map { $0 || $1 }.eraseToAnyPublisher())
             }
         }
-        .task { if column == .conversation { editorFocused = true } }
+        .task { if column == .conversation { composer.focusRequested.send() } }
         .onChange(of: search) { _, value in if !value.isEmpty { showsArchive = true } }
-        .onReceive(controller.$turns.throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)) { turns in
+        .onReceive((column == .conversation ? controller.$turns.eraseToAnyPublisher() : Empty<[QuickAIController.Turn], Never>().eraseToAnyPublisher()).throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)) { turns in
             if column == .conversation, !transcriptSearch.isEmpty { updateSearch(turns) }
         }
         .onChange(of: transcriptSearch) { _, _ in searchIndex = 0; updateSearch(controller.turns) }
-        .onReceive(composer.focusRequested) { _ in
-            if column == .conversation { editorFocused = true }
+        .onReceive(presentation.createProjectRequested) { _ in
+            if column == .conversation { editingProject = AIChatProject() }
         }
         .onReceive(controller.historyOpened) { _ in
             if column == .conversation {
-                composer.text = ""; transcriptSearch = ""; searchIndex = 0; editorFocused = true
+                composer.clear(); transcriptSearch = ""; searchIndex = 0; composer.focusRequested.send()
             }
         }
         .onChange(of: controller.chatID) { old, current in
-            if old != nil && current == nil { composer.text = "" }
+            if column == .conversation, old != nil && current == nil { composer.text = "" }
         }
         .onExitCommand {
             if presentation.actionsVisible { presentation.actionsVisible = false }
@@ -84,7 +101,7 @@ struct AIChatView: View {
         }
         .background {
             if column == .conversation { Group {
-                Button("新对话", action: newChat).keyboardShortcut("n", modifiers: .command)
+                Button("新对话", action: { newChat() }).keyboardShortcut("n", modifiers: .command)
                 Button("搜索当前对话") { presentation.searchVisible.toggle() }.keyboardShortcut("f", modifiers: .command)
                 Button("操作") { presentation.actionsVisible.toggle() }.keyboardShortcut("k", modifiers: .command)
                 Button("聊天设置") { presentation.settingsVisible.toggle() }.keyboardShortcut(",", modifiers: [.command, .shift])
@@ -116,26 +133,26 @@ struct AIChatView: View {
             }
             Button("取消", role: .cancel) { renaming = nil }
         }
+        .sheet(item: $editingProject) { project in
+            AIChatProjectEditor(controller: controller, project: project) { saved in
+                collapsedProjects.remove(saved.id)
+            }
+        }
+        .confirmationDialog("移除项目？聊天记录会保留，并解除项目归组。", isPresented: Binding(
+            get: { deletingProject != nil }, set: { if !$0 { deletingProject = nil } }
+        ), titleVisibility: .visible) {
+            Button("移除项目", role: .destructive) {
+                if let project = deletingProject { controller.removeProject(project.id) }
+                deletingProject = nil
+            }
+        }
+        .sheet(item: $usageTarget) { connection in AISubscriptionUsage(connection: connection) }
         .sheet(item: $editingTurn) { turn in
-            VStack(alignment: .leading, spacing: 16) {
-                Text("编辑问题").font(.headline)
-                Text("发送后创建新分支，原对话和后续消息会保留。")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextEditor(text: $editedQuestion).font(.body).frame(minHeight: 140)
-                    .padding(8).background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
-                    .accessibilityLabel("编辑问题")
-                HStack {
-                    Spacer()
-                    Button("取消") { editingTurn = nil }.keyboardShortcut(.cancelAction)
-                    Button("创建分支并发送") {
-                        if controller.resubmit(turn.id, question: editedQuestion) {
-                            editingTurn = nil
-                            branchCreated()
-                        }
-                    }.keyboardShortcut(.defaultAction)
-                        .disabled(!controller.canRevise || editedQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || editedQuestion.utf8.count > 32_000)
-                }
-            }.padding(24).frame(width: 520)
+            AIChatQuestionEditor(controller: controller, turn: turn) { text in
+                guard controller.resubmit(turn.id, question: text) else { return false }
+                branchCreated()
+                return true
+            }
         }
         .alert("无法添加附件", isPresented: Binding(
             get: { attachmentError != nil }, set: { if !$0 { attachmentError = nil } }
@@ -146,61 +163,89 @@ struct AIChatView: View {
         VStack(spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索对话", text: $search).textFieldStyle(.plain)
+                TextField("", text: $search, prompt: Text("搜索对话").foregroundStyle(.secondary))
+                    .textFieldStyle(.plain).font(.system(size: 13))
                     .accessibilityLabel("搜索对话")
                 if !search.isEmpty {
                     Button("清除搜索", systemImage: "xmark.circle.fill") { search = "" }
                         .labelStyle(.iconOnly).buttonStyle(.plain).foregroundStyle(.secondary)
                 }
             }
-            .padding(11)
+            .padding(10)
             .glassEffect(.regular, in: Capsule())
             .padding(.horizontal, 12).padding(.top, 12)
 
-            List(selection: Binding<UUID?>(get: { controller.chatID }, set: { id in
-                guard let id else { return }
-                controller.openChat(id)
-                composer.focusRequested.send()
-            })) {
-                let pinned = visibleChats.filter { $0.pinned && !$0.archived }
-                if !pinned.isEmpty {
-                    Section { ForEach(pinned) { chatRow($0) } } header: { Label("置顶", systemImage: "pin") }
-                }
-                Section {
-                    if controller.chatID == nil {
-                        Text("新对话").font(.system(size: 13, weight: .medium)).padding(.vertical, 6)
-                            .listRowBackground(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.08)).padding(.horizontal, 8))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    let pinned = visibleChats.filter { $0.pinned && !$0.archived }
+                    if !pinned.isEmpty {
+                        AIChatSidebarHeading(title: "置顶", symbol: "pin")
+                        ForEach(pinned) { chatRow($0) }
                     }
-                    ForEach(visibleChats.filter { !$0.pinned && !$0.archived }) { chatRow($0) }
-                } header: { Label("最近", systemImage: "bubble.left") }
-                Section {
-                    DisclosureGroup(isExpanded: $showsArchive) {
-                        ForEach(visibleChats.filter(\.archived)) { chatRow($0) }
-                    } label: { Label("归档", systemImage: "archivebox") }
-                }
-            }
-            .listStyle(.sidebar)
-            .tint(.gray)
-            .scrollContentBackground(.hidden)
-            .overlay {
-                if !search.isEmpty, visibleChats.isEmpty {
-                    ContentUnavailableView.search(text: search)
-                }
+                    projectSections
+                    AIChatSidebarHeading(title: "最近", symbol: "bubble.left")
+                    if controller.chatID == nil && controller.currentProjectID == nil {
+                        AIChatSidebarRow(title: "新对话", selected: true, action: { newChat() })
+                    }
+                    ForEach(visibleChats.filter { !$0.pinned && !$0.archived && $0.projectID == nil }) { chatRow($0) }
+                    AIChatSidebarHeading(title: "归档", symbol: "archivebox", expanded: $showsArchive)
+                    if showsArchive { ForEach(visibleChats.filter(\.archived)) { chatRow($0) } }
+                    if !search.isEmpty, visibleChats.isEmpty {
+                        Text("没有匹配的对话").font(.system(size: 12)).foregroundStyle(.secondary).padding(12)
+                    }
+                }.padding(.horizontal, AIChatStyle.sidebarInset).padding(.bottom, 12)
             }
             if !controller.historyError.isEmpty {
                 Text(controller.historyError).font(.caption).foregroundStyle(.secondary).padding(12)
             }
         }
-        .background(.background.secondary)
+        .background(colorScheme == .dark ? Color(white: 0.095) : Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var projectSections: some View {
+        ForEach(controller.projects) { project in projectSection(project) }
+    }
+
+    private func projectSection(_ project: AIChatProject) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 0) {
+                            AIChatSidebarHeading(title: project.name, symbol: project.symbol, expanded: Binding(
+                                get: { !collapsedProjects.contains(project.id) },
+                                set: { if $0 { collapsedProjects.remove(project.id) } else { collapsedProjects.insert(project.id) } }))
+                            Button("项目新对话", systemImage: "plus") { newChat(in: project.id) }
+                                .labelStyle(.iconOnly).buttonStyle(.bordered).controlSize(.mini)
+                                .padding(.top, 8).padding(.trailing, 8)
+                        }.contextMenu {
+                            Button("新对话", systemImage: "square.and.pencil") { newChat(in: project.id) }
+                            Button("编辑项目…", systemImage: "pencil") { editingProject = project }
+                            Button("移除项目…", role: .destructive) { deletingProject = project }
+                        }
+                        if !collapsedProjects.contains(project.id) {
+                            if controller.chatID == nil && controller.currentProjectID == project.id {
+                                AIChatSidebarRow(title: "新对话", selected: true) { newChat(in: project.id) }
+                            }
+                            ForEach(visibleChats.filter { !$0.pinned && !$0.archived && $0.projectID == project.id }) { chatRow($0) }
+                        }
+        }
     }
 
     private func chatRow(_ item: AIChatSummary) -> some View {
-        Text(item.title.isEmpty ? "新对话" : item.title)
-            .font(.system(size: 13, weight: .medium)).lineLimit(1)
-            .padding(.vertical, 7).tag(item.id)
+        AIChatSidebarRow(title: item.title, selected: controller.chatID == item.id) {
+            controller.openChat(item.id)
+            composer.focusRequested.send()
+        }
             .contextMenu {
+                Button("复制对话", systemImage: "doc.on.doc") { copyChat(item.id) }
+                Button("创建分支", systemImage: "arrow.triangle.branch") { controller.duplicateChat(item.id) }
+                Divider()
                 Button(item.pinned ? "取消置顶" : "置顶", systemImage: "pin") {
                     controller.updateChat(item.id, change: .pin(!item.pinned))
+                }
+                Menu("移动到项目", systemImage: "folder") {
+                    Button("不属于项目") { controller.moveChat(item.id, to: nil) }
+                    ForEach(controller.projects) { project in
+                        Button(project.name) { controller.moveChat(item.id, to: project.id) }
+                    }
                 }
                 Button("重命名…", systemImage: "pencil") { renaming = item; renamedTitle = item.title }
                 Button(item.archived ? "取消归档" : "归档", systemImage: "archivebox") {
@@ -216,10 +261,10 @@ struct AIChatView: View {
             if presentation.searchVisible { transcriptSearchBar }
             ZStack {
                 AIConversationTranscript(controller: controller, showsEmptyHint: false,
-                    editTurn: { editingTurn = $0; editedQuestion = $0.question },
+                    editTurn: { editingTurn = $0 },
                     didBranch: branchCreated, searchTarget: searchTarget)
                     .id(controller.chatID)
-                    .frame(maxWidth: presentation.fullWidth ? .infinity : 820)
+                    .frame(maxWidth: presentation.fullWidth ? .infinity : AIChatStyle.contentWidth)
                 if controller.turns.isEmpty, !controller.loadingChat {
                     Image(systemName: "sparkles")
                         .font(.system(size: 52, weight: .ultraLight))
@@ -229,64 +274,22 @@ struct AIChatView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            composerView.frame(maxWidth: presentation.fullWidth ? .infinity : 820)
-                .padding(.horizontal, 22).padding(.bottom, 18).padding(.top, 10)
+            composerView.frame(maxWidth: presentation.fullWidth ? .infinity : AIChatStyle.contentWidth)
+                .padding(.horizontal, 32).padding(.bottom, 18).padding(.top, 10)
         }
         .background(colorScheme == .dark ? Color(white: 0.065) : Color(nsColor: .textBackgroundColor))
     }
 
     private var composerView: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            if let message = configurationMessage {
-                HStack {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Button("AI 设置") { openAISettings() }.buttonStyle(ContentActionButtonStyle())
-                }
-            }
-            HStack(alignment: .center, spacing: 8) {
-                Menu {
-                    Button("添加文本文件…", systemImage: "doc.badge.plus", action: addTextFile)
-                    Button("插入剪贴板文字", systemImage: "clipboard", action: insertClipboard)
-                } label: {
-                    Image(systemName: "plus").font(.system(size: 19)).frame(width: 30, height: 34)
-                }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .disabled(controller.loadingChat)
-                .help("添加上下文")
-
-                TextField("输入问题…", text: $composer.text, axis: .vertical)
-                    .textFieldStyle(.plain).font(.system(size: 14))
-                    .lineLimit(1...7).padding(.vertical, 7)
-                    .focused($editorFocused)
-                    .disabled(controller.loadingChat || !controller.matchesCurrentModel)
-                    .accessibilityLabel("问题")
-                    .onKeyPress(keys: [.return], phases: .down) { press in
-                        guard interaction.chatReturn, press.modifiers.isEmpty, !SearchField.isComposing else { return .ignored }
-                        submit()
-                        return .handled
-                    }
-                if controller.running {
-                    Button("停止生成", systemImage: "stop.fill", action: controller.stop)
-                        .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 34, height: 34)
-                } else {
-                    Button("发送", systemImage: "arrow.up", action: submit)
-                        .labelStyle(.iconOnly).buttonStyle(.plain)
-                        .frame(width: 30, height: 30)
-                        .background(.primary.opacity(0.09), in: Circle())
-                        .disabled(!canSubmit)
-                }
-            }
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
-        }
+        AIChatComposerView(controller: controller, configuration: configuration,
+            interaction: interaction, composer: composer, canSubmit: canSubmit,
+            submit: submit, newChat: { newChat() }, chooseModel: chooseChatModel,
+            showUsage: { usageTarget = controller.currentConnection }, openAISettings: openAISettings)
     }
 
-    private var configurationMessage: String? {
-        if !configuration.state.enabled { return "请先启用 AI 并配置模型。" }
-        if !controller.matchesCurrentModel { return "原对话模型不可用，请恢复连接或新建对话。" }
-        if controller.currentConnection == nil { return "请先配置聊天模型。" }
-        return nil
+    private func chooseChatModel(_ id: UUID) {
+        guard controller.currentConnection?.id != id else { return }
+        if !controller.chooseChatModel(id) { pendingModel = id }
     }
 
     private var settings: some View {
@@ -313,7 +316,7 @@ struct AIChatView: View {
                     }
                     VStack(alignment: .leading, spacing: 9) {
                         Text("附加指令").font(.subheadline).foregroundStyle(.secondary)
-                        TextEditor(text: $controller.chatInstructions)
+                        TextEditor(text: Binding(get: { controller.chatInstructions }, set: { controller.chatInstructions = $0 }))
                             .font(.system(size: 13)).scrollContentBackground(.hidden)
                             .padding(8).frame(minHeight: 120)
                             .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
@@ -321,6 +324,8 @@ struct AIChatView: View {
                             .accessibilityLabel("附加指令")
                         Text("应用于这段对话的后续消息。").font(.caption).foregroundStyle(.secondary)
                     }
+                    Divider()
+                    AIChatCapabilitySection()
                     Divider()
                     Toggle("回车发送", isOn: $interaction.chatReturn).toggleStyle(.switch)
                     Toggle("窗口置顶", isOn: $interaction.chatFloating).toggleStyle(.switch)
@@ -334,9 +339,25 @@ struct AIChatView: View {
 
     private var actions: [AIChatActionMenu.Item] {
         var items: [AIChatActionMenu.Item] = [
-            .init(title: "新对话", symbol: "square.and.pencil", keys: "⌘ N", action: newChat),
-            .init(title: "添加文本文件…", symbol: "doc.badge.plus", action: addTextFile),
-            .init(title: "插入剪贴板文字", symbol: "clipboard", action: insertClipboard),
+            .init(title: "创建项目…", symbol: "folder.badge.plus") { editingProject = AIChatProject() },
+            .init(title: "新对话", symbol: "square.and.pencil", keys: "⌘ N", action: { newChat() }),
+            .init(title: "添加文本文件…", symbol: "doc.badge.plus", action: { composer.contextRequested.send(.file) }),
+            .init(title: "插入剪贴板文字", symbol: "clipboard", action: { composer.contextRequested.send(.clipboard) }),
+            .init(title: "编辑最新问题…", symbol: "pencil", enabled: controller.canRevise && !controller.turns.isEmpty) {
+                if let turn = controller.turns.last { editingTurn = turn }
+            },
+            .init(title: "重新生成最新回复", symbol: "arrow.clockwise", enabled: controller.canRevise && !controller.turns.isEmpty) {
+                if let turn = controller.turns.last, controller.resubmit(turn.id) { branchCreated() }
+            },
+            .init(title: "从最新回复创建分支", symbol: "arrow.triangle.branch", enabled: controller.canRevise && controller.turns.last?.complete == true) {
+                if let turn = controller.turns.last, controller.branch(after: turn.id) { branchCreated() }
+            },
+            .init(title: "复制整段对话", symbol: "doc.on.doc", enabled: controller.chatID != nil) {
+                if let id = controller.chatID { copyChat(id) }
+            },
+            .init(title: "导出对话…", symbol: "square.and.arrow.up", enabled: !controller.turns.isEmpty, action: exportChat),
+            .init(title: "在当前对话查找", symbol: "magnifyingglass", keys: "⌘ F") { presentation.searchVisible = true },
+            .init(title: "AI 设置", symbol: "gearshape", action: openAISettings),
             .init(title: "复制最新回复", symbol: "doc.on.doc", enabled: controller.lastAnswer != nil) {
                 AIConversationTranscript.copy(controller.lastAnswer)
             },
@@ -350,8 +371,31 @@ struct AIChatView: View {
                 .init(title: item.archived ? "取消归档" : "归档对话", symbol: "archivebox") { controller.updateChat(item.id, change: .archive(!item.archived)) }
             ]
         }
+        if controller.currentConnection?.protocolKind.isSubscription == true {
+            items.append(.init(title: "查看 AI 用量", symbol: "gauge.with.dots.needle.33percent") { usageTarget = controller.currentConnection })
+        }
         if controller.running { items.append(.init(title: "停止生成", symbol: "stop", action: controller.stop)) }
         return items
+    }
+
+    private func copyChat(_ id: UUID) {
+        let generation = NSPasteboard.general.changeCount
+        controller.transcript(id) { text in
+            guard NSPasteboard.general.changeCount == generation else { return }
+            AIConversationTranscript.copy(text)
+        }
+    }
+
+    private func exportChat() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "Keylane Chat.md"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            let text = controller.turns.map { "## 用户\n\n" + $0.requestText + "\n\n## 助手\n\n" + $0.answer }.joined(separator: "\n\n")
+            do { try text.write(to: url, atomically: true, encoding: .utf8) }
+            catch { attachmentError = "无法导出这段对话。" }
+        }
     }
 
     private func updateSearch(_ turns: [QuickAIController.Turn]) {
@@ -389,63 +433,36 @@ struct AIChatView: View {
     }
 
     private func branchCreated() {
-        composer.text = ""
+        composer.clear()
         transcriptSearch = ""
         presentation.actionsVisible = false
         composer.focusRequested.send()
     }
 
     private func newChat() {
-        controller.reset()
+        controller.reset(projectID: controller.currentProjectID)
         transcriptSearch = ""
         searchMatches = []
         searchIndex = 0
-        composer.text = ""
+        composer.clear()
         composer.focusRequested.send()
         presentation.actionsVisible = false
     }
-    private func submit() {
-        guard !SearchField.isComposing, canSubmit else { return }
-        if controller.submit(composer.text) { composer.text = "" }
-    }
-    private func openAISettings() { (NSApp.delegate as? Delegate)?.model.openSettings(page: "ai") }
-    private func insertClipboard() {
-        guard let text = NSPasteboard.general.string(forType: .string) else { return }
-        appendContext(text)
-    }
-    private func appendContext(_ text: String) {
-        guard composer.text.utf8.count + text.utf8.count + 2 <= 32_000 else {
-            attachmentError = "加入后的内容超过 32,000 字节，请缩短文本后重试。"
-            return
-        }
-        composer.text += (composer.text.isEmpty ? "" : "\n\n") + text
+    private func newChat(in projectID: UUID) {
+        controller.reset(projectID: projectID)
+        composer.clear()
         composer.focusRequested.send()
     }
-    private func addTextFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.text, .sourceCode, .json, .xml, .yaml]
-        panel.prompt = "添加"
-        panel.begin { result in
-            guard result == .OK, let url = panel.url else { return }
-            do {
-                let info = try url.resourceValues(forKeys: [.fileSizeKey])
-                guard let size = info.fileSize, size <= 32_000 else {
-                    attachmentError = "请选择不超过 32,000 字节的文本文件。"
-                    return
-                }
-                let handle = try FileHandle(forReadingFrom: url)
-                defer { try? handle.close() }
-                let data = try handle.read(upToCount: 32_001) ?? Data()
-                guard data.count <= 32_000, let text = String(data: data, encoding: .utf8) else {
-                    attachmentError = "文件需要是 UTF-8 文本，且不超过 32,000 字节。"
-                    return
-                }
-                appendContext("\(url.lastPathComponent)\n\n\(text)")
-            } catch { attachmentError = "无法读取所选文件。" }
+
+    private func submit() {
+        guard !SearchField.isComposing, canSubmit else { return }
+        let question = composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "请分析所附内容。" : composer.text
+        if controller.submit(question, attachments: composer.attachments) {
+            composer.clear()
         }
     }
+    private func openAISettings() { (NSApp.delegate as? Delegate)?.model.openSettings(page: "ai") }
+
 }
 
 struct AIChatActionMenu: View {
@@ -461,6 +478,7 @@ struct AIChatActionMenu: View {
     let dismiss: () -> Void
     @State private var query = ""
     @State private var selection: String?
+    @State private var scrollTarget: String?
     @FocusState private var searchFocused: Bool
 
     private var filtered: [Item] {
@@ -485,7 +503,7 @@ struct AIChatActionMenu: View {
                     LazyVStack(spacing: 3) {
                         ForEach(filtered) { item in
                             LauncherMenuRow(title: item.title, symbol: item.symbol,
-                                            selected: selection == item.id, enabled: item.enabled,
+                                            selected: selection == item.id, enabled: item.enabled, compact: true,
                                             activate: { dismiss(); item.action() },
                                             highlight: { selection = item.id }) {
                                 Text(item.keys).font(.caption).foregroundStyle(.secondary)
@@ -494,13 +512,13 @@ struct AIChatActionMenu: View {
                         if filtered.isEmpty { Text("没有匹配的操作").foregroundStyle(.secondary).padding(20) }
                     }.padding(8)
                 }
-                .frame(height: min(390, CGFloat(max(1, filtered.count)) * 42 + 16))
-                .onChange(of: selection) { _, id in
+                .frame(height: min(390, CGFloat(max(1, filtered.count)) * 33 + 16))
+                .onChange(of: scrollTarget) { _, id in
                     if let id { proxy.scrollTo(id) }
                 }
             }
         }
-        .frame(width: 370)
+        .frame(width: 320)
         .modifier(LauncherMenuSurface(open: true))
         .shadow(color: .black.opacity(0.16), radius: 22, y: 8)
         .task { searchFocused = true; selection = filtered.first(where: \.enabled)?.id }
@@ -513,5 +531,6 @@ struct AIChatActionMenu: View {
         guard !enabled.isEmpty else { selection = nil; return }
         let current = enabled.firstIndex(where: { $0.id == selection }) ?? 0
         selection = enabled[min(enabled.count - 1, max(0, current + delta))].id
+        scrollTarget = selection
     }
 }

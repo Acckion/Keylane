@@ -215,7 +215,7 @@ struct AISubscriptionAdvanced: View {
     }
 }
 
-private struct AISubscriptionUsage: View {
+struct AISubscriptionUsage: View {
     let connection: AIConnection
     @Environment(\.dismiss) private var dismiss
     @State private var usage: AISubscriptionStatus?

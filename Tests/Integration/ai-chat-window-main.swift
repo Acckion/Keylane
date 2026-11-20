@@ -10,9 +10,10 @@ final class QuickAIController: ObservableObject {
     @Published var chats: [Summary] = []
     @Published var chatID: UUID?
     @Published var chatTitle = ""
+    var currentProjectID: UUID?
     let currentConnection: Connection? = .init(displayName: "Fixture model")
     func beginChat(restoreLatest: Bool) {}
-    func reset() {}
+    func reset(projectID: UUID? = nil) {}
     func closeChat() {}
 }
 enum WindowActivationBehavior {
@@ -65,6 +66,15 @@ precondition(app.sendAction(newItem.action!, to: newItem.target, from: newItem))
 precondition(composer.text.isEmpty && composerFocusRequests == 1,
              "The native New Chat action must clear the draft and focus the real composer column")
 focusObserver.cancel()
+let toolbarIDs = window.toolbar!.items.map(\.itemIdentifier)
+let searchIndex = toolbarIDs.firstIndex(of: .init("chat.search"))!
+precondition(toolbarIDs[searchIndex + 1] == .space, "Search must be separate from the action/settings capsule")
+let projectButton = window.toolbar!.items.first { $0.itemIdentifier.rawValue == "chat.project" }!
+var projectRequests = 0
+let projectObserver = presentation.createProjectRequested.sink { projectRequests += 1 }
+precondition(app.sendAction(projectButton.action!, to: projectButton.target, from: projectButton))
+precondition(projectRequests == 1)
+projectObserver.cancel()
 let searchItem = window.toolbar!.items.first { $0.itemIdentifier.rawValue == "chat.search" }!
 precondition(app.sendAction(searchItem.action!, to: searchItem.target, from: searchItem))
 precondition(presentation.searchVisible)

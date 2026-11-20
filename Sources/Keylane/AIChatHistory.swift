@@ -7,6 +7,7 @@ struct AIChatSummary: Identifiable, Equatable, Sendable {
     let updated: Date
     var pinned = false
     var archived = false
+    var projectID: UUID?
 }
 
 struct AIChatRecord: Sendable {
@@ -49,7 +50,7 @@ final class AIChatHistory: @unchecked Sendable {
     }
 
     func list() throws -> [AIChatSummary] {
-        try withStatement("SELECT c.id, COALESCE(m.title, c.title), c.updated, COALESCE(m.pinned, 0), COALESCE(m.archived, 0) FROM chats c LEFT JOIN chat_metadata m ON c.id = m.id ORDER BY c.updated DESC, c.id", values: []) { stmt in
+        try withStatement("SELECT c.id, COALESCE(m.title, c.title), c.updated, COALESCE(m.pinned, 0), COALESCE(m.archived, 0), m.project_id FROM chats c LEFT JOIN chat_metadata m ON c.id = m.id ORDER BY c.updated DESC, c.id", values: []) { stmt in
             var result: [AIChatSummary] = []
             while true {
                 let status = sqlite3_step(stmt)
@@ -59,7 +60,8 @@ final class AIChatHistory: @unchecked Sendable {
                       let title = sqlite3_column_text(stmt, 1) else { throw DatabaseError.read }
                 result.append(.init(id: uuid, title: String(cString: title),
                                     updated: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
-                                    pinned: sqlite3_column_int(stmt, 3) != 0, archived: sqlite3_column_int(stmt, 4) != 0))
+                                    pinned: sqlite3_column_int(stmt, 3) != 0, archived: sqlite3_column_int(stmt, 4) != 0,
+                                    projectID: sqlite3_column_text(stmt, 5).flatMap { UUID(uuidString: String(cString: $0)) }))
             }
         }
     }
@@ -87,7 +89,7 @@ final class AIChatHistory: @unchecked Sendable {
     }
 
     enum Change: Sendable {
-        case pin(Bool), archive(Bool), rename(String)
+        case pin(Bool), archive(Bool), rename(String), project(UUID?)
     }
 
     func update(_ id: UUID, change: Change) throws {
@@ -96,6 +98,7 @@ final class AIChatHistory: @unchecked Sendable {
         switch change {
         case .pin(let pinned): column = "pinned"; value = pinned ? "1" : "0"
         case .archive(let archived): column = "archived"; value = archived ? "1" : "0"
+        case .project(let id): column = "project_id"; value = id?.uuidString ?? ""
         case .rename(let title):
             let trimmed = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
             guard !trimmed.isEmpty else { return }
@@ -109,6 +112,34 @@ final class AIChatHistory: @unchecked Sendable {
 
     func remove(_ id: UUID) throws {
         try withStatement("DELETE FROM chats WHERE id = ?", values: [id.uuidString]) { stmt in
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
+        }
+    }
+
+    func projects() throws -> [AIChatProject] {
+        try withStatement("SELECT content FROM chat_projects", values: []) { stmt in
+            var result: [AIChatProject] = []
+            while true {
+                let status = sqlite3_step(stmt)
+                if status == SQLITE_DONE { return result.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
+                guard status == SQLITE_ROW, let text = sqlite3_column_text(stmt, 0) else { throw DatabaseError.read }
+                result.append(try JSONDecoder().decode(AIChatProject.self, from: Data(String(cString: text).utf8)))
+            }
+        }
+    }
+
+    func saveProject(_ project: AIChatProject) throws {
+        guard !project.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              project.name.count <= 120, project.instructions.utf8.count <= 32_000 else { throw DatabaseError.write }
+        let content = String(decoding: try JSONEncoder().encode(project), as: UTF8.self)
+        try withStatement("INSERT INTO chat_projects(id, content) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET content=excluded.content",
+                          values: [project.id.uuidString, content]) { stmt in
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
+        }
+    }
+
+    func removeProject(_ id: UUID) throws {
+        try withStatement("DELETE FROM chat_projects WHERE id = ?", values: [id.uuidString]) { stmt in
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
         }
     }
@@ -140,6 +171,22 @@ final class AIChatHistory: @unchecked Sendable {
               title TEXT, pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0
             );
             """, nil, nil, nil) == SQLITE_OK else { throw DatabaseError.open }
+        // Additive migration: old chat content and metadata remain untouched.
+        var columns: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(chat_metadata)", -1, &columns, nil) == SQLITE_OK else { throw DatabaseError.read }
+        var hasProject = false
+        while sqlite3_step(columns) == SQLITE_ROW {
+            if let name = sqlite3_column_text(columns, 1), String(cString: name) == "project_id" { hasProject = true }
+        }
+        sqlite3_finalize(columns)
+        if !hasProject, sqlite3_exec(db, "ALTER TABLE chat_metadata ADD COLUMN project_id TEXT", nil, nil, nil) != SQLITE_OK {
+            throw DatabaseError.write
+        }
+        guard sqlite3_exec(db, """
+            CREATE TABLE IF NOT EXISTS chat_projects(id TEXT PRIMARY KEY, content TEXT NOT NULL);
+            CREATE TRIGGER IF NOT EXISTS chat_project_removed AFTER DELETE ON chat_projects
+            BEGIN UPDATE chat_metadata SET project_id = '' WHERE project_id = OLD.id; END;
+            """, nil, nil, nil) == SQLITE_OK else { throw DatabaseError.write }
         var prepared: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &prepared, nil) == SQLITE_OK, let prepared else {
             throw DatabaseError.read
