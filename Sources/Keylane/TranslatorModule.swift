@@ -101,6 +101,7 @@ enum TranslatorModule {
         }, updates: controller.objectWillChange.receive(on: DispatchQueue.main).eraseToAnyPublisher(), headerInput: .none,
                                 actionShortcutsEnabled: true)
         page.fullBleed = true
+        page.enter = { _ in controller.resume(); return nil }
         page.resume = controller.resume
         let settings = LauncherSettingsPage(id: settingsID, title: "翻译", symbol: "translate", subtitle: "在语言之间快速翻译文本。",
                                             order: 129, items: [optionsItem, commandsItem], centeredHeader: true,

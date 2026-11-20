@@ -163,6 +163,7 @@ final class TranslatorController: ObservableObject {
         replacement = nil
     }
     func resume() {
+        guard !active else { return }
         active = true
         if output.isEmpty { schedule() }
     }
