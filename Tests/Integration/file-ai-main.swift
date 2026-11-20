@@ -755,8 +755,10 @@ var moveTargetSaved = false
 raceChat.saveProject(moveTarget) { moveTargetSaved = $0 }
 wait("Incoming destination stored") { moveTargetSaved }
 raceChat.openChat(raceChatID)
+raceChat.updateChat(raceChatID, change: .rename("Incoming latest title"))
 raceChat.moveChat(raceChatID, to: moveTarget.id)
 wait("Move reconciles incoming load") { !raceChat.loadingChat && raceChat.chatID == raceChatID && raceChat.currentProjectID == moveTarget.id }
+precondition(raceChat.chatTitle == "Incoming latest title")
 precondition(raceChat.submit("after incoming move"))
 wait("Incoming move next request") { !raceChat.running }
 precondition((FixtureProtocol.lastMessages.first { $0["role"] == "system" }?["content"] ?? "").contains(moveTarget.instructions))
@@ -764,6 +766,7 @@ var movedRows: [AIChatSummary]?
 raceStore.perform({ try $0.list() }) { movedRows = try! $0.get() }
 wait("Incoming move persisted") { movedRows != nil }
 precondition(movedRows?.first { $0.id == raceChatID }?.projectID == moveTarget.id)
+precondition(movedRows?.first { $0.id == raceChatID }?.title == "Incoming latest title")
 raceChat.closeChat()
 print("PASS review incoming move: load cannot restore old project; next request and saved metadata use destination")
 

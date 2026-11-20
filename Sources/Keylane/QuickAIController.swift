@@ -249,6 +249,11 @@ final class QuickAIController: ObservableObject {
         history.perform({ store in try store.update(id, change: change); return try store.list() }) { [weak self] result in
             guard let self else { return }
             self.applyHistory(result)
+            // An incoming load may have captured metadata before this edit.
+            if case .rename = change, case .success(let rows) = result,
+               self.isInChat, self.chatID == id, let row = rows.first(where: { $0.id == id }) {
+                self.chatTitle = row.title
+            }
             // A load queued before the move can restore the source's old group.
             if case .project = change, case .success(let rows) = result,
                self.isInChat, self.chatID == id,
