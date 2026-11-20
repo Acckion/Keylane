@@ -14,6 +14,7 @@ public enum ConfigurationTransaction {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        guard !RaycastMigrationTransaction.hasPending(in: directory) else { throw ConfigurationError("已有待处理 Raycast 导入，请先完成或取消。") }
         let pending = directory.appendingPathComponent("pending.plist")
         guard !fm.fileExists(atPath: pending.path) else { throw ConfigurationError("已有等待重启的导入。请先重启 Keylane。") }
         let before = current.filter { changes[$0.key] != nil }
@@ -27,6 +28,7 @@ public enum ConfigurationTransaction {
     public static func stageUndo(current: [String: Any], directory: URL) throws {
         let receipt = try readIntent(directory.appendingPathComponent("last-import.plist"))
         guard matches(current, receipt.after, receipt.keys) else { throw ConfigurationError("导入后相关配置已改变，无法自动撤销。请先导出当前配置，再手动恢复。") }
+        guard !RaycastMigrationTransaction.hasPending(in: directory) else { throw ConfigurationError("已有待处理 Raycast 导入，请先完成或取消。") }
         let pending = directory.appendingPathComponent("pending.plist")
         guard !FileManager.default.fileExists(atPath: pending.path) else { throw ConfigurationError("请先重启完成待处理导入。") }
         let intent: [String: Any] = ["version": 1, "keys": receipt.keys, "before": receipt.after, "after": receipt.before, "undo": true]

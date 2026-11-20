@@ -129,9 +129,14 @@ final class EmojiSearchController: ObservableObject {
                 self.loadTask = nil
                 self.isLoading = false
                 guard let loaded else { self.loadFailed = true; return }
-                self.items = loaded
-                self.grouped = Dictionary(grouping: loaded, by: \.category)
-                self.itemsByID = Dictionary(loaded.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let keywords = self.defaults.dictionary(forKey: "emojiCustomKeywords") as? [String:[String]] ?? [:]
+                let enriched = loaded.map { item in
+                    EmojiItem(glyph: item.glyph, category: item.category, english: item.english, chinese: item.chinese,
+                              searchTerms: item.searchTerms + " " + (keywords[item.glyph] ?? []).joined(separator: " ").lowercased())
+                }
+                self.items = enriched
+                self.grouped = Dictionary(grouping: enriched, by: \.category)
+                self.itemsByID = Dictionary(enriched.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 self.refresh()
             }
         }

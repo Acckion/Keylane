@@ -16,6 +16,12 @@ struct AIChatRecord: Sendable {
         let endpoint: String
         let model: String
 
+        init(importedModel: String) {
+            profileID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+            endpoint = "raycast-import:unavailable"
+            model = importedModel
+        }
+
         init(_ connection: AIConnection) {
             profileID = connection.id
             endpoint = connection.requestIdentity
@@ -86,6 +92,19 @@ final class AIConversationRepository: @unchecked Sendable {
             """, values: [record.id.uuidString, title, payload, String(Date().timeIntervalSince1970)]) { stmt in
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
         }
+    }
+
+    /// Isolated migration copies only; keeps source dates and never resolves a model/account.
+    func importHistory(_ record: AIChatRecord, title: String, updated: Date, archived: Bool) throws {
+        let payload = String(decoding: try JSONEncoder().encode(record.content), as: UTF8.self)
+        try withStatement("""
+            INSERT INTO chats(id,title,content,updated) VALUES(?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET title=excluded.title,content=excluded.content,updated=excluded.updated
+            """, values: [record.id.uuidString, String(title.prefix(120)), payload, String(updated.timeIntervalSince1970)]) { statement in
+            guard sqlite3_step(statement) == SQLITE_DONE else { throw DatabaseError.write }
+        }
+        try update(record.id, change: .rename(title))
+        try update(record.id, change: .archive(archived))
     }
 
     /// Must run on perform's serial queue, after pending source edits/deletions.
