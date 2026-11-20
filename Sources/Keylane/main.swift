@@ -1113,6 +1113,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.model.aiSettings.startModelCatalogSync(runtime: self.model.aiRuntime)
+        }
         FileActionsWindow.shared.onEscape = { [weak self] in self?.closeUtilityWindowOnEscape() }
         FileActionsWindow.shared.onActivate = { [weak self] window in
             self?.model.windowActivationBehavior.apply(to: window)
