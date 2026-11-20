@@ -9,7 +9,7 @@ enum AIModule {
 
     static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai-text-commands", title: "AI 命令",
                                                keywords: "润色 摘要 自定义 提示词 导入 快捷键 polish summarize")
-    static let fileAccess = SettingsItem(id: "ai-file-access", page: "ai", title: "AI 文件访问", keywords: "AI 文件 目录 授权 Read Glob Grep Write Edit")
+    static let fileAccess = SettingsItem(id: "ai-file-access", page: "ai", title: "AI 文件访问", keywords: "AI 文件 目录 授权 Read Glob Grep Write")
 
     static let interactions = SettingsItem(id: "ai-interactions", page: "ai", title: "Quick AI 与聊天",
                                            keywords: "Tab 回车 发送 备选命令 窗口置顶")
@@ -197,7 +197,7 @@ private struct AIInteractionSettings: View {
             Divider()
             toggle("AI Chat 窗口置顶", value: $preferences.chatFloating)
             Divider()
-            toggle("允许 AI 调用基础工具", detail: "可查询时间、计算、应用与日程。文件读写须另行启用并授权目录；写入与打开应用逐次确认。结果发送给所选模型。", value: $preferences.toolsEnabled)
+            toggle("允许 AI 调用基础工具", detail: "可查询时间、计算、应用与日程。文件访问与创建须另行启用并授权目录；披露、创建与打开应用逐次确认。结果发送给所选模型。", value: $preferences.toolsEnabled)
         }
     }
 

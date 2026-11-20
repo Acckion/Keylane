@@ -7,7 +7,7 @@ struct AIFileToolSettings: View {
     @State private var folderError = ""
     var body: some View {
         SettingsGroup("AI 文件工具") {
-            SettingsRow("允许 AI 访问文件", detail: "默认关闭。启用后可访问下方目录及当前项目的工作目录；不自动扫描整个 Mac。写入每次确认，敏感文件读取也需确认。") {
+            SettingsRow("允许 AI 访问文件", detail: "默认关闭。启用后可访问下方目录及当前项目的工作目录；不自动扫描整个 Mac。名称、元数据、正文披露及创建操作均逐次确认；凭据路径不开放，覆盖与编辑暂未开放。") {
                 Toggle("允许 AI 访问文件", isOn: $preferences.enabled).labelsHidden().toggleStyle(SettingsSwitchStyle())
             }
         }

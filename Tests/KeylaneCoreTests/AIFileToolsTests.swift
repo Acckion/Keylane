@@ -6,7 +6,8 @@ final class AIFileToolsTests: XCTestCase {
     private var root: URL!
     private var service: AIFileToolService!
     override func setUpWithError() throws {
-        root = URL(fileURLWithPath: AIFileToolService.systemPath(FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneFileTools-" + UUID().uuidString).path))
+        root = URL(fileURLWithPath: AIFileToolService.systemPath(FileManager.default.temporaryDirectory.path))
+            .appendingPathComponent("KeylaneFileTools-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         service = AIFileToolService()
     }
@@ -16,148 +17,190 @@ final class AIFileToolsTests: XCTestCase {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(text.utf8).write(to: url)
     }
-    private func call(_ name: String, _ args: [String: AIToolValue], lease: AIFileAccessLease? = nil) async throws -> [String: AIToolValue] {
-        let result = try await service.execute("keylane_" + name, arguments: args, scopes: [.init(path: root.path)], check: { try lease?.check(); try Task.checkCancellation() })
-        return try JSONDecoder().decode([String: AIToolValue].self, from: Data(result.text.utf8))
+    private func prepare(_ name: String, _ arguments: [String: AIToolValue], lease: AIFileAccessLease = .init()) async throws -> AIFileToolService.Prepared {
+        try await service.prepare("keylane_" + name, arguments: arguments, scopes: [.init(path: root.path)], lease: lease)
     }
+    private func call(_ name: String, _ arguments: [String: AIToolValue], lease: AIFileAccessLease = .init()) async throws -> [String: AIToolValue] {
+        let plan = try await prepare(name, arguments, lease: lease)
+        return try decode(await service.execute(plan, lease: lease, cancellation: .init()))
+    }
+    private func decode(_ result: AIToolResult) throws -> [String: AIToolValue] { try JSONDecoder().decode([String: AIToolValue].self, from: Data(result.text.utf8)) }
     private func text(_ value: AIToolValue?) -> String { if case .string(let text) = value { return text }; return "" }
     private func rows(_ value: AIToolValue?) -> [[String: AIToolValue]] {
         if case .array(let rows) = value { return rows.compactMap { if case .object(let object) = $0 { return object }; return nil } }; return []
     }
-    private func revision(_ path: String) async throws -> String { text(try await call("file_info", ["path": .string(path)])["revision"]) }
-    private func rejects(_ body: () async throws -> Void, file: StaticString = #filePath, line: UInt = #line) async {
-        do { try await body(); XCTFail("Expected a refused file operation", file: file, line: line) } catch {}
+    private func rejects(_ expected: AIFileToolError? = nil, _ body: () async throws -> Void, file: StaticString = #filePath, line: UInt = #line) async {
+        do { try await body(); XCTFail("Expected refusal", file: file, line: line) }
+        catch { if let expected { XCTAssertEqual(error as? AIFileToolError, expected, file: file, line: line) } }
     }
-
-    func testDirectoryReadIsSortedPagedAndDoesNotReadContents() async throws {
-        try file("z.txt", "not returned"); try file("a.txt", "not returned"); try file(".hidden", "secret")
+    func testDirectoryPagingOnlyDisclosesRelativePaths() async throws {
+        try file("z.txt", "not returned"); try file("a.txt", "not returned"); try file(".hidden", "not returned")
         let first = try await call("read_file", ["path": .string(root.path), "limit": .number(1)])
-        XCTAssertEqual(rows(first["entries"]).map { text($0["path"]) }, [root.path + "/a.txt"])
-        XCTAssertEqual(first["next_offset"], .number(1))
+        XCTAssertEqual(rows(first["entries"]).map { text($0["path"]) }, ["a.txt"])
+        XCTAssertEqual(first["next_offset"], .number(1)); XCTAssertEqual(first["root"], .string("root_1"))
         let second = try await call("read_file", ["path": .string("."), "limit": .number(1), "offset": .number(1)])
-        XCTAssertEqual(rows(second["entries"]).map { text($0["path"]) }, [root.path + "/z.txt"])
+        XCTAssertEqual(rows(second["entries"]).map { text($0["path"]) }, ["z.txt"])
         XCTAssertEqual(second["next_offset"], .null)
+        XCTAssertFalse(String(describing: first).contains(root.path))
         XCTAssertFalse(String(describing: first).contains("not returned"))
     }
-    func testReadPreservesUTF8BoundariesAndRevision() async throws {
-        let expected = "你好👋\nmore text 中文"
-        try file("utf8.txt", expected)
-        var offset = 0, output = "", rev = ""
+    func testUTF8PagingLargeFilesAndBinaryRefusal() async throws {
+        let expected = "你好👋\nmore 中文"
+        try file("utf8", expected)
+        var offset = 0, result = ""
         while true {
-            let part = try await call("read_file", ["path": .string("utf8.txt"), "offset": .number(Double(offset)), "limit": .number(7)])
-            output += text(part["text"])
-            if rev.isEmpty { rev = text(part["revision"]) }; XCTAssertEqual(text(part["revision"]), rev)
+            let part = try await call("read_file", ["path": .string("utf8"), "offset": .number(Double(offset)), "limit": .number(7)])
+            result += text(part["text"])
             guard case .number(let next) = part["next_offset"] else { break }
             XCTAssertGreaterThan(Int(next), offset); offset = Int(next)
         }
-        XCTAssertEqual(output, expected)
-        await rejects { _ = try await self.call("read_file", ["path": .string("utf8.txt"), "offset": .number(1)]) }
+        XCTAssertEqual(result, expected)
+        await rejects(.invalidText) { _ = try await self.call("read_file", ["path": .string("utf8"), "offset": .number(1)]) }
         try Data([0, 1, 255]).write(to: root.appendingPathComponent("binary"))
-        await rejects { _ = try await self.call("read_file", ["path": .string("binary")]) }
-    }
-    func testReplacementPreservesExtendedAttributesAndPermissions() async throws {
-        try file("tagged.txt", "before")
-        let path = root.appendingPathComponent("tagged.txt").path
-        let attribute = "com.keylane.fixture", value = Array("fixture attribute".utf8)
-        let set = value.withUnsafeBytes { setxattr(path, attribute, $0.baseAddress, $0.count, 0, 0) }
-        XCTAssertEqual(set, 0)
-        XCTAssertEqual(chmod(path, 0o640), 0)
-        let rev = try await revision("tagged.txt")
-        _ = try await call("write_file", ["path": .string("tagged.txt"), "content": .string("after"), "mode": .string("replace"), "expected_revision": .string(rev)])
-        var bytes = [UInt8](repeating: 0, count: 128)
-        let count = getxattr(path, attribute, &bytes, bytes.count, 0, 0)
-        XCTAssertEqual(count, value.count)
-        XCTAssertEqual(Array(bytes.prefix(max(0, count))), value)
-        let attributes = try FileManager.default.attributesOfItem(atPath: path)
-        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o640)
-    }
-
-    func testReadLargeFileIsBoundedAndOffsetContinues() async throws {
+        await rejects(.invalidText) { _ = try await self.call("read_file", ["path": .string("binary")]) }
         try file("large", String(repeating: "a", count: 100_000))
-        let value = try await call("read_file", ["path": .string("large")])
-        XCTAssertEqual(text(value["text"]).utf8.count, 4096)
-        XCTAssertEqual(value["next_offset"], .number(4096)); XCTAssertEqual(value["truncated"], .bool(true))
+        let large = try await call("read_file", ["path": .string("large")])
+        XCTAssertEqual(text(large["text"]).utf8.count, 4096); XCTAssertEqual(large["next_offset"], .number(4096))
     }
-    func testGlobRecursionHiddenDepthAndGrep() async throws {
+    func testGlobAndGrepUseTheSameProtectedDataPolicy() async throws {
         try file("nested/deep/code.swift", "FIRST\nNeedle here\nlast")
         try file("z.swift", "needle second"); try file(".private.swift", "needle")
         try file(".env", "needle credential"); try file("nested/.env.local", "needle credential")
-        let glob = try await call("glob", ["path": .string("."), "pattern": .string("**/*.swift")])
-        XCTAssertEqual(Set(rows(glob["matches"]).map { text($0["path"]) }), [root.path + "/z.swift", root.path + "/nested/deep/code.swift"])
-        let shallow = try await call("glob", ["path": .string("."), "pattern": .string("**/*.swift"), "depth": .number(1)])
-        XCTAssertEqual(rows(shallow["matches"]).map { text($0["path"]) }, [root.path + "/z.swift"])
-        XCTAssertEqual(shallow["truncated"], .bool(true))
+        try file(".ssh/config", "needle credential"); try file(".config/secret", "needle credential")
+        let glob = try await call("glob", ["path": .string("."), "pattern": .string("**/*"), "include_hidden": .bool(true)])
+        let paths = rows(glob["matches"]).map { text($0["path"]) }
+        XCTAssertTrue(paths.contains("nested/deep/code.swift")); XCTAssertTrue(paths.contains(".private.swift"))
+        XCTAssertFalse(paths.contains { $0.contains(".env") || $0.contains(".ssh") || $0.contains(".config") })
         let grep = try await call("grep", ["path": .string("."), "pattern": .string("**/*"), "query": .string("NEEDLE")])
         XCTAssertEqual(rows(grep["matches"]).count, 2)
-        XCTAssertTrue(rows(grep["matches"]).contains { $0["line"] == .number(2) })
-        XCTAssertTrue(AIFileToolService.isSensitive(".env.local"))
-        XCTAssertTrue(AIFileToolService.isSensitive("/x/.ssh/key"))
-        await rejects { _ = try await self.call("glob", ["path": .string("."), "pattern": .string("../*")]) }
+        XCTAssertFalse(String(describing: grep).contains(root.path))
+        let shallow = try await call("glob", ["path": .string("."), "pattern": .string("**/*.swift"), "depth": .number(1)])
+        XCTAssertEqual(rows(shallow["matches"]).map { text($0["path"]) }, ["z.swift"])
+        XCTAssertEqual(shallow["truncated"], .bool(true))
     }
-    func testScopeTraversalAndSymlinksAreRefused() async throws {
-        let outside = root.deletingLastPathComponent().appendingPathComponent("Outside-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: outside) }
-        try Data("outside".utf8).write(to: outside.appendingPathComponent("secret"))
-        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("escape"), withDestinationURL: outside)
-        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("link"), withDestinationURL: outside.appendingPathComponent("secret"))
-        for path in [outside.path + "/secret", "../" + outside.lastPathComponent + "/secret", "escape/secret", "link"] {
-            await rejects { _ = try await self.call("read_file", ["path": .string(path)]) }
+    func testProtectedPathsCannotDiscloseMetadataOrAppearInListings() async throws {
+        try file(".env", "secret"); try file("ordinary", "normal")
+        for tool in ["read_file", "file_info", "glob", "grep", "write_file", "create_directory"] {
+            await rejects(.restricted) { _ = try await self.prepare(tool, ["path": .string("safe/../.env")]) }
         }
-        await rejects { _ = try await self.call("write_file", ["path": .string("escape/new"), "content": .string("changed")]) }
-        await rejects { _ = try await self.call("write_file", ["path": .string("link"), "content": .string("changed")]) }
-        XCTAssertEqual(try String(contentsOf: outside.appendingPathComponent("secret"), encoding: .utf8), "outside")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: outside.appendingPathComponent("new").path))
-        let glob = try await call("glob", ["path": .string("."), "pattern": .string("**/*")])
-        XCTAssertFalse(rows(glob["matches"]).contains { text($0["path"]).hasSuffix("/secret") })
+        let list = try await call("read_file", ["path": .string("."), "include_hidden": .bool(true)])
+        XCTAssertEqual(rows(list["entries"]).map { text($0["path"]) }, ["ordinary"])
+        await rejects(.restricted) {
+            _ = try await self.service.prepare("keylane_file_roots", arguments: [:], scopes: [.init(path: self.root.path + "/.ssh")], lease: .init())
+        }
     }
-    func testCreateReplaceAndStaleWrites() async throws {
-        let created = try await call("write_file", ["path": .string("new.txt"), "content": .string("first")])
-        XCTAssertEqual(created["written"], .bool(true))
-        await rejects { _ = try await self.call("write_file", ["path": .string("new.txt"), "content": .string("overwrite")]) }
-        await rejects { _ = try await self.call("write_file", ["path": .string("new.txt"), "mode": .string("replace"), "content": .string("overwrite")]) }
-        _ = try await call("write_file", ["path": .string("new.txt"), "mode": .string("replace"), "content": .string("second"), "expected_revision": created["revision"]!])
-        await rejects { _ = try await self.call("write_file", ["path": .string("new.txt"), "mode": .string("replace"), "content": .string("stale"), "expected_revision": created["revision"]!]) }
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("new.txt"), encoding: .utf8), "second")
+    func testLongestMatchingScopeAndRootHandlesNeverExposeLocalPaths() async throws {
+        try file("nested/note", "fixture")
+        let lease = AIFileAccessLease(), scopes = [AIFileToolScope(path: root.path), .init(path: root.path + "/nested")]
+        let plan = try await service.prepare("keylane_read_file", arguments: ["path": .string("nested/note")], scopes: scopes, lease: lease)
+        XCTAssertEqual(plan.rootID, "root_2"); XCTAssertEqual(plan.relativePath, "note")
+        XCTAssertEqual(plan.localRoot, root.path + "/nested")
+        let output = try await service.execute(plan, lease: lease, cancellation: .init())
+        XCTAssertFalse(output.text.contains(root.path)); XCTAssertTrue(output.text.contains("root_2"))
+        let roots = try await service.prepare("keylane_file_roots", arguments: [:], scopes: scopes, lease: lease)
+        let metadata = try await service.execute(roots, lease: lease, cancellation: .init())
+        XCTAssertFalse(metadata.text.contains(root.path)); XCTAssertFalse(metadata.text.contains("nested"))
+        await rejects(.outsideScope) {
+            _ = try await self.service.prepare("keylane_read_file", arguments: ["root": .string("root_2"), "path": .string("../ordinary")], scopes: scopes, lease: lease)
+        }
     }
-    func testEditRequiresUniqueTextAndFreshRevision() async throws {
-        try file("edit", "one one")
-        let rev = try await revision("edit")
-        let args: [String: AIToolValue] = ["path": .string("edit"), "old_text": .string("one"), "new_text": .string("two"), "expected_revision": .string(rev)]
-        await rejects { _ = try await self.call("edit_file", args) }
-        var all = args; all["replace_all"] = .bool(true)
-        _ = try await call("edit_file", all)
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("edit"), encoding: .utf8), "two two")
-        await rejects { _ = try await self.call("edit_file", all) }
-        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".keylane-ai-") })
+    func testSymlinkAndHardlinkDisclosureAreRefused() async throws {
+        try file("outside/secret", "outside")
+        let scope = root.appendingPathComponent("scope")
+        try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: scope.appendingPathComponent("escape"), withDestinationURL: root.appendingPathComponent("outside"))
+        try FileManager.default.linkItem(at: root.appendingPathComponent("outside/secret"), to: scope.appendingPathComponent("alias"))
+        for path in ["escape/secret", "alias", "../outside/secret"] {
+            await rejects { _ = try await self.service.prepare("keylane_read_file", arguments: ["path": .string(path)], scopes: [.init(path: scope.path)], lease: .init()) }
+        }
     }
-    func testDirectoryCreationAndHardlinkReplacement() async throws {
+    func testTargetSwapAfterPreparationFailsClosed() async throws {
+        try file("target", "approved old object")
+        let lease = AIFileAccessLease()
+        let plan = try await prepare("read_file", ["path": .string("target")], lease: lease)
+        try FileManager.default.moveItem(at: root.appendingPathComponent("target"), to: root.appendingPathComponent("old"))
+        try file("target", "unapproved new object")
+        await rejects { _ = try await self.service.execute(plan, lease: lease, cancellation: .init()) }
+        // Updating bytes of the same object during approval must also invalidate its read snapshot.
+        let changed = try await prepare("read_file", ["path": .string("target")], lease: lease)
+        try file("target", "changed in place")
+        await rejects(.stale) { _ = try await self.service.execute(changed, lease: lease, cancellation: .init()) }
+    }
+    func testParentSwapCannotRedirectAnApprovedCreation() async throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("parent"), withIntermediateDirectories: false)
+        let lease = AIFileAccessLease()
+        let plan = try await service.prepare("keylane_write_file", arguments: ["path": .string("new"), "content": .string("approved")], scopes: [.init(path: root.path + "/parent")], lease: lease)
+        try FileManager.default.moveItem(at: root.appendingPathComponent("parent"), to: root.appendingPathComponent("old-parent"))
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("parent"), withIntermediateDirectories: false)
+        await rejects { _ = try await self.service.execute(plan, lease: lease, cancellation: .init()) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path + "/parent/new"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path + "/old-parent/new"))
+    }
+    func testRootSwapCannotRedirectAnApprovedRead() async throws {
+        try file("scoped/note", "old")
+        let lease = AIFileAccessLease()
+        let plan = try await service.prepare("keylane_read_file", arguments: ["path": .string("note")], scopes: [.init(path: root.path + "/scoped")], lease: lease)
+        try FileManager.default.moveItem(at: root.appendingPathComponent("scoped"), to: root.appendingPathComponent("moved"))
+        try file("scoped/note", "new")
+        await rejects { _ = try await self.service.execute(plan, lease: lease, cancellation: .init()) }
+    }
+    func testOnlyExclusiveCreationIsSupported() async throws {
+        let result = try await call("write_file", ["path": .string("new"), "content": .string("first")])
+        XCTAssertEqual(result["written"], .bool(true)); XCTAssertEqual(result["path"], .string("new"))
+        await rejects(.exists) { _ = try await self.call("write_file", ["path": .string("new"), "content": .string("overwrite")]) }
+        await rejects(.unsupported) { _ = try await self.call("write_file", ["path": .string("new"), "mode": .string("replace"), "content": .string("overwrite")]) }
+        await rejects(.unsupported) { _ = try await self.call("edit_file", ["path": .string("new")]) }
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("new"), encoding: .utf8), "first")
         _ = try await call("create_directory", ["path": .string("folder")])
-        await rejects { _ = try await self.call("create_directory", ["path": .string("folder")]) }
-        await rejects { _ = try await self.call("create_directory", ["path": .string(".")]) }
-        try file("original", "unchanged")
-        try FileManager.default.linkItem(at: root.appendingPathComponent("original"), to: root.appendingPathComponent("alias"))
-        let rev = try await revision("alias")
-        _ = try await call("write_file", ["path": .string("alias"), "mode": .string("replace"), "content": .string("changed"), "expected_revision": .string(rev)])
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("original"), encoding: .utf8), "unchanged")
+        await rejects(.exists) { _ = try await self.call("create_directory", ["path": .string("folder")]) }
     }
-    func testRevocationCancelsBeforeEffectsAndInvalidBookmarkRefusesAccess() async throws {
-        let lease = AIFileAccessLease(); lease.revoke()
-        await rejects { _ = try await self.call("write_file", ["path": .string("blocked"), "content": .string("data")], lease: lease) }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("blocked").path))
-        await rejects {
-            _ = try await self.service.execute("keylane_read_file", arguments: ["path": .string(self.root.path)], scopes: [.init(path: self.root.path, bookmark: Data([1, 2, 3]))])
+    func testCreationCannotUseARelocatableDescendantParent() async throws {
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("nested"), withIntermediateDirectories: false)
+        await rejects(.creationScope) { _ = try await self.call("write_file", ["path": .string("nested/new"), "content": .string("blocked")]) }
+        await rejects(.creationScope) { _ = try await self.call("create_directory", ["path": .string("nested/new")]) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path + "/nested/new"))
+    }
+    func testDestinationCreatedDuringApprovalIsNeverOverwritten() async throws {
+        let lease = AIFileAccessLease()
+        let plan = try await prepare("write_file", ["path": .string("new"), "content": .string("approved")], lease: lease)
+        try file("new", "other process")
+        await rejects(.exists) { _ = try await self.service.execute(plan, lease: lease, cancellation: .init()) }
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("new"), encoding: .utf8), "other process")
+    }
+    func testRevocationAndCancellationBeforeCommitLeaveNoFileOrTemporary() async throws {
+        for cancellationCase in [false, true] {
+            let lease = AIFileAccessLease(), cancellation = AIFileAccessLease()
+            let service = AIFileToolService(beforeCommit: { if cancellationCase { cancellation.revoke() } else { lease.revoke() } })
+            let plan = try await service.prepare("keylane_write_file", arguments: ["path": .string("blocked"), "content": .string("staged text")], scopes: [.init(path: root.path)], lease: lease)
+            await rejects { _ = try await service.execute(plan, lease: lease, cancellation: cancellation) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path + "/blocked"))
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".keylane-ai-") })
         }
     }
-    func testCancellationDuringStagingPreservesFileAndRemovesTemporary() async throws {
-        try file("original", "preserved")
-        let rev = try await revision("original"), path = root.path
-        await rejects {
-            _ = try await self.service.execute("keylane_write_file", arguments: ["path": .string("original"), "mode": .string("replace"), "content": .string("changed"), "expected_revision": .string(rev)], scopes: [.init(path: path)], check: {
-                if (try? FileManager.default.contentsOfDirectory(atPath: path).contains { $0.hasPrefix(".keylane-ai-") }) == true { throw CancellationError() }
-            })
+    func testPreparedOperationsCannotBeReplayed() async throws {
+        try file("note", "fixture")
+        let lease = AIFileAccessLease()
+        let plan = try await prepare("read_file", ["path": .string("note")], lease: lease)
+        _ = try await service.execute(plan, lease: lease, cancellation: .init())
+        await rejects(.stale) { _ = try await self.service.execute(plan, lease: lease, cancellation: .init()) }
+    }
+    func testPreparedOperationCannotSubstituteAnUnrevokedLease() async throws {
+        let lease = AIFileAccessLease()
+        let plan = try await prepare("write_file", ["path": .string("blocked"), "content": .string("fixture")], lease: lease)
+        lease.revoke()
+        await rejects(.stale) { _ = try await self.service.execute(plan, lease: .init(), cancellation: .init()) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path + "/blocked"))
+    }
+    func testLeaseRevocationSerializesWithCommitSections() throws {
+        let lease = AIFileAccessLease(), entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), revoked = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            try? lease.withValidAccess { entered.signal(); release.wait() }
         }
-        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("original"), encoding: .utf8), "preserved")
-        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".keylane-ai-") })
+        XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+        DispatchQueue.global().async { lease.revoke(); revoked.signal() }
+        XCTAssertEqual(revoked.wait(timeout: .now() + 0.05), .timedOut)
+        release.signal()
+        XCTAssertEqual(revoked.wait(timeout: .now() + 2), .success)
+        XCTAssertThrowsError(try lease.withValidAccess { XCTFail("Post-revocation effect") })
     }
 }

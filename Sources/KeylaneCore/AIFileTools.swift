@@ -9,185 +9,312 @@ public struct AIFileToolScope: Codable, Identifiable, Equatable, Sendable {
     public init(path: String, bookmark: Data? = nil) { self.path = path; self.bookmark = bookmark }
 }
 
-/// Revoking an access generation also invalidates already-advertised and in-flight tools.
+/// Revocation and the final native commit have a single linearization boundary.
+/// Once revoke() returns, no later operation can enter a commit or disclosure section.
 public final class AIFileAccessLease: @unchecked Sendable {
     private let lock = NSLock()
     private var valid = true
     public init() {}
     public func revoke() { lock.lock(); valid = false; lock.unlock() }
-    public func check() throws {
-        lock.lock(); let allowed = valid; lock.unlock()
-        guard allowed else { throw CancellationError() }
+    public func withValidAccess<T>(_ operation: () throws -> T) throws -> T {
+        lock.lock(); defer { lock.unlock() }
+        guard valid else { throw CancellationError() }
         try Task.checkCancellation()
+        return try operation()
     }
+    public func check() throws { try withValidAccess {} }
 }
 
-public enum AIFileToolError: LocalizedError {
-    case outsideScope, unavailable, unsupported, stale, exists, invalidPath, invalidText, ambiguousEdit, tooLarge
+public enum AIFileToolError: LocalizedError, Equatable {
+    case outsideScope, unavailable, unsupported, stale, exists, invalidPath, invalidText, tooLarge, restricted, creationScope
     public var errorDescription: String? {
         switch self {
-        case .outsideScope: "路径不在 AI 已授权目录内。请在 AI 设置中添加目录，或选择已授权的项目工作目录。"
-        case .unavailable: "目录授权已失效或文件不可访问，请重新选择目录。"
-        case .unsupported: "仅支持普通 UTF-8 文本文件与目录；不跟随符号链接，不读取设备、管道或二进制文件。"
-        case .stale: "文件已变化。请重新读取，使用新的 revision 后再修改。"
-        case .exists: "目标已存在，未覆盖。替换文件需要明确的 replace 模式及当前 revision。"
+        case .outsideScope: "路径不在本次匹配的 AI 授权目录内。"
+        case .unavailable: "目录授权或文件不可用，请重新选择目录。"
+        case .unsupported: "本批不支持该操作或文件类型；覆盖与编辑已停用。"
+        case .stale: "确认的目标或目录已变化，请重新发起操作。"
+        case .exists: "目标已存在，未覆盖。仅支持创建不存在的文件或目录。"
         case .invalidPath: "文件路径或搜索参数无效。"
-        case .invalidText: "内容不是有效 UTF-8 文本，或 offset 不在字符边界；请使用上次返回的 next_offset。"
-        case .ambiguousEdit: "待替换文本不存在或匹配多处；请提供唯一文本，或明确指定 replace_all。"
+        case .invalidText: "内容不是有效 UTF-8 文本，或 offset 不在字符边界。"
         case .tooLarge: "超过本次文件操作的数据限制，请缩小范围或分段读取。"
+        case .restricted: "该路径属于受保护数据，文件工具不披露其内容、名称或元数据。"
+        case .creationScope: "创建仅支持授权根目录内的一级名称。请先将目标父目录单独设为授权根。"
         }
     }
 }
 
-/// All filesystem IO runs on this actor, never the main actor. No shell or index is started.
+/// All file IO, including target preparation and the small final commit, runs on this actor.
 public actor AIFileToolService {
-    public init() {}
-    private final class FD {
+    fileprivate final class FD: @unchecked Sendable {
         let raw: Int32
         init(_ raw: Int32) throws { guard raw >= 0 else { throw AIFileToolError.unavailable }; self.raw = raw }
         deinit { Darwin.close(raw) }
     }
-    private struct Target { let parent: FD; let name: String; let path: String }
+    fileprivate final class Root: @unchecked Sendable {
+        let path: String, id: String
+        let fd: FD
+        let access: URL?
+        init(path: String, id: String, fd: FD, access: URL?) { self.path = path; self.id = id; self.fd = fd; self.access = access }
+        deinit { access?.stopAccessingSecurityScopedResource() }
+    }
+    fileprivate struct Pin: Sendable { let name: String; let fd: FD }
+    public final class Prepared: @unchecked Sendable {
+        public let relativePath: String
+        public let rootID: String
+        /// Local confirmation only. Never put these strings into tool results or model history.
+        public let localTarget: String
+        public let localRoot: String
+        public var localRoots: [String] { roots.map(\.path) }
+        public let displayArguments: [String: AIToolValue]
+        fileprivate let tool: String, arguments: [String: AIToolValue]
+        fileprivate let lease: AIFileAccessLease
+        fileprivate let roots: [Root], parents: [Pin], file: FD?, fileRevision: String?
+        private let lock = NSLock()
+        private var consumed = false
+        fileprivate init(tool: String, arguments: [String: AIToolValue], roots: [Root], lease: AIFileAccessLease, parents: [Pin] = [], file: FD? = nil, fileRevision: String? = nil, relative: String = ".") {
+            self.tool = tool; self.arguments = arguments; self.roots = roots; self.lease = lease; self.parents = parents; self.file = file; self.fileRevision = fileRevision
+            relativePath = relative; rootID = roots.first?.id ?? ""
+            localRoot = roots.first?.path ?? ""
+            localTarget = relative == "." ? localRoot : (localRoot == "/" ? "" : localRoot) + "/" + relative
+            displayArguments = tool == "keylane_file_roots" ? [:] : arguments.merging(["root": .string(rootID), "path": .string(relative)]) { _, normalized in normalized }
+        }
+        fileprivate func claim() throws {
+            lock.lock(); defer { lock.unlock() }
+            guard !consumed else { throw AIFileToolError.stale }; consumed = true
+        }
+    }
+    private struct Disclosure { let fd: FD; let relative: String; let revision: String }
     private struct Scan { var visited = 0; var bytes = 0; var truncated = false; var exhausted = false }
+    private let beforeCommit: @Sendable () throws -> Void
+    public init() { beforeCommit = {} }
+    // Deterministic race injection for synthetic tests; not exposed to the application.
+    init(beforeCommit: @escaping @Sendable () throws -> Void) { self.beforeCommit = beforeCommit }
 
     public static func isSensitive(_ path: String) -> Bool {
-        let components = path.lowercased().split(separator: "/").map(String.init)
-        return components.contains { name in
-            [".ssh", ".aws", ".gnupg", ".git", ".config", "keychains", ".codex", ".claude", "safari", "chrome", "firefox", "cookies", "login data", "local state", "auth.json", "credentials.json", "secrets.json"].contains(name) ||
-            name == ".env" || name.hasPrefix(".env.") || [".pem", ".key", ".p12", ".pfx"].contains { name.hasSuffix($0) }
+        path.lowercased().split(separator: "/").contains { component in
+            let name = String(component)
+            return [".ssh", ".aws", ".gnupg", ".git", ".config", "keychains", ".codex", ".claude", "safari", "chrome", "firefox", "cookies", "login data", "local state", "auth.json", "credentials.json", "secrets.json"].contains(name) ||
+                name == ".env" || name.hasPrefix(".env.") || [".pem", ".key", ".p12", ".pfx"].contains { name.hasSuffix($0) }
         }
     }
+    private func policy(_ path: String) throws { if Self.isSensitive(path) { throw AIFileToolError.restricted } }
 
-    public func execute(_ tool: String, arguments: [String: AIToolValue], scopes: [AIFileToolScope],
-                        check: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> AIToolResult {
-        try check()
-        var accessed: [URL] = []
-        defer { accessed.forEach { $0.stopAccessingSecurityScopedResource() } }
-        let roots = scopes.map { Self.systemPath($0.path) }
-        guard let defaultRoot = roots.first else { throw AIFileToolError.outsideScope }
-        let path = try normalized(string(arguments, "path"), defaultRoot: defaultRoot)
-        let matches = scopes.filter { scope in
-            let root = Self.systemPath(scope.path)
-            return path == root || path.hasPrefix(root == "/" ? "/" : root + "/")
+    /// Opens only the selected scope and pins the exact root, parent chain and existing object.
+    /// Preparation reads metadata, never file bodies or directory names, and has no write effects.
+    public func prepare(_ tool: String, arguments: [String: AIToolValue], scopes: [AIFileToolScope], lease: AIFileAccessLease) throws -> Prepared {
+        try lease.check()
+        guard ["keylane_file_roots", "keylane_read_file", "keylane_file_info", "keylane_glob", "keylane_grep", "keylane_write_file", "keylane_create_directory"].contains(tool) else { throw AIFileToolError.unsupported }
+        if tool == "keylane_write_file", !["", "create"].contains(string(arguments, "mode")) { throw AIFileToolError.unsupported }
+        guard !scopes.isEmpty, scopes.count <= 17 else { throw AIFileToolError.outsideScope }
+        if tool == "keylane_file_roots" {
+            let roots = try scopes.enumerated().map { try openRoot($0.element, id: "root_" + String($0.offset + 1)) }
+            try lease.check()
+            return Prepared(tool: tool, arguments: [:], roots: roots, lease: lease)
         }
-        guard let scope = matches.max(by: { $0.path.count < $1.path.count }) else { throw AIFileToolError.outsideScope }
-        let original = URL(fileURLWithPath: Self.systemPath(scope.path))
-        var url = original
-        if let bookmark = scope.bookmark {
-            var stale = false
-            guard let resolved = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting],
-                relativeTo: nil, bookmarkDataIsStale: &stale), !stale,
-                Self.systemPath(resolved.path) == original.path else { throw AIFileToolError.unavailable }
-            url = resolved
+        let requestedRoot = string(arguments, "root")
+        let candidates = scopes.enumerated().filter { requestedRoot.isEmpty || requestedRoot == "root_" + String($0.offset + 1) }
+        guard let defaultScope = candidates.first else { throw AIFileToolError.outsideScope }
+        let path = try normalized(string(arguments, "path"), defaultRoot: Self.systemPath(defaultScope.element.path))
+        guard let match = candidates.filter({ contains(Self.systemPath($0.element.path), path) }).max(by: { Self.systemPath($0.element.path).count < Self.systemPath($1.element.path).count }) else { throw AIFileToolError.outsideScope }
+        try policy(path)
+        let root = try openRoot(match.element, id: "root_" + String(match.offset + 1))
+        let relative = path == root.path ? "." : String(path.dropFirst(root.path == "/" ? 1 : root.path.count + 1))
+        let parts = relative == "." ? [] : relative.split(separator: "/").map(String.init)
+        if ["keylane_write_file", "keylane_create_directory"].contains(tool), parts.count != 1 {
+            throw AIFileToolError.creationScope
         }
-        if url.startAccessingSecurityScopedResource() { accessed.append(url) }
-        let target = try target(path, roots: roots, check: check)
-        switch tool {
+        var parents: [Pin] = []
+        var parent = root.fd
+        for name in parts.dropLast() {
+            try lease.check()
+            let child = try FD(openat(parent.raw, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
+            parents.append(Pin(name: name, fd: child)); parent = child
+        }
+        let name = parts.last ?? "."
+        var file: FD?, fileRevision: String?
+        if ["keylane_write_file", "keylane_create_directory"].contains(tool) {
+            guard relative != "." else { throw AIFileToolError.exists }
+            try absent(parent, name)
+        } else {
+            let object = try openChild(parent, name)
+            let info = try status(object.raw)
+            guard isDirectory(info) || isRegular(info) && info.st_nlink == 1 else { throw AIFileToolError.unsupported }
+            if ["keylane_glob", "keylane_grep"].contains(tool), !isDirectory(info) { throw AIFileToolError.unsupported }
+            file = object
+            if isRegular(info) { fileRevision = revision(info) }
+        }
+        let plan = Prepared(tool: tool, arguments: arguments, roots: [root], lease: lease, parents: parents, file: file, fileRevision: fileRevision, relative: relative)
+        try validate(plan); try lease.check()
+        return plan
+    }
+
+    public func execute(_ plan: Prepared, lease: AIFileAccessLease, cancellation: AIFileAccessLease) throws -> AIToolResult {
+        try plan.claim()
+        guard plan.lease === lease else { throw AIFileToolError.stale }
+        func check() throws { try lease.check(); try cancellation.check() }
+        try check(); try validate(plan)
+        var values: [String: AIToolValue]
+        var disclosed: [Disclosure] = []
+        let arguments = plan.arguments, path = plan.relativePath
+        switch plan.tool {
+        case "keylane_file_roots":
+            values = ["directories": .array(plan.roots.map { .object(["root": .string($0.id), "path": .string(".")]) }), "default_root": .string(plan.rootID)]
         case "keylane_read_file":
-            let fd = try openFile(target)
+            guard let fd = plan.file else { throw AIFileToolError.unavailable }
             let info = try status(fd.raw)
-            if isDirectory(info) { return try directory(fd, path: path, arguments: arguments, check: check) }
-            guard isRegular(info) else { throw AIFileToolError.unsupported }
-            let offset = integer(arguments, "offset", default: 0)
-            let limit = integer(arguments, "limit", default: 4096)
-            guard offset >= 0, (1...4096).contains(limit) else { throw AIFileToolError.invalidPath }
-            var data = try read(fd.raw, offset: offset, count: limit, check: check)
-            var text = String(data: data, encoding: .utf8)
-            for _ in 0..<3 where text == nil && !data.isEmpty { data.removeLast(); text = String(data: data, encoding: .utf8) }
-            guard let text, !hasBinaryControls(text), data.count > 0 || offset >= info.st_size else { throw AIFileToolError.invalidText }
-            guard revision(try status(fd.raw)) == revision(info) else { throw AIFileToolError.stale }
-            let next = offset + data.count
-            return try output(["path": .string(path), "type": .string("file"), "text": .string(text),
-                "revision": .string(revision(info)), "offset": .number(Double(offset)),
-                "next_offset": next < info.st_size ? .number(Double(next)) : .null, "truncated": .bool(next < info.st_size)])
+            if isDirectory(info) { values = try directory(fd, plan: plan, disclosed: &disclosed, check: check) }
+            else {
+                let offset = integer(arguments, "offset", default: 0), limit = integer(arguments, "limit", default: 4096)
+                guard offset >= 0, (1...4096).contains(limit) else { throw AIFileToolError.invalidPath }
+                var data = try read(fd.raw, offset: offset, count: limit, check: check)
+                var text = String(data: data, encoding: .utf8)
+                for _ in 0..<3 where text == nil && !data.isEmpty { data.removeLast(); text = String(data: data, encoding: .utf8) }
+                guard let text, !hasBinaryControls(text), data.count > 0 || offset >= info.st_size else { throw AIFileToolError.invalidText }
+                let next = offset + data.count
+                values = ["path": .string(path), "type": .string("file"), "text": .string(text), "revision": .string(revision(info)), "offset": .number(Double(offset)), "next_offset": next < info.st_size ? .number(Double(next)) : .null, "truncated": .bool(next < info.st_size)]
+            }
         case "keylane_file_info":
-            var info = stat()
-            guard fstatat(target.parent.raw, target.name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw AIFileToolError.unavailable }
-            return try output(metadata(info, path: path))
+            guard let fd = plan.file else { throw AIFileToolError.unavailable }
+            values = metadata(try status(fd.raw), path: path)
         case "keylane_glob", "keylane_grep":
-            let fd = try openFile(target)
-            guard isDirectory(try status(fd.raw)) else { throw AIFileToolError.unsupported }
-            let pattern = string(arguments, "pattern")
-            guard !pattern.isEmpty, pattern.utf8.count <= 256,
-                  !pattern.split(separator: "/").contains(".."), !pattern.hasPrefix("/") else { throw AIFileToolError.invalidPath }
-            let limit = integer(arguments, "limit", default: 50)
-            let depth = integer(arguments, "depth", default: 6)
-            guard (1...100).contains(limit), (1...12).contains(depth) else { throw AIFileToolError.invalidPath }
-            if tool == "keylane_grep" && string(arguments, "query").isEmpty { throw AIFileToolError.invalidPath }
+            guard let fd = plan.file else { throw AIFileToolError.unavailable }
+            let pattern = string(arguments, "pattern"), limit = integer(arguments, "limit", default: 50), depth = integer(arguments, "depth", default: 6)
+            guard !pattern.isEmpty, pattern.utf8.count <= 256, !pattern.split(separator: "/").contains(".."), !pattern.hasPrefix("/"), (1...100).contains(limit), (1...12).contains(depth) else { throw AIFileToolError.invalidPath }
+            let query = string(arguments, "query"), grep = plan.tool == "keylane_grep"
+            guard !grep || !query.isEmpty && query.utf8.count <= 512 else { throw AIFileToolError.invalidPath }
             var scan = Scan(), rows: [AIToolValue] = []
-            try walk(fd, path: path, relative: "", pattern: pattern, needle: string(arguments, "query"),
-                grep: tool == "keylane_grep", depth: depth, limit: limit,
-                hidden: boolean(arguments, "include_hidden"), scan: &scan, rows: &rows, check: check)
-            return try output(["path": .string(path), "matches": .array(rows), "visited": .number(Double(scan.visited)), "truncated": .bool(scan.truncated)])
-        case "keylane_write_file", "keylane_edit_file":
-            guard target.name != "." else { throw AIFileToolError.invalidPath }
-            var contents = string(arguments, "content")
-            let replacing = tool == "keylane_edit_file" || string(arguments, "mode") == "replace"
-            let expected = string(arguments, "expected_revision")
-            if tool == "keylane_edit_file" {
-                let fd = try openFile(target); let info = try status(fd.raw)
-                guard isRegular(info), info.st_size <= 1_048_576 else { throw AIFileToolError.tooLarge }
-                guard expected == revision(info) else { throw AIFileToolError.stale }
-                let data = try read(fd.raw, offset: 0, count: Int(info.st_size), check: check)
-                guard let original = String(data: data, encoding: .utf8), !hasBinaryControls(original) else { throw AIFileToolError.invalidText }
-                let old = string(arguments, "old_text"), new = string(arguments, "new_text")
-                guard !old.isEmpty else { throw AIFileToolError.ambiguousEdit }
-                let occurrences = original.components(separatedBy: old).count - 1
-                guard occurrences > 0, occurrences == 1 || boolean(arguments, "replace_all") else { throw AIFileToolError.ambiguousEdit }
-                contents = original.replacingOccurrences(of: old, with: new)
+            try walk(fd, plan: plan, relative: path, patternRelative: "", pattern: pattern, needle: query, grep: grep, depth: depth, limit: limit, hidden: boolean(arguments, "include_hidden"), scan: &scan, rows: &rows, disclosed: &disclosed, check: check)
+            values = ["path": .string(path), "matches": .array(rows), "truncated": .bool(scan.truncated)]
+        case "keylane_write_file":
+            let content = string(arguments, "content")
+            guard content.utf8.count <= 12_000, !hasBinaryControls(content) else { throw AIFileToolError.tooLarge }
+            guard plan.parents.isEmpty else { throw AIFileToolError.creationScope }
+            let parent = plan.roots[0].fd
+            let fd = try lease.withValidAccess { try cancellation.withValidAccess {
+                try validate(plan)
+                return try anonymousStage()
+            } }
+            let data = Data(content.utf8)
+            try data.withUnsafeBytes { bytes in
+                var offset = 0
+                while offset < bytes.count {
+                    let count = try lease.withValidAccess { try cancellation.withValidAccess {
+                        Darwin.write(fd.raw, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                    } }
+                    guard count > 0 else { throw AIFileToolError.unavailable }; offset += count
+                }
             }
-            guard contents.utf8.count <= 1_048_576, !hasBinaryControls(contents) else { throw AIFileToolError.tooLarge }
-            let info = try write(Data(contents.utf8), target: target, replacing: replacing, expected: expected, check: check)
-            return try output(metadata(info, path: path).merging(["written": .bool(true)]) { _, new in new })
+            guard fsync(fd.raw) == 0 else { throw AIFileToolError.unavailable }
+            try beforeCommit()
+            // Revocation cannot return between validation and exclusive FD-based publication.
+            // fclonefileat never reopens a staging name and refuses an existing destination.
+            // Unsupported/cross-volume filesystems fail closed; there is no rename fallback.
+            try lease.withValidAccess { try cancellation.withValidAccess {
+                try validate(plan)
+                let name = (path as NSString).lastPathComponent
+                let code = fclonefileat(fd.raw, parent.raw, name, 0)
+                guard code == 0 else { throw errno == EEXIST ? AIFileToolError.exists : AIFileToolError.unavailable }
+            } }
+            values = ["path": .string(path), "written": .bool(true)]
         case "keylane_create_directory":
-            guard target.name != "." else { throw AIFileToolError.exists }
-            try check()
-            guard mkdirat(target.parent.raw, target.name, 0o700) == 0 else {
-                if errno == EEXIST { throw AIFileToolError.exists }; throw AIFileToolError.unavailable
-            }
-            return try output(["path": .string(path), "created": .bool(true)])
-        default: throw AIToolContractError.unavailable
+            try beforeCommit()
+            try lease.withValidAccess { try cancellation.withValidAccess {
+                try validate(plan)
+                guard plan.parents.isEmpty else { throw AIFileToolError.creationScope }
+                let parent = plan.roots[0].fd
+                guard mkdirat(parent.raw, (path as NSString).lastPathComponent, 0o700) == 0 else { throw errno == EEXIST ? AIFileToolError.exists : AIFileToolError.unavailable }
+            } }
+            values = ["path": .string(path), "created": .bool(true)]
+        default: throw AIFileToolError.unsupported
         }
+        // Results carry root handles and relative paths, never the host's root path.
+        values["root"] = .string(plan.rootID)
+        return try lease.withValidAccess { try cancellation.withValidAccess {
+            // For creates the absent target is now present; parent/root identity still must match.
+            try validate(plan, checkTarget: !["keylane_write_file", "keylane_create_directory"].contains(plan.tool))
+            for entry in disclosed { try validateDisclosure(entry, root: plan.roots[0]) }
+            return try output(values)
+        } }
     }
 
-    // Foundation standardization shortens /private/var to /var on macOS. Resolve only
-    // these OS aliases; never resolve user-controlled links inside an approved scope.
     public static func systemPath(_ path: String) -> String {
         let lexical = URL(fileURLWithPath: path).standardizedFileURL.path
         for alias in ["/var", "/tmp", "/etc"] where lexical == alias || lexical.hasPrefix(alias + "/") {
-            guard let pointer = realpath(alias, nil) else { return lexical }
-            defer { free(pointer) }
+            guard let pointer = realpath(alias, nil) else { return lexical }; defer { free(pointer) }
             return String(cString: pointer) + lexical.dropFirst(alias.count)
         }
         return lexical
     }
-
     private func normalized(_ path: String, defaultRoot: String) throws -> String {
         guard !path.isEmpty, path.utf8.count <= 4096, !path.contains("\0") else { throw AIFileToolError.invalidPath }
-        let expanded: String
-        if path == "~" || path.hasPrefix("~/") { expanded = (path as NSString).expandingTildeInPath }
-        else if path.hasPrefix("/") { expanded = path }
-        else { expanded = defaultRoot + "/" + path }
+        let expanded = path == "~" || path.hasPrefix("~/") ? (path as NSString).expandingTildeInPath : path.hasPrefix("/") ? path : defaultRoot + "/" + path
         return Self.systemPath(expanded)
     }
-    private func target(_ path: String, roots: [String], check: () throws -> Void) throws -> Target {
-        guard let root = roots.filter({ path == $0 || path.hasPrefix($0 == "/" ? "/" : $0 + "/") }).max(by: { $0.count < $1.count }) else { throw AIFileToolError.outsideScope }
+    private func contains(_ root: String, _ path: String) -> Bool { path == root || path.hasPrefix(root == "/" ? "/" : root + "/") }
+    private func openDirectory(_ path: String) throws -> FD {
         var fd = try FD(Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC))
-        let relative = path == root ? [] : path.dropFirst(root == "/" ? 1 : root.count + 1).split(separator: "/").map(String.init)
-        for component in root.split(separator: "/").map(String.init) + relative.dropLast() {
-            try check()
-            fd = try FD(openat(fd.raw, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC))
+        for name in path.split(separator: "/") { fd = try FD(openat(fd.raw, String(name), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)) }
+        return fd
+    }
+    private func openRoot(_ scope: AIFileToolScope, id: String) throws -> Root {
+        guard scope.path.hasPrefix("/"), !scope.path.contains("\0") else { throw AIFileToolError.invalidPath }
+        let path = Self.systemPath(scope.path)
+        try policy(path)
+        var accessed: URL?
+        if let bookmark = scope.bookmark {
+            var stale = false
+            guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale), !stale, Self.systemPath(url.path) == path else { throw AIFileToolError.unavailable }
+            if url.startAccessingSecurityScopedResource() { accessed = url }
         }
-        return Target(parent: fd, name: relative.last ?? ".", path: path)
+        do { return Root(path: path, id: id, fd: try openDirectory(path), access: accessed) }
+        catch { accessed?.stopAccessingSecurityScopedResource(); throw error }
     }
-    private func openFile(_ target: Target) throws -> FD {
-        let raw = openat(target.parent.raw, target.name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
-        guard raw >= 0 else { throw AIFileToolError.unsupported }
-        return try FD(raw)
+    private func openChild(_ parent: FD, _ name: String) throws -> FD {
+        try FD(openat(parent.raw, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC))
     }
-    private func status(_ fd: Int32) throws -> stat {
-        var info = stat(); guard fstat(fd, &info) == 0 else { throw AIFileToolError.unavailable }; return info
+    private func same(_ first: FD, _ second: FD) throws -> Bool {
+        let a = try status(first.raw), b = try status(second.raw)
+        return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode & S_IFMT == b.st_mode & S_IFMT
     }
+    private func pathOf(_ fd: FD) throws -> String {
+        var bytes = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(fd.raw, F_GETPATH, &bytes) == 0 else { throw AIFileToolError.stale }
+        return Self.systemPath(String(cString: bytes))
+    }
+    private func anonymousStage() throws -> FD {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneAIStage-" + UUID().uuidString).path
+        let fd = try FD(Darwin.open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600))
+        guard unlink(path) == 0 else { throw AIFileToolError.unavailable }
+        return fd
+    }
+    private func absent(_ parent: FD, _ name: String) throws {
+        var info = stat()
+        guard fstatat(parent.raw, name, &info, AT_SYMLINK_NOFOLLOW) != 0 else { throw AIFileToolError.exists }
+        guard errno == ENOENT else { throw AIFileToolError.unavailable }
+    }
+    private func validate(_ plan: Prepared, checkTarget: Bool = true) throws {
+        for root in plan.roots {
+            try policy(root.path)
+            guard try pathOf(root.fd) == root.path, try same(openDirectory(root.path), root.fd) else { throw AIFileToolError.stale }
+        }
+        guard let root = plan.roots.first, plan.tool != "keylane_file_roots" else { return }
+        var parent = root.fd, full = root.path
+        for pin in plan.parents {
+            full = (full == "/" ? "" : full) + "/" + pin.name; try policy(full)
+            guard try pathOf(pin.fd) == full, try same(openChild(parent, pin.name), pin.fd) else { throw AIFileToolError.stale }
+            parent = pin.fd
+        }
+        try policy(plan.localTarget)
+        guard checkTarget else { return }
+        let name = plan.relativePath == "." ? "." : (plan.relativePath as NSString).lastPathComponent
+        if let file = plan.file {
+            guard try pathOf(file) == plan.localTarget, try same(openChild(parent, name), file) else { throw AIFileToolError.stale }
+            let info = try status(file.raw)
+            guard !isRegular(info) || info.st_nlink == 1 else { throw AIFileToolError.unsupported }
+            if let expected = plan.fileRevision, revision(info) != expected { throw AIFileToolError.stale }
+        } else { try absent(parent, name) }
+    }
+    private func status(_ fd: Int32) throws -> stat { var info = stat(); guard fstat(fd, &info) == 0 else { throw AIFileToolError.unavailable }; return info }
     private func isDirectory(_ info: stat) -> Bool { info.st_mode & S_IFMT == S_IFDIR }
     private func isRegular(_ info: stat) -> Bool { info.st_mode & S_IFMT == S_IFREG }
     private func revision(_ info: stat) -> String {
@@ -195,9 +322,7 @@ public actor AIFileToolService {
         return SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     private func metadata(_ info: stat, path: String) -> [String: AIToolValue] {
-        ["path": .string(path), "type": .string(isDirectory(info) ? "directory" : isRegular(info) ? "file" : "other"),
-         "size": .number(Double(info.st_size)), "modified": .string(Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec)).ISO8601Format()),
-         "revision": .string(revision(info))]
+        ["path": .string(path), "type": .string(isDirectory(info) ? "directory" : "file"), "size": .number(Double(info.st_size)), "modified": .string(Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec)).ISO8601Format()), "revision": .string(revision(info))]
     }
     private func read(_ fd: Int32, offset: Int, count: Int, check: () throws -> Void) throws -> Data {
         var data = Data(); var buffer = [UInt8](repeating: 0, count: min(max(count, 1), 16_384))
@@ -228,23 +353,6 @@ public actor AIFileToolService {
         }
         return values.sorted()
     }
-    private func directory(_ fd: FD, path: String, arguments: [String: AIToolValue], check: () throws -> Void) throws -> AIToolResult {
-        let offset = integer(arguments, "offset", default: 0), limit = integer(arguments, "limit", default: 50)
-        guard offset >= 0, (1...100).contains(limit) else { throw AIFileToolError.invalidPath }
-        var scan = Scan()
-        let all = try names(fd.raw, scan: &scan, check: check).filter { boolean(arguments, "include_hidden") || !$0.hasPrefix(".") }
-        var rows: [AIToolValue] = [], next = offset
-        for name in all.dropFirst(offset).prefix(limit) {
-            try check()
-            var info = stat()
-            guard fstatat(fd.raw, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { next += 1; continue }
-            let row = AIToolValue.object(metadata(info, path: path + "/" + name))
-            if try JSONEncoder().encode(rows + [row]).count > 24_000 { break }
-            rows.append(row); next += 1
-        }
-        return try output(["path": .string(path), "type": .string("directory"), "entries": .array(rows),
-            "next_offset": next < all.count ? .number(Double(next)) : .null, "truncated": .bool(scan.truncated || next < all.count)])
-    }
     private func matches(_ pattern: String, _ path: String) -> Bool {
         let pattern = pattern.split(separator: "/").map(String.init), path = path.split(separator: "/").map(String.init)
         guard pattern.count <= 32 else { return false }
@@ -259,94 +367,87 @@ public actor AIFileToolService {
         }
         return match(0, 0)
     }
-    private func walk(_ fd: FD, path: String, relative: String, pattern: String, needle: String, grep: Bool,
-                      depth: Int, limit: Int, hidden: Bool, scan: inout Scan, rows: inout [AIToolValue], check: () throws -> Void) throws {
+    private func inspect(_ parent: FD, name: String, plan: Prepared, relative: String) throws -> (FD, stat)? {
+        let full = (plan.roots[0].path == "/" ? "" : plan.roots[0].path) + "/" + relative
+        guard !Self.isSensitive(full) else { return nil }
+        guard let fd = try? openChild(parent, name), let info = try? status(fd.raw),
+              isDirectory(info) || isRegular(info) && info.st_nlink == 1 else { return nil }
+        guard try pathOf(fd) == full, try contains(plan.roots[0].path, pathOf(fd)) else { throw AIFileToolError.stale }
+        return (fd, info)
+    }
+    private func validateDisclosure(_ entry: Disclosure, root: Root) throws {
+        let full = (root.path == "/" ? "" : root.path) + "/" + entry.relative
+        try policy(full)
+        var current = root.fd
+        for name in entry.relative.split(separator: "/") { current = try openChild(current, String(name)) }
+        guard try pathOf(entry.fd) == full, try same(current, entry.fd), try revision(status(entry.fd.raw)) == entry.revision else { throw AIFileToolError.stale }
+        let info = try status(entry.fd.raw)
+        guard !isRegular(info) || info.st_nlink == 1 else { throw AIFileToolError.unsupported }
+    }
+    private func joined(_ parent: String, _ name: String) -> String { parent == "." ? name : parent + "/" + name }
+    private func directory(_ fd: FD, plan: Prepared, disclosed: inout [Disclosure], check: () throws -> Void) throws -> [String: AIToolValue] {
+        let offset = integer(plan.arguments, "offset", default: 0), limit = integer(plan.arguments, "limit", default: 50)
+        guard offset >= 0, (1...100).contains(limit) else { throw AIFileToolError.invalidPath }
+        var scan = Scan()
+        let all = try names(fd.raw, scan: &scan, check: check).filter {
+            (boolean(plan.arguments, "include_hidden") || !$0.hasPrefix(".")) && !Self.isSensitive(plan.roots[0].path + "/" + joined(plan.relativePath, $0))
+        }
+        var rows: [AIToolValue] = [], next = offset
+        for name in all.dropFirst(offset).prefix(limit) {
+            try check()
+            let relative = joined(plan.relativePath, name)
+            guard let (child, info) = try inspect(fd, name: name, plan: plan, relative: relative) else { next += 1; continue }
+            let row = AIToolValue.object(metadata(info, path: relative))
+            if try JSONEncoder().encode(rows + [row]).count > 24_000 { break }
+            rows.append(row); disclosed.append(.init(fd: child, relative: relative, revision: revision(info))); next += 1
+        }
+        return ["path": .string(plan.relativePath), "type": .string("directory"), "entries": .array(rows), "next_offset": next < all.count ? .number(Double(next)) : .null, "truncated": .bool(scan.truncated || next < all.count)]
+    }
+    private func walk(_ fd: FD, plan: Prepared, relative: String, patternRelative: String, pattern: String, needle: String, grep: Bool, depth: Int, limit: Int, hidden: Bool, scan: inout Scan, rows: inout [AIToolValue], disclosed: inout [Disclosure], check: () throws -> Void) throws {
         if scan.exhausted || rows.count >= limit { scan.truncated = true; return }
         for name in try names(fd.raw, scan: &scan, check: check) {
             try check()
             if (!hidden && name.hasPrefix(".")) || [".git", "node_modules"].contains(name) { continue }
-            let rel = relative.isEmpty ? name : relative + "/" + name
-            var info = stat(); guard fstatat(fd.raw, name, &info, AT_SYMLINK_NOFOLLOW) == 0 else { continue }
-            let full = path + "/" + name
-            if matches(pattern, rel) {
-                if !grep { rows.append(.object(metadata(info, path: full))) }
-                else if isRegular(info), !Self.isSensitive(full), info.st_size <= 1_048_576 {
-                    guard !needle.isEmpty, needle.utf8.count <= 512 else { throw AIFileToolError.invalidPath }
-                    guard scan.bytes + Int(info.st_size) <= 8_388_608 else { scan.truncated = true; return }
+            let rel = joined(relative, name), patternPath = joined(patternRelative.isEmpty ? "." : patternRelative, name)
+            guard let (child, info) = try inspect(fd, name: name, plan: plan, relative: rel) else { continue }
+            if matches(pattern, patternPath) {
+                if !grep {
+                    rows.append(.object(metadata(info, path: rel)))
+                    disclosed.append(.init(fd: child, relative: rel, revision: revision(info)))
+                }
+                else if isRegular(info), info.st_size <= 1_048_576 {
+                    guard scan.bytes + Int(info.st_size) <= 8_388_608 else { scan.truncated = true; scan.exhausted = true; return }
                     scan.bytes += Int(info.st_size)
-                    if let child = try? openFile(Target(parent: fd, name: name, path: full)),
-                       let text = String(data: try read(child.raw, offset: 0, count: Int(info.st_size), check: check), encoding: .utf8), !hasBinaryControls(text) {
+                    if let text = String(data: try read(child.raw, offset: 0, count: Int(info.st_size), check: check), encoding: .utf8), !hasBinaryControls(text) {
+                        guard revision(try status(child.raw)) == revision(info) else { throw AIFileToolError.stale }
                         var cursor = text.startIndex, number = 1
                         while cursor < text.endIndex {
                             try check()
                             let end = text[cursor...].firstIndex(of: "\n") ?? text.endIndex
                             let line = text[cursor..<end]
                             if String(line).localizedCaseInsensitiveContains(needle) {
-                                let row = AIToolValue.object(["path": .string(full), "line": .number(Double(number)), "text": .string(String(line.prefix(240)))])
+                                let row = AIToolValue.object(["path": .string(rel), "line": .number(Double(number)), "text": .string(String(line.prefix(240)))])
                                 if try JSONEncoder().encode(rows + [row]).count > 24_000 { scan.truncated = true; scan.exhausted = true; return }
                                 rows.append(row)
+                                disclosed.append(.init(fd: child, relative: rel, revision: revision(info)))
                                 if rows.count >= limit { scan.truncated = true; scan.exhausted = true; return }
                             }
-                            if end == text.endIndex { break }
-                            cursor = text.index(after: end); number += 1
+                            if end == text.endIndex { break }; cursor = text.index(after: end); number += 1
                         }
                     }
                 }
-                if try JSONEncoder().encode(rows).count > 24_000 { rows.removeLast(); scan.truncated = true; return }
-                if rows.count >= limit { scan.truncated = true; return }
+                if try JSONEncoder().encode(rows).count > 24_000 { rows.removeLast(); scan.truncated = true; scan.exhausted = true; return }
+                if rows.count >= limit { scan.truncated = true; scan.exhausted = true; return }
             }
             if isDirectory(info) {
                 if scan.exhausted { continue }
                 if depth == 1 { scan.truncated = true; continue }
-                if let child = try? FD(openat(fd.raw, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)) {
-                    try walk(child, path: full, relative: rel, pattern: pattern, needle: needle, grep: grep,
-                        depth: depth - 1, limit: limit, hidden: hidden, scan: &scan, rows: &rows, check: check)
-                    if scan.exhausted || rows.count >= limit { return }
-                }
+                try walk(child, plan: plan, relative: rel, patternRelative: patternPath, pattern: pattern, needle: needle, grep: grep, depth: depth - 1, limit: limit, hidden: hidden, scan: &scan, rows: &rows, disclosed: &disclosed, check: check)
+                if scan.exhausted { return }
             }
         }
     }
-    private func write(_ data: Data, target: Target, replacing: Bool, expected: String, check: () throws -> Void) throws -> stat {
-        var original: stat?
-        var originalFile: FD?
-        if replacing {
-            let fd = try openFile(target); let info = try status(fd.raw)
-            guard isRegular(info), !expected.isEmpty, expected == revision(info) else { throw AIFileToolError.stale }
-            original = info; originalFile = fd
-        }
-        let temporary = ".keylane-ai-" + UUID().uuidString + ".tmp"
-        let fd = try FD(openat(target.parent.raw, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600))
-        defer { unlinkat(target.parent.raw, temporary, 0) }
-        try data.withUnsafeBytes { bytes in
-            var offset = 0
-            while offset < bytes.count {
-                try check()
-                let count = Darwin.write(fd.raw, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
-                guard count > 0 else { throw AIFileToolError.unavailable }; offset += count
-            }
-        }
-        if let originalFile {
-            // Keep Finder tags, quarantine and access metadata when atomically replacing text.
-            guard fcopyfile(originalFile.raw, fd.raw, nil, copyfile_flags_t(COPYFILE_METADATA)) == 0 else { throw AIFileToolError.unavailable }
-        }
-        guard fsync(fd.raw) == 0 else { throw AIFileToolError.unavailable }
-        try check()
-        if let original {
-            var current = stat()
-            guard fstatat(target.parent.raw, target.name, &current, AT_SYMLINK_NOFOLLOW) == 0,
-                  revision(current) == revision(original) else { throw AIFileToolError.stale }
-        }
-        let code = replacing ? renameat(target.parent.raw, temporary, target.parent.raw, target.name) :
-            renameatx_np(target.parent.raw, temporary, target.parent.raw, target.name, UInt32(RENAME_EXCL))
-        guard code == 0 else {
-            if errno == EEXIST { throw AIFileToolError.exists }; throw AIFileToolError.unavailable
-        }
-        return try status(fd.raw)
-    }
-    private func output(_ values: [String: AIToolValue]) throws -> AIToolResult {
-        let data = try JSONEncoder().encode(values)
-        return try AIToolResult(text: String(decoding: data, as: UTF8.self))
-    }
+    private func output(_ values: [String: AIToolValue]) throws -> AIToolResult { try .init(text: String(decoding: JSONEncoder().encode(values), as: UTF8.self)) }
     private func hasBinaryControls(_ text: String) -> Bool { text.unicodeScalars.contains { $0.value < 32 && ![9, 10, 13].contains($0.value) } }
     private func string(_ args: [String: AIToolValue], _ key: String) -> String { if case .string(let text) = args[key] { return text }; return "" }
     private func integer(_ args: [String: AIToolValue], _ key: String, default value: Int) -> Int { if case .number(let n) = args[key], n.isFinite, n.rounded() == n, n >= 0, n <= 1_073_741_824 { return Int(n) }; return value }
