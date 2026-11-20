@@ -364,15 +364,26 @@ enum BuiltinLauncherModules {
         ], aiActions: [FileAIController.definition("ask-files"), FileAIController.definition("ask-finder")], providers: [provider], pages: [
             LauncherPage(id: page, placeholder: "搜索文件…", badge: ("文件搜索", "doc.text.magnifyingglass"),
                          contentPlacement: .fileResults, queryChanged: { [weak model] _ in model?.searchFiles() },
-                         leave: { [weak model] in model?.fileSearch.cancel() },
+
                          updates: model.fileSearch.$isSearching.removeDuplicates().dropFirst().map { _ in () }.eraseToAnyPublisher(),
                          enter: { [weak model] _ in
                              let seed = model?.fileSearchSeed
                              model?.fileSearchSeed = nil
                              return seed
                          },
-                         releasePreview: { FilePreview.shared.dismiss() },
-                          loading: controller.$isSearching.eraseToAnyPublisher())
+                          loading: controller.$isSearching.eraseToAnyPublisher(),
+                          selectionActions: { [weak model] entry in
+                              guard let model, let entry else {
+                                  return .init(primary: .init(id: "open", title: "打开", icon: "return", enabled: false))
+                              }
+                              let items = fileActions(entry, model: model)
+                              var primary = items[0]
+                              primary.enabled = !model.fileSearch.isSearching
+                              return .init(primary: primary, items: items, footerTitle: "打开")
+                          }, startSession: { session in
+                              session.onEnd { [weak model] in model?.fileSearch.cancel() }
+                              session.onEnd { FilePreview.shared.dismiss() }
+                          })
         ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"),
                                    loading: controller.$indexing.eraseToAnyPublisher(), content: LauncherSettingsContent.files)],
            services: [.init(start: { start(reconcile: false) }, stop: { [weak model] in
@@ -510,13 +521,11 @@ enum BuiltinLauncherModules {
                 ClipboardActions.submit(controller)
             },
             returnBindings: .init(alternates: [
-                .command: .init(dismissMenu: true) { [weak model] in
-                    if let controller = model?.clipboard { ClipboardActions.submit(controller, alternate: true) }
-                },
-                .option: .init(dismissMenu: true) {
-                    guard let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil else { return }
-                    delegate.pasteClipboard(keepOpen: true)
-                }
+                .command: .init(dismissMenu: true, actionID: {
+                    controller.primaryAction == .paste || (NSApp.delegate as? Delegate)?.pasteTargetName == nil
+                        ? "copy-clip" : "paste-clip"
+                }),
+                .option: .init(dismissMenu: true, actionID: { "paste-keep-open-clip" })
             ]),
             actionSelectionID: { [weak model] in model?.clipboard.selectedID },
             actionContextTitle: { [weak model] in

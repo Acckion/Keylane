@@ -40,8 +40,8 @@ enum QuickAILauncher {
             [.init(id: "quick-ai-file", title: "附加文件…", icon: "doc.badge.plus", enabled: !controller.composer.loadingFiles && !controller.loadingChat, perform: { AIConversationHostActions.chooseFiles(composer: controller.composer) })]
         }
         page.returnBindings = .init(primary: .plain, alternates: [
-            .command: .init(perform: { useResponse(controller, copyOnly: model.aiInteraction.primaryAction == .paste) }),
-            .option: .init(perform: { useResponse(controller, formatted: true) })
+            .command: .init(actionID: { "quick-ai-copy" }),
+            .option: .init(actionID: { "quick-ai-paste-formatted" })
         ])
         page.actionContextTitle = { controller.conversationTitle }
         page.enter = controller.consumeEntry
