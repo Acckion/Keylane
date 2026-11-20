@@ -670,7 +670,8 @@ final class LauncherModuleRegistry {
             guard current() else { throw AIActionError.unavailable }
             let value = try await source.load()
             try Task.checkCancellation()
-            guard current(), try await source.isCurrent(value) else { throw AIActionError.staleSource }
+            guard current(), try await source.isCurrent(value), current() else { throw AIActionError.staleSource }
+            try Task.checkCancellation()
             try value.validate(maximumBytes: 32_000)
             return value
         }, isCurrent: { value in

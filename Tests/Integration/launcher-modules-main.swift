@@ -810,6 +810,30 @@ Task { @MainActor in
         contextAvailability.send(false); contextAvailability.send(true)
         do { _ = try await freshRows[0].source.load(); preconditionFailure("Feature off/on revived an old candidate") } catch { }
         precondition(reads == 1)
+        // Suspend precisely inside the source version check, after the first generation check.
+        for revocation in ["feature-off", "feature-off-on", "module-off-on"] {
+            var validation: CheckedContinuation<Bool, Never>?
+            let slow = AIActionSource(moduleID: owner, load: {
+                .init(sourceID: "deferred", title: "Fixture", text: "Must not enter a draft")
+            }, isCurrent: { _ in await withCheckedContinuation { validation = $0 } })
+            let guarded = registry.guardedAIContextSource(slow)
+            let pending = Task { @MainActor in try await guarded.load() }
+            let deadline = ContinuousClock.now + .seconds(2)
+            while validation == nil && ContinuousClock.now < deadline { await Task.yield() }
+            precondition(validation != nil, "Fixture did not suspend inside asynchronous validation")
+            if revocation == "module-off-on" {
+                _ = registry.setModuleEnabled(owner, false)
+                _ = registry.setModuleEnabled(owner, true)
+            } else {
+                contextAvailability.send(false)
+                if revocation == "feature-off-on" { contextAvailability.send(true) }
+            }
+            validation?.resume(returning: true)
+            do { _ = try await pending.value; preconditionFailure("Late validated context survived \(revocation)") }
+            catch AIActionError.staleSource { }
+            contextAvailability.send(true)
+        }
+        print("PASS PR212 context validation race: feature off, off/on and module off/on reject a read suspended inside isCurrent")
     } catch { preconditionFailure("Context fixture failed: \(error)") }
     do {
         _ = try LauncherModuleRegistry(modules: [LauncherModule(id: owner, aiContexts: [registration, registration])], preferences: defaults)

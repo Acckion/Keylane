@@ -111,6 +111,9 @@ final class AIConversationSession: ObservableObject {
         (!composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachments.isEmpty)
     }
 
+    /// The attachment follows this live session, including its explicit model selection.
+    var canAttachModuleContext: Bool { currentConnection != nil && !loadingChat && !composer.loadingFiles }
+
     var lastAnswer: String? { turns.last(where: { !$0.answer.isEmpty })?.answer }
     var currentConnection: AIConnection? { connection(in: configuration.state) }
 

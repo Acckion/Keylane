@@ -141,7 +141,7 @@ enum ClipboardActions {
                              shortcut: .init("e", modifiers: [.shift, .command]), group: 1, perform: controller.renameSelected))
         actions.append(.init(id: "ai-clip", title: canEdit ? "发送给 AI 聊天" : "附加到 AI 聊天",
                              icon: "sparkles", shortcut: canEdit ? .init("j", modifiers: .command) : .init("a", modifiers: [.control, .command]),
-                             group: 1, enabled: item.kind == .text && model.aiSettings.isAvailable &&
+                             group: 1, enabled: item.kind == .text && controller.historyCommandEnabled && model.canAttachModuleAIContext() &&
                                 !model.disabledCommands.contains(ClipboardAIActions.attachID.rawValue)) { [weak model] in
             guard let model else { return }
             _ = model.runCommand(ClipboardAIActions.attachID, origin: .menu,
