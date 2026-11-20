@@ -17,6 +17,7 @@ struct AIProviderPreset: Identifiable {
     // Names and addresses checked against the OpenCode/models.dev directory, 2026-11-18.
     static let all: [Self] = [
         .init(id: "openai", name: "OpenAI", endpoint: "https://api.openai.com/v1", model: "gpt-6.2-sol", documentation: "https://platform.openai.com/docs/models", wireProtocol: .openAI, contextTokens: 1050000),
+        .init(id: "elevenlabs", name: "ElevenLabs", endpoint: "https://api.elevenlabs.io/v1", model: "scribe_v2", documentation: "https://elevenlabs.io/docs/api-reference/speech-to-text/convert", wireProtocol: .openAI),
         .init(id: "anthropic", name: "Anthropic", endpoint: "https://api.anthropic.com/v1", model: "claude-fable-5-2", documentation: "https://docs.anthropic.com/en/docs/about-claude/models", wireProtocol: .anthropic, contextTokens: 1000000),
         .init(id: "google", name: "Google", endpoint: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-4-hydrogen", documentation: "https://ai.google.dev/gemini-api/docs/models", wireProtocol: .openAI, contextTokens: 1048576),
         .init(id: "openrouter", name: "OpenRouter", endpoint: "https://openrouter.ai/api/v1", model: "openai/gpt-6.2-sol", documentation: "https://openrouter.ai/models", wireProtocol: .openAI, contextTokens: 1050000),

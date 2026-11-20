@@ -278,7 +278,8 @@ struct AIChatView: View {
         AIConversationComposerView(controller: controller, configuration: configuration,
             interaction: interaction, composer: composer, canSubmit: canSubmit,
             submit: submit, newChat: { newChat() }, chooseModel: chooseChatModel,
-            showUsage: { usageTarget = controller.currentConnection }, openAISettings: openAISettings)
+            showUsage: { usageTarget = controller.currentConnection }, openAISettings: openAISettings,
+            dictation: (NSApp.delegate as? Delegate)?.model.dictation)
     }
 
     private func chooseChatModel(_ id: UUID) {

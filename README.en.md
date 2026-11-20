@@ -29,6 +29,7 @@ Browse text, images, and files from your clipboard history. Search, filter, prev
 - **System and windows**: find system settings, run common system actions, switch windows, and arrange layouts.
 - **Local information**: view calendars, search contacts, find screenshots and OCR text, and connect Apple Notes.
 - **Your workflows**: run Apple Shortcuts and scripts, use Quicklinks and snippets, and assign command aliases and shortcuts.
+- **Cloud dictation (source build)**: transcribe and clean up speech, apply app-specific styles, paste or copy, and recover local transcripts. Real microphone and provider acceptance is pending; see the [dictation workflow](docs/DICTATION.md).
 - **Configuration migration**: back up and restore Keylane settings, or import supported preferences, command mappings, and Quicklinks from Raycast. Preview changes before importing; unsupported items are skipped.
 
 ## Completely free. Open source.
@@ -98,6 +99,7 @@ Do not disable Gatekeeper or remove security restrictions through Terminal. If m
 - **Stored locally**: settings and history stay on your Mac. There is no built-in telemetry or cloud sync. Clipboard history can contain sensitive information; choose persistence and retention settings accordingly.
 - **Access when needed**: file search uses folders you select. Automatic paste and window actions may require Accessibility access; some integrations require Automation or access to the relevant data.
 - **AI is your choice**: File AI sends your question and selected context to your configured provider only when you submit it. Context may include file names, paths, or contents. The provider’s fees and data policies apply. API keys are stored in macOS Keychain.
+- **Dictation is opt-in**: recording starts only on request. Finished audio goes to your chosen cloud endpoint; cleanup and optional app context use your configured model. History stays local. Successful recordings are deleted by default, while failed recordings are kept for retry. Provider retention policies and fees apply.
 
 ## Build from source
 

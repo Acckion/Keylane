@@ -5,6 +5,28 @@ enum AIResponseMode: String, Codable, CaseIterable {
     case streaming, complete
 }
 
+enum AIModelTask: String, Codable, CaseIterable, Sendable {
+    case text, openAITranscription, elevenLabsTranscription
+    var title: String {
+        switch self {
+        case .text: "文字生成"
+        case .openAITranscription: "语音转写（OpenAI 兼容）"
+        case .elevenLabsTranscription: "语音转写（ElevenLabs）"
+        }
+    }
+}
+
+enum AIModelPurpose {
+    case text, transcription, cloudText
+    func accepts(_ connection: AIConnection) -> Bool {
+        switch self {
+        case .text: connection.taskKind == .text
+        case .transcription: connection.transcriptionOptions() != nil
+        case .cloudText: connection.taskKind == .text && connection.isCloudModel
+        }
+    }
+}
+
 struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     var id = UUID()
     var name = ""
@@ -26,13 +48,32 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     var additionalParametersJSON: String?
     var credentialOwnerID: UUID?
     var subscriptionAccountID: String?
+    var modelTask: AIModelTask?
+
+    var taskKind: AIModelTask {
+        if protocolKind != .openAI { return .text }
+        if let modelTask { return modelTask }
+        let name = model.lowercased().split(separator: "/").last.map(String.init) ?? ""
+        if providerID == "elevenlabs" || name == "scribe_v1" || name == "scribe_v2" || name == "scribe_v3" { return .elevenLabsTranscription }
+        if name == "gpt-transcribe" || name == "gpt-transcribe-mini" || name == "gpt-4o-transcribe" || name == "gpt-4o-mini-transcribe"
+            || name == "whisper-1" || name.hasPrefix("whisper-large-v3") { return .openAITranscription }
+        return .text
+    }
+    var isCloudModel: Bool { !["ollama", "lmstudio"].contains(providerID ?? "") }
+
+    func transcriptionOptions(language: String = "auto", vocabulary: [String] = []) -> AITranscriptionOptions? {
+        guard isConfigured, isCloudModel, protocolKind == .openAI, taskKind != .text, let apiBaseURL else { return nil }
+        let options = AITranscriptionOptions(provider: taskKind == .elevenLabsTranscription ? .elevenLabs : .openAI,
+                                            endpoint: apiBaseURL.absoluteString, model: model, language: language, vocabulary: vocabulary)
+        return options.isConfigured ? options : nil
+    }
 
     var protocolKind: AIWireProtocol { wireProtocol ?? .openAI }
     var destinationLabel: String {
         if protocolKind.isSubscription {
             return "\(protocolKind == .codex ? "Codex" : "Claude Code") · \(accountFolder.flatMap { $0.isEmpty ? nil : $0 } ?? "默认账户目录")"
         }
-        return completionURL?.absoluteString ?? endpoint
+        return transcriptionOptions()?.transcriptionURL?.absoluteString ?? completionURL?.absoluteString ?? endpoint
     }
     var requestIdentity: String {
         guard protocolKind.isSubscription else { return destinationLabel }
@@ -48,6 +89,19 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     }
 
     var baseURL: URL? { Self.baseURL(for: endpoint) }
+    var apiBaseURL: URL? {
+        guard var url = baseURL else { return nil }
+        for suffix in ["/chat/completions", "/audio/transcriptions", "/speech-to-text", "/messages"] where url.path.hasSuffix(suffix) {
+            for _ in suffix.split(separator: "/") { url.deleteLastPathComponent() }
+            break
+        }
+        return url
+    }
+    // Keep existing chat credential accounts stable; sibling models reuse the same provider key.
+    var credentialURL: URL? {
+        guard !protocolKind.isSubscription, let apiBaseURL else { return nil }
+        return apiBaseURL.appendingPathComponent(protocolKind == .anthropic ? "messages" : "chat/completions")
+    }
 
     private static func baseURL(for endpoint: String) -> URL? {
         guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -67,11 +121,7 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
         return Self.completionURL(for: endpoint)
     }
     var modelsURL: URL? {
-        guard let url = baseURL else { return nil }
-        let prefix = url.path.hasSuffix("/chat/completions")
-            ? url.deletingLastPathComponent().deletingLastPathComponent()
-            : url.path.hasSuffix("/messages") ? url.deletingLastPathComponent() : url
-        return prefix.appendingPathComponent("models")
+        apiBaseURL?.appendingPathComponent("models")
     }
 
     static func completionURL(for endpoint: String) -> URL? {
@@ -106,6 +156,7 @@ private final class AIRedirectPolicy: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
         guard let first = task.originalRequest?.url, let next = request.url,
+              !first.path.hasSuffix("/audio/transcriptions"), !first.path.hasSuffix("/speech-to-text"),
               first.scheme == next.scheme, first.host == next.host, first.port == next.port,
               next.user == nil, next.password == nil, task.originalRequest?.httpMethod == "POST", request.httpMethod == "POST"
         else { completionHandler(nil); return }
@@ -138,8 +189,7 @@ actor AIRuntime {
 
     func verifyAPIKey(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?) async throws {
         guard let url = connection.keyVerificationURL else {
-            _ = try await generate(connection: connection, readKey: readKey,
-                                   messages: [.init(role: .user, content: "Reply with OK.")]) { _ in }
+            _ = try await testConnection(connection, readKey: readKey)
             return
         }
         try Task.checkCancellation()
@@ -188,17 +238,82 @@ actor AIRuntime {
             guard body.count < 1_048_576 else { throw AIResponseError.tooLarge }
             body.append(byte)
         }
-        guard let list = try? JSONDecoder().decode(ModelList.self, from: body) else { throw AIResponseError.invalidResponse }
-        return Set(list.data.map(\.id).filter {
+        let models: [String]
+        if connection.taskKind == .elevenLabsTranscription {
+            struct ElevenModel: Decodable { let model_id: String }
+            guard let list = try? JSONDecoder().decode([ElevenModel].self, from: body) else { throw AIResponseError.invalidResponse }
+            models = list.map(\.model_id).filter { $0.hasPrefix("scribe_") }
+        } else {
+            guard let list = try? JSONDecoder().decode(ModelList.self, from: body) else { throw AIResponseError.invalidResponse }
+            models = list.data.map(\.id)
+        }
+        return Set(models.filter {
             !$0.isEmpty && $0.utf8.count <= 512 && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
                 && $0.rangeOfCharacter(from: .controlCharacters) == nil
         }).sorted()
+    }
+
+    /// Audio and text requests share the same configured models, credentials, session and cancellation policy.
+    func transcribe(audio: URL, connection: AIConnection, language: String = "auto", vocabulary: [String] = [],
+                    readKey: @Sendable (AIConnection) throws -> String?) async throws -> String {
+        guard let options = connection.transcriptionOptions(language: language, vocabulary: vocabulary) else { throw AITranscriptionError.configuration }
+        try Task.checkCancellation()
+        guard let key = try readKey(connection), !key.isEmpty else { throw AITranscriptionError.missingKey }
+        let data = try await Task.detached(priority: .userInitiated) {
+            let size = try audio.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size <= AITranscriptionRequest.maximumAudioBytes else { throw AITranscriptionError.audioTooLarge }
+            return try Data(contentsOf: audio)
+        }.value
+        try Task.checkCancellation()
+        let request = try AITranscriptionRequest.make(options: options, key: key, audio: data)
+        let (bytes, response) = try await session.bytes(for: request)
+        defer { bytes.task.cancel() }
+        guard let response = response as? HTTPURLResponse else { throw AITranscriptionError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else { throw AITranscriptionError.http(response.statusCode) }
+        var body = Data()
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard body.count < AITranscriptionRequest.maximumResponseBytes else { throw AITranscriptionError.responseTooLarge }
+            body.append(byte)
+        }
+        return try AITranscriptionRequest.text(from: body, status: response.statusCode)
+    }
+
+    func testConnection(_ connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?) async throws -> String {
+        if connection.taskKind == .text {
+            _ = try await generate(connection: connection, readKey: readKey, messages: [.init(role: .user, content: "Reply with OK.")]) { _ in }
+            return "模型已成功响应。"
+        }
+        if connection.taskKind == .elevenLabsTranscription {
+            guard let url = connection.apiBaseURL?.appendingPathComponent("user"), let key = try readKey(connection), !key.isEmpty else {
+                throw AITranscriptionError.missingKey
+            }
+            var request = URLRequest(url: url, timeoutInterval: 15)
+            authorize(&request, connection: connection, key: key)
+            let (bytes, response) = try await session.bytes(for: request)
+            defer { bytes.task.cancel() }
+            guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
+            guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
+            var data = Data()
+            for try await byte in bytes {
+                try Task.checkCancellation()
+                guard data.count < 1_048_576 else { throw AIResponseError.tooLarge }
+                data.append(byte)
+            }
+            struct Account: Decodable { let user_id: String }
+            guard let account = try? JSONDecoder().decode(Account.self, from: data), !account.user_id.isEmpty else { throw AIResponseError.invalidResponse }
+            return "账户接口认证通过；实际语音识别与模型权限仍需在听写中实测。"
+        }
+        let models = try await listModels(connection: connection, readKey: readKey)
+        guard !models.isEmpty else { throw AIResponseError.invalidResponse }
+        return "提供方模型目录可访问；语音识别效果及模型权限仍需在听写中实测。"
     }
 
     func generate(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?, messages: [AIMessage],
                   subscriptionReasoningEffort: String? = nil, tools: AIToolRun? = nil,
                   progress: @escaping @Sendable (AIResponseEvent) async -> Void = { _ in },
                   emit: @Sendable (String) async throws -> Void) async throws -> Int? {
+        guard connection.taskKind == .text else { throw AIResponseError.invalidResponse }
         if tools != nil, connection.supportsTools == false { throw AIResponseError.toolsUnavailable }
         if connection.protocolKind.isSubscription {
             return try await AISubscriptionTransport.generate(connection, messages: messages, effort: subscriptionReasoningEffort, tools: tools, progress: progress, emit: emit)
@@ -297,7 +412,9 @@ actor AIRuntime {
     }
 
     private func authorize(_ request: inout URLRequest, connection: AIConnection, key: String?) {
-        if connection.protocolKind == .anthropic {
+        if connection.taskKind == .elevenLabsTranscription {
+            if let key { request.setValue(key, forHTTPHeaderField: "xi-api-key") }
+        } else if connection.protocolKind == .anthropic {
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             if let key { request.setValue(key, forHTTPHeaderField: "x-api-key") }
         } else if let key, !key.isEmpty {
