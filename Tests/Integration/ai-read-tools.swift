@@ -92,20 +92,20 @@ import KeylaneCore
     let fileRows = try rows(fileSearch, "files")
     let fileReference = fileRows.first { $0["path"] as? String == url.path }!["reference"] as! String
     precondition(fileRows.first { $0["path"] as? String == symlink.path }?["reference"] == nil)
-    let fileRead = try await execute(fileRun, "keylane_read_file", ["reference": .string(fileReference)])
+    let fileRead = try await execute(fileRun, "keylane_read_search_file", ["reference": .string(fileReference)])
     precondition(!fileRead.isError && fileRead.text.contains("fixture file body"))
     precondition(approvals.last!.contains(url.path) && !files.isSearching && files.lastPublishedQuery.isEmpty)
-    let arbitrary = try await execute(fileRun, "keylane_read_file", ["reference": .string(outside.path)])
+    let arbitrary = try await execute(fileRun, "keylane_read_search_file", ["reference": .string(outside.path)])
     precondition(arbitrary.isError)
     let otherRun = try run(AIReadTools.files(files))
-    let foreignFile = try await execute(otherRun, "keylane_read_file", ["reference": .string(fileReference)])
+    let foreignFile = try await execute(otherRun, "keylane_read_search_file", ["reference": .string(fileReference)])
     precondition(foreignFile.isError)
     allowed = false
-    let deniedFile = try await execute(fileRun, "keylane_read_file", ["reference": .string(fileReference)])
+    let deniedFile = try await execute(fileRun, "keylane_read_search_file", ["reference": .string(fileReference)])
     precondition(deniedFile.isError && !deniedFile.text.contains("fixture file body"))
     allowed = true
     try Data("replaced private body".utf8).write(to: url, options: .atomic)
-    let replaced = try await execute(fileRun, "keylane_read_file", ["reference": .string(fileReference)])
+    let replaced = try await execute(fileRun, "keylane_read_search_file", ["reference": .string(fileReference)])
     precondition(replaced.isError && !replaced.text.contains("replaced private body"))
     files.options.enabled = false; files.options.enabled = true
     let revoked = try await execute(fileRun, "keylane_search_files", ["query": .string("fixture")])
