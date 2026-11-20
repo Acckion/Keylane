@@ -88,6 +88,7 @@ final class TranslatorController: ObservableObject {
     private var revision = 0
     private var active = false
     private var settingsChanges: AnyCancellable?
+    private var requestConnection: AIConnection?
     private var replacement: (() -> Bool)?
     var replaceWithResult: (() -> Void)?
 
@@ -111,8 +112,13 @@ final class TranslatorController: ObservableObject {
         config.urlCache = nil
         config.timeoutIntervalForResource = 45
         self.session = session ?? URLSession(configuration: config, delegate: TranslationRedirectPolicy(), delegateQueue: nil)
+        requestConnection = selectedConnection
         settingsChanges = ai.$state.dropFirst().receive(on: DispatchQueue.main).sink { [weak self] _ in
-            Task { @MainActor in if self?.preferences.provider == .ai { self?.schedule() } }
+            Task { @MainActor in
+                guard let self, self.preferences.provider == .ai,
+                      self.selectedConnection != self.requestConnection else { return }
+                self.schedule()
+            }
         }
     }
 
@@ -181,6 +187,7 @@ final class TranslatorController: ObservableObject {
         languageMenu = nil
     }
     private func schedule() {
+        requestConnection = selectedConnection
         revision += 1
         let current = revision
         task?.cancel()
@@ -192,7 +199,7 @@ final class TranslatorController: ObservableObject {
         guard active, !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard input.utf8.count <= 5_000 else { error = TranslationFailure.inputTooLong.localizedDescription; return }
         let text = input, from = source, to = target, provider = preferences.provider
-        let connection = selectedConnection
+        let connection = requestConnection
         loading = true
         deadline = Task { @MainActor [weak self, requestTimeout] in
             do { try await Task.sleep(for: requestTimeout) } catch { return }

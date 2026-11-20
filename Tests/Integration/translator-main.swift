@@ -129,14 +129,30 @@ precondition(controller.output.isEmpty)
 drain(0.5)
 precondition(controller.output.isEmpty && !controller.loading)
 
+let unrelated = AIConnection(name: "Other model", endpoint: "http://127.0.0.1:12345/v1", model: "other")
+precondition(ai.save(unrelated))
 TranslatorFixtureProtocol.mode = "hang"
 let bounded = TranslatorController(ai: ai, runtime: runtime, defaults: defaults, requestTimeout: .milliseconds(1100), readAIKey: { _ in nil })
+let beforeUnrelatedRefresh = TranslatorFixtureProtocol.requests.count
 bounded.begin(text: "no response")
-wait("stalled AI request stops loading with retryable timeout", until: { !bounded.loading })
+// Background catalog changes must not renew this request's deadline.
+for index in 0..<9 {
+    ai.setModelVisible(unrelated.id, visible: index.isMultiple(of: 2))
+    drain(0.15)
+}
+precondition(!bounded.loading, "Unrelated AI updates repeatedly restarted the translation and postponed its timeout")
 precondition(bounded.error.contains("超时") && !bounded.canUseOutput)
+precondition(TranslatorFixtureProtocol.requests.count == beforeUnrelatedRefresh + 1)
+print("PASS unrelated model refresh does not restart translation or postpone timeout")
 TranslatorFixtureProtocol.mode = "stream"
 bounded.retry()
 wait("retry succeeds after AI timeout", until: { bounded.canUseOutput })
+let completedRequestCount = TranslatorFixtureProtocol.requests.count
+ai.setModelVisible(unrelated.id, visible: false)
+drain(0.2)
+precondition(bounded.output == "你好" && bounded.canUseOutput)
+precondition(TranslatorFixtureProtocol.requests.count == completedRequestCount)
+print("PASS unrelated AI updates preserve completed translations")
 bounded.stop()
 TranslatorFixtureProtocol.mode = "normal"
 controller.begin(text: "discard on model disable")
