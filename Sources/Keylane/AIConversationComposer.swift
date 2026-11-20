@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import KeylaneCore
 
 final class AIConversationComposer: ObservableObject {
     @Published var text = ""
@@ -57,6 +58,17 @@ final class AIConversationComposer: ObservableObject {
             case .failure(let error): self.fileError = error.localizedDescription
             }
         }
+    }
+
+    /// Completed module results become an explicit attachment, without sending or replacing a draft.
+    @discardableResult
+    func attachActionResult(_ context: AIActionContext, answer: String) -> Bool {
+        guard !loadingFiles, context.text.utf8.count + answer.utf8.count <= 31_000 else { return false }
+        let attachment = AIConversationAttachment(title: context.title, text: "来源内容：\n" + context.text + "\n\nAI 处理结果：\n" + answer, symbol: "sparkles")
+        let combined = attachments + [attachment]
+        guard combined.count <= 5, AIConversationAttachment.requestText(question: text, attachments: combined).utf8.count <= 32_000 else { return false }
+        attachments = combined
+        return true
     }
 
     func clear() {
