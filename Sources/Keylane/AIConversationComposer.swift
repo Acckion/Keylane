@@ -11,6 +11,7 @@ final class AIConversationComposer: ObservableObject {
     @Published private(set) var loadingFiles = false
     @Published var fileError = ""
     private var fileTask: Task<Void, Never>?
+    private var attachmentAvailability: AnyCancellable?
 
     struct Snapshot {
         let text: String
@@ -35,7 +36,7 @@ final class AIConversationComposer: ObservableObject {
     }
 
     /// The draft owns all asynchronous sources, including OCR, across presentation changes.
-    func loadAttachments(_ operation: @escaping @Sendable () async throws -> [AIConversationAttachment]) {
+    func loadAttachments(availability: AnyPublisher<Bool, Never>? = nil, _ operation: @escaping @Sendable () async throws -> [AIConversationAttachment]) {
         guard !loadingFiles else { return }
         let draft = draftID
         loadingFiles = true
@@ -47,6 +48,7 @@ final class AIConversationComposer: ObservableObject {
             guard let self, !Task.isCancelled, self.draftID == draft else { return }
             self.loadingFiles = false
             self.fileTask = nil
+            self.attachmentAvailability?.cancel(); self.attachmentAvailability = nil
             switch result {
             case .success(let files):
                 let combined = self.attachments + files
@@ -57,6 +59,12 @@ final class AIConversationComposer: ObservableObject {
                 self.attachments = combined
             case .failure(let error): self.fileError = error.localizedDescription
             }
+        }
+        attachmentAvailability = availability?.receive(on: DispatchQueue.main).sink { [weak self] available in
+            guard let self, !available, self.loadingFiles else { return }
+            self.fileTask?.cancel(); self.fileTask = nil; self.loadingFiles = false
+            self.attachmentAvailability?.cancel(); self.attachmentAvailability = nil
+            self.fileError = "来源或命令已停用，请重新选择。"
         }
     }
 
@@ -72,6 +80,7 @@ final class AIConversationComposer: ObservableObject {
     }
 
     func clear() {
+        attachmentAvailability?.cancel(); attachmentAvailability = nil
         fileTask?.cancel()
         fileTask = nil
         loadingFiles = false

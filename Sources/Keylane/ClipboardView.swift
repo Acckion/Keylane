@@ -307,9 +307,7 @@ struct ClipboardPreferences: View {
             }
             ClipboardHistoryStatistics(controller: controller)
             SettingsSectionTitle(title: "AI 扩展")
-            CommandSettingsList(items: ["询问剪贴板"], id: \.self) { title in
-                unavailableCommand(title, symbol: "sparkles")
-            }
+            ExtensionCommandPreferences(model: model, commands: model.launcherModules?.aiCommands(in: ClipboardAIActions.moduleID) ?? [])
         }
         .onAppear { updateExcludedApplications() }
         .onChange(of: controller.excludedApps) { _, _ in updateExcludedApplications() }
@@ -385,10 +383,7 @@ struct ClipboardPreferences: View {
         }
     }
 
-    private func unavailableCommand(_ title: String, symbol: String) -> CommandSettingsEntry<SettingsIcon> {
-        CommandSettingsEntry(title: title, alias: .constant(""), shortcut: nil, isEnabled: .constant(false),
-                             setShortcut: { _ in }, icon: { SettingsIcon(symbol: symbol) }, available: false)
-    }
+
 
     private func binding<Value>(_ key: ReferenceWritableKeyPath<ClipboardController, Value>) -> Binding<Value> {
         Binding(get: { controller[keyPath: key] }, set: { controller[keyPath: key] = $0 })

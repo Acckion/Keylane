@@ -7,9 +7,10 @@ public struct AIActionDefinition: Equatable, Sendable {
     public let title: String
     public let instructions: String
     public let maximumInputBytes: Int
-    public init(commandID: CommandID, title: String, instructions: String, maximumInputBytes: Int = 32_000) {
+    public let acceptsQuestion: Bool
+    public init(commandID: CommandID, title: String, instructions: String, maximumInputBytes: Int = 32_000, acceptsQuestion: Bool = false) {
         self.commandID = commandID; self.title = title; self.instructions = instructions
-        self.maximumInputBytes = maximumInputBytes
+        self.maximumInputBytes = maximumInputBytes; self.acceptsQuestion = acceptsQuestion
     }
     public func validate() throws {
         guard !commandID.rawValue.isEmpty, !title.isEmpty, title.utf8.count <= 256,

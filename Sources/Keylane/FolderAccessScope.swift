@@ -26,4 +26,3 @@ struct ScreenshotScope: Codable, Identifiable, Equatable {
         return url
     }
 }
-

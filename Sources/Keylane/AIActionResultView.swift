@@ -1,17 +1,31 @@
 import SwiftUI
+import KeylaneCore
 
 struct AIActionResultView: View {
     @ObservedObject var session: AIActionSession
     var statusOverride: String? = nil
     var continueAction: (() -> Void)? = nil
     var body: some View {
+        AIResultContent(answer: session.answer, status: statusOverride ?? session.status,
+                        running: session.running, progress: session.progress,
+                        continueAction: !session.preparing && !session.running ? continueAction : nil)
+    }
+}
+
+struct AIResultContent: View {
+    let answer: String
+    let status: String
+    let running: Bool
+    let progress: AIResponseProgress
+    var continueAction: (() -> Void)? = nil
+    var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if session.running { AIResponseProgressView(progress: session.progress) }
-            if !session.answer.isEmpty { AIConversationMarkdownBody(text: session.answer).textSelection(.enabled) }
-            if !session.running && !session.preparing && !session.answer.isEmpty, let continueAction {
+            if running { AIResponseProgressView(progress: progress) }
+            if !answer.isEmpty { AIConversationMarkdownBody(text: answer).textSelection(.enabled) }
+            if !running && !answer.isEmpty, let continueAction {
                 Button("继续到 Quick AI", action: continueAction).buttonStyle(.glass)
             }
-            if !(statusOverride ?? session.status).isEmpty { Text(statusOverride ?? session.status).font(.caption).foregroundStyle(.secondary) }
+            if !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
         }
     }
 }

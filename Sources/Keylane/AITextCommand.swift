@@ -46,6 +46,7 @@ final class AITextCommandSession: ObservableObject {
     private var reviewedConnection: AIConnection?
     private var plan: DynamicTemplate.Plan?
     private var configurationChanges: AnyCancellable?
+    private var availabilityObservation: AnyCancellable?
     private var canInvoke: () -> Bool = { true }
 
     init(configuration: AIConfiguration, runtime: AIRuntime,
@@ -86,6 +87,14 @@ final class AITextCommandSession: ObservableObject {
               AIChatRecord.ModelReference(reviewedConnection) == AIChatRecord.ModelReference(current),
               reviewedConnection.mode == current.mode else { return nil }
         return current
+    }
+
+    func observeAvailability(_ updates: AnyPublisher<Bool, Never>) {
+        availabilityObservation = updates.receive(on: DispatchQueue.main).sink { [weak self] available in
+            guard let self, !available else { return }
+            self.canInvoke = { false }
+            self.reply.reset()
+        }
     }
 
     var isInvocationAvailable: Bool { canInvoke() }
@@ -141,6 +150,7 @@ final class AITextCommandSession: ObservableObject {
     }
 
     func clear() {
+        availabilityObservation?.cancel(); availabilityObservation = nil
         reply.reset()
         reviewedConnection = nil
         customCommand = nil
