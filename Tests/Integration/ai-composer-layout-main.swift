@@ -219,11 +219,18 @@ final class MenuClickTarget: NSView {
     override func mouseDown(with event: NSEvent) { clicks += 1; window?.makeFirstResponder(self) }
     override func rightMouseDown(with event: NSEvent) { clicks += 1 }
 }
+enum FixtureMouseEvents { static var nextNumber = 0 }
 func fixtureClick(_ window: NSWindow, point: NSPoint, type: NSEvent.EventType = .leftMouseDown) {
+    FixtureMouseEvents.nextNumber += 1
     let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-        context: nil, eventNumber: 1, clickCount: 1, pressure: 1)!
+        context: nil, eventNumber: FixtureMouseEvents.nextNumber, clickCount: 1, pressure: 1)!
     NSApp.sendEvent(event)
+    let release = NSEvent.mouseEvent(with: type == .rightMouseDown ? .rightMouseUp : .leftMouseUp,
+        location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+        windowNumber: window.windowNumber, context: nil, eventNumber: FixtureMouseEvents.nextNumber,
+        clickCount: 1, pressure: 0)!
+    NSApp.sendEvent(release)
 }
 let clickWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 240),
     styleMask: [.borderless], backing: .buffered, defer: false)
@@ -241,7 +248,7 @@ func presentBoundary() { boundary.configure(presented: true) { dismissals += 1 }
 presentBoundary()
 precondition(boundary.monitoring)
 fixtureClick(clickWindow, point: NSPoint(x: 60, y: 60))
-precondition(dismissals == 0 && insideTarget.clicks == 1, "Inside clicks must remain interactive without dismissing")
+precondition(dismissals == 0 && insideTarget.clicks == 1, "Inside clicks must remain interactive without dismissing: dismissed=\(dismissals), clicks=\(insideTarget.clicks), boundary=\(boundary.frame)")
 fixtureClick(clickWindow, point: NSPoint(x: 240, y: 60))
 precondition(dismissals == 1 && !boundary.monitoring, "Outside click must dismiss and release its monitor")
 precondition(outsideTarget.clicks == 1 && clickWindow.firstResponder === outsideTarget,
