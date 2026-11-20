@@ -62,6 +62,22 @@ final class AIFileToolsTests: XCTestCase {
         let large = try await call("read_file", ["path": .string("large")])
         XCTAssertEqual(text(large["text"]).utf8.count, 4096); XCTAssertEqual(large["next_offset"], .number(4096))
     }
+    func testGrepRecognizesCRLFAndMixedNewlineBoundaries() async throws {
+        // The match is beyond the first excerpt; treating the file as one line hides it.
+        let before = (1...12).map { "unmatched line \($0) " + String(repeating: "x", count: 30) }
+        try file("windows.txt", (before + ["Needle on line thirteen", "tail"]).joined(separator: "\r\n"))
+        try file("mixed.txt", "first\r\nsecond\nthird\rNeedle on line four\r\nNeedle on final line")
+        let result = try await call("grep", ["path": .string("."), "pattern": .string("**/*"), "query": .string("needle")])
+        let matches = rows(result["matches"])
+        let windows = matches.filter { text($0["path"]) == "windows.txt" }
+        XCTAssertEqual(windows.count, 1)
+        XCTAssertEqual(windows.first?["line"], .number(13))
+        XCTAssertEqual(text(windows.first?["text"]), "Needle on line thirteen")
+        let mixed = matches.filter { text($0["path"]) == "mixed.txt" }
+        XCTAssertEqual(mixed.map { $0["line"] }, [.number(4), .number(5)])
+        XCTAssertEqual(mixed.map { text($0["text"]) }, ["Needle on line four", "Needle on final line"])
+    }
+
     func testGlobAndGrepUseTheSameProtectedDataPolicy() async throws {
         try file("nested/deep/code.swift", "FIRST\nNeedle here\nlast")
         try file("z.swift", "needle second"); try file(".private.swift", "needle")
