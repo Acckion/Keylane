@@ -973,3 +973,115 @@ let nextVisit = LauncherPageSession()
 precondition(nextVisit.publish { stalePublishes += 1 } && stalePublishes == 1)
 nextVisit.end()
 print("PASS alternate Return resolves current action and rejects disabled/missing actions; ended visits cannot publish")
+
+// The catalog itself can acquire new IDs, pages, settings and providers atomically.
+let transactionOwner = ModuleID(rawValue: "transaction.extension")
+let transactionID = CommandID(rawValue: "extension:transaction.run")
+let transactionPage = PageID(rawValue: "transaction-page")
+let oldSearchUpdates = PassthroughSubject<Void, Never>()
+let newSearchUpdates = PassthroughSubject<Void, Never>()
+let oldSettingsUpdates = PassthroughSubject<Void, Never>()
+let newSettingsUpdates = PassthroughSubject<Void, Never>()
+var transactionStarts = 0
+var transactionStops = 0
+var transactionRuns: [Int] = []
+var transactionViews = 0
+func transactionModule(_ version: Int, search: PassthroughSubject<Void, Never>, settings: PassthroughSubject<Void, Never>) -> LauncherModule {
+    .init(id: transactionOwner, commands: [.init(declaration: .init(id: transactionID, title: "Version \(version)", detail: "", symbol: "gear",
+        keywords: [], destination: .page(transactionPage), settingsPage: "transaction-settings"), execute: { _ in transactionRuns.append(version) })],
+        pages: [.init(id: transactionPage, placeholder: "", content: { transactionViews += 1; return AnyView(EmptyView()) })],
+        settings: [.init(id: "transaction-settings", title: "Transaction", symbol: "gear", subtitle: "", order: 0, items: [], content: { transactionViews += 1; return AnyView(EmptyView()) })],
+        services: [.init(start: { transactionStarts += 1 }, stop: { transactionStops += 1 })],
+        searchUpdates: [search.eraseToAnyPublisher()], shortcutSettingsUpdates: [settings.eraseToAnyPublisher()],
+        registration: .init(isPresent: { true }, updates: Empty().eraseToAnyPublisher()))
+}
+let liveCatalog = try LauncherModuleRegistry(modules: [], preferences: extensionPreferences)
+var catalogSearchEvents = 0
+var catalogSettingsEvents = 0
+let catalogSearchObserver = liveCatalog.searchUpdates.sink { catalogSearchEvents += 1 }
+let catalogSettingsObserver = Publishers.MergeMany(liveCatalog.shortcutSettingsUpdates()).sink { catalogSettingsEvents += 1 }
+liveCatalog.startServices()
+try liveCatalog.install(transactionModule(1, search: oldSearchUpdates, settings: oldSettingsUpdates))
+precondition(liveCatalog.catalogRevision == 1 && transactionStarts == 1 && transactionViews == 0)
+precondition(liveCatalog.page(transactionPage) != nil && liveCatalog.settingsCatalog.page("transaction-settings") != nil)
+let oldActivation = liveCatalog.activation(for: transactionOwner)!
+let oldDispatch = liveCatalog.resolve(transactionID, origin: .shortcut, navigate: { _ in })!
+precondition(liveCatalog.shortcutScope(for: transactionID) == .extensionActivation(oldActivation.id))
+var invalid = transactionModule(2, search: newSearchUpdates, settings: newSettingsUpdates)
+invalid.pages = []
+do { try liveCatalog.install(invalid); preconditionFailure("Invalid page reference accepted") } catch {}
+precondition(liveCatalog.catalogRevision == 1 && liveCatalog.activation(for: transactionOwner) == oldActivation)
+precondition(transactionStops == 0 && transactionStarts == 1)
+oldDispatch(); precondition(transactionRuns == [1])
+try liveCatalog.install(transactionModule(2, search: newSearchUpdates, settings: newSettingsUpdates))
+precondition(liveCatalog.catalogRevision == 2 && transactionStarts == 2 && transactionStops == 1)
+precondition(liveCatalog.activation(for: transactionOwner) != oldActivation)
+oldDispatch(); precondition(transactionRuns == [1])
+let searchEventsAfterSwap = catalogSearchEvents
+let settingsEventsAfterSwap = catalogSettingsEvents
+oldSearchUpdates.send(); oldSettingsUpdates.send()
+precondition(catalogSearchEvents == searchEventsAfterSwap && catalogSettingsEvents == settingsEventsAfterSwap)
+newSearchUpdates.send(); newSettingsUpdates.send()
+precondition(catalogSearchEvents == searchEventsAfterSwap + 1 && catalogSettingsEvents == settingsEventsAfterSwap + 1)
+liveCatalog.resolve(transactionID, origin: .shortcut, navigate: { _ in })?()
+precondition(transactionRuns == [1, 2])
+let replacementDispatch = liveCatalog.resolve(transactionID, origin: .menu, navigate: { _ in })!
+try liveCatalog.uninstall(transactionOwner)
+replacementDispatch()
+precondition(transactionRuns == [1, 2] && transactionStops == 2)
+precondition(liveCatalog.catalogRevision == 3 && liveCatalog.page(transactionPage) == nil && liveCatalog.settings.isEmpty)
+precondition(liveCatalog.shortcutScope(for: transactionID) == .unavailable && !liveCatalog.isModuleEnabled(transactionOwner))
+try liveCatalog.install(transactionModule(3, search: newSearchUpdates, settings: newSettingsUpdates))
+precondition(liveCatalog.catalogRevision == 4 && liveCatalog.activation(for: transactionOwner) != oldActivation)
+oldDispatch(); replacementDispatch(); precondition(transactionRuns == [1, 2])
+liveCatalog.stopServices()
+precondition(transactionStarts == 3 && transactionStops == 3 && transactionViews == 0)
+print("PASS catalog insert/replace/uninstall/reinstall, invalid preparation rollback, inert factories, stale dispatch and stream retirement")
+
+// A trusted native adapter uses exactly the same directory transaction contract.
+let adapterRegistry = try LauncherModuleRegistry(modules: [module], preferences: extensionPreferences)
+var nativeAdapter = transactionModule(4, search: oldSearchUpdates, settings: oldSettingsUpdates)
+nativeAdapter.origin = .builtInExtension
+try adapterRegistry.install(nativeAdapter)
+let nativeActivation = adapterRegistry.activation(for: transactionOwner)!
+var guestAdapter = transactionModule(5, search: newSearchUpdates, settings: newSettingsUpdates)
+guestAdapter.origin = .installedExtension
+try adapterRegistry.install(guestAdapter)
+precondition(adapterRegistry.activation(for: transactionOwner) != nativeActivation)
+precondition(adapterRegistry.settingsCatalog.sidebarGroups.first(where: { $0.id == .installedExtension })?.pages.contains(where: { $0.id == "transaction-settings" }) == true)
+let immutableRevision = adapterRegistry.catalogRevision
+do { try adapterRegistry.install(module); preconditionFailure("Unregistered replacement accepted") } catch {}
+precondition(adapterRegistry.catalogRevision == immutableRevision)
+var badParent = guestAdapter
+badParent.pages = [.init(id: transactionPage, placeholder: "", parent: PageID(rawValue: "missing-parent"))]
+do { try adapterRegistry.install(badParent); preconditionFailure("Missing parent accepted") } catch {}
+precondition(adapterRegistry.catalogRevision == immutableRevision)
+var reentrantRejected = false
+var retiringModule = guestAdapter
+retiringModule.services = [.init(start: {}, stop: {
+    do { try adapterRegistry.uninstall(transactionOwner) }
+    catch LauncherModuleRegistry.CatalogUpdateError.busy { reentrantRejected = true }
+    catch { preconditionFailure("Unexpected error") }
+})]
+try adapterRegistry.install(retiringModule)
+adapterRegistry.startServices()
+precondition(adapterRegistry.setModuleEnabled(transactionOwner, false))
+precondition(reentrantRejected)
+reentrantRejected = false
+precondition(adapterRegistry.setModuleEnabled(transactionOwner, true))
+try adapterRegistry.uninstall(transactionOwner)
+precondition(reentrantRejected)
+adapterRegistry.stopServices()
+print("PASS native/guest adapter catalog parity, protected built-ins, missing-parent rollback and reentrant mutation rejection")
+
+var protectedReplacement = module
+protectedReplacement.registration = .init(isPresent: { true }, updates: Empty().eraseToAnyPublisher())
+let protectedRevision = adapterRegistry.catalogRevision
+do { try adapterRegistry.install(protectedReplacement); preconditionFailure("Protected built-in replaced") }
+catch LauncherModuleRegistry.CatalogUpdateError.immutableModule(let owner) where owner == moduleID { }
+catch { preconditionFailure("Unexpected protection error") }
+do { try adapterRegistry.uninstall(moduleID); preconditionFailure("Protected built-in removed") }
+catch LauncherModuleRegistry.CatalogUpdateError.immutableModule(let owner) where owner == moduleID { }
+catch { preconditionFailure("Unexpected protection error") }
+precondition(adapterRegistry.catalogRevision == protectedRevision)
+print("PASS registered adapter cannot replace or uninstall a protected built-in")
