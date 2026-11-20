@@ -6,17 +6,17 @@ struct AppleNoteResult: Identifiable, Equatable {
 }
 
 enum AppleNotesAutomation {
-    static func search(_ query: String, request: ExtensionProcessRequest) throws -> [AppleNoteResult] {
+    static func search(_ query: String, request: ExtensionProcessRequest, titlesOnly: Bool = false) throws -> [AppleNoteResult] {
         let source = """
         set query to \(literal(query))
         tell application id "com.apple.Notes"
             if query is "" then
-                set matches to every note
+                set matches to every note\(titlesOnly ? " whose password protected is false" : "")
                 set bodyMatches to {}
             else
                 ignoring case and diacriticals
-                    set matches to every note whose name contains query
-                    set bodyMatches to every note whose password protected is false and plaintext contains query
+                    set matches to every note whose name contains query\(titlesOnly ? " and password protected is false" : "")
+                    \(titlesOnly ? "set bodyMatches to {}" : "set bodyMatches to every note whose password protected is false and plaintext contains query")
                 end ignoring
             end if
             set deletedIDs to my deletedNoteIDs()
@@ -38,6 +38,27 @@ enum AppleNotesAutomation {
             let title = String(line[line.index(after: tab)...])
             return AppleNoteResult(id: String(line[..<tab]), title: title.isEmpty ? "未命名" : title)
         }
+    }
+
+    /// Read one selected, unlocked, non-deleted note. Never request an unlock or enumerate bodies.
+    static func readText(_ id: String, request: ExtensionProcessRequest,
+                         run: ((String, ExtensionProcessRequest) throws -> String)? = nil) throws -> String {
+        let script = """
+        tell application id "com.apple.Notes"
+            set selectedID to \(literal(id))
+            if selectedID is in my deletedNoteIDs() then error number -1728
+            set selectedNote to note id selectedID
+            if password protected of selectedNote then error number -10006
+            set selectedText to plaintext of selectedNote
+            if (length of selectedText) > 32000 then error number -2750
+            return "KEYLANE_TEXT:" & selectedText
+        end tell
+        """
+        let value = try run?(script, request) ?? execute(script, request: request, preservingText: true)
+        guard value.hasPrefix("KEYLANE_TEXT:") else { throw Failure(code: 0) }
+        let text = String(value.dropFirst("KEYLANE_TEXT:".count))
+        guard text.utf8.count <= 32_000 else { throw Failure(code: -2750) }
+        return text
     }
 
     static func show(_ id: String, request: ExtensionProcessRequest) throws {
@@ -72,6 +93,8 @@ enum AppleNotesAutomation {
             case -1743, -1744: return "请在「系统设置 → 隐私与安全性 → 自动化」中允许 Keylane 控制备忘录。"
             case -1712: return "备忘录响应超时。若系统正在请求授权，请先完成授权。"
             case -1728: return "备忘录或默认文件夹已不可用。请在 Apple 备忘录中检查。"
+            case -10006: return "不能读取受密码保护的备忘录，请选择其他笔记。"
+            case -2750: return "备忘录文字超过本次处理上限，请缩小范围。"
             case -128: return "备忘录操作已取消。"
             default: return "无法完成备忘录操作。请打开 Apple 备忘录检查账户后重试。"
             }
@@ -92,7 +115,7 @@ enum AppleNotesAutomation {
         return names.union([key]).sorted()
     }()
 
-    private static func execute(_ source: String, request: ExtensionProcessRequest) throws -> String {
+    private static func execute(_ source: String, request: ExtensionProcessRequest, preservingText: Bool = false) throws -> String {
         // Pass the script over stdin so queries and drafts never appear in process arguments.
         let folderNames = recentlyDeletedFolderNames.map(literal).joined(separator: ", ")
         let script = """
@@ -149,7 +172,7 @@ enum AppleNotesAutomation {
         let data = output.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0, let result = String(data: data, encoding: .utf8) else { throw Failure(code: 0) }
-        let value = result.trimmingCharacters(in: .newlines)
+        let value = preservingText ? (result.hasSuffix("\n") ? String(result.dropLast()) : result) : result.trimmingCharacters(in: .newlines)
         let prefix = "KEYLANE_ERROR:"
         if value.hasPrefix(prefix) { throw Failure(code: Int(value.dropFirst(prefix.count)) ?? 0) }
         return value

@@ -821,3 +821,33 @@ let contextDeadline = Date().addingTimeInterval(5)
 while !contextRegistryFinished, Date() < contextDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
 precondition(contextRegistryFinished)
 print("PASS module context directory: no eager body reads, command admission, duplicate rejection and irreversible activation revocation")
+
+// Result destinations use the same command executor, including internal-only grid presentation.
+do {
+    let suite = "keylane.ai-result-routing." + UUID().uuidString
+    let prefs = UserDefaults(suiteName: suite)!
+    defer { prefs.removePersistentDomain(forName: suite) }
+    let sourceID = CommandID(rawValue: "fixture-result-source")
+    let destinationID = CommandID(rawValue: "fixture-result-target")
+    let definition = AIActionDefinition(commandID: sourceID, title: "AI result", instructions: "Transform", resultDestination: .init(commandID: destinationID, title: "Preview result"))
+    let source = LauncherModule.Command(declaration: .init(id: sourceID, title: "Source", detail: "", symbol: "sparkles", keywords: []))
+    var delivered: [String] = []
+    let destination = LauncherModule.Command(declaration: .init(id: destinationID, title: "Internal", detail: "", symbol: "doc", keywords: []), isInternal: true, arguments: .init(count: 1...1) { _, args in delivered = args })
+    let module = LauncherModule(id: .init(rawValue: "fixture-result"), commands: [source, destination], aiActions: [definition])
+    let registry = try LauncherModuleRegistry(modules: [module], preferences: prefs)
+    precondition(registry.aiResultDestination(for: sourceID) == definition.resultDestination)
+    let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
+    precondition(!registry.candidates(for: input).contains { $0.commandID == destinationID })
+    precondition(!registry.shortcutCommandGroups.flatMap(\.commands).contains { $0.declaration.id == destinationID })
+    precondition(!registry.invoke(destinationID, origin: .shortcut, arguments: ["result"]) { _ in })
+    precondition(registry.invoke(destinationID, origin: .menu, arguments: ["result"]) { _ in })
+    precondition(delivered == ["result"])
+    _ = registry.setModuleEnabled(module.id, false)
+    precondition(registry.aiResultDestination(for: sourceID) == nil)
+    precondition(!registry.invoke(destinationID, origin: .menu, arguments: ["stale"]) { _ in })
+    do {
+        _ = try LauncherModuleRegistry(modules: [.init(id: module.id, commands: [source], aiActions: [definition])], preferences: prefs)
+        preconditionFailure("Missing result destination accepted")
+    } catch { }
+}
+print("PASS AI result routing: validated target, normal command admission, hidden internal action, shortcut denial and module revocation")

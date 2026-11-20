@@ -24,7 +24,7 @@ enum AIActionLauncher {
                 })
             }, leave: session.clear, submit: { if !SearchField.isComposing { session.send() } },
             returnBindings: .init(primary: .command), actionSelectionID: { session.invocationID.uuidString }, primaryTitle: { "发送给模型" }, primaryEnabled: { session.canSend },
-            actions: {
+            actions: { [weak model] in
                 var result = [LauncherAction(id: "copy-ai-action", title: "复制结果", icon: "doc.on.doc", enabled: !session.answer.isEmpty) {
                     AIConversationHostActions.copyText(session.answer)
                 }]
@@ -35,6 +35,12 @@ enum AIActionLauncher {
                         (NSApp.delegate as? Delegate)?.showLauncherFeedback("无法加入草稿：请等待附件处理完成，或缩小内容范围。", style: .failure)
                     }
                 })
+                if let id = session.commandID, let destination = model?.launcherModules?.aiResultDestination(for: id) {
+                    result.append(.init(id: "ai-result-destination", title: destination.title, icon: "square.and.arrow.down", enabled: session.canUseResult) { [weak model] in
+                        guard session.canUseResult, model?.launcherModules?.aiResultDestination(for: id) == destination else { return }
+                        _ = model?.runCommand(destination.commandID, origin: .menu, arguments: [session.answer])
+                    })
+                }
                 if session.running || session.preparing { result.append(.init(id: "stop-ai-action", title: "停止", icon: "stop.fill", perform: session.cancel)) }
                 return result
             }, updates: updates, badgeTitle: { session.title })
@@ -46,12 +52,12 @@ struct AIActionForm: View {
     @FocusState private var questionFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let context = session.context {
+            if session.showsSourcePreview, let context = session.context {
                 Text(context.title).font(.headline)
                 ScrollView { Text(context.text).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }.frame(height: 140)
             }
             if session.acceptsQuestion {
-                TextField("输入关于这条记录的问题…", text: $session.question, axis: .vertical)
+                TextField(session.questionPlaceholder, text: $session.question, axis: .vertical)
                     .lineLimit(2...5).focused($questionFocused).disabled(session.running || session.preparing)
                 Text("问题过长时请缩短后重试。")
                     .font(.caption).foregroundStyle(.secondary)

@@ -98,6 +98,49 @@ final class EmojiSearchController: ObservableObject {
     private var itemsByID: [String: EmojiItem] = [:]
     private let defaults: UserDefaults
     private var history: [String: Int]
+    private struct AIRecommendation { let ids: [String]; let expires: Date }
+    private var aiCache: [String: AIRecommendation] = [:]
+    private var aiCacheOrder: [String] = []
+    private var aiModelIdentity = ""
+    private var catalogGeneration = UUID()
+    var aiCatalog: [EmojiItem] { items }
+    func setAIModelIdentity(_ identity: String) {
+        guard identity != aiModelIdentity else { return }
+        aiModelIdentity = identity; aiCache = [:]; aiCacheOrder = []
+        refresh()
+    }
+    @MainActor func loadForAI() async throws {
+        guard items.isEmpty else { return }
+        let generation = catalogGeneration
+        let loaded = try await Task.detached(priority: .userInitiated) { try EmojiCatalog.load() }.value
+        try Task.checkCancellation()
+        guard generation == catalogGeneration else { throw CancellationError() }
+        items = loaded; grouped = Dictionary(grouping: loaded, by: \.category)
+        itemsByID = Dictionary(loaded.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+    private func aiKey(_ query: String) -> String { aiModelIdentity + "\u{1f}" + category + "\u{1f}" + query.trimmingCharacters(in: .whitespacesAndNewlines) }
+    func showAIRecommendations(_ result: String, description: String, now: Date = .now) throws {
+        let allowed = Set(items.filter { category == "all" || $0.category == category }.map(\.glyph))
+        let ids = try EmojiAIResult.glyphs(result, allowed: allowed)
+        let key = aiKey(description)
+        aiCache[key] = .init(ids: ids, expires: now.addingTimeInterval(900))
+        aiCacheOrder.removeAll { $0 == key }; aiCacheOrder.append(key)
+        while aiCacheOrder.count > 20 { aiCache.removeValue(forKey: aiCacheOrder.removeFirst()) }
+        refresh()
+    }
+    private func recommendations(now: Date = .now) -> [EmojiItem] {
+        guard let cached = aiCache[aiKey(query)], cached.expires > now else { return [] }
+        return cached.ids.compactMap { itemsByID[$0] }.filter { category == "all" || $0.category == category }
+    }
+    private func withAIRecommendations(_ groups: [ResultGridSection<EmojiItem>]) -> [ResultGridSection<EmojiItem>] {
+        let ai = recommendations()
+        guard !ai.isEmpty else { return groups }
+        let ids = Set(ai.map(\.id))
+        return [.init(id: "ai-results", title: EmojiCatalog.label("AI 推荐", "AI Suggestions"), items: ai)] + groups.compactMap { group in
+            let remaining = group.items.filter { !ids.contains($0.id) }
+            return remaining.isEmpty ? nil : .init(id: group.id, title: group.title, items: remaining)
+        }
+    }
     private var pendingSelection: ResultGridSelection<String>?
 
     init(defaults: UserDefaults = .standard) {
@@ -176,6 +219,7 @@ final class EmojiSearchController: ObservableObject {
     }
 
     func releaseCatalog() {
+        catalogGeneration = UUID(); aiCache = [:]; aiCacheOrder = []
         stop()
         loadTask?.cancel()
         loadTask = nil
@@ -243,7 +287,7 @@ final class EmojiSearchController: ObservableObject {
                         .init(id: "results", title: EmojiCatalog.label("搜索结果", "Results"), items: ranked)
                     ]
                     self.pendingSelection = nil
-                    self.publish(updated, retaining: priorSelection)
+                    self.publish(self.withAIRecommendations(updated), retaining: priorSelection)
                     self.isSearching = false
                     self.searchTask = nil
                 }
@@ -251,7 +295,7 @@ final class EmojiSearchController: ObservableObject {
             return
         }
         pendingSelection = nil
-        publish(updated, retaining: priorSelection)
+        publish(withAIRecommendations(updated), retaining: priorSelection)
     }
 
     private func publish(_ updated: [ResultGridSection<EmojiItem>], retaining priorSelection: ResultGridSelection<String>?) {

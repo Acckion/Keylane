@@ -2261,3 +2261,71 @@ let disabledTextRequestCount = FixtureProtocol.requests.count
 disabledTextCommand.send()
 precondition(FixtureProtocol.requests.count == disabledTextRequestCount)
 print("PASS legacy AI command shares irreversible availability revocation; fast disable/reenable requires fresh invocation")
+
+// Buffered policies never publish raw, unvalidated model output.
+let validatedAction = AIActionSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+validatedAction.prepare(actionDefinition, source: questionSource, resultTransform: { _, _ in throw AIActionError.invalidResult }, allowed: { true })
+wait("Buffered action prepared") { !validatedAction.preparing }
+FixtureProtocol.mode = "ok"
+validatedAction.send()
+wait("Buffered invalid result rejected") { !validatedAction.preparing && !validatedAction.running }
+precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult && validatedAction.status == AIActionError.invalidResult.localizedDescription)
+validatedAction.prepare(questionDefinition, source: questionSource, initialQuestion: "Original question", resultTransform: { _, _ in "validated output" }, allowed: { true })
+wait("Buffered valid action prepared") { !validatedAction.preparing }
+validatedAction.send()
+wait("Buffered valid result accepted") { !validatedAction.preparing && !validatedAction.running }
+precondition(validatedAction.answer == "validated output" && validatedAction.canUseResult)
+validatedAction.question = "Edited question"
+precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult)
+print("PASS buffered module policy: raw output withheld, invalid result rejected, validated output admitted and question edits revoke old result")
+
+var snippetFixture: Snippet? = Snippet(id: "fixture-snippet", title: "Template", text: "Hello {clipboard} {cursor}")
+let snippetSource = SnippetAIContextSource.make(id: "fixture-snippet") { snippetFixture }
+var librarySourcesFinished = false
+Task { @MainActor in
+    do {
+        let snapshot = try await snippetSource.load()
+        precondition(snapshot.text == "Hello {clipboard} {cursor}", "AI must never expand placeholders")
+        snippetFixture?.text = "Edited"
+        let snippetCurrent = try await snippetSource.isCurrent(snapshot)
+        precondition(!snippetCurrent)
+        snippetFixture = nil
+        do { _ = try await snippetSource.load(); preconditionFailure("Deleted snippet accepted") } catch { }
+        let request = ExtensionProcessRequest()
+        let exact = try AppleNotesAutomation.readText("fixture-\"id", request: request) { script, _ in
+            precondition(script.contains("password protected") && script.contains("deletedNoteIDs") && script.contains("32000"))
+            precondition(script.contains("fixture-\\\"id"))
+            return "KEYLANE_TEXT:\nExact body\n\n"
+        }
+        precondition(exact == "\nExact body\n\n")
+        do {
+            _ = try AppleNotesAutomation.readText("large", request: request) { _, _ in "KEYLANE_TEXT:" + String(repeating: "中", count: 11_000) }
+            preconditionFailure("Oversize note accepted")
+        } catch { }
+        let reader = AppleNotesAIReader(available: { true }, read: { _, _ in "One selected note" }, search: { _, _ in [.init(id: "n", title: "Title only")] })
+        let rows = try await reader.directory("")
+        precondition(rows.map(\.id) == ["n"])
+        let note = try await reader.source(id: "n", title: "Title").load()
+        precondition(note.text == "One selected note")
+        let cancellationReader = AppleNotesAIReader(available: { true }, read: { _, request in
+            while !request.isCancelled { Thread.sleep(forTimeInterval: 0.002) }
+            throw CancellationError()
+        })
+        let read = Task { try await cancellationReader.text("cancelled") }
+        try await Task.sleep(for: .milliseconds(20))
+        cancellationReader.cancel()
+        do { _ = try await read.value; preconditionFailure("Note read survived cancellation") } catch { }
+    } catch { preconditionFailure("Library AI source fixture: \(error)") }
+    librarySourcesFinished = true
+}
+wait("Snippet and Apple Notes AI sources") { librarySourcesFinished }
+print("PASS library AI sources: literal snippet snapshot, edit/deletion revocation; bounded note text, locked/deleted guards, exact newlines and cancellable injected reader; no real Notes")
+
+validatedAction.prepare(actionDefinition, source: questionSource, allowed: { true })
+wait("Module-scoped cleanup prepared") { !validatedAction.preparing }
+let cleanupInvocation = validatedAction.invocationID
+validatedAction.clear(for: .init(rawValue: "unrelated-module"))
+precondition(validatedAction.context != nil && validatedAction.invocationID == cleanupInvocation)
+validatedAction.clear(for: questionSource.moduleID)
+precondition(validatedAction.context == nil && validatedAction.invocationID != cleanupInvocation)
+print("PASS module-scoped AI cleanup: stopping another extension preserves the active invocation")

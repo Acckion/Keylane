@@ -9,7 +9,15 @@ private final class ModelFixtureProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
-        let body = try! JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": "这是合成验证结果。所选内容已通过公共 AI 动作会话处理；没有修改原记录。"]]], "usage": ["total_tokens": 12]])
+        var content = "这是合成验证结果。所选内容已通过公共 AI 动作会话处理；没有修改原记录。"
+        var input = request.httpBody ?? Data()
+        if input.isEmpty, let stream = request.httpBodyStream {
+            stream.open(); defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true { let count = stream.read(&buffer, maxLength: buffer.count); if count <= 0 { break }; input.append(contentsOf: buffer.prefix(count)) }
+        }
+        if String(decoding: input, as: UTF8.self).contains("JSON array") { content = "[\"😄\",\"❤️\"]" }
+        let body = try! JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": content]]], "usage": ["total_tokens": 12]])
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body); client?.urlProtocolDidFinishLoading(self)
     }
@@ -29,13 +37,13 @@ private final class ModelFixtureProtocol: URLProtocol {
                 let transport = URLSessionConfiguration.ephemeral; transport.protocolClasses = [ModelFixtureProtocol.self]
                 let runtime = AIRuntime(configuration: transport)
                 let session = AIActionSession(configuration: config, runtime: runtime, readKey: { _ in nil })
-                for definition in ClipboardAIActions.definitions + ScreenshotAIActions.definitions {
+                for definition in ClipboardAIActions.definitions + ScreenshotAIActions.definitions + SnippetAIActions.definitions + AppleNotesAIActions.definitions + [EmojiAIActions.definition] {
                     let source = AIActionSource(moduleID: .init(rawValue: "keylane.clipboard"),
                         load: {
                             if definition.acceptsQuestion { try await Task.sleep(for: .milliseconds(150)) }
                             return .init(sourceID: "fixture", title: "合成剪贴板记录", text: "Keylane brings your commands together. This is sample text for the shared AI action UI.")
                         }, isCurrent: { _ in true })
-                    session.prepare(definition, source: source, allowed: { true })
+                    session.prepare(definition, source: source, resultTransform: definition.commandID == EmojiAIActions.definition.commandID ? { _, result in try EmojiAIResult.normalized(result, allowed: ["😄", "❤️"]) } : nil, allowed: { true })
                     if definition.acceptsQuestion {
                         try await display(AnyView(LauncherCreationForm(back: {}, spacing: 16) {
                             Text(definition.title).font(.headline)
@@ -70,7 +78,15 @@ private final class ModelFixtureProtocol: URLProtocol {
                 }
                 try await display(AnyView(AIChatContextSheet(source: context, add: { _ in })), name: "module-context-picker")
                 try await display(AnyView(AIResultContent(answer: "## 合成结果\n\n- **统一 Markdown**\n- 保留原始数据", status: "合成验证完成", running: false, progress: .init()).padding(26)), name: "shared-text-result")
-                print("PASS eight production AI UI cases: five module actions, file question, generic context picker and shared text result; synthetic transport only, no real history")
+                let emoji = EmojiSearchController(defaults: prefs)
+                try await emoji.loadForAI(); emoji.start()
+                emoji.query = "表达开心的心情"
+                try emoji.showAIRecommendations("[\"😄\",\"❤️\"]", description: emoji.query)
+                try await wait { !emoji.isSearching }
+                guard emoji.sections.first?.id == "ai-results" else { throw CocoaError(.fileReadUnknown) }
+                try await display(AnyView(EmojiSearchPage(controller: emoji, activate: { _ in })), name: "emoji-ai-grid")
+                emoji.releaseCatalog()
+                print("PASS sixteen production AI UI cases: twelve module actions, file question, generic context picker, shared text result and validated Emoji grid; synthetic transport only, no real history")
                 prefs.removePersistentDomain(forName: suite)
                 NSApp.terminate(nil)
             } catch { fputs("Module AI window fixture failed: \(error)\n", stderr); exit(1) }

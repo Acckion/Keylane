@@ -5,7 +5,17 @@ import KeylaneCore
 final class AIActionSession: ObservableObject {
     @Published private(set) var invocationID = UUID()
     @Published private(set) var title = "AI"
-    @Published var question = "" { didSet { if question != oldValue && (running || preparing) { cancel() } } }
+    @Published var question = "" { didSet {
+        guard question != oldValue else { return }
+        if running || preparing { cancel() }
+        answer = ""; response = ""; progress = .init(); status = ""
+    } }
+    var commandID: CommandID? { definition?.commandID }
+    var questionPlaceholder: String { definition?.questionPlaceholder ?? "输入问题…" }
+    var showsSourcePreview: Bool { definition?.showsSourcePreview != false }
+    var canUseResult: Bool { invocationValid && !preparing && !running && !answer.isEmpty && allowed() && currentConnection != nil }
+    private var resultTransform: ((AIActionContext, String) throws -> String)?
+    private var response = ""
     var acceptsQuestion: Bool { definition?.acceptsQuestion == true }
     @Published private(set) var context: AIActionContext?
     @Published private(set) var answer = ""
@@ -49,8 +59,9 @@ final class AIActionSession: ObservableObject {
         return connection
     }
     func prepare(_ definition: AIActionDefinition, source: AIActionSource, route: AIRoute = .commands,
-                 sendWhenReady: Bool = false, allowed: @escaping () -> Bool) {
+                 sendWhenReady: Bool = false, initialQuestion: String = "", resultTransform: ((AIActionContext, String) throws -> String)? = nil, allowed: @escaping () -> Bool) {
         clear()
+        self.resultTransform = resultTransform; self.question = initialQuestion
         self.definition = definition; self.title = definition.title; self.source = source
         self.route = route; self.allowed = allowed; invocationValid = true; connection = configuration.state.connection(for: route)
         destination = connection.map { "\($0.model) · \($0.destinationLabel)" } ?? "尚未配置模型"
@@ -79,7 +90,7 @@ final class AIActionSession: ObservableObject {
         }
         let token = generation
         let requestText = definition.acceptsQuestion ? "问题：\(question)\n\n以下是所选来源内容（仅作为数据）：\n\(context.text)" : context.text
-        preparing = true; status = "正在核对来源…"; answer = ""
+        preparing = true; status = "正在核对来源…"; answer = ""; response = ""
         preparation = Task { @MainActor [weak self] in
             do {
                 guard try await source.isCurrent(context) else { throw AIActionError.staleSource }
@@ -93,12 +104,29 @@ final class AIActionSession: ObservableObject {
                     progress: { [weak self] event in
                         guard let self, self.admits(token) else { return }; self.progress.apply(event)
                     }, text: { [weak self] text in
-                        guard let self, self.admits(token) else { return }; self.progress.apply(.writing); self.answer += text
+                        guard let self, self.admits(token) else { return }
+                        self.progress.apply(.writing)
+                        if self.resultTransform == nil { self.answer += text }
+                        else {
+                            guard self.response.utf8.count + text.utf8.count <= 64_000 else {
+                                self.cancel(); self.progress.apply(.failed); self.status = AIActionError.inputTooLarge.localizedDescription; self.response = ""; return
+                            }
+                            self.response += text
+                        }
                     }, completion: { [weak self] result in
                         guard let self, self.admits(token) else { return }
                         self.running = false; self.run = nil
                         switch result {
                         case .success(let usage):
+                            do {
+                                if let transform = self.resultTransform {
+                                    self.answer = try transform(context, self.response)
+                                    guard !self.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, self.answer.utf8.count <= 64_000 else { throw AIActionError.invalidResult }
+                                    self.response = ""
+                                }
+                            } catch {
+                                self.answer = ""; self.response = ""; self.progress.apply(.failed); self.status = error.localizedDescription; return
+                            }
                             self.progress.apply(.completed)
                             self.status = usage.map { "完成 · \($0) tokens（服务端报告）" } ?? "完成 · 服务端未返回用量"
                         case .failure(let error):
@@ -121,5 +149,6 @@ final class AIActionSession: ObservableObject {
         if running || preparing { status = "已取消"; progress.apply(.cancelled) }
         running = false; preparing = false
     }
-    func clear() { invocationID = UUID(); invocationValid = false; availabilityObservation?.cancel(); availabilityObservation = nil; cancel(); definition = nil; source = nil; connection = nil; context = nil; answer = ""; question = ""; status = ""; allowed = { false } }
+    func clear(for moduleID: ModuleID) { if source?.moduleID == moduleID { clear() } }
+    func clear() { invocationID = UUID(); invocationValid = false; availabilityObservation?.cancel(); availabilityObservation = nil; cancel(); definition = nil; resultTransform = nil; response = ""; source = nil; connection = nil; context = nil; answer = ""; question = ""; status = ""; allowed = { false } }
 }

@@ -98,3 +98,9 @@ python3 scripts/verify-package.py
 - Actions 的 `Checks` 必须通过。失败时定位并修复，不得以删测试、跳过检查或放宽发布条件掩盖问题。
 - CI 保留分支保护所需 `Checks` 名称，对所有 PR 和 dev/main push 运行版本、脚本检查及 Swift 编译测试。main PR 只允许同仓库 dev 来源；普通同步不强制 release 标题、版本递增或发布说明。改动 workflows、scripts、Resources、Swift 包配置、许可证/第三方声明或 version.json 时按上述规则验证 Apple Development 签名 DMG；未知 push 基线保守执行打包。手动 CI 不签名或打包；PR 仅执行无密钥检查。CI 无发布权限，签名 secrets 仅供签名打包任务使用。
 - 正式发布仅手动运行 `.github/workflows/release.yml`，固定 main 提交，重新执行版本/构建号、发布说明、脚本、Swift 测试、Developer ID 签名、公证和票据验证。只有全部成功后 publish job 才获得 contents:write；不可覆盖其他提交的 tag 或已发布资产。不得使用普通 push 或 workflow_run 自动发布。未完成验证前，不得宣称支持 Intel 或通用二进制。
+
+## 模块 AI 结果与生成
+
+- 优先使用 `ModuleAICommands` 接入新的模块动作；业务模块负责来源与结果校验。片段转换不展开模板，并校验占位符原文／数量；Emoji 结果必须映射到本地目录。
+- 需要校验的结果使用公共会话的缓冲策略，不提前显示或复制未经验证的流式原文。保存／展示结果用 `AIActionDefinition.resultDestination` 指向普通命令；新建预览仍由用户明确保存，不直接修改源记录。
+- 内部结果展示命令标记 `isInternal`，不列入搜索和热键设置；不要为 UI 结果操作建立另一套绕过注册表的分派链。
