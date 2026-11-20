@@ -27,6 +27,8 @@ final class DictationController: ObservableObject {
     private var activeRecord: DictationRecord?
     private var activeOptions = DictationOptions()
     private var activeStyle: DictationStyle?
+    private var activeTranscription: AIConnection?
+    private var activeCleanup: AIConnection?
     private var target: DictationTarget?
     private var destination = Destination.application
     private var audioURL: URL?
@@ -76,11 +78,14 @@ final class DictationController: ObservableObject {
         }
     }
     var cleanupConnection: AIConnection? {
-        if let id = settings.options.cleanupModelID {
-            guard configuration.state.enabled else { return nil }
-            return configuration.state.connections.first { $0.id == id && $0.isConfigured }
-        }
-        return configuration.state.connection(for: .commands)
+        guard configuration.state.enabled else { return nil }
+        let connection = settings.options.cleanupModelID.flatMap { id in configuration.state.connections.first { $0.id == id && $0.isConfigured } }
+            ?? (settings.options.cleanupModelID == nil ? configuration.state.connection(for: .commands) : nil)
+        return connection.flatMap { AIModelPurpose.cloudText.accepts($0) ? $0 : nil }
+    }
+    var transcriptionConnection: AIConnection? {
+        guard configuration.state.enabled, let id = settings.options.transcriptionModelID else { return nil }
+        return configuration.state.connections.first { $0.id == id && AIModelPurpose.transcription.accepts($0) }
     }
 
     func startService() {
@@ -102,7 +107,9 @@ final class DictationController: ObservableObject {
             DispatchQueue.main.async { self?.keyMonitor?.configureModifier() }
         }.store(in: &subscriptions)
         configuration.$state.receive(on: DispatchQueue.main).sink { [weak self] state in
-            if !state.enabled, self?.phase == .formatting { self?.cancel() }
+            guard let self, self.busy else { return }
+            if !state.enabled || self.activeTranscription.map({ !state.connections.contains($0) }) == true
+                || self.activeCleanup.map({ !state.connections.contains($0) }) == true { self.cancel() }
         }.store(in: &subscriptions)
         keyMonitor?.configureModifier()
     }
@@ -123,16 +130,22 @@ final class DictationController: ObservableObject {
 
     private func begin(_ destination: Destination) {
         guard !shortcutsSuspended else { return }
-        guard canRun(), settings.permission.available, settings.options.isConfigured else { openSettings(); return }
+        guard canRun(), settings.permission.available else { openSettings(); return }
+        guard let transcription = transcriptionConnection else {
+            message = "请先在 AI 中添加语音转写模型，并在这里选择；聊天模型用于下方文字整理。"
+            openSettings(); return
+        }
         if settings.options.cleanup, cleanupConnection == nil {
             message = "请先配置文字整理模型，或关闭「整理口头表达」后直接使用原始转写。"
             openSettings(); return
         }
         do {
-            guard try DictationCredentials.read(settings.options) != nil else { message = DictationError.missingKey.localizedDescription; openSettings(); return }
+            guard try AIConfiguration.key(for: transcription) != nil else { message = AITranscriptionError.missingKey.localizedDescription; openSettings(); return }
         } catch { message = error.localizedDescription; openSettings(); return }
         cancel()
         activeOptions = settings.options
+        activeTranscription = transcription
+        activeCleanup = cleanupConnection
         finishRequested = false
         self.destination = destination
         let app = NSWorkspace.shared.frontmostApplication
@@ -218,20 +231,25 @@ final class DictationController: ObservableObject {
         let style = activeStyle
         let context = target?.nearbyText
         let app = activeRecord?.application
-        let connection = cleanupConnection
+        let connection = activeCleanup
+        let transcription = activeTranscription
         task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                guard var record = activeRecord, let audioURL else { throw DictationError.invalidAudio }
+                guard var record = activeRecord, let audioURL else { throw AITranscriptionError.invalidAudio }
                 let raw: String
                 if !record.rawText.isEmpty { raw = record.rawText }
-                else { raw = try await DictationCloudClient().transcribe(audio: audioURL, options: options) }
+                else {
+                    guard let transcription else { throw AITranscriptionError.configuration }
+                    raw = try await runtime.transcribe(audio: audioURL, connection: transcription, language: options.language,
+                                                       vocabulary: options.validVocabulary, readKey: { try AIConfiguration.key(for: $0) })
+                }
                 try Task.checkCancellation()
                 guard session.accepts(token) else { return }
                 record.rawText = raw; record.text = raw; activeRecord = record
                 if options.cleanup {
                     guard let connection else { throw Failure("转写已保留。请在 AI 设置中配置文字整理模型，或关闭听写的文字整理。") }
-                    guard !["ollama", "lmstudio"].contains(connection.providerID ?? "") else {
+                    guard AIModelPurpose.cloudText.accepts(connection) else {
                         throw Failure("此版本只使用云端模型，请选择云端文字整理模型。")
                     }
                     updatePhase(.formatting, token: token)
@@ -242,7 +260,7 @@ final class DictationController: ObservableObject {
                         try await collector.append(text)
                     })
                     record.text = await collector.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !record.text.isEmpty else { throw DictationError.emptyTranscript }
+                    guard !record.text.isEmpty else { throw AITranscriptionError.emptyTranscript }
                 }
                 try Task.checkCancellation()
                 guard session.accepts(token), canRun(), settings.permission.available else { return }
@@ -295,6 +313,7 @@ final class DictationController: ObservableObject {
         guard session.accepts(token) else { return }
         session.cancel(); phase = .idle; panel.close(); keyMonitor?.stopWatchingSession()
         task = nil; target = nil; audioURL = nil; activeRecord = nil; destination = .application
+        activeTranscription = nil; activeCleanup = nil
     }
     private func fail(_ error: Error, token: UUID) {
         guard session.accepts(token) else { return }
@@ -320,6 +339,7 @@ final class DictationController: ObservableObject {
         capture?.cancel(); capture = nil; clock?.invalidate(); clock = nil
         keyMonitor?.stopWatchingSession(); audioDucking.restore(); panel.close()
         phase = .idle; target = nil; audioURL = nil; activeRecord = nil; destination = .application
+        activeTranscription = nil; activeCleanup = nil
         if let id, removeAudio { Task { try? await history.discardRecording(id) } }
     }
     func cancelField(_ id: UUID) { if case .field(let current, _) = destination, current == id { cancel() } }
@@ -330,6 +350,7 @@ final class DictationController: ObservableObject {
         cancel()
         // A retry never pastes into a stale application from an earlier session.
         activeOptions = settings.options; activeOptions.output = .copy
+        activeTranscription = transcriptionConnection; activeCleanup = cleanupConnection
         activeRecord = record; activeRecord?.error = nil
         activeStyle = record.styleName.flatMap { name in activeOptions.styles.first { $0.name == name } }
         destination = .application
@@ -401,7 +422,7 @@ final class DictationController: ObservableObject {
 private actor DictationTextCollector {
     var text = ""
     func append(_ value: String) throws {
-        guard text.utf8.count + value.utf8.count <= 1_048_576 else { throw DictationError.responseTooLarge }
+        guard text.utf8.count + value.utf8.count <= 1_048_576 else { throw AITranscriptionError.responseTooLarge }
         text += value
     }
 }

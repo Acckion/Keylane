@@ -1,14 +1,5 @@
 import Foundation
 
-public enum DictationCloudProvider: String, Codable, CaseIterable, Sendable {
-    case openAI, elevenLabs, compatible
-    public var title: String {
-        switch self { case .openAI: "OpenAI"; case .elevenLabs: "ElevenLabs"; case .compatible: "OpenAI 兼容接口" }
-    }
-    public var endpoint: String { self == .elevenLabs ? "https://api.elevenlabs.io/v1" : "https://api.openai.com/v1" }
-    public var model: String { self == .elevenLabs ? "scribe_v2" : "gpt-transcribe" }
-}
-
 public enum DictationOutput: String, Codable, CaseIterable, Sendable {
     case paste, copy, pasteAndCopy
     public var title: String {
@@ -56,9 +47,7 @@ public struct DictationStyle: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct DictationOptions: Codable, Equatable, Sendable {
-    public var provider = DictationCloudProvider.openAI
-    public var endpoint = DictationCloudProvider.openAI.endpoint
-    public var model = DictationCloudProvider.openAI.model
+    public var transcriptionModelID: UUID?
     public var language = "auto"
     public var microphoneIDs: [String] = []
     public var output = DictationOutput.paste
@@ -82,28 +71,8 @@ public struct DictationOptions: Codable, Equatable, Sendable {
     public var dictateToChat = false
     public init() {}
 
-    public var transcriptionURL: URL? {
-        guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let host = url.host, !host.isEmpty, url.user == nil, url.password == nil,
-              url.query == nil, url.fragment == nil,
-              url.scheme == "https" || (url.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased()))
-        else { return nil }
-        let suffix = provider == .elevenLabs ? "speech-to-text" : "audio/transcriptions"
-        return url.path.hasSuffix("/" + suffix) ? url : url.appendingPathComponent(suffix)
-    }
-    public var credentialAccount: String? {
-        transcriptionURL.map { provider.rawValue + "|" + $0.absoluteString }
-    }
-    public var validVocabulary: [String] {
-        var seen = Set<String>()
-        return vocabulary.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count <= 20 && $0.rangeOfCharacter(from: .controlCharacters) == nil && seen.insert($0).inserted }
-            .prefix(50).map { $0 }
-    }
-    public var isConfigured: Bool {
-        transcriptionURL != nil && !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && model.utf8.count <= 256 && model.rangeOfCharacter(from: .controlCharacters) == nil
-    }
+    public var validVocabulary: [String] { AITranscriptionOptions.sanitizedVocabulary(vocabulary) }
+
 }
 
 /// A generation accompanies every asynchronous capture, network and delivery callback.

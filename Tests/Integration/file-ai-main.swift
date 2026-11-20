@@ -893,3 +893,47 @@ precondition(noMatchingMenu.groups.isEmpty)
 precondition(noMatchingMenu.choices(inherits: true, allowsLastUsed: true).isEmpty)
 precondition(orderedMenu.choices(inherits: true, allowsLastUsed: true).prefix(2) == [.inherit, .lastUsed])
 print("PASS model menu search: matching models precede Return selection, no matches offer no selection, clearing search restores special choices")
+
+// Dictation uses the same catalog and credential scope as text AI; it stores only model IDs.
+let sharedSpeechName = "KeylaneSharedSpeech-" + UUID().uuidString
+let sharedSpeechDefaults = UserDefaults(suiteName: sharedSpeechName)!
+defer { sharedSpeechDefaults.removePersistentDomain(forName: sharedSpeechName) }
+let sharedSpeechConfig = AIConfiguration(preferences: sharedSpeechDefaults)
+let speechOwner = AIConnection(name: "Text model", endpoint: "https://fixture-provider.test/v1/chat/completions", model: "fixture-chat")
+precondition(sharedSpeechConfig.save(speechOwner, selectAsDefault: true))
+sharedSpeechConfig.setEnabled(true)
+let oldDefault = sharedSpeechConfig.state.defaults
+precondition(sharedSpeechConfig.addProviderModels(["gpt-transcribe"], from: speechOwner, discoveredUsing: speechOwner) == 1)
+let sharedSpeech = sharedSpeechConfig.state.connections.first { $0.model == "gpt-transcribe" }!
+precondition(sharedSpeech.taskKind == .openAITranscription)
+precondition(sharedSpeech.transcriptionOptions()?.transcriptionURL?.absoluteString == "https://fixture-provider.test/v1/audio/transcriptions")
+precondition(AIConfiguration.credentialQueries(for: sharedSpeech) as NSArray == AIConfiguration.credentialQueries(for: speechOwner) as NSArray)
+precondition(sharedSpeechConfig.state.defaults == oldDefault, "adding a speech model must not replace any text default")
+precondition(sharedSpeechConfig.addProviderModels(["gpt-transcribe"], from: speechOwner, discoveredUsing: speechOwner) == 0)
+sharedSpeechConfig.setDefault(sharedSpeech.id, for: .chat)
+precondition(sharedSpeechConfig.state.connection(for: .chat)?.id == speechOwner.id, "speech-only models cannot be chat defaults")
+var otherSpeechEndpoint = sharedSpeech
+otherSpeechEndpoint.endpoint = "https://other-fixture.test/v1"
+precondition(AIConfiguration.credentialQueries(for: otherSpeechEndpoint) as NSArray != AIConfiguration.credentialQueries(for: sharedSpeech) as NSArray)
+var explicitAudioEndpoint = sharedSpeech
+explicitAudioEndpoint.endpoint = "https://fixture-provider.test/v1/audio/transcriptions"
+precondition(AIConfiguration.credentialQueries(for: explicitAudioEndpoint) as NSArray == AIConfiguration.credentialQueries(for: sharedSpeech) as NSArray)
+precondition(explicitAudioEndpoint.modelsURL?.absoluteString == "https://fixture-provider.test/v1/models")
+var manualSpeech = speechOwner
+manualSpeech.model = "custom-speech-model"; manualSpeech.modelTask = .openAITranscription
+precondition(manualSpeech.transcriptionOptions() != nil)
+var textOverride = sharedSpeech
+textOverride.modelTask = .text
+precondition(textOverride.transcriptionOptions() == nil)
+var localSpeech = sharedSpeech
+localSpeech.providerID = "ollama"
+precondition(localSpeech.transcriptionOptions() == nil)
+let sharedSpeechMenu = AIModelMenuCatalog(connections: [speechOwner, sharedSpeech], selection: .inherit, query: "", purpose: .transcription)
+precondition(sharedSpeechMenu.choices(inherits: false, allowsLastUsed: false) == [.model(sharedSpeech.id)])
+let speechInTextMenu = AIModelMenuCatalog(connections: [speechOwner, sharedSpeech], selection: .model(sharedSpeech.id), query: "")
+precondition(speechInTextMenu.groups.flatMap(\.models).contains { $0.id == sharedSpeech.id }, "an incompatible saved choice remains visible for repair")
+precondition(!speechInTextMenu.choices(inherits: false, allowsLastUsed: false).contains(.model(sharedSpeech.id)))
+let reloadedSpeechConfig = AIConfiguration(preferences: sharedSpeechDefaults)
+precondition(reloadedSpeechConfig.state.connections.first { $0.id == sharedSpeech.id } == sharedSpeech)
+precondition(AIProviderPreset.all.first { $0.id == "elevenlabs" }!.connection.taskKind == .elevenLabsTranscription)
+print("PASS shared dictation models: common catalog and model picker, sibling credential reuse, endpoint isolation, explicit capabilities and unchanged text defaults")

@@ -16,23 +16,23 @@ final class DictationAudioEncoder {
             AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 32000
         ])
         input.expectsMediaDataInRealTime = true
-        guard writer.canAdd(input) else { throw DictationError.invalidAudio }
+        guard writer.canAdd(input) else { throw AITranscriptionError.invalidAudio }
         writer.add(input)
     }
     func append(_ sample: CMSampleBuffer) throws {
-        guard CMSampleBufferDataIsReady(sample) else { throw DictationError.invalidAudio }
+        guard CMSampleBufferDataIsReady(sample) else { throw AITranscriptionError.invalidAudio }
         if !hasSamples {
-            guard writer.startWriting() else { throw DictationError.invalidAudio }
+            guard writer.startWriting() else { throw AITranscriptionError.invalidAudio }
             writer.startSession(atSourceTime: CMSampleBufferGetPresentationTimeStamp(sample))
         }
-        guard writer.status == .writing, input.isReadyForMoreMediaData, input.append(sample) else { throw DictationError.invalidAudio }
+        guard writer.status == .writing, input.isReadyForMoreMediaData, input.append(sample) else { throw AITranscriptionError.invalidAudio }
         hasSamples = true
     }
     func finish(_ completion: @escaping (Result<Void, Error>) -> Void) {
-        guard hasSamples, writer.status == .writing else { completion(.failure(DictationError.invalidAudio)); return }
+        guard hasSamples, writer.status == .writing else { completion(.failure(AITranscriptionError.invalidAudio)); return }
         input.markAsFinished()
         writer.finishWriting { [writer] in
-            completion(writer.status == .completed ? .success(()) : .failure(DictationError.invalidAudio))
+            completion(writer.status == .completed ? .success(()) : .failure(AITranscriptionError.invalidAudio))
         }
     }
     func cancel() { if writer.status == .writing { writer.cancelWriting() } }

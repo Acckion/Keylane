@@ -10,49 +10,13 @@ struct DictationPreferences: View {
     @ObservedObject var settings: DictationSettings
     @ObservedObject var configuration: AIConfiguration
     let commands: [LauncherModule.Command]
-    @State private var apiKey = ""
-    @State private var keyStatus = ""
     @State private var microphones: [AVCaptureDevice] = []
 
     var body: some View {
         SettingsPageSections {
             if !controller.message.isEmpty { SettingsDescription(controller.message).foregroundStyle(.orange) }
-            SettingsGroup("云端转写") {
-                SettingsDescription("录音会发送到你选择的云端接口。API Key 仅保存在本机钥匙串，数据保留政策以提供方和你的账户为准。")
-                    .padding(.vertical, 8)
-                Divider()
-                SettingsPicker("提供方", selection: Binding(get: { settings.options.provider }, set: settings.chooseProvider)) {
-                    ForEach(DictationCloudProvider.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                Divider()
-                SettingsRow("接口地址") {
-                    TextField("https://…/v1", text: settings.binding(\.endpoint)).textFieldStyle(.roundedBorder).frame(maxWidth: 360)
-                }
-                Divider()
-                SettingsRow("语音模型") {
-                    TextField("模型 ID", text: settings.binding(\.model)).textFieldStyle(.roundedBorder).frame(maxWidth: 260)
-                }
-                Divider()
-                SettingsRow("API Key", detail: keyStatus.isEmpty ? "密钥仅供上方当前接口使用；修改接口后请重新保存。" : keyStatus) {
-                    HStack {
-                        SecureField("输入新的 API Key", text: $apiKey).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
-                        Button("保存") {
-                            do { try DictationCredentials.save(apiKey, options: settings.options); apiKey = ""; keyStatus = "已保存到本机钥匙串。" }
-                            catch { keyStatus = error.localizedDescription }
-                        }.disabled(apiKey.isEmpty || !settings.options.isConfigured)
-                        Button("移除") {
-                            do { try DictationCredentials.remove(settings.options); keyStatus = "已移除此接口的密钥。" }
-                            catch { keyStatus = error.localizedDescription }
-                        }.disabled(!settings.options.isConfigured)
-                    }
-                }
-                Divider()
-                SettingsPicker("语言", selection: settings.binding(\.language)) {
-                    Text("自动识别").tag("auto")
-                    Text("中文").tag("zh"); Text("English").tag("en"); Text("日本語").tag("ja")
-                    Text("한국어").tag("ko"); Text("Français").tag("fr"); Text("Deutsch").tag("de")
-                    Text("Español").tag("es")
-                }
+            DictationTranscriptionPreferences(settings: settings, configuration: configuration) {
+                model.openSettings(page: "ai-models")
             }.settingsAnchor(DictationModule.connectionItem)
 
             SettingsGroup("麦克风") {
@@ -131,7 +95,7 @@ struct DictationPreferences: View {
                     }, set: { choice in
                         if case .model(let id) = choice { settings.options.cleanupModelID = id }
                         else { settings.options.cleanupModelID = nil }
-                    }), inheritTitle: "沿用 AI 命令默认模型")
+                    }), inheritTitle: "沿用 AI 命令默认模型", purpose: .cloudText)
                 }
                 Divider()
                 Button { model.openSettings(page: "ai-models") } label: {
@@ -152,7 +116,6 @@ struct DictationPreferences: View {
             ExtensionCommandPreferences(model: model, commands: commands)
         }
         .task { microphones = DictationCapture.microphones }
-        .onChange(of: settings.options.credentialAccount) { _, _ in apiKey = ""; keyStatus = "" }
         .onChange(of: settings.options.modifierKey) { _, value in if value != nil { model.setShortcut("dictate", value: nil) } }
     }
     private func toggle(_ title: String, detail: String? = nil, path: WritableKeyPath<DictationOptions, Bool>) -> some View {
@@ -211,7 +174,7 @@ struct DictationPersonalization: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let data = try Data(contentsOf: url)
-            guard data.count <= 64_000 else { throw DictationError.responseTooLarge }
+            guard data.count <= 64_000 else { throw AITranscriptionError.responseTooLarge }
             let values = (try? JSONDecoder().decode([String].self, from: data)) ?? String(decoding: data, as: UTF8.self).components(separatedBy: .newlines)
             var candidate = settings.options; candidate.vocabulary += values
             settings.options.vocabulary = candidate.validVocabulary
@@ -354,5 +317,39 @@ struct DictationStatisticsView: View {
                 }.padding(.vertical, 14)
             }
         }.task { controller.loadHistory() }
+    }
+}
+
+/// Uses the same AIModelPicker and AIConfiguration as every other AI surface.
+struct DictationTranscriptionPreferences: View {
+    @ObservedObject var settings: DictationSettings
+    @ObservedObject var configuration: AIConfiguration
+    let manageModels: () -> Void
+    var body: some View {
+        SettingsGroup("云端转写") {
+            SettingsDescription("转写与文字整理直接使用 AI 中的模型、接口和钥匙串凭据。录音会发送到所选语音模型，不在这里重复配置。")
+                .padding(.vertical, 8)
+            Divider()
+            SettingsRow("语音转写模型", detail: configuration.state.connections.first { $0.id == settings.options.transcriptionModelID }?.destinationLabel ?? "从 AI 中选择支持语音转写的云端模型。") {
+                AIModelPicker(configuration: configuration, selection: Binding(get: {
+                    settings.options.transcriptionModelID.map(AIModelChoice.model) ?? .inherit
+                }, set: { choice in
+                    if case .model(let id) = choice { settings.options.transcriptionModelID = id }
+                }), purpose: .transcription)
+            }
+            Divider()
+            Button(action: manageModels) {
+                SettingsRow("管理 AI 模型与提供方", detail: "语音模型可自动识别；自定义模型在 AI 编辑页指定「模型用途」。") {
+                    Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                }
+            }.buttonStyle(.plain)
+            Divider()
+            SettingsPicker("语言", selection: settings.binding(\.language)) {
+                Text("自动识别").tag("auto")
+                Text("中文").tag("zh"); Text("English").tag("en"); Text("日本語").tag("ja")
+                Text("한국어").tag("ko"); Text("Français").tag("fr"); Text("Deutsch").tag("de")
+                Text("Español").tag("es")
+            }
+        }
     }
 }

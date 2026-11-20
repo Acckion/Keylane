@@ -61,7 +61,7 @@ final class QuickAIController: ObservableObject {
         guard state.enabled else { return nil }
         if isInChat, let conversationModel {
             return state.connections.first {
-                $0.id == conversationModel.profileID && $0.isConfigured && AIChatRecord.ModelReference($0) == conversationModel
+                $0.id == conversationModel.profileID && $0.isConfigured && $0.taskKind == .text && AIChatRecord.ModelReference($0) == conversationModel
             }
         }
         return state.connection(for: isInChat ? .chat : .quick)
@@ -76,7 +76,7 @@ final class QuickAIController: ObservableObject {
     func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil) -> Bool {
         guard !running, !loadingChat, configuration.state.enabled,
               !isInChat || override == nil,
-              let connection = override ?? currentConnection, connection.isConfigured,
+              let connection = override ?? currentConnection, connection.isConfigured, connection.taskKind == .text,
               configuration.state.connections.contains(connection),
               conversationModel == nil || conversationModel == AIChatRecord.ModelReference(connection) else { return false }
         let question = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -209,7 +209,7 @@ final class QuickAIController: ObservableObject {
     @discardableResult
     func chooseChatModel(_ id: UUID) -> Bool {
         guard isInChat, turns.isEmpty, !loadingChat, configuration.state.enabled,
-              let connection = configuration.state.connections.first(where: { $0.id == id && $0.isConfigured }) else { return false }
+              let connection = configuration.state.connections.first(where: { $0.id == id && $0.isConfigured && $0.taskKind == .text }) else { return false }
         conversationModel = AIChatRecord.ModelReference(connection)
         return true
     }

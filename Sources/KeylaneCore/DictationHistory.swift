@@ -57,7 +57,7 @@ public actor DictationHistory {
     public func list() throws -> [DictationRecord] {
         guard FileManager.default.fileExists(atPath: index.path) else { return [] }
         let data = try Data(contentsOf: index)
-        guard data.count <= 32_000_000 else { throw DictationError.responseTooLarge }
+        guard data.count <= 32_000_000 else { throw AITranscriptionError.responseTooLarge }
         return try JSONDecoder().decode([DictationRecord].self, from: data).sorted { $0.date > $1.date }
     }
     public func save(_ record: DictationRecord, retainRecording: Bool) throws {
@@ -97,7 +97,7 @@ public actor DictationHistory {
     private func write(_ records: [DictationRecord]) throws {
         try prepare()
         let data = try JSONEncoder().encode(records)
-        guard data.count <= 32_000_000 else { throw DictationError.responseTooLarge }
+        guard data.count <= 32_000_000 else { throw AITranscriptionError.responseTooLarge }
         try data.write(to: index, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: index.path)
     }

@@ -5,9 +5,7 @@ import XCTest
 final class DictationWorkflowTests: XCTestCase {
     func testCloudDefaultsAreExplicitAndContainNoRecordingConsent() throws {
         let options = DictationOptions()
-        XCTAssertEqual(options.provider, .openAI)
-        XCTAssertTrue(options.isConfigured)
-        XCTAssertEqual(options.transcriptionURL?.absoluteString, "https://api.openai.com/v1/audio/transcriptions")
+        XCTAssertNil(options.transcriptionModelID)
         XCTAssertFalse(options.keepRecordings)
         XCTAssertFalse(options.appContext)
         XCTAssertEqual(options.submit, .disabled)
@@ -15,15 +13,26 @@ final class DictationWorkflowTests: XCTestCase {
         XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("apiKey"))
     }
 
-    func testCloudEndpointAndCredentialAreBoundToExactDestination() {
+    func testDictationPersistsSharedModelReferencesWithoutDuplicatingConnections() throws {
         var options = DictationOptions()
-        let first = options.credentialAccount
+        options.transcriptionModelID = UUID(); options.cleanupModelID = UUID()
+        let data = try JSONEncoder().encode(options)
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        for key in ["endpoint", "model", "provider", "apiKey", "credentialAccount"] { XCTAssertNil(json[key]) }
+        let restored = try JSONDecoder().decode(DictationOptions.self, from: data)
+        XCTAssertEqual(restored.transcriptionModelID, options.transcriptionModelID)
+        XCTAssertEqual(restored.cleanupModelID, options.cleanupModelID)
+    }
+
+    func testCloudEndpointRejectsUnsafeDestinations() {
+        var options = AITranscriptionOptions()
+        let first = options.transcriptionURL
         for endpoint in ["http://example.com/v1", "https://user:secret@example.com/v1", "https://example.com/v1?key=secret", "file:///tmp/asr", "https://example.com/v1#x"] {
             options.endpoint = endpoint
             XCTAssertNil(options.transcriptionURL, endpoint)
         }
         options.endpoint = "https://other.example/v1"
-        XCTAssertNotEqual(options.credentialAccount, first)
+        XCTAssertNotEqual(options.transcriptionURL, first)
         options.endpoint = "http://127.0.0.1:8000/v1"
         XCTAssertNotNil(options.transcriptionURL)
         options.endpoint = "https://api.openai.com/v1/audio/transcriptions"
@@ -31,9 +40,9 @@ final class DictationWorkflowTests: XCTestCase {
     }
 
     func testOpenAIUploadUsesAudioEndpointAndVocabularyPrompt() throws {
-        var options = DictationOptions()
+        var options = AITranscriptionOptions()
         options.language = "zh"; options.vocabulary = ["Keylane", "测试"]
-        let request = try DictationCloudRequest.make(options: options, key: "fixture-key", audio: Data([0, 1, 2]), boundary: "fixture")
+        let request = try AITranscriptionRequest.make(options: options, key: "fixture-key", audio: Data([0, 1, 2]), boundary: "fixture")
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-key")
         XCTAssertNil(request.value(forHTTPHeaderField: "xi-api-key"))
@@ -45,10 +54,10 @@ final class DictationWorkflowTests: XCTestCase {
     }
 
     func testElevenLabsUsesItsProtocolAndDoesNotPromiseEnterpriseRetention() throws {
-        var options = DictationOptions()
-        options.provider = .elevenLabs; options.endpoint = options.provider.endpoint; options.model = "scribe_v2"
+        var options = AITranscriptionOptions()
+        options.provider = .elevenLabs; options.endpoint = "https://api.elevenlabs.io/v1"; options.model = "scribe_v2"
         options.vocabulary = ["Keylane"]
-        let request = try DictationCloudRequest.make(options: options, key: "fixture-key", audio: Data([1]))
+        let request = try AITranscriptionRequest.make(options: options, key: "fixture-key", audio: Data([1]))
         XCTAssertEqual(request.url?.absoluteString, "https://api.elevenlabs.io/v1/speech-to-text")
         XCTAssertEqual(request.value(forHTTPHeaderField: "xi-api-key"), "fixture-key")
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
@@ -60,10 +69,10 @@ final class DictationWorkflowTests: XCTestCase {
     }
 
     func testAudioAndHeaderBounds() {
-        let options = DictationOptions()
-        XCTAssertThrowsError(try DictationCloudRequest.make(options: options, key: "secret\r\nx: y", audio: Data([1])))
-        XCTAssertThrowsError(try DictationCloudRequest.make(options: options, key: "key", audio: Data()))
-        XCTAssertThrowsError(try DictationCloudRequest.make(options: options, key: "key", audio: Data(count: DictationCloudRequest.maximumAudioBytes + 1)))
+        let options = AITranscriptionOptions()
+        XCTAssertThrowsError(try AITranscriptionRequest.make(options: options, key: "secret\r\nx: y", audio: Data([1])))
+        XCTAssertThrowsError(try AITranscriptionRequest.make(options: options, key: "key", audio: Data()))
+        XCTAssertThrowsError(try AITranscriptionRequest.make(options: options, key: "key", audio: Data(count: AITranscriptionRequest.maximumAudioBytes + 1)))
     }
 
     func testVocabularyTrimsDeduplicatesAndBoundsTerms() {

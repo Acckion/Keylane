@@ -25,15 +25,15 @@ final class DictationCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDele
         queue.async { [self] in
             guard !cancelled else { return }
             do {
-                guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw DictationError.invalidAudio }
+                guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw AITranscriptionError.invalidAudio }
                 let devices = Self.microphones
                 let chosen = preferredDevices.lazy.compactMap { id in devices.first { $0.uniqueID == id } }.first
                     ?? AVCaptureDevice.default(for: .audio)
-                guard let device = chosen else { throw DictationError.invalidAudio }
+                guard let device = chosen else { throw AITranscriptionError.invalidAudio }
                 let session = AVCaptureSession()
                 let deviceInput = try AVCaptureDeviceInput(device: device)
                 let output = AVCaptureAudioDataOutput()
-                guard session.canAddInput(deviceInput), session.canAddOutput(output) else { throw DictationError.invalidAudio }
+                guard session.canAddInput(deviceInput), session.canAddOutput(output) else { throw AITranscriptionError.invalidAudio }
                 session.addInput(deviceInput)
                 session.addOutput(output)
                 output.setSampleBufferDelegate(self, queue: queue)
@@ -45,7 +45,7 @@ final class DictationCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDele
                     self.queue.async { if self.session != nil && !self.cancelled { self.reportFailure() } }
                 }
                 session.startRunning()
-                guard session.isRunning else { throw DictationError.invalidAudio }
+                guard session.isRunning else { throw AITranscriptionError.invalidAudio }
             } catch { release(); DispatchQueue.main.async { failure(error) } }
         }
     }
@@ -74,7 +74,7 @@ final class DictationCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDele
             session?.stopRunning()
             session = nil; output = nil
             guard !cancelled, firstSample, let encoder else {
-                release(); DispatchQueue.main.async { completion(.failure(DictationError.invalidAudio)) }; return
+                release(); DispatchQueue.main.async { completion(.failure(AITranscriptionError.invalidAudio)) }; return
             }
             encoder.finish { [self] result in
                 queue.async {
@@ -88,7 +88,7 @@ final class DictationCapture: NSObject, AVCaptureAudioDataOutputSampleBufferDele
     private func reportFailure() {
         let callback = failure
         cancelled = true; release()
-        DispatchQueue.main.async { callback?(DictationError.invalidAudio) }
+        DispatchQueue.main.async { callback?(AITranscriptionError.invalidAudio) }
     }
     private func release() {
         if let runtimeError { NotificationCenter.default.removeObserver(runtimeError) }; runtimeError = nil

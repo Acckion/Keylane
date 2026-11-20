@@ -231,6 +231,11 @@ private struct AIConnectionEditor: View {
                 }
             }
             Divider()
+            SettingsPicker("模型用途", detail: "自动识别已知语音模型；其他语音模型可手动指定转写接口。", selection: $draft.modelTask) {
+                Text("自动识别").tag(AIModelTask?.none)
+                ForEach(AIModelTask.allCases, id: \.self) { Text($0.title).tag(Optional($0)) }
+            }
+            Divider()
             SettingsPicker("响应方式", detail: "流式逐段显示回复，完整响应兼容旧接口。", selection: $draft.mode) {
                 Text("流式").tag(AIResponseMode.streaming)
                 Text("完整响应").tag(AIResponseMode.complete)
@@ -270,7 +275,7 @@ private struct AIConnectionEditor: View {
                 }
                 if !isNew {
                     Divider()
-                    SettingsRow("测试连接", detail: "发送一条简短测试消息，可能计入提供方用量。") {
+                    SettingsRow("测试连接", detail: connection.taskKind == .text ? "发送一条简短测试消息，可能计入提供方用量。" : "检查提供方连接；实际识别效果与模型权限需在听写中验证。") {
                         if test != nil { Button("停止") { cancelTest() } }
                         else { Button("发送测试") { startTest() }.disabled(!configuration.state.enabled || draft != connection || discovery != nil) }
                     }
@@ -392,11 +397,9 @@ private struct AIConnectionEditor: View {
         status = "正在测试连接…"
         test = Task { @MainActor in
             do {
-                _ = try await runtime.generate(connection: target, readKey: { try AIConfiguration.key(for: $0) }, messages: [
-                    AIMessage(role: .user, content: "Reply with OK.")
-                ]) { _ in }
+                let result = try await runtime.testConnection(target, readKey: { try AIConfiguration.key(for: $0) })
                 guard !Task.isCancelled else { return }
-                status = "模型已成功响应。"
+                status = result
             } catch {
                 guard !Task.isCancelled else { return }
                 status = error.localizedDescription

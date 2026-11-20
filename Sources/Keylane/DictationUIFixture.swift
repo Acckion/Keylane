@@ -14,6 +14,14 @@ enum DictationUIFixture {
         let settings = DictationSettings(defaults: preferences)
         settings.options.vocabulary = ["Keylane", "SwiftUI", "项目验收"]
         settings.options.instructions = "保留中英混排。产品名写为 Keylane，按自然段落整理，不改变原意。"
+        let configuration = AIConfiguration(preferences: preferences)
+        let speech = AIConnection(name: "云端语音转写", endpoint: "https://speech.fixture.test/v1", model: "gpt-transcribe")
+        _ = configuration.save(speech, selectAsDefault: false)
+        configuration.setEnabled(true)
+        settings.options.transcriptionModelID = speech.id
+        try render(AnyView(SettingsPageSections {
+            DictationTranscriptionPreferences(settings: settings, configuration: configuration, manageModels: {})
+        }), name: "shared-models", directory: directory)
         let draft = DictationStyleDraft()
         draft.prepare(.init(name: "工作邮件", symbol: "envelope", prompt: "整理为简洁清楚的邮件，保留原语言，按段落排版，不补充未提到的信息。", applications: ["com.apple.mail"], websites: ["mail.google.com"]))
         try render(AnyView(DictationPersonalization(settings: settings)), name: "personalization", directory: directory)
@@ -30,7 +38,7 @@ enum DictationUIFixture {
         let deadline = Date().addingTimeInterval(5)
         while !ready && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
         observation.cancel()
-        guard ready, !controller.records.isEmpty else { throw DictationError.invalidResponse }
+        guard ready, !controller.records.isEmpty else { throw AITranscriptionError.invalidResponse }
         try render(AnyView(DictationHistoryView(controller: controller)), name: "history", directory: directory)
         print("Dictation UI fixtures rendered: \(directory.path). No recording or real app data was used.")
     }
@@ -46,9 +54,9 @@ enum DictationUIFixture {
         view.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.08))
         view.layoutSubtreeIfNeeded()
-        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw DictationError.invalidResponse }
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw AITranscriptionError.invalidResponse }
         view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw DictationError.invalidResponse }
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw AITranscriptionError.invalidResponse }
         try data.write(to: directory.appendingPathComponent(name + ".png"))
         window.contentView = nil; window.close()
     }

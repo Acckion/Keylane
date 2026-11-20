@@ -132,7 +132,7 @@ private struct AIAPIKeyEditor: View {
                     TextField("自动选择默认模型", text: $model).frame(width: 240)
                 }
                 Divider()
-                SettingsRow("验证", detail: target.keyVerificationURL.map { "仅验证 Key 身份，不发送模型消息、不产生生成用量。模型权限和额度在使用时另行检查。目标为 \($0.absoluteString)" } ?? "发送一条简短测试消息，可能计入提供方用量。目标为 \(target.destinationLabel)") {
+                SettingsRow("验证", detail: verificationDetail) {
                     if verification != nil { Button("停止") { stopVerification() } }
                     else { Button("验证 Key", action: verify).disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
                 }
@@ -154,6 +154,16 @@ private struct AIAPIKeyEditor: View {
         .onDisappear { stopVerification(); key = ""; verifiedKey = "" }
     }
 
+    private var verificationDetail: String {
+        if let url = target.keyVerificationURL {
+            return "仅验证 Key 身份，不发送模型消息、不产生生成用量。模型权限和额度在使用时另行检查。目标为 \(url.absoluteString)"
+        }
+        if target.taskKind != .text {
+            return "检查提供方连接（ElevenLabs 使用账户接口）；语音识别与模型权限需在听写中实测。目标为 \(target.destinationLabel)"
+        }
+        return "发送一条简短测试消息，可能计入提供方用量。目标为 \(target.destinationLabel)"
+    }
+
     private func stopVerification() { verification?.cancel(); verification = nil }
 
     private func verify() {
@@ -166,7 +176,7 @@ private struct AIAPIKeyEditor: View {
                 guard !Task.isCancelled else { return }
                 verifiedKey = credential
                 verifiedModel = connection.model
-                status = "验证成功。"
+                status = connection.taskKind == .text ? "验证成功。" : "提供方连接已验证；真实语音识别与模型权限仍需在听写中实测。"
             } catch {
                 guard !Task.isCancelled else { return }
                 status = "验证失败：\(error.localizedDescription)"

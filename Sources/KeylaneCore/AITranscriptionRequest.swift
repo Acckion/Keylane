@@ -1,12 +1,12 @@
 import Foundation
 
-public enum DictationError: LocalizedError, Equatable {
+public enum AITranscriptionError: LocalizedError, Equatable {
     case configuration, missingKey, invalidAudio, audioTooLarge, emptyTranscript, invalidResponse, responseTooLarge
     case http(Int)
     public var errorDescription: String? {
         switch self {
-        case .configuration: "请在听写设置中填写有效的云端接口和模型。"
-        case .missingKey: "请在听写设置中保存此云端接口的 API Key。"
+        case .configuration: "请在 AI 设置中添加语音转写模型，并在听写中选择。"
+        case .missingKey: "请在 AI 设置中为此模型保存 API Key。"
         case .invalidAudio: "没有录到可用的声音，请检查麦克风后重试。"
         case .audioTooLarge: "录音超过云端接口的 25 MB 上传限制，请缩短录音。"
         case .emptyTranscript: "没有识别到文字。录音可从听写历史中重试。"
@@ -22,16 +22,16 @@ public enum DictationError: LocalizedError, Equatable {
     }
 }
 
-public enum DictationCloudRequest {
+public enum AITranscriptionRequest {
     public static let maximumAudioBytes = 25_000_000
     public static let maximumResponseBytes = 1_048_576
 
-    public static func make(options: DictationOptions, key: String, audio: Data, boundary: String = "Keylane-" + UUID().uuidString) throws -> URLRequest {
-        guard options.isConfigured, let url = options.transcriptionURL else { throw DictationError.configuration }
-        guard !key.isEmpty, key.utf8.count <= 8192, key.rangeOfCharacter(from: .controlCharacters) == nil else { throw DictationError.missingKey }
-        guard !audio.isEmpty else { throw DictationError.invalidAudio }
-        guard audio.count <= maximumAudioBytes else { throw DictationError.audioTooLarge }
-        guard boundary.rangeOfCharacter(from: .controlCharacters) == nil else { throw DictationError.configuration }
+    public static func make(options: AITranscriptionOptions, key: String, audio: Data, boundary: String = "Keylane-" + UUID().uuidString) throws -> URLRequest {
+        guard options.isConfigured, let url = options.transcriptionURL else { throw AITranscriptionError.configuration }
+        guard !key.isEmpty, key.utf8.count <= 8192, key.rangeOfCharacter(from: .controlCharacters) == nil else { throw AITranscriptionError.missingKey }
+        guard !audio.isEmpty else { throw AITranscriptionError.invalidAudio }
+        guard audio.count <= maximumAudioBytes else { throw AITranscriptionError.audioTooLarge }
+        guard boundary.rangeOfCharacter(from: .controlCharacters) == nil else { throw AITranscriptionError.configuration }
         var body = Data()
         func field(_ name: String, _ value: String) {
             body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))
@@ -67,12 +67,12 @@ public enum DictationCloudRequest {
     }
 
     public static func text(from data: Data, status: Int) throws -> String {
-        guard (200..<300).contains(status) else { throw DictationError.http(status) }
-        guard data.count <= maximumResponseBytes else { throw DictationError.responseTooLarge }
+        guard (200..<300).contains(status) else { throw AITranscriptionError.http(status) }
+        guard data.count <= maximumResponseBytes else { throw AITranscriptionError.responseTooLarge }
         struct Response: Decodable { let text: String }
-        guard let response = try? JSONDecoder().decode(Response.self, from: data) else { throw DictationError.invalidResponse }
+        guard let response = try? JSONDecoder().decode(Response.self, from: data) else { throw AITranscriptionError.invalidResponse }
         let text = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw DictationError.emptyTranscript }
+        guard !text.isEmpty else { throw AITranscriptionError.emptyTranscript }
         return text
     }
 }
