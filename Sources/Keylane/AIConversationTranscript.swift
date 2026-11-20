@@ -5,6 +5,7 @@ import SwiftUI
 struct AIConversationTranscript: View {
     @ObservedObject var controller: AIConversationSession
     var inLauncher = false
+    var composerInset: CGFloat = VisualStyle.launcherBottomInset
     var showsEmptyHint = true
     var editTurn: ((AIConversationSession.Turn) -> Void)?
     var didBranch: (() -> Void)?
@@ -39,7 +40,12 @@ struct AIConversationTranscript: View {
     }
 
     @ViewBuilder private var styledScrollView: some View {
-        if inLauncher { transcript.launcherScrollInsets().launcherScrollEdgeFade() }
+        if inLauncher {
+            transcript.launcherScrollInsets(bottom: false)
+                .contentMargins(.bottom, composerInset, for: .scrollContent)
+                .contentMargins(.bottom, composerInset, for: .scrollIndicators)
+                .launcherScrollEdgeFade(bottom: composerInset + 22)
+        }
         else { transcript }
     }
 

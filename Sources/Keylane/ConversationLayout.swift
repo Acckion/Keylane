@@ -9,6 +9,7 @@ struct ConversationLayout<Content: View, Composer: View, Trailing: View>: View {
     var contextPreview: String? = nil
     var emptyTitle = "随时提问"
     var emptyDescription = "直接在启动器中向 AI 提问。"
+    var composerInset: CGFloat = VisualStyle.launcherBottomInset
     let back: () -> Void
     @ViewBuilder let content: () -> Content
     @ViewBuilder let composer: () -> Composer
@@ -25,7 +26,7 @@ struct ConversationLayout<Content: View, Composer: View, Trailing: View>: View {
                 .padding(.horizontal, 40)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(.top, VisualStyle.launcherTopInset)
-                .padding(.bottom, VisualStyle.launcherBottomInset)
+                .padding(.bottom, composerInset)
             } else {
                 content()
             }
@@ -34,7 +35,7 @@ struct ConversationLayout<Content: View, Composer: View, Trailing: View>: View {
                 ChromeBlur().frame(height: VisualStyle.launcherTopInset)
                     .mask(LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom))
                 Spacer(minLength: 0)
-                ChromeBlur().frame(height: VisualStyle.launcherBottomInset + 22)
+                ChromeBlur().frame(height: composerInset + 22)
                     .mask(LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom))
             }.allowsHitTesting(false)
 

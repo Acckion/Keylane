@@ -77,6 +77,8 @@ private struct QuickAIConversationContent: View {
     let inputEnabled: Bool
     let focusToken: Int
     @State private var usageTarget: AIConnection?
+    @State private var composerHeight: CGFloat = VisualStyle.launcherBottomInset
+    private var composerInset: CGFloat { max(VisualStyle.launcherBottomInset, composerHeight + VisualStyle.launcherEdgeInset) }
 
     var body: some View {
         ConversationLayout(title: controller.conversationTitle,
@@ -84,8 +86,8 @@ private struct QuickAIConversationContent: View {
                                ? "自动 · " + model.aiInteraction.modelPreference.title + " · " + (controller.currentConnection?.displayName ?? "请选择模型")
                                : controller.currentConnection?.displayName ?? "请选择模型",
                            isEmpty: controller.turns.isEmpty && controller.status.isEmpty,
-                           back: { model.goBackInLauncher() }) {
-            AIConversationTranscript(controller: controller, inLauncher: true)
+                           composerInset: composerInset, back: { model.goBackInLauncher() }) {
+            AIConversationTranscript(controller: controller, inLauncher: true, composerInset: composerInset)
         } composer: {
             AIConversationComposerView(controller: controller, configuration: model.aiSettings,
                 interaction: model.aiInteraction, composer: composer,
@@ -101,6 +103,7 @@ private struct QuickAIConversationContent: View {
                 }, commandReturn: {
                     QuickAILauncher.useResponse(controller, copyOnly: model.aiInteraction.primaryAction == .paste)
                 }, optionReturn: { QuickAILauncher.useResponse(controller, formatted: true) })
+                .onGeometryChange(for: CGFloat.self) { ceil($0.size.height) } action: { composerHeight = $0 }
         } trailing: {
             NativeHoverButton(title: "在 AI Chat 中继续", action: openChat) {
                 Image(systemName: "arrow.up.forward.app").font(.system(size: 18))
