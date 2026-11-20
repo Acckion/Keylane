@@ -17,6 +17,7 @@ struct MenuOutsideClickDismissal: NSViewRepresentable {
         private var dismiss: (() -> Void)?
         private var mouseMonitor: Any?
         private var resignObserver: NSObjectProtocol?
+        private var inactiveObserver: NSObjectProtocol?
         private weak var observedWindow: NSWindow?
         var monitoring: Bool { mouseMonitor != nil }
 
@@ -42,6 +43,8 @@ struct MenuOutsideClickDismissal: NSViewRepresentable {
             }
             resignObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification,
                 object: window, queue: .main) { [weak self] _ in self?.close() }
+            inactiveObserver = NotificationCenter.default.addObserver(forName: NSApplication.didResignActiveNotification,
+                object: NSApp, queue: .main) { [weak self] _ in self?.close() }
         }
 
         private func close() {
@@ -60,8 +63,10 @@ struct MenuOutsideClickDismissal: NSViewRepresentable {
         func stop() {
             if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
             if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
+            if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) }
             mouseMonitor = nil
             resignObserver = nil
+            inactiveObserver = nil
             observedWindow = nil
         }
     }
