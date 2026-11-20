@@ -236,3 +236,48 @@ Task { @MainActor in
     toolCLIFinished = true
 }
 wait("Subscription tool fixtures") { toolCLIFinished }
+
+var toolSessionFinished = false
+Task { @MainActor in
+    do {
+        let suite = "keylane.tool-session." + UUID().uuidString
+        let prefs = UserDefaults(suiteName: suite)!
+        defer { prefs.removePersistentDomain(forName: suite) }
+        let connection = AIConnection(endpoint: "http://localhost/v1", model: "synthetic", mode: .complete)
+        prefs.set(try JSONEncoder().encode(AIConfiguration.State(enabled: true, connections: [connection], selectedID: connection.id)), forKey: "aiConnections.v1")
+        let settings = AIConfiguration(preferences: prefs)
+        let interaction = AIInteractionPreferences(preferences: prefs)
+        interaction.toolsEnabled = true
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ToolFixtureProtocol.self]
+        let session = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: config), readKey: { _ in "synthetic-key" })
+        var count = 0
+        let tool = AIToolRegistration(definition: toolDefinition, requiresConfirmation: true) { _ in count += 1; return try .init(text: "42") }
+        session.configureTools(preferences: interaction, source: { [tool] })
+        func pending() async throws -> AIToolApproval {
+            let deadline = Date().addingTimeInterval(2)
+            while session.toolApproval.pending == nil, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            guard let request = session.toolApproval.pending else { fatalError("Missing approval: " + session.status) }
+            return request
+        }
+        ToolFixtureProtocol.rounds = 0
+        precondition(session.submit("Synthetic fixture"))
+        let first = try await pending()
+        session.beginChat()
+        precondition(session.running && session.toolApproval.pending?.id == first.id && ToolFixtureProtocol.rounds == 1)
+        session.toolApproval.resolve(first.id, allow: true)
+        let deadline = Date().addingTimeInterval(2)
+        while session.running, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        precondition(count == 1 && session.lastAnswer == "verified answer" && ToolFixtureProtocol.rounds == 2)
+        session.reset(); ToolFixtureProtocol.rounds = 0
+        precondition(session.submit("Synthetic cancelled fixture"))
+        let stale = try await pending()
+        interaction.toolsEnabled = false
+        precondition(!session.running && session.toolApproval.pending == nil)
+        session.toolApproval.resolve(stale.id, allow: true)
+        try await Task.sleep(for: .milliseconds(50))
+        precondition(count == 1 && ToolFixtureProtocol.rounds == 1)
+        print("PASS shared tool session: pending Quick AI confirmation transfers to AI Chat without resending; tool disable cancels pending action and rejects stale approval")
+    } catch { fatalError("Tool session fixture failed: \(error)") }
+    toolSessionFinished = true
+}
+wait("Shared tool session and approval handoff") { toolSessionFinished }
