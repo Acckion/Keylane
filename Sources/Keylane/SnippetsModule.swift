@@ -106,7 +106,7 @@ enum SnippetsModule {
                     ]
                     if let model {
                         actions.append(SnippetAIActions.menu(selected, model: model))
-                        actions.append(.init(id: "snippet-ai-attach", title: "附加到 AI 聊天", icon: "sparkles", enabled: model.aiSettings.isAvailable && !model.disabledCommands.contains(SnippetAIActions.attachID.rawValue)) { [weak model] in
+                        actions.append(.init(id: "snippet-ai-attach", title: "附加到 AI 聊天", icon: "sparkles", enabled: model.canAttachModuleAIContext() && !model.disabledCommands.contains(SnippetAIActions.attachID.rawValue)) { [weak model] in
                             guard let model else { return }
                             _ = model.runCommand(SnippetAIActions.attachID, origin: .menu, aiSource: SnippetAIActions.source(selected, controller: snippets))
                         })
