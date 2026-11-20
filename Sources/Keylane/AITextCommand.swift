@@ -76,7 +76,7 @@ final class AITextCommandSession: ObservableObject {
     static func connection(for command: CustomAICommand?, in state: AIConfiguration.State) -> AIConnection? {
         guard state.enabled else { return nil }
         if let id = command?.connectionID {
-            return state.connections.first { $0.id == id && $0.isConfigured }
+            return state.connections.first { $0.id == id && $0.isConfigured && $0.taskKind == .text }
         }
         return state.connection(for: .commands)
     }

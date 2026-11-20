@@ -110,6 +110,15 @@ final class AIConversationComposer: ObservableObject {
         selection = NSRange(location: text.utf16.count, length: 0)
     }
 
+    @discardableResult
+    func appendDictation(_ transcript: String, for draft: UUID) -> Bool {
+        guard draftID == draft, !transcript.isEmpty else { return false }
+        text += (text.isEmpty || text.last?.isWhitespace == true ? "" : " ") + transcript
+        selection = NSRange(location: text.utf16.count, length: 0)
+        completion = nil
+        return true
+    }
+
     func consumeCompletion() {
         guard let completion, let range = Range(completion.range, in: text) else { return }
         text.removeSubrange(range)

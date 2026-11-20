@@ -54,7 +54,15 @@ enum AppleNotesModule {
             .init(declaration: .init(id: .init(rawValue: "create-apple-note"), title: "新建 Apple 备忘录",
                                      detail: "快速记录到 Apple 备忘录的默认文件夹", symbol: "square.and.pencil",
                                      keywords: ["Create Note", "新建笔记", "记笔记"], destination: .action, settingsPage: "keylane.apple-notes"),
-                  permission: permission, execute: create)
+                  permission: permission, execute: create,
+                  arguments: .init(count: 0...1) { [weak model] origin, arguments in
+                      notes.resetDraft()
+                      if let body = arguments.first {
+                          notes.body = body
+                          notes.title = String(body.split(whereSeparator: \.isNewline).first?.prefix(80) ?? "")
+                      }
+                      model?.openPage(createPage, origin: origin)
+                  })
         ], pages: [search, editor], services: [.init(start: permission.startObserving, stop: {
             permission.stopObserving()
             notes.stop()

@@ -12,11 +12,13 @@ struct AIModelMenuCatalog {
     }
     let groups: [Group]
     let isSearching: Bool
+    let purpose: AIModelPurpose
 
-    init(connections: [AIConnection], selection: AIModelChoice, query: String) {
+    init(connections: [AIConnection], selection: AIModelChoice, query: String, purpose: AIModelPurpose = .text) {
+        self.purpose = purpose
         isSearching = !query.isEmpty
         let matches = connections.filter {
-            ($0.isConfigured && $0.hiddenFromPicker != true || selection == .model($0.id)) &&
+            ($0.isConfigured && $0.hiddenFromPicker != true && purpose.accepts($0) || selection == .model($0.id)) &&
                 (query.isEmpty || ($0.displayName + " " + $0.model + " " + $0.providerLabel).localizedCaseInsensitiveContains(query))
         }
         let providers = Dictionary(grouping: matches, by: \.providerLabel)
@@ -30,7 +32,7 @@ struct AIModelMenuCatalog {
 
     func choices(inherits: Bool, allowsLastUsed: Bool) -> [AIModelChoice] {
         (inherits && !isSearching ? [.inherit] : []) + (allowsLastUsed && !isSearching ? [.lastUsed] : []) +
-            groups.flatMap(\.models).filter(\.isConfigured).map { .model($0.id) }
+            groups.flatMap(\.models).filter { $0.isConfigured && purpose.accepts($0) }.map { .model($0.id) }
     }
 
     private static func precedes(_ lhs: String, _ rhs: String) -> Bool {
