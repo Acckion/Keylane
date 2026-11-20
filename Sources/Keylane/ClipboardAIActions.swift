@@ -33,9 +33,11 @@ enum ClipboardAIActions {
                 available: { [weak model] in model?.clipboard.historyCommandEnabled == true && model?.aiSettings.state.connection(for: .commands) != nil },
                 aiExecute: { [weak model] origin, provided in
                     guard let model, let registry = model.launcherModules else { return }
-                    let selected = provided ?? model.clipboard.selectedID.map { source(id: $0, controller: model.clipboard) }
+                    let selected = provided ?? model.clipboard.selectedID.flatMap { id in
+                        model.clipboard.items.contains { $0.id == id && $0.kind == .text } ? source(id: id, controller: model.clipboard) : nil
+                    }
                     guard let selected else {
-                        model.openPage(.init(rawValue: "clipboard"), origin: origin)
+                        model.openPage(BuiltinLauncherModules.clipboardPage, origin: origin)
                         (NSApp.delegate as? Delegate)?.showLauncherFeedback("请先选择一条文本记录，再从动作菜单运行 AI 命令。", style: .failure)
                         return
                     }

@@ -6,6 +6,7 @@ import KeylaneCore
 /// Composition point for the features present on dev. Construction stores
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
+    static let clipboardPage = PageID(rawValue: "Clipboard")
     static func make(model: Model) -> [LauncherModule] {
         let modules = [applications(model), host(model), AIModule.make(model: model), TranslatorModule.make(model: model), files(model), clipboard(model), AppleNotesModule.make(model: model),
                        QuicklinksModule.make(model: model), CalculatorLauncherModule.make(model: model), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model),
@@ -487,7 +488,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func clipboard(_ model: Model) -> LauncherModule {
-        let id = PageID(rawValue: "Clipboard")
+        let id = clipboardPage
         let controller = model.clipboard
         let permission = PermissionFeature("clipboardPersistentCapture", authorization: .persistentClipboard, observeImmediately: false)
         var titlebar = permission.titlebar(SettingsItem.clipboardCapture.title)
