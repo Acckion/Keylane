@@ -6,6 +6,7 @@ import KeylaneCore
 /// Composition point for the features present on dev. Construction stores
 /// closures only; controllers are consulted when the host uses a contribution.
 enum BuiltinLauncherModules {
+    static let clipboardPage = PageID(rawValue: "Clipboard")
     static func make(model: Model) -> [LauncherModule] {
         let modules = [applications(model).withAITools(AIBuiltinTools.applications(model)), host(model).withAITools(AIBuiltinTools.time), AIModule.make(model: model), TranslatorModule.make(model: model), DictationModule.make(model: model), files(model).withAITools(AIBuiltinTools.files(model)), clipboard(model), AppleNotesModule.make(model: model),
                        QuicklinksModule.make(model: model), CalculatorLauncherModule.make(model: model).withAITools(AIBuiltinTools.calculator), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model).withAITools(AIBuiltinTools.calendar(model)),
@@ -360,7 +361,7 @@ enum BuiltinLauncherModules {
                 if origin == .shortcut { (NSApp.delegate as? Delegate)?.hideLauncher() }
                 model?.fileAI.presentFinder()
             })
-        ], providers: [provider], pages: [
+        ], aiActions: [FileAIController.definition("ask-files"), FileAIController.definition("ask-finder")], providers: [provider], pages: [
             LauncherPage(id: page, placeholder: "搜索文件…", badge: ("文件搜索", "doc.text.magnifyingglass"),
                          contentPlacement: .fileResults, queryChanged: { [weak model] _ in model?.searchFiles() },
                          leave: { [weak model] in model?.fileSearch.cancel() },
@@ -487,7 +488,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func clipboard(_ model: Model) -> LauncherModule {
-        let id = PageID(rawValue: "Clipboard")
+        let id = clipboardPage
         let controller = model.clipboard
         let permission = PermissionFeature("clipboardPersistentCapture", authorization: .persistentClipboard, observeImmediately: false)
         var titlebar = permission.titlebar(SettingsItem.clipboardCapture.title)
@@ -585,7 +586,7 @@ enum BuiltinLauncherModules {
                     ["Reset Paste Sequence", "重置粘贴顺序"], settings: "clipboard", execute: { _ in
                 (NSApp.delegate as? Delegate)?.resetClipboardPasteSequence()
             })
-        ], pages: [page], settings: [
+        ] + ClipboardAIActions.commands(model: model), aiActions: ClipboardAIActions.definitions, pages: [page], settings: [
             settingsPage(model, "clipboard", "剪贴板历史", "clipboard.fill", "查找本地保存的文字、图片和文件引用。", 40, titlebar: titlebar, content: LauncherSettingsContent.clipboard)
         ], services: [
             .init(start: {
@@ -603,6 +604,7 @@ enum BuiltinLauncherModules {
                 permissionChanges?.cancel()
                 permissionChanges = nil
                 permission.stopObserving()
+                model.moduleAIAction.clear()
                 controller.stopRuntime()
                 linkVisualChanges?.cancel()
                 linkVisualChanges = nil

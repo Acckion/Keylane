@@ -42,6 +42,8 @@
 - Quick AI 和 AI Chat 共用 `AIConversationSession`、`AIConversationComposer`、`AIConversationRepository`、消息和附件模型；新增发送、停止、重试、历史或模型策略先在公共层实现，不在某个窗口另写分派链。
 - 思考/工具过程、添加附件菜单、原生输入、附件导入和消息展示复用现有 `AIConversation*` 组件，通过紧凑配置适配 Launcher。系统 sheet、剪贴板、导出和确认弹窗留在宿主；生成与存储状态不依赖 AppKit。
 - 变更消息编码须兼容旧 `files` 与 `attachments`；补测活动请求转入完整窗口不重复发送、草稿/附件保留和各异步代次失效。架构与验证边界见 `docs/AI-CONVERSATION-ARCHITECTURE.md`。
+- 内置模块的 AI 动作使用普通 CommandID 和 `LauncherModule.aiActions` 登记，来源由模块提供 `AIActionSource`；不得在菜单或视图中直接读取全文并另写请求循环。聊天和模块动作共用 `AIRunHandle`，结果复用公共 Markdown／过程组件。样板与额度见 `docs/AI-MODULE-ACTIONS.md`。
+- AI 输入只在显式调用后准备，发送前重查来源、命令和模型；逐片段更新不得转发根搜索评分。加入聊天草稿须保留现有草稿和附件，不因路由进入而自动提交。停用后重新启用不能复活旧调用。
 
 ## 版本规范
 
