@@ -1,12 +1,20 @@
 import Foundation
 import Combine
 import Security
+import SQLite3
 import KeylaneCore
 
 final class FixtureProtocol: URLProtocol {
     static var mode = "ok"
     private static let requestLock = NSLock()
     private static var recordedRequests: [URLRequest] = []
+    private static var recordedBodies: [Data] = []
+    static var lastMessages: [[String: String]] {
+        requestLock.lock()
+        let body = recordedBodies.last ?? Data()
+        requestLock.unlock()
+        return ((try? JSONSerialization.jsonObject(with: body)) as? [String: Any])?["messages"] as? [[String: String]] ?? []
+    }
     static var requests: [URLRequest] {
         requestLock.lock()
         defer { requestLock.unlock() }
@@ -18,8 +26,20 @@ final class FixtureProtocol: URLProtocol {
     override class func canonicalRequest(for request:URLRequest) -> URLRequest { request }
     override func startLoading() {
         let mode = Self.mode
+        var body = request.httpBody ?? Data()
+        if body.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while true {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                body.append(contentsOf: buffer.prefix(count))
+            }
+        }
         Self.requestLock.lock()
         Self.recordedRequests.append(request)
+        Self.recordedBodies.append(body)
         Self.requestLock.unlock()
         DispatchQueue.global().asyncAfter(deadline:.now()+(mode == "slow" ? 0.5 : 0.02)) {
             self.lock.lock(); let stopped = self.stopped; self.lock.unlock(); if stopped { return }
@@ -61,6 +81,10 @@ final class FixtureProtocol: URLProtocol {
                 text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             }
             self.client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
+            if mode == "held-stream" {
+                self.client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{\"content\":\"visible streaming fragment\"}}]}\n\n".utf8))
+                return // Deliberately leave the synthetic stream open until stop/cancellation.
+            }
             if mode == "stream" || mode == "incomplete" {
                 let first = Data("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\r\n\r\n".utf8)
                 for byte in first { self.client?.urlProtocol(self, didLoad: Data([byte])) }
@@ -94,6 +118,52 @@ precondition(composer.text.isEmpty)
 composer.offer(" 初始问题 ")
 composer.offer("另一个入口的问题")
 precondition(composer.text == " 初始问题 ", "Opening a second entry preserves the existing unsent draft")
+let tokenComposer = AIChatComposer()
+tokenComposer.text = "开头 😀 @cli 结尾"
+let caret = ("开头 😀 @cli" as NSString).length
+tokenComposer.selection = NSRange(location: caret, length: 0)
+tokenComposer.completion = AIChatCompletionToken.at(tokenComposer.text, selection: tokenComposer.selection)
+precondition(tokenComposer.completion?.kind == .mention && tokenComposer.completion?.query == "cli")
+tokenComposer.consumeCompletion()
+precondition(tokenComposer.text == "开头 😀  结尾")
+precondition(tokenComposer.selection.location == ("开头 😀 " as NSString).length)
+for invalid in ["mail@example.com", "https://example.com/path", "/Users/example", "plain text"] {
+    precondition(AIChatCompletionToken.at(invalid, selection: NSRange(location: invalid.utf16.count, length: 0)) == nil)
+}
+precondition(AIChatCompletionToken.at("/model", selection: NSRange(location: 6, length: 0))?.kind == .command)
+precondition(AIChatCompletionToken.at("@中", selection: NSRange(location: 2, length: 0), composing: true) == nil)
+precondition(AIChatCompletionToken.at("@cli", selection: NSRange(location: 0, length: 4)) == nil)
+precondition(AIChatCompletionToken.at("@cli", selection: NSRange(location: 999, length: 0)) == nil)
+let oldDraftID = tokenComposer.draftID
+tokenComposer.attachments = [.init(title: "fixture", text: "context")]
+tokenComposer.clear()
+precondition(tokenComposer.text.isEmpty && tokenComposer.attachments.isEmpty && tokenComposer.completion == nil && tokenComposer.draftID != oldDraftID)
+print("PASS chat completion: caret-aware UTF-16, emoji, suffix preservation, email/URL rejection, IME, selections and draft cancellation identity")
+
+let contextLoad = AIChatContextLoadState()
+for allowed in [true, false] {
+    var matchingEvents: [String] = []
+    contextLoad.begin() // Search-field invalidation starts the spinner before the debounce.
+    contextLoad.performSynchronously {
+        guard allowed else { return }
+        matchingEvents = ["Synthetic calendar event", "Other event"].filter { $0.contains("calendar") }
+    }
+    precondition(!contextLoad.loading, "Calendar completion and permission denial must both release the selection lock")
+    precondition(matchingEvents.count == (allowed ? 1 : 0))
+    if allowed {
+        let selectionRequest = contextLoad.begin()
+        precondition(contextLoad.complete(selectionRequest), "A matching searched event must remain selectable")
+    }
+}
+let staleContextRequest = contextLoad.begin()
+let currentContextRequest = contextLoad.begin()
+precondition(!contextLoad.complete(staleContextRequest) && contextLoad.loading)
+precondition(contextLoad.complete(currentContextRequest) && !contextLoad.loading)
+let cancelledContextRequest = contextLoad.begin()
+contextLoad.cancel()
+precondition(!contextLoad.loading && !contextLoad.complete(cancelledContextRequest))
+print("PASS review calendar context: searched results selectable, denied access releases loading, stale completion and cancellation")
+
 print("PASS Quick AI and chat settings persistence and non-destructive draft handoff")
 let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FixtureProtocol.self]
 let fresh = AIConfiguration(preferences: prefs)
@@ -209,6 +279,7 @@ let transferredTurn = quick.turns.first!.id
 quick.beginChat()
 quick.leaveLauncher()
 precondition(quick.isInChat && quick.running && quick.turns.first?.id == transferredTurn)
+precondition(quick.chatTitle == "handoff")
 wait("AI Chat receives active Quick AI answer") { !quick.running }
 precondition(quick.turns.count == 1 && quick.turns.first?.id == transferredTurn && quick.lastAnswer == "你好")
 FixtureProtocol.mode = "slow"
@@ -253,6 +324,7 @@ wait("Chat metadata is persisted independently of generated titles") {
         conversation.chats.first?.title == "重命名后的对话"
 }
 conversation.chatInstructions = "简洁回答，保留技术术语。"
+RunLoop.current.run(until: Date().addingTimeInterval(0.45))
 var instructedRecord: AIChatRecord?
 history.perform({ try $0.load(savedID) }) { instructedRecord = try! $0.get() }
 wait("Additional instructions survive history writes") {
@@ -322,6 +394,385 @@ precondition(recordsOnDisk.map(\.id) == [savedID])
 let permissions = try FileManager.default.attributesOfItem(atPath: historyURL.path)[.posixPermissions] as? NSNumber
 precondition(permissions?.intValue == 0o600)
 print("PASS AI Chat history: lazy SQLite, handoff, reopen, model isolation, interrupted turns, deletion and file permissions")
+
+// A separate database keeps revision tests independent from existing history fixtures.
+let revisionStore = AIChatHistory(url: historyDirectory.appendingPathComponent("revisions.sqlite"))
+let revisions = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
+                                 history: revisionStore, readKey: { _ in nil })
+revisions.beginChat()
+revisions.renameCurrentChat("预先命名 ")
+precondition(revisions.chatTitle == "预先命名 ", "Typing spaces must not collapse the title draft")
+revisions.renameCurrentChat("预先命名")
+revisions.chatInstructions = "仅使用本对话的指令"
+FixtureProtocol.mode = "stream"
+precondition(revisions.chooseChatModel(second.id))
+precondition(revisions.submit("第一问"))
+wait("Revision first turn") { !revisions.running }
+precondition(revisions.submit("第二问"))
+wait("Revision second turn") { !revisions.running }
+let revisionOriginalID = revisions.chatID!
+let originalFirstTurn = revisions.turns[0].id
+let originalSecondTurn = revisions.turns[1].id
+precondition(!revisions.resubmit(originalFirstTurn, question: " "))
+precondition(!revisions.resubmit(originalFirstTurn, question: String(repeating: "a", count: 32_001)))
+precondition(revisions.chatID == revisionOriginalID && revisions.turns.count == 2)
+precondition(revisions.branch(after: originalFirstTurn))
+let explicitBranchID = revisions.chatID!
+precondition(explicitBranchID != revisionOriginalID && revisions.turns.count == 1)
+precondition(revisions.chatInstructions == "仅使用本对话的指令" && revisions.currentConnection?.id == second.id)
+precondition(revisions.submit("分支的追问"))
+precondition(!revisions.branch(after: originalFirstTurn) && !revisions.resubmit(originalFirstTurn))
+wait("Branch follow-up") { !revisions.running }
+precondition(revisions.resubmit(originalFirstTurn, question: "修改后的第一问"))
+let editedBranchID = revisions.chatID!
+precondition(editedBranchID != explicitBranchID && revisions.turns.count == 1)
+precondition(revisions.turns[0].question == "修改后的第一问")
+wait("Edited first turn") { !revisions.running }
+precondition(revisions.messages(for: "下一问").map(\.content) == ["修改后的第一问", "你好", "下一问"])
+revisions.openChat(revisionOriginalID)
+wait("Restore original after editing branch") { !revisions.loadingChat && revisions.chatID == revisionOriginalID }
+precondition(revisions.chatTitle == "预先命名" && revisions.turns.count == 2)
+precondition(revisions.turns[0].id == originalFirstTurn && revisions.turns[1].id == originalSecondTurn)
+precondition(revisions.resubmit(originalSecondTurn))
+let retryBranchID = revisions.chatID!
+precondition(revisions.turns.count == 2 && revisions.turns[0].id == originalFirstTurn)
+wait("Retry second turn in branch") { !revisions.running }
+revisions.renameCurrentChat("重试后的分支")
+var retriedRecord: AIChatRecord?
+revisionStore.perform({ try $0.load(retryBranchID) }) { retriedRecord = try! $0.get() }
+wait("Persist retry branch") { retriedRecord?.content.turns.last?.complete == true }
+precondition(retriedRecord?.content.model == AIChatRecord.ModelReference(second))
+precondition(retriedRecord?.content.instructions == "仅使用本对话的指令")
+let preservedOriginal = try revisionStore.load(revisionOriginalID)
+precondition(preservedOriginal?.content.turns.count == 2)
+let revisionList = try revisionStore.list()
+precondition(revisionList.count == 4)
+precondition(settings.save(movedModel, selectAsDefault: false))
+let invalidRevisionID = revisions.chatID
+precondition(!revisions.resubmit(originalFirstTurn) && !revisions.branch(after: originalFirstTurn))
+precondition(revisions.chatID == invalidRevisionID)
+precondition(settings.save(second, selectAsDefault: false))
+revisions.closeChat()
+print("PASS AI Chat revisions: edit/retry branches, prefix context, original history, names, instructions, busy/invalid/model isolation and persistence")
+
+let contextStore = AIChatHistory(url: historyDirectory.appendingPathComponent("context.sqlite"))
+let contextChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: contextStore, readKey: { _ in nil })
+contextChat.beginChat()
+precondition(contextChat.chooseChatModel(second.id))
+let attachment = AIChatAttachment(title: "选择的文本", text: "Synthetic context only")
+precondition(!contextChat.submit("问题", attachments: [.init(title: "too large", text: String(repeating: "x", count: 32_001))]))
+precondition(contextChat.turns.isEmpty)
+FixtureProtocol.mode = "stream"
+precondition(contextChat.submit("分析", attachments: [attachment]))
+wait("Chat context answer") { !contextChat.running }
+let contextOriginalID = contextChat.chatID!
+let contextFirstID = contextChat.turns[0].id
+precondition(contextChat.turns[0].question == "分析" && contextChat.turns[0].attachments == [attachment])
+precondition(contextChat.messages(for: "继续").first?.content.contains("Synthetic context only") == true)
+precondition(contextChat.resubmit(contextFirstID))
+wait("Chat context retry") { !contextChat.running }
+precondition(contextChat.turns[0].attachments == [attachment])
+let contextRetryID = contextChat.chatID
+contextChat.duplicateChat(contextOriginalID)
+wait("Duplicate history including context") { !contextChat.loadingChat && contextChat.chatID != contextRetryID }
+precondition(contextChat.turns[0].attachments == [attachment] && contextChat.currentConnection?.id == second.id)
+var copiedTranscript: String?
+contextChat.transcript(contextOriginalID) { copiedTranscript = $0 }
+wait("Export saved transcript with context") { copiedTranscript != nil }
+precondition(copiedTranscript!.contains("Synthetic context only") && copiedTranscript!.contains("你好"))
+let legacyTurn = try JSONSerialization.data(withJSONObject: ["id": UUID().uuidString, "question": "旧记录", "answer": "回答", "complete": true])
+let decodedLegacyTurn = try JSONDecoder().decode(QuickAIController.Turn.self, from: legacyTurn)
+precondition(decodedLegacyTurn.attachments == nil)
+contextChat.closeChat()
+print("PASS chat context: bounded submission, persistent attachments, follow-up/retry/duplicate context, transcript export and legacy history decoding")
+
+let projectStore = AIChatHistory(url: historyDirectory.appendingPathComponent("projects.sqlite"))
+let projectChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: projectStore, readKey: { _ in nil })
+projectChat.beginChat()
+var project = AIChatProject()
+project.name = "测试项目"
+project.instructions = "Use synthetic project instructions only."
+project.directory = historyDirectory
+var projectSaved = false
+projectChat.saveProject(project) { projectSaved = $0 }
+wait("Save chat project") { projectSaved && projectChat.projects.count == 1 }
+projectChat.reset(projectID: project.id)
+precondition(projectChat.currentProjectID == project.id)
+projectChat.chatInstructions = "Additional synthetic chat instruction."
+precondition(projectChat.effectiveInstructions!.contains(project.instructions))
+precondition(projectChat.effectiveInstructions!.contains(projectChat.chatInstructions))
+precondition(projectChat.chooseChatModel(second.id) && projectChat.submit("项目中的会话"))
+wait("Project chat generated") { !projectChat.running }
+let projectChatID = projectChat.chatID!
+let projectTurn = projectChat.turns[0].id
+precondition(projectChat.branch(after: projectTurn))
+let projectBranchID = projectChat.chatID!
+wait("Project branch saved") { projectChat.chats.contains { $0.id == projectBranchID && $0.projectID == project.id } }
+projectChat.moveChat(projectChatID, to: nil)
+wait("Move original out of project") { projectChat.chats.contains { $0.id == projectChatID && $0.projectID == nil } }
+projectChat.openChat(projectChatID)
+wait("Restore moved chat") { !projectChat.loadingChat && projectChat.chatID == projectChatID }
+precondition(projectChat.currentProjectID == nil && !projectChat.effectiveInstructions!.contains(project.instructions))
+projectChat.openChat(projectBranchID)
+wait("Restore project branch") { !projectChat.loadingChat && projectChat.chatID == projectBranchID }
+precondition(projectChat.currentProjectID == project.id && projectChat.effectiveInstructions!.contains(project.instructions))
+project.instructions = "Updated project instructions."
+var updatedProject = false
+projectChat.saveProject(project) { updatedProject = $0 }
+wait("Update project applies to future requests") { updatedProject && projectChat.effectiveInstructions!.contains(project.instructions) }
+FixtureProtocol.mode = "slow"
+precondition(projectChat.submit("切换项目时取消"))
+projectChat.setProject(nil)
+RunLoop.current.run(until: Date().addingTimeInterval(0.65))
+precondition(!projectChat.running && projectChat.turns.last?.answer.isEmpty == true && projectChat.currentProjectID == nil)
+projectChat.setProject(project.id)
+FixtureProtocol.mode = "stream"
+projectChat.removeProject(project.id)
+wait("Remove group preserves chats") { projectChat.projects.isEmpty && projectChat.chats.count == 2 && projectChat.chats.allSatisfy { $0.projectID == nil } }
+precondition(projectChat.currentProjectID == nil && projectChat.turns.count == 2)
+projectChat.closeChat()
+let persistedProjects = try projectStore.projects()
+let preservedProjectChats = try projectStore.list()
+precondition(persistedProjects.isEmpty && preservedProjectChats.count == 2)
+print("PASS chat projects: CRUD, instruction inheritance, grouping, branch inheritance, moves, reopen and deletion without chat loss")
+
+let legacyHistoryURL = historyDirectory.appendingPathComponent("legacy-project-migration.sqlite")
+let legacyRecordID = UUID()
+let legacyPayload = String(decoding: try JSONEncoder().encode(AIChatRecord.Content(model: .init(second), turns: [decodedLegacyTurn], instructions: "old instructions")), as: UTF8.self).replacingOccurrences(of: "'", with: "''")
+var legacyDatabase: OpaquePointer?
+precondition(sqlite3_open(legacyHistoryURL.path, &legacyDatabase) == SQLITE_OK)
+let legacySQL = """
+CREATE TABLE chats(id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, updated REAL NOT NULL);
+CREATE TABLE chat_metadata(id TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE, title TEXT, pinned INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0);
+INSERT INTO chats VALUES('\(legacyRecordID.uuidString)', 'old generated title', '\(legacyPayload)', 0);
+INSERT INTO chat_metadata VALUES('\(legacyRecordID.uuidString)', 'existing alias', 1, 1);
+"""
+precondition(sqlite3_exec(legacyDatabase, legacySQL, nil, nil, nil) == SQLITE_OK)
+sqlite3_close(legacyDatabase)
+let migratedStore = AIChatHistory(url: legacyHistoryURL)
+let migratedRows = try migratedStore.list()
+precondition(migratedRows.count == 1 && migratedRows[0].title == "existing alias" && migratedRows[0].pinned && migratedRows[0].archived && migratedRows[0].projectID == nil)
+try migratedStore.saveProject(project)
+try migratedStore.update(legacyRecordID, change: .project(project.id))
+let movedLegacyRows = try migratedStore.list()
+precondition(movedLegacyRows[0].projectID == project.id)
+try migratedStore.removeProject(project.id)
+let retainedLegacyRows = try migratedStore.list()
+let retainedLegacyRecord = try migratedStore.load(legacyRecordID)
+precondition(retainedLegacyRows[0].projectID == nil && retainedLegacyRows[0].pinned && retainedLegacyRows[0].archived && retainedLegacyRows[0].title == "existing alias")
+precondition(retainedLegacyRecord?.content.instructions == "old instructions" && retainedLegacyRecord?.content.turns[0].question == "旧记录")
+print("PASS chat project additive migration: pre-project SQLite, aliases, pinned/archive metadata, old turn content, project moves and group removal")
+
+// PR #191 regressions run only against temporary stores and the intercepted URLSession.
+let reviewStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-branch.sqlite"))
+let reviewChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: reviewStore, readKey: { _ in nil })
+reviewChat.beginChat()
+var reviewProject = AIChatProject()
+reviewProject.name = "Review project"
+reviewProject.instructions = "Synthetic project policy"
+var reviewProjectSaved = false
+reviewChat.saveProject(reviewProject) { reviewProjectSaved = $0 }
+wait("Review project stored") { reviewProjectSaved }
+reviewChat.reset(projectID: reviewProject.id)
+reviewChat.chatInstructions = "Synthetic conversation policy"
+FixtureProtocol.mode = "stream"
+precondition(reviewChat.chooseChatModel(second.id) && reviewChat.submit("source question one"))
+wait("Review source first answer") { !reviewChat.running }
+precondition(reviewChat.submit("source question two"))
+wait("Review source second answer") { !reviewChat.running }
+let reviewSourceID = reviewChat.chatID!
+reviewChat.updateChat(reviewSourceID, change: .rename("Named source"))
+wait("Review source name saved") { reviewChat.chats.first { $0.id == reviewSourceID }?.title == "Named source" }
+reviewChat.reset()
+precondition(reviewChat.chatID == nil && reviewChat.turns.isEmpty && reviewChat.currentProjectID == nil)
+reviewChat.duplicateChat(reviewSourceID)
+wait("Open duplicate from blank conversation") { !reviewChat.loadingChat && reviewChat.chatID != nil }
+let reviewDuplicateID = reviewChat.chatID!
+precondition(reviewDuplicateID != reviewSourceID && reviewChat.chatTitle == "Named source · 分支")
+precondition(reviewChat.currentProjectID == reviewProject.id && reviewChat.turns.count == 2)
+precondition(reviewChat.submit("follow-up in duplicated project"))
+wait("Duplicate project next request") { !reviewChat.running }
+let duplicateSystem = FixtureProtocol.lastMessages.first { $0["role"] == "system" }?["content"] ?? ""
+precondition(duplicateSystem.contains(reviewProject.instructions) && duplicateSystem.contains("Synthetic conversation policy"))
+print("PASS review duplicate: blank current chat restores copied title/project and sends the next request with project and chat instructions")
+
+let editingTarget = reviewChat.turns.first!.id
+let reviewTurnEncoder = JSONEncoder()
+reviewTurnEncoder.outputFormatting = .sortedKeys
+let originalReviewTurns = try reviewTurnEncoder.encode(reviewChat.turns)
+let originalReviewTitle = reviewChat.chatTitle
+let reviewRequestsBeforeInvalidRetry = FixtureProtocol.requests.count
+reviewProject.instructions = String(repeating: "界", count: 6_000) // 18,000 UTF-8 bytes.
+reviewProjectSaved = false
+reviewChat.saveProject(reviewProject) { reviewProjectSaved = $0 }
+wait("Oversized combined policy applied") { reviewProjectSaved }
+reviewChat.chatInstructions = String(repeating: "x", count: 14_001)
+precondition(reviewChat.effectiveInstructions!.utf8.count > 32_000)
+precondition(!reviewChat.resubmit(editingTarget))
+precondition(!reviewChat.resubmit(editingTarget, question: "edited source question"))
+precondition(reviewChat.chatID == reviewDuplicateID && reviewChat.chatTitle == originalReviewTitle && reviewChat.currentProjectID == reviewProject.id)
+let rejectedReviewTurns = try reviewTurnEncoder.encode(reviewChat.turns)
+precondition(rejectedReviewTurns == originalReviewTurns && reviewChat.turns.first?.id == editingTarget)
+precondition(!reviewChat.running && FixtureProtocol.requests.count == reviewRequestsBeforeInvalidRetry)
+var reviewSavedCount: Int?
+reviewStore.perform({ try $0.list().count }) { reviewSavedCount = try! $0.get() }
+wait("Rejected edits create no persisted branch") { reviewSavedCount != nil }
+precondition(reviewSavedCount == 2)
+reviewChat.chatInstructions = "Short corrected policy"
+precondition(reviewChat.resubmit(editingTarget, question: "edited after correction"))
+wait("Same editing target works after policy correction") { !reviewChat.running }
+precondition(reviewChat.chatID != reviewDuplicateID && reviewChat.turns.first?.question == "edited after correction")
+precondition(FixtureProtocol.requests.count == reviewRequestsBeforeInvalidRetry + 1)
+reviewChat.closeChat()
+print("PASS review retry validation: combined UTF-8 instruction limit checked before mutation, original ID/title/project/turns and editor target retained, corrected retry succeeds")
+
+let deletionStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-delete.sqlite"))
+let deletionChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: deletionStore, readKey: { _ in nil })
+deletionChat.beginChat()
+precondition(deletionChat.chooseChatModel(second.id) && deletionChat.submit("other saved conversation"))
+wait("Other deletion fixture ready") { !deletionChat.running }
+let otherDeletionID = deletionChat.chatID!
+deletionChat.reset()
+precondition(deletionChat.submit("current saved conversation"))
+wait("Current deletion fixture ready") { !deletionChat.running }
+let currentDeletionID = deletionChat.chatID!
+let deletionDraft = AIChatComposer()
+var draftResets = 0
+let deletionObserver = deletionChat.chatReset.sink { draftResets += 1; deletionDraft.clear() }
+deletionDraft.offer("draft @context")
+deletionDraft.completion = AIChatCompletionToken.at(deletionDraft.text, selection: deletionDraft.selection)
+precondition(deletionDraft.appendAttachment(.init(title: "chosen context", text: "Synthetic attachment"), for: deletionDraft.draftID))
+let pendingOCRDraftID = deletionDraft.draftID
+deletionChat.deleteChat(otherDeletionID)
+wait("Delete non-current fixture") { !deletionChat.chats.contains { $0.id == otherDeletionID } }
+precondition(deletionChat.chatID == currentDeletionID && draftResets == 0 && deletionDraft.draftID == pendingOCRDraftID)
+precondition(deletionDraft.text == "draft @context" && deletionDraft.attachments.count == 1 && deletionDraft.completion != nil)
+deletionChat.deleteChat(currentDeletionID)
+precondition(draftResets == 1 && deletionDraft.text.isEmpty && deletionDraft.attachments.isEmpty && deletionDraft.completion == nil)
+precondition(deletionDraft.selection == NSRange(location: 0, length: 0) && deletionDraft.draftID != pendingOCRDraftID)
+precondition(!deletionDraft.appendAttachment(.init(title: "late OCR", text: "old result"), for: pendingOCRDraftID))
+precondition(deletionDraft.attachments.isEmpty)
+wait("Delete current fixture") { deletionChat.chats.isEmpty }
+precondition(deletionDraft.appendAttachment(.init(title: "new OCR", text: "new draft result"), for: deletionDraft.draftID))
+deletionObserver.cancel()
+deletionChat.closeChat()
+print("PASS review deletion: non-current draft retained, current draft fully cleared and late old-draft OCR rejected")
+
+let streamingStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-copy.sqlite"))
+let streamingChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: streamingStore, readKey: { _ in nil })
+streamingChat.beginChat()
+precondition(streamingChat.chooseChatModel(second.id) && streamingChat.submit("other transcript fixture"))
+wait("Other transcript saved") { !streamingChat.running }
+let storedTranscriptID = streamingChat.chatID!
+streamingChat.reset()
+FixtureProtocol.mode = "held-stream"
+precondition(streamingChat.submit("current streaming transcript"))
+wait("Visible partial response without stream completion") { streamingChat.running && streamingChat.turns.last?.answer == "visible streaming fragment" }
+let streamingTranscriptID = streamingChat.chatID!
+var streamingRecord: AIChatRecord?
+streamingStore.perform({ try $0.load(streamingTranscriptID) }) { streamingRecord = try! $0.get() }
+wait("Start-of-stream record persisted") { streamingRecord != nil }
+precondition(streamingRecord?.content.turns.last?.answer.isEmpty == true)
+var liveTranscript: String?
+streamingChat.transcript(streamingTranscriptID) { liveTranscript = $0 }
+precondition(liveTranscript?.contains("visible streaming fragment") == true && streamingChat.running)
+var otherTranscript: String?
+streamingChat.transcript(storedTranscriptID) { otherTranscript = $0 }
+wait("Copy other persisted conversation during streaming") { otherTranscript != nil }
+precondition(otherTranscript!.contains("other transcript fixture") && otherTranscript!.contains("你好") && !otherTranscript!.contains("visible streaming fragment"))
+streamingChat.chatInstructions = "Pending synthetic instruction edit"
+streamingChat.duplicateChat(streamingTranscriptID)
+wait("Duplicate current stream and pending instructions") { !streamingChat.loadingChat && streamingChat.chatID != streamingTranscriptID }
+precondition(streamingChat.turns.last?.answer == "visible streaming fragment" && !streamingChat.running)
+precondition(streamingChat.chatInstructions == "Pending synthetic instruction edit")
+precondition(streamingChat.currentConnection?.id == second.id)
+streamingChat.closeChat()
+FixtureProtocol.mode = "stream"
+print("PASS review duplicate snapshot: current partial response and pending instruction edits included in the branch")
+print("PASS review transcript: current visible streaming snapshot copied before persistence, other conversation still loaded from its own history")
+
+
+let raceStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-project-race.sqlite"))
+let raceChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: raceStore, readKey: { _ in nil })
+raceChat.beginChat()
+var removedProject = AIChatProject()
+removedProject.name = "Removed synthetic group"
+removedProject.instructions = "This removed policy must not return."
+var raceProjectSaved = false
+raceChat.saveProject(removedProject) { raceProjectSaved = $0 }
+wait("Project race fixture stored") { raceProjectSaved }
+raceChat.reset(projectID: removedProject.id)
+precondition(raceChat.chooseChatModel(second.id) && raceChat.submit("grouped conversation"))
+wait("Project race conversation ready") { !raceChat.running }
+let raceChatID = raceChat.chatID!
+raceChat.reset()
+// Both operations are enqueued before yielding the main loop: load reads the old
+// association, then deletion runs before its completion can reconcile the UI.
+raceChat.openChat(raceChatID)
+raceChat.removeProject(removedProject.id)
+wait("Project deletion races incoming chat") { !raceChat.loadingChat && raceChat.chatID == raceChatID && raceChat.projects.isEmpty }
+precondition(raceChat.currentProjectID == nil)
+raceChat.chatInstructions = "A later save must keep this conversation ungrouped."
+precondition(raceChat.submit("after project deletion"))
+wait("Send and save after project deletion") { !raceChat.running }
+precondition(!(FixtureProtocol.lastMessages.first { $0["role"] == "system" }?["content"] ?? "").contains(removedProject.instructions))
+var raceRows: [AIChatSummary]?
+raceStore.perform({ try $0.list() }) { raceRows = try! $0.get() }
+wait("Project reconciliation persists") { raceRows != nil }
+precondition(raceRows?.first { $0.id == raceChatID }?.projectID == nil)
+precondition(raceChat.chats.contains { $0.id == raceChatID && $0.projectID == nil && !$0.pinned && !$0.archived })
+raceChat.closeChat()
+print("PASS review project deletion race: incoming project cleared, later requests omit removed instructions and saves keep the chat visible ungrouped")
+
+// Copy a non-current source before deletion/move/rename callbacks refresh summaries.
+raceChat.beginChat()
+var copyProject = AIChatProject()
+copyProject.name = "Copy source group"
+var copyProjectSaved = false
+raceChat.saveProject(copyProject) { copyProjectSaved = $0 }
+wait("Copy source project saved") { copyProjectSaved }
+raceChat.moveChat(raceChatID, to: copyProject.id)
+wait("Copy source grouped") { raceChat.chats.first { $0.id == raceChatID }?.projectID == copyProject.id }
+raceChat.removeProject(copyProject.id)
+raceChat.duplicateChat(raceChatID)
+wait("Copy immediately after project removal") { !raceChat.loadingChat && raceChat.chatID != nil && raceChat.chatID != raceChatID }
+precondition(raceChat.currentProjectID == nil)
+precondition(raceChat.chats.contains { $0.id == raceChat.chatID && $0.projectID == nil })
+raceChat.reset()
+copyProjectSaved = false
+raceChat.saveProject(copyProject) { copyProjectSaved = $0 }
+wait("Copy destination project saved") { copyProjectSaved }
+raceChat.moveChat(raceChatID, to: copyProject.id)
+raceChat.updateChat(raceChatID, change: .rename("Latest queued title"))
+raceChat.duplicateChat(raceChatID)
+wait("Copy immediately after metadata edits") { !raceChat.loadingChat && raceChat.chatID != nil && raceChat.chatID != raceChatID }
+precondition(raceChat.currentProjectID == copyProject.id)
+precondition(raceChat.chatTitle == "Latest queued title · 分支")
+raceChat.closeChat()
+print("PASS review queued copy metadata: removed project stays ungrouped; immediate move and rename inherited from current storage")
+
+raceChat.beginChat()
+var moveTarget = AIChatProject()
+moveTarget.name = "Incoming move destination"
+moveTarget.instructions = "Use the latest incoming destination policy."
+var moveTargetSaved = false
+raceChat.saveProject(moveTarget) { moveTargetSaved = $0 }
+wait("Incoming destination stored") { moveTargetSaved }
+raceChat.openChat(raceChatID)
+raceChat.updateChat(raceChatID, change: .rename("Incoming latest title"))
+raceChat.moveChat(raceChatID, to: moveTarget.id)
+wait("Move reconciles incoming load") { !raceChat.loadingChat && raceChat.chatID == raceChatID && raceChat.currentProjectID == moveTarget.id }
+precondition(raceChat.chatTitle == "Incoming latest title")
+precondition(raceChat.submit("after incoming move"))
+wait("Incoming move next request") { !raceChat.running }
+precondition((FixtureProtocol.lastMessages.first { $0["role"] == "system" }?["content"] ?? "").contains(moveTarget.instructions))
+var movedRows: [AIChatSummary]?
+raceStore.perform({ try $0.list() }) { movedRows = try! $0.get() }
+wait("Incoming move persisted") { movedRows != nil }
+precondition(movedRows?.first { $0.id == raceChatID }?.projectID == moveTarget.id)
+precondition(movedRows?.first { $0.id == raceChatID }?.title == "Incoming latest title")
+raceChat.closeChat()
+print("PASS review incoming move: load cannot restore old project; next request and saved metadata use destination")
 
 let commandSession = AITextCommandSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                            readKey: { "fixture-" + $0.id.uuidString })
