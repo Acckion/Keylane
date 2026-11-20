@@ -171,7 +171,7 @@ enum AIToolHTTPTransport {
         var blocks = [Int: [String: Any]]()
         var closedBlocks = Set<Int>()
         var arguments = [Int: String]()
-        var reasoningDetails = [Int: [String: Any]]()
+        var reasoningDetails = [[String: Any]]()
         var stop: String?
         var usage: [String: Any]?
         var ended = false
@@ -187,18 +187,35 @@ enum AIToolHTTPTransport {
                 let delta = choice["delta"] as? [String: Any] ?? [:]
                 let text = delta["content"] as? String ?? ""
                 lastThinking = delta["reasoning_content"] as? String ?? delta["reasoning"] as? String
-                for (position, detail) in (delta["reasoning_details"] as? [[String: Any]] ?? []).enumerated() {
-                    let index = detail["index"] as? Int ?? position
-                    guard (0..<64).contains(index) else { throw AIResponseError.tooLarge }
-                    var current = reasoningDetails[index] ?? [:]
-                    for (key, value) in detail {
-                        if ["text", "data", "signature", "summary"].contains(key), let text = value as? String {
-                            current[key] = (current[key] as? String ?? "") + text
-                        } else { current[key] = value }
+                for detail in delta["reasoning_details"] as? [[String: Any]] ?? [] {
+                    // Encrypted items are complete opaque blocks, never text fragments.
+                    let type = detail["type"] as? String
+                    let field = type == "reasoning.text" ? "text" : type == "reasoning.summary" ? "summary" : nil
+                    let index = detail["index"] as? Int
+                    let id = detail["id"] as? String
+                    let format = detail["format"] as? String
+                    let match = reasoningDetails.lastIndex { previous in
+                        guard field != nil, previous["type"] as? String == type,
+                              previous["format"] as? String == format else { return false }
+                        if id != nil || index != nil {
+                            return previous["id"] as? String == id && previous["index"] as? Int == index
+                        }
+                        return reasoningDetails.last.map { NSDictionary(dictionary: $0).isEqual(to: previous) } == true
                     }
-                    reasoningDetails[index] = current
+                    if let match, let field {
+                        var combined = reasoningDetails[match]
+                        for (key, value) in detail {
+                            if key == field || key == "signature", let fragment = value as? String {
+                                combined[key] = (combined[key] as? String ?? "") + fragment
+                            } else if !(value is NSNull) || combined[key] == nil { combined[key] = value }
+                        }
+                        reasoningDetails[match] = combined
+                    } else {
+                        guard reasoningDetails.count < 64 else { throw AIResponseError.tooLarge }
+                        reasoningDetails.append(detail)
+                    }
                 }
-                if !reasoningDetails.isEmpty { message["reasoning_details"] = reasoningDetails.keys.sorted().compactMap { reasoningDetails[$0] } }
+                if !reasoningDetails.isEmpty { message["reasoning_details"] = reasoningDetails }
                 for (key, value) in delta where key != "tool_calls" && key != "reasoning_details" {
                     if let string = value as? String { message[key] = (message[key] as? String ?? "") + string }
                     else { message[key] = value }

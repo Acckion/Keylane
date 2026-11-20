@@ -99,3 +99,5 @@ Quick AI 与 AI Chat 的同一个 `AIConversationSession` 创建每次生成的 
 首批工具包括时间、计算器、应用名称查找、确认后打开应用、已授权本地补充索引的文件名查询、已授权且已选中日历的七天内日程查询。文件工具明确标注索引覆盖范围，不读取正文；两种查询均不修改当前页面的查询、选择或预览。此阶段未接入任意命令执行、文件写入与第三方工具自动发现。
 
 协议集成使用模拟 HTTP、隔离 CLI、虚构账户；通过自动化不代表真实提供商和所有模型已实测。真实账户、模型能力、安装版交互仍需单独验收。
+
+OpenRouter 的流式续接分别处理文本/摘要增量和不可拆解的加密块；加密块保留原顺序、标识和内容，不拼接或展示到界面。协议依据：[OpenRouter reasoning_details](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#reasoning_details-array-structure)。

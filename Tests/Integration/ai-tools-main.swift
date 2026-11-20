@@ -151,13 +151,13 @@ Task { @MainActor in
         _ = try collector.consume(["choices": [["delta": ["tool_calls": [["index": 0, "function": ["name": "add", "arguments": "ber\":21}"]]]], "finish_reason": "tool_calls"]]])
         _ = try collector.consume(["choices": [["delta": ["reasoning_details": [
             ["index": 0, "type": "reasoning.text", "text": "First "],
-            ["index": 1, "type": "reasoning.encrypted", "data": "opaque-"]]]]]])
+            ["type": "reasoning.encrypted", "id": "opaque-one", "data": "opaque-one"]]]]]])
         _ = try collector.consume(["choices": [["delta": ["reasoning_details": [
             ["index": 0, "type": "reasoning.text", "text": "second"],
-            ["index": 1, "type": "reasoning.encrypted", "data": "signature"]]]]]])
+            ["type": "reasoning.encrypted", "id": "opaque-two", "data": "opaque-two"]]]]]])
         let fragmented = try collector.finish()
         let continuation = fragmented.assistant["reasoning_details"] as! [[String: Any]]
-        precondition(continuation[0]["text"] as? String == "First second" && continuation[1]["data"] as? String == "opaque-signature")
+        precondition(continuation[0]["text"] as? String == "First second" && continuation.count == 3 && continuation[1]["data"] as? String == "opaque-one" && continuation[2]["data"] as? String == "opaque-two")
         precondition(fragmented.calls.first?.name == "fixture_add" && fragmented.calls.first?.arguments["number"] == .number(21))
         do { _ = try AIToolHTTPTransport.decode(["choices": [["message": ["content": "cut"], "finish_reason": "length"]]], anthropic: false); preconditionFailure("Truncation accepted") }
         catch AIResponseError.incomplete { }
