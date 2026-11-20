@@ -177,7 +177,7 @@ final class AIConversationSession: ObservableObject {
             prepareTools: { [weak self] in
                 guard let self, self.toolEnabled() else { return nil }
                 guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
-                return try AIToolRun(registrations: self.toolSource(), recipient: connection.toolRecipient, isCurrent: { [weak self] in
+                return try AIToolRun(registrations: self.toolSource().map { $0.forRun() }, recipient: connection.toolRecipient, isCurrent: { [weak self] in
                     guard let self else { return false }
                     return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
                         self.currentConnection == connection

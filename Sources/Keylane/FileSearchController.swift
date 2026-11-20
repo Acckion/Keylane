@@ -13,6 +13,7 @@ struct AutomaticFileExclusion: Codable, Identifiable, Equatable {
 }
 final class FileSearchController: ObservableObject {
     private var aiIndexRevision = UUID()
+    var aiAccessRevision: UUID { aiIndexRevision }
     @Published var options: FileSearchOptions { willSet { if newValue != options { aiIndexRevision = UUID() } } didSet { if options != oldValue { configure(old: oldValue) } } }
     @Published private(set) var automaticExclusions: [AutomaticFileExclusion] = [] { willSet { if newValue != automaticExclusions { aiIndexRevision = UUID() } } }
     @Published private(set) var stats = FileIndexStats()
@@ -74,7 +75,7 @@ final class FileSearchController: ObservableObject {
     private var recoverEvents = false
     private static let maxQueuedEvents = 8192
     private var pendingRefresh: DispatchWorkItem?
-    private var restored: Set<String> = []
+    private var restored: Set<String> = [] { didSet { if oldValue != restored { aiIndexRevision = UUID() } } }
     private var dirtyPaths = Set<String>()
     private var needsFullScan = false
     static var defaults: FileSearchOptions {
@@ -463,6 +464,13 @@ final class FileSearchController: ObservableObject {
         search(query, includeContents: includesQueryContents, standalone: standalone, showPathItself: showPathItself)
     }
 
+    /// Capture authorization metadata only. Filesystem validation runs off the UI actor.
+    @MainActor func aiReadScope() throws -> (@Sendable () -> FileSearchLocation) {
+        guard isRunning, options.enabled else { throw AIToolContractError.unavailable }
+        let options = authorizedOptions, exclusions = automaticExclusions.map(\.path), restored = restored
+        return { FileSearchLocation(options: options, automaticExclusions: exclusions, restored: restored) }
+    }
+
     /// Pure declaration snapshot. Search runs only after the file tool's root-bound approval.
     @MainActor func aiToolIndexSource() -> AIFileToolIndexSource? {
         guard let runtime, !runtime.cancelled, options.enabled else { return nil }
@@ -495,7 +503,7 @@ final class FileSearchController: ObservableObject {
                 reader.async(execute: DispatchWorkItem { [weak self] in
                     do {
                         guard let self, let db = self.readDB, !runtime.cancelled, !cancellation.cancelled else { throw CancellationError() }
-                        let files = try db.search(query, options: config, excluded: exclusions, limit: limit, within: within,
+                        let files = try db.search(query, options: config, excluded: exclusions + config.excludedPaths, limit: limit, within: within,
                             isCancelled: { cancellation.cancelled || runtime.cancelled })
                         continuation.resume(returning: files)
                     } catch { continuation.resume(throwing: error) }

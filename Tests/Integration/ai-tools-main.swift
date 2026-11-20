@@ -6,7 +6,9 @@
     func event(_ event: AIResponseEvent) { events.append(event) }
     func append(_ delta: String) { text += delta }
 }
+@MainActor final class ToolFixtureReferences { var reference: String? }
 @MainActor final class ToolFixtureAvailability { var allowed = true }
+@MainActor final class ToolFixtureLease { var revision = UUID(); var enabled = true }
 
 final class ToolFixtureProtocol: URLProtocol {
     static var bodies: [[String: Any]] = []
@@ -52,6 +54,13 @@ final class ToolFixtureProtocol: URLProtocol {
                 var message: [String: Any] = ["role": "assistant", "content": next ? "verified answer" : "", "reasoning_summary": "synthetic public reasoning"]
                 if !next { message["tool_calls"] = [["id": id, "type": "function", "function": ["name": "fixture_add", "arguments": "{\"number\":21}"]]] }
                 object = ["choices": [["message": message, "finish_reason": next ? "stop" : "tool_calls"]], "usage": ["total_tokens": 3]]
+            }
+            if Self.scenario == "scoped-revocation", !next {
+                precondition(!anthropic && body["stream"] as? Bool != true)
+                object = ["choices": [["message": ["role": "assistant", "content": "", "tool_calls": [
+                    ["id": "private-one", "type": "function", "function": ["name": "fixture_private", "arguments": "{}"]],
+                    ["id": "confirm-two", "type": "function", "function": ["name": "fixture_confirm", "arguments": "{}"]]
+                ]], "finish_reason": "tool_calls"]]]
             }
             object["error"] = NSNull()
             var responseData = try JSONSerialization.data(withJSONObject: object)
@@ -145,6 +154,44 @@ Task { @MainActor in
         catch AIToolContractError.invalidArguments { }
         catch AIToolContractError.limitReached { }
         precondition(performed == 5)
+        // Capabilities are private to this run and require a human-readable confirmation.
+        let referenceDefinition = try AIToolDefinition(name: "fixture_reference", title: "Read fixture", description: "Fixture", parameters: [])
+        var revision = UUID()
+        var reads = 0
+        let scoped = AIToolRegistration(definition: referenceDefinition, requiresConfirmation: true,
+            snapshotAvailability: { let expected = revision; return { revision == expected } },
+            confirmationDetail: { _, scope in
+                let store = scope.state(ToolFixtureReferences.self) { ToolFixtureReferences() }
+                return store.reference ?? "synthetic document.txt"
+            }, performInRun: { _, scope in
+                reads += 1
+                let store = scope.state(ToolFixtureReferences.self) { ToolFixtureReferences() }
+                let result = store.reference ?? "new-run"
+                store.reference = "same-run"
+                return try .init(text: result)
+            })
+        do { _ = try run([scoped]); preconditionFailure("Unfrozen private-data tool accepted") }
+        catch AIToolContractError.unavailable { }
+        let frozen = scoped.forRun()
+        let referenceRun = try AIToolRun(registrations: [frozen], isCurrent: { true }, approve: { _, detail in
+            precondition(detail == "synthetic document.txt" || detail == "same-run"); return true
+        })
+        let firstReference = try AIToolCall(id: "ref-one", name: "fixture_reference", arguments: [:])
+        let secondReference = try AIToolCall(id: "ref-two", name: "fixture_reference", arguments: [:])
+        let firstResult = try await referenceRun.execute(firstReference, scope: "fixture", progress: { _ in })
+        let secondResult = try await referenceRun.execute(secondReference, scope: "fixture", progress: { _ in })
+        precondition(firstResult.text == "new-run" && secondResult.text == "same-run")
+        let separateRun = try run([frozen])
+        let separateResult = try await separateRun.execute(firstReference, scope: "fixture", progress: { _ in })
+        precondition(separateResult.text == "new-run")
+        let deniedReference = try AIToolRun(registrations: [frozen], isCurrent: { true }, approve: { _, _ in false })
+        let beforeReads = reads
+        _ = try await deniedReference.execute(firstReference, scope: "fixture", progress: { _ in })
+        precondition(reads == beforeReads)
+        let revokedReference = try AIToolRun(registrations: [frozen], isCurrent: { true }, approve: { _, _ in revision = UUID(); return true })
+        let revokedResult = try await revokedReference.execute(firstReference, scope: "fixture", progress: { _ in })
+        precondition(revokedResult.isError && reads == beforeReads)
+        print("PASS run-scoped tools: frozen feature lease, human confirmation, isolated references, denial and revocation before read")
         let broker = AIToolApprovalBroker()
         let approval = Task { @MainActor in await broker.request(title: "Synthetic", arguments: "{}") }
         await Task.yield()
@@ -272,6 +319,54 @@ Task { @MainActor in
     toolCLIFinished = true
 }
 wait("Subscription tool fixtures") { toolCLIFinished }
+
+var scopedPublicationFinished = false
+Task { @MainActor in
+    do {
+        defer { ToolFixtureProtocol.scenario = "ok"; ToolFixtureProtocol.rounds = 0; ToolFixtureProtocol.bodies = [] }
+        for reenable in [false, true] {
+            let lease = ToolFixtureLease()
+            let privateDefinition = try AIToolDefinition(name: "fixture_private", title: "Read private fixture", description: "Synthetic private source", parameters: [])
+            let confirmDefinition = try AIToolDefinition(name: "fixture_confirm", title: "Confirm second fixture", description: "Synthetic approval", parameters: [])
+            var reads = 0
+            var secondExecutions = 0
+            let scoped = AIToolRegistration(definition: privateDefinition, requiresConfirmation: true,
+                snapshotAvailability: { let revision = lease.revision; return { lease.enabled && lease.revision == revision } },
+                confirmationDetail: { _, _ in "Synthetic source preview" },
+                performInRun: { _, _ in reads += 1; return try .init(text: "SECRET_NOT_FOR_REVOKED_POST") })
+            let second = AIToolRegistration(definition: confirmDefinition, requiresConfirmation: true) { _ in secondExecutions += 1; return try .init(text: "second") }
+            let broker = AIToolApprovalBroker()
+            var waitedForSecond = false
+            let tools = try AIToolRun(registrations: [scoped.forRun(), second],
+                recipient: .init(destination: "https://synthetic.invalid", model: "synthetic"), isCurrent: { true },
+                approve: { title, detail in
+                    guard title == "Confirm second fixture" else { return true }
+                    let approval = Task { @MainActor in await broker.request(title: title, arguments: detail) }
+                    while broker.pending == nil { await Task.yield() }
+                    waitedForSecond = true
+                    lease.enabled = false; lease.revision = UUID()
+                    if reenable { lease.enabled = true }
+                    broker.resolve(broker.pending!.id, allow: true)
+                    return await approval.value
+                })
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ToolFixtureProtocol.self]
+            ToolFixtureProtocol.scenario = "scoped-revocation"; ToolFixtureProtocol.rounds = 0; ToolFixtureProtocol.bodies = []
+            do {
+                _ = try await AIRuntime(configuration: configuration).generate(
+                    connection: .init(endpoint: "https://synthetic.invalid/v1", model: "synthetic", mode: .complete),
+                    readKey: { _ in "synthetic-key" }, messages: [.init(role: .user, content: "Synthetic revocation fixture")], tools: tools) { _ in }
+                preconditionFailure("Revoked private result reached a follow-up model request")
+            } catch is CancellationError { }
+            precondition(reads == 1 && secondExecutions == 0 && waitedForSecond && ToolFixtureProtocol.rounds == 1)
+            let sent = String(decoding: try JSONSerialization.data(withJSONObject: ToolFixtureProtocol.bodies), as: UTF8.self)
+            precondition(!sent.contains("SECRET_NOT_FOR_REVOKED_POST"))
+        }
+        print("PASS scoped disclosure: first private result revoked during second approval cancels before follow-up POST; disable and off/on both withhold transcript")
+    } catch { fatalError("Scoped disclosure fixture: \(error)") }
+    scopedPublicationFinished = true
+}
+wait("Scoped tool revocation before transport publication") { scopedPublicationFinished }
 
 var toolSessionFinished = false
 Task { @MainActor in

@@ -22,7 +22,49 @@ struct AIToolRegistration: Sendable {
     var requiresConfirmation = false
     var prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil
     var available: @MainActor @Sendable () -> Bool = { true }
-    let perform: @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult
+    var snapshotAvailability: (@MainActor @Sendable () -> (@MainActor @Sendable () -> Bool))? = nil
+    var confirmationDetail: (@MainActor @Sendable ([String: AIToolValue], AIToolRunScope) throws -> String)? = nil
+    var performInRun: (@MainActor @Sendable ([String: AIToolValue], AIToolRunScope) async throws -> AIToolResult)? = nil
+    var perform: @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult = { _ in throw AIToolContractError.unavailable }
+
+    init(definition: AIToolDefinition, requiresConfirmation: Bool = false,
+         prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil,
+         available: @escaping @MainActor @Sendable () -> Bool = { true },
+         perform: @escaping @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult) {
+        self.definition = definition; self.requiresConfirmation = requiresConfirmation
+        self.available = available; self.prepare = prepare; self.perform = perform
+    }
+
+    init(definition: AIToolDefinition, requiresConfirmation: Bool = false,
+         available: @escaping @MainActor @Sendable () -> Bool = { true },
+         snapshotAvailability: @escaping @MainActor @Sendable () -> (@MainActor @Sendable () -> Bool),
+         confirmationDetail: (@MainActor @Sendable ([String: AIToolValue], AIToolRunScope) throws -> String)? = nil,
+         performInRun: @escaping @MainActor @Sendable ([String: AIToolValue], AIToolRunScope) async throws -> AIToolResult) {
+        self.definition = definition; self.requiresConfirmation = requiresConfirmation
+        self.available = available; self.snapshotAvailability = snapshotAvailability
+        self.confirmationDetail = confirmationDetail; self.performInRun = performInRun
+    }
+
+    @MainActor func forRun() -> Self {
+        var copy = self
+        if let snapshotAvailability {
+            let live = available
+            let lease = snapshotAvailability()
+            copy.available = { live() && lease() }
+            copy.snapshotAvailability = nil
+        }
+        return copy
+    }
+}
+
+/// Private references live for one model run, never in history or a global registry.
+final class AIToolRunScope: @unchecked Sendable {
+    private var storage: [ObjectIdentifier: AnyObject] = [:]
+    @MainActor func state<T: AnyObject>(_ type: T.Type, create: () -> T) -> T {
+        let key = ObjectIdentifier(type)
+        if let value = storage[key] as? T { return value }
+        let value = create(); storage[key] = value; return value
+    }
 }
 
 struct AIToolApproval: Identifiable, Sendable {
@@ -75,6 +117,7 @@ actor AIToolRun {
     private let recipient: AIToolRecipient?
     private let isCurrent: @MainActor @Sendable () -> Bool
     private let approve: @MainActor @Sendable (String, String) async -> Bool
+    private let runScope = AIToolRunScope()
     private var budget = AIToolRunBudget()
     private var sourceGuards: [@MainActor @Sendable () -> Bool] = []
     private var executing = false
@@ -91,6 +134,7 @@ actor AIToolRun {
 
     init(registrations: [AIToolRegistration], recipient: AIToolRecipient? = nil, isCurrent: @escaping @MainActor @Sendable () -> Bool,
          approve: @escaping @MainActor @Sendable (String, String) async -> Bool) throws {
+        guard registrations.allSatisfy({ $0.snapshotAvailability == nil }) else { throw AIToolContractError.unavailable }
         catalog = try AIToolCatalog(registrations.map(\.definition))
         self.registrations = Dictionary(uniqueKeysWithValues: registrations.map { ($0.definition.name, $0) })
         // A reused registration array must not turn an opaque read cursor into a
@@ -134,7 +178,16 @@ actor AIToolRun {
             guard await tool.available() else { throw AIToolContractError.unavailable }
             await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: .requested))
             if tool.requiresConfirmation || prepared != nil {
-                guard await approve(name, prepared?.approvalArguments ?? arguments) else {
+                let approvalArguments: String
+                if let prepared { approvalArguments = prepared.approvalArguments }
+                else {
+                    var detail = try await tool.confirmationDetail?(call.arguments, runScope) ?? arguments
+                    if tool.confirmationDetail != nil, let recipient {
+                        detail += "\n直接接收方：\(recipient.destination)\n模型：\(recipient.model)"
+                    }
+                    approvalArguments = detail
+                }
+                guard await approve(name, approvalArguments) else {
                     try await validateCurrent()
                     let denied = try AIToolResult(text: prepared == nil ? "用户未允许本次操作。不要重试该操作，向用户说明未执行。" : AIToolPreparedOperation.unapprovedResult, isError: true)
                     try budget.record(denied, for: call.id)
@@ -148,16 +201,23 @@ actor AIToolRun {
             guard await tool.available() else { throw AIToolContractError.unavailable }
             await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: .running))
             let isCurrent = self.isCurrent
+            let runScope = self.runScope
             let invoke: @MainActor @Sendable () async throws -> AIToolResult = {
                 // Check and enter the native handler on the same actor as stop/disable.
                 try Task.checkCancellation()
                 guard isCurrent(), tool.available() else { throw CancellationError() }
                 if let prepared { return try await prepared.perform() }
+                if let scoped = tool.performInRun { return try await scoped(call.arguments, runScope) }
                 return try await tool.perform(call.arguments)
             }
             result = try await invoke()
             try await validateCurrent()
             guard await tool.available() else { throw AIToolContractError.unavailable }
+            if tool.performInRun != nil, !result.isError {
+                // Retain the frozen lease until transport publication, including other
+                // tool approvals in this response and subsequent model rounds.
+                sourceGuards.append(tool.available)
+            }
         } catch is CancellationError { throw CancellationError() }
         catch {
             if registration?.prepare != nil, !disclosureAllowed {
