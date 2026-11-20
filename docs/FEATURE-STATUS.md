@@ -33,7 +33,7 @@
 | BASE-05 | Hyper Key、双击与导航绑定 | 部分实现 | 对照物理键映射、短按及 Secure Input 行为 | 实机待验收；[历史清单](archive/FEATURES.csv) |
 | BASE-06 | 设置全文搜索、定位到模块与命令 | 已实现 | 新增设置页持续补搜索关键词与定位锚点 | [设置入口](../Sources/Keylane/Settings.swift) |
 | BASE-07 | 共用菜单栏条目与生命周期 | 已实现 | 新模块复用登记、更新、注销和可见性设置 | 已有实机及隔离记录；[菜单栏](MENU-BAR-CALENDAR.md) |
-| BASE-08 | 主题与自定义主题导入/共享 | 部分实现 | 已有外观设置；Raycast 自定义主题完整范围待核对 | [设置](../Sources/Keylane/Settings.swift)、[Raycast 主题](https://manual.raycast.com/themes) |
+| BASE-08 | 主题与自定义主题导入/共享 | 待合并 | Theme Studio 三栏编辑、滚动交互预览、深浅色分配、JSON/链接导入共享已在功能分支实现；使用 Keylane 自有主题格式，完整安装版验收仍待完成 | [实现与验证](features/THEME-STUDIO.md)、[issue #196](https://github.com/Acckion/Keylane/issues/196)、[PR #220](https://github.com/Acckion/Keylane/pull/220)；已通过隔离交互、341 项 Swift 与 27 项脚本测试，本机安装与签名已核对；审查增加紧凑栏主题透明间隙与独立表面回归 |
 | BASE-09 | 通用动态占位符及修饰符 | 部分实现 | 片段、快捷链接分别支持部分语法，核对共用解析与完整修饰符 | [片段](SNIPPETS.md)、[快捷链接](QUICKLINKS.md)、[参考](https://manual.raycast.com/dynamic-placeholders) |
 | BASE-10 | 首次引导、权限、辅助使用与本地化 | 部分实现 | 持续核对默认状态、拒绝/撤销、VoiceOver、对比度和中文输入 | [协作规范](../AGENTS.md)、[架构](LAUNCHER-ARCHITECTURE.md) |
 | BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现；定向评分复用待合并 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
@@ -171,8 +171,10 @@
 | 2026-11-21 | DATA-02 / DATA-02-a：扩展 Raycast 分类迁移，独立列出待合并能力与未支持项目；PR #219 审查补充新库原子发布与附件轮次边界修复，12 个强制退出场景及同步 dev `8bacfa8` 后全量 349+3 项 Swift 测试通过，仍待合并 | 实现 `ca498f3`；全量 342 项 Core + 3 项 ProviderConfig、补充 14 项迁移专项、27 项 ReleaseTests、隔离原生流程与签名包校验通过；真实备份仅只读核对，未实机导入 |
 | 2026-11-21 | EXTRA-01 暂存架网格审查修复待合并 | [PR #211](https://github.com/Acckion/Keylane/pull/211)，覆盖空架后续裁剪及存档恢复、搜索时横向选择；验收结果见 PR |
 
+| 2026-11-21 | BASE-08：Theme Studio 及设置颜色隔离，标记待合并 | 功能分支 `feat/theme-studio`，[PR #220](https://github.com/Acckion/Keylane/pull/220)，`d414663` / `d8e5c96`；自动化与本机安装证据见 [模块记录](features/THEME-STUDIO.md)，用户最终验收仍待完成 |
 维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用待合并；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。
 
 维护记录：2026-11-21，AI-13 / PR #215 修复 Grep 的 CRLF 换行识别；使用文件后部匹配及混合换行合成样本回归；23 项定向 Swift 测试、27 项脚本测试通过，未安装验收。
+| 2026-11-21 | BASE-08：修复紧凑自定义主题连成整块背景的审查问题 | [PR #220](https://github.com/Acckion/Keylane/pull/220)；原生窗口透明像素、独立表面、点击、减少透明度和展开渐显回归；旧行为对照能复现失败 |
 
 维护记录：2026-11-21，BASE-03 页面 ActionSnapshot 公共契约及词典/文件/Emoji/表单样板、替代 Return 与页面会话作用域见 [PR #221](https://github.com/Acckion/Keylane/pull/221)（20a170c），待合并、未安装；完整构建、动作/会话、文件与 Emoji 隔离回归通过；见 [页面动作契约](PAGE-ACTION-CONTRACT.md)。
