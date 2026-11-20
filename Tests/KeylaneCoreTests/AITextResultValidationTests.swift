@@ -10,6 +10,16 @@ final class AITextResultValidationTests: XCTestCase {
         XCTAssertThrowsError(try AITextResultValidation.preservingPlaceholders(source: "{uuid}", result: "{uuid} {uuid}"))
         XCTAssertThrowsError(try AITextResultValidation.preservingPlaceholders(source: "literal", result: "{clipboard}"))
     }
+    func testPlaceholderValidationUsesTheTemplateLexerForQuotedBraces() throws {
+        let source = #"Code: {argument name="code" default="{value}"}"#
+        XCTAssertEqual(try AITextResultValidation.preservingPlaceholders(source: source, result: source), source)
+        XCTAssertThrowsError(try AITextResultValidation.preservingPlaceholders(source: source, result: #"Code: {argument name="code" default="changed"}"#))
+    }
+    func testPlaceholderAttributesPreserveExactUnicodeBytes() {
+        let source = "{argument name=\"é\"}"
+        let changed = "{argument name=\"e\u{301}\"}"
+        XCTAssertThrowsError(try AITextResultValidation.preservingPlaceholders(source: source, result: changed))
+    }
     func testEmojiOnlyReturnsInstalledCatalogGlyphs() throws {
         XCTAssertEqual(try EmojiAIResult.glyphs("[\"😄\",\"not-installed\",\"😄\",\"β\"]", allowed: ["😄", "β"]), ["😄", "β"])
         XCTAssertThrowsError(try EmojiAIResult.glyphs("```json\n[\"😄\"]\n```", allowed: ["😄"]))

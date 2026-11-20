@@ -3,13 +3,10 @@ import Foundation
 /// Snippet transformations must not resolve or alter executable template placeholders.
 public enum AITextResultValidation {
     public static func preservingPlaceholders(source: String, result: String) throws -> String {
-        let names = DynamicTemplate.Kind.allCases.map { NSRegularExpression.escapedPattern(for: $0.rawValue) }.joined(separator: "|")
-        let pattern = "\\{(?:" + names + ")\\b[^{}]*\\}"
-        let expression = try NSRegularExpression(pattern: pattern)
-        func tokens(_ value: String) -> [String: Int] {
-            var counts: [String: Int] = [:]
-            for match in expression.matches(in: value, range: NSRange(value.startIndex..., in: value)) {
-                if let range = Range(match.range, in: value) { counts[String(value[range]), default: 0] += 1 }
+        func tokens(_ value: String) -> [Data: Int] {
+            var counts: [Data: Int] = [:]
+            for span in DynamicTemplate(value, usage: .snippet).placeholderRanges {
+                if let range = Range(span, in: value) { counts[Data(value[range].utf8), default: 0] += 1 }
             }
             return counts
         }
