@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Carbon
+import KeylaneCore
 
 /// Reuses normal command shortcuts; the optional modifier has no registration until opted in.
 final class DictationKeys {
@@ -8,7 +9,7 @@ final class DictationKeys {
     private var global: Any?
     private var local: Any?
     private var pending: DispatchWorkItem?
-    private var held = false
+    private var gesture = DictationModifierGesture()
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     init(controller: DictationController) { self.controller = controller }
@@ -17,8 +18,9 @@ final class DictationKeys {
         removeModifier()
         guard let controller, !controller.shortcutsSuspended, controller.canRun(), controller.settings.permission.available,
               controller.settings.options.modifierKey != nil, !controller.commandShortcutAssigned(), AXIsProcessTrusted() else { return }
-        global = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown, .leftMouseDown]) { [weak self] in self?.observe($0) }
-        local = NSEvent.addLocalMonitorForEvents(matching: [.flagsChanged, .keyDown, .leftMouseDown]) { [weak self] event in
+        let observed: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        global = NSEvent.addGlobalMonitorForEvents(matching: observed) { [weak self] in self?.observe($0) }
+        local = NSEvent.addLocalMonitorForEvents(matching: observed) { [weak self] event in
             self?.observe(event); return event
         }
     }
@@ -27,7 +29,7 @@ final class DictationKeys {
               controller.canRun(), controller.settings.permission.available, !IsSecureEventInputEnabled() else { return }
         guard event.type == .flagsChanged, event.keyCode == key else {
             pending?.cancel(); pending = nil
-            if held && controller.settings.options.holdToTalk { held = false; controller.cancel() }
+            if gesture.interrupt() { controller.cancel() }
             return
         }
         let pressed = CGEventSource.keyState(.hidSystemState, key: CGKeyCode(key))
@@ -35,22 +37,23 @@ final class DictationKeys {
         let expected: NSEvent.ModifierFlags
         switch key { case 54, 55: expected = .command; case 56, 60: expected = .shift; case 58, 61: expected = .option; case 59, 62: expected = .control; default: expected = .function }
         if pressed {
-            guard flags == expected, !held, pending == nil else { return }
+            guard flags == expected, !gesture.isArmed, pending == nil else { return }
             if controller.settings.options.holdToTalk {
                 let item = DispatchWorkItem { [weak self, weak controller] in
                     guard let self, let controller else { return }
                     self.pending = nil
                     guard controller.canRun(), controller.settings.permission.available, !controller.busy else { return }
-                    self.held = true; controller.invokeDefaultShortcut()
+                    self.gesture.arm(holdToTalk: true); controller.invokeDefaultShortcut()
                 }
                 pending = item; DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
-            } else { held = true }
+            } else { gesture.arm(holdToTalk: false) }
         } else {
             pending?.cancel(); pending = nil
-            guard held else { return }
-            held = false
-            if controller.settings.options.holdToTalk { controller.releaseShortcut() }
-            else { controller.invokeDefaultShortcut() }
+            switch gesture.release() {
+            case .none: break
+            case .toggle: controller.invokeDefaultShortcut()
+            case .finishHold: controller.releaseShortcut()
+            }
         }
     }
 
@@ -87,7 +90,7 @@ final class DictationKeys {
         tap = nil; source = nil
     }
     private func removeModifier() {
-        pending?.cancel(); pending = nil; held = false
+        pending?.cancel(); pending = nil; gesture.interrupt()
         if let global { NSEvent.removeMonitor(global) }
         if let local { NSEvent.removeMonitor(local) }
         global = nil; local = nil

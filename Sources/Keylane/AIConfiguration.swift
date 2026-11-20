@@ -130,6 +130,9 @@ final class AIConfiguration: ObservableObject {
             copy.supportsImages = nil
             copy.supportsTools = nil
             copy.modelTask = nil
+            if copy.taskKind != connection.taskKind, let base = connection.apiBaseURL {
+                copy.endpoint = base.absoluteString
+            }
             copy.credentialOwnerID = connection.credentialOwnerID ?? connection.id
             updated.connections.append(copy)
             added += 1

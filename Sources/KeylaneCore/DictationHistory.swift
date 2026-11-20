@@ -61,6 +61,8 @@ public actor DictationHistory {
         return try JSONDecoder().decode([DictationRecord].self, from: data).sorted { $0.date > $1.date }
     }
     public func save(_ record: DictationRecord, retainRecording: Bool) throws {
+        // A canceled retry may have been waiting for this actor; do not commit or remove its source.
+        try Task.checkCancellation()
         guard !deleted.contains(record.id), record.date > clearedAt else {
             try discardRecording(record.id)
             return

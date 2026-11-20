@@ -70,10 +70,64 @@ func encodeSyntheticAudio(in directory: URL) async throws -> URL {
     return url
 }
 
+private func verifyDictationReviewRegressions(in directory: URL) async throws {
+    var gesture = DictationModifierGesture()
+    gesture.arm(holdToTalk: false)
+    require(gesture.release() == .toggle, "a standalone modifier release toggles")
+    for _ in ["letter chord", "other modifier", "mouse button"] {
+        gesture.arm(holdToTalk: false)
+        require(!gesture.interrupt() && gesture.release() == .none, "other input disarms toggle without canceling a session")
+    }
+    gesture.arm(holdToTalk: true)
+    require(gesture.release() == .finishHold, "hold release finishes recording")
+    gesture.arm(holdToTalk: true)
+    require(gesture.interrupt() && gesture.release() == .none, "other input cancels an invoked hold once")
+
+    let history = DictationHistory(directory: directory.appendingPathComponent("retry-history"))
+    let failed = DictationRecord(duration: 1, error: "synthetic failure")
+    let originalBytes = Data([1, 2, 3])
+    let recording = try await history.recordingURL(failed.id)
+    try originalBytes.write(to: recording)
+    try await history.save(failed, retainRecording: true)
+    var retry = DictationSession()
+    let token = retry.begin(borrowingRecording: true)
+    require(retry.transition(.transcribing, token: token), "retry transcribing")
+    if retry.discardsRecordingOnCancel { try await history.discardRecording(failed.id) }
+    retry.cancel()
+    require(!retry.accepts(token), "canceled retry rejects stale work")
+    let preserved = try Data(contentsOf: recording)
+    let entries = try await history.list()
+    require(preserved == originalBytes && entries.first?.hasRecording == true && entries.first?.error == failed.error,
+            "a canceled retry retains the original bytes and index for another retry")
+    let fresh = retry.begin()
+    require(retry.transition(.transcribing, token: fresh) && retry.discardsRecordingOnCancel, "fresh capture cancellation deletes temporary audio")
+    require(retry.transition(.failed, token: fresh) && !retry.discardsRecordingOnCancel, "failed capture retains audio")
+
+    let suite = "KeylaneDictationReview.\(UUID())"
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let configuration = AIConfiguration(preferences: preferences)
+    let speech = AIConnection(endpoint: "https://fixture-provider.test/v1/audio/transcriptions", model: "gpt-transcribe")
+    require(configuration.save(speech, selectAsDefault: false), "register full transcription endpoint")
+    let defaults = configuration.state.defaults
+    require(configuration.addProviderModels(["fixture-chat"], from: speech, discoveredUsing: speech) == 1, "import chat from speech connection")
+    let chat = configuration.state.connections.first { $0.model == "fixture-chat" }!
+    require(chat.taskKind == .text && chat.completionURL?.absoluteString == "https://fixture-provider.test/v1/chat/completions", "imported chat uses API base")
+    require(AIConfiguration.credentialQueries(for: chat) as NSArray == AIConfiguration.credentialQueries(for: speech) as NSArray,
+            "cross-task import retains credential scope")
+    require(configuration.state.defaults == defaults, "cross-task import retains route defaults")
+    require(configuration.addProviderModels(["gpt-transcribe-mini"], from: chat, discoveredUsing: chat) == 1, "import speech from chat connection")
+    let sibling = configuration.state.connections.first { $0.model == "gpt-transcribe-mini" }!
+    require(sibling.transcriptionOptions()?.transcriptionURL?.absoluteString == "https://fixture-provider.test/v1/audio/transcriptions", "imported speech uses correct route")
+}
+
 func run() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
+    try await verifyDictationReviewRegressions(in: directory)
+    print("Dictation review regressions passed: standalone gestures, borrowed history and cross-task model routes.")
+    if ProcessInfo.processInfo.environment["KEYLANE_DICTATION_REVIEW_ONLY"] == "1" { return }
     let audio = try await encodeSyntheticAudio(in: directory)
     let config = URLSessionConfiguration.ephemeral
     config.protocolClasses = [FixtureProtocol.self]

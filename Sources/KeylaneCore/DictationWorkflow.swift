@@ -75,21 +75,49 @@ public struct DictationOptions: Codable, Equatable, Sendable {
 
 }
 
+/// Tracks only a standalone modifier gesture, independent of the AppKit event source.
+public struct DictationModifierGesture: Sendable {
+    public enum Release: Equatable, Sendable { case none, toggle, finishHold }
+    private enum State: Sendable { case idle, toggle, holding }
+    private var state = State.idle
+    public init() {}
+    public var isArmed: Bool { state != .idle }
+
+    public mutating func arm(holdToTalk: Bool) { state = holdToTalk ? .holding : .toggle }
+    /// Only an already invoked hold session needs to be canceled.
+    @discardableResult public mutating func interrupt() -> Bool {
+        let cancelHold = state == .holding
+        state = .idle
+        return cancelHold
+    }
+    public mutating func release() -> Release {
+        defer { state = .idle }
+        switch state {
+        case .idle: return .none
+        case .toggle: return .toggle
+        case .holding: return .finishHold
+        }
+    }
+}
+
 /// A generation accompanies every asynchronous capture, network and delivery callback.
 public struct DictationSession: Sendable {
     public enum Phase: String, Sendable { case idle, starting, recording, transcribing, formatting, delivering, failed }
     public private(set) var generation = UUID()
     public private(set) var phase = Phase.idle
+    private var borrowedRecording = false
     public init() {}
-    @discardableResult public mutating func begin() -> UUID {
+    @discardableResult public mutating func begin(borrowingRecording: Bool = false) -> UUID {
+        borrowedRecording = borrowingRecording
         generation = UUID(); phase = .starting; return generation
     }
+    public var discardsRecordingOnCancel: Bool { !borrowedRecording && phase != .idle && phase != .failed }
     @discardableResult public mutating func transition(_ phase: Phase, token: UUID) -> Bool {
         guard token == generation, self.phase != .idle, self.phase != .failed else { return false }
         self.phase = phase; return true
     }
     public func accepts(_ token: UUID) -> Bool { token == generation && phase != .idle && phase != .failed }
-    public mutating func cancel() { generation = UUID(); phase = .idle }
+    public mutating func cancel() { generation = UUID(); phase = .idle; borrowedRecording = false }
 }
 
 public enum DictationText {

@@ -334,7 +334,7 @@ final class DictationController: ObservableObject {
     }
     func cancel() {
         let id = activeRecord?.id
-        let removeAudio = phase != .failed && activeRecord?.error == nil
+        let removeAudio = session.discardsRecordingOnCancel && activeRecord?.error == nil
         session.cancel(); task?.cancel(); task = nil
         capture?.cancel(); capture = nil; clock?.invalidate(); clock = nil
         keyMonitor?.stopWatchingSession(); audioDucking.restore(); panel.close()
@@ -354,12 +354,13 @@ final class DictationController: ObservableObject {
         activeRecord = record; activeRecord?.error = nil
         activeStyle = record.styleName.flatMap { name in activeOptions.styles.first { $0.name == name } }
         destination = .application
-        let token = session.begin(); updatePhase(.transcribing, token: token); panel.show()
+        let token = session.begin(borrowingRecording: true); updatePhase(.transcribing, token: token); panel.show()
         task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                audioURL = try await history.recordingURL(record.id)
+                let existingAudio = try await history.recordingURL(record.id)
                 guard session.accepts(token), !Task.isCancelled else { return }
+                audioURL = existingAudio
                 process(token: token)
             } catch { fail(error, token: token) }
         }
