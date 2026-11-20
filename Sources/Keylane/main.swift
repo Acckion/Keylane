@@ -77,6 +77,8 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let aiSettings = AIConfiguration()
     let aiInteraction = AIInteractionPreferences()
+    var canAttachModuleAIContext: () -> Bool = { false }
+    var attachModuleAIContext: ((AIActionSource, CommandID) -> Bool)?
     let aiFileAccess = AIFileToolPreferences()
     var continueModuleAIAction: ((AIActionContext, String) -> Bool)?
     var openAIChatLink: ((UUID) -> Void)?

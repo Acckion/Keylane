@@ -50,6 +50,9 @@
 - 变更消息编码须兼容旧 `files` 与 `attachments`；补测活动请求转入完整窗口不重复发送、草稿/附件保留和各异步代次失效。架构与验证边界见 `docs/AI-CONVERSATION-ARCHITECTURE.md`。
 - 内置模块的 AI 动作使用普通 CommandID 和 `LauncherModule.aiActions` 登记，来源由模块提供 `AIActionSource`；不得在菜单或视图中直接读取全文并另写请求循环。聊天和模块动作共用 `AIRunHandle`，结果复用公共 Markdown／过程组件。样板与额度见 `docs/AI-MODULE-ACTIONS.md`。
 - AI 输入只在显式调用后准备，发送前重查来源、命令和模型；逐片段更新不得转发根搜索评分。加入聊天草稿须保留现有草稿和附件，不因路由进入而自动提交。停用后重新启用不能复活旧调用。
+- 聊天上下文通过所属模块的 `LauncherModule.aiContexts` 登记；目录只提供元数据和 `AIActionSource`，选中后才读取正文。使用注册表包装的模块／功能代次，不在聊天宿主添加模块 switch，不在读取目录时做 OCR、权限请求或网络操作。来源读取与核对在主线程进入，耗时提取交给可取消后台任务。
+- 聊天 `/` 菜单复用注册表的 AI 命令投影，内置动作使用 `aiActions`，动态命令提供方用 `isAICommand` 标记；仍按普通 CommandID 执行。结果复用 `AIResultContent`／`AIActionResultView`，不另写 Markdown 或过程展示；命令切换保留已有会话和草稿，但不得自动发送。
+
 
 ## 版本规范
 

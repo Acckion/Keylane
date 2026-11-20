@@ -92,6 +92,7 @@ enum ScreenshotActions {
                 confirmTrash(item, model: model)
             }
         ]
+        if item.kind == .image { actions.append(ScreenshotAIActions.menu(item, model: model)) }
         return actions + gridActions
     }
 

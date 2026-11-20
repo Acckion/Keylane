@@ -77,6 +77,8 @@ final class ScreenshotLibrary: ObservableObject {
             guard oldValue != enabled else { return }
             configureRetention()
             if !enabled {
+                for work in aiContextWork.values { work.cancel() }
+                aiContextWork.removeAll()
                 stop()
                 latestTask?.cancel()
                 latestTask = nil
@@ -155,6 +157,7 @@ final class ScreenshotLibrary: ObservableObject {
     private var pageActive = false
     private var needsRefresh = false
     private var scopeAccess: [URL] = []
+    private var aiContextWork: [UUID: ImageTextRecognitionWork] = [:]
     private var items: [ScreenshotMedia] = []
     private var query = ""
     private var scanTask: Task<Void, Never>?
@@ -284,6 +287,8 @@ final class ScreenshotLibrary: ObservableObject {
     private func saveScopes(_ updated: [ScreenshotScope]) {
         guard updated != scopes, let data = try? JSONEncoder().encode(updated) else { return }
         defaults.set(data, forKey: "screenshotScopes")
+        for work in aiContextWork.values { work.cancel() }
+        aiContextWork.removeAll()
         scopes = updated
         configureRetention()
         cancelImageTextCopies()
@@ -700,22 +705,62 @@ final class ScreenshotLibrary: ObservableObject {
         return true
     }
 
+    var aiContextItems: [ScreenshotMedia] { items }
+
+    @MainActor func aiTextContext(_ item: ScreenshotMedia) async throws -> String {
+        try validateAIContext(item)
+        guard item.kind == .image else { throw ImageTextError.notImage }
+        let folders = scopes.compactMap(\.accessibleURL).filter { folder in
+            let root = folder.standardizedFileURL.path
+            let parent = item.url.deletingLastPathComponent().standardizedFileURL.path
+            return root == "/" || parent == root || parent.hasPrefix(root + "/")
+        }
+        let access = folders.filter { $0.startAccessingSecurityScopedResource() }
+        defer { for folder in access { folder.stopAccessingSecurityScopedResource() } }
+        let cache = ocrCache, accurate = accurate
+        let work = ImageTextRecognitionWork()
+        let id = UUID()
+        aiContextWork[id] = work
+        defer { aiContextWork.removeValue(forKey: id) }
+        let text = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                cache.read(item, accurate: accurate, allowCloud: false, work: work)
+            }.value
+        } onCancel: { work.cancel() }
+        try Task.checkCancellation()
+        guard !work.cancelled else { throw CancellationError() }
+        try validateAIContext(item)
+        guard let text, !text.isEmpty else { throw ImageTextError.noText }
+        guard text.utf8.count <= 32_000 else { throw ImageTextError.textTooLarge }
+        return text
+    }
+
+    func validateAIContext(_ item: ScreenshotMedia) throws {
+        try validateTextAccess(item, requiresPage: false, allowCloud: false)
+    }
+
     private func validateTextCopy(_ item: ScreenshotMedia) throws {
-        guard pageActive, enabled else { throw CancellationError() }
+        try validateTextAccess(item, requiresPage: true, allowCloud: allowCloudOCR)
+    }
+
+    private func validateTextAccess(_ item: ScreenshotMedia, requiresPage: Bool, allowCloud: Bool) throws {
+        guard enabled, !requiresPage || pageActive else { throw CancellationError() }
         let parent = item.url.deletingLastPathComponent().standardizedFileURL.path
         guard scopes.contains(where: { scope in
             guard let folder = scope.accessibleURL else { return false }
             let root = folder.standardizedFileURL.path
             return root == "/" || parent == root || parent.hasPrefix(root + "/")
         }) else { throw CocoaError(.fileReadNoPermission) }
-        try ScreenshotFileVersion.check(item, allowCloud: allowCloudOCR)
+        try ScreenshotFileVersion.check(item, allowCloud: allowCloud)
     }
 
     fileprivate enum ImageTextError: LocalizedError {
-        case notImage, cloudDownloadDisabled, pasteboardChanged
+        case notImage, cloudDownloadDisabled, pasteboardChanged, noText, textTooLarge
 
         var errorDescription: String? {
             switch self {
+            case .noText: return "截图中没有可处理的文字。"
+            case .textTooLarge: return "截图文字超过 32,000 字节，请缩小处理范围。"
             case .notImage: return "请选择一张截图。"
             case .cloudDownloadDisabled: return "图片尚未下载。请先下载图片，或在截图设置中允许识别云端文件。"
             case .pasteboardChanged: return "剪贴板内容已变化，请重新执行复制。"

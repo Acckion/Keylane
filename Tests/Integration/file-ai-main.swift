@@ -2201,3 +2201,177 @@ func verifyCatalogReviewRegressions() {
     action.clear(); files.cancel()
     print("PASS PR209 reviews: cross-task endpoint/credentials, unavailable model and endpoint repair, rename guard, persisted defaults, and active module/file requests survive catalog names while destination edits cancel")
 }
+
+// Question commands prepare locally, then submit the question and selected data together.
+FixtureProtocol.mode = "ok"
+let questionAction = AIActionSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let questionDefinition = AIActionDefinition(commandID: .init(rawValue: "fixture-question"), title: "Ask selected text", instructions: "Use only the supplied source", acceptsQuestion: true)
+let questionSource = AIActionSource(moduleID: .init(rawValue: "fixture"), load: {
+    .init(sourceID: "question-source", title: "Selected record", text: "Synthetic record: delivery on Friday")
+}, isCurrent: { _ in true })
+let requestsBeforeQuestion = FixtureProtocol.requests.count
+questionAction.prepare(questionDefinition, source: questionSource, allowed: { true })
+wait("Question source prepared") { !questionAction.preparing }
+precondition(questionAction.context != nil && !questionAction.canSend && FixtureProtocol.requests.count == requestsBeforeQuestion)
+questionAction.question = String(repeating: "中", count: 2_667)
+precondition(!questionAction.canSend)
+questionAction.question = "What day is the delivery?"
+precondition(questionAction.canSend)
+questionAction.send()
+wait("Question command completed") { !questionAction.preparing && !questionAction.running }
+precondition(FixtureProtocol.requests.count == requestsBeforeQuestion + 1)
+precondition(FixtureProtocol.lastMessages.last?["content"]?.contains("What day is the delivery?") == true)
+precondition(FixtureProtocol.lastMessages.last?["content"]?.contains("Synthetic record: delivery on Friday") == true)
+questionAction.clear()
+print("PASS module question command: local preview, required bounded question, explicit send with exactly selected source")
+
+// Use the same published route and presentation reducer as Launcher, with leave dispatched later.
+final class AIPageRouteFixture: ObservableObject {
+    @Published var pageID = PageID(rawValue: "quick-ai")
+}
+let preservedSession = AIConversationSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let aiRoute = AIPageRouteFixture()
+var aiPresentation = LauncherPagePresentation()
+_ = aiPresentation.update(page: aiRoute.pageID, visible: true)
+preservedSession.composer.text = "Existing draft"
+preservedSession.composer.attachments = [.init(title: "Existing", text: "Keep me", symbol: "doc")]
+let preservedDraft = preservedSession.composer.draftID
+let aiDestination = PageID(rawValue: "module-ai-action")
+precondition(preservedSession.navigatePreservingLauncherConversation(currentPage: { aiRoute.pageID }, changes: aiRoute.$pageID.eraseToAnyPublisher()) {
+    aiRoute.pageID = aiDestination; return true
+})
+var deferredLeaveFinished = false
+DispatchQueue.main.async {
+    let change = aiPresentation.update(page: aiRoute.pageID, visible: true)
+    precondition(change.previousPage == PageID(rawValue: "quick-ai") && change.deactivation == change.previousPage)
+    preservedSession.leaveLauncher()
+    deferredLeaveFinished = true
+}
+wait("Actual deferred page deactivation") { deferredLeaveFinished }
+precondition(preservedSession.composer.text == "Existing draft" && preservedSession.composer.attachments.count == 1 && preservedSession.composer.draftID == preservedDraft)
+// The lease is consumed once. A normal later leave still clears state.
+preservedSession.leaveLauncher()
+precondition(preservedSession.composer.text.isEmpty && preservedSession.composer.attachments.isEmpty)
+for admitted in [false, true] {
+    aiRoute.pageID = .init(rawValue: "quick-ai")
+    preservedSession.composer.text = "No navigation"
+    _ = preservedSession.navigatePreservingLauncherConversation(currentPage: { aiRoute.pageID }, changes: aiRoute.$pageID.eraseToAnyPublisher()) { admitted }
+    preservedSession.leaveLauncher()
+    precondition(preservedSession.composer.text.isEmpty, "Failed/no-op navigation leaked a preservation lease")
+}
+for reason in ["return", "reset", "revocation"] {
+    aiRoute.pageID = .init(rawValue: "quick-ai")
+    preservedSession.composer.text = "Original"
+    _ = preservedSession.navigatePreservingLauncherConversation(currentPage: { aiRoute.pageID }, changes: aiRoute.$pageID.eraseToAnyPublisher()) {
+        aiRoute.pageID = aiDestination; return true
+    }
+    if reason == "return" {
+        // Even if SwiftUI coalesces a quick out-and-back, a later ordinary visit must not reuse the lease.
+        aiRoute.pageID = .init(rawValue: "quick-ai"); aiRoute.pageID = aiDestination
+    } else if reason == "reset" { preservedSession.reset(); preservedSession.composer.text = "New draft" }
+    preservedSession.leaveLauncher(allowPreservation: reason != "revocation")
+    precondition(preservedSession.composer.text.isEmpty)
+}
+print("PASS PR212 delayed navigation: actual presentation deactivation preserves draft/attachments once; failed/no-op, coalesced return, reset and owner revocation cannot leak preservation")
+
+// PR212: attachments use the actual Quick AI/AI Chat session, never the file route.
+do {
+    let suite = "KeylaneAttachmentDestination-" + UUID().uuidString
+    let prefs = UserDefaults(suiteName: suite)!
+    defer { prefs.removePersistentDomain(forName: suite) }
+    let quickModel = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "quick-fixture")
+    let chatModel = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "chat-fixture")
+    let unavailableModel = AIConnection(endpoint: "", model: "")
+    var state = AIConfiguration.State(enabled: true, connections: [quickModel, chatModel, unavailableModel], selectedID: unavailableModel.id,
+        defaults: [.quick: quickModel.id, .chat: chatModel.id, .files: unavailableModel.id], usesLastChatModel: false)
+    prefs.set(try JSONEncoder().encode(state), forKey: "aiConnections.v1")
+    let config = AIConfiguration(preferences: prefs)
+    let session = AIConversationSession(configuration: config, runtime: actionRuntime, readKey: { _ in preconditionFailure("Availability cannot read credentials") })
+    precondition(!config.isAvailable && session.currentConnection?.id == quickModel.id && session.canAttachModuleContext)
+    session.beginChat()
+    precondition(session.currentConnection?.id == chatModel.id && session.canAttachModuleContext)
+    session.closeChat()
+    session.composer.loadAttachments { try? await Task.sleep(for: .milliseconds(50)); return [] }
+    precondition(!session.canAttachModuleContext)
+    wait("Attachment destination import finished") { !session.composer.loadingFiles }
+    precondition(session.canAttachModuleContext)
+
+    state.defaults = [.quick: unavailableModel.id, .chat: unavailableModel.id, .files: quickModel.id]
+    prefs.set(try JSONEncoder().encode(state), forKey: "aiConnections.v1")
+    let fileOnlyConfig = AIConfiguration(preferences: prefs)
+    let fileOnlySession = AIConversationSession(configuration: fileOnlyConfig, runtime: actionRuntime, readKey: { _ in nil })
+    precondition(fileOnlyConfig.isAvailable && !fileOnlySession.canAttachModuleContext)
+    fileOnlySession.beginChat()
+    precondition(!fileOnlySession.canAttachModuleContext)
+    let preferredQuick = AIConversationSession(configuration: fileOnlyConfig, runtime: actionRuntime, preferredQuickModel: { quickModel.id }, readKey: { _ in nil })
+    precondition(preferredQuick.currentConnection?.id == quickModel.id && preferredQuick.canAttachModuleContext)
+    precondition(FixtureProtocol.requests.count == requestsBeforeQuestion + 1)
+    print("PASS PR212 attachment destination: Quick/Chat remain available with broken files route; files-only cannot enable attachments; explicit Quick model and busy import respected; zero model requests")
+}
+
+let cancelledAttachmentComposer = AIConversationComposer()
+cancelledAttachmentComposer.text = "Keep this draft"
+let attachmentAvailability = PassthroughSubject<Bool, Never>()
+cancelledAttachmentComposer.loadAttachments(availability: attachmentAvailability.eraseToAnyPublisher()) {
+    try? await Task.sleep(for: .milliseconds(100))
+    return [.init(title: "Stale", text: "Must not be appended", symbol: "doc")]
+}
+attachmentAvailability.send(false)
+attachmentAvailability.send(true)
+wait("Unavailable attachment cancelled") { !cancelledAttachmentComposer.loadingFiles }
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(cancelledAttachmentComposer.text == "Keep this draft" && cancelledAttachmentComposer.attachments.isEmpty)
+print("PASS direct context attachment: off/on revokes pending read without replacing draft or appending stale data")
+
+let disabledTextCommand = AITextCommandSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let textCommandAvailability = PassthroughSubject<Bool, Never>()
+disabledTextCommand.prepare(.polish, selection: "Synthetic text", canInvoke: { true })
+disabledTextCommand.observeAvailability(textCommandAvailability.eraseToAnyPublisher())
+precondition(disabledTextCommand.canSend)
+textCommandAvailability.send(false); textCommandAvailability.send(true)
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+precondition(!disabledTextCommand.canSend && !disabledTextCommand.reply.running)
+let disabledTextRequestCount = FixtureProtocol.requests.count
+disabledTextCommand.send()
+precondition(FixtureProtocol.requests.count == disabledTextRequestCount)
+print("PASS legacy AI command shares irreversible availability revocation; fast disable/reenable requires fresh invocation")
+
+
+// Preserve an active response through a deferred page leave without resending or stopping it.
+let activeNavigationSuite = "KeylaneActiveNavigation-" + UUID().uuidString
+let activeNavigationPrefs = UserDefaults(suiteName: activeNavigationSuite)!
+defer { activeNavigationPrefs.removePersistentDomain(forName: activeNavigationSuite) }
+activeNavigationPrefs.set("http://127.0.0.1:43991/v1", forKey: "fileAIEndpoint")
+activeNavigationPrefs.set("fixture", forKey: "fileAIModel")
+let activeNavigationConfig = AIConfiguration(preferences: activeNavigationPrefs)
+var activeNavigationProfile = activeNavigationConfig.selected!
+activeNavigationProfile.mode = .streaming
+precondition(activeNavigationConfig.save(activeNavigationProfile))
+let activeNavigationSession = AIConversationSession(configuration: activeNavigationConfig, runtime: actionRuntime, readKey: { _ in nil })
+FixtureProtocol.mode = "held-stream"
+precondition(activeNavigationSession.submit("Active conversation"))
+wait("Active response before navigation") { activeNavigationSession.running && activeNavigationSession.lastAnswer != nil }
+let activeTurnID = activeNavigationSession.turns.last!.id
+let activeRequestCount = FixtureProtocol.requests.count
+activeNavigationSession.composer.text = "Next unsent question"
+activeNavigationSession.composer.attachments = [.init(title: "Keep", text: "synthetic attachment", symbol: "doc")]
+aiRoute.pageID = .init(rawValue: "quick-ai")
+_ = aiPresentation.update(page: aiRoute.pageID, visible: true)
+_ = activeNavigationSession.navigatePreservingLauncherConversation(currentPage: { aiRoute.pageID }, changes: aiRoute.$pageID.eraseToAnyPublisher()) {
+    aiRoute.pageID = aiDestination; return true
+}
+var activeLeaveFinished = false
+DispatchQueue.main.async {
+    let change = aiPresentation.update(page: aiRoute.pageID, visible: true)
+    precondition(change.deactivation == PageID(rawValue: "quick-ai"))
+    activeNavigationSession.leaveLauncher()
+    activeLeaveFinished = true
+}
+wait("Active response survives deferred leave") { activeLeaveFinished }
+precondition(activeNavigationSession.running && activeNavigationSession.turns.last?.id == activeTurnID)
+precondition(activeNavigationSession.composer.text == "Next unsent question" && activeNavigationSession.composer.attachments.count == 1)
+precondition(FixtureProtocol.requests.count == activeRequestCount)
+activeNavigationSession.leaveLauncher()
+precondition(!activeNavigationSession.running && activeNavigationSession.turns.isEmpty && activeNavigationSession.composer.text.isEmpty)
+FixtureProtocol.mode = "ok"
+print("PASS PR212 active navigation: delayed lifecycle retains same response and unsent draft, zero resubmission; later normal leave cancels and clears")
