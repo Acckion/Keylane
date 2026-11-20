@@ -22,30 +22,33 @@ final class ShortcutManager {
     private var handler: EventHandlerRef?
     private var nextID: UInt32 = 1
     var fired: ((String) -> Void)?
+    var released: ((String) -> Void)?
     var scopeForAction: (String) -> ShortcutRegistrationScope = { _ in .native }
     private var suspended = false
 
     init() {
-        var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        var types = [EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+                     EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased))]
         InstallEventHandler(GetApplicationEventTarget(), { _, event, context in
             guard let context, let event else { return OSStatus(eventNotHandledErr) }
             let owner = Unmanaged<ShortcutManager>.fromOpaque(context).takeUnretainedValue()
             var id = EventHotKeyID()
             guard GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil, MemoryLayout<EventHotKeyID>.size, nil, &id) == noErr,
-                  id.signature == 0x4B4C414E, owner.enqueue(id: id.id) else { return OSStatus(eventNotHandledErr) }
+                  id.signature == 0x4B4C414E, owner.enqueue(id: id.id, release: GetEventKind(event) == UInt32(kEventHotKeyReleased)) else { return OSStatus(eventNotHandledErr) }
             return noErr
-        }, 1, &type, Unmanaged.passUnretained(self).toOpaque(), &handler)
+        }, types.count, &types, Unmanaged.passUnretained(self).toOpaque(), &handler)
     }
 
     deinit { stop() }
 
-    func enqueue(id: UInt32) -> Bool {
+    func enqueue(id: UInt32, release: Bool = false) -> Bool {
         guard let action = ids[id], let queued = registrations[action] else { return false }
         DispatchQueue.main.async { [weak self] in
             guard let self, self.ids[id] == action, let registration = self.registrations[action],
                   registration.id == id, registration.scope == queued.scope,
                   registration.scope == self.scopeForAction(action) else { return }
-            self.fired?(action)
+            if release { self.released?(action) }
+            else { self.fired?(action) }
         }
         return true
     }
@@ -92,6 +95,7 @@ final class ShortcutManager {
     func restore(_ saved: [String: Shortcut]) throws {
         suspend()
         suspended = false
+        defer { NotificationCenter.default.post(name: .init("KeylaneShortcutsSuspended"), object: nil, userInfo: ["suspended": false]) }
         specs = saved
         try registerMissing(saved)
     }
@@ -156,6 +160,7 @@ final class ShortcutManager {
     func suspend() {
         for action in Array(registrations.keys) { unregister(action) }
         suspended = true
+        NotificationCenter.default.post(name: .init("KeylaneShortcutsSuspended"), object: nil, userInfo: ["suspended": true])
     }
 
     func resume() throws { try restore(specs) }

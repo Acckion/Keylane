@@ -31,6 +31,24 @@ enum AIModule {
                 if fromQuickAI { model.pageID = .root }
             }
         }
+        model.dictation.deliverAI = { [weak model, weak quickAI] text, prefersChat in
+            guard let model, let quickAI else { return }
+            guard configuration.state.enabled, configuration.state.connection(for: .quick) != nil || prefersChat || quickAI.isInChat else {
+                _ = DictationDelivery.copy(text)
+                model.openSettings(page: "ai-models")
+                return
+            }
+            if prefersChat || quickAI.isInChat {
+                // An explicit empty seed opens the current draft without asynchronously restoring history.
+                openChat("")
+            } else {
+                let draft = quickAI.composer
+                _ = draft.appendDictation(text, for: draft.draftID)
+                model.openPageWithExistingDraft(QuickAILauncher.pageID)
+                return
+            }
+            _ = quickAI.composer.appendDictation(text, for: quickAI.composer.draftID)
+        }
         model.openAIChatLink = { [weak model, weak quickAI] id in
             guard let model, let quickAI, configuration.state.enabled,
                   !model.disabledCommands.contains(QuickAILauncher.commandID.rawValue),

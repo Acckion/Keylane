@@ -649,6 +649,9 @@ struct Launcher: View {
             }
         }
 
+        let isOpeningExistingDraft = model.isOpeningExistingDraft(current)
+        let opensExistingDraft = visible && isOpeningExistingDraft
+        let entryIntent = change.activation == .enter || opensExistingDraft ? model.takePageEntry(for: current) : .standard
         if let previous = change.previousPage {
             dismissArgumentEditor()
             if previous == .root {
@@ -659,7 +662,7 @@ struct Launcher: View {
             if current == .root {
                 model.query = mainSearchQuery
                 model.compactExpanded = mainSearchExpanded
-            } else {
+            } else if !isOpeningExistingDraft {
                 model.query = restoredQuery ?? ""
             }
         }
@@ -667,24 +670,19 @@ struct Launcher: View {
         if change.activation != nil, let page, let activation {
             model.trackRegisteredPage(page, activation: activation)
         }
-        switch change.activation {
-        case .enter:
-            let explicitQuery = model.takeInitialQuery(for: current)
-            let initialQuery = page?.enter?(explicitQuery ?? model.query)
-            if let seed = LauncherPagePresentation.entryQuery(explicit: explicitQuery, pageResult: initialQuery,
-                                                              restored: restoredQuery,
-                                                              pageConsumesEntryQuery: page?.consumesEntryQuery == true) {
+        if change.activation == .enter || opensExistingDraft {
+            if let seed = entryIntent.resolve(current: model.query, restored: restoredQuery,
+                                              pageConsumesEntryQuery: page?.consumesEntryQuery == true,
+                                              existingDraft: { page?.entryDraft?() }, enter: { page?.enter?($0) }) {
                 if showsFileResults { fileType = "all" }
                 model.query = seed
             }
             refreshActiveQuery()
-        case .resume:
+        } else if change.activation == .resume {
             if let resume = page?.resume {
                 dispatchedQuery = model.query
                 resume()
             } else { refreshActiveQuery() }
-        case nil:
-            break
         }
         if change.previousPage != nil {
             resetResultSelection(to: current == .root ? mainSearchSelection : .init())

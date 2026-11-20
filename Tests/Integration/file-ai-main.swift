@@ -135,6 +135,9 @@ final class FixtureProtocol: URLProtocol {
     override func stopLoading() { lock.lock(); stopped = true; lock.unlock() }
 }
 let suite = "org.keylane.file-ai-test."+UUID().uuidString
+try verifyDictatedChatKeepsDraft()
+if ProcessInfo.processInfo.environment["KEYLANE_DICTATED_CHAT_ONLY"] == "1" { exit(0) }
+
 let prefs = UserDefaults(suiteName:suite)!
 defer { prefs.removePersistentDomain(forName:suite) }
 let interaction = AIInteractionPreferences(preferences: prefs)
@@ -214,6 +217,39 @@ precondition(!contextLoad.loading && !contextLoad.complete(cancelledContextReque
 print("PASS review calendar context: searched results selectable, denied access releases loading, stale completion and cancellation")
 
 print("PASS Quick AI and chat settings persistence and non-destructive draft handoff")
+func verifyDictatedChatKeepsDraft() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let suite = "KeylaneSyntheticDictatedChat-" + UUID().uuidString
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let history = AIConversationRepository(url: folder.appendingPathComponent("history.sqlite"))
+    let connection = AIConnection(endpoint: "https://example.invalid/v1", model: "synthetic-text")
+    let archivedID = UUID()
+    try history.save(.init(id: archivedID, content: .init(model: .init(connection), turns: [])))
+    let urlConfig = URLSessionConfiguration.ephemeral
+    urlConfig.protocolClasses = [FixtureProtocol.self]
+    let chat = AIConversationSession(configuration: AIConfiguration(preferences: preferences),
+        runtime: AIRuntime(configuration: urlConfig), history: history,
+        readKey: { _ in fatalError("Dictation draft opening cannot use credentials") })
+    chat.composer.offer("已有未发草稿")
+    let draftID = chat.composer.draftID
+    let attachment = AIConversationAttachment(title: "Fixture", text: "synthetic", symbol: "doc")
+    chat.composer.attachments = [attachment]
+    let requests = FixtureProtocol.requests.count
+    chat.beginChat(restoreLatest: false)
+    precondition(chat.composer.appendDictation("NASA 转写", for: draftID))
+    wait("Chat sidebar loads without replacing the dictated draft") {
+        chat.chats.contains(where: { $0.id == archivedID }) && !chat.loadingChat
+    }
+    precondition(chat.chatID == nil && chat.composer.draftID == draftID)
+    precondition(chat.composer.text == "已有未发草稿 NASA 转写" && chat.composer.attachments == [attachment])
+    precondition(FixtureProtocol.requests.count == requests)
+    chat.closeChat()
+    print("PASS dictated Chat draft: load sidebar only, retain transcript and attachments, no model submission")
+}
+
 let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [FixtureProtocol.self]
 let fresh = AIConfiguration(preferences: prefs)
 precondition(!fresh.isAvailable && fresh.selected == nil)
@@ -1759,3 +1795,47 @@ precondition(noMatchingMenu.groups.isEmpty)
 precondition(noMatchingMenu.choices(inherits: true, allowsLastUsed: true).isEmpty)
 precondition(orderedMenu.choices(inherits: true, allowsLastUsed: true).prefix(2) == [.inherit, .lastUsed])
 print("PASS model menu search: matching models precede Return selection, no matches offer no selection, clearing search restores special choices")
+
+// Dictation uses the same catalog and credential scope as text AI; it stores only model IDs.
+let sharedSpeechName = "KeylaneSharedSpeech-" + UUID().uuidString
+let sharedSpeechDefaults = UserDefaults(suiteName: sharedSpeechName)!
+defer { sharedSpeechDefaults.removePersistentDomain(forName: sharedSpeechName) }
+let sharedSpeechConfig = AIConfiguration(preferences: sharedSpeechDefaults)
+let speechOwner = AIConnection(name: "Text model", endpoint: "https://fixture-provider.test/v1/chat/completions", model: "fixture-chat")
+precondition(sharedSpeechConfig.save(speechOwner, selectAsDefault: true))
+sharedSpeechConfig.setEnabled(true)
+let oldDefault = sharedSpeechConfig.state.defaults
+precondition(sharedSpeechConfig.addProviderModels(["gpt-transcribe"], from: speechOwner, discoveredUsing: speechOwner) == 1)
+let sharedSpeech = sharedSpeechConfig.state.connections.first { $0.model == "gpt-transcribe" }!
+precondition(sharedSpeech.taskKind == .openAITranscription)
+precondition(sharedSpeech.transcriptionOptions()?.transcriptionURL?.absoluteString == "https://fixture-provider.test/v1/audio/transcriptions")
+precondition(AIConfiguration.credentialQueries(for: sharedSpeech) as NSArray == AIConfiguration.credentialQueries(for: speechOwner) as NSArray)
+precondition(sharedSpeechConfig.state.defaults == oldDefault, "adding a speech model must not replace any text default")
+precondition(sharedSpeechConfig.addProviderModels(["gpt-transcribe"], from: speechOwner, discoveredUsing: speechOwner) == 0)
+sharedSpeechConfig.setDefault(sharedSpeech.id, for: .chat)
+precondition(sharedSpeechConfig.state.connection(for: .chat)?.id == speechOwner.id, "speech-only models cannot be chat defaults")
+var otherSpeechEndpoint = sharedSpeech
+otherSpeechEndpoint.endpoint = "https://other-fixture.test/v1"
+precondition(AIConfiguration.credentialQueries(for: otherSpeechEndpoint) as NSArray != AIConfiguration.credentialQueries(for: sharedSpeech) as NSArray)
+var explicitAudioEndpoint = sharedSpeech
+explicitAudioEndpoint.endpoint = "https://fixture-provider.test/v1/audio/transcriptions"
+precondition(AIConfiguration.credentialQueries(for: explicitAudioEndpoint) as NSArray == AIConfiguration.credentialQueries(for: sharedSpeech) as NSArray)
+precondition(explicitAudioEndpoint.modelsURL?.absoluteString == "https://fixture-provider.test/v1/models")
+var manualSpeech = speechOwner
+manualSpeech.model = "custom-speech-model"; manualSpeech.modelTask = .openAITranscription
+precondition(manualSpeech.transcriptionOptions() != nil)
+var textOverride = sharedSpeech
+textOverride.modelTask = .text
+precondition(textOverride.transcriptionOptions() == nil)
+var localSpeech = sharedSpeech
+localSpeech.providerID = "ollama"
+precondition(localSpeech.transcriptionOptions() == nil)
+let sharedSpeechMenu = AIModelMenuCatalog(connections: [speechOwner, sharedSpeech], selection: .inherit, query: "", purpose: .transcription)
+precondition(sharedSpeechMenu.choices(inherits: false, allowsLastUsed: false) == [.model(sharedSpeech.id)])
+let speechInTextMenu = AIModelMenuCatalog(connections: [speechOwner, sharedSpeech], selection: .model(sharedSpeech.id), query: "")
+precondition(speechInTextMenu.groups.flatMap(\.models).contains { $0.id == sharedSpeech.id }, "an incompatible saved choice remains visible for repair")
+precondition(!speechInTextMenu.choices(inherits: false, allowsLastUsed: false).contains(.model(sharedSpeech.id)))
+let reloadedSpeechConfig = AIConfiguration(preferences: sharedSpeechDefaults)
+precondition(reloadedSpeechConfig.state.connections.first { $0.id == sharedSpeech.id } == sharedSpeech)
+precondition(AIProviderPreset.all.first { $0.id == "elevenlabs" }!.connection.taskKind == .elevenLabsTranscription)
+print("PASS shared dictation models: common catalog and model picker, sibling credential reuse, endpoint isolation, explicit capabilities and unchanged text defaults")

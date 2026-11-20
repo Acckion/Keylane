@@ -30,13 +30,13 @@ final class AIConfiguration: ObservableObject {
             guard enabled else { return nil }
             let fallback = defaults?[route] ?? selectedID
             let id = route == .chat && usesLastChatModel == true ? lastChatModelID ?? fallback : fallback
-            return connections.first { $0.id == id && $0.isConfigured }
+            return connections.first { $0.id == id && $0.isConfigured && $0.taskKind == .text }
         }
 
         var routeAvailability: [Bool] { AIRoute.allCases.map { connection(for: $0) != nil } }
         var availableConnectionIDs: Set<UUID> {
             guard enabled else { return [] }
-            return Set(connections.filter(\.isConfigured).map(\.id))
+            return Set(connections.filter { $0.isConfigured && $0.taskKind == .text }.map(\.id))
         }
     }
 
@@ -65,7 +65,7 @@ final class AIConfiguration: ObservableObject {
             }
         }
         // Expand the former shared selection into explicit per-surface defaults.
-        if let selected = state.selectedID {
+        if let selected = state.selectedID, state.selected?.taskKind == .text {
             var defaults = state.defaults ?? [:]
             for route in AIRoute.allCases where defaults[route] == nil { defaults[route] = selected }
             state.defaults = defaults
@@ -90,7 +90,7 @@ final class AIConfiguration: ObservableObject {
     }
 
     func setDefault(_ id: UUID?, for route: AIRoute, usesLastChatModel: Bool = false) {
-        guard id == nil || state.connections.contains(where: { $0.id == id && $0.isConfigured }) else { return }
+        guard id == nil || state.connections.contains(where: { $0.id == id && $0.isConfigured && $0.taskKind == .text }) else { return }
         var updated = state
         var defaults = updated.defaults ?? [:]
         defaults[route] = id
@@ -118,7 +118,7 @@ final class AIConfiguration: ObservableObject {
         var updated = state
         let existing = Set(state.connections.filter {
             ($0.credentialOwnerID ?? $0.id) == (connection.credentialOwnerID ?? connection.id)
-                && $0.requestIdentity == connection.requestIdentity
+                && $0.credentialURL == connection.credentialURL
         }.map(\.model))
         var added = 0
         for model in Set(models).sorted() where !existing.contains(model) {
@@ -129,6 +129,10 @@ final class AIConfiguration: ObservableObject {
             copy.contextTokens = nil
             copy.supportsImages = nil
             copy.supportsTools = nil
+            copy.modelTask = nil
+            if copy.taskKind != connection.taskKind, let base = connection.apiBaseURL {
+                copy.endpoint = base.absoluteString
+            }
             copy.credentialOwnerID = connection.credentialOwnerID ?? connection.id
             updated.connections.append(copy)
             added += 1
@@ -252,11 +256,11 @@ final class AIConfiguration: ObservableObject {
         if let index = updated.connections.firstIndex(where: { $0.id == connection.id }) {
             let original = updated.connections[index]
             connection.legacyAccount = original.legacyAccount
-            if original.completionURL != connection.completionURL {
-                if let oldEndpoint = original.completionURL?.absoluteString {
+            if original.credentialURL != connection.credentialURL {
+                if let oldEndpoint = original.credentialURL?.absoluteString {
                     var previous = Set(original.previousEndpoints ?? [])
                     previous.insert(oldEndpoint)
-                    if let current = connection.completionURL?.absoluteString { previous.remove(current) }
+                    if let current = connection.credentialURL?.absoluteString { previous.remove(current) }
                     connection.previousEndpoints = previous.sorted()
                 }
             }
@@ -264,9 +268,11 @@ final class AIConfiguration: ObservableObject {
         } else {
             updated.connections.append(connection)
         }
-        if selectAsDefault || updated.selectedID == nil { updated.selectedID = connection.id }
+        if connection.taskKind == .text, selectAsDefault || updated.selectedID == nil { updated.selectedID = connection.id }
         var defaults = updated.defaults ?? [:]
-        for route in AIRoute.allCases where defaults[route] == nil { defaults[route] = connection.id }
+        if connection.taskKind == .text {
+            for route in AIRoute.allCases where defaults[route] == nil { defaults[route] = connection.id }
+        }
         updated.defaults = defaults
         persist(updated)
         return true
@@ -308,7 +314,7 @@ final class AIConfiguration: ObservableObject {
              kSecAttrAccount as String: account]
         }
 
-        let currentURL = connection.completionURL
+        let currentURL = connection.credentialURL
         var endpoints = currentURL.map { [$0.absoluteString] } ?? []
         if includingPreviousEndpoints { endpoints.append(contentsOf: connection.previousEndpoints ?? []) }
         var result = endpoints.map { query(service: service, account: (connection.credentialOwnerID ?? connection.id).uuidString + "|" + $0) }
@@ -330,8 +336,8 @@ final class AIConfiguration: ObservableObject {
                              readSaved: (AIConnection) throws -> String? = { try key(for: $0) }) throws -> String? {
         let entered = enteredKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !entered.isEmpty { return entered }
-        guard let original, let endpoint = target.completionURL,
-              endpoint == original.completionURL else { return nil }
+        guard let original, let endpoint = target.credentialURL,
+              endpoint == original.credentialURL else { return nil }
         return try readSaved(original)
     }
 

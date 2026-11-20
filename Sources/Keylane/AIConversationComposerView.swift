@@ -14,6 +14,7 @@ struct AIConversationComposerView: View {
     let chooseModel: (UUID) -> Void
     let showUsage: () -> Void
     let openAISettings: () -> Void
+    var dictation: DictationController? = nil
     var compact = false
     var inputEnabled = true
     var focusToken = 0
@@ -118,6 +119,9 @@ struct AIConversationComposerView: View {
                         dismissMenu: dismissComposerMenu, escape: escape, commandReturn: commandReturn, optionReturn: optionReturn)
                         .frame(height: inputHeight)
                 }
+                if let dictation, !controller.running, !controller.loadingChat, inputEnabled {
+                    DictationComposerButton(controller: dictation, composer: composer)
+                }
                 if composer.loadingFiles {
                     ProgressView().controlSize(.small).frame(width: 30, height: 34)
                 } else if controller.running {
@@ -125,11 +129,11 @@ struct AIConversationComposerView: View {
                         .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 34, height: 34)
                 } else if compact && composer.text.isEmpty && composer.attachments.isEmpty, let emptyAction, controller.lastAnswer != nil {
                     Button(emptyActionTitle, action: emptyAction).buttonStyle(.plain).font(.system(size: 12))
-                } else if composer.text.isEmpty && composer.attachments.isEmpty {
+                } else if dictation == nil && composer.text.isEmpty && composer.attachments.isEmpty {
                     Button("语音输入（尚未接入）", systemImage: "mic") { capability = .voice }
                         .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 30, height: 34)
                         .foregroundStyle(.secondary).help("语音输入：基础入口，尚未接入")
-                } else {
+                } else if !composer.text.isEmpty || !composer.attachments.isEmpty {
                     Button("发送", systemImage: "arrow.up", action: submit)
                         .labelStyle(.iconOnly).buttonStyle(.plain)
                         .frame(width: 30, height: 30)
