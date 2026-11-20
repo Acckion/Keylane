@@ -60,6 +60,12 @@ private final class TranslationRedirectPolicy: NSObject, URLSessionTaskDelegate 
     }
 }
 
+struct TranslationReplacement {
+    let target: NSRunningApplication
+    let canStart: () -> Bool
+    let canDispatch: () -> Bool
+}
+
 final class TranslatorController: ObservableObject {
     @Published var preferences: TranslatorPreferences {
         didSet {
@@ -89,8 +95,8 @@ final class TranslatorController: ObservableObject {
     private var active = false
     private var settingsChanges: AnyCancellable?
     private var requestConnection: AIConnection?
-    private var replacement: (() -> Bool)?
-    var replaceWithResult: (() -> Void)?
+    private var replacement: TranslationReplacement?
+    var replaceWithResult: ((TranslationReplacement) -> Void)?
 
     init(ai: AIConfiguration, runtime: AIRuntime, defaults: UserDefaults = .standard,
          session: URLSession? = nil, requestTimeout: Duration = .seconds(120),
@@ -122,6 +128,10 @@ final class TranslatorController: ObservableObject {
         }
     }
 
+    var modelCatalog: AIModelMenuCatalog {
+        AIModelMenuCatalog(connections: ai.state.connections,
+                           selection: preferences.modelID.map(AIModelChoice.model) ?? .inherit, query: "")
+    }
     var selectedConnection: AIConnection? {
         guard ai.state.enabled else { return nil }
         if let id = preferences.modelID { return ai.state.connections.first { $0.id == id && $0.isConfigured } }
@@ -146,7 +156,7 @@ final class TranslatorController: ObservableObject {
         tokenizer.string = input
         return tokenizer.tokens(for: input.startIndex..<input.endIndex).count
     }
-    func begin(text: String, command: TranslateCommand? = nil, replacement: (() -> Bool)? = nil) {
+    func begin(text: String, command: TranslateCommand? = nil, replacement: TranslationReplacement? = nil) {
         stop()
         source = command?.source ?? preferences.source
         target = command?.target ?? preferences.target
@@ -258,7 +268,7 @@ final class TranslatorController: ObservableObject {
                 self.loading = false
                 if let replacement = self.replacement {
                     self.replacement = nil
-                    if replacement() { self.replaceWithResult?() }
+                    if replacement.canStart() { self.replaceWithResult?(replacement) }
                     else { self.error = "选中文字或目标应用已更改，请检查译文后手动粘贴。" }
                 }
             } catch {

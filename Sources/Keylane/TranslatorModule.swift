@@ -23,24 +23,38 @@ enum TranslatorModule {
                 _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary)
             }
             let input = text ?? ((controller.preferences.useSelection || command?.replaceSelection == true) ? selected : nil) ?? ""
-            var verify: (() -> Bool)?
-            if text == nil, command?.replaceSelection == true, let target, let selected, !selected.isEmpty {
-                verify = { [weak model] in
-                    guard let model, model.pageID == pageID,
-                          let command, model.disabledCommands.contains(command.commandID) == false,
+            var replacement: TranslationReplacement?
+            if text == nil, command?.replaceSelection == true, let target, let selected, !selected.isEmpty,
+               let position = SnippetTextTarget.position(in: target), position.range.length > 0 {
+                let selection = TranslationSelection(element: position.element, range: position.range, text: selected)
+                let selectionIsCurrent = {
+                    guard let current = SnippetTextTarget.position(in: target) else { return false }
+                    let currentText = (current.text as NSString).substring(
+                        with: NSRange(location: current.range.location, length: current.range.length))
+                    return selection.matches(element: current.element, range: current.range, text: currentText)
+                }
+                let isAdmitted = { [weak model] in
+                    guard let model, model.pageID == pageID, let command,
+                          !model.disabledCommands.contains(command.commandID),
                           controller.preferences.commands.contains(command),
                           model.launcherModules?.isModuleEnabled(.init(rawValue: "keylane.translator")) == true,
-                          let delegate = NSApp.delegate as? Delegate, delegate.window?.isKeyWindow == true,
-                          delegate.previousApplication?.processIdentifier == target.processIdentifier,
-                          selection(in: target) == selected else { return false }
+                          (NSApp.delegate as? Delegate)?.previousApplication?.processIdentifier == target.processIdentifier
+                    else { return false }
+                    return !target.isTerminated
+                }
+                replacement = TranslationReplacement(target: target, canStart: {
+                    guard isAdmitted(), selectionIsCurrent(),
+                          (NSApp.delegate as? Delegate)?.window?.isKeyWindow == true else { return false }
                     let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
                     return front == ProcessInfo.processInfo.processIdentifier || front == target.processIdentifier
-                }
+                }, canDispatch: { isAdmitted() && selectionIsCurrent() })
             }
-            controller.begin(text: input, command: command, replacement: verify)
+            controller.begin(text: input, command: command, replacement: replacement)
             model.openPage(pageID, origin: origin)
         }
-        controller.replaceWithResult = { [weak controller] in if let controller { use(controller, paste: true) } }
+        controller.replaceWithResult = { [weak controller] replacement in
+            if let controller { use(controller, paste: true, replacement: replacement) }
+        }
         let command = LauncherModule.Command(declaration: .init(
             id: commandID, title: "翻译", detail: "翻译文本并切换语言", symbol: "translate",
             keywords: ["Translate", "Translator", "翻译", "语言"], destination: .action, settingsPage: settingsID
@@ -119,13 +133,14 @@ enum TranslatorModule {
         }))
     }
 
-    static func use(_ controller: TranslatorController, paste: Bool) {
+    static func use(_ controller: TranslatorController, paste: Bool, replacement: TranslationReplacement? = nil) {
         guard controller.canUseOutput else { return }
         let board = NSPasteboard.general
         board.clearContents()
         guard board.setString(controller.output, forType: .string) else { return }
         if paste, let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil {
-            delegate.pasteIntoPreviousApplication(clipboardGeneration: board.changeCount)
+            delegate.pasteIntoPreviousApplication(clipboardGeneration: board.changeCount,
+                                                  targetApplication: replacement?.target, validation: replacement?.canDispatch)
         } else {
             (NSApp.delegate as? Delegate)?.showLauncherFeedback("已复制译文", style: .success)
         }

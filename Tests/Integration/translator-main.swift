@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import KeylaneCore
 
@@ -192,3 +193,51 @@ editor.setSelectedRange(NSRange(location: 0, length: editor.string.utf16.count))
 editor.deleteBackward(nil)
 precondition(committedText.isEmpty && editor.showsPlaceholder)
 print("PASS native translator input: IME composition hides placeholder, commit publishes, deletion restores placeholder")
+
+// Hiding a model affects the translation picker, but must not break an existing binding.
+var hiddenModel = AIConnection(name: "Hidden selected", endpoint: "http://127.0.0.1:12345/v1", model: "hidden")
+hiddenModel.hiddenFromPicker = true
+var anotherHidden = hiddenModel
+anotherHidden.id = UUID()
+anotherHidden.model = "other-hidden"
+precondition(ai.save(hiddenModel) && ai.save(anotherHidden))
+controller.preferences.modelID = nil
+precondition(!controller.modelCatalog.groups.flatMap(\.models).contains { $0.id == hiddenModel.id })
+controller.preferences.modelID = hiddenModel.id
+let visibleChoices = controller.modelCatalog.groups.flatMap(\.models).map(\.id)
+precondition(visibleChoices.contains(hiddenModel.id) && !visibleChoices.contains(anotherHidden.id))
+print("PASS translator model catalog hides excluded models and retains only the selected hidden model")
+
+// The dispatch check must survive the earlier validation and the launcher being hidden.
+controller.preferences.provider = .google
+TranslatorFixtureProtocol.mode = "normal"
+var capturedReplacement: TranslationReplacement?
+var selectionIsCurrent = true
+var dispatchChecks = 0
+controller.replaceWithResult = { capturedReplacement = $0 }
+let replacement = TranslationReplacement(target: .current, canStart: { true }, canDispatch: {
+    dispatchChecks += 1
+    return selectionIsCurrent
+})
+controller.begin(text: "replace selected text", replacement: replacement)
+wait("automatic replacement carries dispatch-time validation", until: { capturedReplacement != nil })
+precondition(dispatchChecks == 0 && capturedReplacement?.target === replacement.target)
+controller.stop()
+selectionIsCurrent = false
+precondition(capturedReplacement?.canDispatch() == false && dispatchChecks == 1)
+capturedReplacement = nil
+controller.begin(text: "selection changed before copy", replacement: .init(target: .current, canStart: { false }, canDispatch: { true }))
+wait("automatic replacement rejects a changed selection before dispatch", until: { !controller.loading })
+precondition(capturedReplacement == nil && controller.error.contains("已更改"))
+controller.stop()
+
+let originalElement = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+let otherElement = AXUIElementCreateSystemWide()
+let originalRange = CFRange(location: 2, length: 4)
+let originalSelection = TranslationSelection(element: originalElement, range: originalRange, text: "same")
+precondition(originalSelection.matches(element: originalElement, range: originalRange, text: "same"))
+precondition(!originalSelection.matches(element: otherElement, range: originalRange, text: "same"))
+precondition(!originalSelection.matches(element: originalElement, range: CFRange(location: 3, length: 4), text: "same"))
+precondition(!originalSelection.matches(element: originalElement, range: CFRange(location: 2, length: 0), text: "same"))
+precondition(!originalSelection.matches(element: originalElement, range: originalRange, text: "changed"))
+print("PASS automatic replacement rejects a different field, selected range, caret or selected text")

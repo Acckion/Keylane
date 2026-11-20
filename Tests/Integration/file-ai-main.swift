@@ -689,7 +689,15 @@ else:
             send({'id': rid, 'result': {}})
             send({'method': 'item/agentMessage/delta', 'params': {'threadId': active_thread, 'delta': 'CLI fixture '}})
             send({'method': 'item/agentMessage/delta', 'params': {'threadId': active_thread, 'delta': 'answer'}})
-            send({'method': 'turn/completed', 'params': {'threadId': active_thread, 'turn': {'status': 'completed'}}})
+            completed = {'method': 'turn/completed', 'params': {'threadId': active_thread, 'turn': {'status': 'completed'}}}
+            if (root / 'split-notification').exists():
+                trailing = (json.dumps({'method': 'worker/notice', 'params': {'text': '中文'}}, ensure_ascii=False) + '\n').encode()
+                split = trailing.index('中'.encode()) + 1
+                os.write(sys.stdout.fileno(), (json.dumps(completed) + '\n').encode() + trailing[:split])
+                time.sleep(0.15)
+                os.write(sys.stdout.fileno(), trailing[split:])
+            else:
+                send(completed)
             continue
         else:
             raise RuntimeError(method)
@@ -748,6 +756,7 @@ Task { @MainActor in
         await MainActor.run { cliAnswer += delta }
     }
     precondition(cliAnswer == "CLI fixture answer")
+    try! Data().write(to: cliDirectory.appendingPathComponent("split-notification"))
     cliAnswer = ""
     _ = try! await AISubscriptionTransport.generate(cliConnection, messages: [.init(role: .user, content: "fixture translation")], effort: "low") { delta in
         await MainActor.run { cliAnswer += delta }
@@ -779,7 +788,7 @@ Task { @MainActor in
     precondition(afterCancellation.last![0] != workerCalls[0][0])
     await AISubscriptionTransport.closeTranslationWorker()
     print("PASS warm worker cancellation discards the process; next translation uses a fresh process")
-    print("PASS fast translation: lean startup, disabled MCP, low reasoning, process reuse with fresh threads and explicit shutdown; normal AI unchanged")
+    print("PASS fast translation: lean startup, disabled MCP, low reasoning, split UTF-8 notification across reused requests, fresh threads and shutdown; normal AI unchanged")
     var otherAccount = cliConnection
     otherAccount.subscriptionAccountID = "different@example.invalid"
     do {

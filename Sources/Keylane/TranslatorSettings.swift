@@ -28,8 +28,12 @@ struct TranslatorSettings: View {
                 if controller.preferences.provider == .ai {
                     SettingsPicker("翻译模型", selection: $controller.preferences.modelID) {
                         Text("跟随 AI 命令默认模型").tag(nil as UUID?)
-                        ForEach(ai.state.connections.filter(\.isConfigured)) { item in
-                            Text(item.displayName).tag(Optional(item.id))
+                        ForEach(controller.modelCatalog.groups) { group in
+                            Section(group.id) {
+                                ForEach(group.models) { item in
+                                    Text(item.displayName).tag(Optional(item.id)).disabled(!item.isConfigured)
+                                }
+                            }
                         }
                     }
                     if !ai.state.enabled || controller.selectedConnection == nil {

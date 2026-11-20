@@ -20,6 +20,7 @@ private final class TranslationCodexWorker: @unchecked Sendable {
     let directory: URL
     let process: AICLIProcess
     let stream: AsyncThrowingStream<Data, Error>
+    var unreadBuffer = Data()
     var initialized = false
     var uses = 0
 
@@ -212,7 +213,9 @@ enum AISubscriptionTransport {
                 }
                 var currentThread: String?
                 var checkedAccount: [String: Any]?
-                var buffer = Data()
+                var buffer = worker.unreadBuffer
+                worker.unreadBuffer = Data()
+                defer { worker.unreadBuffer = buffer }
                 var receivedText = false
                 var pendingText = ""
                 let clock = ContinuousClock()
