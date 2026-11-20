@@ -1,7 +1,7 @@
 import Foundation
 
 public enum AIResponseError: Error, LocalizedError, Equatable {
-    case invalidResponse, incomplete, requestTooLarge, tooLarge, serviceError, http(Int)
+    case invalidResponse, incomplete, requestTooLarge, tooLarge, serviceError, toolsUnavailable, http(Int)
 
     public var errorDescription: String? {
         switch self {
@@ -10,6 +10,7 @@ public enum AIResponseError: Error, LocalizedError, Equatable {
         case .requestTooLarge: "要发送的内容超过大小限制。"
         case .tooLarge: "模型响应超过大小限制。"
         case .serviceError: "模型服务返回了错误。"
+        case .toolsUnavailable: "模型请求了工具，但本次会话没有执行该工具。"
         case .http(let code): "请求失败（HTTP \(code)）。请检查地址、模型、密钥或服务额度。"
         }
     }
@@ -17,7 +18,26 @@ public enum AIResponseError: Error, LocalizedError, Equatable {
 
 public struct AICompletionEnvelope: Decodable, Sendable {
     public struct Choice: Decodable, Sendable {
-        public struct Text: Decodable, Sendable { public let content: String? }
+        public struct Text: Decodable, Sendable {
+            public struct Tool: Decodable, Sendable {
+                public struct Function: Decodable, Sendable { public let name: String?; public let arguments: String? }
+                public let index: Int?
+                public let id: String?
+                public let function: Function?
+            }
+            public let content: String?
+            public let reasoning: String?
+            public let toolCalls: [Tool]?
+            enum CodingKeys: String, CodingKey { case content, reasoning, reasoningContent = "reasoning_content", reasoningSummary = "reasoning_summary", toolCalls = "tool_calls" }
+            public init(from decoder: Decoder) throws {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                content = try values.decodeIfPresent(String.self, forKey: .content)
+                reasoning = (try? values.decode(String.self, forKey: .reasoningSummary))
+                    ?? (try? values.decode(String.self, forKey: .reasoningContent))
+                    ?? (try? values.decode(String.self, forKey: .reasoning))
+                toolCalls = try values.decodeIfPresent([Tool].self, forKey: .toolCalls)
+            }
+        }
         public let message: Text?
         public let delta: Text?
         public let finishReason: String?

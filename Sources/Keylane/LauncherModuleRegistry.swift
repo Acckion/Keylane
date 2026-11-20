@@ -128,6 +128,7 @@ struct LauncherPage {
     }
     var headerInput: HeaderInput = .searchField
     var enter: ((String) -> String?)?
+    var consumesEntryQuery = false
     var resume: (() -> Void)?
     var moveHorizontal: ((Int) -> Void)?
     var navigateWhileTyping = false
@@ -135,7 +136,6 @@ struct LauncherPage {
     var typeFilter: ((Binding<Bool>) -> AnyView)?
     var badgeTitle: (() -> String)?
     var badgeActions: (() -> [LauncherAction])?
-    var maximumActionWidth: CGFloat?
     var releasePreview: (() -> Void)?
     var actionShortcutsEnabled = false
     var loading: AnyPublisher<Bool, Never>?

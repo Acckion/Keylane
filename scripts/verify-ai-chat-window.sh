@@ -6,6 +6,6 @@ trap 'rm -rf "$task_directory"' EXIT
 export CLANG_MODULE_CACHE_PATH="$task_directory/modules"
 cp Tests/Integration/ai-chat-window-main.swift "$task_directory/main.swift"
 swiftc -Xfrontend -disable-sandbox -swift-version 5 -target "$(uname -m)-apple-macos26.0" \
-  Sources/Keylane/AIChatWindow.swift Sources/Keylane/AIInteractionPreferences.swift \
+  Sources/Keylane/AIChatWindow.swift Sources/Keylane/AIInteractionPreferences.swift Sources/Keylane/AIConversationComposer.swift Sources/Keylane/AIContextLoadState.swift Sources/Keylane/AIFileAttachment.swift \
   "$task_directory/main.swift" -o "$task_directory/verify"
 "$task_directory/verify"

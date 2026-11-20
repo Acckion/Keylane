@@ -8,7 +8,7 @@ enum AIModule {
                                      keywords: "AI 模型 提供方 接口 API 密钥 Keychain 流式 Ollama")
 
     static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai-text-commands", title: "AI 命令",
-                                               keywords: "翻译 润色 摘要 自定义 提示词 导入 快捷键 translate polish summarize")
+                                               keywords: "润色 摘要 自定义 提示词 导入 快捷键 polish summarize")
     static let interactions = SettingsItem(id: "ai-interactions", page: "ai", title: "Quick AI 与聊天",
                                            keywords: "Tab 回车 发送 备选命令 窗口置顶")
 
@@ -18,8 +18,8 @@ enum AIModule {
         let runtime = model.aiRuntime
         let historyURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Keylane/AI/history.sqlite")
-        let quickAI = QuickAIController(configuration: configuration, runtime: runtime,
-                                        history: AIChatHistory(url: historyURL))
+        let quickAI = AIConversationSession(configuration: configuration, runtime: runtime,
+                                        history: AIConversationRepository(url: historyURL), preferredQuickModel: { interaction.preferredModelID })
         let chat = AIChatWindow(controller: quickAI, configuration: configuration, interaction: interaction,
                                 appearance: model.$appearance.eraseToAnyPublisher())
         let openChat: (String?) -> Void = { [weak model] initialQuery in
@@ -31,18 +31,37 @@ enum AIModule {
                 if fromQuickAI { model.pageID = .root }
             }
         }
+        model.openAIChatLink = { [weak model, weak quickAI] id in
+            guard let model, let quickAI, configuration.state.enabled,
+                  !model.disabledCommands.contains(QuickAILauncher.commandID.rawValue),
+                  model.launcherModules?.isCommandModuleEnabled(QuickAILauncher.commandID) == true else { return }
+            if quickAI.isInChat {
+                quickAI.openChat(id)
+                openChat(nil)
+            } else {
+                model.openPage(QuickAILauncher.pageID, origin: .menu, initialQuery: "")
+                quickAI.openChat(id)
+                (NSApp.delegate as? Delegate)?.revealLauncherDestination()
+            }
+        }
         let quickCommand = LauncherModule.Command(declaration: .init(
             id: QuickAILauncher.commandID, title: "Quick AI", detail: "向已配置的模型提问", symbol: "sparkles",
             keywords: ["ask", "AI", "快速问答", "询问 AI"], destination: .action, settingsPage: "ai"
         ), available: { configuration.state.connection(for: .quick) != nil }, acceptsFallbackQuery: true,
             fallbackAvailable: { interaction.rootFallback }, arguments: .init(count: 0...1) { [weak model] origin, arguments in
-                if quickAI.isInChat { openChat(arguments.first) }
-                else { model?.openPage(QuickAILauncher.pageID, origin: origin, initialQuery: arguments.first) }
+                if quickAI.isInChat {
+                    let draft = arguments.first.flatMap(quickAI.consumeEntry)
+                    if draft == "" { model?.query = "" }
+                    openChat(draft)
+                } else {
+                    if quickAI.turns.isEmpty, let id = interaction.preferredModelID { _ = quickAI.chooseModel(id, behavior: .forkContinuation, automatic: true) }
+                    model?.openPage(QuickAILauncher.pageID, origin: origin, initialQuery: arguments.first)
+                }
             })
         let chatCommand = LauncherModule.Command(declaration: .init(
             id: .init(rawValue: "ai-chat"), title: "AI Chat", detail: "打开独立聊天窗口", symbol: "bubble.left.and.bubble.right",
             keywords: ["chat", "AI", "聊天", "对话"], destination: .action, settingsPage: "ai"
-        ), available: { configuration.state.enabled }, execute: { _ in openChat(nil) })
+        ), available: { configuration.state.enabled }, arguments: .init(count: 0...1) { _, arguments in openChat(arguments.first) })
         let textSession = AITextCommandSession(configuration: configuration, runtime: runtime)
         let library = CustomAICommandLibrary()
         let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)
@@ -79,7 +98,8 @@ enum AIModule {
             ViewObservation.changes(configuration.$state.map(\.enabled)),
             ViewObservation.changes(configuration.$state.map(\.availableConnectionIDs)),
             ViewObservation.changes(library.$commands),
-            ViewObservation.changes(interaction.$rootFallback)
+            ViewObservation.changes(interaction.$rootFallback),
+            ViewObservation.changes(interaction.$rootTab)
         ], dynamicCommandSettings: .init(model: model, items: { library.commands }, title: \.title,
                                         commandID: \.commandID, updates: { [ViewObservation.changes(library.$commands)] },
                                         entry: { $0.settingsEntry(model: $1) }))
@@ -96,7 +116,7 @@ private struct AISettingsHome: View {
                 Divider()
                 link(AIModule.textCommandsItem)
             }
-            AIInteractionSettings(preferences: model.aiInteraction).settingsAnchor(AIModule.interactions)
+            AIInteractionSettings(preferences: model.aiInteraction, configuration: model.aiSettings).settingsAnchor(AIModule.interactions)
         }
     }
 
@@ -111,12 +131,29 @@ private struct AISettingsHome: View {
 
 private struct AIInteractionSettings: View {
     @ObservedObject var preferences: AIInteractionPreferences
+    @ObservedObject var configuration: AIConfiguration
 
     var body: some View {
         SettingsGroup("Quick AI 与聊天") {
-            toggle("搜索备选命令", detail: "没有匹配结果时显示 Quick AI。", value: $preferences.rootFallback)
+            SettingsPicker("Quick AI 首选操作", selection: $preferences.primaryAction) {
+                Text("粘贴到当前应用").tag(QuickAIPrimaryAction.paste)
+                Text("复制回复").tag(QuickAIPrimaryAction.copy)
+            }
             Divider()
-            toggle("在主搜索中按 Tab 打开 Quick AI", detail: "将当前搜索文字带入输入框。", value: $preferences.rootTab)
+            ForEach(QuickAIModelPreference.allCases, id: \.self) { preference in
+                SettingsRow("自动模型 · " + preference.title, detail: "可为此偏好指定模型；未指定时使用 Quick AI 默认模型。") {
+                    AIModelPicker(configuration: configuration, selection: Binding(get: {
+                        preferences.preferenceModels[preference.rawValue].flatMap(UUID.init(uuidString:)).map(AIModelChoice.model) ?? .inherit
+                    }, set: { choice in
+                        if case let .model(id) = choice { preferences.preferenceModels[preference.rawValue] = id.uuidString }
+                        else { preferences.preferenceModels.removeValue(forKey: preference.rawValue) }
+                    }), inheritTitle: "Quick AI 默认模型")
+                }
+                Divider()
+            }
+            toggle("在主搜索中显示 Quick AI 提示", detail: "没有匹配结果时提供备选命令；启用 Tab 时始终显示右侧快捷提示。", value: $preferences.rootFallback)
+            Divider()
+            toggle("在主搜索中按 Tab 询问 Quick AI", detail: "直接发送搜索文字，无需再次按回车；有匹配结果时同样可用。", value: $preferences.rootTab)
             Divider()
             SettingsPicker("AI Chat 发送键", selection: $preferences.chatReturn) {
                 Text("⌘ Return").tag(false)

@@ -10,8 +10,8 @@ final class AIChatSplitViewController: NSSplitViewController {
     private var changes: [AnyCancellable] = []
     private var collapsedChanges: [NSKeyValueObservation] = []
 
-    init(controller: QuickAIController, configuration: AIConfiguration,
-         interaction: AIInteractionPreferences, composer: AIChatComposer,
+    init(controller: AIConversationSession, configuration: AIConfiguration,
+         interaction: AIInteractionPreferences, composer: AIConversationComposer,
          presentation: AIChatPresentation) {
         func host(_ column: AIChatView.Column) -> NSViewController {
             NSHostingController(rootView: AIChatView(column: column, controller: controller,
