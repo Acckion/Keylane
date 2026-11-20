@@ -163,4 +163,44 @@ final class RaycastMigrationTransactionTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf:destination),Data("external".utf8))
         XCTAssertTrue(RaycastMigrationTransaction.hasPending(in:recovery))
     }
+
+    func testValidSQLiteAppearingAfterValidationCannotSelectExistingStorePath() throws {
+        let source = root.appendingPathComponent("source")
+        do {
+            let store = try Store(url:source.appendingPathComponent("data.sqlite"))
+            try store.save(Record(id:"import",kind:"snippet",title:"Import",body:"Synthetic import"))
+        }
+        let payload = try XCTUnwrap(RaycastMigrationTransaction.snapshot(.snippets,root:source))
+        let destination = root.appendingPathComponent("data.sqlite")
+        var prefs: [String:Any] = ["unrelated":"keep"]
+        var unexpected: Store?
+        var unexpectedSnapshot: Data?
+        var installedInode: NSNumber?
+        var inserted = false
+        try RaycastMigrationTransaction.stage(changes:["imported":true],current:prefs,
+            resources:[.init(id:.snippets,before:nil,after:payload)],directory:recovery)
+        // Inject a legitimate WAL database after the final pre-install validation, but
+        // before install decides which path to use. This is earlier than .verified.
+        XCTAssertThrowsError(try RaycastMigrationTransaction.finish(directory:recovery,root:root,
+            read:{prefs},persist:{prefs=$0;return true},installationObserver:{_,_ in},beforeInstallation:{ id in
+                XCTAssertEqual(id,.snippets)
+                XCTAssertFalse(FileManager.default.fileExists(atPath:destination.path))
+                unexpected = try Store(url:destination)
+                try unexpected!.save(Record(id:"external",kind:"snippet",title:"External",body:"Must survive"))
+                unexpectedSnapshot = try RaycastMigrationTransaction.snapshot(.snippets,root:root)
+                installedInode = try FileManager.default.attributesOfItem(atPath:destination.path)[.systemFileNumber] as? NSNumber
+                inserted = true
+            }))
+        XCTAssertTrue(inserted)
+        XCTAssertEqual(try unexpected?.records(kind:"snippet").map(\.id),["external"])
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath:destination.path)[.systemFileNumber] as? NSNumber,installedInode)
+        XCTAssertEqual(try RaycastMigrationTransaction.fingerprint(RaycastMigrationTransaction.snapshot(.snippets,root:root),id:.snippets),try RaycastMigrationTransaction.fingerprint(unexpectedSnapshot,id:.snippets))
+        XCTAssertEqual(prefs["unrelated"] as? String,"keep")
+        XCTAssertNil(prefs["imported"])
+        XCTAssertTrue(RaycastMigrationTransaction.hasPending(in:recovery))
+        XCTAssertTrue(RaycastMigrationTransaction.hasStarted(in:recovery))
+        XCTAssertThrowsError(try finish(&prefs))
+        XCTAssertEqual(try unexpected?.records(kind:"snippet").map(\.id),["external"])
+        XCTAssertNil(prefs["imported"])
+    }
 }

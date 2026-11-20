@@ -7,7 +7,7 @@ struct AIToolSettingsContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle("允许 AI 调用基础工具", isOn: $interaction.toolsEnabled)
-            Text("开启后，模型可以查询时间、计算、应用名称、已授权文件名与日程。打开应用每次都需要确认。工具结果会发送给本次选择的模型。关闭后立即停止当前工具请求。")
+            Text("开启后可使用已登记的工具。文件访问与创建须在 AI 设置中另行启用并添加目录，文件披露、创建与打开应用每次确认。工具结果发送给所选模型，关闭后停止当前请求。")
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(definitions, id: \.name) { tool in
                 VStack(alignment: .leading, spacing: 3) {

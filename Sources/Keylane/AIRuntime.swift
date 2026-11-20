@@ -77,6 +77,16 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
         }
         return transcriptionOptions()?.transcriptionURL?.absoluteString ?? completionURL?.absoluteString ?? endpoint
     }
+    var toolRecipient: AIToolRecipient? {
+        if protocolKind.isSubscription {
+            let cli = protocolKind == .codex ? "Codex" : "Claude Code"
+            let executable = executablePath.flatMap { $0.isEmpty ? nil : $0 } ?? "自动发现的 " + cli + " CLI"
+            return .init(destination: cli + " 本机进程（" + executable + "）；后续网络接收方由 CLI 配置决定，Keylane 无法核实，不能视为完全本地", model: model)
+        }
+        guard let destination = completionURL?.absoluteString else { return nil }
+        return .init(destination: destination, model: model)
+    }
+
     var requestIdentity: String {
         guard protocolKind.isSubscription else { return destinationLabel }
         return [protocolKind.rawValue, executablePath ?? "", accountFolder ?? "", subscriptionAccountID ?? ""].joined(separator: "\n")

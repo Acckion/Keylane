@@ -79,6 +79,7 @@ final class Model: ObservableObject {
     let aiInteraction = AIInteractionPreferences()
     var canAttachModuleAIContext: () -> Bool = { false }
     var attachModuleAIContext: ((AIActionSource, CommandID) -> Bool)?
+    let aiFileAccess = AIFileToolPreferences()
     var continueModuleAIAction: ((AIActionContext, String) -> Bool)?
     var openAIChatLink: ((UUID) -> Void)?
     let aiRuntime = AIRuntime()
