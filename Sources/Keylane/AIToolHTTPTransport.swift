@@ -147,7 +147,7 @@ enum AIToolHTTPTransport {
                        emit: @Sendable (String) async throws -> Void) async throws -> Reply {
         var collector = StreamCollector(anthropic: anthropic)
         let thoughtID = "http-thought-" + UUID().uuidString
-        var line = Data()
+        var events = AISSEEventDecoder()
         var count = 0
         var pending = ""
         let clock = ContinuousClock()
@@ -156,23 +156,17 @@ enum AIToolHTTPTransport {
             try Task.checkCancellation()
             count += 1
             guard count <= 1_048_576 else { throw AIResponseError.tooLarge }
-            if byte != 10 { line.append(byte); continue }
-            let text = String(decoding: line, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            line.removeAll(keepingCapacity: true)
-            if text.hasPrefix("data:") {
-                let payload = text.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                if payload == "[DONE]", !anthropic { break }
-                let data = Data(payload.utf8)
-                guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw AIResponseError.invalidResponse }
-                pending += try collector.consume(object)
-                if let thought = collector.lastThinking { await progress(.thinking(id: thoughtID, delta: thought)) }
-                if clock.now >= nextUpdate, !pending.isEmpty {
-                    try await emit(pending); pending = ""; nextUpdate = clock.now + .milliseconds(40)
-                }
-                if anthropic, collector.ended { break }
+            guard let payload = try events.consume(byte) else { continue }
+            if payload == Data("[DONE]".utf8), !anthropic { break }
+            guard let object = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else { throw AIResponseError.invalidResponse }
+            pending += try collector.consume(object)
+            if let thought = collector.lastThinking { await progress(.thinking(id: thoughtID, delta: thought)) }
+            if clock.now >= nextUpdate, !pending.isEmpty {
+                try await emit(pending); pending = ""; nextUpdate = clock.now + .milliseconds(40)
             }
+            if anthropic, collector.ended { break }
         }
-        guard line.allSatisfy({ $0 == 13 || $0 == 32 }) else { throw AIResponseError.incomplete }
+        guard !events.hasPendingData else { throw AIResponseError.incomplete }
         let result = try collector.finish()
         if !pending.isEmpty { try await emit(pending) }
         return result

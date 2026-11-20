@@ -71,7 +71,7 @@ final class ToolFixtureProtocol: URLProtocol {
                     if var calls = delta["tool_calls"] as? [[String: Any]] { calls[0]["index"] = 0; delta["tool_calls"] = calls }
                     events = [["choices": [["delta": delta, "finish_reason": choice["finish_reason"]!]], "usage": ["total_tokens": 3]]]
                 }
-                responseData = Data(try events.map { "data: " + String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) + "\n\n" }.joined().utf8)
+                responseData = Data(try events.map { "data: " + String(decoding: try JSONSerialization.data(withJSONObject: $0, options: .prettyPrinted), as: UTF8.self).replacingOccurrences(of: "\n", with: "\ndata: ") + "\n\n" }.joined().utf8)
             }
             if Self.scenario == "held-open", !anthropic { responseData.append(Data("data: [DONE]\n\n".utf8)) }
             if Self.scenario == "held-open" { responseData.append(Data((":" + String(repeating: " ", count: 65_536) + "\n\n").utf8)) }

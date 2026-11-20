@@ -45,8 +45,7 @@ enum AnthropicAIProtocol {
             try await emit(text)
             return tokenTotal(event["usage"])
         }
-        var line = Data()
-        var dataLines = [String]()
+        var events = AISSEEventDecoder()
         var count = 0
         var ended = false
         var stopReason: String?
@@ -64,16 +63,8 @@ enum AnthropicAIProtocol {
             try Task.checkCancellation()
             count += 1
             guard count <= 1_048_576 else { throw AIResponseError.tooLarge }
-            if byte != 10 { line.append(byte); continue }
-            guard let text = String(data: line, encoding: .utf8) else { throw AIResponseError.invalidResponse }
-            line.removeAll(keepingCapacity: true)
-            let clean = text.hasSuffix("\r") ? String(text.dropLast()) : text
-            if clean.hasPrefix("data:") {
-                dataLines.append(String(clean.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-            }
-            guard clean.isEmpty, !dataLines.isEmpty else { continue }
-            let event = try object(Data(dataLines.joined(separator: "\n").utf8))
-            dataLines.removeAll(keepingCapacity: true)
+            guard let payload = try events.consume(byte) else { continue }
+            let event = try object(payload)
             switch event["type"] as? String {
             case "error": throw AIResponseError.serviceError
             case "message_start":

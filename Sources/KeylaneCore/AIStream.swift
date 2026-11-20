@@ -68,48 +68,23 @@ public struct AICompletionEnvelope: Decodable, Sendable {
 
 /// Parses SSE as bytes so a split UTF-8 scalar cannot corrupt text.
 public struct AIStreamDecoder {
-    private var line = Data()
-    private var event = Data()
-    private var skipLineFeed = false
+    private var events = AISSEEventDecoder()
     public private(set) var isDone = false
     public private(set) var hasFinishReason = false
-    private let limit = 262_144
 
     public init() {}
 
     public mutating func consume(_ byte: UInt8) throws -> AICompletionEnvelope? {
-        if skipLineFeed {
-            skipLineFeed = false
-            if byte == 10 { return nil }
-        }
-        guard byte == 10 || byte == 13 else {
-            guard line.count < limit else { throw AIResponseError.tooLarge }
-            line.append(byte)
-            return nil
-        }
-        skipLineFeed = byte == 13
-        defer { line.removeAll(keepingCapacity: true) }
-        if line.isEmpty {
-            guard !event.isEmpty else { return nil }
-            defer { event.removeAll(keepingCapacity: true) }
-            if event == Data("[DONE]".utf8) { isDone = true; return nil }
-            let value = try JSONDecoder().decode(AICompletionEnvelope.self, from: event)
-            guard !value.failed else { throw AIResponseError.serviceError }
-            if value.choices?.first?.finishReason != nil { hasFinishReason = true }
-            return value
-        }
-        if line.starts(with: "data:".utf8) {
-            var payload = line.dropFirst(5)
-            if payload.first == 32 { payload = payload.dropFirst() }
-            guard event.count + payload.count + 1 <= limit else { throw AIResponseError.tooLarge }
-            if !event.isEmpty { event.append(10) }
-            event.append(contentsOf: payload)
-        }
-        return nil
+        guard let event = try events.consume(byte) else { return nil }
+        if event == Data("[DONE]".utf8) { isDone = true; return nil }
+        let value = try JSONDecoder().decode(AICompletionEnvelope.self, from: event)
+        guard !value.failed else { throw AIResponseError.serviceError }
+        if value.choices?.first?.finishReason != nil { hasFinishReason = true }
+        return value
     }
 
     public func validateEnd() throws {
-        guard isDone || (hasFinishReason && line.isEmpty && event.isEmpty) else {
+        guard isDone || (hasFinishReason && !events.hasPendingData) else {
             throw AIResponseError.incomplete
         }
     }

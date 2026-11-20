@@ -101,3 +101,5 @@ Quick AI 与 AI Chat 的同一个 `AIConversationSession` 创建每次生成的 
 协议集成使用模拟 HTTP、隔离 CLI、虚构账户；通过自动化不代表真实提供商和所有模型已实测。真实账户、模型能力、安装版交互仍需单独验收。
 
 OpenRouter 的流式续接分别处理文本/摘要增量和不可拆解的加密块；加密块保留原顺序、标识和内容，不拼接或展示到界面。协议依据：[OpenRouter reasoning_details](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#reasoning_details-array-structure)。
+
+普通 OpenAI 响应、Anthropic 响应和工具响应共用 `AISSEEventDecoder` 分帧：逐字节保留 UTF-8，兼容 LF、CR、CRLF，多条 `data:` 在空行后才组成 JSON 事件。各协议在自己的结束标记处停止读取，避免等待仍开放的连接；公共组件限制单事件大小，传输层限制总响应大小。
