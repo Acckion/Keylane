@@ -19,43 +19,116 @@ final class DropShelfController: ObservableObject {
     @Published var addBehavior: ShelfAddBehavior { didSet { preferences.set(addBehavior.rawValue, forKey: "dropShelf.addBehavior") } }
     @Published var ignoredApps: [String: String] { didSet { preferences.set(ignoredApps, forKey: "dropShelf.ignoredApps") } }
     @Published var error = ""
+    @Published private(set) var displayedShelfIDs: Set<UUID> = []
     @Published private(set) var managedShelves: [DropShelfStore.Shelf] = []
     @Published var selectedShelfID: UUID?
     @Published var shelfFilter = "all" { didSet { refreshManagement() } }
     @Published private(set) var managementActive = false
-    func beginManagement(_ query: String) { managementActive = true; searchShelves(query) }
+    func beginManagement(_ query: String) { managementActive = true; syncDisplayedShelves(); searchShelves(query) }
     func endManagement() { managementActive = false; pendingRemoval = nil; pendingRename = nil }
     @Published var pendingRemoval: DropShelfStore.Shelf?
     @Published var pendingRename: DropShelfStore.Shelf?
     private var managementQuery = ""
+    private var launcherShelfOrder: [UUID]?
     var openManager: (() -> Void)?
     var selectedShelf: DropShelfStore.Shelf? { managedShelves.first { $0.id == selectedShelfID } }
     func searchShelves(_ query: String) { managementQuery = query; refreshManagement() }
+    func launcherShown() {
+        launcherShelfOrder = store?.shelves.map(\.id) ?? []
+        refreshManagement()
+    }
+    func launcherHidden() { launcherShelfOrder = nil }
+
+    private func shelvesInManagementOrder() -> [DropShelfStore.Shelf] {
+        let shelves = store?.shelves ?? []
+        guard var order = launcherShelfOrder else { return shelves }
+        let byID = Dictionary(uniqueKeysWithValues: shelves.map { ($0.id, $0) })
+        order.removeAll { byID[$0] == nil }
+        let knownIDs = Set(order)
+        // New shelves appear at the end without moving an existing pointer target.
+        order.append(contentsOf: shelves.map(\.id).filter { !knownIDs.contains($0) })
+        launcherShelfOrder = order
+        return order.compactMap { byID[$0] }
+    }
+
     func refreshManagement() {
         let terms = managementQuery.split(whereSeparator: \.isWhitespace).map(String.init)
-        let values = (store?.shelves ?? []).filter { shelf in
-            (shelfFilter == "all" || (shelfFilter == "pinned" ? shelf.pinned : !shelf.pinned)) && terms.allSatisfy { term in
+        let values = shelvesInManagementOrder().filter { shelf in
+            (shelfFilter == "all" || (shelfFilter == "pinned") == isShelfOpen(shelf.id)) && terms.allSatisfy { term in
                 ([shelf.title] + shelf.items.flatMap { [$0.title, $0.value ?? "", $0.url?.path ?? ""] }).contains { $0.localizedStandardContains(term) }
             }
         }
-        let ordered = values.filter(\.pinned) + values.filter { !$0.pinned }
-        if managedShelves != ordered { managedShelves = ordered }
-        if !ordered.contains(where: { $0.id == selectedShelfID }) { selectedShelfID = ordered.first?.id }
+        if managedShelves != values { managedShelves = values }
+        if !values.contains(where: { $0.id == selectedShelfID }) { selectedShelfID = values.first?.id }
     }
-    func moveShelf(_ delta: Int) {
+    var managementGridColumns = 1
+    func moveShelf(_ delta: Int, vertical: Bool = false) {
         guard !managedShelves.isEmpty else { return }
         let index = managedShelves.firstIndex { $0.id == selectedShelfID } ?? 0
-        selectedShelfID = managedShelves[min(max(index + delta, 0), managedShelves.count - 1)].id
+        if let target = NavigationBounds.moveGrid(section: 0, item: index, by: delta, vertical: vertical,
+                                                  columns: managementGridColumns, counts: [managedShelves.count]) {
+            selectedShelfID = managedShelves[target.item].id
+        }
     }
-    func openSelectedShelf() { if let id = selectedShelfID { _ = reveal(id) } }
-    func toggleSelectedPin() {
-        guard let shelf = selectedShelf else { return }
-        do { try store?.pin(shelf.id, value: !shelf.pinned); windows[shelf.id]?.refresh() } catch { report(error) }
+    func openSelectedShelf() { if let id = selectedShelfID { openManagedShelf(id) } }
+    func openManagedShelf(_ id: UUID) {
+        guard active, store?.shelf(id) != nil else { return }
+        if managedShelves.contains(where: { $0.id == id }) { selectedShelfID = id }
+        if let launcher = NSApp.delegate as? Delegate, launcher.window?.isVisible == true {
+            launcher.hideLauncher()
+        }
+        reveal(id)
+    }
+    func toggleSelectedPin() { if let id = selectedShelfID { toggleManagedPin(id) } }
+    func toggleManagedPin(_ id: UUID) {
+        if isShelfOpen(id) {
+            closeManagedShelf(id)
+            return
+        }
+        guard active, store?.shelf(id) != nil else { return }
+        guard let origin = availableManagedShelfOrigin() else {
+            error = "屏幕上没有足够空间放置暂存架。"
+            return
+        }
+        reveal(id, activate: false, origin: origin, showDuration: 0.30)?.keepVisibleAfterDrop = true
+    }
+    func isShelfOpen(_ id: UUID) -> Bool { displayedShelfIDs.contains(id) }
+    private func syncDisplayedShelves() {
+        let visible = Set(windows.values.filter { $0.isVisible && !$0.isMiniaturized }.map(\.shelfID))
+        guard visible != displayedShelfIDs else { return }
+        displayedShelfIDs = visible
+        refreshManagement()
+    }
+    private func availableManagedShelfOrigin() -> NSPoint? {
+        let mouse = NSEvent.mouseLocation
+        let screens = NSScreen.screens
+        let current = screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
+        let ordered = [current].compactMap { $0 } + screens.filter { $0 != current }
+        let occupied = windows.values.filter { $0.isVisible && !$0.isMiniaturized }.map(\.frame)
+        for screen in ordered {
+            let area = screen.visibleFrame
+            let preferred = defaultPosition.origin(size: DropShelfWindow.compactSize, in: area, mouse: mouse)
+            if let origin = Self.availableShelfOrigin(preferred: preferred, in: [area], avoiding: occupied) {
+                return origin
+            }
+        }
+        return nil
+    }
+    func recordUse(_ id: UUID) {
+        do { try store?.markUsed(id) } catch { report(error) }
+    }
+    func closeManagedShelf(_ id: UUID) {
+        guard let window = windows[id], let store else { return }
+        do {
+            try store.preserveEmptyShelf(id)
+            window.dismissAnimated()
+        } catch { report(error) }
     }
     func removeManagedShelf(_ id: UUID) {
         guard store?.shelf(id) != nil else { return }
         // Detach before closing: cancel imports normally, but do not retain/trim history.
         windows.removeValue(forKey: id)?.close()
+        syncDisplayedShelves()
         do { try store?.deleteShelf(id) } catch { report(error) }
         pendingRemoval = nil
     }
@@ -184,8 +257,10 @@ final class DropShelfController: ObservableObject {
         active = false; timer?.invalidate(); timer = nil
         notchTarget?.hide(); notchTarget = nil
         endManagement()
+        launcherHidden()
         for window in Array(windows.values) { window.close() }
         windows.removeAll()
+        syncDisplayedShelves()
         registry?.unregister(owner: "keylane.drop-shelf"); registry = nil
         // Keep the store until promise callbacks finish; old windows revoke their import batches.
     }
@@ -194,7 +269,8 @@ final class DropShelfController: ObservableObject {
         do { let id = try store.create(); return reveal(id, activate: activate, origin: origin, dragEntry: dragEntry) }
         catch { report(error); return nil }
     }
-    @discardableResult func reveal(_ id: UUID, activate: Bool = true, origin: NSPoint? = nil, dragEntry: Bool = false) -> DropShelfWindow? {
+    @discardableResult func reveal(_ id: UUID, activate: Bool = true, origin: NSPoint? = nil, dragEntry: Bool = false,
+                                  showDuration: TimeInterval = FloatingWindowVisibility.defaultShowDuration) -> DropShelfWindow? {
         guard active, let store, store.shelf(id) != nil else { return nil }
         let window: DropShelfWindow
         if let existing = windows[id] { window = existing }
@@ -210,14 +286,17 @@ final class DropShelfController: ObservableObject {
             }
         }
         window.refresh()
-        window.presentAnimated()
+        window.presentAnimated(duration: showDuration)
+        syncDisplayedShelves()
+        recordUse(id)
         if activate { window.dropOverlay.restoreDockedShelf(animated: false); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); window.focusContents() }
         return window
     }
     func closed(_ window: DropShelfWindow) {
         automaticShelves.remove(window.shelfID)
         guard windows.removeValue(forKey: window.shelfID) != nil else { return }
-        do { try store?.remember(window.shelfID, keeping: Set(windows.keys)) } catch { report(error) }
+        syncDisplayedShelves()
+        do { try store?.trimHistory(keeping: Set(windows.keys)) } catch { report(error) }
     }
     /// Shared integration entry: use a private pasteboard and existing receiving/bookmark logic.
     /// Never replaces the user's clipboard or enables a disabled module.
@@ -417,6 +496,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private var receivedSequence: Int?
     private var refreshInProgress = false
     private var internalReorder = false
+    var keepVisibleAfterDrop = false
     private let shelfChrome = NSStackView()
     private let entryPrompt = NSTextField(labelWithString: "放置你的内容项")
     private(set) var showsDragEntry: Bool
@@ -431,9 +511,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private lazy var visibility = FloatingWindowVisibility(window: self)
     private var outsideMonitors: [Any] = []
     private var detailWidth: NSLayoutConstraint?
-    private var thumbnailKey: String?
-    private var thumbnailRequests: [QLThumbnailGenerator.Request] = []
-    private var previewImages: [NSImage] = []
+    private let compactThumbnails = DropShelfThumbnails()
     private var dropSurface: DropShelfDropView? { dropOverlay }
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard contentView?.bounds.contains(sender.draggingLocation) == true else { dropSurface?.draggingExited(sender); return [] }
@@ -689,7 +767,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         }
     }
 
-    func presentAnimated() { visibility.show() }
+    func presentAnimated(duration: TimeInterval) { visibility.show(duration: duration) }
     func dismissAnimated() {
         visibility.hide { [weak self] in self?.close() }
     }
@@ -765,33 +843,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         filename.imagePosition = .imageTrailing
         filename.toolTip = rows.map(\.title).joined(separator: "\n")
         preview.placeholder.isHidden = !rows.isEmpty
-        let items = Array(rows.prefix(3))
-        let key = items.map { $0.id.uuidString + $0.title }.joined(separator: ":")
-        guard key != thumbnailKey else { return }
-        thumbnailKey = key
-        thumbnailRequests.forEach { QLThumbnailGenerator.shared.cancel($0) }; thumbnailRequests.removeAll()
-        previewImages = items.map { item in
-            if let url = try? store.resolve(item) { return NSWorkspace.shared.icon(forFile: url.path) }
-            return NSImage(systemSymbolName: item.kind == .link ? "link" : "doc.text", accessibilityDescription: item.title)!
-        }
-        preview.setImages(previewImages)
-        for (index, item) in items.enumerated() {
-            do {
-                guard let url = try store.resolve(item) else { continue }
-                let access = DropShelfFileAccess(url)
-                let request = QLThumbnailGenerator.Request(fileAt: url, size: NSSize(width: 140, height: 140), scale: backingScaleFactor, representationTypes: .all)
-                request.iconMode = item.kind != .image
-                thumbnailRequests.append(request)
-                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self, access] representation, _ in
-                    DispatchQueue.main.async {
-                        _ = access
-                        guard let self, self.thumbnailKey == key, let representation else { return }
-                        self.previewImages[index] = representation.nsImage
-                        self.preview.setImages(self.previewImages)
-                    }
-                }
-            } catch { message(error.localizedDescription, failed: true) }
-        }
+        compactThumbnails.update(items: rows, store: store, scale: backingScaleFactor, imagesChanged: { [weak self] in
+            self?.preview.setImages($0)
+        }, failed: { [weak self] in self?.message($0.localizedDescription, failed: true) })
     }
     private func beginCompactDrag(_ event: NSEvent) -> [NSDraggingItem] {
         var items: [NSDraggingItem] = []
@@ -1001,7 +1055,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private func showShelfOptions() {
         let menu = NSMenu()
         let entries: [(String, Selector)] = [
-            (store.shelf(shelfID)?.pinned == true ? "取消固定" : "固定暂存架", #selector(pinFromMenu)),
+            (store.shelf(shelfID)?.pinned == true ? "取消保留历史记录" : "保留在历史记录", #selector(pinFromMenu)),
             ("重命名暂存架…", #selector(renameFromMenu)), ("复制内容", #selector(copyContents)),
             ("粘贴内容", #selector(pasteContents)), ("在 Finder 中显示", #selector(revealInFinder)),
             ("清空暂存架", #selector(clearContents)),
@@ -1240,7 +1294,8 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         if !operation.isEmpty {
             refreshFiles()
             message(operation.contains(.move) ? "已由目标接收（移动）" : "已由目标接收（复制）")
-            if controller?.keepOpen != true { dismissAnimated() }
+            controller?.recordUse(shelfID)
+            if !keepVisibleAfterDrop, controller?.keepOpen != true, store.shelf(shelfID)?.pinned != true { dismissAnimated() }
         } else { message("拖动已取消或目标未接收，暂存内容已保留") }
     }
     @objc private func copyContents() {
@@ -1249,6 +1304,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             guard !objects.isEmpty else { return }
             NSPasteboard.general.clearContents()
             guard NSPasteboard.general.writeObjects(objects) else { throw DropShelfStore.Failure.unavailable }
+            controller?.recordUse(shelfID)
             message("已复制 \(objects.count) 项")
         } catch { message(error.localizedDescription, failed: true) }
         // Scope grants are held until the shelf closes; pasteboard consumers can read asynchronously.
@@ -1338,13 +1394,12 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         dropOverlay.cancelDockAnimation()
         resizeTimer?.invalidate(); resizeTimer = nil
         outsideMonitors.forEach(NSEvent.removeMonitor); outsideMonitors.removeAll()
-        thumbnailKey = nil
-        thumbnailRequests.forEach { QLThumbnailGenerator.shared.cancel($0) }; thumbnailRequests.removeAll()
+        compactThumbnails.cancel()
         cancelImports(); releaseAccess(); FilePreview.shared.dismiss(owner: .dropShelf(shelfID)); controller?.closed(self)
     }
 }
 
-private final class DropShelfFileAccess {
+final class DropShelfFileAccess {
     let url: URL
     let scoped: Bool
     init(_ url: URL) { self.url = url; scoped = url.startAccessingSecurityScopedResource() }

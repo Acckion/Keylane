@@ -68,9 +68,9 @@ enum SnippetsModule {
             queryChanged: { snippets.query = $0 },
             move: snippets.move,
             submit: { if snippets.entries.isEmpty { create() } else { useSelected() } },
-            returnBindings: .init(alternates: [.command: .init {
-                if let snippet = snippets.selected { snippets.use(snippet, paste: snippets.options.primary == .copy) }
-            }]),
+            returnBindings: .init(alternates: [.command: .init(actionID: {
+                snippets.options.primary == .paste ? "snippet-copy" : "snippet-paste"
+            })]),
             actionSelectionID: { snippets.selected?.id },
             primaryTitle: {
                 if snippets.entries.isEmpty { return "创建文字片段" }
@@ -106,7 +106,7 @@ enum SnippetsModule {
                     ]
                     if let model {
                         actions.append(SnippetAIActions.menu(selected, model: model))
-                        actions.append(.init(id: "snippet-ai-attach", title: "附加到 AI 聊天", icon: "sparkles", enabled: model.aiSettings.isAvailable && !model.disabledCommands.contains(SnippetAIActions.attachID.rawValue)) { [weak model] in
+                        actions.append(.init(id: "snippet-ai-attach", title: "附加到 AI 聊天", icon: "sparkles", enabled: model.canAttachModuleAIContext() && !model.disabledCommands.contains(SnippetAIActions.attachID.rawValue)) { [weak model] in
                             guard let model else { return }
                             _ = model.runCommand(SnippetAIActions.attachID, origin: .menu, aiSource: SnippetAIActions.source(selected, controller: snippets))
                         })

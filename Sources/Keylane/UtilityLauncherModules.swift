@@ -27,32 +27,33 @@ enum UtilityLauncherModules {
                 delegate?.showLauncherFeedback(EmojiCatalog.label("已复制字符", "Character copied"), style: .success)
             }
         }
-        let primaryTitle = {
-            controller.primaryAction == .paste ? emojiPasteTitle() : EmojiCatalog.label("复制字符", "Copy Character")
+        let snapshot: () -> LauncherPage.ActionSnapshot = { [weak model] in
+            let ai = model.map { [EmojiAIActions.action(model: $0)] } ?? []
+            let pasteFirst = controller.primaryAction == .paste
+            let paste = LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
+                shortcut: pasteFirst ? .init(.return, modifiers: []) : .init(.return, modifiers: .command),
+                enabled: controller.selected != nil, perform: {
+                    if let item = controller.selected { use(item, true) }
+                })
+            let copy = LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"), icon: "doc.on.doc",
+                shortcut: pasteFirst ? .init(.return, modifiers: .command) : .init(.return, modifiers: []),
+                enabled: controller.selected != nil, perform: {
+                    if let item = controller.selected { use(item, false) }
+                })
+            return .init(primary: pasteFirst ? paste : copy,
+                items: (controller.selected == nil ? [] : (pasteFirst ? [paste, copy] : [copy, paste])) + ai)
         }
         var page = LauncherPage(id: pageID,
-                                placeholder: EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"),
-                                badge: (title, "face.smiling"),
-                                contentPlacement: .underChrome,
-                                content: { AnyView(EmojiSearchPage(controller: controller) { use($0, controller.primaryAction == .paste) }) },
-                                queryChanged: { controller.query = $0 },
-                                move: { controller.move($0, vertical: true) },
-                                submit: { if let item = controller.selected { use(item, controller.primaryAction == .paste) } },
-                                primaryTitle: primaryTitle,
-                                actions: { [weak model] in
-                                    let ai = model.map { [EmojiAIActions.action(model: $0)] } ?? []
-                                    guard let item = controller.selected else { return ai }
-                                    let pasteFirst = controller.primaryAction == .paste
-                                    let paste = LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
-                                                               shortcut: pasteFirst ? .init(.return, modifiers: []) : .init(.return, modifiers: .command), perform: { use(item, true) })
-                                    let copy = LauncherAction(id: "copy-emoji", title: EmojiCatalog.label("复制字符", "Copy Character"),
-                                                               icon: "doc.on.doc", shortcut: pasteFirst ? .init(.return, modifiers: .command) : .init(.return, modifiers: []),
-                                                               perform: { use(item, false) })
-                                    return (pasteFirst ? [paste, copy] : [copy, paste]) + ai
-                                },
-                                updates: Publishers.Merge3(ViewObservation.changes(controller.$selection),
-                                                           ViewObservation.changes(controller.$category),
-                                                           ViewObservation.changes(controller.$primaryAction)).eraseToAnyPublisher())
+            placeholder: EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"),
+            badge: (title, "face.smiling"), contentPlacement: .underChrome,
+            content: { AnyView(EmojiSearchPage(controller: controller) { item in
+                guard controller.selected?.id == item.id else { return }
+                snapshot().primary.invoke()
+            }) },
+            queryChanged: { controller.query = $0 }, move: { controller.move($0, vertical: true) },
+            updates: Publishers.Merge3(ViewObservation.changes(controller.$selection),
+                ViewObservation.changes(controller.$category), ViewObservation.changes(controller.$primaryAction)).eraseToAnyPublisher(),
+            actionSnapshot: snapshot, startSession: { session in session.onEnd(controller.stop) })
         page.loading = controller.$isLoading.combineLatest(controller.$isSearching)
             .map { loading, searching in loading || searching }.removeDuplicates().eraseToAnyPublisher()
         page.enter = { query in
@@ -60,13 +61,11 @@ enum UtilityLauncherModules {
             controller.start()
             return nil
         }
-        page.leave = controller.stop
         page.resume = controller.start
         page.actionSelectionID = { controller.selected?.id }
-        page.primaryEnabled = { controller.selected != nil }
-        page.returnBindings.alternates[.command] = .init {
-            if let item = controller.selected { use(item, controller.primaryAction == .copy) }
-        }
+        page.returnBindings.alternates[.command] = .init(actionID: {
+            controller.primaryAction == .copy ? "paste-emoji" : "copy-emoji"
+        })
         page.moveHorizontal = { controller.move($0, vertical: false) }
         page.navigateWhileTyping = true
         page.badgeTitle = { controller.selected.map { "\(title) – \($0.title)" } ?? title }
