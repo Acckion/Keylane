@@ -801,9 +801,22 @@ if CommandLine.arguments.contains("--manager-preview") {
     }
     withExtendedLifetime(previewDelegate) { print("PASS registered Launcher manager mounted in light and dark appearance (visual QA separate)") }
     if !CommandLine.arguments.contains("--manager-interactive"), let id = folderShelfIDs.first {
+        previewWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        expect(previewWindow.isVisible && previewWindow.isKeyWindow, "Launcher is visible and key before pinning")
         previewModel.dropShelf.toggleManagedPin(id)
-        guard let pinnedWindow = previewModel.dropShelf.reveal(id) else { fatalError("pinned shelf did not open") }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        let pinnedWindow = NSApp.windows.compactMap { $0 as? DropShelfWindow }.first { $0.shelfID == id }
+        guard let pinnedWindow else { fatalError("pinned shelf did not open") }
+        expect(previewWindow.isVisible && previewWindow.isKeyWindow && pinnedWindow.isVisible,
+               "pinning presents a desktop shelf and preserves Launcher keyboard focus")
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+            expect(pinnedWindow.alphaValue > 0 && pinnedWindow.alphaValue < 1,
+                   "pinning fades the desktop shelf through an intermediate opacity")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        expect(pinnedWindow.alphaValue == 1 && previewWindow.isKeyWindow, "pinned shelf finishes fading while Launcher stays key")
         let contentFrame = pinnedWindow.contentView?.frame.size
         expect(pinnedWindow.frame.size == DropShelfWindow.compactSize && contentFrame == pinnedWindow.frame.size,
                "pinning a saved three-folder shelf opens a square desktop window and glass: \(pinnedWindow.frame), \(String(describing: contentFrame))")

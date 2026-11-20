@@ -65,8 +65,12 @@ final class DropShelfController: ObservableObject {
         guard let store, let shelf = store.shelf(id) else { return }
         do {
             try store.pin(id, value: !shelf.pinned)
-            if !shelf.pinned { openManagedShelf(id) }
-            else { windows[id]?.refresh() }
+            if shelf.pinned {
+                windows[id]?.refresh()
+            } else {
+                let window = reveal(id, activate: false, showDuration: 0.30)
+                window?.dropOverlay.restoreDockedShelf()
+            }
         } catch { report(error) }
     }
     func isShelfOpen(_ id: UUID) -> Bool { windows[id] != nil }
@@ -222,7 +226,8 @@ final class DropShelfController: ObservableObject {
         do { let id = try store.create(); return reveal(id, activate: activate, origin: origin, dragEntry: dragEntry) }
         catch { report(error); return nil }
     }
-    @discardableResult func reveal(_ id: UUID, activate: Bool = true, origin: NSPoint? = nil, dragEntry: Bool = false) -> DropShelfWindow? {
+    @discardableResult func reveal(_ id: UUID, activate: Bool = true, origin: NSPoint? = nil, dragEntry: Bool = false,
+                                  showDuration: TimeInterval = FloatingWindowVisibility.defaultShowDuration) -> DropShelfWindow? {
         guard active, let store, store.shelf(id) != nil else { return nil }
         let window: DropShelfWindow
         if let existing = windows[id] { window = existing }
@@ -238,7 +243,7 @@ final class DropShelfController: ObservableObject {
             }
         }
         window.refresh()
-        window.presentAnimated()
+        window.presentAnimated(duration: showDuration)
         if activate { window.dropOverlay.restoreDockedShelf(animated: false); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); window.focusContents() }
         return window
     }
@@ -706,7 +711,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         }
     }
 
-    func presentAnimated() { visibility.show() }
+    func presentAnimated(duration: TimeInterval) { visibility.show(duration: duration) }
     func dismissAnimated() {
         visibility.hide { [weak self] in self?.close() }
     }
