@@ -41,6 +41,11 @@ private final class ModelFixtureProtocol: URLProtocol {
                     try await display(AnyView(LauncherCreationForm(back: {}, spacing: 16) {
                         Text(definition.title).font(.headline)
                     } fields: { AIActionForm(session: session).padding(.horizontal, 26) }), name: definition.commandID.rawValue)
+                    if definition.acceptsQuestion {
+                        guard let editor = window?.firstResponder as? NSTextView, editor.string == session.question else {
+                            throw CocoaError(.validationMissingMandatoryProperty)
+                        }
+                    }
                 }
                 let files = FileAIController(settings: config, runtime: runtime, preferences: prefs, readKey: { _ in nil })
                 files.setFiles([URL(fileURLWithPath: "/synthetic/示例会议记录.txt")]); files.question = "请概括这个文件的内容。"

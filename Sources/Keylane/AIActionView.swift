@@ -43,6 +43,7 @@ enum AIActionLauncher {
 
 struct AIActionForm: View {
     @ObservedObject var session: AIActionSession
+    @FocusState private var questionFocused: Bool
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let context = session.context {
@@ -51,13 +52,13 @@ struct AIActionForm: View {
             }
             if session.acceptsQuestion {
                 TextField("输入关于这条记录的问题…", text: $session.question, axis: .vertical)
-                    .lineLimit(2...5).disabled(session.running || session.preparing)
-                Text("问题最多 8,000 UTF-8 字节。此前的内容仅在发送后交给模型。")
+                    .lineLimit(2...5).focused($questionFocused).disabled(session.running || session.preparing)
+                Text("问题过长时请缩短后重试。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text("发送至 \(session.destination)").font(.caption).foregroundStyle(.secondary)
             Text("仅在发送后处理以上所选内容，结果不会自动修改原记录。").font(.caption).foregroundStyle(.secondary)
             AIActionResultView(session: session)
-        }
+        }.task(id: session.invocationID) { questionFocused = session.acceptsQuestion }
     }
 }
