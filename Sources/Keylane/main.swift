@@ -101,6 +101,7 @@ final class Model: ObservableObject {
     let rootSearchUpdates = PassthroughSubject<Void, Never>()
     let clipboard = ClipboardController(startTimer: false, presentationActive: false, startStorage: false)
     let screenshots = ScreenshotLibrary()
+    let downloads = DownloadsController()
     let systemShortcuts = SystemShortcutsController(active: false)
     let scripts = ScriptCommandsController()
     lazy var snippets = SnippetsController(storageURL: dataStoreURL)
