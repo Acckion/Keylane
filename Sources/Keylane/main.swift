@@ -70,11 +70,28 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let aiSettings = AIConfiguration()
     let aiInteraction = AIInteractionPreferences()
+    var continueModuleAIAction: ((AIActionContext, String) -> Bool)?
     var openAIChatLink: ((UUID) -> Void)?
     let aiRuntime = AIRuntime()
+    lazy var moduleAIAction = AIActionSession(configuration: aiSettings, runtime: aiRuntime)
+
     lazy var dictation = DictationController(configuration: aiSettings, runtime: aiRuntime)
     lazy var fileAI: FileAIController = {
         let controller = FileAIController(settings: aiSettings, runtime: aiRuntime)
+        controller.continueConversation = { [weak self] context, answer in self?.continueModuleAIAction?(context, answer) == true }
+        controller.invocationUpdates = { [weak self] id in
+            guard let self, let registry = self.launcherModules else { return Empty().eraseToAnyPublisher() }
+            return Publishers.MergeMany([
+                registry.availabilityChanges.map { [weak registry] in registry?.isCommandModuleEnabled(.init(rawValue: id)) == true }.eraseToAnyPublisher(),
+                self.$disabledCommands.map { !$0.contains(id) }.eraseToAnyPublisher(),
+                self.fileSearch.$options.map(\.enabled).eraseToAnyPublisher()
+            ]).eraseToAnyPublisher()
+        }
+        controller.isInvocationAvailable = { [weak self] id in
+            guard let self else { return false }
+            return self.fileSearch.options.enabled && self.launcherModules?.isCommandModuleEnabled(.init(rawValue: id)) == true
+                && !self.disabledCommands.contains(id)
+        }
         controller.openSettings = { [weak self] in self?.openSettings(page: "ai") }
         return controller
     }()
@@ -493,9 +510,9 @@ final class Model: ObservableObject {
         }
     }
     @discardableResult
-    func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil, arguments: [String] = []) -> Bool {
+    func runCommand(_ id: CommandID, origin: LauncherCommandOrigin, usageKey: String? = nil, arguments: [String] = [], aiSource: AIActionSource? = nil) -> Bool {
         let queryKey = usageKey != nil && pageID == .root && origin != .shortcut ? SearchUsageHistory.queryKey(query) : nil
-        let admitted = launcherModules?.invoke(id, origin: origin, arguments: arguments) { destination in
+        let admitted = launcherModules?.invoke(id, origin: origin, arguments: arguments, aiSource: aiSource) { destination in
             switch destination {
             case .action: break
             case let .page(page): openPage(page, origin: origin)
