@@ -104,3 +104,4 @@ python3 scripts/verify-package.py
 - 优先使用 `ModuleAICommands` 接入新的模块动作；业务模块负责来源与结果校验。片段转换不展开模板，并校验占位符原文／数量；Emoji 结果必须映射到本地目录。
 - 需要校验的结果使用公共会话的缓冲策略，不提前显示或复制未经验证的流式原文。保存／展示结果用 `AIActionDefinition.resultDestination` 指向普通命令；新建预览仍由用户明确保存，不直接修改源记录。
 - 内部结果展示命令标记 `isInternal`，不列入搜索和热键设置；不要为 UI 结果操作建立另一套绕过注册表的分派链。
+- `AIActionOutput.text` 是用户可读结果，内部结构参数放入 `commandArgument`；不要将传输 JSON 或协议字段直接显示给用户。结果动作必须以成功完成状态为准，不能仅凭存在部分正文判断可执行。
