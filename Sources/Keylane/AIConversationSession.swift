@@ -7,6 +7,19 @@ final class AIConversationSession: ObservableObject {
 
     @Published private(set) var turns: [Turn] = []
     let composer = AIConversationComposer()
+    let toolApproval = AIToolApprovalBroker()
+    private var toolSource: @MainActor () -> [AIToolRegistration] = { [] }
+    private var toolEnabled: () -> Bool = { false }
+    private var toolChanges: AnyCancellable?
+    @MainActor var availableTools: [AIToolDefinition] { toolSource().map(\.definition) }
+
+    func configureTools(preferences: AIInteractionPreferences, source: @escaping @MainActor () -> [AIToolRegistration]) {
+        toolSource = source
+        toolEnabled = { [weak preferences] in preferences?.toolsEnabled == true }
+        toolChanges = preferences.$toolsEnabled.dropFirst().sink { [weak self] enabled in
+            if !enabled { self?.stop() }
+        }
+    }
     @Published var textScale: Double = 1
     @Published private(set) var quickModelIsAutomatic = true
     let revealMessage = PassthroughSubject<UUID, Never>()
@@ -159,7 +172,19 @@ final class AIConversationSession: ObservableObject {
         saveChat()
         task = Task { @MainActor [weak self, runtime, readKey] in
             do {
-                _ = try await runtime.generate(connection: connection, readKey: readKey, messages: requestMessages, progress: { [weak self] event in
+                var tools: AIToolRun?
+                if let self, self.toolEnabled() {
+                    guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
+                    tools = try AIToolRun(registrations: self.toolSource(), isCurrent: { [weak self] in
+                        guard let self else { return false }
+                        return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
+                            self.currentConnection == connection
+                    }, approve: { [weak self] title, arguments in
+                        guard let self else { return false }
+                        return await self.toolApproval.request(title: title, arguments: arguments)
+                    })
+                }
+                _ = try await runtime.generate(connection: connection, readKey: readKey, messages: requestMessages, tools: tools, progress: { [weak self] event in
                     await MainActor.run { [weak self] in
                         guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
                         self.turns[index].progress?.apply(event)
@@ -546,6 +571,7 @@ final class AIConversationSession: ObservableObject {
     }
 
     private func finish() {
+        toolApproval.cancel()
         activeID = nil
         task = nil
         running = false

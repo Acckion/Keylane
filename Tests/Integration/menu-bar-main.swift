@@ -123,3 +123,16 @@ precondition(registry.nativeItem(id: "calendar.agenda") != nil, "Calendar restor
 calendar.stop()
 registry.shutdown(); precondition(registry.descriptors.isEmpty)
 print("PASS native menu bar: registration, update, actions, persistence, permission opt-in, denial, revocation and stale response cancellation")
+
+var calendarToolFinished = false
+Task { @MainActor in
+    do {
+        _ = try await calendar.aiEvents(start: Date(), end: Date().addingTimeInterval(3600), limit: 2)
+        preconditionFailure("Stopped calendar tool queried EventKit")
+    } catch AIToolContractError.unavailable { } catch { preconditionFailure("Unexpected calendar tool error") }
+    calendarToolFinished = true
+}
+let calendarToolDeadline = Date().addingTimeInterval(2)
+while !calendarToolFinished, Date() < calendarToolDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+precondition(calendarToolFinished)
+print("PASS AI calendar: stopped/unauthorized service rejects before querying or requesting permission")

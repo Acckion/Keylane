@@ -10,7 +10,7 @@ public enum AIResponseError: Error, LocalizedError, Equatable {
         case .requestTooLarge: "要发送的内容超过大小限制。"
         case .tooLarge: "模型响应超过大小限制。"
         case .serviceError: "模型服务返回了错误。"
-        case .toolsUnavailable: "模型请求了工具，但本次会话没有执行该工具。"
+        case .toolsUnavailable: "当前模型或会话未启用工具调用，工具没有执行。请开启工具或选择支持工具的模型。"
         case .http(let code): "请求失败（HTTP \(code)）。请检查地址、模型、密钥或服务额度。"
         }
     }

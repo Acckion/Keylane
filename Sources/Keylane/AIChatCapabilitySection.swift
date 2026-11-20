@@ -1,18 +1,20 @@
 import SwiftUI
+import KeylaneCore
 
-/// Explicit scaffolding: these controls do not advertise or grant tool access.
+/// Tool settings share the composer control; remaining capability placeholders are explicit.
 struct AIChatCapabilitySection: View {
+    @ObservedObject var interaction: AIInteractionPreferences
+    let definitions: [AIToolDefinition]
     @State private var information: AIChatCapabilityInfo?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            section("扩展工具", symbol: "puzzlepiece.extension", feature: .tools,
-                    detail: "可手动添加文件、剪贴板和日程。AI 自动调用工具尚未接入。")
+            AIToolSettingsContent(interaction: interaction, definitions: definitions)
             section("技能", symbol: "square.stack.3d.up", feature: .skills,
                     detail: "技能发现与执行尚未接入，不会加载本地脚本。")
             VStack(alignment: .leading, spacing: 6) {
                 Text("工具权限").font(.subheadline)
-                Text("工具运行层接入后提供逐次确认与权限策略。").font(.caption).foregroundStyle(.secondary)
+                Text("只读工具沿用已有授权；打开应用逐次确认。").font(.caption).foregroundStyle(.secondary)
             }
         }
         .sheet(item: $information) { AIChatCapabilityInfoView(feature: $0) }

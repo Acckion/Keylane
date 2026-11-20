@@ -722,3 +722,29 @@ if CommandLine.arguments.contains("--verify-system-shortcuts") {
     manager.stop()
     print("PASS Carbon registration, queued event revocation, slot release, conflict retry and recorder resume")
 }
+
+// Tool catalog construction must be inert; captured entries must recheck module enablement.
+var toolRegistryFinished = false
+Task { @MainActor in
+    let definition = try! AIToolDefinition(name: "module_fixture", title: "Fixture", description: "Synthetic tool")
+    var probes = 0
+    let contribution = AIToolRegistration(definition: definition, available: { probes += 1; return true }) { _ in try .init(text: "fixture") }
+    let toolModule = LauncherModule(id: ModuleID(rawValue: "fixture.tools"), aiTools: [contribution])
+    let tools = try! LauncherModuleRegistry(modules: [toolModule], preferences: extensionPreferences)
+    precondition(probes == 0, "Registration cannot query services or permissions")
+    let frozen = tools.availableAITools
+    precondition(frozen.count == 1)
+    precondition(tools.setModuleEnabled(toolModule.id, false))
+    precondition(!frozen[0].available() && tools.availableAITools.isEmpty)
+    precondition(tools.setModuleEnabled(toolModule.id, true))
+    precondition(!frozen[0].available() && tools.availableAITools.count == 1, "Reenabling cannot revive a pending old action")
+    do {
+        _ = try LauncherModuleRegistry(modules: [toolModule, LauncherModule(id: ModuleID(rawValue: "fixture.other"), aiTools: [contribution])], preferences: extensionPreferences)
+        preconditionFailure("Duplicate tool name accepted")
+    } catch AIToolContractError.duplicateTool { } catch { preconditionFailure("Unexpected duplicate error") }
+    toolRegistryFinished = true
+}
+let toolRegistryDeadline = Date().addingTimeInterval(3)
+while !toolRegistryFinished, Date() < toolRegistryDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+precondition(toolRegistryFinished)
+print("PASS module tools: inert catalog construction, duplicate rejection and live module enablement for captured declarations")

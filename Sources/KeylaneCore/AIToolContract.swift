@@ -37,8 +37,17 @@ public enum AIToolValue: Codable, Equatable, Sendable {
     }
 }
 
-public enum AIToolContractError: Error, Equatable, Sendable {
+public enum AIToolContractError: LocalizedError, Equatable, Sendable {
     case invalidDefinition, duplicateTool, invalidArguments, unavailable, limitReached, invalidResult
+    public var errorDescription: String? {
+        switch self {
+        case .invalidDefinition, .duplicateTool: "工具登记无效或存在重复名称。"
+        case .invalidArguments: "模型提供的工具参数无效。"
+        case .unavailable: "工具已关闭、授权不足或当前不可用。"
+        case .limitReached: "已达到本次工具调用的次数或数据限制，请新建问题后再试。"
+        case .invalidResult: "工具返回的数据无效或过大。"
+        }
+    }
 }
 
 /// Describes a deliberately small strict object schema; providers adapt it to their wire format.
