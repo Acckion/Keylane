@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 task_directory="$(mktemp -d /private/tmp/KeylaneCompactBar.XXXXXX)"
 trap 'rm -rf "$task_directory"' EXIT
 export CLANG_MODULE_CACHE_PATH="$task_directory/modules"
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos26.0" -emit-library -emit-module \
+swiftc -package-name Keylane -swift-version 5 -target "$(uname -m)-apple-macos26.0" -emit-library -emit-module \
   -module-name KeylaneCore Sources/KeylaneCore/*.swift -lsqlite3 \
   -emit-module-path "$task_directory/KeylaneCore.swiftmodule" -o "$task_directory/libKeylaneCore.dylib"
 cp Tests/Integration/compact-launcher-main.swift "$task_directory/main.swift"
