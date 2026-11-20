@@ -97,7 +97,7 @@ struct AIConversationComposerView: View {
                     Image(systemName: "plus").font(.system(size: 22, weight: .regular))
                         .frame(width: 34, height: 34).contentShape(Rectangle())
                 }.buttonStyle(.plain).help("添加上下文（@）")
-                    .accessibilityLabel("添加上下文").disabled(controller.loadingChat)
+                    .accessibilityLabel("添加上下文").disabled(controller.loadingChat || composer.loadingFiles)
 
                 ZStack(alignment: .leading) {
                     if composer.text.isEmpty {
@@ -106,7 +106,7 @@ struct AIConversationComposerView: View {
                             .allowsHitTesting(false)
                     }
                     AIConversationTextInput(composer: composer, height: $inputHeight,
-                        enabled: inputEnabled && !controller.loadingChat && !composer.loadingFiles && controller.matchesCurrentModel,
+                        enabled: inputEnabled && !controller.loadingChat && controller.matchesCurrentModel,
                         sendWithReturn: compact || interaction.chatReturn, menuVisible: composerMenuVisible,
                         submit: submit, moveMenu: moveComposerMenu, chooseMenu: chooseComposerMenu,
                         dismissMenu: dismissComposerMenu, escape: escape, commandReturn: commandReturn, optionReturn: optionReturn)

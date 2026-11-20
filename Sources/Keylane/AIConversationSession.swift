@@ -316,8 +316,7 @@ final class AIConversationSession: ObservableObject {
         // and instruction edits still inside the save debounce.
         if id == chatID { saveChat() }
         let revision = historyRevision
-        history.perform({ try $0.duplicate(id)
-        }) { [weak self] result in
+        history.perform({ try $0.duplicate(id) }) { [weak self] result in
             guard let self, self.historyRevision == revision else { return }
             if case .success(let id?) = result { self.openChat(id) }
             else { self.historyError = "无法创建对话分支。" }

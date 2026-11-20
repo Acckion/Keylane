@@ -100,7 +100,7 @@ private struct AIConversationMessage: View, Equatable {
         VStack(alignment: .leading, spacing: compact ? 8 : 16) {
             HStack {
                 Spacer(minLength: 50)
-                Text(turn.question).textSelection(.enabled)
+                Text(turn.question).textSelection(.enabled).font(.system(size: 14 * textScale))
                     .padding(.horizontal, 14).padding(.vertical, 9)
                     .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 16))
             }

@@ -427,7 +427,6 @@ struct AIChatView: View {
     }
 
     private func branchCreated() {
-        composer.clear()
         transcriptSearch = ""
         presentation.actionsVisible = false
         composer.focusRequested.send()
