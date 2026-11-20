@@ -20,10 +20,12 @@ struct AIProviderSetupSettings: View {
                 SettingsRow("模型提供商", detail: "选择提供商并输入 Key。请求直接发送到该提供商。") {
                     SettingsIconButton("添加 API Key", symbol: "plus") { addingKey = true }
                 }
-                let connections = configuration.state.connections.filter { $0.providerID != nil && !$0.protocolKind.isSubscription && $0.providerID != "ollama" }
+                let connections = providerConnections
                 ForEach(connections) { connection in
                     Divider()
-                    SettingsRow(connection.displayName, detail: "\(connection.model) · \(connection.destinationLabel)") { EmptyView() }
+                    SettingsRow(connection.providerLabel, detail: catalogDetail(connection)) {
+                        Button("同步模型") { configuration.refreshModelCatalogs(runtime: runtime, connection: connection) }
+                    }
                 }
             }
             SettingsGroup("本地模型") {
@@ -56,6 +58,25 @@ struct AIProviderSetupSettings: View {
         }
         .onChange(of: ollamaHost) { _, _ in cancelSync(); showingModels = false }
         .onDisappear { cancelSync() }
+    }
+
+    private var providerConnections: [AIConnection] {
+        var seen = Set<String>()
+        return configuration.state.connections.filter {
+            $0.providerID != nil && !$0.protocolKind.isSubscription && $0.providerID != "ollama"
+                && seen.insert($0.catalogIdentity).inserted
+        }
+    }
+
+    private func catalogDetail(_ connection: AIConnection) -> String {
+        let count = configuration.state.connections.filter { $0.catalogIdentity == connection.catalogIdentity && $0.isConfigured }.count
+        if let status = configuration.catalogSyncStatus[connection.catalogIdentity] {
+            return "\(count) 个模型 · " + status
+        }
+        if let cache = configuration.state.providerCatalogs?[connection.catalogIdentity] {
+            return "\(count) 个模型 · 更新于 \(cache.updatedAt.formatted(date: .omitted, time: .shortened))"
+        }
+        return "\(count) 个已配置模型 · 自动同步目录；未成功时可手动重试。"
     }
 
     private func cancelSync() {
@@ -194,6 +215,7 @@ private struct AIAPIKeyEditor: View {
                 try AIConfiguration.deleteKey(for: connection)
                 return
             }
+            configuration.refreshModelCatalogs(runtime: runtime, connection: connection)
             dismiss()
         } catch { status = error.localizedDescription }
     }
