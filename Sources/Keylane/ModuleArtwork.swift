@@ -73,6 +73,12 @@ enum ModuleArtwork {
     private static func image(_ name: String) -> NSImage? {
         let key = name as NSString
         if let cached = cache.object(forKey: key) { return cached }
+        if name == "shortcuts",
+           let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.shortcuts") {
+            let artwork = NSWorkspace.shared.icon(forFile: application.path)
+            cache.setObject(artwork, forKey: key)
+            return artwork
+        }
         var url = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "ModuleArtwork")
         #if DEBUG
         if url == nil {
