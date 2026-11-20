@@ -42,17 +42,18 @@ final class ToolFixtureProtocol: URLProtocol {
                 }
             }
             let id = Self.scenario == "loop" ? "loop-\(Self.rounds)" : "call-one"
-            let object: [String: Any]
+            var object: [String: Any]
             if anthropic {
                 object = ["content": next ? [["type": "text", "text": "verified answer"]] : [
                     ["type": "thinking", "thinking": "fixture summary", "signature": "opaque-fixture"],
                     ["type": "tool_use", "id": id, "name": "fixture_add", "input": ["number": 21]]],
                     "stop_reason": next ? "end_turn" : "tool_use", "usage": ["input_tokens": 1, "output_tokens": 2]]
             } else {
-                var message: [String: Any] = ["role": "assistant", "content": next ? "verified answer" : "", "reasoning_content": "synthetic public reasoning"]
+                var message: [String: Any] = ["role": "assistant", "content": next ? "verified answer" : "", "reasoning_summary": "synthetic public reasoning"]
                 if !next { message["tool_calls"] = [["id": id, "type": "function", "function": ["name": "fixture_add", "arguments": "{\"number\":21}"]]] }
                 object = ["choices": [["message": message, "finish_reason": next ? "stop" : "tool_calls"]], "usage": ["total_tokens": 3]]
             }
+            object["error"] = NSNull()
             var responseData = try JSONSerialization.data(withJSONObject: object)
             if body["stream"] as? Bool == true {
                 var events: [[String: Any]] = []
@@ -71,6 +72,7 @@ final class ToolFixtureProtocol: URLProtocol {
                     if var calls = delta["tool_calls"] as? [[String: Any]] { calls[0]["index"] = 0; delta["tool_calls"] = calls }
                     events = [["choices": [["delta": delta, "finish_reason": choice["finish_reason"]!]], "usage": ["total_tokens": 3]]]
                 }
+                events = events.map { event in var value = event; value["error"] = NSNull(); return value }
                 responseData = Data(try events.map { "data: " + String(decoding: try JSONSerialization.data(withJSONObject: $0, options: .prettyPrinted), as: UTF8.self).replacingOccurrences(of: "\n", with: "\ndata: ") + "\n\n" }.joined().utf8)
             }
             if Self.scenario == "held-open", !anthropic { responseData.append(Data("data: [DONE]\n\n".utf8)) }
@@ -163,6 +165,7 @@ Task { @MainActor in
         _ = try collector.consume(["choices": [["delta": ["reasoning_details": [
             ["index": 0, "type": "reasoning.text", "text": "second"],
             ["type": "reasoning.encrypted", "id": "opaque-two", "data": "opaque-two"]]]]]])
+        precondition(collector.lastThinking == "second")
         _ = try collector.consume(["choices": [["delta": ["reasoning_content": "complete reasoning"]]]])
         _ = try collector.consume(["choices": [["delta": ["reasoning_content": NSNull(), "content": NSNull()]]]])
         _ = try collector.consume(["choices": [["delta": ["tool_calls": [["index": 0, "id": NSNull(), "function": ["name": NSNull(), "arguments": NSNull()]]]]]]])
@@ -173,6 +176,9 @@ Task { @MainActor in
         precondition(fragmented.calls.first?.name == "fixture_add" && fragmented.calls.first?.arguments["number"] == .number(21))
         do { _ = try AIToolHTTPTransport.decode(["choices": [["message": ["content": "cut"], "finish_reason": "length"]]], anthropic: false); preconditionFailure("Truncation accepted") }
         catch AIResponseError.incomplete { }
+        do { _ = try AIToolHTTPTransport.decode(["error": ["message": "Synthetic failure"]], anthropic: false); preconditionFailure("Service error accepted") }
+        catch AIResponseError.serviceError { }
+        precondition(AIToolHTTPTransport.publicThinking(["reasoning_details": [["type": "reasoning.encrypted", "data": "opaque"], ["type": "reasoning.summary", "summary": "public summary"]]]) == "public summary")
         ToolFixtureProtocol.scenario = "loop"; ToolFixtureProtocol.rounds = 0
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ToolFixtureProtocol.self]
         do {

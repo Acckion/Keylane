@@ -95,7 +95,7 @@ enum AIToolHTTPTransport {
     }
 
     static func decode(_ object: [String: Any], anthropic: Bool) throws -> Reply {
-        guard object["error"] == nil else { throw AIResponseError.invalidResponse }
+        guard object["error"] == nil || object["error"] is NSNull else { throw AIResponseError.serviceError }
         var reply = Reply()
         if anthropic {
             guard let content = object["content"] as? [[String: Any]],
@@ -118,16 +118,7 @@ enum AIToolHTTPTransport {
             reply.assistant = message
             reply.assistant["role"] = "assistant"
             reply.text = message["content"] as? String ?? ""
-            reply.thinking = message["reasoning_content"] as? String ?? message["reasoning"] as? String ?? ""
-            if reply.thinking.isEmpty {
-                reply.thinking = (message["reasoning_details"] as? [[String: Any]] ?? []).compactMap { detail in
-                    switch detail["type"] as? String {
-                    case "reasoning.summary": return detail["summary"] as? String
-                    case "reasoning.text": return detail["text"] as? String
-                    default: return nil
-                    }
-                }.joined(separator: "\n")
-            }
+            reply.thinking = publicThinking(message)
             for call in message["tool_calls"] as? [[String: Any]] ?? [] {
                 guard call["type"] as? String == "function", let id = call["id"] as? String,
                       let function = call["function"] as? [String: Any], let name = function["name"] as? String,
@@ -139,6 +130,20 @@ enum AIToolHTTPTransport {
         }
         guard Set(reply.calls.map(\.id)).count == reply.calls.count, reply.calls.count <= 12 else { throw AIToolContractError.invalidArguments }
         return reply
+    }
+
+    /// Public reasoning uses one extraction rule for complete responses and streaming deltas.
+    static func publicThinking(_ message: [String: Any]) -> String {
+        for key in ["reasoning_content", "reasoning", "reasoning_summary"] {
+            if let text = message[key] as? String, !text.isEmpty { return text }
+        }
+        return (message["reasoning_details"] as? [[String: Any]] ?? []).compactMap { detail -> String? in
+            switch detail["type"] as? String {
+            case "reasoning.summary": return detail["summary"] as? String
+            case "reasoning.text": return detail["text"] as? String
+            default: return nil
+            }
+        }.joined(separator: "\n")
     }
 
     /// Assemble only bounded wire data; signatures and provider continuation fields stay private.
@@ -187,14 +192,15 @@ enum AIToolHTTPTransport {
 
         mutating func consume(_ object: [String: Any]) throws -> String {
             lastThinking = nil
-            guard object["error"] == nil else { throw AIResponseError.invalidResponse }
+            guard object["error"] == nil || object["error"] is NSNull else { throw AIResponseError.serviceError }
             if !anthropic {
                 if let next = object["usage"] as? [String: Any] { usage = next }
                 guard let choice = (object["choices"] as? [[String: Any]])?.first else { return "" }
                 if let reason = choice["finish_reason"] as? String { stop = reason }
                 let delta = choice["delta"] as? [String: Any] ?? [:]
                 let text = delta["content"] as? String ?? ""
-                lastThinking = delta["reasoning_content"] as? String ?? delta["reasoning"] as? String
+                let thought = publicThinking(delta)
+                lastThinking = thought.isEmpty ? nil : thought
                 for detail in delta["reasoning_details"] as? [[String: Any]] ?? [] {
                     // Encrypted items are complete opaque blocks, never text fragments.
                     let type = detail["type"] as? String

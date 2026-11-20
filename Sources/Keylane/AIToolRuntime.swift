@@ -10,7 +10,7 @@ struct AIToolRegistration: Sendable {
     let perform: @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult
 }
 
-struct AIToolApproval: Identifiable {
+struct AIToolApproval: Identifiable, Sendable {
     let id = UUID()
     let title: String
     let arguments: String
@@ -24,11 +24,11 @@ final class AIToolApprovalBroker: ObservableObject {
 
     @MainActor func request(title: String, arguments: String) async -> Bool {
         guard !Task.isCancelled else { return false }
+        let request = AIToolApproval(title: title, arguments: arguments)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { reply in
                 guard !Task.isCancelled else { reply.resume(returning: false); return }
                 cancel()
-                let request = AIToolApproval(title: title, arguments: arguments)
                 pending = request
                 continuation = reply
                 timeout = Task { @MainActor [weak self] in
@@ -36,7 +36,7 @@ final class AIToolApprovalBroker: ObservableObject {
                     self?.resolve(request.id, allow: false)
                 }
             }
-        } onCancel: { Task { @MainActor [weak self] in self?.cancel() } }
+        } onCancel: { Task { @MainActor [weak self] in self?.resolve(request.id, allow: false) } }
     }
 
     func resolve(_ id: UUID, allow: Bool) {
