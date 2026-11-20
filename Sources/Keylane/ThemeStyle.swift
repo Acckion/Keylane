@@ -35,7 +35,7 @@ struct ThemeSelectionStyle: ShapeStyle {
     let increasedOpacity: Double
     func resolve(in environment: EnvironmentValues) -> Color {
         if let theme = environment.keylaneTheme, !theme.usesSystemMaterial {
-            return theme.color(.selection).swiftUI.opacity(environment.colorSchemeContrast == .increased ? 0.5 : 0.3)
+            return theme.color(.selection).swiftUI.opacity(environment.colorSchemeContrast == .increased ? 0.5 : 0.18)
         }
         return Color.primary.opacity(environment.colorSchemeContrast == .increased ? increasedOpacity : normalOpacity)
     }

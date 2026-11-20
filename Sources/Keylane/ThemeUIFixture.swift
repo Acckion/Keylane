@@ -16,8 +16,9 @@ enum ThemeUIFixture {
         let initial = store.library
         studio.select(ThemeDefinition.builtins[2].id); studio.duplicate()
         var theme = studio.selected
-        theme.name = "我的雾港"
-        theme.colors["text"] = "#E4F5FA"; theme.colors["selection"] = "#368B9E"
+        theme.name = "Sky Copy"
+        theme.background = .init(color: "#151924")
+        theme.colors["text"] = "#D4F0F5"; theme.colors["selection"] = "#5E80FF"; theme.colors["loader"] = "#48EDF1"
         studio.edit(theme)
         guard store.library == initial else { throw ThemeError.invalid("编辑草稿影响了活动主题。") }
         studio.select(ThemeDefinition.lightID); studio.select(theme.id)
@@ -45,7 +46,7 @@ enum ThemeUIFixture {
             LauncherMenuRow(title: "删除", symbol: "trash", selected: false, destructive: true, activate: {}, highlight: {}) { EmptyView() }
         }.padding(22).keylaneTheme(store: store), name: "applied-components", scheme: .dark, size: .init(width: 650, height: 260), directory: directory)
         let switcher = ThemeSwitcher(store: store)
-        switcher.query = "我的雾港"; switcher.reconcile()
+        switcher.query = "Sky Copy"; switcher.reconcile()
         guard switcher.matches.count == 1, switcher.selected?.id == theme.id else { throw ThemeError.invalid("主题搜索失败。") }
         switcher.query = "no matching synthetic theme"; switcher.reconcile()
         guard switcher.selected == nil else { throw ThemeError.invalid("空结果仍可应用主题。") }
@@ -78,15 +79,15 @@ enum ThemeUIFixture {
     private static func verifyPreviewInteraction(theme: ThemeDefinition) throws {
         let state = ThemePreviewState()
         let ids = ThemePreviewState.rows.map(\.id)
-        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 760, height: 470), styleMask: [.titled], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 760, height: ThemePreview.height), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.contentView = nil; window.close() }
-        let hosting = NSHostingView(rootView: ThemePreview(theme: theme, state: state))
+        var scrollOffset: CGFloat = 0
+        let hosting = NSHostingView(rootView: ThemePreview(theme: theme, state: state, observeScroll: { scrollOffset = $0 }))
         hosting.sizingOptions = []; window.contentView = hosting
-        hosting.frame = NSRect(x: 0, y: 0, width: 760, height: 470)
+        hosting.frame = NSRect(x: 0, y: 0, width: 760, height: ThemePreview.height)
         window.makeKeyAndOrderFront(nil)
-        defer { window.contentView = nil; window.close() }
-        func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.12)); hosting.layoutSubtreeIfNeeded() }
+        func pump() { RunLoop.main.run(until: Date().addingTimeInterval(0.3)); hosting.layoutSubtreeIfNeeded() }
         func click(_ point: NSPoint) {
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                 if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
@@ -97,7 +98,7 @@ enum ThemeUIFixture {
         pump()
         click(NSPoint(x: 28, y: 28))
         guard state.menu == .application else { throw ThemeError.invalid("预览左下角按钮无法打开菜单。") }
-        state.menuQuery = "退出"; state.submit(); pump()
+        state.menuQuery = "Configure"; state.submit(); pump()
         guard state.menu == nil, state.feedback != nil else { throw ThemeError.invalid("预览应用菜单未模拟操作。") }
         state.feedback = nil
         click(NSPoint(x: 700, y: 28))
@@ -107,12 +108,13 @@ enum ThemeUIFixture {
         state.activate("open-with")
         guard state.submenu != nil else { throw ThemeError.invalid("预览子菜单未打开。") }
         state.back(); state.activate("favorite")
-        guard state.favorites.contains("calendar") else { throw ThemeError.invalid("预览收藏未更新。") }
-        state.feedback = nil
-        click(NSPoint(x: 605, y: 28))
+        guard state.favorites.contains("primary") else { throw ThemeError.invalid("预览收藏未更新。") }
+        state.feedback = nil; pump()
+        let bar = LauncherFooterActionBar(title: state.primaryTitle, keys: ["↩"], enabled: true, showsActions: true, actionsTitle: "Actions", perform: {}, showActions: {})
+        click(NSPoint(x: 760 - VisualStyle.launcherEdgeInset - bar.width + 4 + bar.primaryWidth / 2, y: 28))
         guard state.feedback != nil else { throw ThemeError.invalid("预览主操作按钮无法点击。") }
         state.feedback = nil
-        click(NSPoint(x: 160, y: 440))
+        click(NSPoint(x: 160, y: ThemePreview.height - 30))
         if let editor = window.firstResponder as? NSTextView { editor.insertText("fixed example", replacementRange: editor.selectedRange()) }
         else { throw ThemeError.invalid("预览搜索栏无法输入。") }
         pump()
@@ -120,14 +122,50 @@ enum ThemeUIFixture {
         if let down = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil, characters: "\u{f701}", charactersIgnoringModifiers: "\u{f701}", isARepeat: false, keyCode: 125) { window.sendEvent(down) }
         pump()
-        guard state.selectedID == "clipboard" else { throw ThemeError.invalid("预览列表键盘导航失败。") }
+        guard state.selectedID == "secondary" else { throw ThemeError.invalid("预览列表键盘导航失败。") }
         state.select("unavailable")
-        guard state.selectedID == "clipboard" else { throw ThemeError.invalid("禁用示例可被选中。") }
+        guard state.selectedID == "secondary" else { throw ThemeError.invalid("禁用示例可被选中。") }
         if let command = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
             windowNumber: window.windowNumber, context: nil, characters: "k", charactersIgnoringModifiers: "k", isARepeat: false, keyCode: 40) { window.sendEvent(command) }
         pump()
         guard state.menu == .actions else { throw ThemeError.invalid("预览 ⌘K 未打开操作菜单。") }
-        print("Theme preview: native footer clicks, search editing with fixed results, selection, disabled action, submenu and favorites passed.")
+        state.closeMenu(); pump()
+        click(NSPoint(x: 380, y: 200))
+        guard state.selectedGrid == 2 else { throw ThemeError.invalid("预览网格无法点击选中。") }
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        guard let scroll = descendants(hosting).compactMap({ $0 as? NSScrollView })
+            .first(where: { ($0.documentView?.frame.height ?? 0) > ThemePreview.height * 2 }) else {
+            throw ThemeError.invalid("预览内容未形成完整的滚动文档。")
+        }
+        let initialOffset = scrollOffset
+        let initialScrollOrigin = scroll.contentView.bounds.origin
+        func capture(_ name: String) throws {
+            guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { throw ThemeError.invalid("预览截图失败。") }
+            hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+            guard let bytes = bitmap.representation(using: .png, properties: [:]) else { throw ThemeError.invalid("预览截图编码失败。") }
+            try bytes.write(to: URL(fileURLWithPath: "/private/tmp/keylane-theme-studio-ui/" + name + ".png"))
+        }
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 300)); scroll.reflectScrolledClipView(scroll.contentView); pump()
+        guard scrollOffset > initialOffset + 200 else { throw ThemeError.invalid("预览未实际向下滚动。") }
+        try capture("preview-form")
+        // The text field remains a native, editable control after scrolling.
+        guard let field = descendants(hosting).compactMap({ $0 as? NSTextField }).first(where: { $0.placeholderString == "Placeholder" }) else {
+            throw ThemeError.invalid("预览表单没有原生输入框。")
+        }
+        let fieldBounds = field.convert(field.bounds, to: nil)
+        click(NSPoint(x: fieldBounds.midX, y: fieldBounds.midY))
+        if let editor = window.firstResponder as? NSTextView { editor.insertText("Sample input", replacementRange: editor.selectedRange()) }
+        pump()
+        guard state.formText == "Sample input" else { throw ThemeError.invalid("滚动后的表单输入失败。") }
+        window.makeFirstResponder(nil); state.query = ""
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: 635)); scroll.reflectScrolledClipView(scroll.contentView); pump()
+        try capture("preview-markdown")
+        scroll.contentView.scroll(to: initialScrollOrigin); scroll.reflectScrolledClipView(scroll.contentView); pump()
+        guard abs(scrollOffset - initialOffset) < 2 else { throw ThemeError.invalid("预览未滚回顶部。") }
+        guard state.formText == "Sample input" else { throw ThemeError.invalid("滚回顶部丢失表单状态。") }
+        state.feedback = nil; click(NSPoint(x: 700, y: 28))
+        guard state.menu == .actions else { throw ThemeError.invalid("滚动后固定底栏不可点击。") }
+        print("Theme preview: native footer clicks, fixed search results, selection, menus, scrolling, editable form and retained state passed.")
     }
     private static func render<V: View>(_ content: V, name: String, scheme: ColorScheme, size: NSSize, directory: URL) throws {
         let view = NSHostingView(rootView: content.environment(\.colorScheme, scheme).background(Color(nsColor: .windowBackgroundColor)))

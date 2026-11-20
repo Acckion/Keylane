@@ -108,20 +108,27 @@ final class ThemeStudio: NSObject, ObservableObject, NSWindowDelegate {
     func perform(_ action: () throws -> Void) { do { try action(); error = nil } catch { self.error = error.localizedDescription } }
     func show(rememberFrame: Bool = true) {
         if window == nil {
-            let window = ThemeStudioWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 620), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            let window = ThemeStudioWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 540), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.title = "Theme Studio"; window.isReleasedWhenClosed = false; window.delegate = self
-            window.minSize = NSSize(width: 1000, height: 500)
+            window.minSize = NSSize(width: 1040, height: 440)
             window.studioUndo = undo
             let host = NSHostingController(rootView: ThemeStudioView(studio: self))
-            host.sceneBridgingOptions = .all
+            host.sceneBridgingOptions = [.toolbars]
             window.contentViewController = host
             window.toolbarStyle = .unified
             window.titlebarAppearsTransparent = true
-            window.setContentSize(NSSize(width: 1160, height: 620))
+            window.titleVisibility = .hidden
+            window.setContentSize(NSSize(width: 1280, height: 540))
             if rememberFrame { window.setFrameAutosaveName("ThemeStudio") }
             window.center(); self.window = window
         }
         window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak window] in
+            // The hosting bridge also supplies AppKit's standard sidebar item.
+            if let toolbar = window?.toolbar, let index = toolbar.items.firstIndex(where: { $0.itemIdentifier == .toggleSidebar || $0.action == #selector(NSSplitViewController.toggleSidebar(_:)) }) {
+                toolbar.removeItem(at: index)
+            }
+        }
     }
     func windowWillClose(_ notification: Notification) {
         guard let closed = notification.object as? NSWindow, closed === window else { return }
@@ -156,160 +163,216 @@ final class ThemeStudio: NSObject, ObservableObject, NSWindowDelegate {
 struct ThemeStudioView: View {
     @ObservedObject var studio: ThemeStudio
     @State private var filter = "all"
-    @State private var query = ""
-    @State private var inspectorVisible = true
     private var matches: [ThemeDefinition] {
-        studio.themes.filter { (filter == "all" || $0.appearance.rawValue == filter) && (query.isEmpty || $0.name.localizedStandardContains(query)) }
+        studio.themes.filter { filter == "all" || $0.appearance.rawValue == filter }
     }
+    private var filterTitle: String { filter == "dark" ? "Dark" : filter == "light" ? "Light" : "All" }
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 200, ideal: 226, max: 300)
+                .frame(minWidth: 252)
+                .navigationSplitViewColumnWidth(252)
                 .toolbar {
-                    ToolbarItem(placement: .navigation) {
-                        Button("新建主题", systemImage: "plus", action: studio.create)
+                    ToolbarItem(placement: .automatic) {
+                        Menu {
+                            ForEach(["all", "dark", "light"], id: \.self) { value in
+                                Button { filter = value } label: {
+                                    let title = value == "all" ? "All" : value == "dark" ? "Dark" : "Light"
+                                    if filter == value { Label(title, systemImage: "checkmark") } else { Text(title) }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 8) { Image(systemName: "list.bullet"); Text(filterTitle); Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(.secondary) }
+                        }.menuIndicator(.hidden).help("Filter Themes")
+                    }
+                    ToolbarSpacer(.fixed)
+                    ToolbarItem {
+                        Button("New Theme", systemImage: "doc.badge.plus", action: studio.create)
                     }
                 }
         } detail: {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    ThemePreview(theme: studio.selected, state: studio.preview)
-                    HStack {
-                        if studio.selected.isBuiltin { Button("复制并编辑", systemImage: "plus.square.on.square", action: studio.duplicate) }
-                        Spacer()
-                        Button("应用主题", action: studio.apply).buttonStyle(.borderedProminent)
-                    }
-                }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(minWidth: 460, maxWidth: .infinity)
-                .navigationTitle("Theme Studio")
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button("显示检查器", systemImage: "sidebar.trailing") { inspectorVisible.toggle() }
-                            .help(inspectorVisible ? "隐藏检查器" : "显示检查器")
-                    }
-                }
+            GeometryReader { geometry in
+                ThemePreview(theme: studio.selected, state: studio.preview)
+                    .frame(width: max(1, min(geometry.size.width - 72, (geometry.size.height - 64) * VisualStyle.launcherWidth / ThemePreview.height)))
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+            }
+            .frame(minWidth: 520)
+            .ignoresSafeArea(.container, edges: .top)
+            .navigationTitle("")
         }
         .navigationSplitViewStyle(.balanced)
-        .inspector(isPresented: $inspectorVisible) {
+        .toolbar(removing: .sidebarToggle)
+        .inspector(isPresented: .constant(true)) {
             inspector
-                .inspectorColumnWidth(min: 250, ideal: 278, max: 380)
+                .inspectorColumnWidth(min: 240, ideal: 252, max: 320)
                 .toolbar {
-                    ToolbarItem {
-                        Button("还原更改", systemImage: "arrow.uturn.backward", action: studio.reset).disabled(!studio.dirty)
+                    ToolbarItemGroup {
+                        Button("Paste Theme", systemImage: "clipboard", action: studio.paste)
+                        Button("Revert Changes", systemImage: "arrow.uturn.backward", action: studio.reset).disabled(!studio.dirty)
                     }
+                    ToolbarSpacer(.flexible)
                     ToolbarItem {
-                        Button("保存", systemImage: "checkmark", action: studio.save).disabled(!studio.dirty)
+                        Button("Save", action: studio.save).keyboardShortcut("s").disabled(!studio.dirty)
                     }
                 }
         }
         .onChange(of: studio.selectedID) { _, id in
-            if let theme = studio.themes.first(where: { $0.id == id }), !matches.contains(where: { $0.id == id }) {
-                filter = theme.appearance.rawValue; query = ""
-            }
+            if let theme = studio.themes.first(where: { $0.id == id }), !matches.contains(where: { $0.id == id }) { filter = theme.appearance.rawValue }
         }
-        .background {
-            Button("保存主题", action: studio.save).keyboardShortcut("s").disabled(!studio.dirty).hidden().accessibilityHidden(true)
-        }
-        .alert("主题操作失败", isPresented: Binding(get: { studio.error != nil }, set: { if !$0 { studio.error = nil } })) {
-            Button("好", role: .cancel) { studio.error = nil }
+        .alert("Theme could not be updated", isPresented: Binding(get: { studio.error != nil }, set: { if !$0 { studio.error = nil } })) {
+            Button("OK", role: .cancel) { studio.error = nil }
         } message: { Text(studio.error ?? "") }
     }
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Picker("主题外观", selection: $filter) {
-                Text("全部").tag("all"); Text("深色").tag("dark"); Text("浅色").tag("light")
-            }.labelsHidden().padding(.horizontal, 12).padding(.top, 12)
-            SettingsSearchField(text: $query, placeholder: "搜索主题…").frame(height: 30).padding(.horizontal, 12).padding(.top, 12)
-            Text("已安装主题  \(studio.themes.count)").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Text("Installed Themes"); Text("\(studio.themes.count)").foregroundStyle(.tertiary)
+            }.font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 3)
             List(selection: Binding(get: { studio.selectedID }, set: { studio.select($0) })) {
                 ForEach(matches) { theme in
-                    HStack(spacing: 10) {
-                        Image(systemName: theme.appearance == .dark ? "moon.fill" : "sun.max.fill")
-                            .font(.caption).foregroundStyle(theme.color(.text).swiftUI)
-                            .frame(width: 26, height: 26).background { ThemeBackgroundView(theme: theme).clipShape(Circle()) }
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(theme.name).lineLimit(1)
-                            if studio.drafts[theme.id] != nil { Text("未保存").font(.caption2).foregroundStyle(.secondary) }
-                        }
+                    HStack(spacing: 9) {
+                        Image(systemName: theme.appearance == .dark ? "moon" : "sun.max")
+                            .font(.system(size: 13, weight: .medium)).foregroundStyle(theme.color(.text).swiftUI)
+                            .frame(width: 22, height: 22)
+                            .background { ThemeBackgroundView(theme: theme).clipShape(Circle()) }
+                            .overlay(Circle().stroke(.primary.opacity(0.3), lineWidth: 0.5))
+                        Text(theme.name).font(.system(size: 13)).lineLimit(1)
+                        if theme.isBuiltin { Image(systemName: "lock").font(.system(size: 10)).foregroundStyle(.tertiary) }
+                        if studio.drafts[theme.id] != nil { Circle().fill(.secondary).frame(width: 4, height: 4).accessibilityLabel("Unsaved") }
                         Spacer(minLength: 0)
-                        if theme.isBuiltin { Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.tertiary) }
-                        if studio.store.library.darkID == theme.id || studio.store.library.lightID == theme.id {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint).font(.caption)
-                        }
-                    }.tag(theme.id)
+                        if studio.store.library.darkID == theme.id { assignedIcon(dark: true) }
+                        if studio.store.library.lightID == theme.id { assignedIcon(dark: false) }
+                    }.frame(height: 28).tag(theme.id)
+                    .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                     .contextMenu {
-                        Button("应用主题") { studio.select(theme.id); studio.apply() }
-                        Button(theme.appearance == .dark ? "设为深色主题" : "设为浅色主题") { studio.select(theme.id); studio.assign() }
-                        Button("复制主题") { studio.select(theme.id); studio.duplicate() }
+                        Button("Apply Theme") { studio.select(theme.id); studio.apply() }
+                        Button(theme.appearance == .dark ? "Use as Dark Theme" : "Use as Light Theme") { studio.select(theme.id); studio.assign() }
+                        Button("Duplicate Theme") { studio.select(theme.id); studio.duplicate() }
                         Divider()
-                        Button("复制分享链接") { studio.select(theme.id); studio.copy(link: true) }
-                        Button("复制 JSON") { studio.select(theme.id); studio.copy(link: false) }
-                        Button("导出 JSON…") { studio.select(theme.id); studio.export() }
-                        if !theme.isBuiltin { Divider(); Button("删除主题…", role: .destructive) { studio.select(theme.id); studio.remove() } }
+                        Button("Copy Theme URL") { studio.select(theme.id); studio.copy(link: true) }
+                        Button("Copy JSON") { studio.select(theme.id); studio.copy(link: false) }
+                        Button("Export Theme…") { studio.select(theme.id); studio.export() }
+                        Button("Import Themes…", action: studio.importFile)
+                        if !theme.isBuiltin { Divider(); Button("Delete Theme…", role: .destructive) { studio.select(theme.id); studio.remove() } }
                     }
                 }
             }.listStyle(.sidebar)
-            Menu("导入与分享", systemImage: "square.and.arrow.up") {
-                Button("粘贴主题或链接", action: studio.paste)
-                Button("从文件导入…", action: studio.importFile)
-                Divider()
-                Button("复制分享链接") { studio.copy(link: true) }
-                Button("复制 JSON") { studio.copy(link: false) }
-                Button("导出 JSON…", action: studio.export)
-            }.padding(.horizontal, 12).padding(.bottom, 12)
         }
+    }
+    private func assignedIcon(dark: Bool) -> some View {
+        Image(systemName: dark ? "moon" : "sun.max")
+            .font(.system(size: 12, weight: .medium)).foregroundStyle(dark ? Color.cyan : .yellow)
+            .frame(width: 22, height: 22).background((dark ? Color.cyan : .yellow).opacity(0.1), in: Circle())
+            .accessibilityLabel(dark ? "Current Dark Theme" : "Current Light Theme")
     }
     private func binding<T>(_ key: WritableKeyPath<ThemeDefinition, T>) -> Binding<T> {
         Binding(get: { studio.selected[keyPath: key] }, set: { value in var copy = studio.selected; copy[keyPath: key] = value; studio.edit(copy) })
     }
     private var inspector: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                Text("名称").font(.headline)
-                TextField("主题名称", text: binding(\.name)).textFieldStyle(.roundedBorder)
-                Picker("外观", selection: binding(\.appearance)) {
-                    Label("浅色", systemImage: "sun.max").tag(ThemeAppearance.light)
-                    Label("深色", systemImage: "moon").tag(ThemeAppearance.dark)
-                }.pickerStyle(.segmented)
-                Divider()
-                Text("背景").font(.headline)
-                Picker("背景类型", selection: binding(\.background.kind)) {
-                    Text("纯色").tag(ThemeBackground.Kind.solid); Text("渐变").tag(ThemeBackground.Kind.gradient)
-                }.pickerStyle(.segmented)
-                ThemeColorField(title: studio.selected.background.kind == .solid ? "背景" : "起始颜色", hex: binding(\.background.color))
-                if studio.selected.background.kind == .gradient {
-                    ThemeColorField(title: "结束颜色", hex: binding(\.background.endColor))
-                    HStack { Text("角度"); TextField("角度", value: binding(\.background.angle), format: .number).textFieldStyle(.roundedBorder); Text("°") }
-                    Slider(value: binding(\.background.angle), in: 0...360).accessibilityLabel("渐变角度")
-                }
-                Divider(); Text("主要颜色").font(.headline)
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
+                    sectionTitle("Theme Name")
+                    TextField("Theme Name", text: binding(\.name)).textFieldStyle(.plain).font(.system(size: 13))
+                        .padding(.horizontal, 12).frame(height: 34)
+                        .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.18)))
+                    HStack {
+                        sectionTitle("Theme Appearance")
+                        Spacer()
+                        appearanceButton(.light, symbol: "sun.max")
+                        appearanceButton(.dark, symbol: "moon")
+                    }.padding(.top, 8).frame(height: 34)
+                }.padding(.bottom, 16)
+                Divider().padding(.horizontal, -18)
+                VStack(spacing: 0) {
+                    HStack {
+                        sectionTitle("Background").fixedSize()
+                        Spacer(minLength: 4)
+                        ForEach([ThemeBackground.Kind.solid, .gradient], id: \.self) { kind in
+                            Button { var theme = studio.selected; theme.background.kind = kind; studio.edit(theme) } label: {
+                                Text(kind == .solid ? "Solid" : "Gradient").font(.system(size: 11, weight: .medium))
+                                    .padding(.horizontal, 7).padding(.vertical, 4)
+                                    .background(.primary.opacity(studio.selected.background.kind == kind ? 0.09 : 0), in: RoundedRectangle(cornerRadius: 6))
+                            }.buttonStyle(.plain)
+                        }
+                    }.frame(height: 32)
+                    ThemeColorField(title: "Background Color", hex: binding(\.background.color))
+                    if studio.selected.background.kind == .gradient {
+                        ThemeColorField(title: "End Color", hex: binding(\.background.endColor))
+                        HStack { Text("Angle"); Slider(value: binding(\.background.angle), in: 0...360); Text("\(Int(studio.selected.background.angle.isFinite ? studio.selected.background.angle : 0))°").monospacedDigit() }.font(.system(size: 12)).frame(height: 30)
+                    }
+                }.padding(.top, 12).padding(.bottom, 12)
+                sectionTitle("Primary Colors").padding(.top, 10).padding(.bottom, 10)
                 ForEach(Array(ThemeColorRole.allCases.prefix(3)), id: \.self, content: colorField)
-                Divider(); Text("辅助颜色").font(.headline)
+                Divider().padding(.horizontal, -18).padding(.top, 12)
+                sectionTitle("Support Colors").padding(.top, 16).padding(.bottom, 10)
                 ForEach(Array(ThemeColorRole.allCases.dropFirst(3)), id: \.self, content: colorField)
-            }.padding(18).disabled(studio.selected.isBuiltin)
+            }.padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 18).disabled(studio.selected.isBuiltin)
         }
     }
+    private func appearanceButton(_ appearance: ThemeAppearance, symbol: String) -> some View {
+        Button { var theme = studio.selected; theme.appearance = appearance; studio.edit(theme) } label: {
+            Image(systemName: symbol).font(.system(size: 12)).foregroundStyle(studio.selected.appearance == appearance ? .primary : .secondary)
+                .frame(width: 22, height: 22).background(.primary.opacity(studio.selected.appearance == appearance ? 0.09 : 0), in: RoundedRectangle(cornerRadius: 6))
+        }.buttonStyle(.plain).accessibilityLabel(appearance == .dark ? "Dark" : "Light")
+    }
+    private func sectionTitle(_ title: String) -> some View { Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary) }
     private func colorField(_ role: ThemeColorRole) -> some View {
-        ThemeColorField(title: role.title, hex: Binding(get: { studio.selected.colors[role.rawValue] ?? "" }, set: { value in
+        let titles: [ThemeColorRole: String] = [.text: "Text", .selection: "Selection", .loader: "Loader", .red: "Red", .orange: "Orange", .yellow: "Yellow", .green: "Green", .blue: "Blue", .purple: "Purple", .magenta: "Magenta"]
+        return ThemeColorField(title: titles[role] ?? role.rawValue, hex: Binding(get: { studio.selected.colors[role.rawValue] ?? "" }, set: { value in
             var theme = studio.selected; theme.colors[role.rawValue] = value; studio.edit(theme)
         }))
     }
 }
 
+/// A compact native color well. The system color panel provides exact numeric input.
 struct ThemeColorField: View {
     let title: String
     @Binding var hex: String
     var body: some View {
-        HStack(spacing: 8) {
-            Text(title).frame(maxWidth: .infinity, alignment: .leading)
-            TextField("#RRGGBB", text: $hex).font(.system(.caption, design: .monospaced)).textFieldStyle(.roundedBorder).frame(width: 94)
-                .accessibilityLabel("\(title)十六进制颜色")
-                .overlay(alignment: .bottom) { if (try? ThemeRGBA(hex)) == nil { Rectangle().fill(.red).frame(height: 1) } }
-            ColorPicker(title, selection: Binding(get: { (try? ThemeRGBA(hex))?.swiftUI ?? .clear }, set: { color in
-                guard let rgb = NSColor(color).usingColorSpace(.sRGB) else { return }
-                let channels = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent]
-                hex = "#" + channels.map { String(format: "%02X", min(255, max(0, Int(($0 * 255).rounded())))) }.joined()
-            })).labelsHidden()
+        HStack {
+            Text(title).font(.system(size: 13))
+            Spacer()
+            ThemeColorWell(title: title, hex: $hex).frame(width: 22, height: 22)
+        }.frame(height: 36)
+    }
+}
+
+private final class ThemeNativeColorWell: NSColorWell {
+    override var intrinsicContentSize: NSSize { NSSize(width: 22, height: 22) }
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
+        color.setFill(); path.fill()
+        NSColor.labelColor.withAlphaComponent(0.25).setStroke(); path.lineWidth = 0.5; path.stroke()
+    }
+}
+
+private struct ThemeColorWell: NSViewRepresentable {
+    let title: String
+    @Binding var hex: String
+    @Environment(\.isEnabled) private var isEnabled
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> NSColorWell {
+        let well = ThemeNativeColorWell()
+        well.colorWellStyle = .minimal; well.supportsAlpha = true
+        well.target = context.coordinator; well.action = #selector(Coordinator.changed(_:))
+        well.setAccessibilityLabel(title)
+        return well
+    }
+    func updateNSView(_ well: NSColorWell, context: Context) {
+        context.coordinator.parent = self
+        well.isEnabled = isEnabled
+        let color = (try? ThemeRGBA(hex))?.nsColor ?? .clear
+        if !well.color.isEqual(color) { well.color = color }
+    }
+    final class Coordinator: NSObject {
+        var parent: ThemeColorWell
+        init(_ parent: ThemeColorWell) { self.parent = parent }
+        @objc func changed(_ well: NSColorWell) {
+            guard let rgb = well.color.usingColorSpace(.sRGB) else { return }
+            parent.hex = "#" + [rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent]
+                .map { String(format: "%02X", min(255, max(0, Int(($0 * 255).rounded())))) }.joined()
         }
     }
 }
