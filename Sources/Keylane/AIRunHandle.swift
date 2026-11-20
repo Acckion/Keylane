@@ -11,13 +11,16 @@ final class AIRunHandle {
 
     static func start(runtime: AIRuntime, connection: AIConnection,
                       readKey: @escaping @Sendable (AIConnection) throws -> String?, messages: [AIMessage],
+                      prepareTools: @escaping @MainActor () throws -> AIToolRun? = { nil },
                       progress: @escaping (AIResponseEvent) -> Void,
                       text: @escaping (String) -> Void,
                       completion: @escaping (Result<Int?, Error>) -> Void) -> AIRunHandle {
         let handle = AIRunHandle()
         handle.task = Task { @MainActor [weak handle] in
             do {
-                let usage = try await runtime.generate(connection: connection, readKey: readKey, messages: messages,
+                try Task.checkCancellation()
+                let tools = try prepareTools()
+                let usage = try await runtime.generate(connection: connection, readKey: readKey, messages: messages, tools: tools,
                     progress: { event in await MainActor.run { if handle?.active == true { progress(event) } } }) { delta in
                     try await MainActor.run {
                         guard handle?.active == true else { throw CancellationError() }

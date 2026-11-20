@@ -310,12 +310,19 @@ actor AIRuntime {
     }
 
     func generate(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?, messages: [AIMessage],
-                  subscriptionReasoningEffort: String? = nil,
-                  progress: @Sendable (AIResponseEvent) async -> Void = { _ in },
+                  subscriptionReasoningEffort: String? = nil, tools: AIToolRun? = nil,
+                  progress: @escaping @Sendable (AIResponseEvent) async -> Void = { _ in },
                   emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         guard connection.taskKind == .text else { throw AIResponseError.invalidResponse }
+        if tools != nil, connection.supportsTools == false { throw AIResponseError.toolsUnavailable }
         if connection.protocolKind.isSubscription {
-            return try await AISubscriptionTransport.generate(connection, messages: messages, effort: subscriptionReasoningEffort, progress: progress, emit: emit)
+            return try await AISubscriptionTransport.generate(connection, messages: messages, effort: subscriptionReasoningEffort, tools: tools, progress: progress, emit: emit)
+        }
+        if let tools, !tools.catalog.definitions.isEmpty {
+            guard connection.isConfigured else { throw AIResponseError.invalidResponse }
+            guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
+            return try await AIToolHTTPTransport.generate(session: session, connection: connection, key: readKey(connection),
+                messages: messages, tools: tools, progress: progress, emit: emit)
         }
         guard let url = connection.completionURL, connection.isConfigured else { throw AIResponseError.invalidResponse }
         try Task.checkCancellation()

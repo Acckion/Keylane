@@ -22,6 +22,7 @@ final class AIInteractionPreferences: ObservableObject {
 
     var showsRootHint: Bool { rootTab || rootFallback }
 
+    @Published var toolsEnabled: Bool { didSet { preferences.set(toolsEnabled, forKey: "ai.tools.enabled") } }
     @Published var rootFallback: Bool { didSet { preferences.set(rootFallback, forKey: Key.rootFallback) } }
     @Published var rootTab: Bool { didSet { preferences.set(rootTab, forKey: Key.rootTab) } }
     @Published var chatReturn: Bool { didSet { preferences.set(chatReturn, forKey: Key.chatReturn) } }
@@ -30,6 +31,7 @@ final class AIInteractionPreferences: ObservableObject {
 
     init(preferences: UserDefaults = .standard) {
         self.preferences = preferences
+        toolsEnabled = preferences.bool(forKey: "ai.tools.enabled")
         primaryAction = QuickAIPrimaryAction(rawValue: preferences.string(forKey: "ai.quick.primaryAction") ?? "") ?? .paste
         modelPreference = QuickAIModelPreference(rawValue: preferences.string(forKey: "ai.quick.modelPreference") ?? "") ?? .balanced
         preferenceModels = preferences.dictionary(forKey: "ai.quick.preferenceModels") as? [String: String] ?? [:]

@@ -20,6 +20,7 @@ enum AIModule {
             .appendingPathComponent("Keylane/AI/history.sqlite")
         let quickAI = AIConversationSession(configuration: configuration, runtime: runtime,
                                         history: AIConversationRepository(url: historyURL), preferredQuickModel: { interaction.preferredModelID })
+        quickAI.configureTools(preferences: interaction) { [weak model] in model?.launcherModules?.availableAITools ?? [] }
         let chat = AIChatWindow(controller: quickAI, configuration: configuration, interaction: interaction,
                                 appearance: model.$appearance.eraseToAnyPublisher())
         let openChat: (String?) -> Void = { [weak model] initialQuery in
@@ -186,6 +187,8 @@ private struct AIInteractionSettings: View {
             }
             Divider()
             toggle("AI Chat 窗口置顶", value: $preferences.chatFloating)
+            Divider()
+            toggle("允许 AI 调用基础工具", detail: "可查询时间、计算、应用名称、已授权文件名与日程。结果发送给所选模型；打开应用逐次确认。", value: $preferences.toolsEnabled)
         }
     }
 

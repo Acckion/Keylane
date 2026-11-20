@@ -31,6 +31,7 @@ struct AIConversationComposerView: View {
     @State private var menuScrollTarget: String?
     @State private var suppressedCompletion: AIChatCompletionToken?
     @State private var contextRequest: AIConversationDraftContextRequest<AIChatContextSheet.Source>?
+    @State private var toolsPresented = false
     @State private var capability: AIChatCapabilityInfo?
 
     var body: some View {
@@ -47,6 +48,9 @@ struct AIConversationComposerView: View {
                 case .file: addTextFile()
                 case .clipboard: insertClipboard()
                 }
+            }
+            .sheet(isPresented: $toolsPresented) {
+                AIToolSettingsSheet(interaction: interaction, definitions: controller.availableTools)
             }
             .sheet(item: $capability) { AIChatCapabilityInfoView(feature: $0) }
             .sheet(item: $contextRequest) { request in
@@ -204,7 +208,7 @@ struct AIConversationComposerView: View {
             ]
             if !contextMenuOpen {
                 items += [
-                    Item(id: "tools", section: "基础入口", title: "扩展工具…", symbol: "puzzlepiece.extension", detail: "待接入") { capability = .tools },
+                    Item(id: "tools", section: "基础入口", title: "扩展工具…", symbol: "puzzlepiece.extension", detail: interaction.toolsEnabled ? "已开启" : "已关闭") { toolsPresented = true },
                     Item(id: "skills", section: "基础入口", title: "技能…", symbol: "square.stack.3d.up", detail: "待接入") { capability = .skills }
                 ]
             }

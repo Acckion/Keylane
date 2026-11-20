@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 from signing import signing_identity
+from app_intents import extract_metadata
 from versioning import load_version
 root = pathlib.Path(__file__).resolve().parent.parent
 version = load_version()
@@ -23,6 +24,7 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     executable.chmod(0o755)
     resources = app / 'Contents/Resources'
     resources.mkdir(parents=True, exist_ok=True)
+    extract_metadata(binary, resources, root)
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
         shutil.copyfile(root / name, resources / name)
     for name in ('EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
@@ -35,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
                     NSCameraUseContinuityCameraDeviceType=True,
                     NSDesktopFolderUsageDescription="将你拍摄的照片保存到桌面。",
                     NSContactsUsageDescription='在 Keylane 中搜索和管理系统联系人，并按你的操作新建或删除联系人。',
-                    NSCalendarsFullAccessUsageDescription='读取系统日历，并按你的操作保存日程和提醒。', NSAppleEventsUsageDescription='读取 Finder 信息和快捷指令图标，搜索、新建和打开 Apple 备忘录，定位日程及添加受邀人，或执行你选择的废纸篓、系统外观及电源操作。')
+                    NSCalendarsFullAccessUsageDescription='读取系统日历，并按你的操作保存日程和提醒。', NSAppleEventsUsageDescription='读取 Finder 信息和快捷指令图标，搜索、新建和打开 Apple 备忘录，定位日程及添加受邀人，在专注会话期间屏蔽并恢复浏览器标签，或执行你选择的废纸篓、系统外观及电源操作。')
     metadata['CFBundleURLTypes'] = [dict(CFBundleURLName='org.keylane.ai-chat', CFBundleURLSchemes=['keylane'])]
     icon_metadata = pathlib.Path(directory) / 'IconInfo.plist'
     subprocess.run([

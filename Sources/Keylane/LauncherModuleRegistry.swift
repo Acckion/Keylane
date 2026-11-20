@@ -284,6 +284,7 @@ struct LauncherModule {
     var pages: [LauncherPage] = []
     var settings: [LauncherSettingsPage] = []
     var services: [Service] = []
+    var aiTools: [AIToolRegistration] = []
     var searchUpdates: [AnyPublisher<Void, Never>] = []
     var launcherShown: (() -> Void)?
     var launcherHidden: (() -> Void)?
@@ -295,6 +296,9 @@ struct LauncherModule {
     var permissionTitlebar: SettingsTitlebarContribution?
     var registration: Registration?
     var canDisable: Bool { origin != .application }
+    func withAITools(_ tools: [AIToolRegistration]) -> Self {
+        var copy = self; copy.aiTools = tools; return copy
+    }
 }
 
 extension LauncherModule {
@@ -370,6 +374,7 @@ final class LauncherModuleRegistry {
     var registrationUpdates: AnyPublisher<Void, Never> { registrationChanges.eraseToAnyPublisher() }
     private var registrationObservation: AnyCancellable?
     private var activations: [ModuleID: Activation] = [:]
+    private var toolGenerations: [ModuleID: UUID] = [:]
     private var runningModules: Set<ModuleID> = []
     private var reconcilingModules: Set<ModuleID> = []
     var settingsCatalog: SettingsWindowCatalog {
@@ -394,6 +399,7 @@ final class LauncherModuleRegistry {
 
     init(modules: [LauncherModule], preferences: UserDefaults = .standard,
          commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
+        _ = try AIToolCatalog(modules.flatMap(\.aiTools).map(\.definition))
         self.commandEnabled = commandEnabled
         self.modules = modules
         self.preferences = preferences
@@ -483,6 +489,7 @@ final class LauncherModuleRegistry {
     func setModuleEnabled(_ id: ModuleID, _ enabled: Bool) -> Bool {
         guard let module = modules.first(where: { $0.id == id && $0.canDisable }),
               enabled == disabledModules.contains(id) else { return false }
+        toolGenerations[id] = UUID()
         if enabled { disabledModules.remove(id) } else { disabledModules.insert(id) }
         preferences.set(disabledModules.map(\.rawValue).sorted(), forKey: Self.disabledModulesPreferenceKey)
         if module.registration != nil {
@@ -596,6 +603,22 @@ final class LauncherModuleRegistry {
 
     private func isModulePresent(_ id: ModuleID) -> Bool {
         moduleRegistrations[id]?.isPresent() ?? true
+    }
+
+    @MainActor var availableAITools: [AIToolRegistration] {
+        modules.flatMap { module in
+            module.aiTools.map { contribution in
+                var tool = contribution
+                let generation = toolGenerations[module.id]
+                let activation = activation(for: module.id)
+                tool.available = { [weak self] in
+                    guard let self, self.isModuleEnabled(module.id), self.toolGenerations[module.id] == generation,
+                          self.activation(for: module.id) == activation else { return false }
+                    return contribution.available()
+                }
+                return tool
+            }
+        }.filter { $0.available() }
     }
 
     func isModuleEnabled(_ id: ModuleID) -> Bool {

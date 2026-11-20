@@ -32,6 +32,11 @@ struct AIConversationTranscript: View {
                 followsBottom = false
                 proxy.scrollTo(id, anchor: .top)
             }
+            .onReceive(controller.toolApproval.$pending) { pending in
+                guard pending != nil else { return }
+                followsBottom = true
+                Task { @MainActor in proxy.scrollTo(bottomID, anchor: .bottom) }
+            }
             .onReceive(controller.$turns) { _ in
                 guard followsBottom else { return }
                 Task { @MainActor in proxy.scrollTo(bottomID, anchor: .bottom) }
@@ -73,6 +78,7 @@ struct AIConversationTranscript: View {
                         }
                     }
                 }
+                AIToolApprovalView(broker: controller.toolApproval)
                 if !controller.status.isEmpty {
                     Text(controller.status).foregroundStyle(.secondary)
                 }

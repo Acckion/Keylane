@@ -8,7 +8,7 @@
 - `LauncherModule.aiActions` 只补充普通命令的 AI 元数据。注册表验证声明、重复项与本模块命令引用；搜索、热键、菜单仍走原 invoke。`Command.aiExecute` 可接受宿主提供的来源，注册表拒绝其他模块的来源。声明枚举不读取正文、不创建请求。
 - 模块用 `AIActionSource` 提供惰性 load 和 isCurrent；公共会话不包含 clipboard／files 业务 switch。来源工厂分别在 ClipboardAIActions 与 FileAIContextSource，提取工作在后台执行。
 - `AIActionSession` 管理准备、发送前来源核对、固定模型目的地、结果和代次；短动作不创建聊天资料库或自动写入历史。
-- `AIRunHandle` 是聊天与模块动作的共同传输循环，负责增量、进度、结束和取消。AIConversationSession 仍拥有原聊天、项目和历史状态；FileAIController 已移除独立模型请求循环，只保留原窗口、文件范围和设置桥接。
+- `AIRunHandle` 是聊天与模块动作的共同传输循环，负责增量、进度、结束和取消。聊天通过 `prepareTools` 在请求开始时创建现有 `AIToolRun`，保留确认、可用性与取消检查；模块短动作默认不启用工具。AIConversationSession 仍拥有原聊天、项目和历史状态；FileAIController 已移除独立模型请求循环，只保留原窗口、文件范围和设置桥接。
 - `AIActionResultView` 复用 AIConversationMarkdownBody 与 AIResponseProgressView。模块页面复用 LauncherCreationForm 和原动作／回车／Esc 宿主；文件窗口继续沿用原布局，使用同一结果组件。
 
 新增内置 AI 命令时，在所属模块提供普通 Command 和关联 Definition，再提供该模块的 Source 工厂。普通入口使用原命令执行器；对象菜单通过 `Model.runCommand(..., aiSource:)` 传入稳定来源，不直接发模型请求。模块设置继续复用已有命令管理列表。

@@ -1,18 +1,20 @@
 import SwiftUI
+import KeylaneCore
 
-/// Explicit scaffolding: these controls do not advertise or grant tool access.
+/// Tool settings share the composer control; remaining capability placeholders are explicit.
 struct AIChatCapabilitySection: View {
+    @ObservedObject var interaction: AIInteractionPreferences
+    let definitions: [AIToolDefinition]
     @State private var information: AIChatCapabilityInfo?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            section("扩展工具", symbol: "puzzlepiece.extension", feature: .tools,
-                    detail: "可手动添加文件、剪贴板和日程。AI 自动调用工具尚未接入。")
+            AIToolSettingsContent(interaction: interaction, definitions: definitions)
             section("技能", symbol: "square.stack.3d.up", feature: .skills,
                     detail: "技能发现与执行尚未接入，不会加载本地脚本。")
             VStack(alignment: .leading, spacing: 6) {
                 Text("工具权限").font(.subheadline)
-                Text("工具运行层接入后提供逐次确认与权限策略。").font(.caption).foregroundStyle(.secondary)
+                Text("只读工具沿用已有授权；打开应用逐次确认。").font(.caption).foregroundStyle(.secondary)
             }
         }
         .sheet(item: $information) { AIChatCapabilityInfoView(feature: $0) }
@@ -28,18 +30,16 @@ struct AIChatCapabilitySection: View {
 }
 
 enum AIChatCapabilityInfo: String, Identifiable {
-    case tools, skills, voice
+    case skills, voice
     var id: Self { self }
     var title: String {
         switch self {
-        case .tools: "扩展工具"
         case .skills: "技能"
         case .voice: "语音输入"
         }
     }
     var description: String {
         switch self {
-        case .tools: "当前支持用户手动选择上下文。模型自动调用扩展工具、操作系统和执行轨迹尚未接入，本入口不会运行命令或获取额外权限。"
         case .skills: "技能目录、自动发现与执行属于下一批运行层接入。当前可通过 / 菜单使用文本命令；本入口不会加载或执行本地技能。"
         case .voice: "语音识别尚未接入。本入口不会启用麦克风或申请权限；请继续输入文字。"
         }
