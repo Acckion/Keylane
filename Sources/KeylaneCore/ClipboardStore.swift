@@ -439,6 +439,24 @@ public final class ClipboardStore {
         guard try scalar("SELECT count(*) FROM clips WHERE id=?",[.text(id)]) > 0 else { throw ClipboardError.storageFull }
         return id
     }
+    /// Used on an isolated migration copy. Does not capture, prune, or increment usage.
+    /// Existing content stays intact unless the preview explicitly chose overwrite.
+    @discardableResult public func importText(_ clip: RaycastMigrationData.Clip, overwrite: Bool) throws -> Bool {
+        let payload = Data(clip.text.utf8)
+        guard !payload.isEmpty, payload.count <= 1_048_576 else { throw ClipboardError.oversized }
+        let id = Self.contentID(kind: .text, data: payload, snapshot: nil)
+        if try scalar("SELECT count(*) FROM clips WHERE id=?", [.text(id)]) > 0, !overwrite { return false }
+        try write("""
+            INSERT INTO clips(id,kind,preview,payload,searchable,source,bundle,created,copied,pinned,copies,bytes)
+            VALUES(?,'text',?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET preview=excluded.preview,source=excluded.source,bundle=excluded.bundle,
+              created=excluded.created,copied=excluded.copied,pinned=max(clips.pinned,excluded.pinned),copies=excluded.copies,searchable=excluded.searchable
+            """, [.text(id), .text(String((clip.title.isEmpty ? clip.text : clip.title).prefix(512))), .blob(payload),
+                  .text(Self.normalize(clip.text + " " + clip.source)), .text(String(clip.source.prefix(256))), .text(clip.bundle),
+                  .number(clip.created.timeIntervalSince1970), .number(clip.updated.timeIntervalSince1970),
+                  .number(clip.pinned ? 1 : 0), .number(Double(clip.copyCount)), .number(Double(payload.count))])
+        return true
+    }
     public func list(query: String = "", kind: ClipKind? = nil, category: ClipboardCategory? = nil, pinnedOnly: Bool = false, limit: Int = 200) throws -> [ClipItem] {
         var conditions: [String] = []; var values: [Value] = []
         let search = Self.normalize(String(query.prefix(256))).trimmingCharacters(in:.whitespacesAndNewlines)

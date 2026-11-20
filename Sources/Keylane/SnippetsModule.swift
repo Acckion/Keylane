@@ -68,9 +68,9 @@ enum SnippetsModule {
             queryChanged: { snippets.query = $0 },
             move: snippets.move,
             submit: { if snippets.entries.isEmpty { create() } else { useSelected() } },
-            returnBindings: .init(alternates: [.command: .init {
-                if let snippet = snippets.selected { snippets.use(snippet, paste: snippets.options.primary == .copy) }
-            }]),
+            returnBindings: .init(alternates: [.command: .init(actionID: {
+                snippets.options.primary == .paste ? "snippet-copy" : "snippet-paste"
+            })]),
             actionSelectionID: { snippets.selected?.id },
             primaryTitle: {
                 if snippets.entries.isEmpty { return "创建文字片段" }

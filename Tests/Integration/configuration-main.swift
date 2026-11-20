@@ -60,6 +60,22 @@ func withAutoClosedDialog(check: @escaping (NSWindow) -> Void, operation: () -> 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 switch phase {
+case "preparation-ui":
+    let before = current()
+    let timer = Timer(timeInterval: 5, repeats: false) { _ in
+        NSApp.abortModal()
+    }
+    RunLoop.main.add(timer, forMode: .common)
+    defer { timer.invalidate() }
+    let value = try ConfigurationTransfer.preparing("合成解析预览") {
+        Thread.sleep(forTimeInterval: 0.1)
+        return 42
+    }
+    precondition(value == 42 && NSDictionary(dictionary:current()).isEqual(to:before))
+    do {
+        let _: Int = try ConfigurationTransfer.preparing("合成错误预览") { throw ConfigurationError("Synthetic failure") }
+        preconditionFailure("Expected preparation failure")
+    } catch is ConfigurationError {}
 case "seed":
     let original = available()
     var baseline: [String: Any] = [
