@@ -6,8 +6,9 @@ enum AIReadTools {
     private final class References {
         var clipboard: [String: (id: String, preview: String)] = [:]
         var files: [String: FileReference] = [:]
-        func clearIfFull() {
-            if clipboard.count + files.count >= 64 { clipboard.removeAll(); files.removeAll() }
+        func reserveBatch(_ count: Int) {
+            precondition((0...64).contains(count))
+            if clipboard.count + files.count > 64 - count { clipboard.removeAll(); files.removeAll() }
         }
     }
     private struct FileReference: Sendable {
@@ -52,8 +53,9 @@ enum AIReadTools {
                       let rows = await withCheckedContinuation { reply in controller.aiTextContexts(query: queryText) { reply.resume(returning: $0) } }
                       try Task.checkCancellation()
                       let refs = references(scope)
-                      let results = rows.prefix(limit(args)).map { item -> AIToolValue in
-                          refs.clearIfFull()
+                      let batch = rows.prefix(limit(args))
+                      refs.reserveBatch(batch.count)
+                      let results = batch.map { item -> AIToolValue in
                           let key = UUID().uuidString; refs.clipboard[key] = (item.id, preview(item.preview))
                           return .object(["reference": .string(key), "preview": .string(preview(item.preview))])
                       }
@@ -107,10 +109,11 @@ enum AIReadTools {
                       }
                       try Task.checkCancellation()
                       let refs = references(scope)
+                      refs.reserveBatch(prepared.filter { $0.1 != nil }.count)
                       return try AIToolWire.result(["scope": .string("已授权范围的本地文件名索引"), "files": .array(prepared.map { file, ref in
                           var row: [String: AIToolValue] = ["name": .string(file.name), "path": .string(file.url.path), "directory": .bool(file.isDirectory)]
                           if let ref {
-                              refs.clearIfFull(); let key = UUID().uuidString; refs.files[key] = ref
+                              let key = UUID().uuidString; refs.files[key] = ref
                               row["reference"] = .string(key)
                           }
                           return .object(row)

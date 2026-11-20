@@ -31,6 +31,36 @@ import KeylaneCore
         let object = try JSONSerialization.jsonObject(with: Data(result.text.utf8)) as! [String: Any]
         return object[key] as! [[String: Any]]
     }
+    // Exercise the module's private reference directory directly: checking 20 references must
+    // not relax the production executor's 12-call budget or manufacture confirmations.
+    func verifyReferenceBatch(_ registrations: [AIToolRegistration], resultKey: String, query: String) async throws {
+        let scope = AIToolRunScope()
+        let search = registrations[0], read = registrations[1]
+        let args: [String: AIToolValue] = ["query": .string(query), "limit": .number(20)]
+        var oldReference = ""
+        var finalReferences: [String] = []
+        for batch in 0..<4 {
+            let result = try await search.performInRun!(args, scope)
+            let values = try rows(result, resultKey)
+            let refs = values.compactMap { $0["reference"] as? String }
+            precondition(refs.count == 20 && Set(refs).count == 20)
+            if batch == 0 { oldReference = refs[0] }
+            if batch == 3 { finalReferences = refs }
+        }
+        for reference in finalReferences {
+            let detail = try read.confirmationDetail!(["reference": .string(reference)], scope)
+            precondition(!detail.isEmpty)
+        }
+        for reference in [finalReferences.first!, finalReferences.last!] {
+            let result = try await read.performInRun!(["reference": .string(reference)], scope)
+            precondition(!result.isError && !result.text.isEmpty)
+        }
+        do {
+            _ = try read.confirmationDetail!(["reference": .string(oldReference)], scope)
+            preconditionFailure("Old references were not evicted before admitting the next batch")
+        } catch AIToolContractError.unavailable { }
+    }
+
     let clipboardRun = try run(AIReadTools.clipboard(clipboard))
     allowed = false
     let denied = try await execute(clipboardRun, "keylane_search_clipboard", ["query": .string("fixture")])
@@ -64,6 +94,8 @@ import KeylaneCore
     precondition(!bounded.isError)
     let boundedRows = try rows(bounded, "untrusted_data")
     precondition(boundedRows.count == 20 && boundedRows.allSatisfy { ($0["preview"] as! String).utf8.count <= 640 })
+    try await verifyReferenceBatch(AIReadTools.clipboard(clipboard), resultKey: "untrusted_data", query: "bounded")
+    print("PASS clipboard reference capacity: four batches of 20 keep every new reference resolvable; first/last content readable and older batch revoked")
     print("PASS clipboard preview budget: 20 long combining-scalar records remain bounded and fit the tool result")
     print("PASS clipboard tools: per-operation consent, text-only, opaque isolated references, capture-off history, unchanged page, off/on revocation, deleted source")
 
@@ -80,6 +112,11 @@ import KeylaneCore
     for file in [url, symlink] {
         try index.put(.init(path: file.path, name: file.lastPathComponent, volume: "/", modified: 1, directory: false, symlink: file == symlink), root: scope.path, epoch: "n:fixture")
     }
+    for indexInBatch in 0..<20 {
+        let file = scope.appendingPathComponent("batchref-\(indexInBatch).txt")
+        try Data("Synthetic capacity body \(indexInBatch)".utf8).write(to: file)
+        try index.put(.init(path: file.path, name: file.lastPathComponent, volume: "/", modified: 1, directory: false, symlink: false), root: scope.path, epoch: "n:fixture")
+    }
     preferences.set([scope.path], forKey: "fileSearchSelectedScopes")
     let files = FileSearchController(directory: indexDirectory, preferences: preferences, defaultOptions: .init(roots: [scope.path]), watchChanges: false)
     defer { files.stopRuntime() }
@@ -87,6 +124,24 @@ import KeylaneCore
     while (try? await files.aiSearch("fixture", limit: 1).isEmpty) != false && ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
+    try await verifyReferenceBatch(AIReadTools.files(files), resultKey: "files", query: "batchref")
+    let mixedScope = AIToolRunScope()
+    let clipTools = AIReadTools.clipboard(clipboard), fileTools = AIReadTools.files(files)
+    var mixedOldReference = ""
+    for batch in 0..<3 {
+        let result = try await clipTools[0].performInRun!(["query": .string("bounded"), "limit": .number(20)], mixedScope)
+        if batch == 0 { mixedOldReference = try rows(result, "untrusted_data")[0]["reference"] as! String }
+    }
+    let mixedFiles = try rows(await fileTools[0].performInRun!(["query": .string("batchref"), "limit": .number(20)], mixedScope), "files")
+    precondition(mixedFiles.count == 20)
+    for row in mixedFiles {
+        _ = try fileTools[1].confirmationDetail!(["reference": .string(row["reference"] as! String)], mixedScope)
+    }
+    do {
+        _ = try clipTools[1].confirmationDetail!(["reference": .string(mixedOldReference)], mixedScope)
+        preconditionFailure("Mixed clipboard/file directory did not share its capacity")
+    } catch AIToolContractError.unavailable { }
+    print("PASS file/mixed reference capacity: all new batch entries survive eviction across shared clipboard/file scope")
     let fileRun = try run(AIReadTools.files(files))
     let fileSearch = try await execute(fileRun, "keylane_search_files", ["query": .string("fixture")])
     let fileRows = try rows(fileSearch, "files")
