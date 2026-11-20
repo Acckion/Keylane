@@ -174,7 +174,7 @@ final class AIConversationSession: ObservableObject {
             prepareTools: { [weak self] in
                 guard let self, self.toolEnabled() else { return nil }
                 guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
-                return try AIToolRun(registrations: self.toolSource(), isCurrent: { [weak self] in
+                return try AIToolRun(registrations: self.toolSource(), recipient: connection.toolRecipient, isCurrent: { [weak self] in
                     guard let self else { return false }
                     return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
                         self.currentConnection == connection
@@ -445,6 +445,7 @@ final class AIConversationSession: ObservableObject {
 
     func saveProject(_ project: AIChatProject, completion: @escaping (Bool) -> Void) {
         guard let history else { completion(false); return }
+        if currentProjectID == project.id, currentProject != project { stop() }
         history.perform({ store in try store.saveProject(project); return try store.projects() }) { [weak self] result in
             guard let self else { completion(false); return }
             switch result {

@@ -77,6 +77,7 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let aiSettings = AIConfiguration()
     let aiInteraction = AIInteractionPreferences()
+    let aiFileAccess = AIFileToolPreferences()
     var continueModuleAIAction: ((AIActionContext, String) -> Bool)?
     var openAIChatLink: ((UUID) -> Void)?
     let aiRuntime = AIRuntime()
