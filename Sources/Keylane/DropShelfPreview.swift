@@ -139,6 +139,12 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
     private var didMoveWindow = false
     private(set) var dock: DropShelfDock?
     private let dockHandle = NSImageView()
+    private let entryOutline = NSView()
+    private var preparedLandingSequence: Int?
+    private var landingSequence: Int?
+    var landingDidFinish: (() -> Void)?
+    var waitsForNativeLanding: Bool { landingSequence != nil }
+    var landingCenter: (() -> NSPoint)?
     private var dockAnimation: Timer?
     private weak var hoveredButton: DropShelfHoverButton?
     private var hoverArea: NSTrackingArea?
@@ -149,8 +155,79 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
         dockHandle.isHidden = true
         dockHandle.setAccessibilityElement(false)
         addSubview(dockHandle)
+        entryOutline.frame = bounds
+        entryOutline.autoresizingMask = [.width, .height]
+        entryOutline.wantsLayer = true
+        entryOutline.layer?.cornerRadius = VisualStyle.launcherCornerRadius
+        entryOutline.layer?.cornerCurve = .continuous
+        entryOutline.layer?.borderWidth = 4
+        entryOutline.layer?.borderColor = NSColor.systemBlue.cgColor
+        entryOutline.isHidden = true
+        entryOutline.setAccessibilityElement(false)
+        addSubview(entryOutline)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var showsEntryHighlight: Bool { !entryOutline.isHidden }
+
+    func setEntryHighlight(_ highlighted: Bool) {
+        entryOutline.isHidden = !highlighted
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard super.prepareForDragOperation(sender) else { return false }
+        sender.animatesToDestination = dock == nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        preparedLandingSequence = sender.animatesToDestination ? sender.draggingSequenceNumber : nil
+        return true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let sequence = sender.draggingSequenceNumber
+        let shouldAnimate = preparedLandingSequence == sequence && sender.animatesToDestination
+        preparedLandingSequence = nil
+        if shouldAnimate { landingSequence = sequence }
+        // Import synchronously, including registration of all file promises.
+        let accepted = super.performDragOperation(sender)
+        guard shouldAnimate else { return accepted }
+        guard accepted else {
+            finishNativeLanding(sequence)
+            return accepted
+        }
+        let center = landingCenter?() ?? NSPoint(x: bounds.midX, y: bounds.midY)
+        sender.draggingFormation = .none
+        var foundImage = false
+        sender.enumerateDraggingItems(options: [], for: self,
+            classes: [NSURL.self, NSFilePromiseReceiver.self, NSImage.self, NSString.self], searchOptions: [:]) { item, index, _ in
+            foundImage = true
+            let source = item.draggingFrame.size
+            let factor = min(1, 52 / max(1, source.width, source.height))
+            let size = NSSize(width: max(1, source.width * factor), height: max(1, source.height * factor))
+            let offset: CGFloat = [0, -8, 8][index % 3]
+            item.draggingFrame = NSRect(x: center.x + offset - size.width / 2,
+                                        y: center.y - abs(offset) / 2 - size.height / 2,
+                                        width: size.width, height: size.height)
+        }
+        if foundImage {
+            // Some sources do not deliver a separate conclusion callback.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
+                self?.finishNativeLanding(sequence)
+            }
+        } else {
+            finishNativeLanding(sequence)
+        }
+        return true
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        super.concludeDragOperation(sender)
+        if let sequence = sender?.draggingSequenceNumber ?? landingSequence { finishNativeLanding(sequence) }
+    }
+
+    private func finishNativeLanding(_ sequence: Int) {
+        guard landingSequence == sequence else { return }
+        landingSequence = nil
+        landingDidFinish?()
+    }
 
     override func layout() {
         super.layout()

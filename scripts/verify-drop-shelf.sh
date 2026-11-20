@@ -6,8 +6,10 @@ if [[ "${1:-}" != "--prepare" ]]; then trap 'rm -rf "$task_directory"' EXIT; fi
 source_directory="$task_directory/source"
 app="$task_directory/Keylane Shelf Fixture.app"
 mkdir -p "$source_directory/Tests/KeylaneCoreTests" "$app/Contents/MacOS" "$task_directory/home/Library/Preferences"
-cp -R Package.swift Sources "$source_directory/"
+cp -R Package.swift Package.resolved Sources "$source_directory/"
 cp Tests/KeylaneCoreTests/LauncherTests.swift "$source_directory/Tests/KeylaneCoreTests/"
+mkdir -p "$source_directory/Tests/KeylaneProviderConfigTests"
+cp Tests/KeylaneProviderConfigTests/CustomProviderDocumentTests.swift "$source_directory/Tests/KeylaneProviderConfigTests/"
 python3 - "$source_directory" "$app" <<'PY'
 import plistlib, sys, uuid
 from pathlib import Path
@@ -24,7 +26,7 @@ main.write_text(source.removesuffix(entry) + '\n' + Path('Tests/Integration/drop
 PY
 export CLANG_MODULE_CACHE_PATH="$task_directory/cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="$task_directory/cache"
-swift build --package-path "$source_directory" --scratch-path "$task_directory/build" --disable-sandbox --product Keylane
+swift build --package-path "$source_directory" --scratch-path "$task_directory/build" --force-resolved-versions --disable-sandbox --product Keylane
 cp "$task_directory/build/debug/Keylane" "$app/Contents/MacOS/verify"
 codesign --force --sign - "$app"
 provider_app="$task_directory/Keylane Promise Source.app"

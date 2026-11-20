@@ -132,7 +132,7 @@ private struct AIAPIKeyEditor: View {
                     TextField("自动选择默认模型", text: $model).frame(width: 240)
                 }
                 Divider()
-                SettingsRow("验证", detail: "发送一条简短测试消息，可能计入提供方用量。目标为 \(target.destinationLabel)") {
+                SettingsRow("验证", detail: target.keyVerificationURL.map { "仅验证 Key 身份，不发送模型消息、不产生生成用量。模型权限和额度在使用时另行检查。目标为 \($0.absoluteString)" } ?? "发送一条简短测试消息，可能计入提供方用量。目标为 \(target.destinationLabel)") {
                     if verification != nil { Button("停止") { stopVerification() } }
                     else { Button("验证 Key", action: verify).disabled(key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
                 }
@@ -162,8 +162,7 @@ private struct AIAPIKeyEditor: View {
         status = "正在验证…"
         verification = Task { @MainActor in
             do {
-                _ = try await runtime.generate(connection: connection, readKey: { _ in credential },
-                                                messages: [.init(role: .user, content: "Reply with OK.")]) { _ in }
+                try await runtime.verifyAPIKey(connection: connection, readKey: { _ in credential })
                 guard !Task.isCancelled else { return }
                 verifiedKey = credential
                 verifiedModel = connection.model
