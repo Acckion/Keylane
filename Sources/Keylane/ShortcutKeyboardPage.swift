@@ -27,16 +27,10 @@ struct ShortcutKeyboardPage: View {
     @ObservedObject private var map: ShortcutMapController
     @State private var source: ShortcutMapEntry.Source? = nil
     @State private var query = ""
-    @State private var change: Change?
+    @State private var confirmationState = ShortcutBindingConfirmation()
     @State private var inputMonitor: Any?
-
-    private struct Change {
-        let target: Shortcut
-        let commandID: String
-        let previous: Shortcut?
-        let displaced: String?
-        let evidence: [ShortcutMapEntry]
-    }
+    private typealias Change = ShortcutBindingConfirmation.Proposal
+    private var change: Change? { confirmationState.proposal }
 
     init(model: Model, selection: ShortcutKeyboardSelection, menuOpen: Binding<Bool>? = nil) {
         self.model = model
@@ -262,11 +256,10 @@ struct ShortcutKeyboardPage: View {
             }
         }
         .modifier(LauncherMenuSurface(open: open.wrappedValue && selection.choosing))
+        .onDisappear { confirmationState.cancel() }
         .onChange(of: selection.choosing, initial: true) { _, choosing in
-            if choosing {
-                query = ""
-                change = nil
-            }
+            confirmationState.cancel()
+            if choosing { query = "" }
             if open.wrappedValue != choosing { open.wrappedValue = choosing }
         }
         .onChange(of: open.wrappedValue) { _, isOpen in
@@ -287,7 +280,7 @@ struct ShortcutKeyboardPage: View {
             SettingsDescription(map.coverage)
             HStack {
                 Spacer()
-                Button("取消") { change = nil }
+                Button("取消") { confirmationState.cancel() }
                 Button("确认改绑") { save(proposed, registry: registry) }
             }
         }
@@ -295,7 +288,7 @@ struct ShortcutKeyboardPage: View {
 
     private func closePicker() {
         selection.choosing = false
-        change = nil
+        confirmationState.cancel()
     }
 
     private static let unbindID = "keylane.unbind-shortcut"
@@ -389,33 +382,34 @@ struct ShortcutKeyboardPage: View {
         guard let shortcut, validation == nil, id != owner else { return }
         map.load(map.target) {
             guard selection.choosing, selection.shortcut == shortcut else { return }
-            let proposed = Change(target: shortcut, commandID: id, previous: model.bindings[id], displaced: owner,
-                                  evidence: map.overlaps(shortcut))
             // Always show refreshed coverage, including when no known conflict was found.
-            change = proposed
+            confirmationState.begin(target: shortcut, commandID: id, previous: model.bindings[id],
+                                    displaced: owner, evidence: map.overlaps(shortcut))
         }
     }
 
     private func save(_ proposed: Change, registry: LauncherModuleRegistry?) {
+        guard confirmationState.isCurrent(proposed.id), selection.choosing,
+              menuOpen?.wrappedValue != false else { return }
         map.load(map.target) {
-            guard selection.choosing, selection.shortcut == proposed.target,
-                  registry?.canBindFromShortcutKeyboard(.init(rawValue: proposed.commandID)) == true,
-                  model.bindings[proposed.commandID] == proposed.previous,
-                  model.bindings.first(where: { $0.value == proposed.target })?.key == proposed.displaced else {
+            // This must precede validation, conflict updates and all binding changes.
+            guard confirmationState.isCurrent(proposed.id), selection.choosing,
+                  menuOpen?.wrappedValue != false else { return }
+            guard selection.shortcut == proposed.target,
+                  registry?.canBindFromShortcutKeyboard(.init(rawValue: proposed.commandID)) == true else {
                 closePicker()
                 selection.feedback = "快捷键或命令已变化，请重新选择。"
                 return
             }
-            let fresh = map.overlaps(proposed.target)
-            guard fresh == proposed.evidence else {
-                change = Change(target: proposed.target, commandID: proposed.commandID, previous: proposed.previous,
-                                displaced: proposed.displaced, evidence: fresh)
+            switch confirmationState.complete(proposed.id, evidence: map.overlaps(proposed.target), bindings: model.bindings) {
+            case .ignored, .needsConfirmation:
                 return
+            case .invalid:
+                closePicker()
+                selection.feedback = "快捷键或命令已变化，请重新选择。"
+            case .save(let bindings):
+                saveBindings(bindings, message: "已保存")
             }
-            var bindings = model.bindings
-            if let displaced = proposed.displaced { bindings.removeValue(forKey: displaced) }
-            bindings[proposed.commandID] = proposed.target
-            saveBindings(bindings, message: "已保存")
         }
     }
 
