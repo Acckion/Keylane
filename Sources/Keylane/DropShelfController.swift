@@ -473,6 +473,15 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             if clip.bounds.contains(clip.convert(point, from: nil)) { self.table.deselectAll(nil) }
         }
         dropOverlay.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
+        dropOverlay.landingCenter = { [weak self] in
+            guard let self else { return .zero }
+            if !self.showsDragEntry && !self.expanded, !self.preview.imageView.bounds.isEmpty {
+                let bounds = self.preview.imageView.bounds
+                return self.preview.imageView.convert(NSPoint(x: bounds.midX, y: bounds.midY), to: self.dropOverlay)
+            }
+            return NSPoint(x: self.dropOverlay.bounds.midX, y: self.dropOverlay.bounds.midY)
+        }
+        dropOverlay.landingDidFinish = { [weak self] in self?.finishDragEntryIfReady() }
         dropOverlay.dragActivity = { [weak self] active in
             guard let self else { return }
             self.receivingDrag = active
@@ -527,12 +536,14 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         let stack = shelfChrome
         for view in [top, preview, capsule, details, status] { stack.addArrangedSubview(view) }
         stack.isHidden = dragEntry
+        stack.wantsLayer = true
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
         surface.addSubview(stack); stack.translatesAutoresizingMaskIntoConstraints = false
         let grabber = NSView(); grabber.wantsLayer = true; grabber.layer?.cornerRadius = 2
         grabber.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
         surface.addSubview(grabber); grabber.translatesAutoresizingMaskIntoConstraints = false
         entryPrompt.isHidden = !dragEntry
+        entryPrompt.wantsLayer = true
         entryPrompt.font = .systemFont(ofSize: 15, weight: .semibold)
         entryPrompt.textColor = .secondaryLabelColor
         entryPrompt.alignment = .center
@@ -584,10 +595,11 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         table.selectRowIndexes(IndexSet(rows.indices.filter { selected.contains(rows[$0].id) }), byExtendingSelection: false)
         updateCompactPreview()
         expandedTitle.stringValue = contentTitle
-        if showsDragEntry, !rows.isEmpty { finishDragEntry() }
+        finishDragEntryIfReady()
     }
 
-    private func finishDragEntry() {
+    private func finishDragEntryIfReady() {
+        guard showsDragEntry, !rows.isEmpty, !dropOverlay.waitsForNativeLanding else { return }
         showsDragEntry = false
         dropOverlay.setEntryHighlight(false)
         shelfChrome.isHidden = false
@@ -597,7 +609,8 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         }
         shelfChrome.alphaValue = 0
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
+            context.duration = 0.36
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             self.shelfChrome.animator().alphaValue = 1
             self.entryPrompt.animator().alphaValue = 0
         } completionHandler: { [weak self] in

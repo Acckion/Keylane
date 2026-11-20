@@ -59,13 +59,20 @@ final class ShelfTestDragInfo: NSObject, NSDraggingInfo {
     var draggingSequenceNumber = 4321
     var draggingFormation: NSDraggingFormation = .none
     var animatesToDestination = false
+    var testDraggingItems: [NSDraggingItem] = []
     var numberOfValidItemsForDrop = 1
     var springLoadingHighlight: NSSpringLoadingHighlight { .none }
     init(window: NSWindow, board: NSPasteboard) { draggingDestinationWindow = window; draggingPasteboard = board }
     func slideDraggedImage(to screenPoint: NSPoint) {}
     override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
     func resetSpringLoading() {}
-    func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?, classes: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?, classes: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {
+        var stop = ObjCBool(false)
+        for (index, item) in testDraggingItems.enumerated() {
+            block(item, index, &stop)
+            if stop.boolValue { break }
+        }
+    }
 }
 let _ = NSApplication.shared
 NSApp.setActivationPolicy(.regular)
@@ -579,6 +586,12 @@ expect(entryViews.compactMap { $0 as? NSButton }.allSatisfy { $0.isHiddenOrHasHi
 
 board.clearContents(); board.writeObjects([source as NSURL])
 let dropInfo = ShelfTestDragInfo(window: droppingWindow, board: board)
+let detachedFrame = NSRect(x: -90, y: -70, width: 84, height: 64)
+dropInfo.testDraggingItems = (0..<3).map { index in
+    let item = NSDraggingItem(pasteboardWriter: "fixture-\(index)" as NSString)
+    item.setDraggingFrame(detachedFrame, contents: nil)
+    return item
+}
 expect(dropSurface.registeredDraggedTypes.contains(.fileURL), "whole card surface registers file drops")
 expect(dropSurface.draggingEntered(dropInfo) == .copy && droppingWindow.receivingDrag, "native destination entry marks a pending drop")
 expect(dropSurface.showsEntryHighlight, "drag hover shows the blue outline with the mouse still down")
@@ -588,12 +601,19 @@ _ = dropSurface.draggingEntered(dropInfo)
 shelves.finishDragActivation()
 expect(droppingWindow.isVisible, "mouse release cleanup cannot close a pending destination before perform")
 expect(dropSurface.prepareForDragOperation(dropInfo) && dropSurface.performDragOperation(dropInfo), "card-wide destination delivers the dropped file")
+if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+    expect(dropInfo.animatesToDestination && dropSurface.waitsForNativeLanding && droppingWindow.showsDragEntry,
+           "entry waits for AppKit landing before showing normal shelf chrome")
+    let frames = dropInfo.testDraggingItems.map(\.draggingFrame)
+    expect(frames.allSatisfy { dropSurface.bounds.contains($0) && $0.width <= 52 } && Set(frames.map(\.midX)).count == 3,
+           "AppKit gets distinct landing frames for all three drag images")
+}
 dropSurface.concludeDragOperation(dropInfo); dropSurface.draggingEnded(dropInfo)
 shelves.finishDragActivation()
 expect(droppingWindow.isVisible && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "completed file drop keeps the populated automatic shelf")
 expect(!droppingWindow.receivingDrag, "completed drop clears pending destination state")
 expect(!droppingWindow.showsDragEntry && !dropSurface.showsEntryHighlight, "successful drop begins the transition to normal shelf chrome")
-drain(0.25)
+drain(0.42)
 expect(entryViews.compactMap { $0 as? NSTextField }.filter { $0.stringValue == "放置你的内容项" }.allSatisfy(\.isHidden), "transition retires the entry prompt")
 expect(dropSurface.performDragOperation(dropInfo) && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "repeated perform callback does not duplicate the file")
 droppingWindow.contentView!.layoutSubtreeIfNeeded()
