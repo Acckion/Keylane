@@ -46,9 +46,16 @@ final class CloudSyncTests: XCTestCase {
         let a = Module(), b = Module(), la = base.appendingPathComponent("A"), lb = base.appendingPathComponent("B")
         a.values["appearance"] = Data("cloud-choice".utf8)
         b.values["appearance"] = Data("fresh-device-default".utf8)
+        a.values["navigation"] = a.values["appearance"]
+        b.values["navigation"] = b.values["appearance"]
         try run(a, la, transport); try run(b, lb, transport)
-        XCTAssertEqual(b.values["appearance"], a.values["appearance"])
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(at: lb.appendingPathComponent("Recovery"), includingPropertiesForKeys: nil).count, 1)
+        XCTAssertEqual(b.values, a.values)
+        let backups = try FileManager.default.contentsOfDirectory(at: lb.appendingPathComponent("Recovery"), includingPropertiesForKeys: nil)
+        let identities = try backups.map { url -> String in
+            let document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            return try XCTUnwrap(document["id"] as? String)
+        }
+        XCTAssertEqual(Set(identities), ["appearance", "navigation"])
     }
     func testClipboardExpiryIsLocalButManualDeletionPropagates() throws {
         let base = try temp(), transport = try SyncDriveTransport(directory: base.appendingPathComponent("cloud"))

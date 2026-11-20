@@ -88,7 +88,8 @@ public enum SyncEngine {
                 let recovery = local.appendingPathComponent("Recovery", isDirectory: true)
                 try fm.createDirectory(at: recovery, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 let backup = Recovery(category: entry.category, id: entry.id, payload: old, replacedBy: entry.stamp, savedAt: .now)
-                try SyncHash.encode(backup).write(to: recovery.appendingPathComponent(entry.category.rawValue + "-" + SyncHash.digest(old) + ".json"), options: .atomic)
+                let identity = SyncHash.digest(Data(entry.key.utf8))
+                try SyncHash.encode(backup).write(to: recovery.appendingPathComponent(entry.category.rawValue + "-" + identity + "-" + SyncHash.digest(old) + ".json"), options: .atomic)
             }
             guard allowed() else { throw SyncError.cancelled }
             let pending = intents.appendingPathComponent(entry.category.rawValue + "-" + SyncHash.digest(Data(entry.key.utf8)) + ".json")
