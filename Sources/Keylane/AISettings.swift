@@ -38,9 +38,10 @@ enum AIModule {
                   !quickAI.loadingChat, !quickAI.composer.loadingFiles,
                   registry.moduleOwningCommand(commandID) == source.moduleID, !model.disabledCommands.contains(commandID.rawValue) else { return false }
             let guarded = registry.guardedAIContextSource(source)
-            let availability = Publishers.Merge(
+            let availability = Publishers.Merge3(
                 model.$disabledCommands.map { !$0.contains(commandID.rawValue) },
-                registry.availabilityChanges.map { registry.isCommandModuleEnabled(commandID) }
+                registry.availabilityChanges.map { registry.isCommandModuleEnabled(commandID) },
+                configuration.$state.map(\.enabled)
             ).eraseToAnyPublisher()
             quickAI.composer.loadAttachments(availability: availability) {
                 let context = try await guarded.load()

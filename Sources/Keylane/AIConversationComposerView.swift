@@ -44,6 +44,9 @@ struct AIConversationComposerView: View {
                 Button("好") { composer.fileError = "" }
             } message: { Text(composer.fileError) }
             .onChange(of: composer.draftID) { _, _ in contextRequest = nil; dismissComposerMenu() }
+            .onReceive(configuration.$state.map(\.enabled).removeDuplicates()) { enabled in
+                if !enabled { contextRequest = nil; dismissComposerMenu() }
+            }
             .onReceive(composer.contextRequested) { request in
                 switch request {
                 case .file: addTextFile()
@@ -56,6 +59,7 @@ struct AIConversationComposerView: View {
             .sheet(item: $capability) { AIChatCapabilityInfoView(feature: $0) }
             .sheet(item: $contextRequest) { request in
                 AIChatContextSheet(source: request.source) { attachment in
+                    guard configuration.state.enabled, contextRequest?.id == request.id else { return }
                     if composer.appendAttachment(attachment, from: request) {
                         composer.focusRequested.send()
                     } else if composer.draftID == request.draftID {
