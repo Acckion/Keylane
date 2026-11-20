@@ -12,6 +12,7 @@ enum AIActionLauncher {
             session.$running.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.$preparing.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.$answer.map { $0.isEmpty }.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
+            session.$question.map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.utf8.count <= 8_000 }.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.$title.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ]).eraseToAnyPublisher()
         return LauncherPage(id: pageID, placeholder: "", badge: ("AI", "sparkles"), contentPlacement: .form,
@@ -47,6 +48,12 @@ struct AIActionForm: View {
             if let context = session.context {
                 Text(context.title).font(.headline)
                 ScrollView { Text(context.text).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }.frame(height: 140)
+            }
+            if session.acceptsQuestion {
+                TextField("输入关于这条记录的问题…", text: $session.question, axis: .vertical)
+                    .lineLimit(2...5).disabled(session.running || session.preparing)
+                Text("问题最多 8,000 UTF-8 字节。此前的内容仅在发送后交给模型。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Text("发送至 \(session.destination)").font(.caption).foregroundStyle(.secondary)
             Text("仅在发送后处理以上所选内容，结果不会自动修改原记录。").font(.caption).foregroundStyle(.secondary)

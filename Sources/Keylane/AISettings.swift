@@ -32,6 +32,24 @@ enum AIModule {
                 if fromQuickAI { model.pageID = .root }
             }
         }
+        model.attachModuleAIContext = { [weak model, weak quickAI] source, commandID in
+            guard let model, let quickAI, let registry = model.launcherModules,
+                  configuration.state.connection(for: quickAI.isInChat ? .chat : .quick) != nil,
+                  !quickAI.loadingChat, !quickAI.composer.loadingFiles,
+                  registry.moduleOwningCommand(commandID) == source.moduleID, !model.disabledCommands.contains(commandID.rawValue) else { return false }
+            let guarded = registry.guardedAIContextSource(source)
+            let availability = Publishers.Merge(
+                model.$disabledCommands.map { !$0.contains(commandID.rawValue) },
+                registry.availabilityChanges.map { registry.isCommandModuleEnabled(commandID) }
+            ).eraseToAnyPublisher()
+            quickAI.composer.loadAttachments(availability: availability) {
+                let context = try await guarded.load()
+                return [.init(title: context.title, text: context.text, symbol: "doc.text")]
+            }
+            if quickAI.isInChat { openChat("") }
+            else { model.openPageWithExistingDraft(QuickAILauncher.pageID) }
+            return true
+        }
         model.continueModuleAIAction = { [weak model, weak quickAI] context, answer in
             guard let model, let quickAI, configuration.state.enabled, !quickAI.loadingChat,
                   quickAI.composer.attachActionResult(context, answer: answer) else { return false }
@@ -93,6 +111,7 @@ enum AIModule {
         let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
                               title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand] + textCommands,
+                              aiActions: AITextCommand.allCases.map { .init(commandID: .init(rawValue: $0.id), title: $0.title, instructions: $0.instructions) },
                               providers: [AITextCommandLauncher.customCommands(model: model, session: textSession, library: library)],
                               pages: [AIActionLauncher.page(model: model), QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
                                       AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [

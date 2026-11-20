@@ -482,8 +482,17 @@ final class AIConversationSession: ObservableObject {
         }
     }
 
+    private var preservingLauncherConversation = false
+    /// Synchronous command navigation may suspend Quick AI without destroying its conversation/draft.
+    func preservingLauncherConversationDuring(_ navigate: () -> Void) {
+        let previous = preservingLauncherConversation
+        preservingLauncherConversation = true
+        defer { preservingLauncherConversation = previous }
+        navigate()
+    }
+
     func leaveLauncher() {
-        if !isInChat { reset() }
+        if !isInChat && !preservingLauncherConversation { reset() }
     }
 
     func closeChat() {

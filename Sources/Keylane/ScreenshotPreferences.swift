@@ -83,6 +83,9 @@ struct ScreenshotPreferences: View {
                         SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.command(.init(rawValue: command.rawValue), settingsPage: "screenshots"))
                     }
             }.disabled(!library.enabled)
+            SettingsSectionTitle(title: "AI 扩展")
+            ExtensionCommandPreferences(model: model, commands: model.launcherModules?.aiCommands(in: ScreenshotAIActions.moduleID) ?? [])
+                .disabled(!library.enabled)
         }
         .confirmationDialog("启用截图自动清理？", isPresented: Binding(
             get: { pendingRetention != nil }, set: { if !$0 { pendingRetention = nil } }

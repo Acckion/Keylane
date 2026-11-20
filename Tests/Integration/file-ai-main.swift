@@ -2201,3 +2201,63 @@ func verifyCatalogReviewRegressions() {
     action.clear(); files.cancel()
     print("PASS PR209 reviews: cross-task endpoint/credentials, unavailable model and endpoint repair, rename guard, persisted defaults, and active module/file requests survive catalog names while destination edits cancel")
 }
+
+// Question commands prepare locally, then submit the question and selected data together.
+FixtureProtocol.mode = "ok"
+let questionAction = AIActionSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let questionDefinition = AIActionDefinition(commandID: .init(rawValue: "fixture-question"), title: "Ask selected text", instructions: "Use only the supplied source", acceptsQuestion: true)
+let questionSource = AIActionSource(moduleID: .init(rawValue: "fixture"), load: {
+    .init(sourceID: "question-source", title: "Selected record", text: "Synthetic record: delivery on Friday")
+}, isCurrent: { _ in true })
+let requestsBeforeQuestion = FixtureProtocol.requests.count
+questionAction.prepare(questionDefinition, source: questionSource, allowed: { true })
+wait("Question source prepared") { !questionAction.preparing }
+precondition(questionAction.context != nil && !questionAction.canSend && FixtureProtocol.requests.count == requestsBeforeQuestion)
+questionAction.question = String(repeating: "中", count: 2_667)
+precondition(!questionAction.canSend)
+questionAction.question = "What day is the delivery?"
+precondition(questionAction.canSend)
+questionAction.send()
+wait("Question command completed") { !questionAction.preparing && !questionAction.running }
+precondition(FixtureProtocol.requests.count == requestsBeforeQuestion + 1)
+precondition(FixtureProtocol.lastMessages.last?["content"]?.contains("What day is the delivery?") == true)
+precondition(FixtureProtocol.lastMessages.last?["content"]?.contains("Synthetic record: delivery on Friday") == true)
+questionAction.clear()
+print("PASS module question command: local preview, required bounded question, explicit send with exactly selected source")
+
+let preservedSession = AIConversationSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+preservedSession.composer.text = "Existing draft"
+preservedSession.composer.attachments = [.init(title: "Existing", text: "Keep me", symbol: "doc")]
+let preservedDraft = preservedSession.composer.draftID
+preservedSession.preservingLauncherConversationDuring { preservedSession.leaveLauncher() }
+precondition(preservedSession.composer.text == "Existing draft" && preservedSession.composer.attachments.count == 1 && preservedSession.composer.draftID == preservedDraft)
+preservedSession.leaveLauncher()
+precondition(preservedSession.composer.text.isEmpty && preservedSession.composer.attachments.isEmpty)
+print("PASS AI command navigation: scoped conversation preservation retains draft and attachments; normal leave still clears")
+
+let cancelledAttachmentComposer = AIConversationComposer()
+cancelledAttachmentComposer.text = "Keep this draft"
+let attachmentAvailability = PassthroughSubject<Bool, Never>()
+cancelledAttachmentComposer.loadAttachments(availability: attachmentAvailability.eraseToAnyPublisher()) {
+    try? await Task.sleep(for: .milliseconds(100))
+    return [.init(title: "Stale", text: "Must not be appended", symbol: "doc")]
+}
+attachmentAvailability.send(false)
+attachmentAvailability.send(true)
+wait("Unavailable attachment cancelled") { !cancelledAttachmentComposer.loadingFiles }
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(cancelledAttachmentComposer.text == "Keep this draft" && cancelledAttachmentComposer.attachments.isEmpty)
+print("PASS direct context attachment: off/on revokes pending read without replacing draft or appending stale data")
+
+let disabledTextCommand = AITextCommandSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let textCommandAvailability = PassthroughSubject<Bool, Never>()
+disabledTextCommand.prepare(.polish, selection: "Synthetic text", canInvoke: { true })
+disabledTextCommand.observeAvailability(textCommandAvailability.eraseToAnyPublisher())
+precondition(disabledTextCommand.canSend)
+textCommandAvailability.send(false); textCommandAvailability.send(true)
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+precondition(!disabledTextCommand.canSend && !disabledTextCommand.reply.running)
+let disabledTextRequestCount = FixtureProtocol.requests.count
+disabledTextCommand.send()
+precondition(FixtureProtocol.requests.count == disabledTextRequestCount)
+print("PASS legacy AI command shares irreversible availability revocation; fast disable/reenable requires fresh invocation")

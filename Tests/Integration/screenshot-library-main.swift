@@ -289,6 +289,16 @@ struct ScreenshotLibraryCheck {
         try require(cancelled && pasteboard.string(forType: .string) == "Untouched",
                     "Closing the screenshot page did not cancel OCR copy")
 
+        let aiText = try await library.aiTextContext(updated)
+        try require(aiText.contains("REPLACEMENT") && pasteboard.string(forType: .string) == "Untouched",
+                    "AI OCR must work after leaving the page and must not touch the clipboard")
+        library.enabled = false
+        var disabledAI = false
+        do { _ = try await library.aiTextContext(updated) } catch { disabledAI = true }
+        try require(disabledAI, "Disabled screenshot module allowed an AI body read")
+        library.enabled = true
+        print("PASS screenshot AI context: independent page lifetime, OCR reuse, disabled module rejection and no pasteboard writes")
+
         let large = folder.appendingPathComponent("Large")
         try FileManager.default.createDirectory(at: large, withIntermediateDirectories: false)
         for index in 0..<384 {

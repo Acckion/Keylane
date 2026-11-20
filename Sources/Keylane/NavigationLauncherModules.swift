@@ -165,7 +165,8 @@ enum NavigationLauncherModules {
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(ScreenshotPreferences(library: library, model: model))
         }
-        return LauncherModule(id: .init(rawValue: "keylane.screenshots"), commands: commands,
+        return LauncherModule(id: .init(rawValue: "keylane.screenshots"), commands: commands + ScreenshotAIActions.commands(model: model),
+                              aiActions: ScreenshotAIActions.definitions,
                               pages: [screenshotsPage(id, model: model)], settings: [settings], services: [.init(start: {
             permission.startObserving()
             library.enabled = permission.available
@@ -187,7 +188,7 @@ enum NavigationLauncherModules {
         })], searchUpdates: [
             library.$enabled.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             library.$disabledCommands.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
-        ], shortcutSettingsUpdates: [ViewObservation.changes(library.$disabledCommands)])
+        ], shortcutSettingsUpdates: [ViewObservation.changes(library.$disabledCommands)]).withAIContexts([BuiltinAIContexts.screenshots(model)])
     }
 
     private static func pasteLatestScreenshot(_ model: Model) {

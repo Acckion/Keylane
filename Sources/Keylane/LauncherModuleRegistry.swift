@@ -233,6 +233,7 @@ struct LauncherModule {
         var permission: PermissionFeature?
         var acceptsFallbackQuery = false
         var fallbackAvailable: () -> Bool = { true }
+        var isAICommand = false
         var aiExecute: ((LauncherCommandOrigin, AIActionSource?) -> Void)?
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
         var arguments: Arguments?
@@ -255,6 +256,7 @@ struct LauncherModule {
         var available: (CommandID) -> Bool = { _ in true }
         var permission: (CommandID) -> PermissionFeature? = { _ in nil }
         var fallback: Fallback?
+        var isAICommand = false
     }
 
     /// Runtime-discovered modules expose their current presence from validated in-memory metadata.
@@ -285,6 +287,7 @@ struct LauncherModule {
     var settings: [LauncherSettingsPage] = []
     var services: [Service] = []
     var aiTools: [AIToolRegistration] = []
+    var aiContexts: [AIContextRegistration] = []
     var searchUpdates: [AnyPublisher<Void, Never>] = []
     var launcherShown: (() -> Void)?
     var launcherHidden: (() -> Void)?
@@ -296,6 +299,9 @@ struct LauncherModule {
     var permissionTitlebar: SettingsTitlebarContribution?
     var registration: Registration?
     var canDisable: Bool { origin != .application }
+    func withAIContexts(_ contexts: [AIContextRegistration]) -> Self {
+        var copy = self; copy.aiContexts = contexts; return copy
+    }
     func withAITools(_ tools: [AIToolRegistration]) -> Self {
         var copy = self; copy.aiTools = tools; return copy
     }
@@ -374,6 +380,8 @@ final class LauncherModuleRegistry {
     var registrationUpdates: AnyPublisher<Void, Never> { registrationChanges.eraseToAnyPublisher() }
     private var registrationObservation: AnyCancellable?
     private var activations: [ModuleID: Activation] = [:]
+    private var contextGenerations: [ModuleID: UUID] = [:]
+    private var contextObservations: [AnyCancellable] = []
     private var toolGenerations: [ModuleID: UUID] = [:]
     private var runningModules: Set<ModuleID> = []
     private var reconcilingModules: Set<ModuleID> = []
@@ -399,6 +407,8 @@ final class LauncherModuleRegistry {
 
     init(modules: [LauncherModule], preferences: UserDefaults = .standard,
          commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
+        let contextIDs = modules.flatMap(\.aiContexts).map(\.id)
+        guard contextIDs.allSatisfy({ !$0.isEmpty }), Set(contextIDs).count == contextIDs.count else { throw AIActionError.invalidDefinition }
         _ = try AIToolCatalog(modules.flatMap(\.aiTools).map(\.definition))
         self.commandEnabled = commandEnabled
         self.modules = modules
@@ -455,6 +465,16 @@ final class LauncherModuleRegistry {
         for module in registeredModules {
             if let generation = enabledGeneration(for: module.id) {
                 activations[module.id] = Activation(generation: generation)
+            }
+        }
+        for module in modules {
+            for context in module.aiContexts {
+                if let changes = context.availabilityUpdates {
+                    contextObservations.append(changes.sink { [weak self] available in
+                        precondition(Thread.isMainThread)
+                        if !available { self?.contextGenerations[module.id] = UUID() }
+                    })
+                }
             }
         }
         registrationObservation = Publishers.MergeMany(registeredModules.compactMap { module in
@@ -603,6 +623,87 @@ final class LauncherModuleRegistry {
 
     private func isModulePresent(_ id: ModuleID) -> Bool {
         moduleRegistrations[id]?.isPresent() ?? true
+    }
+
+    func aiCommands(in moduleID: ModuleID) -> [LauncherModule.Command] {
+        guard let module = modules.first(where: { $0.id == moduleID }) else { return [] }
+        let ids = Set(module.aiActions.map(\.commandID))
+        return module.commands.filter { $0.isAICommand || ids.contains($0.declaration.id) }
+    }
+
+    /// Uses the ordinary command catalog and current admission; no second executor.
+    func aiCommandEntries() -> [Entry] {
+        let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
+        let fixed = commands.filter { owned in
+            owned.value.isAICommand || modules.first(where: { $0.id == owned.module })?.aiActions.contains(where: { $0.commandID == owned.value.declaration.id }) == true
+        }.compactMap { owned -> Entry? in
+            let declaration = owned.value.declaration
+            guard currentAction(for: declaration.id, origin: .menu, arguments: []) != nil else { return nil }
+            return Entry(id: declaration.id.rawValue, commandID: declaration.id, name: declaration.title,
+                         detail: "AI 命令", symbol: declaration.symbol)
+        }
+        let dynamic = providers.filter { $0.value.isAICommand && isModuleEnabled($0.module) }.flatMap { owned in
+            owned.value.entries(input).filter { currentAction(for: $0.commandID, origin: .menu, arguments: []) != nil }
+        }
+        return fixed + dynamic
+    }
+
+    /// A captured source cannot survive disable/re-enable, replacement or uninstallation.
+    func guardedAIContextSource(_ source: AIActionSource) -> AIActionSource {
+        let module = source.moduleID
+        let generation = toolGenerations[module]
+        let contextGeneration = contextGenerations[module]
+        let activation = activation(for: module)
+        let current = { [weak self] in
+            guard let self else { return false }
+            return self.isModuleEnabled(module) && self.toolGenerations[module] == generation && self.contextGenerations[module] == contextGeneration && self.activation(for: module) == activation
+        }
+        return AIActionSource(moduleID: module, load: {
+            guard current() else { throw AIActionError.unavailable }
+            let value = try await source.load()
+            try Task.checkCancellation()
+            guard current(), try await source.isCurrent(value) else { throw AIActionError.staleSource }
+            try value.validate(maximumBytes: 32_000)
+            return value
+        }, isCurrent: { value in
+            guard current(), try await source.isCurrent(value) else { return false }
+            return current()
+        })
+    }
+
+    var availableAIContexts: [AIContextRegistration] {
+        modules.filter { isModuleEnabled($0.id) }.flatMap { module in
+            module.aiContexts.filter { $0.available() }.map { contribution in
+                let generation = toolGenerations[module.id]
+                let contextGeneration = contextGenerations[module.id]
+                let activation = activation(for: module.id)
+                let current = { [weak self] in
+                    guard let self else { return false }
+                    return self.isModuleEnabled(module.id) && self.toolGenerations[module.id] == generation &&
+                        self.contextGenerations[module.id] == contextGeneration && self.activation(for: module.id) == activation && contribution.available()
+                }
+                return AIContextRegistration(id: contribution.id, title: contribution.title, symbol: contribution.symbol,
+                    available: current, search: { [weak self] query in
+                        guard current(), let self else { throw AIActionError.unavailable }
+                        let rows = try await contribution.search(query)
+                        try Task.checkCancellation()
+                        guard current() else { throw AIActionError.unavailable }
+                        return rows.filter { $0.source.moduleID == module.id }.prefix(100).map { row in
+                            let source = self.guardedAIContextSource(row.source)
+                            return AIContextCandidate(id: row.id, title: row.title, detail: row.detail,
+                                source: AIActionSource(moduleID: module.id, load: {
+                                    guard current() else { throw AIActionError.unavailable }
+                                    let value = try await source.load()
+                                    guard current() else { throw AIActionError.unavailable }
+                                    return value
+                                }, isCurrent: { value in
+                                    guard current(), try await source.isCurrent(value) else { return false }
+                                    return current()
+                                }))
+                        }
+                    })
+            }
+        }
     }
 
     @MainActor var availableAITools: [AIToolRegistration] {
