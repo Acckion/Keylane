@@ -5,12 +5,14 @@ import KeylaneCore
 struct AIToolRecipient: Sendable {
     let destination: String
     let model: String
+    let runID = UUID()
 }
 
 struct AIToolPreparedOperation: Sendable {
     static let unapprovedResult = "目标未获核实与披露许可。本次未执行；不得据此判断目标是否存在，请用户在本机检查设置。不要重试或声称成功。"
     let displayArguments: String
     let approvalArguments: String
+    var isCurrent: @MainActor @Sendable () -> Bool = { true }
     let perform: @MainActor @Sendable () async throws -> AIToolResult
 }
 
@@ -32,8 +34,7 @@ struct AIToolRegistration: Sendable {
          available: @escaping @MainActor @Sendable () -> Bool = { true },
          perform: @escaping @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult) {
         self.definition = definition; self.requiresConfirmation = requiresConfirmation
-        self.prepare = prepare
-        self.available = available; self.perform = perform
+        self.available = available; self.prepare = prepare; self.perform = perform
     }
 
     init(definition: AIToolDefinition, requiresConfirmation: Bool = false,
@@ -120,6 +121,7 @@ actor AIToolRun {
     private let approve: @MainActor @Sendable (String, String) async -> Bool
     private let runScope = AIToolRunScope()
     private var budget = AIToolRunBudget()
+    private var sourceGuards: [@MainActor @Sendable () -> Bool] = []
     private var executing = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -137,7 +139,9 @@ actor AIToolRun {
         guard registrations.allSatisfy({ $0.snapshotAvailability == nil }) else { throw AIToolContractError.unavailable }
         catalog = try AIToolCatalog(registrations.map(\.definition))
         self.registrations = Dictionary(uniqueKeysWithValues: registrations.map { ($0.definition.name, $0) })
-        self.recipient = recipient
+        // A reused registration array must not turn an opaque read cursor into a
+        // cross-request or cross-model capability.
+        self.recipient = recipient.map { AIToolRecipient(destination: $0.destination, model: $0.model) }
         self.isCurrent = isCurrent
         self.approve = approve
     }
@@ -150,6 +154,7 @@ actor AIToolRun {
     func validateCurrent() async throws {
         try Task.checkCancellation()
         guard await isCurrent() else { throw CancellationError() }
+        for source in sourceGuards { guard await source() else { throw CancellationError() } }
     }
 
     func execute(_ call: AIToolCall, scope: String,
@@ -170,18 +175,21 @@ actor AIToolRun {
             try catalog.validate(call)
             guard let tool = registrations[call.name], await tool.available() else { throw AIToolContractError.unavailable }
             let prepared = try await tool.prepare?(call.arguments, recipient)
-            if let prepared { arguments = prepared.displayArguments }
+            if let prepared { arguments = prepared.displayArguments; sourceGuards.append(prepared.isCurrent) }
             try await validateCurrent()
             guard await tool.available() else { throw AIToolContractError.unavailable }
             await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: .requested))
             if tool.requiresConfirmation || prepared != nil {
-                var review = prepared?.approvalArguments ?? arguments
-                if prepared == nil, let detail = tool.confirmationDetail {
-                    review = try await detail(call.arguments, runScope)
+                let approvalArguments: String
+                if let prepared { approvalArguments = prepared.approvalArguments }
+                else {
+                    var detail = try await tool.confirmationDetail?(call.arguments, runScope) ?? arguments
+                    if tool.confirmationDetail != nil, let recipient {
+                        detail += "\n直接接收方：\(recipient.destination)\n模型：\(recipient.model)"
+                    }
+                    approvalArguments = detail
                 }
-                try await validateCurrent()
-                guard await tool.available() else { throw AIToolContractError.unavailable }
-                guard await approve(name, review) else {
+                guard await approve(name, approvalArguments) else {
                     try await validateCurrent()
                     let denied = try AIToolResult(text: prepared == nil ? "用户未允许本次操作。不要重试该操作，向用户说明未执行。" : AIToolPreparedOperation.unapprovedResult, isError: true)
                     try budget.record(denied, for: call.id)
@@ -207,6 +215,11 @@ actor AIToolRun {
             result = try await invoke()
             try await validateCurrent()
             guard await tool.available() else { throw AIToolContractError.unavailable }
+            if tool.performInRun != nil, !result.isError {
+                // Retain the frozen lease until transport publication, including other
+                // tool approvals in this response and subsequent model rounds.
+                sourceGuards.append(tool.available)
+            }
         } catch is CancellationError { throw CancellationError() }
         catch {
             if registration?.prepare != nil, !disclosureAllowed {

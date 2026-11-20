@@ -798,16 +798,7 @@ FixtureProtocol.mode = "slow"
 precondition(reopened.submit("切换时的未完成问题"))
 let interruptedID = reopened.chatID!
 reopened.openChat(savedID)
-let switchStarted = Date()
-var switchDiagnosed = false
-wait("Switch while generating") {
-    let ready = !reopened.loadingChat && reopened.chatID == savedID
-    if !ready, !switchDiagnosed, Date().timeIntervalSince(switchStarted) > 4.8 {
-        switchDiagnosed = true
-        FileHandle.standardError.write(Data("Synthetic history switch: loading=\(reopened.loadingChat), target=\(reopened.chatID == savedID), error=\(reopened.historyError)\n".utf8))
-    }
-    return ready
-}
+wait("Switch while generating") { !reopened.loadingChat && reopened.chatID == savedID }
 precondition(!reopened.running && reopened.turns.first?.id == savedTurnID)
 reopened.openChat(interruptedID)
 wait("Restore interrupted chat") { !reopened.loadingChat && reopened.chatID == interruptedID }
@@ -2249,15 +2240,54 @@ precondition(FixtureProtocol.lastMessages.last?["content"]?.contains("Synthetic 
 questionAction.clear()
 print("PASS module question command: local preview, required bounded question, explicit send with exactly selected source")
 
+// Use the same published route and presentation reducer as Launcher, with leave dispatched later.
+final class AIPageRouteFixture: ObservableObject {
+    @Published var pageID = PageID(rawValue: "quick-ai")
+}
 let preservedSession = AIConversationSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let aiRoute = AIPageRouteFixture()
+var aiPresentation = LauncherPagePresentation()
+_ = aiPresentation.update(page: aiRoute.pageID, visible: true)
 preservedSession.composer.text = "Existing draft"
 preservedSession.composer.attachments = [.init(title: "Existing", text: "Keep me", symbol: "doc")]
 let preservedDraft = preservedSession.composer.draftID
-preservedSession.preservingLauncherConversationDuring { preservedSession.leaveLauncher() }
+let aiDestination = PageID(rawValue: "module-ai-action")
+precondition(preservedSession.navigatePreservingLauncherConversation(currentPage: { aiRoute.pageID }, changes: aiRoute.$pageID.eraseToAnyPublisher()) {
+    aiRoute.pageID = aiDestination; return true
+})
+var deferredLeaveFinished = false
+DispatchQueue.main.async {
+    let change = aiPresentation.update(page: aiRoute.pageID, visible: true)
+    precondition(change.previousPage == PageID(rawValue: "quick-ai") && change.deactivation == change.previousPage)
+    preservedSession.leaveLauncher()
+    deferredLeaveFinished = true
+}
+wait("Actual deferred page deactivation") { deferredLeaveFinished }
 precondition(preservedSession.composer.text == "Existing draft" && preservedSession.composer.attachments.count == 1 && preservedSession.composer.draftID == preservedDraft)
+// The lease is consumed once. A normal later leave still clears state.
 preservedSession.leaveLauncher()
 precondition(preservedSession.composer.text.isEmpty && preservedSession.composer.attachments.isEmpty)
-print("PASS AI command navigation: scoped conversation preservation retains draft and attachments; normal leave still clears")
+for admitted in [false, true] {
+    aiRoute.pageID = .init(rawValue: "quick-ai")
+    preservedSession.composer.text = "No navigation"
+    _ = preservedSession.navigatePreservingLauncherConversation(currentPage: { aiRoute.pageID }, changes: aiRoute.$pageID.eraseToAnyPublisher()) { admitted }
+    preservedSession.leaveLauncher()
+    precondition(preservedSession.composer.text.isEmpty, "Failed/no-op navigation leaked a preservation lease")
+}
+for reason in ["return", "reset", "revocation"] {
+    aiRoute.pageID = .init(rawValue: "quick-ai")
+    preservedSession.composer.text = "Original"
+    _ = preservedSession.navigatePreservingLauncherConversation(currentPage: { aiRoute.pageID }, changes: aiRoute.$pageID.eraseToAnyPublisher()) {
+        aiRoute.pageID = aiDestination; return true
+    }
+    if reason == "return" {
+        // Even if SwiftUI coalesces a quick out-and-back, a later ordinary visit must not reuse the lease.
+        aiRoute.pageID = .init(rawValue: "quick-ai"); aiRoute.pageID = aiDestination
+    } else if reason == "reset" { preservedSession.reset(); preservedSession.composer.text = "New draft" }
+    preservedSession.leaveLauncher(allowPreservation: reason != "revocation")
+    precondition(preservedSession.composer.text.isEmpty)
+}
+print("PASS PR212 delayed navigation: actual presentation deactivation preserves draft/attachments once; failed/no-op, coalesced return, reset and owner revocation cannot leak preservation")
 
 // PR212: attachments use the actual Quick AI/AI Chat session, never the file route.
 do {
@@ -2432,3 +2462,43 @@ precondition(continuationCommand.completedResult?.context.text.contains("formal"
 continuationCommand.setArgument("tone", value: "casual")
 precondition(continuationCommand.completedResult == nil)
 print("PASS PR214 result actions: running/stopped/failed partial outputs rejected, successful output bound to submitted source, subsequent input and template edits revoke result")
+
+
+// Preserve an active response through a deferred page leave without resending or stopping it.
+let activeNavigationSuite = "KeylaneActiveNavigation-" + UUID().uuidString
+let activeNavigationPrefs = UserDefaults(suiteName: activeNavigationSuite)!
+defer { activeNavigationPrefs.removePersistentDomain(forName: activeNavigationSuite) }
+activeNavigationPrefs.set("http://127.0.0.1:43991/v1", forKey: "fileAIEndpoint")
+activeNavigationPrefs.set("fixture", forKey: "fileAIModel")
+let activeNavigationConfig = AIConfiguration(preferences: activeNavigationPrefs)
+var activeNavigationProfile = activeNavigationConfig.selected!
+activeNavigationProfile.mode = .streaming
+precondition(activeNavigationConfig.save(activeNavigationProfile))
+let activeNavigationSession = AIConversationSession(configuration: activeNavigationConfig, runtime: actionRuntime, readKey: { _ in nil })
+FixtureProtocol.mode = "held-stream"
+precondition(activeNavigationSession.submit("Active conversation"))
+wait("Active response before navigation") { activeNavigationSession.running && activeNavigationSession.lastAnswer != nil }
+let activeTurnID = activeNavigationSession.turns.last!.id
+let activeRequestCount = FixtureProtocol.requests.count
+activeNavigationSession.composer.text = "Next unsent question"
+activeNavigationSession.composer.attachments = [.init(title: "Keep", text: "synthetic attachment", symbol: "doc")]
+aiRoute.pageID = .init(rawValue: "quick-ai")
+_ = aiPresentation.update(page: aiRoute.pageID, visible: true)
+_ = activeNavigationSession.navigatePreservingLauncherConversation(currentPage: { aiRoute.pageID }, changes: aiRoute.$pageID.eraseToAnyPublisher()) {
+    aiRoute.pageID = aiDestination; return true
+}
+var activeLeaveFinished = false
+DispatchQueue.main.async {
+    let change = aiPresentation.update(page: aiRoute.pageID, visible: true)
+    precondition(change.deactivation == PageID(rawValue: "quick-ai"))
+    activeNavigationSession.leaveLauncher()
+    activeLeaveFinished = true
+}
+wait("Active response survives deferred leave") { activeLeaveFinished }
+precondition(activeNavigationSession.running && activeNavigationSession.turns.last?.id == activeTurnID)
+precondition(activeNavigationSession.composer.text == "Next unsent question" && activeNavigationSession.composer.attachments.count == 1)
+precondition(FixtureProtocol.requests.count == activeRequestCount)
+activeNavigationSession.leaveLauncher()
+precondition(!activeNavigationSession.running && activeNavigationSession.turns.isEmpty && activeNavigationSession.composer.text.isEmpty)
+FixtureProtocol.mode = "ok"
+print("PASS PR212 active navigation: delayed lifecycle retains same response and unsent draft, zero resubmission; later normal leave cancels and clears")

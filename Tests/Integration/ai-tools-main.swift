@@ -8,6 +8,7 @@
 }
 @MainActor final class ToolFixtureReferences { var reference: String? }
 @MainActor final class ToolFixtureAvailability { var allowed = true }
+@MainActor final class ToolFixtureLease { var revision = UUID(); var enabled = true }
 
 final class ToolFixtureProtocol: URLProtocol {
     static var bodies: [[String: Any]] = []
@@ -54,6 +55,13 @@ final class ToolFixtureProtocol: URLProtocol {
                 if !next { message["tool_calls"] = [["id": id, "type": "function", "function": ["name": "fixture_add", "arguments": "{\"number\":21}"]]] }
                 object = ["choices": [["message": message, "finish_reason": next ? "stop" : "tool_calls"]], "usage": ["total_tokens": 3]]
             }
+            if Self.scenario == "scoped-revocation", !next {
+                precondition(!anthropic && body["stream"] as? Bool != true)
+                object = ["choices": [["message": ["role": "assistant", "content": "", "tool_calls": [
+                    ["id": "private-one", "type": "function", "function": ["name": "fixture_private", "arguments": "{}"]],
+                    ["id": "confirm-two", "type": "function", "function": ["name": "fixture_confirm", "arguments": "{}"]]
+                ]], "finish_reason": "tool_calls"]]]
+            }
             object["error"] = NSNull()
             var responseData = try JSONSerialization.data(withJSONObject: object)
             if body["stream"] as? Bool == true {
@@ -97,10 +105,13 @@ Task { @MainActor in
             runtime: AIRuntime(), readKey: { _ in nil })
         let capabilityInteraction = AIInteractionPreferences(preferences: capabilityPreferences)
         let firstOwner = ModuleID(rawValue: "fixture.a"), secondOwner = ModuleID(rawValue: "fixture.b")
+        var firstLeaseCount = 0, secondLeaseCount = 0
         var firstTool = AIToolRegistration(definition: toolDefinition) { _ in try .init(text: "a") }
         firstTool.owner = firstOwner; firstTool.ownerTitle = "A"
+        firstTool.snapshotAvailability = { firstLeaseCount += 1; return { true } }
         var secondTool = AIToolRegistration(definition: try .init(name: "fixture_b", title: "B", description: "Fixture")) { _ in try .init(text: "b") }
         secondTool.owner = secondOwner; secondTool.ownerTitle = "B"
+        secondTool.snapshotAvailability = { secondLeaseCount += 1; return { true } }
         var discoveryNames: [String] = []
         capabilitySession.configureTools(preferences: capabilityInteraction, discovery: { tools in
             discoveryNames = tools.map { $0.definition.name }
@@ -111,18 +122,23 @@ Task { @MainActor in
         capabilitySession.setToolCapability(secondOwner, enabled: false)
         precondition(capabilitySession.availableTools.map(\.name) == [toolDefinition.name, "fixture_discovery"])
         precondition(discoveryNames == [toolDefinition.name])
+        precondition(firstLeaseCount == 0 && secondLeaseCount == 0, "Browsing must not snapshot private provider state")
+        capabilityInteraction.toolsEnabled = true
+        let selectedRequest = try capabilitySession.toolRegistrationsForRequest(supportsTools: true)
+        precondition(selectedRequest.map { $0.definition.name } == [toolDefinition.name, "fixture_discovery"])
+        precondition(firstLeaseCount == 1 && secondLeaseCount == 0, "Only selected providers may freeze a lease")
         capabilitySession.setToolCapability(firstOwner, enabled: false)
         precondition(capabilitySession.availableTools.isEmpty)
         capabilityInteraction.toolsEnabled = true
         let noRequestedTools = try capabilitySession.toolRegistrationsForRequest(supportsTools: false)
-        precondition(noRequestedTools.isEmpty)
+        precondition(noRequestedTools.isEmpty && firstLeaseCount == 1 && secondLeaseCount == 0)
         capabilitySession.resetToolCapabilities()
         precondition(capabilitySession.availableTools.count == 3)
         do { _ = try capabilitySession.toolRegistrationsForRequest(supportsTools: false); preconditionFailure("Unsupported model received tools") }
         catch AIResponseError.toolsUnavailable { }
         capabilityInteraction.toolsEnabled = false
         let globallyDisabledTools = try capabilitySession.toolRegistrationsForRequest(supportsTools: false)
-        precondition(globallyDisabledTools.isEmpty)
+        precondition(globallyDisabledTools.isEmpty && firstLeaseCount == 1 && secondLeaseCount == 0)
         print("PASS session module selection, explicit empty catalog and discovery restricted to selected capabilities")
         var performed = 0
         let availability = ToolFixtureAvailability()
@@ -346,6 +362,54 @@ Task { @MainActor in
 }
 wait("Subscription tool fixtures") { toolCLIFinished }
 
+var scopedPublicationFinished = false
+Task { @MainActor in
+    do {
+        defer { ToolFixtureProtocol.scenario = "ok"; ToolFixtureProtocol.rounds = 0; ToolFixtureProtocol.bodies = [] }
+        for reenable in [false, true] {
+            let lease = ToolFixtureLease()
+            let privateDefinition = try AIToolDefinition(name: "fixture_private", title: "Read private fixture", description: "Synthetic private source", parameters: [])
+            let confirmDefinition = try AIToolDefinition(name: "fixture_confirm", title: "Confirm second fixture", description: "Synthetic approval", parameters: [])
+            var reads = 0
+            var secondExecutions = 0
+            let scoped = AIToolRegistration(definition: privateDefinition, requiresConfirmation: true,
+                snapshotAvailability: { let revision = lease.revision; return { lease.enabled && lease.revision == revision } },
+                confirmationDetail: { _, _ in "Synthetic source preview" },
+                performInRun: { _, _ in reads += 1; return try .init(text: "SECRET_NOT_FOR_REVOKED_POST") })
+            let second = AIToolRegistration(definition: confirmDefinition, requiresConfirmation: true) { _ in secondExecutions += 1; return try .init(text: "second") }
+            let broker = AIToolApprovalBroker()
+            var waitedForSecond = false
+            let tools = try AIToolRun(registrations: [scoped.forRun(), second],
+                recipient: .init(destination: "https://synthetic.invalid", model: "synthetic"), isCurrent: { true },
+                approve: { title, detail in
+                    guard title == "Confirm second fixture" else { return true }
+                    let approval = Task { @MainActor in await broker.request(title: title, arguments: detail) }
+                    while broker.pending == nil { await Task.yield() }
+                    waitedForSecond = true
+                    lease.enabled = false; lease.revision = UUID()
+                    if reenable { lease.enabled = true }
+                    broker.resolve(broker.pending!.id, allow: true)
+                    return await approval.value
+                })
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [ToolFixtureProtocol.self]
+            ToolFixtureProtocol.scenario = "scoped-revocation"; ToolFixtureProtocol.rounds = 0; ToolFixtureProtocol.bodies = []
+            do {
+                _ = try await AIRuntime(configuration: configuration).generate(
+                    connection: .init(endpoint: "https://synthetic.invalid/v1", model: "synthetic", mode: .complete),
+                    readKey: { _ in "synthetic-key" }, messages: [.init(role: .user, content: "Synthetic revocation fixture")], tools: tools) { _ in }
+                preconditionFailure("Revoked private result reached a follow-up model request")
+            } catch is CancellationError { }
+            precondition(reads == 1 && secondExecutions == 0 && waitedForSecond && ToolFixtureProtocol.rounds == 1)
+            let sent = String(decoding: try JSONSerialization.data(withJSONObject: ToolFixtureProtocol.bodies), as: UTF8.self)
+            precondition(!sent.contains("SECRET_NOT_FOR_REVOKED_POST"))
+        }
+        print("PASS scoped disclosure: first private result revoked during second approval cancels before follow-up POST; disable and off/on both withhold transcript")
+    } catch { fatalError("Scoped disclosure fixture: \(error)") }
+    scopedPublicationFinished = true
+}
+wait("Scoped tool revocation before transport publication") { scopedPublicationFinished }
+
 var toolSessionFinished = false
 Task { @MainActor in
     do {
@@ -360,7 +424,9 @@ Task { @MainActor in
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ToolFixtureProtocol.self]
         let session = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: config), readKey: { _ in "synthetic-key" })
         var count = 0
-        let tool = AIToolRegistration(definition: toolDefinition, requiresConfirmation: true) { _ in count += 1; return try .init(text: "42") }
+        var tool = AIToolRegistration(definition: toolDefinition, requiresConfirmation: true) { _ in count += 1; return try .init(text: "42") }
+        let capabilityOwner = ModuleID(rawValue: "fixture.session-tools")
+        tool.owner = capabilityOwner
         session.configureTools(preferences: interaction, source: { [tool] })
         func pending() async throws -> AIToolApproval {
             let deadline = Date().addingTimeInterval(2)
@@ -385,6 +451,18 @@ Task { @MainActor in
         session.toolApproval.resolve(stale.id, allow: true)
         try await Task.sleep(for: .milliseconds(50))
         precondition(count == 1 && ToolFixtureProtocol.rounds == 1)
+        interaction.toolsEnabled = true
+        session.reset(); ToolFixtureProtocol.rounds = 0
+        precondition(session.submit("Synthetic selection-change fixture"))
+        let selectionApproval = try await pending()
+        session.setToolCapability(capabilityOwner, enabled: false)
+        precondition(!session.running && session.toolApproval.pending == nil && session.availableTools.isEmpty)
+        session.toolApproval.resolve(selectionApproval.id, allow: true)
+        try await Task.sleep(for: .milliseconds(50))
+        precondition(count == 1 && ToolFixtureProtocol.rounds == 1)
+        session.resetToolCapabilities()
+        precondition(!session.running && count == 1 && ToolFixtureProtocol.rounds == 1)
+        print("PASS module selection change cancels pending approval; restore does not resume or resend")
         print("PASS shared tool session: pending Quick AI confirmation transfers to AI Chat without resending; tool disable cancels pending action and rejects stale approval")
     } catch { fatalError("Tool session fixture failed: \(error)") }
     toolSessionFinished = true

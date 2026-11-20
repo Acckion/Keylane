@@ -85,7 +85,8 @@ public enum RaycastMigrationTransaction {
     enum InstallationEvent: String, CaseIterable { case created, copying, verified, published }
     @discardableResult static func finish(directory: URL, root: URL,
         read: () -> [String:Any], persist: ([String:Any]) -> Bool,
-        installationObserver: (InstallationEvent, URL) throws -> Void) throws -> Bool {
+        installationObserver: (InstallationEvent, URL) throws -> Void,
+        beforeInstallation: (MigrationResourceID) throws -> Void = { _ in }) throws -> Bool {
         guard hasPending(in: directory) else { return false }
         var intent = try load(pending(directory))
         let before = try dictionary(intent.before), after = try dictionary(intent.after)
@@ -104,21 +105,25 @@ public enum RaycastMigrationTransaction {
             }
         }
         // Validate ALL resources before the first write, including replay after interruption.
+        var installations: [(id: MigrationResourceID, data: Data?, expectingMissing: Bool)] = []
         for resource in intent.resources {
-            let found = try fingerprint(snapshot(resource.id, root: root), id: resource.id)
+            let existing = try snapshot(resource.id, root: root)
+            let found = try fingerprint(existing, id: resource.id)
             let target: Data? = intent.undo && resource.after.isEmpty ? nil : resource.after
             let original = try fingerprint(resource.before, id: resource.id)
             let final = try fingerprint(target, id: resource.id)
             guard found == original || found == final else {
                 throw ConfigurationError("待导入资料已被修改，已停止迁移并保留恢复记录。")
             }
+            if found != final {
+                installations.append((resource.id, target, existing == nil))
+            }
         }
         if intent.started != true { intent.started = true; try save(intent, to: pending(directory)) }
-        for resource in intent.resources {
-            let target: Data? = intent.undo && resource.after.isEmpty ? nil : resource.after
-            if try fingerprint(snapshot(resource.id, root: root), id: resource.id) != fingerprint(target, id: resource.id) {
-                try install(target, id: resource.id, root: root, observer: installationObserver)
-            }
+        for installation in installations {
+            try beforeInstallation(installation.id)
+            try install(installation.data, id: installation.id, root: root,
+                        expectingMissing: installation.expectingMissing, observer: installationObserver)
         }
         for resource in intent.resources {
             let target: Data? = intent.undo && resource.after.isEmpty ? nil : resource.after
@@ -231,6 +236,7 @@ public enum RaycastMigrationTransaction {
         }
     }
     private static func install(_ data: Data?, id: MigrationResourceID, root: URL,
+                                expectingMissing: Bool,
                                 observer: (InstallationEvent, URL) throws -> Void) throws {
         try parents(id, root: root)
         let destination = root.appendingPathComponent(id.relativePath)
@@ -246,13 +252,15 @@ public enum RaycastMigrationTransaction {
         if !id.sqlite { try privateWrite(data, to: destination); return }
         try temporary { temp in
             let source = temp.appendingPathComponent("source.sqlite"); try privateWrite(data, to: source)
-            if exists(destination) {
+            if !expectingMissing {
                 // Keep SQLite's transactional backup for existing stores, including live WAL readers.
-                try backup(from: source, to: destination)
+                guard exists(destination) else { throw ConfigurationError("原资料库在校验后消失，已停止迁移并保留恢复记录。") }
+                try backup(from: source, to: destination, createDestination: false)
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
             } else {
-                // Never create a partial database at the final path. The candidate lives on the
-                // same volume, is closed and verified before an exclusive atomic rename.
+                // A validated absence must never become an in-place overwrite, even if another
+                // legitimate database appears before this branch is reached. RENAME_EXCL is
+                // the only publication path. The candidate is closed and verified beforehand.
                 var name = Array(destination.deletingLastPathComponent().appendingPathComponent(".keylane-migration-XXXXXX").path.utf8CString)
                 let descriptor = mkstemp(&name)
                 guard descriptor >= 0 else { throw ConfigurationError("无法准备迁移资料库。") }
@@ -264,7 +272,7 @@ public enum RaycastMigrationTransaction {
                     }
                 }
                 try observer(.created, candidate)
-                try backup(from: source, to: candidate, standalone: true, pagesPerStep: 16) {
+                try backup(from: source, to: candidate, standalone: true, createDestination: false, pagesPerStep: 16) {
                     try observer(.copying, candidate)
                 }
                 guard try fingerprint(boundedRead(candidate), id: id) == fingerprint(data, id: id) else {
@@ -280,12 +288,14 @@ public enum RaycastMigrationTransaction {
         }
     }
     private static func backup(from source: URL, to destination: URL, standalone: Bool = false,
+                               createDestination: Bool = true,
                                pagesPerStep: Int32 = -1, progress: () throws -> Void = {}) throws {
         let newDestination = !exists(destination)
         var input: OpaquePointer?, output: OpaquePointer?
         guard sqlite3_open_v2(source.path, &input, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { sqlite3_close(input); throw ConfigurationError("无法创建迁移数据库快照。") }
         defer { sqlite3_close(input) }
-        guard sqlite3_open_v2(destination.path, &output, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { sqlite3_close(output); throw ConfigurationError("无法保存迁移数据库快照。") }
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX | (createDestination ? SQLITE_OPEN_CREATE : 0)
+        guard sqlite3_open_v2(destination.path, &output, flags, nil) == SQLITE_OK else { sqlite3_close(output); throw ConfigurationError("无法保存迁移数据库快照。") }
         defer { sqlite3_close(output) }
         sqlite3_busy_timeout(input, 2000); sqlite3_busy_timeout(output, 2000)
         guard let backup = sqlite3_backup_init(output, "main", input, "main") else { throw ConfigurationError("资料库正在使用，请重试。") }

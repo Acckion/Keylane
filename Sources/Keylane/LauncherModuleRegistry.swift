@@ -496,6 +496,9 @@ final class LauncherModuleRegistry {
     private let catalogChanges = CurrentValueSubject<UInt64, Never>(0)
     var catalogRevision: UInt64 { catalogChanges.value }
     private var updatingCatalog = false
+    private var pendingRegistrationChanges: Set<ModuleID> = []
+    private var pendingRegistrationRevocations: Set<ModuleID> = []
+    private var drainingRegistrationChanges = false
 
     private var registeredShortcutGroups: [ShortcutCommandGroup] { catalog.registeredShortcutGroups }
     var shortcutCommandGroups: [ShortcutCommandGroup] {
@@ -590,8 +593,17 @@ final class LauncherModuleRegistry {
             module.registration?.updates.map { module }.eraseToAnyPublisher()
         }).sink { [weak self] module in
             precondition(Thread.isMainThread)
-            guard let self, !self.updatingCatalog else { return }
-            self.registrationChanged(for: module)
+            guard let self else { return }
+            if self.updatingCatalog {
+                self.pendingRegistrationChanges.insert(module.id)
+                if let active = self.activations[module.id], active.generation != self.enabledGeneration(for: module.id) {
+                    // Preserve transient off/on changes even if final metadata
+                    // returns to the same generation before callbacks finish.
+                    self.pendingRegistrationRevocations.insert(module.id)
+                }
+            } else {
+                self.registrationChanged(for: module)
+            }
         }
     }
 
@@ -624,7 +636,7 @@ final class LauncherModuleRegistry {
     /// Existing application/built-in modules without registration cannot be replaced.
     func install(_ module: LauncherModule) throws {
         precondition(Thread.isMainThread)
-        guard !updatingCatalog, reconcilingModules.isEmpty else { throw CatalogUpdateError.busy }
+        guard !updatingCatalog, !drainingRegistrationChanges, reconcilingModules.isEmpty else { throw CatalogUpdateError.busy }
         guard module.registration != nil else { throw CatalogUpdateError.requiresRegistration(module.id) }
         if let old = modules.first(where: { $0.id == module.id }), old.registration == nil {
             throw CatalogUpdateError.immutableModule(module.id)
@@ -637,7 +649,7 @@ final class LauncherModuleRegistry {
 
     func uninstall(_ id: ModuleID) throws {
         precondition(Thread.isMainThread)
-        guard !updatingCatalog, reconcilingModules.isEmpty else { throw CatalogUpdateError.busy }
+        guard !updatingCatalog, !drainingRegistrationChanges, reconcilingModules.isEmpty else { throw CatalogUpdateError.busy }
         guard let old = modules.first(where: { $0.id == id }) else { throw CatalogUpdateError.missingModule(id) }
         guard old.registration != nil else { throw CatalogUpdateError.immutableModule(id) }
         try commit(modules.filter { $0.id != id }, changing: id)
@@ -649,13 +661,11 @@ final class LauncherModuleRegistry {
         updatingCatalog = true
         defer { updatingCatalog = false }
         let old = modules.first { $0.id == id }
-        registrationObservation?.cancel()
         if let activation = activations.removeValue(forKey: id) {
             revokedActivations.send((module: id, activation: activation))
         }
         toolGenerations[id] = UUID()
         contextGenerations[id] = UUID()
-        contextObservations.removeAll()
         if let old { stop(old) }
         catalog = next
         if let generation = enabledGeneration(for: id) {
@@ -665,8 +675,55 @@ final class LauncherModuleRegistry {
         if let installed = modules.first(where: { $0.id == id }) {
             start(installed, notifyVisible: true)
         }
+        // Recheck final registration metadata across the subscription handover,
+        // as well as events queued by stop/start/show callbacks.
+        pendingRegistrationChanges.formUnion(moduleRegistrations.keys)
+        drainRegistrationChanges()
         catalogChanges.send(catalogRevision &+ 1)
-        registrationChanges.send()
+        drainRegistrationChanges()
+        // Publish only stable state, retaining the catalog mutation boundary.
+        // Subscribers may update metadata themselves. Coalesce no-op events so
+        // such a subscriber cannot turn publication into an endless echo loop.
+        var published: [ModuleID: RegistrationState]
+        repeat {
+            published = registrationStates
+            registrationChanges.send()
+            drainRegistrationChanges()
+        } while registrationStates != published
+    }
+
+    private struct RegistrationState: Equatable {
+        let present: Bool
+        let enabled: Bool
+        let generation: UInt64
+        let activation: UUID?
+    }
+
+    private var registrationStates: [ModuleID: RegistrationState] {
+        Dictionary(uniqueKeysWithValues: moduleRegistrations.map { id, registration in
+            (id, RegistrationState(present: registration.isPresent(), enabled: registration.isEnabled(),
+                                   generation: registration.generation(), activation: activations[id]?.id))
+        })
+    }
+
+    private func drainRegistrationChanges() {
+        guard !drainingRegistrationChanges else { return }
+        drainingRegistrationChanges = true
+        defer { drainingRegistrationChanges = false }
+        while !pendingRegistrationChanges.isEmpty {
+            let pending = pendingRegistrationChanges
+            pendingRegistrationChanges.removeAll()
+            for id in pending.sorted(by: { $0.rawValue < $1.rawValue }) {
+                // Resolve against the current snapshot, never a retired module.
+                let revoke = pendingRegistrationRevocations.remove(id) != nil
+                guard let module = modules.first(where: { $0.id == id && $0.registration != nil }) else { continue }
+                if revoke, let activation = activations.removeValue(forKey: id) {
+                    revokedActivations.send((module: id, activation: activation))
+                    stop(module)
+                }
+                registrationChanged(for: module, notify: false)
+            }
+        }
     }
 
     func module(forSettingsPage id: String) -> ModuleID? {
@@ -697,7 +754,7 @@ final class LauncherModuleRegistry {
         return true
     }
 
-    private func registrationChanged(for module: LauncherModule, resuming: Bool = false) {
+    private func registrationChanged(for module: LauncherModule, resuming: Bool = false, notify: Bool = true) {
         let id = module.id
         guard reconcilingModules.insert(id).inserted else { return }
         while activations[id]?.generation != enabledGeneration(for: id) {
@@ -712,7 +769,7 @@ final class LauncherModuleRegistry {
             }
         }
         reconcilingModules.remove(id)
-        registrationChanges.send()
+        if notify { registrationChanges.send() }
     }
 
     func canBindFromShortcutKeyboard(_ id: CommandID) -> Bool {
@@ -897,11 +954,11 @@ final class LauncherModuleRegistry {
     @MainActor var availableAITools: [AIToolRegistration] {
         modules.flatMap { module in
             module.aiTools.map { contribution in
-                // Browsing the tool catalog must not acquire a private-data lease.
-                // The conversation freezes selected registrations only when a run starts.
+                // Catalog browsing is metadata-only. The conversation freezes the
+                // selected provider leases immediately before request dispatch.
                 let frozen = contribution
                 var tool = frozen
-                // Ownership comes from the registry, never from a contribution's self-label.
+                // Module ownership is assigned here, never trusted from a contribution.
                 tool.owner = module.id
                 tool.ownerTitle = module.displayTitle
                 let generation = toolGenerations[module.id]
@@ -929,7 +986,8 @@ final class LauncherModuleRegistry {
     }
 
     func activation(for id: ModuleID) -> Activation? {
-        guard let activation = activations[id], activation.generation == enabledGeneration(for: id) else { return nil }
+        guard !pendingRegistrationRevocations.contains(id),
+              let activation = activations[id], activation.generation == enabledGeneration(for: id) else { return nil }
         return activation
     }
 

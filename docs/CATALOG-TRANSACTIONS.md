@@ -31,3 +31,29 @@ registry.install(module) 和 uninstall(id) 是宿主内部的逻辑目录入口�
 本批验证：目录事务/模块集成与完整应用构建通过（12.68 秒最终增量），版本检查通过；实机第三方安装与跨批集成仍待验证。
 
 后续整合验证：同步 #221、#219 后完整应用构建通过（65.33 秒），合并两批测试后集成通过；未安装或自动合并。
+
+## PR #223 审查修复：生命周期期间的注册事件
+
+本次基线为 dev `fc44e8b5ea287811feccc6add20114bbc7011e13`，从远端 #223 `ff58af255d62a8731f22a113e11c946a90ea9d25` 同步。合并保留 AI 上下文/结果目标校验和隐藏内部命令规则：声明校验仍位于候选快照，运行期上下文监听随目录重绑。
+
+修复 P2：提交期间的注册事件按 ModuleID 排队，不在 `updatingCatalog` 时丢弃；生命周期回调完成后协调到稳定状态，仍保持目录/激活协调的防重入边界。旧停止回调期间继续观察注册与上下文变化，避免遗漏其他模块的撤权。瞬时关闭再开启会记住撤销事实，立即阻止旧激活准入，随后撤销旧 UUID、停止服务并按最终元数据重建实例。公开通知引发的注册变化也会处理；无变化事件合并，不形成通知回声循环。
+
+合成回归先在未修复版本确定性复现 `start-disable: lifecycle registration change was lost`。修复后新增 8 个启动/显示组合，以及跨模块联动、公开通知、旧模块停止时的瞬时撤权回归通过；覆盖撤销通知、服务退出、旧回调拒绝和最终激活状态。完整构建与 403 项 Swift 测试、27 项脚本测试通过。准确最终头与远端 Checks 结果记录在原 PR；没有安装、合并、发布或修改 #222/#226。
+
+### #217 integration (2026-11-21)
+
+Synchronized PR #223 with dev `7f6a01b`. Tool projection preserves #217's
+`forRun()` feature-generation snapshot together with the catalog's module
+activation and tool-generation checks. Directory preparation does not capture
+provider leases or read content. Synthetic integration covers feature lease
+revocation, same-ID replacement, registration disable/re-enable, uninstall and
+reinstall; every captured old tool remains unavailable. No real model, user
+clipboard, user file or external service is used.
+
+Validation: full application build, 403 Swift tests, 27 release-script tests,
+directory integration, AI read-reference integration and native file-tool
+integration passed. The initial sandboxed Swift/read-reference attempts were
+blocked by macOS bookmark/pasteboard services; the unchanged tests passed outside
+the sandbox. The read-reference fixture uses the local Apple Development
+certificate, verified before/after execution; the original application main is
+never run and no installation is performed. Exact final head and CI are in #223.

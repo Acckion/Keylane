@@ -32,7 +32,7 @@ enum AppleNotesModule {
                 if let model, let id = notes.selectedID, let row = notes.results.first(where: { $0.id == id }) {
                     let source = aiReader.source(id: id, title: row.title)
                     actions.append(ModuleAICommands.menu(definitions: AppleNotesAIActions.definitions, source: source, model: model))
-                    actions.append(.init(id: "apple-note-ai-attach", title: "附加到 AI 聊天", icon: "sparkles", enabled: model.aiSettings.isAvailable && !model.disabledCommands.contains(AppleNotesAIActions.attachID.rawValue)) { [weak model] in
+                    actions.append(.init(id: "apple-note-ai-attach", title: "附加到 AI 聊天", icon: "sparkles", enabled: model.canAttachModuleAIContext() && !model.disabledCommands.contains(AppleNotesAIActions.attachID.rawValue)) { [weak model] in
                         _ = model?.runCommand(AppleNotesAIActions.attachID, origin: .menu, aiSource: source)
                     })
                 }

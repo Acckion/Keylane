@@ -193,8 +193,10 @@ struct AIConversationComposerView: View {
             items += (registry?.aiCommandEntries() ?? []).map { command in
                 Item(id: command.id, section: "AI 命令", title: command.name, symbol: command.symbol) {
                     guard let delegate = NSApp.delegate as? Delegate else { return }
-                    controller.preservingLauncherConversationDuring {
-                        _ = delegate.model.runCommand(command.commandID, origin: .menu)
+                    let model = delegate.model
+                    controller.navigatePreservingLauncherConversation(
+                        currentPage: { [weak model] in model?.pageID }, changes: model.$pageID.eraseToAnyPublisher()) {
+                        model.runCommand(command.commandID, origin: .menu)
                     }
                 }
             }

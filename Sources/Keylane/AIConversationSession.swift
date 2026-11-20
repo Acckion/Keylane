@@ -523,17 +523,44 @@ final class AIConversationSession: ObservableObject {
         }
     }
 
-    private var preservingLauncherConversation = false
-    /// Synchronous command navigation may suspend Quick AI without destroying its conversation/draft.
-    func preservingLauncherConversationDuring(_ navigate: () -> Void) {
-        let previous = preservingLauncherConversation
-        preservingLauncherConversation = true
-        defer { preservingLauncherConversation = previous }
-        navigate()
+    private var launcherPreservation: (id: UUID, isCurrent: () -> Bool)?
+    private var launcherPreservationChanges: AnyCancellable?
+
+    /// A navigation arms a one-shot lease for the real, possibly deferred page-leave callback.
+    /// Failed/no-op commands and a subsequent route change cannot preserve an unrelated leave.
+    @discardableResult
+    func navigatePreservingLauncherConversation(currentPage: @escaping () -> PageID?,
+                                                 changes: AnyPublisher<PageID, Never>,
+                                                 _ navigate: () -> Bool) -> Bool {
+        cancelLauncherPreservation()
+        guard !isInChat, let origin = currentPage() else { return navigate() }
+        let id = UUID()
+        // Also support a host which dispatches leave synchronously after changing its route.
+        launcherPreservation = (id, { currentPage().map { $0 != origin } ?? false })
+        let admitted = navigate()
+        guard launcherPreservation?.id == id else { return admitted }
+        guard admitted, let destination = currentPage(), destination != origin else {
+            cancelLauncherPreservation()
+            return admitted
+        }
+        launcherPreservation = (id, { currentPage() == destination })
+        launcherPreservationChanges = changes.sink { [weak self] next in
+            precondition(Thread.isMainThread)
+            if next != destination { self?.cancelLauncherPreservation() }
+        }
+        return admitted
     }
 
-    func leaveLauncher() {
-        if !isInChat && !preservingLauncherConversation { reset() }
+    private func cancelLauncherPreservation() {
+        launcherPreservation = nil
+        launcherPreservationChanges?.cancel()
+        launcherPreservationChanges = nil
+    }
+
+    func leaveLauncher(allowPreservation: Bool = true) {
+        let preserve = allowPreservation && launcherPreservation?.isCurrent() == true
+        cancelLauncherPreservation()
+        if !isInChat && !preserve { reset() }
     }
 
     func closeChat() {
@@ -544,6 +571,7 @@ final class AIConversationSession: ObservableObject {
     }
 
     func reset(projectID: UUID? = nil) {
+        cancelLauncherPreservation()
         stop()
         saveChat()
         historyRevision = UUID()

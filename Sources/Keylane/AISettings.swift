@@ -26,7 +26,7 @@ enum AIModule {
             guard let model, let quickAI else { return [] }
             let tools = (model.launcherModules?.availableAITools ?? []) + AIFileToolProvider.registrations(
                 preferences: model.aiFileAccess, project: quickAI.currentProject,
-                currentProject: { [weak quickAI] in quickAI?.currentProject })
+                currentProject: { [weak quickAI] in quickAI?.currentProject }, index: model.fileSearch.aiToolIndexSource())
             return tools.map { registration in
                 var copy = registration
                 if copy.owner == nil { copy.owner = .init(rawValue: "keylane.ai"); copy.ownerTitle = "AI" }

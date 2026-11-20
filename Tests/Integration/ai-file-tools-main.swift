@@ -4,6 +4,8 @@ import KeylaneCore
 
 // Only owned synthetic directories and in-memory consent decisions. No account,
 // network, system permission grant/bookmark creation, app launch or user file.
+@MainActor final class IndexFixtureState { var searches = 0; var revision = 0 }
+
 @main struct FileToolsIntegration {
     @MainActor static func main() async throws {
         let root = URL(fileURLWithPath: AIFileToolService.systemPath(FileManager.default.temporaryDirectory.path))
@@ -15,8 +17,8 @@ import KeylaneCore
         defer { store.removePersistentDomain(forName: suite) }
         let preferences = AIFileToolPreferences(store: store)
         var project: AIChatProject?
-        func registrations() -> [AIToolRegistration] {
-            AIFileToolProvider.registrations(preferences: preferences, project: project, currentProject: { project })
+        func registrations(index: AIFileToolIndexSource? = nil) -> [AIToolRegistration] {
+            AIFileToolProvider.registrations(preferences: preferences, project: project, currentProject: { project }, index: index)
         }
         precondition(!preferences.enabled && registrations().isEmpty)
         preferences.add(.init(path: root.path)); preferences.enabled = true
@@ -54,6 +56,12 @@ import KeylaneCore
             deniedResults.append(result.text)
             precondition(!result.text.contains("synthetic needle") && !result.text.contains(root.path))
             precondition(approvals.last!.contains(recipient.destination) && approvals.last!.contains(recipient.model))
+            if ["write_file", "create_directory"].contains(name) {
+                precondition(approvals.last!.contains("创建绑定已确认的目录对象") && approvals.last!.contains("不能证明未写入"))
+                precondition(approvals.last!.contains("勿直接重试") && approvals.last!.contains("不自动回滚"))
+            } else {
+                precondition(!approvals.last!.contains("创建绑定已确认的目录对象"))
+            }
         }
         precondition(!FileManager.default.fileExists(atPath: root.path + "/created.txt"))
         precondition(!FileManager.default.fileExists(atPath: root.path + "/folder"))
@@ -95,8 +103,11 @@ import KeylaneCore
         let disabledEdit = try await execute(run(), "edit_file", ["path": .string("created.txt")])
         precondition(disabledReplace.isError && disabledEdit.isError)
         onApproval = { preferences.remove(root.path); preferences.add(.init(path: root.path)) }
-        let revoked = try await execute(run(), "write_file", ["path": .string("stale.txt"), "content": .string("must not exist")])
-        precondition(revoked.isError && !FileManager.default.fileExists(atPath: root.path + "/stale.txt"))
+        do {
+            _ = try await execute(run(), "write_file", ["path": .string("stale.txt"), "content": .string("must not exist")])
+            preconditionFailure("Revoked source did not cancel generation")
+        } catch { precondition(error is CancellationError) }
+        precondition(!FileManager.default.fileExists(atPath: root.path + "/stale.txt"))
         onApproval = nil
         let frozen = try run()
         preferences.enabled = false; preferences.enabled = true
@@ -180,5 +191,68 @@ import KeylaneCore
         let removedScope = try await execute(publishedCatalog, "read_file", ["path": .string(root.path + "/created.txt")])
         precondition(removedScope.isError && !removedScope.text.contains("approved fixture"))
         print("PASS shared preparation: no raw-handler bypass, recipient/run change blocks disclosure, prepared consent and publication-phase scope invalidation")
+        // Reset only this fixture's scopes; no real grants or user preferences are used.
+        for scope in preferences.scopes { preferences.remove(scope.path) }
+        preferences.add(.init(path: root.path)); project = nil; onApproval = nil; allow = true
+        try Data(String(repeating: "continuation fixture 中文 ", count: 100).utf8).write(to: root.appendingPathComponent("large.txt"))
+        let shared = registrations(), continuedRun = try run(shared)
+        let firstPage = try await execute(continuedRun, "read_file", ["path": .string("large.txt"), "limit": .number(64)])
+        let firstObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(firstPage.text.utf8))
+        guard case .string(let cursor) = firstObject["cursor"] else { preconditionFailure("No continuation") }
+        allow = false
+        let beforeDeclinedPage = approvals.count
+        let declinedPage = try await execute(continuedRun, "read_result", ["cursor": .string(cursor)])
+        precondition(approvals.count == beforeDeclinedPage + 1)
+        precondition(declinedPage.isError && !declinedPage.text.contains("continuation fixture"))
+        allow = true
+        let beforeAllowedPage = approvals.count
+        let nextPage = try await execute(continuedRun, "read_result", ["cursor": .string(cursor), "limit": .number(64)])
+        precondition(approvals.count == beforeAllowedPage + 1)
+        precondition(!nextPage.isError && !nextPage.text.contains(root.path))
+        let nextObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(nextPage.text.utf8))
+        guard case .string(let stillLiveCursor) = nextObject["cursor"] else { preconditionFailure("No live continuation") }
+        let otherRun = try await execute(run(shared), "read_result", ["cursor": .string(stillLiveCursor)])
+        precondition(otherRun.isError)
+        let beforeOriginalPage = approvals.count
+        let originalRun = try await execute(continuedRun, "read_result", ["cursor": .string(stillLiveCursor), "limit": .number(64)])
+        precondition(!originalRun.isError && approvals.count == beforeOriginalPage + 1)
+        let originalObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(originalRun.text.utf8))
+        guard case .string(let pendingCursor) = originalObject["cursor"] else { preconditionFailure("No page awaiting independent approval") }
+        onApproval = { preferences.enabled = false; preferences.enabled = true }
+        let beforeRevokedPage = approvals.count
+        do {
+            _ = try await execute(continuedRun, "read_result", ["cursor": .string(pendingCursor), "limit": .number(64)])
+            preconditionFailure("Revocation during page approval did not cancel disclosure")
+        } catch { precondition(error is CancellationError) }
+        precondition(approvals.count == beforeRevokedPage + 1)
+        onApproval = nil
+        print("PASS read continuation: independent per-page approval, refusal retains cursor, approval-time revocation cancels, no pathname disclosure or cross-run registration reuse")
+
+        let indexState = IndexFixtureState()
+        for i in 0..<3 { try Data("indexed fixture".utf8).write(to: root.appendingPathComponent("indexed-\(i).txt")) }
+        let index = AIFileToolIndexSource(isCurrent: { indexState.revision == 0 }, search: { query, directory in
+            indexState.searches += 1
+            precondition(query == "indexed" && directory == root.path)
+            return (0..<3).map { root.path + "/indexed-\($0).txt" } + ["/outside/synthetic", root.path + "/.env"]
+        })
+        _ = registrations(index: index).map(\.definition)
+        precondition(indexState.searches == 0)
+        allow = false
+        let deniedIndex = try await execute(run(registrations(index: index)), "search_indexed_files", ["path": .string("."), "query": .string("indexed"), "limit": .number(1)])
+        precondition(deniedIndex.isError && indexState.searches == 0)
+        allow = true
+        let indexRun = try run(registrations(index: index))
+        let indexed = try await execute(indexRun, "search_indexed_files", ["path": .string("."), "query": .string("indexed"), "limit": .number(1)])
+        let indexedObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(indexed.text.utf8))
+        guard case .string(let indexCursor) = indexedObject["cursor"] else { preconditionFailure("No index continuation") }
+        precondition(!indexed.isError && indexState.searches == 1 && !indexed.text.contains(root.path) && !indexed.text.contains(".env") && !indexed.text.contains("/outside"))
+        indexState.revision += 1
+        do {
+            _ = try await execute(indexRun, "read_result", ["cursor": .string(indexCursor)])
+            preconditionFailure("Revoked index source disclosed a cached page")
+        } catch { precondition(error is CancellationError) }
+        precondition(indexState.searches == 1)
+        print("PASS indexed search: pure catalog, no query before consent, matched root filtering and generation-bound cached results")
+
     }
 }
