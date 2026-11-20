@@ -292,13 +292,16 @@ enum ScriptCommandsModule {
                 return AnyView(ScriptCreationPage(controller: controller, back: model.goBackInLauncher,
                                                   cancel: model.cancelLauncherPage))
             },
-            submit: controller.saveDraft, returnBindings: .init(primary: .command),
-            primaryTitle: { "创建脚本" },
-            primaryEnabled: { controller.canSaveDraft },
+            returnBindings: .init(primary: .command),
             updates: Publishers.Merge(
                 ViewObservation.changes(controller.$draft.map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.removeDuplicates()),
                 ViewObservation.changes(controller.$enabled)
-            ).eraseToAnyPublisher()
+            ).eraseToAnyPublisher(),
+            actionSnapshot: {
+                .init(primary: .init(id: "script-create", title: "创建脚本", icon: "plus",
+                    shortcut: .init(.return, modifiers: .command), enabled: controller.canSaveDraft,
+                    perform: controller.saveDraft))
+            }
         )
         let configure = LauncherPage(
             id: configurePageID, placeholder: "", badge: ("编辑脚本命令", "keyboard"),
