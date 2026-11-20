@@ -397,7 +397,12 @@ extension QuickAIController {
     }
 
     func chooseFiles() {
-        guard !loadingFiles, !loadingChat else { return }
+        guard let window = NSApp.keyWindow else { return }
+        chooseFiles(in: window)
+    }
+
+    func chooseFiles(in window: NSWindow) {
+        guard !loadingFiles, !loadingChat, window.attachedSheet == nil else { return }
         let revision = UUID()
         fileLoadRevision = revision
         let panel = NSOpenPanel()
@@ -405,27 +410,34 @@ extension QuickAIController {
         panel.message = "支持 UTF-8 文本、代码和有文字的 PDF。文件仅在发送问题时交给所选模型。"
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
-        panel.begin { [weak self] response in
+        // The Launcher's focus/outside-click handlers already retain windows with a sheet.
+        panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let self, self.fileLoadRevision == revision else { return }
-            let urls = panel.urls
-            guard self.pendingFiles.count + urls.count <= 5 else { self.fileError = "每条消息最多附加 5 个文件。"; return }
-            self.loadingFiles = true
-            Task { @MainActor [weak self] in
-                let result = await Task.detached(priority: .userInitiated) {
-                    Result { try urls.map(AIFileAttachment.read) }
-                }.value
-                guard let self, self.fileLoadRevision == revision else { return }
-                self.loadingFiles = false
-                switch result {
-                case .success(let files):
-                    let combined = self.pendingFiles + files
-                    guard AIFileAttachment.prompt("", files: combined).utf8.count <= 30_000 else {
-                        self.fileError = "附件文字总量超过 30,000 字节，请减少附件。"; return
-                    }
-                    self.pendingFiles = combined
-                    self.fileError = ""
-                case .failure(let error): self.fileError = error.localizedDescription
+            self.attachFiles(panel.urls)
+        }
+    }
+
+    func attachFiles(_ urls: [URL]) {
+        guard !loadingFiles, !loadingChat else { return }
+        guard pendingFiles.count + urls.count <= 5 else { fileError = "每条消息最多附加 5 个文件。"; return }
+        let revision = UUID()
+        fileLoadRevision = revision
+        loadingFiles = true
+        Task { @MainActor [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                Result { try urls.map(AIFileAttachment.read) }
+            }.value
+            guard let self, self.fileLoadRevision == revision else { return }
+            self.loadingFiles = false
+            switch result {
+            case .success(let files):
+                let combined = self.pendingFiles + files
+                guard AIFileAttachment.prompt("", files: combined).utf8.count <= 30_000 else {
+                    self.fileError = "附件文字总量超过 30,000 字节，请减少附件。"; return
                 }
+                self.pendingFiles = combined
+                self.fileError = ""
+            case .failure(let error): self.fileError = error.localizedDescription
             }
         }
     }

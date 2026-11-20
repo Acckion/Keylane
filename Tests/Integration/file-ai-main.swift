@@ -416,6 +416,43 @@ precondition(video.currentConnection?.id == legacy.id && video.turns.count == 1)
 precondition(video.regenerate(modelID: second.id))
 wait("Regenerate with another model") { !video.running }
 precondition(video.currentConnection?.id == second.id && video.turns.count == 1)
+// Native sheet lifecycle: selecting files must not be an unrelated window that hides the Launcher.
+let fixtureApp = NSApplication.shared
+fixtureApp.setActivationPolicy(.accessory)
+fixtureApp.finishLaunching()
+let attachmentWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+attachmentWindow.isReleasedWhenClosed = false
+attachmentWindow.title = "Keylane attachment regression fixture"
+attachmentWindow.orderFront(nil)
+video.pendingFiles = [pdfAttachment]
+let attachmentChatID = video.chatID
+let attachmentTurnIDs = video.turns.map(\.id)
+video.chooseFiles(in: attachmentWindow)
+wait("File picker is attached to its originating window") { attachmentWindow.attachedSheet is NSOpenPanel }
+let attachmentPicker = attachmentWindow.attachedSheet as! NSOpenPanel
+attachmentPicker.directoryURL = videoDirectory
+video.chooseFiles(in: attachmentWindow)
+precondition(attachmentWindow.attachedSheet === attachmentPicker, "A second click must not replace the active picker")
+precondition(attachmentWindow.isVisible && video.chatID == attachmentChatID && video.turns.map(\.id) == attachmentTurnIDs)
+attachmentPicker.cancel(nil)
+wait("Cancelling the sheet returns to the originating window") { attachmentWindow.attachedSheet == nil }
+precondition(attachmentWindow.isVisible && video.pendingFiles == [pdfAttachment])
+precondition(video.chatID == attachmentChatID && video.turns.map(\.id) == attachmentTurnIDs)
+attachmentWindow.close()
+// Exercise the same import callback using a synthetic URL selection, without typing into the OS dialog.
+video.attachFiles([textURL])
+wait("File selection appends into the same existing conversation") { !video.loadingFiles }
+precondition(video.pendingFiles.map(\.name) == ["fixture.pdf", "fixture.md"])
+precondition(video.chatID == attachmentChatID && video.turns.map(\.id) == attachmentTurnIDs)
+video.attachFiles([textURL])
+video.reset()
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(video.pendingFiles.isEmpty && !video.loadingFiles, "An explicitly reset conversation must reject a late file read")
+// Restore the saved conversation for the remaining history-navigation checks.
+video.openChat(attachmentChatID!)
+wait("Restore attachment test conversation") { !video.loadingChat && video.chatID == attachmentChatID }
+print("PASS native file-picker sheet/cancel keeps its parent and conversation; synthetic URL import preserves attachments and explicit reset rejects late reads")
+
 let firstVideoChat = video.chatID!
 wait("First quick conversation saved") { video.chats.contains { $0.id == firstVideoChat } }
 video.reset()
