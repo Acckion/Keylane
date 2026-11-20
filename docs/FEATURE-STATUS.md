@@ -33,7 +33,7 @@
 | BASE-05 | Hyper Key、双击与导航绑定 | 部分实现 | 对照物理键映射、短按及 Secure Input 行为 | 实机待验收；[历史清单](archive/FEATURES.csv) |
 | BASE-06 | 设置全文搜索、定位到模块与命令 | 已实现 | 新增设置页持续补搜索关键词与定位锚点 | [设置入口](../Sources/Keylane/Settings.swift) |
 | BASE-07 | 共用菜单栏条目与生命周期 | 已实现 | 新模块复用登记、更新、注销和可见性设置 | 已有实机及隔离记录；[菜单栏](MENU-BAR-CALENDAR.md) |
-| BASE-08 | 主题与自定义主题导入/共享 | 部分实现 | 已有外观设置；Raycast 自定义主题完整范围待核对 | [设置](../Sources/Keylane/Settings.swift)、[Raycast 主题](https://manual.raycast.com/themes) |
+| BASE-08 | 主题与自定义主题导入/共享 | 待合并 | Theme Studio 三栏编辑、滚动交互预览、深浅色分配、JSON/链接导入共享已在功能分支实现；使用 Keylane 自有主题格式，完整安装版验收仍待完成 | [实现与验证](features/THEME-STUDIO.md)、[issue #196](https://github.com/Acckion/Keylane/issues/196)、[PR #220](https://github.com/Acckion/Keylane/pull/220)；已通过隔离交互、341 项 Swift 与 27 项脚本测试，本机安装与签名已核对；审查增加紧凑栏主题透明间隙与独立表面回归 |
 | BASE-09 | 通用动态占位符及修饰符 | 部分实现 | 片段、快捷链接分别支持部分语法，核对共用解析与完整修饰符 | [片段](SNIPPETS.md)、[快捷链接](QUICKLINKS.md)、[参考](https://manual.raycast.com/dynamic-placeholders) |
 | BASE-10 | 首次引导、权限、辅助使用与本地化 | 部分实现 | 持续核对默认状态、拒绝/撤销、VoiceOver、对比度和中文输入 | [协作规范](../AGENTS.md)、[架构](LAUNCHER-ARCHITECTURE.md) |
 | BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现；定向评分复用待合并 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
@@ -138,7 +138,8 @@
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
 | DATA-01 | Keylane 配置导出、预览冲突与恢复 | 部分实现 | 安装版恢复、旧数据和异常中断验收 | [配置迁移](CONFIGURATION-MIGRATION.md) |
-| DATA-02 | Raycast 配置迁移 | 部分实现 | 已支持部分配置格式，按类别明确支持与不支持字段 | [配置迁移](CONFIGURATION-MIGRATION.md) |
+| DATA-02 | Raycast 配置迁移 | 部分实现 | 基础配置已有；分类数据扩展见 DATA-02-a（待合并），尚非完整兼容 | [配置迁移](CONFIGURATION-MIGRATION.md)、[分类支持进度](RAYCAST-IMPORT-COVERAGE.md) |
+| DATA-02-a | Raycast 分类数据导入、预览与启动恢复 | 待合并 | 片段、文本剪贴板、AI 只读历史/命令、Emoji、专注分类；笔记暂缓，未支持内容不保存；实际导入/重启/撤销待验收 | [PR #219](https://github.com/Acckion/Keylane/pull/219)；补充 12 个强制退出恢复场景及附件轮次回归；[范围及验证](RAYCAST-IMPORT-COVERAGE.md) |
 | DATA-03 | 跨设备设置、聊天与剪贴板同步 | 待合并 | iCloud Drive 方案 PR #201，合并前不计为已有云同步 | [PR #201](https://github.com/Acckion/Keylane/pull/201)、[Raycast Cloud Sync](https://manual.raycast.com/cloud-sync) |
 | DATA-04 | 完整用户数据备份与恢复 | 待核对 | 配置备份之外，核对聊天、历史、附件及冲突恢复范围 | [配置边界](CONFIGURATION-MIGRATION.md)、[原计划](archive/FEATURES.csv) |
 | RELEASE-01 | GitHub 更新检查、测试版渠道与更新日志 | 部分实现 | 真实下载/替换/重启、签名迁移和失败恢复验收 | [应用工具](APP-UTILITIES.md)、[发行](CI-RELEASE.md) |
@@ -167,9 +168,12 @@
 | 日期 | 范围 | 基线与证据 |
 | --- | --- | --- |
 | 2026-11-21 | 建立全仓库总表，纳入 macOS 功能、AI、扩展、同步、平台及长期项目 | dev `9e73f01`；Raycast 官方手册目录及专项页面；仓库模块文档；PR #201/#211/#212/#214/#215 当前均未合并 |
+| 2026-11-21 | DATA-02 / DATA-02-a：扩展 Raycast 分类迁移，独立列出待合并能力与未支持项目；PR #219 审查补充新库原子发布与附件轮次边界修复，12 个强制退出场景及同步 dev `8bacfa8` 后全量 349+3 项 Swift 测试通过，仍待合并 | 实现 `ca498f3`；全量 342 项 Core + 3 项 ProviderConfig、补充 14 项迁移专项、27 项 ReleaseTests、隔离原生流程与签名包校验通过；真实备份仅只读核对，未实机导入 |
 | 2026-11-21 | EXTRA-01 暂存架网格审查修复待合并 | [PR #211](https://github.com/Acckion/Keylane/pull/211)，覆盖空架后续裁剪及存档恢复、搜索时横向选择；验收结果见 PR |
 
+| 2026-11-21 | BASE-08：Theme Studio 及设置颜色隔离，标记待合并 | 功能分支 `feat/theme-studio`，[PR #220](https://github.com/Acckion/Keylane/pull/220)，`d414663` / `d8e5c96`；自动化与本机安装证据见 [模块记录](features/THEME-STUDIO.md)，用户最终验收仍待完成 |
 维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用待合并；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。
 
+| 2026-11-21 | BASE-08：修复紧凑自定义主题连成整块背景的审查问题 | [PR #220](https://github.com/Acckion/Keylane/pull/220)；原生窗口透明像素、独立表面、点击、减少透明度和展开渐显回归；旧行为对照能复现失败 |
 
 维护记录：2026-11-21，BASE-03 页面 ActionSnapshot 公共契约及词典/文件/Emoji/表单样板、替代 Return 与页面会话作用域见 [PR #221](https://github.com/Acckion/Keylane/pull/221)（20a170c），待合并、未安装；完整构建、动作/会话、文件与 Emoji 隔离回归通过；见 [页面动作契约](PAGE-ACTION-CONTRACT.md)。
