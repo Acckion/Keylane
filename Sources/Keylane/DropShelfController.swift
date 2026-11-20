@@ -111,7 +111,7 @@ final class DropShelfController: ObservableObject {
             if windows[id]?.receivingDrag == true { continue }
             automaticShelves.remove(id)
             guard let window = windows[id], store?.shelf(id)?.items.isEmpty == true, !window.receivedDrop else { continue }
-            window.close()
+            window.dismissAnimated()
         }
     }
     private var active = false
@@ -186,7 +186,7 @@ final class DropShelfController: ObservableObject {
             }
         }
         window.refresh()
-        window.orderFrontRegardless()
+        window.presentAnimated()
         if activate { window.dropOverlay.restoreDockedShelf(animated: false); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true); window.focusContents() }
         return window
     }
@@ -355,6 +355,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private let details = NSStackView()
     private var expanded = false
     private var resizeTimer: Timer?
+    private lazy var visibility = FloatingWindowVisibility(window: self)
     private var outsideMonitors: [Any] = []
     private var detailWidth: NSLayoutConstraint?
     private var thumbnailKey: String?
@@ -564,7 +565,12 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         }
     }
 
-    @objc private func closeShelf() { if expanded { toggleDetails() } else { close() } }
+    func presentAnimated() { visibility.show() }
+    func dismissAnimated() {
+        visibility.hide { [weak self] in self?.close() }
+    }
+
+    @objc private func closeShelf() { if expanded { toggleDetails() } else { dismissAnimated() } }
     @objc func toggleDetails() {
         expanded.toggle(); details.isHidden = !expanded; detailWidth?.isActive = expanded
         preview.isHidden = expanded; capsule.isHidden = expanded
@@ -882,7 +888,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     @objc private func pinFromMenu() {
         do { try store.pin(shelfID, value: store.shelf(shelfID)?.pinned != true); refresh() } catch { message(error.localizedDescription, failed: true) }
     }
-    @objc private func closeFromMenu() { close() }
+    @objc private func closeFromMenu() { dismissAnimated() }
     @objc private func renameFromMenu() {
         let alert = NSAlert(); alert.messageText = "重命名暂存架"; alert.addButton(withTitle: "保存"); alert.addButton(withTitle: "取消")
         let field = NSTextField(string: store.shelf(shelfID)?.title ?? "暂存架"); field.frame.size = NSSize(width: 240, height: 24); alert.accessoryView = field
@@ -1109,7 +1115,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         if !operation.isEmpty {
             refreshFiles()
             message(operation.contains(.move) ? "已由目标接收（移动）" : "已由目标接收（复制）")
-            if controller?.keepOpen != true { close() }
+            if controller?.keepOpen != true { dismissAnimated() }
         } else { message("拖动已取消或目标未接收，暂存内容已保留") }
     }
     @objc private func copyContents() {
@@ -1127,7 +1133,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         let command = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command)
         if command {
             switch event.charactersIgnoringModifiers?.lowercased() {
-            case "w": close(); return true
+            case "w": dismissAnimated(); return true
             case "c": copyContents(); return true
             case "v": pasteContents(); return true
             default: break
@@ -1199,6 +1205,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         filename.toolTip = text
     }
     func windowWillClose(_ notification: Notification) {
+        visibility.cancel()
         dropOverlay.cancelDockAnimation()
         resizeTimer?.invalidate(); resizeTimer = nil
         outsideMonitors.forEach(NSEvent.removeMonitor); outsideMonitors.removeAll()
