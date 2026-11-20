@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import KeylaneCore
 
 struct AIChatSummary: Identifiable, Equatable, Sendable {
     let id: UUID
@@ -75,6 +76,7 @@ final class AIChatHistory: @unchecked Sendable {
     }
 
     func save(_ record: AIChatRecord) throws {
+        defer { NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil) }
         let question = record.content.turns.first?.question ?? ""
         let title = String(question.split(whereSeparator: \.isNewline).first?.prefix(72) ?? "")
         let payload = String(decoding: try JSONEncoder().encode(record.content), as: UTF8.self)
@@ -91,6 +93,7 @@ final class AIChatHistory: @unchecked Sendable {
     }
 
     func update(_ id: UUID, change: Change) throws {
+        defer { NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil) }
         let column: String
         let value: String
         switch change {
@@ -108,7 +111,15 @@ final class AIChatHistory: @unchecked Sendable {
     }
 
     func remove(_ id: UUID) throws {
+        defer { NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil) }
         try withStatement("DELETE FROM chats WHERE id = ?", values: [id.uuidString]) { stmt in
+            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
+        }
+    }
+
+    func preserveSyncDate(_ id: UUID, date: Date) throws {
+        guard date.timeIntervalSince1970.isFinite else { throw SyncError.invalidData }
+        try withStatement("UPDATE chats SET updated=? WHERE id=?", values: [String(date.timeIntervalSince1970), id.uuidString]) { stmt in
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
         }
     }

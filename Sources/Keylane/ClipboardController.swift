@@ -182,6 +182,12 @@ final class ClipboardController: ObservableObject {
         if startTimer { startMonitoring() }
     }
 
+    func reloadFromSync() {
+        guard runtime != nil else { return }
+        generation += 1; detailRequest?.cancel(); detail = nil; thumbnail = nil
+        reload()
+    }
+
     func startRuntime() {
         guard runtime == nil else { return }
         let token = ImageTextRecognitionWork()

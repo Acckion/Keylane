@@ -135,7 +135,8 @@ enum WindowManagementModule {
                          permission.stopObserving()
                          controller.cancel()
                          SystemNavigation.shared.clearWindowPlacementHistory()
-                     })], searchUpdates: [permission.updates, customUpdates],
+                     })], syncContributions: [.init(category: .layouts, make: { _ in LayoutsSyncParticipant() })],
+                     searchUpdates: [permission.updates, customUpdates],
                      dynamicCommandSettings: .init(
                         model: model, items: { controller.actions }, title: \.name,
                         commandID: \.commandID, updates: { [customUpdates] },

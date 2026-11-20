@@ -116,6 +116,12 @@ final class SnippetsController: ObservableObject {
         } catch { self.error = "无法读取片段：\(error.localizedDescription)" }
     }
 
+    func reloadFromSync() {
+        guard active, let store else { return }
+        do { entries = try store.records(kind: "snippet").map(Snippet.fromRecord); configureExpansion() }
+        catch { self.error = "无法刷新同步后的文字片段。" }
+    }
+
     func stop() {
         active = false
         expansion.stop()

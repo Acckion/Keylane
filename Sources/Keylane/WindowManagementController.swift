@@ -40,6 +40,7 @@ final class WindowManagementController: ObservableObject {
     private var layoutPathPanel: NSOpenPanel?
     private var grid: WindowGridPanel?
     private var gridRequest: NavigationScanRequest?
+    private var syncChanges: AnyCancellable?
     private let storageKey = "windowManagement.customActions"
 
     init(model: Model, permission: PermissionFeature) {
@@ -48,6 +49,12 @@ final class WindowManagementController: ObservableObject {
         if let data = UserDefaults.standard.data(forKey: storageKey),
            let archive = try? JSONDecoder().decode(WindowActionsArchive.self, from: data), archive.isValid {
             actions = archive.actions
+        }
+        syncChanges = NotificationCenter.default.publisher(for: .keylaneSyncApplied).sink { [weak self] note in
+            guard let self, let categories = note.userInfo?["categories"] as? Set<SyncCategory>, categories.contains(.layouts),
+                  let data = UserDefaults.standard.data(forKey: self.storageKey),
+                  let archive = try? JSONDecoder().decode(WindowActionsArchive.self, from: data), archive.isValid else { return }
+            self.actions = archive.actions
         }
     }
 

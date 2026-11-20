@@ -61,6 +61,7 @@ enum BuiltinLauncherModules {
     }
 
     private static func host(_ model: Model) -> LauncherModule {
+        let sync = model.cloudSync
         let category = ShortcutSettingsControls()
         let keyboard = ShortcutKeyboardSelection()
         let canBind = {
@@ -112,6 +113,11 @@ enum BuiltinLauncherModules {
                                 return AnyView(ShortcutKeyboardPage(model: model, selection: keyboard, menuOpen: open))
                             })],
               settings: [settingsPage(model, "general", "通用", "slider.horizontal.3", "管理外观、快捷键和启动方式。", 0, content: LauncherSettingsContent.general),
+                         settingsPage(model, "cloud-sync", "iCloud 同步", "icloud", "让设置与内容在你的 Mac 之间保持一致。", 2,
+                                      titlebar: .init(title: "启用 iCloud 同步", enabled: Binding(get: { sync.enabled }, set: { sync.setEnabled($0) }),
+                                                      updates: sync.$enabled.eraseToAnyPublisher(), searchItem: .cloudSync)) {
+                             CloudSyncSettings(sync: $0.cloudSync)
+                         },
                          settingsPage(model, "launcher", "启动器", "magnifyingglass", "管理启动器的显示与搜索行为。", 5) {
                              LauncherBehaviorPreferences(model: $0)
                          },
@@ -138,6 +144,11 @@ enum BuiltinLauncherModules {
                          settingsPage(model, "advanced", "高级", "wrench.and.screwdriver", "管理窗口、导出和连接设置。", 100, content: LauncherSettingsContent.advanced),
                          settingsPage(model, "about", "关于 Keylane", "info.circle", "独立、原生、以键盘为中心。", 110,
                                       loading: model.updates.$busy.eraseToAnyPublisher(), content: LauncherSettingsContent.about)],
+              services: [.init(start: { sync.start() }, stop: { sync.stop() })],
+              syncContributions: [
+                  .init(category: .preferences, make: { _ in DefaultsSyncParticipant(.preferences, keys: ["appearance", "interfaceSize", "windowMode", "placement", "navigation", "launcherReturnDelay", "launcherEscapeBehavior", "windowActivationBehavior", "pageNavigationKeys", "escapeClosesUtilityWindows", "rootSearchSensitivity"]) }),
+                  .init(category: .commands, make: { _ in CommandsSyncParticipant() }),
+                  .init(category: .extensions, make: { _ in DefaultsSyncParticipant(.extensions, keys: ["clipboardPrimaryAction", "clipboardPrefersPlainText", "clipboardShowsLinkVisuals", "clipboardSequenceTimeout", "clipboardSequenceAddsNewline", "emojiColumns", "emojiSkinTone", "emojiPrimaryAction", "screenshotColumns"]) })],
               shortcutSettingsBinding: .init(id: "launcher", title: "Keylane 热键", symbol: "command"))
     }
 
@@ -611,7 +622,8 @@ enum BuiltinLauncherModules {
                 FilePreview.shared.dismiss(owner: .clipboard)
                 FileActionsWindow.shared.dismiss(owner: .clipboard)
             })
-        ], searchUpdates: [updates(controller.$historyCommandEnabled)],
+        ], syncContributions: [.init(category: .clipboard, make: { ClipboardSyncParticipant(directory: $0.appendingPathComponent("Clipboard", isDirectory: true)) })],
+        searchUpdates: [updates(controller.$historyCommandEnabled)],
         shortcutSettingsUpdates: [ViewObservation.changes(controller.$historyCommandEnabled)])
     }
 

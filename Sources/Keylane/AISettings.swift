@@ -73,7 +73,8 @@ enum AIModule {
                               .settingsAnchor(textCommandsItem)
                       })
                   })
-        ], searchUpdates: [
+        ], syncContributions: [.init(category: .chats, make: { AIChatHistory(url: $0.appendingPathComponent("AI/history.sqlite")) })],
+        searchUpdates: [
             ViewObservation.changes(configuration.$state.map(\.routeAvailability)),
             ViewObservation.changes(configuration.$state.map(\.isAvailable)),
             ViewObservation.changes(configuration.$state.map(\.enabled)),

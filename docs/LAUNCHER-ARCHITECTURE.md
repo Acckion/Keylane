@@ -60,3 +60,9 @@
 - 创建类命令使用 `LauncherPage.ContentPlacement.form`，由 `LauncherCreationForm` 提供返回按钮、可选顶部操作区域和滚动表单。标准返回按钮使用 `Model.goBackInLauncher`，文字片段编辑页先处理占位符补全，再把 Esc 交给宿主。字段用 `LauncherCreationField` 对齐，输入控件可用 `LauncherCreationControl` 统一描边。命令负责绑定、校验和提交，底栏继续由启动器宿主管理。
 - 创建表单的可搜索选项使用 `LauncherCreationPicker`，悬浮在原窗口的表单上方，展开时下方字段保持原位，复用 `ResultFilterPanel` 的搜索和键盘导航。验收时打开「创建脚本命令」，分别点击模板和模式的搜索框、用鼠标选值，再用方向键和回车选值。按 Esc 应先收起选择器并留在表单。重新展开后搜索为空，当前值仍在。关闭启动器后重新进入创建命令，两个选择器均应收起。
 - 命令子项的设置搜索使用 `CommandSettingsDisclosure.revealItem` 登记定位锚点。验收时先折叠「搜索文字片段」，从另一个设置页搜索并选择「搜索文字片段的主要操作」，检查命令行定位后立即显示「主要操作」。在同页手动折叠，再通过键盘选择同一个搜索结果，检查子项再次展开。剪贴板的「超时」和「换行」搜索也应展开「顺序粘贴」。
+
+### iCloud 同步贡献
+
+模块通过 `LauncherModule.syncContributions` 登记 `LauncherSyncContribution`。注册目录只读取类别与工厂，不创建数据库、不申请权限、不访问 iCloud。同步总开关和类别启用后，工厂才在专用执行器上创建 `SyncParticipant`。
+
+参与者提供快照、按 ID 验证与应用、单条当前值及轻量指纹。正文可由 `SyncPayload.read` 延迟加载；未变化的图片不重复解码或编码。宿主统一处理文件协调、逻辑版本、删除标记、恢复副本与中断意图，模块继续拥有数据格式和本机数据库。当前每类别有一个登记所有者，重复类别会报错。同步后台服务随宿主停止，权限与采集开关不作为可同步偏好。协议、范围和验收边界见 [iCloud Drive 同步](ICLOUD-SYNC.md)。

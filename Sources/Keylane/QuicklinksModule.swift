@@ -224,6 +224,7 @@ enum QuicklinksModule {
            providers: [provider(.exact(.init(rawValue: QuicklinkLibrary.legacyID))), provider(.prefix("quicklink:")),
                        googleSearch(controller)],
            pages: [list, editPage, arguments], settings: [settings], services: [.init(start: controller.load, stop: controller.stop)],
+           syncContributions: [.init(category: .quicklinks, make: { _ in QuicklinksSyncParticipant() })],
            searchUpdates: [ViewObservation.changes(controller.$links)],
            dynamicCommandSettings: .init(
                model: model, items: { controller.links }, title: \.title, commandID: \.id,
