@@ -269,8 +269,10 @@ import KeylaneCore
     precondition(!readFile.isError && readFile.text.contains("Unified synthetic file body"))
     precondition(approvals.last!.contains("synthetic.invalid") && approvals.last!.contains("fixture.md"))
     filePreferences.enabled = false; filePreferences.enabled = true
-    let revokedFile = try await execute(unified, "keylane_read_file", readArgs)
-    precondition(revokedFile.isError && !revokedFile.text.contains("Unified synthetic file body"))
+    do {
+        _ = try await execute(unified, "keylane_read_file", readArgs)
+        preconditionFailure("Revoked prepared source did not cancel its run")
+    } catch is CancellationError { }
     print("PASS unified file/clipboard catalog: distinct path/reference schemas, cross-parameter rejection, recipient-aware consent, denial and independent off/on lease revocation")
 
 }
