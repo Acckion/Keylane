@@ -167,7 +167,7 @@ struct AIConversationComposerView: View {
             }
             items += AITextCommand.allCases.map { command in
                 Item(id: command.id, section: "AI 命令", title: command.title, symbol: command.icon) {
-                    appendContext(command.instructions(language: .chinese))
+                    appendContext(command.instructions)
                 }
             }
             items += controller.projects.map { project in

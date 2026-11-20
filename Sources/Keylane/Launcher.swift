@@ -205,8 +205,7 @@ struct Launcher: View {
                                 }
                                 .launcherScrollInsets()
                                 .launcherScrollEdgeFade()
-                            case .form: content()
-                            case .conversation:
+                            case .form, .conversation:
                                 content()
                                     .environment(\.conversationInputEnabled, menu == nil)
                                     .environment(\.conversationInputFocusToken, focusToken)
