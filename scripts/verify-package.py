@@ -65,6 +65,8 @@ def verify_app(app, image, version, distribution):
     entitlements = plistlib.loads(entitlement_data) if entitlement_data else {}
     if not info.get('NSCameraUsageDescription') or entitlements.get('com.apple.security.device.camera') is not True:
         raise SystemExit('Missing camera usage description or entitlement')
+    if not info.get('NSMicrophoneUsageDescription') or entitlements.get('com.apple.security.device.audio-input') is not True:
+        raise SystemExit('Missing microphone usage description or entitlement')
     if distribution:
         if entitlements.get(APPLE_EVENTS_ENTITLEMENT) is not True:
             raise SystemExit('Distribution app is missing the Apple Events entitlement')

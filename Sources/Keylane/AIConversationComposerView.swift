@@ -14,6 +14,7 @@ struct AIConversationComposerView: View {
     let chooseModel: (UUID) -> Void
     let showUsage: () -> Void
     let openAISettings: () -> Void
+    var dictation: DictationController? = nil
     var compact = false
     var inputEnabled = true
     var focusToken = 0
@@ -30,6 +31,7 @@ struct AIConversationComposerView: View {
     @State private var menuScrollTarget: String?
     @State private var suppressedCompletion: AIChatCompletionToken?
     @State private var contextRequest: AIConversationDraftContextRequest<AIChatContextSheet.Source>?
+    @State private var toolsPresented = false
     @State private var capability: AIChatCapabilityInfo?
 
     var body: some View {
@@ -46,6 +48,9 @@ struct AIConversationComposerView: View {
                 case .file: addTextFile()
                 case .clipboard: insertClipboard()
                 }
+            }
+            .sheet(isPresented: $toolsPresented) {
+                AIToolSettingsSheet(interaction: interaction, definitions: controller.availableTools)
             }
             .sheet(item: $capability) { AIChatCapabilityInfoView(feature: $0) }
             .sheet(item: $contextRequest) { request in
@@ -118,6 +123,9 @@ struct AIConversationComposerView: View {
                         dismissMenu: dismissComposerMenu, escape: escape, commandReturn: commandReturn, optionReturn: optionReturn)
                         .frame(height: inputHeight)
                 }
+                if let dictation, !controller.running, !controller.loadingChat, inputEnabled {
+                    DictationComposerButton(controller: dictation, composer: composer)
+                }
                 if composer.loadingFiles {
                     ProgressView().controlSize(.small).frame(width: 30, height: 34)
                 } else if controller.running {
@@ -125,11 +133,11 @@ struct AIConversationComposerView: View {
                         .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 34, height: 34)
                 } else if compact && composer.text.isEmpty && composer.attachments.isEmpty, let emptyAction, controller.lastAnswer != nil {
                     Button(emptyActionTitle, action: emptyAction).buttonStyle(.plain).font(.system(size: 12))
-                } else if composer.text.isEmpty && composer.attachments.isEmpty {
+                } else if dictation == nil && composer.text.isEmpty && composer.attachments.isEmpty {
                     Button("语音输入（尚未接入）", systemImage: "mic") { capability = .voice }
                         .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 30, height: 34)
                         .foregroundStyle(.secondary).help("语音输入：基础入口，尚未接入")
-                } else {
+                } else if !composer.text.isEmpty || !composer.attachments.isEmpty {
                     Button("发送", systemImage: "arrow.up", action: submit)
                         .labelStyle(.iconOnly).buttonStyle(.plain)
                         .frame(width: 30, height: 30)
@@ -200,7 +208,7 @@ struct AIConversationComposerView: View {
             ]
             if !contextMenuOpen {
                 items += [
-                    Item(id: "tools", section: "基础入口", title: "扩展工具…", symbol: "puzzlepiece.extension", detail: "待接入") { capability = .tools },
+                    Item(id: "tools", section: "基础入口", title: "扩展工具…", symbol: "puzzlepiece.extension", detail: interaction.toolsEnabled ? "已开启" : "已关闭") { toolsPresented = true },
                     Item(id: "skills", section: "基础入口", title: "技能…", symbol: "square.stack.3d.up", detail: "待接入") { capability = .skills }
                 ]
             }

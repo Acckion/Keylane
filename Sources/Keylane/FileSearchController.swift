@@ -3,7 +3,7 @@ import Combine
 import CoreServices
 import KeylaneCore
 
-private final class FileScanCancellation {
+private final class FileScanCancellation: @unchecked Sendable {
     private let lock = NSLock(); private var stopped = false
     func cancel() { lock.lock(); stopped = true; lock.unlock() }
     var cancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
@@ -459,6 +459,34 @@ final class FileSearchController: ObservableObject {
         let query = currentQuery
         hasQuery = false
         search(query, includeContents: includesQueryContents, standalone: standalone, showPathItself: showPathItself)
+    }
+
+    /// Independent bounded filename query. Never changes the visible page or starts an index scan.
+    @MainActor func aiSearch(_ query: String, limit: Int) async throws -> [SpotlightFile] {
+        guard let runtime, options.enabled, (1...20).contains(limit) else { throw AIToolContractError.unavailable }
+        var snapshot = authorizedOptions
+        snapshot.contentSearch = false
+        let config = snapshot
+        let exclusions = automaticExclusions.map(\.path)
+        let cancellation = FileScanCancellation()
+        return try await withTaskCancellationHandler {
+            let result: [SpotlightFile] = try await withCheckedThrowingContinuation { continuation in
+                reader.async(execute: DispatchWorkItem { [weak self] in
+                    do {
+                        guard let self, let db = self.readDB, !runtime.cancelled, !cancellation.cancelled else { throw CancellationError() }
+                        let files = try db.search(query, options: config, excluded: exclusions, limit: limit,
+                            isCancelled: { cancellation.cancelled || runtime.cancelled })
+                        continuation.resume(returning: files)
+                    } catch { continuation.resume(throwing: error) }
+                })
+            }
+            try Task.checkCancellation()
+            var latest = authorizedOptions
+            latest.contentSearch = false
+            guard !runtime.cancelled, options.enabled, latest == config,
+                  automaticExclusions.map(\.path) == exclusions else { throw AIToolContractError.unavailable }
+            return result
+        } onCancel: { cancellation.cancel() }
     }
 
     func recentForLauncherSwipe() async -> [SpotlightFile] {

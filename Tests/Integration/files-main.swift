@@ -73,6 +73,17 @@ controller.search("")
 precondition(!controller.indexing, "Opening an empty search should not start a full scan")
 controller.search("batch-fixture")
 wait("Wide directory across index batches") { !controller.indexing && results.count == 130 }
+let toolPageQuery = controller.lastPublishedQuery
+let toolPageRows = results
+var toolSearchFinished = false
+Task { @MainActor in
+    let files = try! await controller.aiSearch("batch-fixture", limit: 3)
+    precondition(files.count == 3 && files.allSatisfy { $0.name.contains("batch-fixture") && !$0.matchesContent })
+    precondition(controller.lastPublishedQuery == toolPageQuery && results == toolPageRows)
+    toolSearchFinished = true
+}
+wait("Independent read-only AI filename query") { toolSearchFinished }
+print("PASS AI filename query: bounded indexed results, no content matching, visible query and rows unchanged")
 controller.search("作业")
 wait("Chinese filename") { !controller.indexing && results.contains { $0.name == "作业-2.pdf" } }
 precondition(results.first(where: { $0.name == "作业-2.pdf" })?.contentType?.conforms(to: .pdf) == true,

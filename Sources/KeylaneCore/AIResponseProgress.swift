@@ -59,6 +59,10 @@ public struct AIResponseProgress: Codable, Equatable, Sendable {
             } else if activities.count < 64 {
                 activities.append(.init(id: id, kind: .tool, title: String(name.prefix(100)), arguments: Self.sanitizedArguments(arguments), state: state))
             }
+        case let .toolResult(id, text):
+            if let index = activities.firstIndex(where: { $0.id == id }) {
+                activities[index].text = Self.bounded(text)
+            }
         case .writing:
             finishThinking(); phase = .writing
         case .completed:
@@ -114,5 +118,6 @@ public struct AIResponseProgress: Codable, Equatable, Sendable {
 public enum AIResponseEvent: Equatable, Sendable {
     case thinking(id: String, delta: String)
     case tool(id: String, name: String, arguments: String, state: AIResponseProgress.Activity.State)
+    case toolResult(id: String, text: String)
     case writing, completed, failed, cancelled
 }

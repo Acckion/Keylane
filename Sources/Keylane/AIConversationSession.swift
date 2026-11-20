@@ -7,6 +7,19 @@ final class AIConversationSession: ObservableObject {
 
     @Published private(set) var turns: [Turn] = []
     let composer = AIConversationComposer()
+    let toolApproval = AIToolApprovalBroker()
+    private var toolSource: @MainActor () -> [AIToolRegistration] = { [] }
+    private var toolEnabled: () -> Bool = { false }
+    private var toolChanges: AnyCancellable?
+    @MainActor var availableTools: [AIToolDefinition] { toolSource().map(\.definition) }
+
+    func configureTools(preferences: AIInteractionPreferences, source: @escaping @MainActor () -> [AIToolRegistration]) {
+        toolSource = source
+        toolEnabled = { [weak preferences] in preferences?.toolsEnabled == true }
+        toolChanges = preferences.$toolsEnabled.dropFirst().sink { [weak self] enabled in
+            if !enabled { self?.stop() }
+        }
+    }
     @Published var textScale: Double = 1
     @Published private(set) var quickModelIsAutomatic = true
     let revealMessage = PassthroughSubject<UUID, Never>()
@@ -105,11 +118,11 @@ final class AIConversationSession: ObservableObject {
         guard state.enabled else { return nil }
         if let conversationModel {
             return state.connections.first {
-                $0.id == conversationModel.profileID && $0.isConfigured && AIChatRecord.ModelReference($0) == conversationModel
+                $0.id == conversationModel.profileID && $0.isConfigured && $0.taskKind == .text && AIChatRecord.ModelReference($0) == conversationModel
             }
         }
         if !isInChat, let id = preferredQuickModel?(),
-           let connection = state.connections.first(where: { $0.id == id && $0.isConfigured }) { return connection }
+           let connection = state.connections.first(where: { $0.id == id && $0.isConfigured && $0.taskKind == .text }) { return connection }
         return state.connection(for: isInChat ? .chat : .quick)
     }
 
@@ -128,7 +141,7 @@ final class AIConversationSession: ObservableObject {
     func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil, attachments suppliedAttachments: [AIConversationAttachment]? = nil) -> Bool {
         guard !running, !loadingChat, !composer.loadingFiles, configuration.state.enabled,
               !isInChat || override == nil,
-              let connection = override ?? currentConnection, connection.isConfigured,
+              let connection = override ?? currentConnection, connection.isConfigured, connection.taskKind == .text,
               configuration.state.connections.contains(connection),
               conversationModel == nil || conversationModel == AIChatRecord.ModelReference(connection) else { return false }
         let attachments = suppliedAttachments ?? composer.attachments
@@ -159,7 +172,19 @@ final class AIConversationSession: ObservableObject {
         saveChat()
         task = Task { @MainActor [weak self, runtime, readKey] in
             do {
-                _ = try await runtime.generate(connection: connection, readKey: readKey, messages: requestMessages, progress: { [weak self] event in
+                var tools: AIToolRun?
+                if let self, self.toolEnabled() {
+                    guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
+                    tools = try AIToolRun(registrations: self.toolSource(), isCurrent: { [weak self] in
+                        guard let self else { return false }
+                        return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
+                            self.currentConnection == connection
+                    }, approve: { [weak self] title, arguments in
+                        guard let self else { return false }
+                        return await self.toolApproval.request(title: title, arguments: arguments)
+                    })
+                }
+                _ = try await runtime.generate(connection: connection, readKey: readKey, messages: requestMessages, tools: tools, progress: { [weak self] event in
                     await MainActor.run { [weak self] in
                         guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
                         self.turns[index].progress?.apply(event)
@@ -344,7 +369,7 @@ final class AIConversationSession: ObservableObject {
     @discardableResult
     func chooseModel(_ id: UUID, behavior: ModelChange = .emptyOnly, automatic: Bool = false) -> Bool {
         guard !running, !loadingChat, !composer.loadingFiles, configuration.state.enabled,
-              let connection = configuration.state.connections.first(where: { $0.id == id && $0.isConfigured }) else { return false }
+              let connection = configuration.state.connections.first(where: { $0.id == id && $0.isConfigured && $0.taskKind == .text }) else { return false }
         if !turns.isEmpty {
             guard behavior == .forkContinuation, matchesCurrentModel, currentConnection != nil else { return false }
             if currentConnection?.id != id { startBranch(with: turns) }
@@ -368,7 +393,7 @@ final class AIConversationSession: ObservableObject {
         guard validateInstructions(effectiveInstructions) else { return false }
         let nextModel: AIConnection?
         if let modelID {
-            guard let candidate = configuration.state.connections.first(where: { $0.id == modelID && $0.isConfigured }) else { return false }
+            guard let candidate = configuration.state.connections.first(where: { $0.id == modelID && $0.isConfigured && $0.taskKind == .text }) else { return false }
             nextModel = candidate
         } else { nextModel = nil }
         let draft = composer.snapshot
@@ -546,6 +571,7 @@ final class AIConversationSession: ObservableObject {
     }
 
     private func finish() {
+        toolApproval.cancel()
         activeID = nil
         task = nil
         running = false

@@ -278,7 +278,8 @@ struct AIChatView: View {
         AIConversationComposerView(controller: controller, configuration: configuration,
             interaction: interaction, composer: composer, canSubmit: canSubmit,
             submit: submit, newChat: { newChat() }, chooseModel: chooseChatModel,
-            showUsage: { usageTarget = controller.currentConnection }, openAISettings: openAISettings)
+            showUsage: { usageTarget = controller.currentConnection }, openAISettings: openAISettings,
+            dictation: (NSApp.delegate as? Delegate)?.model.dictation)
     }
 
     private func chooseChatModel(_ id: UUID) {
@@ -319,7 +320,7 @@ struct AIChatView: View {
                         Text("应用于这段对话的后续消息。").font(.caption).foregroundStyle(.secondary)
                     }
                     Divider()
-                    AIChatCapabilitySection()
+                    AIChatCapabilitySection(interaction: interaction, definitions: controller.availableTools)
                     Divider()
                     Toggle("回车发送", isOn: $interaction.chatReturn).toggleStyle(.switch)
                     Toggle("窗口置顶", isOn: $interaction.chatFloating).toggleStyle(.switch)

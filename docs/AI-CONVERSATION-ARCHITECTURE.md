@@ -80,3 +80,26 @@ Quick AI 回复区、滚动指示器与底部遮罩使用公共输入组件的�
 窗口关闭只结束当前会话和草稿，不清空共用历史/项目目录；空白完整聊天关闭后，Quick AI 的历史导航和项目选择仍可使用，已补隔离回归。
 
 公共回复字体由 `AIConversationMarkdownBody` 指定，段落、列表和标题统一随聊天缩放；实际 SwiftUI 渲染高度回归覆盖放大/缩小，并确认更新日志仍继承原字号。
+
+## 基础工具运行层
+
+`LauncherModule.aiTools` 登记 `AIToolRegistration`：纯声明、可用性、是否逐次确认与原生处理器分离。注册表统一拒绝重名；读取目录不执行处理器或申请权限。执行器保留本次目录快照，并在操作前、异步查询返回后核对模块启用状态和动态注册代次。禁用再启用不会复活旧操作。
+
+Quick AI 与 AI Chat 的同一个 `AIConversationSession` 创建每次生成的 `AIToolRun`，共用设置开关、过程展示与 `AIToolApprovalBroker`。开关默认关闭；打开应用每次确认，60 秒未答复即拒绝。停止、换会话、关闭工具和更换连接使旧请求失效；确认与真正执行之间再次在主线程检查。并行请求按顺序执行，避免多个确认互相覆盖。
+
+接入协议：
+
+- OpenAI-compatible API、Ollama `/v1`、高级自定义提供方：函数 schema、多轮 assistant/tool 消息与 SSE 参数拼接；保留提供方额外续接字段。
+- Anthropic API：原生 `tool_use/tool_result`，保留 assistant 原始块及 thinking signature，签名不显示到 UI。
+- ChatGPT 订阅：Codex app-server 客户端 dynamic tools；RPC 必须匹配当前 thread/turn，返回原请求 ID。CLI 原生 shell、web 和外部 MCP 继续禁用。
+- Claude 订阅：Claude Code SDK stream-json 控制协议，通过唯一 Keylane SDK MCP 服务提供 `tools/list`、`tools/call`；原生工具、用户 MCP、hooks 与 slash commands 继续禁用。收到取消控制消息时取消对应请求。订阅身份沿用既有连接检查。
+
+每次生成最多 6 个模型往返、12 次工具执行，参数 16 KiB、单项结果 32 KiB、结果合计 128 KiB；CLI 单轮请求由 CLI 管理，仍受 12 次执行、总输出与超时限制。非法参数、未知工具、重复调用 ID、截断响应与超限均不会被当作成功。工具关闭时沿用原纯文字路径；模型明确不支持工具时显示错误，不静默降级。
+
+首批工具包括时间、计算器、应用名称查找、确认后打开应用、已授权本地补充索引的文件名查询、已授权且已选中日历的七天内日程查询。文件工具明确标注索引覆盖范围，不读取正文；两种查询均不修改当前页面的查询、选择或预览。此阶段未接入任意命令执行、文件写入与第三方工具自动发现。
+
+协议集成使用模拟 HTTP、隔离 CLI、虚构账户；通过自动化不代表真实提供商和所有模型已实测。真实账户、模型能力、安装版交互仍需单独验收。
+
+OpenRouter 的流式续接分别处理文本/摘要增量和不可拆解的加密块；加密块保留原顺序、标识和内容，不拼接或展示到界面。协议依据：[OpenRouter reasoning_details](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#reasoning_details-array-structure)。
+
+普通 OpenAI 响应、Anthropic 响应和工具响应共用 `AISSEEventDecoder` 分帧：逐字节保留 UTF-8，兼容 LF、CR、CRLF，多条 `data:` 在空行后才组成 JSON 事件。各协议在自己的结束标记处停止读取，避免等待仍开放的连接；公共组件限制单事件大小，传输层限制总响应大小。
