@@ -150,7 +150,7 @@
 | TEAM-01 | 组织共享、角色与私有扩展 | 待确认范围 | 此前暂不纳入当前批次，长期目标中保留，开发前确认 | [历史决定](TODO.md)、[Raycast Teams](https://manual.raycast.com/teams) |
 | TEAM-02 | 企业 SSO、SCIM、MDM 和管理控制 | 待确认范围 | 调查所需服务、身份及设备管理基础设施，再确定批次 | [Raycast 企业功能目录](https://manual.raycast.com/) |
 | SERVICE-01 | 账号、计费与 AI Credits | 待确认范围 | Keylane 当前以用户自己的模型连接为主，商业服务方案另定 | [提供方](AI-PROVIDERS.md)、[Raycast AI Credits](https://manual.raycast.com/ai/ai-credits) |
-| EXTRA-01 | 暂存架、内容投放与桌面管理 | 部分实现 | Keylane 自身功能，继续记录回归；网格管理 PR #211 待合并 | [暂存架](DROP-SHELF.md)、[PR #211](https://github.com/Acckion/Keylane/pull/211) |
+| EXTRA-01 | 暂存架、内容投放与桌面管理 | 部分实现 | 网格管理、显式关闭空架后保留、搜索中横向选卡待合并；真实 Finder 拖放待验收 | [暂存架](DROP-SHELF.md)、[PR #211](https://github.com/Acckion/Keylane/pull/211) |
 | EXTRA-02 | 下载扩展及截图/下载自动入架 | 部分实现 | 真实下载完成识别、首次授权及自动投放安装版验收 | [下载联动](DOWNLOADS-SHELF.md) |
 
 ## 下一步执行
@@ -167,6 +167,7 @@
 | 日期 | 范围 | 基线与证据 |
 | --- | --- | --- |
 | 2026-11-21 | 建立全仓库总表，纳入 macOS 功能、AI、扩展、同步、平台及长期项目 | dev `9e73f01`；Raycast 官方手册目录及专项页面；仓库模块文档；PR #201/#211/#212/#214/#215 当前均未合并 |
+| 2026-11-21 | EXTRA-01 暂存架网格审查修复待合并 | [PR #211](https://github.com/Acckion/Keylane/pull/211)，覆盖空架后续裁剪及存档恢复、搜索时横向选择；验收结果见 PR |
 
 | 2026-11-21 | BASE-08：Theme Studio 及设置颜色隔离，标记待合并 | 功能分支 `feat/theme-studio`，[PR #220](https://github.com/Acckion/Keylane/pull/220)，`d414663` / `d8e5c96`；自动化与本机安装证据见 [模块记录](features/THEME-STUDIO.md)，用户最终验收仍待完成 |
 维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用待合并；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。

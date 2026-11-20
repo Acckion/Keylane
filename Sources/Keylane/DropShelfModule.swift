@@ -22,14 +22,14 @@ enum DropShelfModule {
         let historyID = CommandID(rawValue: "drop-shelf-history")
         commands.append(.init(declaration: .init(id: historyID, title: "暂存架", detail: "搜索和管理最近与固定的暂存架", symbol: "tray.full",
                                                  keywords: ["Dropover", "Shelf History", "暂存架历史", "暂存架管理"], destination: .page(pageID), settingsPage: settingsID)))
-        let page = LauncherPage(
+        var page = LauncherPage(
             id: pageID, placeholder: "搜索暂存架与内容…", badge: ("暂存架", "tray.full"), actionTitle: "暂存架操作",
             contentPlacement: .underChrome,
             content: { [weak model] in AnyView(DropShelfHistoryView(controller: controller, query: model?.query ?? "")) },
             queryChanged: controller.searchShelves,
             leave: controller.endManagement,
             move: { [weak model] delta in
-                controller.searchShelves(model?.query ?? ""); controller.moveShelf(delta)
+                controller.searchShelves(model?.query ?? ""); controller.moveShelf(delta, vertical: true)
             },
             submit: { [weak model] in
                 controller.searchShelves(model?.query ?? ""); controller.openSelectedShelf()
@@ -40,9 +40,10 @@ enum DropShelfModule {
             actions: { [weak model] in
                 var actions: [LauncherAction] = []
                 if let shelf = controller.selectedShelf {
+                    let onDesktop = controller.isShelfOpen(shelf.id)
                     actions += [
                         .init(id: "shelf-open", title: "打开浮动暂存架", icon: "arrow.up.forward.app", perform: controller.openSelectedShelf),
-                        .init(id: "shelf-pin", title: shelf.pinned ? "取消固定" : "固定暂存架", icon: shelf.pinned ? "pin.slash" : "pin", perform: controller.toggleSelectedPin),
+                        .init(id: "shelf-pin", title: onDesktop ? "取消固定" : "固定暂存架", icon: onDesktop ? "pin.slash" : "pin", perform: controller.toggleSelectedPin),
                         .init(id: "shelf-rename", title: "重命名…", icon: "pencil", perform: { controller.pendingRename = shelf }),
                         .init(id: "shelf-remove", title: "移除暂存架…", icon: "trash", group: 2, destructive: true, perform: { controller.pendingRemoval = shelf })
                     ]
@@ -53,9 +54,10 @@ enum DropShelfModule {
                 ]
                 return actions
             },
-            updates: Publishers.Merge(
+            updates: Publishers.Merge3(
                 ViewObservation.changes(controller.$managedShelves),
-                ViewObservation.changes(controller.$selectedShelfID)
+                ViewObservation.changes(controller.$selectedShelfID),
+                ViewObservation.changes(controller.$displayedShelfIDs)
             ).eraseToAnyPublisher(),
             enter: { query in controller.beginManagement(query); return nil },
             resume: { [weak model] in controller.beginManagement(model?.query ?? "") },
@@ -64,11 +66,13 @@ enum DropShelfModule {
                 AnyView(ResultTypeFilter(selection: Binding(get: { controller.shelfFilter }, set: { controller.shelfFilter = $0 }),
                                          options: [.init(id: "all", title: "全部暂存架", symbol: "tray.full"),
                                                    .init(id: "pinned", title: "已固定", symbol: "pin"),
-                                                   .init(id: "recent", title: "最近", symbol: "clock")],
+                                                   .init(id: "recent", title: "未在桌面显示", symbol: "clock")],
                                          open: open, navigation: model?.navigation ?? "arrows"))
             },
             actionShortcutsEnabled: true
         )
+        page.moveHorizontal = { controller.moveShelf($0) }
+        page.navigateWhileTyping = true
         let anchor = SettingsItem(id: "dropShelf.behavior", page: settingsID, title: "暂存架交互", keywords: "晃动 摇晃 灵敏度 按键 快捷键 刘海 默认位置 添加文件 忽略应用 复制 拖出 最近 固定")
         return .init(id: .init(rawValue: settingsID), title: "暂存架", symbol: "tray", commands: commands, pages: [page],
                      settings: [.init(id: settingsID, title: "暂存架", symbol: "tray", subtitle: "收集文件、图片、链接与文字，再拖到目标应用。", order: 85,
@@ -78,7 +82,8 @@ enum DropShelfModule {
         })], services: [.init(start: { [weak model] in if let model {
             controller.openManager = { [weak model] in model?.runCommand(historyID, origin: .menu) }
             controller.start(registry: model.menuBar)
-        } }, stop: controller.stop)])
+        } }, stop: controller.stop)],
+        launcherShown: controller.launcherShown, launcherHidden: controller.launcherHidden)
     }
 }
 
