@@ -138,7 +138,8 @@
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
 | DATA-01 | Keylane 配置导出、预览冲突与恢复 | 部分实现 | 安装版恢复、旧数据和异常中断验收 | [配置迁移](CONFIGURATION-MIGRATION.md) |
-| DATA-02 | Raycast 配置迁移 | 部分实现 | 已支持部分配置格式，按类别明确支持与不支持字段 | [配置迁移](CONFIGURATION-MIGRATION.md) |
+| DATA-02 | Raycast 配置迁移 | 部分实现 | 基础配置已有；分类数据扩展见 DATA-02-a（待合并），尚非完整兼容 | [配置迁移](CONFIGURATION-MIGRATION.md)、[分类支持进度](RAYCAST-IMPORT-COVERAGE.md) |
+| DATA-02-a | Raycast 分类数据导入、预览与启动恢复 | 待合并 | 片段、文本剪贴板、AI 只读历史/命令、Emoji、专注分类；笔记暂缓，未支持内容不保存；实际导入/重启/撤销待验收 | [实现 ca498f3](https://github.com/Acckion/Keylane/commit/ca498f3)、[范围及验证](RAYCAST-IMPORT-COVERAGE.md) |
 | DATA-03 | 跨设备设置、聊天与剪贴板同步 | 待合并 | iCloud Drive 方案 PR #201，合并前不计为已有云同步 | [PR #201](https://github.com/Acckion/Keylane/pull/201)、[Raycast Cloud Sync](https://manual.raycast.com/cloud-sync) |
 | DATA-04 | 完整用户数据备份与恢复 | 待核对 | 配置备份之外，核对聊天、历史、附件及冲突恢复范围 | [配置边界](CONFIGURATION-MIGRATION.md)、[原计划](archive/FEATURES.csv) |
 | RELEASE-01 | GitHub 更新检查、测试版渠道与更新日志 | 部分实现 | 真实下载/替换/重启、签名迁移和失败恢复验收 | [应用工具](APP-UTILITIES.md)、[发行](CI-RELEASE.md) |
@@ -167,3 +168,4 @@
 | 日期 | 范围 | 基线与证据 |
 | --- | --- | --- |
 | 2026-11-21 | 建立全仓库总表，纳入 macOS 功能、AI、扩展、同步、平台及长期项目 | dev `9e73f01`；Raycast 官方手册目录及专项页面；仓库模块文档；PR #201/#211/#212/#214/#215 当前均未合并 |
+| 2026-11-21 | DATA-02 / DATA-02-a：扩展 Raycast 分类迁移，独立列出待合并能力与未支持项目 | 实现 `ca498f3`；全量 342 项 Core + 3 项 ProviderConfig、补充 14 项迁移专项、27 项 ReleaseTests、隔离原生流程与签名包校验通过；真实备份仅只读核对，未实机导入 |

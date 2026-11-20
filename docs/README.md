@@ -21,7 +21,7 @@
 | 本地暂存与拖放 | [暂存架](DROP-SHELF.md)（实机验收待完成） |
 | macOS 集成 | [日历与菜单栏](MENU-BAR-CALENDAR.md)、[Apple 备忘录](APPLE-NOTES.md)、[截图](SCREENSHOTS.md)、[系统操作](SYSTEM-ACTIONS.md)、[系统设置](SYSTEM-SETTINGS.md) |
 | 窗口交互 | [导航](NAVIGATION.md)、[窗口管理](WINDOW-MANAGEMENT.md) |
-| 配置 | [备份、恢复与 Raycast 迁移](CONFIGURATION-MIGRATION.md) |
+| 配置 | [备份、恢复与 Raycast 迁移](CONFIGURATION-MIGRATION.md)、[Raycast 分类导入支持进度](RAYCAST-IMPORT-COVERAGE.md) |
 
 模块文档保留设计决定与历次验证记录；涉及旧日期、旧版本的段落描述当时状态。当前发布内容以发布说明为准。
 
