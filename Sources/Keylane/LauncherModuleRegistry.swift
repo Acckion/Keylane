@@ -44,6 +44,12 @@ struct LauncherAction: Identifiable {
     var enabled = true
     var destructive = false
     var perform: () -> Void = {}
+
+    @discardableResult func invoke() -> Bool {
+        guard enabled else { return false }
+        perform()
+        return true
+    }
 }
 
 extension KeyboardShortcut {
@@ -59,7 +65,37 @@ extension KeyboardShortcut {
     }
 }
 
+/// Owns work for one active page visit, independently of persistent module services.
+final class LauncherPageSession {
+    private(set) var ended = false
+    private var cleanup: [() -> Void] = []
+    func onEnd(_ action: @escaping () -> Void) {
+        if ended { action() } else { cleanup.append(action) }
+    }
+    func own(_ task: Task<Void, Never>) { onEnd { task.cancel() } }
+    @discardableResult func publish(_ action: () -> Void) -> Bool {
+        guard !ended else { return false }
+        action(); return true
+    }
+    func end() {
+        guard !ended else { return }
+        ended = true
+        let actions = cleanup; cleanup.removeAll()
+        actions.reversed().forEach { $0() }
+    }
+}
+
 struct LauncherPage {
+    /// Produced together from current selection/state, never retained across page visits.
+    struct ActionSnapshot {
+        let primary: LauncherAction
+        var items: [LauncherAction] = []
+        var footerTitle: String?
+        var menuActions: [LauncherAction] {
+            items.map { $0.id == primary.id ? primary : $0 }
+        }
+    }
+
     enum ContentPlacement {
         case inset
         case underChrome
@@ -86,7 +122,10 @@ struct LauncherPage {
     struct ReturnBindings {
         struct Alternate {
             var dismissMenu = false
-            let perform: () -> Void
+            let actionID: () -> String
+            init(dismissMenu: Bool = false, actionID: @escaping () -> String) {
+                self.dismissMenu = dismissMenu; self.actionID = actionID
+            }
         }
 
         var primary: ReturnKey?
@@ -141,6 +180,16 @@ struct LauncherPage {
     var actionShortcutsEnabled = false
     var loading: AnyPublisher<Bool, Never>?
     var fullBleed = false
+    var actionSnapshot: (() -> ActionSnapshot)?
+    var selectionActions: ((Entry?) -> ActionSnapshot)?
+    var startSession: ((LauncherPageSession) -> Void)?
+    var resolvedActions: [LauncherAction] { actionSnapshot?().menuActions ?? actions?() ?? [] }
+    func action(for key: ReturnKey, selection: Entry? = nil) -> LauncherAction? {
+        guard let binding = returnBindings.alternates[key] else { return nil }
+        let id = binding.actionID()
+        let items = selectionActions.map { $0(selection).menuActions } ?? resolvedActions
+        return items.first { $0.id == id }
+    }
 }
 
 struct SettingsTitlebarContribution {
