@@ -31,6 +31,24 @@ enum AIModule {
                 if fromQuickAI { model.pageID = .root }
             }
         }
+        model.dictation.deliverAI = { [weak model] text, prefersChat in
+            guard let model else { return }
+            if prefersChat || quickAI.isInChat {
+                openChat(nil)
+                chat.appendDictation(text)
+            } else if configuration.state.connection(for: .quick) != nil {
+                model.openPage(QuickAILauncher.pageID, origin: .menu)
+                model.query = text
+                DispatchQueue.main.async {
+                    guard model.pageID == QuickAILauncher.pageID, model.query == text else { return }
+                    if quickAI.submit(text) { model.query = "" }
+                }
+            } else {
+                _ = DictationDelivery.copy(text)
+                model.openSettings(page: "ai-models")
+                (NSApp.delegate as? Delegate)?.showLauncherFeedback("听写已保存并复制。请先配置 Quick AI 模型。", style: .failure)
+            }
+        }
         let quickCommand = LauncherModule.Command(declaration: .init(
             id: QuickAILauncher.commandID, title: "Quick AI", detail: "向已配置的模型提问", symbol: "sparkles",
             keywords: ["ask", "AI", "快速问答", "询问 AI"], destination: .action, settingsPage: "ai"

@@ -178,6 +178,9 @@ private struct QuickAIConversationPage: View {
                                     if controller.running { controller.stop() }
                                     else { model.cancelLauncherPage() }
                                 })
+                    if !controller.running {
+                        DictationComposerButton(controller: model.dictation, text: $input)
+                    }
                     if controller.running {
                         NativeHoverButton(title: "停止生成", action: controller.stop) {
                             Image(systemName: "stop.fill")

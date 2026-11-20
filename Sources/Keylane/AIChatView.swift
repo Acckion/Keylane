@@ -229,6 +229,10 @@ struct AIChatView: View {
                     Button("停止生成", systemImage: "stop.fill", action: controller.stop)
                         .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 34, height: 34)
                 } else {
+                    if let delegate = NSApp.delegate as? Delegate {
+                        DictationComposerButton(controller: delegate.model.dictation, text: $composer.text)
+                            .id(controller.chatID)
+                    }
                     Button("发送", systemImage: "arrow.up", action: submit)
                         .labelStyle(.iconOnly).buttonStyle(.plain)
                         .frame(width: 30, height: 30)

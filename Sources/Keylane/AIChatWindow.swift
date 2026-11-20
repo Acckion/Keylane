@@ -42,6 +42,10 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
         }
     }
 
+    func appendDictation(_ text: String) {
+        composer.text += (composer.text.isEmpty ? "" : "\n") + text
+    }
+
     func show(draft: String, restoreLatest: Bool, activation: WindowActivationBehavior, leaveLauncher: () -> Void) {
         controller.beginChat(restoreLatest: restoreLatest)
         composer.offer(draft)

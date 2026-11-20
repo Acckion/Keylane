@@ -71,6 +71,7 @@ final class Model: ObservableObject {
     let aiSettings = AIConfiguration()
     let aiInteraction = AIInteractionPreferences()
     let aiRuntime = AIRuntime()
+    lazy var dictation = DictationController(configuration: aiSettings, runtime: aiRuntime)
     lazy var fileAI: FileAIController = {
         let controller = FileAIController(settings: aiSettings, runtime: aiRuntime)
         controller.openSettings = { [weak self] in self?.openSettings(page: "ai") }
@@ -1182,6 +1183,9 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self.model.runCommand(.init(rawValue: action), origin: .shortcut, usageKey: appKey)
             }
         }
+        shortcuts.released = { [weak self] action in
+            if ["dictate", "dictate-to-note", "dictate-to-ai"].contains(action) { self?.model.dictation.releaseShortcut() }
+        }
         do { try shortcuts.restore(model.bindings); hotkeyStatus = 0 } catch { hotkeyStatus = -1; model.error = error.localizedDescription }
         modifiers.activate = { [weak self] in self?.show() }
         model.configureModifiers()
@@ -1561,6 +1565,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 if CommandLine.arguments.dropFirst() == [DictionaryProcess.argument] { DictionaryProcess.run() }
 
 let application = NSApplication.shared
+#if DEBUG
+if CommandLine.arguments.dropFirst() == ["--verify-dictation-ui"] {
+    do { try DictationUIFixture.run(); exit(0) }
+    catch { fputs("Dictation UI fixture failed: \(error)\n", stderr); exit(1) }
+}
+#endif
 ConfigurationTransfer.finishPending()
 let delegate = Delegate()
 application.delegate = delegate
