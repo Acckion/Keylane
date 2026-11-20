@@ -101,7 +101,7 @@
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 待合并 | PR #215 待合并；仅根内一级不覆盖创建，目录移动后的不确定结果、无覆盖竞争与不支持条件有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
-| AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 尚未合入基线，确认权限和副作用行为 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
+| AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 待合并；同步已合入 #212 的 dev，片段模板/成功结果校验、备忘录附加授权与 Emoji 导入关键词已保留；隔离回归进行中，真实服务未验收 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-17 | MCP 客户端及 Keylane MCP 服务端 | 待核对 | 两个方向分别调查传输、发现、授权及宿主动作 | [参考](https://manual.raycast.com/ai/model-context-protocol) |
@@ -183,3 +183,5 @@
 维护记录：2026-11-21，DATA-02-b：从 dev `8b2fa648` 独立提交 SQLite 安装预期状态修复，原 #219 的实现不重复携带。旧逻辑在隔离合成库中确定性复现覆盖；补丁不改变附件轮次处理；实现 `d27da3f`，独立补丁 [PR #225](https://github.com/Acckion/Keylane/pull/225) 已同步 dev `2ad472e`，全量 356+3 项 Swift、18 项迁移专项、12 个强制退出场景和 27 项 ReleaseTests 通过。验证结果见 [分类支持进度](RAYCAST-IMPORT-COVERAGE.md)。
 
 维护记录：2026-11-21，AI-13 / PR #215 同步 dev `d99d1d9`，澄清仅不覆盖创建、授权目录对象身份与移动后结果不确定的边界；补测提交前拒绝、发布前后移动、目标竞争和不支持系统调用；28 项定向 Swift、6 组集成、27 项脚本测试通过，无真实模型/用户资料/安装验收。
+
+维护记录：2026-11-21，AI-14 / PR #214 同步 dev `426b844`（#212 已合入），剔除已进入基线的等价改动，仅保留片段、备忘录、Emoji 及必要公共结果支持；保留 Emoji 导入关键词共用加载和附件来源/权限代次检查。隔离合成验证结果见 PR；不访问真实备忘录、模型或用户文件，未安装、未合并、未发布。
