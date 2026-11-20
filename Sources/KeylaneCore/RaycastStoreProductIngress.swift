@@ -47,6 +47,17 @@ import Foundation
         self.sink = sink
     }
 
+    /// Composition for the narrow Store UI capability. Packaged authority may
+    /// disallow toast; replacing its presentation sink does not add any grant.
+    package func withToastFeedback(_ feedback: @escaping (StoreGuestRunTicket, String) throws -> String) -> Self {
+        Self(application: application, team: team, recipe: recipe, key: key,
+             grants: grants.intersection(["feedback.toast"]), reader: reader,
+             openStorage: openStorage, sign: sign) { ticket, capability, payload in
+            guard capability == "feedback.toast" else { throw RaycastStoreToastState.Failure.denied }
+            return try feedback(ticket, payload)
+        }
+    }
+
     package func open() async -> Result {
         // A synthetic no-SDK recipe is not a qualified public runtime.
         guard !team.isEmpty, !recipe.qualifiedAPIVersions.isEmpty else { return .blocked(.runtimeUnavailable) }

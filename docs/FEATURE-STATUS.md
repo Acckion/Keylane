@@ -131,7 +131,7 @@
 | EXT-04 | 存储、网络、文件、系统工具和 Utilities | 部分实现 | 用公开契约和隔离运行证据缩小 partial 项 | [API 表](RAYCAST-API-COVERAGE.csv) |
 | EXT-05 | 扩展 AI / Tool API | 未实现 | 当前兼容说明列为待覆盖，单独核对授权与执行 | [API 说明](RAYCAST-API-COVERAGE.md) |
 | EXT-06 | OAuth 与依赖 OAuth 的命令 | 待确认范围 | 现有兼容目标明确列为例外，保留差异并在开发前确认范围 | [兼容目标](RAYCAST-COMPATIBILITY.md) |
-| EXT-07 | 扩展商店、发布、更新与开发工具链 | 待核对 | 分开调查本地开发、市场元数据、分发和版本更新 | [原型](EXTENSION-PROTOTYPE.md)、[开发者文档](https://developers.raycast.com) |
+| EXT-07 | 扩展商店、发布、更新与开发工具链 | 待合并 | 商店可浏览；已验证配置入口的短提示只支持展示/更新，不含动作。普通版仍需合格运行资源和配置接入；真机安装、运行和持久化待验证。 | [草稿 #222](https://github.com/Acckion/Keylane/pull/222)、[原型](EXTENSION-PROTOTYPE.md) |
 
 ## 同步、发行与长期范围
 
@@ -173,3 +173,5 @@
 
 
 维护记录：2026-11-21，BASE-03 页面 ActionSnapshot 公共契约及词典/文件/Emoji/表单样板、替代 Return 与页面会话作用域见 [PR #221](https://github.com/Acckion/Keylane/pull/221)（20a170c），待合并、未安装；完整构建、动作/会话、文件与 Emoji 隔离回归通过；见 [页面动作契约](PAGE-ACTION-CONTRACT.md)。
+
+维护记录：2026-11-21，EXT-07 草稿 #222 的配置入口可接宿主短提示；权限只缩不增，提示 ID 随当前运行凭据失效。未执行真实扩展、安装或发布。

@@ -56,7 +56,9 @@ final class ExtensionStoreController: ObservableObject {
         guard let product, !backendReady, !resolvingProduct else { return }
         resolvingProduct = true
         defer { resolvingProduct = false }
-        switch await product.open() {
+        let feedback = RaycastStoreToastFeedback()
+        let scopedProduct = product.withToastFeedback { try feedback.apply($0, payload: $1) }
+        switch await scopedProduct.open() {
         case .blocked(let reason): productReadiness = reason
         case .ready(let capability):
             preferencePersistence = capability.coordinator

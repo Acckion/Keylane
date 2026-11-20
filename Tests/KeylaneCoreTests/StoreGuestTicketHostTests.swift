@@ -57,12 +57,14 @@ final class StoreGuestTicketHostTests: XCTestCase {
             commandID: "fixture", capabilities: ["feedback.toast"], launchContext: .init(), liveLease: { true })
         let authority = Authority(), channel = Channel(ticket.id)
         var effects: [String] = [], spawns = 0
+        var retired: [Bool] = []
         let host = StoreGuestTicketHost(authority: authority, spawn: { _, _, supplied in
             XCTAssertEqual(supplied.id, ticket.id)
             spawns += 1
             return channel
-        }, sink: { _, _, text in
+        }, sink: { ticket, _, text in
             XCTAssertTrue(authority.withinEffect)
+            try ticket.observeFeedbackEnd { retired.append($0) }
             effects.append(text)
             return text
         })
@@ -82,12 +84,15 @@ final class StoreGuestTicketHostTests: XCTestCase {
         do { try await host.revoke(request, timeout: .milliseconds(100)); XCTFail("unauthenticated revoke") }
         catch { XCTAssertEqual(error as? StoreGuestTicketHost.Failure, .denied) }
         XCTAssertEqual(channel.stops, 0)
+        XCTAssertTrue(retired.isEmpty)
 
         authority.authorizedRequest = request.id
         channel.acknowledge = true
         do { try await host.revoke(request, timeout: .milliseconds(100)); XCTFail("ack without helper exit") }
         catch { XCTAssertEqual(error as? StoreGuestTicketHost.Failure, .stopUnconfirmed) }
         XCTAssertThrowsError(try effect("feedback.toast", "still denied"))
+        XCTAssertEqual(retired, [false])
+        XCTAssertThrowsError(try ticket.observeFeedbackEnd { _ in XCTFail("retired ticket") })
         channel.exit = true; channel.delay = .milliseconds(15)
         do { try await host.revoke(request, timeout: .milliseconds(1)); XCTFail("late proof") }
         catch { XCTAssertEqual(error as? StoreGuestTicketHost.Failure, .stopUnconfirmed) }
@@ -96,6 +101,7 @@ final class StoreGuestTicketHostTests: XCTestCase {
         try await task.value
         XCTAssertEqual(channel.stops, 3)
         XCTAssertEqual(effects, ["first"])
+        XCTAssertEqual(retired, [false])
         XCTAssertEqual(spawns, 1)
     }
 }

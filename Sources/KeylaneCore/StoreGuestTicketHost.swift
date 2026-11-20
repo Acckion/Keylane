@@ -81,9 +81,11 @@ package final class StoreGuestTicketHost {
                 throw Failure.stopUnconfirmed
             }
             if sessions[ticket.id]?.revocationID == nil, sessions[ticket.id]?.unconfirmed == false {
+                ticket.endFeedback(keepFinalPresentation: true)
                 sessions[ticket.id] = nil
             }
         } catch {
+            ticket.endFeedback(keepFinalPresentation: false)
             // A channel/error result is not positive proof the helper stopped.
             if sessions[ticket.id]?.revocationID == nil {
                 sessions[ticket.id]?.unconfirmed = true
@@ -105,6 +107,7 @@ package final class StoreGuestTicketHost {
         }
         // Gate all affected sessions before the first asynchronous transport action.
         for session in affected { sessions[session.ticket.id]?.revocationID = request.id }
+        for session in affected { session.ticket.endFeedback(keepFinalPresentation: false) }
         let deadline = ContinuousClock.now.advanced(by: timeout)
         var failed = false
         var prepared: [Session] = []

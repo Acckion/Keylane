@@ -15,6 +15,22 @@ public final class StoreGuestRunTicket: Sendable {
 
     private let liveLease: @Sendable () -> Bool
     private let claim = OSAllocatedUnfairLock(initialState: false)
+    @MainActor private var feedbackEnded = false
+    @MainActor private var feedbackCleanup: ((Bool) -> Void)?
+
+    // The native host retires this callback on completion or before asynchronous
+    // revocation. This cannot grant or schedule guest effects.
+    @MainActor package func observeFeedbackEnd(_ cleanup: @escaping (Bool) -> Void) throws {
+        guard !feedbackEnded else { throw RaycastStoreToastState.Failure.denied }
+        feedbackCleanup = cleanup
+    }
+
+    @MainActor func endFeedback(keepFinalPresentation: Bool) {
+        feedbackEnded = true
+        let cleanup = feedbackCleanup
+        feedbackCleanup = nil
+        cleanup?(keepFinalPresentation)
+    }
 
     init(id: UUID, profileID: UUID, installation: StoreRuntimeBridge.Installation, receipt: StoreRuntimeBridge.Receipt,
          commandID: String, capabilities: Set<String>, launchContext: StoreGuestLaunchContext,
