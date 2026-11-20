@@ -44,7 +44,11 @@ enum AIBuiltinTools {
             return try .init(text: "已向系统请求打开该应用。")
         }]
     }
-    static func files(_ model: Model) -> [AIToolRegistration] { AIReadTools.files(model.fileSearch) }
+    static func files(_ model: Model) -> [AIToolRegistration] {
+        // The old index handler disclosed absolute paths without the file-access lease
+        // or recipient approval. Keep it unavailable until it uses the scoped pipeline.
+        []
+    }
     static func clipboard(_ model: Model) -> [AIToolRegistration] { AIReadTools.clipboard(model.clipboard) }
     static func calendar(_ model: Model) -> [AIToolRegistration] {
         [.init(definition: definition("keylane_calendar", "查询日程", "查询已授权且已选中日历的日程标题及时间。不申请新权限，不读取备注。最多七天。", [

@@ -112,4 +112,4 @@ python3 scripts/verify-package.py
 - 内部结果展示命令标记 `isInternal`，不列入搜索和热键设置；不要为 UI 结果操作建立另一套绕过注册表的分派链。
 - `AIActionOutput.text` 是用户可读结果，内部结构参数放入 `commandArgument`；不要将传输 JSON 或协议字段直接显示给用户。结果动作必须以成功完成状态为准，不能仅凭存在部分正文判断可执行。
 
-- 读取私人数据的 AI 工具须复用 `AIToolRun` 逐次确认与运行域；模型只能通过本次搜索返回的临时引用读取正文，不能直接传文件路径或数据库 ID。`snapshotAvailability` 在目录快照时冻结功能代次，停用／重新启用不能恢复旧权限。授权范围与文件版本由业务模块校验；声明目录不读正文、不申请权限。样板见 `AIReadTools` 与 `docs/AI-MODULE-ACTIONS.md`。
+- 私人数据的 AI 工具复用 `AIToolRun` 确认、接收方与撤销检查。剪贴板历史读取仅接受当前运行域内搜索返回的临时引用，不接受数据库 ID；文件操作统一使用 `AIFileToolProvider` 的目录授权、准备和披露确认管线，不重复注册同名工具或恢复旧索引旁路。`snapshotAvailability` 冻结模块功能代次，停用／重新启用不能恢复旧权限。声明目录不读正文、不申请权限。样板见 `AIReadTools`、`AIFileToolProvider` 与相关架构文档。
