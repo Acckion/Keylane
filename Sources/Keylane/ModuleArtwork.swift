@@ -16,6 +16,11 @@ enum ModuleArtwork {
         "keylane.contacts": "contacts", "keylane.dictionary": "dictionary", "keylane.emoji": "emoji",
         "keylane.apple-notes": "notes", "keylane.window-management": "window-management",
         "snippets": "snippets",
+        "ai": "ai", "ai-models": "ai-models", "ai-text-commands": "ai-commands",
+        "translator": "translator", "dictation": "dictation",
+        "dictation-personalization": "dictation", "dictation-styles": "dictation",
+        "dictation-statistics": "dictation",
+        "keylane.drop-shelf": "drop-shelf", "keylane.focus": "focus",
     ]
 
     private static let modulePages = [
@@ -23,10 +28,12 @@ enum ModuleArtwork {
         "keylane.clipboard": "clipboard", "keylane.screenshots": "screenshots", "keylane.calendar": "calendar",
         "keylane.shortcuts": "shortcuts", "keylane.script-commands": "script-commands",
         "keylane.snippets": "snippets", "keylane.links": "links",
+        "keylane.ai": "ai", "keylane.translator": "translator", "keylane.dictation": "dictation",
     ]
 
     private static let commandNames = [
         "settings": "general", "show-onboarding": "launcher",
+        "quick-ai": "ai", "ai-chat": "ai-chat", "translate": "translator",
         "ask-files": "ai", "ask-finder": "ai",
         "calculator": "calculator", "calculator-hint": "calculator", "calculator-help": "calculator",
         "screenshot": "capture-screen", "paste-latest-screenshot": "paste-screenshot", "color": "color-picker", "speak": "read-aloud",
@@ -58,12 +65,20 @@ enum ModuleArtwork {
     static func command(_ id: CommandID, settingsPage: String? = nil, moduleID: ModuleID? = nil) -> NSImage? {
         if let name = commandNames[id.rawValue] { return image(name) }
         if id.rawValue.hasPrefix("quicklink:") { return settings("links") }
+        if id.rawValue.hasPrefix("ai-command:") { return image("ai-commands") }
+        if id.rawValue.hasPrefix("translate:") { return settings("translator") }
         return settingsPage.flatMap(settings) ?? moduleID.flatMap(module)
     }
 
     private static func image(_ name: String) -> NSImage? {
         let key = name as NSString
         if let cached = cache.object(forKey: key) { return cached }
+        if name == "shortcuts",
+           let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.shortcuts") {
+            let artwork = NSWorkspace.shared.icon(forFile: application.path)
+            cache.setObject(artwork, forKey: key)
+            return artwork
+        }
         var url = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "ModuleArtwork")
         #if DEBUG
         if url == nil {

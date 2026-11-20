@@ -129,7 +129,7 @@ enum TranslatorModule {
                      dynamicCommandSettings: .init(model: model, items: { controller.preferences.commands }, title: \.name, commandID: \.commandID,
                                                   updates: { [controller.$preferences.map { $0.commands }.removeDuplicates().map { _ in () }.eraseToAnyPublisher()] },
                                                   entry: { item, model in
-            CommandSettingsEntry(title: item.name, model: model, commandID: .init(rawValue: item.commandID), icon: { SettingsIcon(symbol: "translate") })
+            CommandSettingsEntry(title: item.name, model: model, commandID: .init(rawValue: item.commandID), icon: { SettingsIcon(symbol: "translate", artwork: ModuleArtwork.settings(TranslatorModule.settingsID)) })
         }))
     }
 
