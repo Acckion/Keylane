@@ -751,12 +751,13 @@ var toolRegistryFinished = false
 Task { @MainActor in
     let definition = try! AIToolDefinition(name: "module_fixture", title: "Fixture", description: "Synthetic tool")
     var probes = 0
-    let contribution = AIToolRegistration(definition: definition, available: { probes += 1; return true }) { _ in try .init(text: "fixture") }
+    var contribution = AIToolRegistration(definition: definition, available: { probes += 1; return true }) { _ in try .init(text: "fixture") }
+    contribution.owner = .init(rawValue: "fixture.spoofed")
     let toolModule = LauncherModule(id: ModuleID(rawValue: "fixture.tools"), aiTools: [contribution])
     let tools = try! LauncherModuleRegistry(modules: [toolModule], preferences: extensionPreferences)
     precondition(probes == 0, "Registration cannot query services or permissions")
     let frozen = tools.availableAITools
-    precondition(frozen.count == 1)
+    precondition(frozen.count == 1 && frozen[0].owner == toolModule.id)
     precondition(tools.setModuleEnabled(toolModule.id, false))
     precondition(!frozen[0].available() && tools.availableAITools.isEmpty)
     precondition(tools.setModuleEnabled(toolModule.id, true))

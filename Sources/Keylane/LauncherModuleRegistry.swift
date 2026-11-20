@@ -732,6 +732,9 @@ final class LauncherModuleRegistry {
             module.aiTools.map { contribution in
                 let frozen = contribution.forRun()
                 var tool = frozen
+                // Ownership comes from the registry, never from a contribution's self-label.
+                tool.owner = module.id
+                tool.ownerTitle = module.displayTitle
                 let generation = toolGenerations[module.id]
                 let activation = activation(for: module.id)
                 tool.available = { [weak self] in

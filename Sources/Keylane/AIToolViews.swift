@@ -20,13 +20,24 @@ struct AIToolSettingsContent: View {
 }
 
 struct AIToolSettingsSheet: View {
+    @ObservedObject var controller: AIConversationSession
     @ObservedObject var interaction: AIInteractionPreferences
-    let definitions: [AIToolDefinition]
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("扩展工具").font(.headline)
-            ScrollView { AIToolSettingsContent(interaction: interaction, definitions: definitions) }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("当前会话使用的模块").font(.subheadline)
+                    ForEach(controller.toolCapabilities) { capability in
+                        Toggle(capability.title, isOn: Binding(
+                            get: { controller.toolSelection.permits(capability.id) },
+                            set: { controller.setToolCapability(capability.id, enabled: $0) }))
+                    }
+                    Button("恢复使用全部模块") { controller.resetToolCapabilities() }
+                    AIToolSettingsContent(interaction: interaction, definitions: controller.availableTools)
+                }
+            }
             HStack { Spacer(); Button("完成") { dismiss() }.keyboardShortcut(.cancelAction) }
         }.padding(24).frame(width: 440, height: 460)
     }

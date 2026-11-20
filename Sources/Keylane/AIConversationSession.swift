@@ -11,10 +11,40 @@ final class AIConversationSession: ObservableObject {
     private var toolSource: @MainActor () -> [AIToolRegistration] = { [] }
     private var toolEnabled: () -> Bool = { false }
     private var toolChanges: AnyCancellable?
-    @MainActor var availableTools: [AIToolDefinition] { toolSource().map(\.definition) }
+    private var toolDiscovery: (@MainActor ([AIToolRegistration]) -> AIToolRegistration)?
+    @Published private(set) var toolSelection = AICapabilitySelection()
+    struct ToolCapability: Identifiable {
+        let id: ModuleID
+        let title: String
+    }
+    @MainActor var toolCapabilities: [ToolCapability] {
+        var seen = Set<ModuleID>()
+        return toolSource().compactMap { tool in
+            guard let owner = tool.owner, seen.insert(owner).inserted else { return nil }
+            return ToolCapability(id: owner, title: tool.ownerTitle ?? owner.rawValue)
+        }.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+    @MainActor func setToolCapability(_ id: ModuleID, enabled: Bool) {
+        let next = toolSelection.setting(id, enabled: enabled, available: Set(toolCapabilities.map(\.id)))
+        guard next != toolSelection else { return }
+        stop()
+        toolSelection = next
+    }
+    @MainActor func resetToolCapabilities() {
+        guard toolSelection != AICapabilitySelection() else { return }
+        stop(); toolSelection = .init()
+    }
+    @MainActor private func selectedTools() -> [AIToolRegistration] {
+        let tools = toolSource().filter { toolSelection.permits($0.owner) }
+        guard !tools.isEmpty, let toolDiscovery else { return tools }
+        return tools + [toolDiscovery(tools)]
+    }
+    @MainActor var availableTools: [AIToolDefinition] { selectedTools().map(\.definition) }
 
-    func configureTools(preferences: AIInteractionPreferences, source: @escaping @MainActor () -> [AIToolRegistration]) {
+    func configureTools(preferences: AIInteractionPreferences,
+                        discovery: (@MainActor ([AIToolRegistration]) -> AIToolRegistration)? = nil, source: @escaping @MainActor () -> [AIToolRegistration]) {
         toolSource = source
+        toolDiscovery = discovery
         toolEnabled = { [weak preferences] in preferences?.toolsEnabled == true }
         toolChanges = preferences.$toolsEnabled.dropFirst().sink { [weak self] enabled in
             if !enabled { self?.stop() }
@@ -177,7 +207,7 @@ final class AIConversationSession: ObservableObject {
             prepareTools: { [weak self] in
                 guard let self, self.toolEnabled() else { return nil }
                 guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
-                return try AIToolRun(registrations: self.toolSource().map { $0.forRun() }, recipient: connection.toolRecipient, isCurrent: { [weak self] in
+                return try AIToolRun(registrations: self.selectedTools().map { $0.forRun() }, recipient: connection.toolRecipient, isCurrent: { [weak self] in
                     guard let self else { return false }
                     return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
                         self.currentConnection == connection

@@ -22,12 +22,16 @@ enum AIModule {
             .appendingPathComponent("Keylane/AI/history.sqlite")
         let quickAI = AIConversationSession(configuration: configuration, runtime: runtime,
                                         history: AIConversationRepository(url: historyURL), preferredQuickModel: { interaction.preferredModelID })
-        quickAI.configureTools(preferences: interaction) { [weak model, weak quickAI] in
+        quickAI.configureTools(preferences: interaction, discovery: AIFileToolProvider.discovery) { [weak model, weak quickAI] in
             guard let model, let quickAI else { return [] }
             let tools = (model.launcherModules?.availableAITools ?? []) + AIFileToolProvider.registrations(
                 preferences: model.aiFileAccess, project: quickAI.currentProject,
                 currentProject: { [weak quickAI] in quickAI?.currentProject })
-            return tools + [AIFileToolProvider.discovery(tools)]
+            return tools.map { registration in
+                var copy = registration
+                if copy.owner == nil { copy.owner = .init(rawValue: "keylane.ai"); copy.ownerTitle = "AI" }
+                return copy
+            }
         }
         let chat = AIChatWindow(controller: quickAI, configuration: configuration, interaction: interaction,
                                 appearance: model.$appearance.eraseToAnyPublisher())

@@ -17,6 +17,8 @@ struct AIToolPreparedOperation: Sendable {
 /// A module contributes declarations and handlers; catalog reads never execute handlers.
 struct AIToolRegistration: Sendable {
     let definition: AIToolDefinition
+    var owner: ModuleID?
+    var ownerTitle: String?
     var requiresConfirmation = false
     var prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil
     var available: @MainActor @Sendable () -> Bool = { true }
@@ -26,9 +28,11 @@ struct AIToolRegistration: Sendable {
     var perform: @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult = { _ in throw AIToolContractError.unavailable }
 
     init(definition: AIToolDefinition, requiresConfirmation: Bool = false,
+         prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil,
          available: @escaping @MainActor @Sendable () -> Bool = { true },
          perform: @escaping @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult) {
         self.definition = definition; self.requiresConfirmation = requiresConfirmation
+        self.prepare = prepare
         self.available = available; self.perform = perform
     }
 

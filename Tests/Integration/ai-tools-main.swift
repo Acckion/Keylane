@@ -90,6 +90,32 @@ let toolDefinition = try AIToolDefinition(name: "fixture_add", title: "Synthetic
 var toolsFinished = false
 Task { @MainActor in
     do {
+        let capabilitySuite = "org.keylane.capability.fixture.\(UUID())"
+        let capabilityPreferences = UserDefaults(suiteName: capabilitySuite)!
+        defer { capabilityPreferences.removePersistentDomain(forName: capabilitySuite) }
+        let capabilitySession = AIConversationSession(configuration: AIConfiguration(preferences: capabilityPreferences),
+            runtime: AIRuntime(), readKey: { _ in nil })
+        let capabilityInteraction = AIInteractionPreferences(preferences: capabilityPreferences)
+        let firstOwner = ModuleID(rawValue: "fixture.a"), secondOwner = ModuleID(rawValue: "fixture.b")
+        var firstTool = AIToolRegistration(definition: toolDefinition) { _ in try .init(text: "a") }
+        firstTool.owner = firstOwner; firstTool.ownerTitle = "A"
+        var secondTool = AIToolRegistration(definition: try .init(name: "fixture_b", title: "B", description: "Fixture")) { _ in try .init(text: "b") }
+        secondTool.owner = secondOwner; secondTool.ownerTitle = "B"
+        var discoveryNames: [String] = []
+        capabilitySession.configureTools(preferences: capabilityInteraction, discovery: { tools in
+            discoveryNames = tools.map { $0.definition.name }
+            return .init(definition: try! .init(name: "fixture_discovery", title: "Discover", description: "Fixture")) { _ in try .init(text: "metadata") }
+        }) { [firstTool, secondTool] in [firstTool, secondTool] }
+        precondition(capabilitySession.toolCapabilities.map(\.id) == [firstOwner, secondOwner])
+        precondition(capabilitySession.availableTools.count == 3)
+        capabilitySession.setToolCapability(secondOwner, enabled: false)
+        precondition(capabilitySession.availableTools.map(\.name) == [toolDefinition.name, "fixture_discovery"])
+        precondition(discoveryNames == [toolDefinition.name])
+        capabilitySession.setToolCapability(firstOwner, enabled: false)
+        precondition(capabilitySession.availableTools.isEmpty)
+        capabilitySession.resetToolCapabilities()
+        precondition(capabilitySession.availableTools.count == 3)
+        print("PASS session module selection, explicit empty catalog and discovery restricted to selected capabilities")
         var performed = 0
         let availability = ToolFixtureAvailability()
         let registration = AIToolRegistration(definition: toolDefinition, available: { availability.allowed }) { arguments in

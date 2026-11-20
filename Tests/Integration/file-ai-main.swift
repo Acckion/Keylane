@@ -798,7 +798,16 @@ FixtureProtocol.mode = "slow"
 precondition(reopened.submit("切换时的未完成问题"))
 let interruptedID = reopened.chatID!
 reopened.openChat(savedID)
-wait("Switch while generating") { !reopened.loadingChat && reopened.chatID == savedID }
+let switchStarted = Date()
+var switchDiagnosed = false
+wait("Switch while generating") {
+    let ready = !reopened.loadingChat && reopened.chatID == savedID
+    if !ready, !switchDiagnosed, Date().timeIntervalSince(switchStarted) > 4.8 {
+        switchDiagnosed = true
+        FileHandle.standardError.write(Data("Synthetic history switch: loading=\(reopened.loadingChat), target=\(reopened.chatID == savedID), error=\(reopened.historyError)\n".utf8))
+    }
+    return ready
+}
 precondition(!reopened.running && reopened.turns.first?.id == savedTurnID)
 reopened.openChat(interruptedID)
 wait("Restore interrupted chat") { !reopened.loadingChat && reopened.chatID == interruptedID }
