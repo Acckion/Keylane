@@ -310,8 +310,10 @@ public struct Record: Identifiable, Codable, Equatable {
 }
 public enum StoreError: Error { case sqlite(String); case incompatibleVersion(Int32) }
 public final class Store {
+    private let syncLock: NSRecursiveLock
     private var db: OpaquePointer?
     public init(url: URL) throws {
+        let gate = SyncMutationLock.database(url); syncLock = gate; gate.lock(); defer { gate.unlock() }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw StoreError.sqlite("Cannot open database") }
         do {
@@ -361,6 +363,8 @@ public final class Store {
     public func save(_ record: Record) throws { try save([record]) }
 
     public func save(_ records: [Record]) throws {
+        syncLock.lock(); defer { syncLock.unlock() }
+        defer { NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil) }
         try execute("BEGIN IMMEDIATE")
         do {
             for record in records {
@@ -379,7 +383,16 @@ public final class Store {
             throw error
         }
     }
-    public func remove(id: String) throws { try execute("BEGIN IMMEDIATE"); do { try write("DELETE FROM records WHERE id=?",[id]); try write("DELETE FROM records_fts WHERE id=?",[id]); try execute("COMMIT") } catch { try? execute("ROLLBACK"); throw error } }
+    public func remove(id: String) throws { syncLock.lock(); defer { syncLock.unlock() }; defer { NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil) }; try execute("BEGIN IMMEDIATE"); do { try write("DELETE FROM records WHERE id=?",[id]); try write("DELETE FROM records_fts WHERE id=?",[id]); try execute("COMMIT") } catch { try? execute("ROLLBACK"); throw error } }
+    public func record(id: String) throws -> Record? {
+        let stmt = try statement("SELECT id,kind,title,body,updated FROM records WHERE id=?", [id])
+        defer { sqlite3_finalize(stmt) }
+        let status = sqlite3_step(stmt)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw StoreError.sqlite(String(cString: sqlite3_errmsg(db))) }
+        func text(_ index: Int32) -> String { String(cString: sqlite3_column_text(stmt, index)) }
+        return Record(id: text(0), kind: text(1), title: text(2), body: text(3), updated: sqlite3_column_double(stmt, 4))
+    }
     public func records(kind: String) throws -> [Record] {
         let stmt = try statement("SELECT id,kind,title,body,updated FROM records WHERE kind=? ORDER BY updated DESC,id ASC", [kind]); defer { sqlite3_finalize(stmt) }; var result: [Record] = []
         while true { let status = sqlite3_step(stmt); if status == SQLITE_DONE { break }; guard status == SQLITE_ROW else { throw StoreError.sqlite(String(cString: sqlite3_errmsg(db))) }; func text(_ index: Int32) -> String { String(cString: sqlite3_column_text(stmt,index)) }; result.append(Record(id: text(0), kind: text(1), title: text(2), body: text(3), updated: sqlite3_column_double(stmt,4))) }; return result

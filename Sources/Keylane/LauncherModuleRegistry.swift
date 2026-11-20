@@ -217,6 +217,12 @@ struct SettingsWindowCatalog {
     func item(_ id: String) -> SettingsItem? { itemsByID[id] }
 }
 
+struct LauncherSyncContribution {
+    let category: SyncCategory
+    /// Constructed only on the sync executor after opt-in, never while reading the catalog.
+    let make: (URL) -> SyncParticipant
+}
+
 struct LauncherModule {
     struct Command {
         struct Arguments {
@@ -280,6 +286,7 @@ struct LauncherModule {
     var pages: [LauncherPage] = []
     var settings: [LauncherSettingsPage] = []
     var services: [Service] = []
+    var syncContributions: [LauncherSyncContribution] = []
     var searchUpdates: [AnyPublisher<Void, Never>] = []
     var launcherShown: (() -> Void)?
     var launcherHidden: (() -> Void)?
@@ -373,6 +380,7 @@ final class LauncherModuleRegistry {
                               origins: settingsOrigins)
     }
     var settings: [LauncherSettingsPage] { settingsCatalog.pages }
+    var syncContributions: [LauncherSyncContribution] { modules.filter { isModulePresent($0.id) }.flatMap(\.syncContributions) }
     private let modules: [LauncherModule]
     private let disableableModules: Set<ModuleID>
     private let preferences: UserDefaults

@@ -9,6 +9,7 @@ import KeylaneCore
 
 final class Model: ObservableObject {
     let updates = KeylaneReleaseCheck()
+    lazy var cloudSync = CloudSyncController(model: self)
     private let dataStoreURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Keylane/data.sqlite")
     @Published var error = ""
@@ -200,6 +201,50 @@ final class Model: ObservableObject {
             return nil
         }
     }()
+    func syncDidApply(_ categories: Set<SyncCategory>) {
+        let defaults = UserDefaults.standard
+        if categories.contains(.preferences) {
+            appearance = defaults.string(forKey: "appearance") ?? "system"
+            interfaceSize = defaults.string(forKey: "interfaceSize") ?? "medium"
+            windowMode = defaults.string(forKey: "windowMode") ?? "expanded"
+            placement = defaults.string(forKey: "placement") ?? "activeScreen"
+            navigation = defaults.string(forKey: "navigation") ?? "arrows"
+            launcherReturnDelay = LauncherReturnDelay(rawValue: defaults.integer(forKey: "launcherReturnDelay")) ?? .after90Seconds
+            launcherEscapeBehavior = LauncherEscapeBehavior(rawValue: defaults.string(forKey: "launcherEscapeBehavior") ?? "") ?? .backOrClose
+            windowActivationBehavior = WindowActivationBehavior(rawValue: defaults.string(forKey: "windowActivationBehavior") ?? "") ?? .systemDefault
+            pageNavigationKeys = PageNavigationKeys(rawValue: defaults.string(forKey: "pageNavigationKeys") ?? "") ?? .brackets
+            escapeClosesUtilityWindows = defaults.object(forKey: "escapeClosesUtilityWindows") as? Bool ?? true
+            rootSearchSensitivity = LauncherSearchRanking.Sensitivity(rawValue: defaults.string(forKey: "rootSearchSensitivity") ?? "") ?? .low
+        }
+        if categories.contains(.commands) {
+            aliases = defaults.dictionary(forKey: "aliases") as? [String: String] ?? [:]
+            favorites = Set(defaults.stringArray(forKey: "favorites") ?? [])
+            favoriteOrder = defaults.stringArray(forKey: "favoriteOrder") ?? []
+            if let data = defaults.data(forKey: "shortcuts"), let proposed = try? JSONDecoder().decode([String: Shortcut].self, from: data) {
+                do { try updateShortcuts(proposed) } catch { self.error = "同步的快捷键存在冲突，请在快捷键设置中检查。" }
+            }
+        }
+        if categories.contains(.quicklinks) { quicklinks.load() }
+        if categories.contains(.snippets) { snippets.reloadFromSync() }
+        if categories.contains(.clipboard) { clipboard.reloadFromSync() }
+        if categories.contains(.extensions) {
+            clipboard.primaryAction = ClipboardPrimaryAction(rawValue: defaults.string(forKey: "clipboardPrimaryAction") ?? "") ?? .paste
+            clipboard.prefersPlainText = defaults.bool(forKey: "clipboardPrefersPlainText")
+            clipboard.showsLinkVisuals = defaults.object(forKey: "clipboardShowsLinkVisuals") as? Bool ?? true
+            let timeout = defaults.integer(forKey: "clipboardSequenceTimeout")
+            clipboard.sequenceTimeout = ClipboardController.sequenceTimeouts.contains(timeout) ? timeout : 30
+            clipboard.sequenceAddsNewline = defaults.bool(forKey: "clipboardSequenceAddsNewline")
+            let columns = defaults.integer(forKey: "emojiColumns")
+            emoji.columns = EmojiSearchController.columnCounts.contains(columns) ? columns : 8
+            let tone = defaults.integer(forKey: "emojiSkinTone")
+            emoji.skinTone = EmojiSearchController.skinTones.indices.contains(tone) ? tone : 0
+            emoji.primaryAction = EmojiSearchController.PrimaryAction(rawValue: defaults.string(forKey: "emojiPrimaryAction") ?? "") ?? .paste
+            let screenshotColumns = defaults.integer(forKey: "screenshotColumns")
+            screenshots.columns = ScreenshotLibrary.columnCounts.contains(screenshotColumns) ? screenshotColumns : ScreenshotLibrary.columnCounts.lowerBound
+        }
+        rootSearchUpdates.send()
+    }
+
     func setModuleEnabled(_ id: ModuleID, _ enabled: Bool) {
         guard let registry = launcherModules, registry.setModuleEnabled(id, enabled) else { return }
         commandSearch.invalidate()

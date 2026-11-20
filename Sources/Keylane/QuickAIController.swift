@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import KeylaneCore
 
 final class QuickAIController: ObservableObject {
     struct Turn: Identifiable, Codable, Sendable {
@@ -22,6 +23,7 @@ final class QuickAIController: ObservableObject {
     /// Emitted after successfully restoring history, independently of first-send ID allocation.
     let historyOpened = PassthroughSubject<UUID, Never>()
     private var historyRevision = UUID()
+    private var syncChanges: AnyCancellable?
     @Published private var conversationModel: AIChatRecord.ModelReference?
     private var restoringChat = false
     private let history: AIChatHistory?
@@ -41,6 +43,10 @@ final class QuickAIController: ObservableObject {
         self.runtime = runtime
         self.history = history
         self.readKey = readKey
+        syncChanges = NotificationCenter.default.publisher(for: .keylaneSyncApplied).sink { [weak self] note in
+            guard let categories = note.userInfo?["categories"] as? Set<SyncCategory>, categories.contains(.chats) else { return }
+            self?.refreshHistory(restoreLatest: false)
+        }
         guard observesDefaultConnection else { return }
         configurationChanges = configuration.$state.dropFirst()
             .sink { [weak self] next in

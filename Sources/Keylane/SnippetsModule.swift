@@ -190,6 +190,7 @@ enum SnippetsModule {
                 expansionPermission.stopObserving()
                 snippets.stop()
             })],
+            syncContributions: [.init(category: .snippets, make: { SnippetsSyncParticipant(url: $0.appendingPathComponent("data.sqlite")) })],
             launcherHidden: { [weak model] in
                 guard snippets.input?.trigger != nil else { return }
                 snippets.clearInput()

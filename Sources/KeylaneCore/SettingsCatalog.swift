@@ -12,6 +12,7 @@ public struct SettingsItem: Identifiable, Equatable {
         self.keywords = keywords
     }
 
+    public static let cloudSync = SettingsItem(id: "cloud-sync", page: "cloud-sync", title: "iCloud 同步", keywords: "云同步 Cloud Sync 剪贴板 聊天 设备")
     public static let applicationAutoQuit = SettingsItem(id: "application-auto-quit", page: "applications-auto-quit", title: "自动退出", keywords: "应用程序 闲置 退出 默认 时长 auto quit idle duration")
     public static let applicationScopes = SettingsItem(id: "scopes", page: "applications", title: "应用搜索范围", keywords: "应用 文件夹 applications folders scope")
     public static let applicationFavorites = SettingsItem(id: "favorites", page: "applications", title: "收藏", keywords: "排序 favorite pin")
@@ -94,6 +95,7 @@ public struct SettingsItem: Identifiable, Equatable {
     public static let developmentStatus = SettingsItem(id: "status", page: "about", title: "开发状态", keywords: "功能 限制 roadmap status")
 
     public static let all: [SettingsItem] = [
+        cloudSync,
         appearance,
         windowMode,
         windowPosition,
