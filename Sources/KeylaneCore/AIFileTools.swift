@@ -113,20 +113,25 @@ public actor AIFileToolService {
             lock.lock(); defer { lock.unlock() }
             guard owner === lease, let value = entries[token] else { throw AIFileToolError.stale }; return value
         }
-        fileprivate func consume(_ token: String, expected: ReadReference, lease: AIFileAccessLease) throws {
-            lock.lock(); defer { lock.unlock() }
-            guard owner === lease, entries[token] === expected else { throw AIFileToolError.stale }
-            entries.removeValue(forKey: token)
-        }
-        fileprivate func store(_ value: ReadReference, lease: AIFileAccessLease) throws -> String {
+        /// Publish and rotate under one lock. Failed generation/encoding keeps the old cursor usable.
+        fileprivate func publish(consuming token: String?, expected: ReadReference?, next: ReadReference?,
+                                 lease: AIFileAccessLease, result: (String?) throws -> AIToolResult) throws -> AIToolResult {
             lock.lock(); defer { lock.unlock() }
             guard owner == nil || owner === lease else { throw AIFileToolError.stale }
-            guard entries.count < 32, entries.values.reduce(0, { $0 + $1.payload.bytes }) + value.payload.bytes <= 8_388_608,
-                  entries.values.reduce(0, { $0 + $1.pinCost }) + value.pinCost <= 64 else { throw AIFileToolError.tooLarge }
-            owner = lease
-            let token = UUID().uuidString; entries[token] = value; return token
+            if let token {
+                guard let expected, entries[token] === expected else { throw AIFileToolError.stale }
+            }
+            if let next {
+                let retained = entries.filter { $0.key != token }.map(\.value)
+                guard retained.count < 32, retained.reduce(0, { $0 + $1.payload.bytes }) + next.payload.bytes <= 8_388_608,
+                      retained.reduce(0, { $0 + $1.pinCost }) + next.pinCost <= 64 else { throw AIFileToolError.tooLarge }
+            }
+            let nextToken = next.map { _ in UUID().uuidString }
+            let value = try result(nextToken)
+            if let token { entries.removeValue(forKey: token) }
+            if let nextToken, let next { owner = lease; entries[nextToken] = next }
+            return value
         }
-        fileprivate func discard(_ token: String) { lock.lock(); entries.removeValue(forKey: token); lock.unlock() }
     }
     private struct Disclosure { let fd: FD; let relative: String; let revision: String }
     private struct Scan { var visited = 0; var bytes = 0; var truncated = false; var exhausted = false; var outputBytes = 0 }
@@ -260,7 +265,7 @@ public actor AIFileToolService {
             }
         case "keylane_read_result":
             guard let session, let reference = plan.continuation else { throw AIFileToolError.stale }
-            try session.consume(string(arguments, "cursor"), expected: reference, lease: lease)
+            guard try session.lookup(string(arguments, "cursor"), lease: lease) === reference else { throw AIFileToolError.stale }
             switch reference.payload {
             case .text(let offset):
                 (values, continuation) = try textPage(reference.plan, offset: offset,
@@ -349,13 +354,12 @@ public actor AIFileToolService {
             // For creates the absent target is now present; parent/root identity still must match.
             try validate(plan, checkTarget: !["keylane_write_file", "keylane_create_directory"].contains(plan.tool))
             for entry in disclosed { try validateDisclosure(entry, root: plan.roots[0]) }
-            var token: String?
-            if let session, let continuation {
-                token = try session.store(continuation, lease: lease)
-                values["cursor"] = .string(token!)
+            guard let session else { return try output(values) }
+            return try session.publish(consuming: plan.continuation == nil ? nil : string(arguments, "cursor"),
+                                       expected: plan.continuation, next: continuation, lease: lease) { token in
+                if let token { values["cursor"] = .string(token) }
+                return try output(values)
             }
-            do { return try output(values) }
-            catch { if let token { session?.discard(token) }; throw error }
         } }
     }
 
@@ -497,10 +501,10 @@ public actor AIFileToolService {
         return (fd, info)
     }
     private func validateDisclosure(_ entry: Disclosure, root: Root) throws {
-        let full = (root.path == "/" ? "" : root.path) + "/" + entry.relative
+        let full = entry.relative == "." ? root.path : (root.path == "/" ? "" : root.path) + "/" + entry.relative
         try policy(full)
         var current = root.fd
-        for name in entry.relative.split(separator: "/") { current = try openChild(current, String(name)) }
+        for name in entry.relative.split(separator: "/") where name != "." { current = try openChild(current, String(name)) }
         guard try pathOf(entry.fd) == full, try same(current, entry.fd), try revision(status(entry.fd.raw)) == entry.revision else { throw AIFileToolError.stale }
         let info = try status(entry.fd.raw)
         guard !isRegular(info) || info.st_nlink == 1 else { throw AIFileToolError.unsupported }

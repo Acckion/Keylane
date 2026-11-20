@@ -54,6 +54,29 @@ final class AIFileReadContinuationTests: XCTestCase {
         XCTAssertEqual(result, text)
         await rejects(.stale) { _ = try await self.call("read_result", ["cursor": .string(old)]) }
     }
+    func testFailedPagingCanRetryTheSameCursorWithCorrectedLimits() async throws {
+        try file("note", "a中文 remainder")
+        let first = try await call("read_file", ["path": .string("note"), "limit": .number(1)])
+        let cursor = try XCTUnwrap(first["cursor"])
+        await rejects(.invalidText) { _ = try await self.call("read_result", ["cursor": cursor, "limit": .number(1)]) }
+        let retry = try await call("read_result", ["cursor": cursor, "limit": .number(4096)])
+        XCTAssertEqual(string(retry["text"]), "中文 remainder")
+        await rejects(.stale) { _ = try await self.call("read_result", ["cursor": cursor]) }
+        try file("other", "fixture")
+        let listing = try await call("read_file", ["path": .string("."), "limit": .number(1)])
+        let listCursor = try XCTUnwrap(listing["cursor"])
+        await rejects(.invalidPath) { _ = try await self.call("read_result", ["cursor": listCursor, "limit": .number(101)]) }
+        let listRetry = try await call("read_result", ["cursor": listCursor, "limit": .number(100)])
+        XCTAssertEqual(rows(listRetry["entries"]).map { string($0["path"]) }, ["other"])
+    }
+    func testContinuationCanReplaceItsCursorAtTheSessionBudget() async throws {
+        try file("note", String(repeating: "fixture", count: 100))
+        var cursor: AIToolValue?
+        for _ in 0..<32 { cursor = try await call("read_file", ["path": .string("note"), "limit": .number(4)])["cursor"] }
+        let page = try await call("read_result", ["cursor": try XCTUnwrap(cursor), "limit": .number(4)])
+        XCTAssertNotNil(page["cursor"])
+    }
+
     func testContinuationCannotCrossSessionLeaseOrScope() async throws {
         try file("note", String(repeating: "private fixture ", count: 100))
         let first = try await call("read_file", ["path": .string("note"), "limit": .number(64)])
@@ -141,6 +164,18 @@ final class AIFileReadContinuationTests: XCTestCase {
         XCTAssertEqual(rows(object["matches"]).map { string($0["path"]) }, ["match.txt"])
         XCTAssertFalse(result.text.contains(root.path))
     }
+    func testIndexedRootDirectoryAndChildCanShareAResultsPage() async throws {
+        try file("match.txt", "fixture")
+        let plan = try await service.prepare("keylane_search_indexed_files", arguments: ["path": .string("."), "query": .string("match"), "limit": .number(1)], scopes: [.init(path: root.path)], lease: lease, session: session)
+        let result = try await service.execute(plan, lease: lease, cancellation: .init(), session: session,
+            indexedPaths: [root.path, root.path + "/match.txt"])
+        let first = try JSONDecoder().decode([String: AIToolValue].self, from: Data(result.text.utf8))
+        XCTAssertEqual(rows(first["matches"]).map { string($0["path"]) }, ["."])
+        let second = try await call("read_result", ["cursor": try XCTUnwrap(first["cursor"])])
+        XCTAssertEqual(rows(second["matches"]).map { string($0["path"]) }, ["match.txt"])
+        XCTAssertFalse(result.text.contains(root.path))
+    }
+
     func testPDFIsReadFromPinnedVersionAndCanStartAtPage() async throws {
         let pdf = Self.pdf([String(repeating: "First page text. ", count: 15), String(repeating: "Second page text. ", count: 15)])
         try pdf.write(to: root.appendingPathComponent("document.pdf"))

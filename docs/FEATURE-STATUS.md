@@ -101,7 +101,7 @@
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 待合并 | PR #215 待合并；Grep CRLF/混合换行行号与摘录已补回归，安装版及真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
-| AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 待合并 | PR #224 依赖 #215；#217 的文件入口仍须整合；44 项定向/8 组隔离验证通过，Office/OCR 与实机待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
+| AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 待合并 | PR #224 依赖 #215；#217 的文件入口仍须整合；47 项定向/8 组隔离验证通过，Office/OCR 与实机待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 尚未合入基线，确认权限和副作用行为 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
@@ -178,3 +178,5 @@
 维护记录：2026-11-21，AI-13 / PR #215 修复 Grep 的 CRLF 换行识别；使用文件后部匹配及混合换行合成样本回归；23 项定向 Swift 测试、27 项脚本测试通过，未安装验收。
 
 维护记录：2026-11-21，BASE-03 页面 ActionSnapshot 公共契约及词典/文件/Emoji/表单样板、替代 Return 与页面会话作用域见 [PR #221](https://github.com/Acckion/Keylane/pull/221)（20a170c），待合并、未安装；完整构建、动作/会话、文件与 Emoji 隔离回归通过；见 [页面动作契约](PAGE-ACTION-CONTRACT.md)。
+
+维护记录：2026-11-21，AI-13-a / PR #224 修复索引根目录 `.` 的披露验证及续读错误提前消费游标；新增失败后重试、满额替换与根目录分页回归，47 项定向 Swift 测试通过。
