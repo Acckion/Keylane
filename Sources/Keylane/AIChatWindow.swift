@@ -12,10 +12,10 @@ final class AIChatPresentation: ObservableObject {
 }
 
 final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
-    private let controller: QuickAIController
+    private let controller: AIConversationSession
     private let configuration: AIConfiguration
     private let interaction: AIInteractionPreferences
-    private let composer = AIChatComposer()
+    private var composer: AIConversationComposer { controller.composer }
     private let presentation = AIChatPresentation()
     private var window: NSWindow?
     private var splitController: AIChatSplitViewController?
@@ -25,7 +25,7 @@ final class AIChatWindow: NSObject, NSWindowDelegate, NSToolbarDelegate {
     private var appearanceChanges: AnyCancellable?
     private var floatingChanges: AnyCancellable?
 
-    init(controller: QuickAIController, configuration: AIConfiguration, interaction: AIInteractionPreferences,
+    init(controller: AIConversationSession, configuration: AIConfiguration, interaction: AIInteractionPreferences,
          appearance: AnyPublisher<String, Never>) {
         self.controller = controller
         self.configuration = configuration

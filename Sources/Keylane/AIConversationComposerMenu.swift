@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Context, @ mentions and / commands share one list and keyboard selection.
-struct AIChatComposerMenu: View {
+struct AIConversationComposerMenu: View {
     struct Item: Identifiable {
         let id: String
         let section: String

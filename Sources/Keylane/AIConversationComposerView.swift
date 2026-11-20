@@ -3,17 +3,25 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// The complete composer is reused as a unit: input, attachments, completion and context lifecycle.
-struct AIChatComposerView: View {
-    @ObservedObject var controller: QuickAIController
+struct AIConversationComposerView: View {
+    @ObservedObject var controller: AIConversationSession
     @ObservedObject var configuration: AIConfiguration
     @ObservedObject var interaction: AIInteractionPreferences
-    @ObservedObject var composer: AIChatComposer
+    @ObservedObject var composer: AIConversationComposer
     let canSubmit: Bool
     let submit: () -> Void
     let newChat: () -> Void
     let chooseModel: (UUID) -> Void
     let showUsage: () -> Void
     let openAISettings: () -> Void
+    var compact = false
+    var inputEnabled = true
+    var focusToken = 0
+    var emptyAction: (() -> Void)? = nil
+    var emptyActionTitle = "复制回复"
+    var escape: (() -> Void)? = nil
+    var commandReturn: (() -> Void)? = nil
+    var optionReturn: (() -> Void)? = nil
     @State private var attachmentError: String?
     @State private var inputHeight: CGFloat = 36
     @State private var contextMenuOpen = false
@@ -22,13 +30,17 @@ struct AIChatComposerView: View {
     @State private var menuScrollTarget: String?
     @State private var suppressedCompletion: AIChatCompletionToken?
     @State private var contextSource: AIChatContextSheet.Source?
-    @State private var contextReadTask: Task<Void, Never>?
     @State private var capability: AIChatCapabilityInfo?
 
     var body: some View {
         content
-            .onDisappear { contextReadTask?.cancel() }
-            .onChange(of: composer.draftID) { _, _ in contextReadTask?.cancel(); dismissComposerMenu() }
+            .onAppear { if compact && inputEnabled { composer.focusRequested.send() } }
+            .onChange(of: focusToken) { _, _ in if inputEnabled { composer.focusRequested.send() } }
+            .onChange(of: inputEnabled) { _, enabled in if enabled { composer.focusRequested.send() } }
+            .alert("无法读取附件", isPresented: Binding(get: { !composer.fileError.isEmpty }, set: { if !$0 { composer.fileError = "" } })) {
+                Button("好") { composer.fileError = "" }
+            } message: { Text(composer.fileError) }
+            .onChange(of: composer.draftID) { _, _ in dismissComposerMenu() }
             .onReceive(composer.contextRequested) { request in
                 switch request {
                 case .file: addTextFile()
@@ -46,7 +58,7 @@ struct AIChatComposerView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 9) {
-            if let project = controller.currentProject {
+            if !compact, let project = controller.currentProject {
                 HStack(spacing: 6) {
                     Label(project.name, systemImage: project.symbol).lineLimit(1)
                     Button("移出项目", systemImage: "xmark") { controller.setProject(nil) }.labelStyle(.iconOnly).buttonStyle(.plain)
@@ -93,16 +105,20 @@ struct AIChatComposerView: View {
                             .font(.system(size: 14)).foregroundStyle(.tertiary)
                             .allowsHitTesting(false)
                     }
-                    AIChatTextInput(composer: composer, height: $inputHeight,
-                        enabled: !controller.loadingChat && controller.matchesCurrentModel,
-                        sendWithReturn: interaction.chatReturn, menuVisible: composerMenuVisible,
+                    AIConversationTextInput(composer: composer, height: $inputHeight,
+                        enabled: inputEnabled && !controller.loadingChat && !composer.loadingFiles && controller.matchesCurrentModel,
+                        sendWithReturn: compact || interaction.chatReturn, menuVisible: composerMenuVisible,
                         submit: submit, moveMenu: moveComposerMenu, chooseMenu: chooseComposerMenu,
-                        dismissMenu: dismissComposerMenu)
+                        dismissMenu: dismissComposerMenu, escape: escape, commandReturn: commandReturn, optionReturn: optionReturn)
                         .frame(height: inputHeight)
                 }
-                if controller.running {
+                if composer.loadingFiles {
+                    ProgressView().controlSize(.small).frame(width: 30, height: 34)
+                } else if controller.running {
                     Button("停止生成", systemImage: "stop.fill", action: controller.stop)
                         .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 34, height: 34)
+                } else if compact && composer.text.isEmpty && composer.attachments.isEmpty, let emptyAction, controller.lastAnswer != nil {
+                    Button(emptyActionTitle, action: emptyAction).buttonStyle(.plain).font(.system(size: 12))
                 } else if composer.text.isEmpty && composer.attachments.isEmpty {
                     Button("语音输入（尚未接入）", systemImage: "mic") { capability = .voice }
                         .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 30, height: 34)
@@ -116,14 +132,14 @@ struct AIChatComposerView: View {
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: compact ? 14 : 20))
         }
         .overlay(alignment: .topLeading) {
             if composerMenuVisible {
-                AIChatComposerMenu(items: composerMenuItems, query: $menuQuery,
+                AIConversationComposerMenu(items: composerMenuItems, query: $menuQuery,
                     selection: $menuSelection, scrollTarget: $menuScrollTarget, searchable: contextMenuOpen,
                     activate: activateComposerItem, dismiss: dismissComposerMenu)
-                    .offset(y: -AIChatComposerMenu.height(items: composerMenuItems, searchable: contextMenuOpen) - 8)
+                    .offset(y: -AIConversationComposerMenu.height(items: composerMenuItems, searchable: contextMenuOpen) - 8)
                     .zIndex(10)
             }
         }
@@ -136,8 +152,8 @@ struct AIChatComposerView: View {
         contextMenuOpen || (composer.completion != nil && composer.completion != suppressedCompletion)
     }
 
-    private var composerMenuItems: [AIChatComposerMenu.Item] {
-        typealias Item = AIChatComposerMenu.Item
+    private var composerMenuItems: [AIConversationComposerMenu.Item] {
+        typealias Item = AIConversationComposerMenu.Item
         let token = composer.completion
         let commands = !contextMenuOpen && token?.kind == .command
         var items: [Item]
@@ -159,7 +175,9 @@ struct AIChatComposerView: View {
                     controller.setProject(project.id)
                 }
             }
-            items += configuration.state.connections.filter { $0.isConfigured && $0.hiddenFromPicker != true }.map { connection in
+            let catalog = AIModelMenuCatalog(connections: configuration.state.connections,
+                selection: controller.currentConnection.map { .model($0.id) } ?? .inherit, query: "")
+            items += catalog.groups.flatMap(\.models).filter(\.isConfigured).map { connection in
                 Item(id: connection.id.uuidString, section: "模型", title: connection.model,
                      symbol: "sparkles", detail: connection.providerLabel) {
                     chooseModel(connection.id)
@@ -167,7 +185,7 @@ struct AIChatComposerView: View {
             }
         } else {
             items = [
-                Item(id: "file", section: "上下文", title: "添加文本文件…", symbol: "doc", action: addTextFile),
+                Item(id: "file", section: "上下文", title: "添加文件…", symbol: "doc", action: addTextFile),
                 Item(id: "clipboard-history", section: "上下文", title: "剪贴板历史…", symbol: "clipboard") { contextSource = .clipboard },
                 Item(id: "clipboard", section: "上下文", title: "当前剪贴板文字", symbol: "doc.on.clipboard", action: insertClipboard),
                 Item(id: "screenshot", section: "上下文", title: "截图文字…", symbol: "viewfinder", action: addImageText),
@@ -198,7 +216,7 @@ struct AIChatComposerView: View {
         activateComposerItem(item)
     }
 
-    private func activateComposerItem(_ item: AIChatComposerMenu.Item) {
+    private func activateComposerItem(_ item: AIConversationComposerMenu.Item) {
         if !contextMenuOpen { composer.consumeCompletion() }
         dismissComposerMenu()
         item.action()
@@ -240,7 +258,7 @@ struct AIChatComposerView: View {
         composer.selection = NSRange(location: composer.text.utf16.count, length: 0)
         composer.focusRequested.send()
     }
-    private func addAttachment(_ attachment: AIChatAttachment, for draft: UUID? = nil) {
+    private func addAttachment(_ attachment: AIConversationAttachment, for draft: UUID? = nil) {
         let expectedDraft = draft ?? composer.draftID
         guard composer.appendAttachment(attachment, for: expectedDraft) else {
             if composer.draftID == expectedDraft {
@@ -252,50 +270,12 @@ struct AIChatComposerView: View {
     }
 
     private func addImageText() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.directoryURL = controller.currentProject?.directoryURL
-        panel.allowedContentTypes = [.image]
-        panel.prompt = "提取文字并添加"
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            contextReadTask?.cancel()
-            let draft = composer.draftID
-            contextReadTask = Task { @MainActor in
-                do {
-                    let attachment = try await AIChatImageContext.read(url)
-                    guard !Task.isCancelled else { return }
-                    addAttachment(attachment, for: draft)
-                } catch is CancellationError { }
-                catch { if composer.draftID == draft { attachmentError = error.localizedDescription } }
-            }
+        AIConversationHostActions.chooseImage(composer: composer, directory: controller.currentProject?.directoryURL) {
+            try await AIChatImageContext.read($0)
         }
     }
 
     private func addTextFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.directoryURL = controller.currentProject?.directoryURL
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.text, .sourceCode, .json, .xml, .yaml]
-        panel.prompt = "添加"
-        panel.begin { result in
-            guard result == .OK, let url = panel.url else { return }
-            do {
-                let info = try url.resourceValues(forKeys: [.fileSizeKey])
-                guard let size = info.fileSize, size <= 32_000 else {
-                    attachmentError = "请选择不超过 32,000 字节的文本文件。"
-                    return
-                }
-                let handle = try FileHandle(forReadingFrom: url)
-                defer { try? handle.close() }
-                let data = try handle.read(upToCount: 32_001) ?? Data()
-                guard data.count <= 32_000, let text = String(data: data, encoding: .utf8) else {
-                    attachmentError = "文件需要是 UTF-8 文本，且不超过 32,000 字节。"
-                    return
-                }
-                addAttachment(.init(title: url.lastPathComponent, text: text))
-            } catch { attachmentError = "无法读取所选文件。" }
-        }
+        AIConversationHostActions.chooseFiles(composer: composer, directory: controller.currentProject?.directoryURL)
     }
 }

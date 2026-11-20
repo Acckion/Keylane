@@ -1,5 +1,7 @@
 # AI Chat 基础体验
 
+Quick AI 与 AI Chat 的最新公共边界、生命周期及兼容约定见 [公共会话架构](AI-CONVERSATION-ARCHITECTURE.md)。
+
 独立聊天窗口沿用 `NSSplitViewController`：左侧会话历史、中间消息与输入框、右侧会话设置。窗口、导航、聊天运行、模型目录与历史存储各自负责生命周期。Quick AI 转入聊天时继续使用同一请求与消息，不重新发送。
 
 ## 本批实现

@@ -54,7 +54,7 @@ final class AITextCommandSession: ObservableObject {
         didSet { if oldValue != language, !reply.running { reply.reset() } }
     }
 
-    let reply: QuickAIController
+    let reply: AIConversationSession
     let configuration: AIConfiguration
     private var reviewedConnection: AIConnection?
     private var plan: DynamicTemplate.Plan?
@@ -64,7 +64,7 @@ final class AITextCommandSession: ObservableObject {
     init(configuration: AIConfiguration, runtime: AIRuntime,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
         self.configuration = configuration
-        reply = QuickAIController(configuration: configuration, runtime: runtime,
+        reply = AIConversationSession(configuration: configuration, runtime: runtime,
                                   observesDefaultConnection: false, readKey: readKey)
         configurationChanges = configuration.$state.dropFirst().sink { [weak self] state in
             guard let self, self.reviewedConnection != nil, self.confirmedConnection(in: state) == nil

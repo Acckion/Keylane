@@ -25,7 +25,7 @@ struct AIChatRecord: Sendable {
 
     struct Content: Codable, Sendable {
         let model: ModelReference
-        let turns: [QuickAIController.Turn]
+        let turns: [AIConversationTurn]
         var instructions: String?
     }
 
@@ -34,14 +34,14 @@ struct AIChatRecord: Sendable {
 }
 
 /// All operations are serialized, including a final snapshot followed by deletion.
-final class AIChatHistory: @unchecked Sendable {
+final class AIConversationRepository: @unchecked Sendable {
     private let url: URL
     private let queue = DispatchQueue(label: "org.keylane.ai-chat-history", qos: .utility)
     private enum DatabaseError: Error { case open, read, write }
 
     init(url: URL) { self.url = url }
 
-    func perform<Value: Sendable>(_ operation: @escaping @Sendable (AIChatHistory) throws -> Value,
+    func perform<Value: Sendable>(_ operation: @escaping @Sendable (AIConversationRepository) throws -> Value,
                                  completion: @escaping @Sendable (Result<Value, Error>) -> Void) {
         queue.async { [self] in
             let result = Result { try operation(self) }
@@ -86,6 +86,22 @@ final class AIChatHistory: @unchecked Sendable {
             """, values: [record.id.uuidString, title, payload, String(Date().timeIntervalSince1970)]) { stmt in
             guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
         }
+    }
+
+    /// Must run on perform's serial queue, after pending source edits/deletions.
+    func duplicate(_ id: UUID) throws -> UUID? {
+        guard let record = try load(id), let summary = try list().first(where: { $0.id == id }) else { return nil }
+        let projectID = try projects().contains(where: { $0.id == summary.projectID }) ? summary.projectID : nil
+        let copy = AIChatRecord(id: UUID(), content: record.content)
+        try save(copy, title: summary.title + " · 分支", projectID: projectID)
+        return copy.id
+    }
+
+    func save(_ record: AIChatRecord, title: String, projectID: UUID?) throws {
+        try save(record)
+        if !title.isEmpty { try update(record.id, change: .rename(title)) }
+        let validProject = try projects().contains(where: { $0.id == projectID }) ? projectID : nil
+        try update(record.id, change: .project(validProject))
     }
 
     enum Change: Sendable {
@@ -201,5 +217,16 @@ final class AIChatHistory: @unchecked Sendable {
             guard bound == SQLITE_OK else { throw DatabaseError.write }
         }
         return try body(prepared)
+    }
+}
+
+/// Local history IDs only; links never carry prompts, credentials or file paths.
+enum AIChatLink {
+    static func make(_ id: UUID) -> String { "keylane://ai/chat/" + id.uuidString.lowercased() }
+    static func parse(_ url: URL) -> UUID? {
+        guard url.scheme?.lowercased() == "keylane", url.host?.lowercased() == "ai",
+              url.user == nil, url.password == nil, url.port == nil, url.query == nil, url.fragment == nil,
+              url.pathComponents.count == 3, url.pathComponents[1] == "chat" else { return nil }
+        return UUID(uuidString: url.pathComponents[2])
     }
 }

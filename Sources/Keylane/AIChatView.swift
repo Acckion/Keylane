@@ -6,11 +6,11 @@ import UniformTypeIdentifiers
 struct AIChatView: View {
     enum Column { case sidebar, conversation, settings }
     var column: Column = .conversation
-    let controller: QuickAIController
+    let controller: AIConversationSession
     @StateObject private var observation: ViewObservation
     @ObservedObject var configuration: AIConfiguration
     @ObservedObject var interaction: AIInteractionPreferences
-    let composer: AIChatComposer
+    let composer: AIConversationComposer
     @ObservedObject var presentation: AIChatPresentation
     @Environment(\.colorScheme) private var colorScheme
     @State private var search = ""
@@ -24,21 +24,21 @@ struct AIChatView: View {
     @State private var editingProject: AIChatProject?
     @State private var deletingProject: AIChatProject?
     @State private var collapsedProjects = Set<UUID>()
-    @State private var editingTurn: QuickAIController.Turn?
+    @State private var editingTurn: AIConversationSession.Turn?
     @State private var transcriptSearch = ""
     @State private var searchIndex = 0
     @State private var searchMatches: [UUID] = []
     @FocusState private var transcriptSearchFocused: Bool
 
-    init(column: Column = .conversation, controller: QuickAIController, configuration: AIConfiguration,
-         interaction: AIInteractionPreferences, composer: AIChatComposer, presentation: AIChatPresentation) {
+    init(column: Column = .conversation, controller: AIConversationSession, configuration: AIConfiguration,
+         interaction: AIInteractionPreferences, composer: AIConversationComposer, presentation: AIChatPresentation) {
         self.column = column
         self.controller = controller
         self.configuration = configuration
         self.interaction = interaction
         self.composer = composer
         self.presentation = presentation
-        let scope: QuickAIController.ViewScope = column == .sidebar ? .sidebar : column == .settings ? .settings : .conversation
+        let scope: AIConversationSession.ViewScope = column == .sidebar ? .sidebar : column == .settings ? .settings : .conversation
         var inputs = controller.viewUpdates(scope)
         if column == .conversation { inputs.append(composer.objectWillChange.eraseToAnyPublisher()) }
         _observation = StateObject(wrappedValue: ViewObservation(inputs))
@@ -47,10 +47,7 @@ struct AIChatView: View {
     private var visibleChats: [AIChatSummary] {
         controller.chats.filter { search.isEmpty || $0.title.localizedCaseInsensitiveContains(search) }
     }
-    private var canSubmit: Bool {
-        !controller.running && !controller.loadingChat && controller.matchesCurrentModel &&
-        controller.currentConnection != nil && (!composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachments.isEmpty)
-    }
+    private var canSubmit: Bool { controller.canSendDraft }
 
     var body: some View {
         Group {
@@ -78,7 +75,7 @@ struct AIChatView: View {
         }
         .task { if column == .conversation { composer.focusRequested.send() } }
         .onChange(of: search) { _, value in if !value.isEmpty { showsArchive = true } }
-        .onReceive((column == .conversation ? controller.$turns.eraseToAnyPublisher() : Empty<[QuickAIController.Turn], Never>().eraseToAnyPublisher()).throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)) { turns in
+        .onReceive((column == .conversation ? controller.$turns.eraseToAnyPublisher() : Empty<[AIConversationTurn], Never>().eraseToAnyPublisher()).throttle(for: .milliseconds(250), scheduler: RunLoop.main, latest: true)) { turns in
             if column == .conversation, !transcriptSearch.isEmpty { updateSearch(turns) }
         }
         .onChange(of: transcriptSearch) { _, _ in searchIndex = 0; updateSearch(controller.turns) }
@@ -87,11 +84,8 @@ struct AIChatView: View {
         }
         .onReceive(controller.historyOpened) { _ in
             if column == .conversation {
-                composer.clear(); transcriptSearch = ""; searchIndex = 0; composer.focusRequested.send()
+                transcriptSearch = ""; searchIndex = 0; composer.focusRequested.send()
             }
-        }
-        .onReceive(controller.chatReset) { _ in
-            if column == .conversation { composer.clear() }
         }
         .onExitCommand {
             if presentation.actionsVisible { presentation.actionsVisible = false }
@@ -119,7 +113,7 @@ struct AIChatView: View {
             Button("新建对话") {
                 guard let id = pendingModel else { return }
                 newChat()
-                controller.chooseChatModel(id)
+                controller.chooseModel(id)
                 pendingModel = nil
             }
         }
@@ -281,7 +275,7 @@ struct AIChatView: View {
     }
 
     private var composerView: some View {
-        AIChatComposerView(controller: controller, configuration: configuration,
+        AIConversationComposerView(controller: controller, configuration: configuration,
             interaction: interaction, composer: composer, canSubmit: canSubmit,
             submit: submit, newChat: { newChat() }, chooseModel: chooseChatModel,
             showUsage: { usageTarget = controller.currentConnection }, openAISettings: openAISettings)
@@ -289,7 +283,7 @@ struct AIChatView: View {
 
     private func chooseChatModel(_ id: UUID) {
         guard controller.currentConnection?.id != id else { return }
-        if !controller.chooseChatModel(id) { pendingModel = id }
+        if !controller.chooseModel(id) { pendingModel = id }
     }
 
     private var settings: some View {
@@ -307,7 +301,7 @@ struct AIChatView: View {
                             get: { controller.currentConnection.map { .model($0.id) } ?? .inherit },
                             set: { choice in
                                 guard case .model(let id) = choice, controller.currentConnection?.id != id else { return }
-                                if !controller.chooseChatModel(id) { pendingModel = id }
+                                if !controller.chooseModel(id) { pendingModel = id }
                             }))
                             .disabled(controller.running || controller.loadingChat || !configuration.state.enabled)
                         if let connection = controller.currentConnection {
@@ -359,7 +353,7 @@ struct AIChatView: View {
             .init(title: "在当前对话查找", symbol: "magnifyingglass", keys: "⌘ F") { presentation.searchVisible = true },
             .init(title: "AI 设置", symbol: "gearshape", action: openAISettings),
             .init(title: "复制最新回复", symbol: "doc.on.doc", enabled: controller.lastAnswer != nil) {
-                AIConversationTranscript.copy(controller.lastAnswer)
+                AIConversationHostActions.copyText(controller.lastAnswer)
             },
             .init(title: "聊天设置", symbol: "slider.horizontal.3", keys: "⇧ ⌘ ,") { presentation.settingsVisible = true },
             .init(title: presentation.fullWidth ? "使用标准宽度" : "全宽对话", symbol: "arrow.left.and.right") { presentation.fullWidth.toggle() }
@@ -382,7 +376,7 @@ struct AIChatView: View {
         let generation = NSPasteboard.general.changeCount
         controller.transcript(id) { text in
             guard NSPasteboard.general.changeCount == generation else { return }
-            AIConversationTranscript.copy(text)
+            AIConversationHostActions.copyText(text)
         }
     }
 
@@ -398,7 +392,7 @@ struct AIChatView: View {
         }
     }
 
-    private func updateSearch(_ turns: [QuickAIController.Turn]) {
+    private func updateSearch(_ turns: [AIConversationTurn]) {
         searchMatches = transcriptSearch.isEmpty ? [] : turns.filter {
             $0.question.localizedCaseInsensitiveContains(transcriptSearch) || $0.answer.localizedCaseInsensitiveContains(transcriptSearch)
         }.map(\.id)
@@ -457,9 +451,7 @@ struct AIChatView: View {
     private func submit() {
         guard !SearchField.isComposing, canSubmit else { return }
         let question = composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "请分析所附内容。" : composer.text
-        if controller.submit(question, attachments: composer.attachments) {
-            composer.clear()
-        }
+        _ = controller.submit(question)
     }
     private func openAISettings() { (NSApp.delegate as? Delegate)?.model.openSettings(page: "ai") }
 

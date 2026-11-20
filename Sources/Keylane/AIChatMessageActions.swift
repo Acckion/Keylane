@@ -2,7 +2,7 @@ import SwiftUI
 
 /// One action strip for every chat response, including interrupted responses.
 struct AIChatMessageActions: View {
-    let turn: QuickAIController.Turn
+    let turn: AIConversationSession.Turn
     let enabled: Bool
     let edit: () -> Void
     let retry: () -> Void
@@ -11,7 +11,7 @@ struct AIChatMessageActions: View {
     var body: some View {
         HStack(spacing: 6) {
             action("复制回复", symbol: "doc.on.doc", enabled: !turn.answer.isEmpty) {
-                AIConversationTranscript.copy(turn.answer)
+                AIConversationHostActions.copyText(turn.answer)
             }
             action("编辑问题并创建分支", symbol: "pencil", enabled: enabled, perform: edit)
             action("重新生成并创建分支", symbol: "arrow.clockwise", enabled: enabled, perform: retry)

@@ -1,14 +1,14 @@
 import SwiftUI
 
 struct AIChatQuestionEditor: View {
-    @ObservedObject var controller: QuickAIController
-    let turn: QuickAIController.Turn
+    @ObservedObject var controller: AIConversationSession
+    let turn: AIConversationSession.Turn
     let send: (String) -> Bool
     @State private var text: String
     @State private var error = ""
     @Environment(\.dismiss) private var dismiss
 
-    init(controller: QuickAIController, turn: QuickAIController.Turn, send: @escaping (String) -> Bool) {
+    init(controller: AIConversationSession, turn: AIConversationSession.Turn, send: @escaping (String) -> Bool) {
         self.controller = controller
         self.turn = turn
         self.send = send
@@ -32,7 +32,7 @@ struct AIChatQuestionEditor: View {
                     else { error = "无法发送，请检查模型可用性与内容长度。" }
                 }.keyboardShortcut(.defaultAction)
                     .disabled(!controller.canRevise || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                              AIChatAttachment.requestText(question: text, attachments: turn.attachments ?? []).utf8.count > 32_000)
+                              AIConversationAttachment.requestText(question: text, attachments: turn.attachments ?? []).utf8.count > 32_000)
             }
         }.padding(24).frame(width: 520)
     }

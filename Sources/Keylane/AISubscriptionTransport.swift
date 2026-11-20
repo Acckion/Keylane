@@ -68,12 +68,13 @@ enum AISubscriptionTransport {
     }
 
     static func generate(_ connection: AIConnection, messages: [AIMessage],
+                         progress: @Sendable (AIResponseEvent) async -> Void = { _ in },
                          emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         guard connection.isConfigured else { throw AISubscriptionError.failed }
         guard let expected = connection.subscriptionAccountID, !expected.isEmpty else { throw AISubscriptionError.accountChanged }
         if connection.protocolKind == .codex {
             // Check in the process that will receive the conversation, not a preflight process.
-            _ = try await codex(connection, operation: .generate(messages), emit: emit)
+            _ = try await codex(connection, operation: .generate(messages), progress: progress, emit: emit)
             return nil
         }
         let account = try await status(connection)
@@ -107,6 +108,7 @@ enum AISubscriptionTransport {
     }
 
     private static func codex(_ connection: AIConnection, operation: Operation,
+                              progress: @Sendable (AIResponseEvent) async -> Void = { _ in },
                               emit: @Sendable (String) async throws -> Void) async throws -> [String: Any] {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -199,6 +201,9 @@ enum AISubscriptionTransport {
                             case .generate, .reset: throw AISubscriptionError.accountChanged
                             default: break
                             }
+                        }
+                        if case .generate = operation, checkedAccount != nil {
+                            for event in CodexProgressAdapter.events(method: method, params: params) { await progress(event) }
                         }
                         if method == "item/agentMessage/delta", let delta = params["delta"] as? String {
                             receivedText = true

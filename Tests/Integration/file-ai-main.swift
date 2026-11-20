@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import CoreText
 import Combine
 import Security
 import SQLite3
@@ -85,7 +87,39 @@ final class FixtureProtocol: URLProtocol {
                 self.client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{\"content\":\"visible streaming fragment\"}}]}\n\n".utf8))
                 return // Deliberately leave the synthetic stream open until stop/cancellation.
             }
-            if mode == "stream" || mode == "incomplete" {
+            if mode == "reasoning-stream" || mode == "reasoning-pause" {
+                let thought = "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Provider reasoning summary\"}}]}\n\n"
+                self.client?.urlProtocol(self, didLoad: Data(thought.utf8))
+                let finish = { [self] in
+                    self.lock.lock(); let stopped = self.stopped; self.lock.unlock(); if stopped { return }
+                    let end = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                    self.client?.urlProtocol(self, didLoad: Data(end.utf8))
+                    self.client?.urlProtocolDidFinishLoading(self)
+                }
+                if mode == "reasoning-pause" { DispatchQueue.global().asyncAfter(deadline: .now() + 0.5, execute: finish) }
+                else { finish() }
+                return
+            } else if mode == "tool-stream" {
+                let event: [String: Any] = ["choices": [["delta": ["tool_calls": [["index": 0, "id": "request-1", "function": ["name": "Read", "arguments": "{\"path\":\"/Example\",\"token\":\"private\"}"]]]], "finish_reason": "tool_calls"]]]
+                let payload = try! JSONSerialization.data(withJSONObject: event)
+                self.client?.urlProtocol(self, didLoad: Data("data: ".utf8) + payload + Data("\n\ndata: [DONE]\n\n".utf8))
+            } else if mode == "reasoning-complete" {
+                self.client?.urlProtocol(self, didLoad: Data(#"{"choices":[{"message":{"content":"final answer","reasoning_content":"Complete response summary"}}]}"#.utf8))
+            } else if mode == "anthropic-thinking-stream" {
+                let events: [[String: Any]] = [
+                    ["type": "message_start", "message": ["usage": ["input_tokens": 2]]],
+                    ["type": "content_block_start", "index": 0, "content_block": ["type": "thinking", "thinking": ""]],
+                    ["type": "content_block_delta", "index": 0, "delta": ["type": "thinking_delta", "thinking": "Anthropic visible summary"]],
+                    ["type": "content_block_delta", "index": 0, "delta": ["type": "signature_delta", "signature": "must-not-display"]],
+                    ["type": "content_block_delta", "index": 1, "delta": ["type": "text_delta", "text": "你好"]],
+                    ["type": "message_delta", "delta": ["stop_reason": "end_turn"], "usage": ["output_tokens": 3]],
+                    ["type": "message_stop"]
+                ]
+                for event in events {
+                    let payload = try! JSONSerialization.data(withJSONObject: event)
+                    self.client?.urlProtocol(self, didLoad: Data("data: ".utf8) + payload + Data("\n\n".utf8))
+                }
+            } else if mode == "stream" || mode == "incomplete" {
                 let first = Data("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\r\n\r\n".utf8)
                 for byte in first { self.client?.urlProtocol(self, didLoad: Data([byte])) }
                 if mode == "stream" {
@@ -104,7 +138,16 @@ let suite = "org.keylane.file-ai-test."+UUID().uuidString
 let prefs = UserDefaults(suiteName:suite)!
 defer { prefs.removePersistentDomain(forName:suite) }
 let interaction = AIInteractionPreferences(preferences: prefs)
-precondition(!interaction.rootTab && !interaction.rootFallback && !interaction.chatReturn && !interaction.chatFloating)
+precondition(interaction.rootTab && interaction.rootFallback && !interaction.chatReturn && !interaction.chatFloating)
+interaction.rootTab = false
+interaction.rootFallback = false
+let disabledQuickEntry = AIInteractionPreferences(preferences: prefs)
+precondition(!disabledQuickEntry.rootTab && !disabledQuickEntry.rootFallback && !disabledQuickEntry.showsRootHint)
+interaction.rootTab = true
+precondition(interaction.showsRootHint, "Tab must advertise itself even when fallback results are disabled")
+interaction.rootTab = false
+interaction.rootFallback = true
+precondition(interaction.showsRootHint, "The standalone hint remains available without Tab")
 interaction.rootTab = true
 interaction.rootFallback = true
 interaction.chatReturn = true
@@ -112,13 +155,19 @@ interaction.chatFloating = true
 let reloadedInteraction = AIInteractionPreferences(preferences: prefs)
 precondition(reloadedInteraction.rootTab && reloadedInteraction.rootFallback &&
              reloadedInteraction.chatReturn && reloadedInteraction.chatFloating)
-let composer = AIChatComposer()
+interaction.primaryAction = .copy
+interaction.modelPreference = .fast
+let preferredModel = UUID()
+interaction.preferenceModels[QuickAIModelPreference.fast.rawValue] = preferredModel.uuidString
+let videoPreferences = AIInteractionPreferences(preferences: prefs)
+precondition(videoPreferences.primaryAction == .copy && videoPreferences.modelPreference == .fast && videoPreferences.preferredModelID == preferredModel)
+let composer = AIConversationComposer()
 composer.offer("   ")
 precondition(composer.text.isEmpty)
 composer.offer(" 初始问题 ")
 composer.offer("另一个入口的问题")
 precondition(composer.text == " 初始问题 ", "Opening a second entry preserves the existing unsent draft")
-let tokenComposer = AIChatComposer()
+let tokenComposer = AIConversationComposer()
 tokenComposer.text = "开头 😀 @cli 结尾"
 let caret = ("开头 😀 @cli" as NSString).length
 tokenComposer.selection = NSRange(location: caret, length: 0)
@@ -140,7 +189,7 @@ tokenComposer.clear()
 precondition(tokenComposer.text.isEmpty && tokenComposer.attachments.isEmpty && tokenComposer.completion == nil && tokenComposer.draftID != oldDraftID)
 print("PASS chat completion: caret-aware UTF-16, emoji, suffix preservation, email/URL rejection, IME, selections and draft cancellation identity")
 
-let contextLoad = AIChatContextLoadState()
+let contextLoad = AIContextLoadState()
 for allowed in [true, false] {
     var matchingEvents: [String] = []
     contextLoad.begin() // Search-field invalidation starts the spinner before the debounce.
@@ -249,10 +298,11 @@ precondition(restoredQueries.map { $0[credentialKey] as? String } == ["org.keyla
 print("PASS legacy credential routing: endpoint changes, reload, original endpoint restoration and removal queries")
 settings.setEnabled(true)
 settings.select(second.id)
-let quick = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), readKey: { _ in nil })
+let quick = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), readKey: { _ in nil })
 FixtureProtocol.mode = "stream"
 precondition(!quick.submit("  "))
-precondition(quick.submit("first") && !quick.submit("while busy"))
+precondition(quick.consumeEntry("   ") == nil)
+precondition(quick.consumeEntry("first") == "" && quick.consumeEntry("while busy") == "while busy")
 wait("Quick AI first answer") { !quick.running }
 precondition(quick.turns.count == 1 && quick.turns[0].complete && quick.lastAnswer == "你好")
 let followUp = quick.messages(for: "second")
@@ -282,6 +332,17 @@ precondition(quick.isInChat && quick.running && quick.turns.first?.id == transfe
 precondition(quick.chatTitle == "handoff")
 wait("AI Chat receives active Quick AI answer") { !quick.running }
 precondition(quick.turns.count == 1 && quick.turns.first?.id == transferredTurn && quick.lastAnswer == "你好")
+let previousTurnCount = quick.turns.count
+precondition(quick.consumeEntry("Tab after opening chat") == "")
+precondition(quick.turns.count == previousTurnCount + 1 && quick.turns.last?.question == "Tab after opening chat")
+precondition(quick.consumeEntry("retain rejected draft") == "retain rejected draft")
+precondition(quick.turns.count == previousTurnCount + 1, "A busy submission must not create a duplicate turn")
+wait("Tab immediately sends into the existing chat") { !quick.running }
+precondition(quick.turns.last?.complete == true)
+let oversizedDraft = String(repeating: "a", count: 32_001)
+precondition(quick.consumeEntry(oversizedDraft) == oversizedDraft)
+precondition(quick.turns.count == previousTurnCount + 1)
+print("PASS Quick AI entry: immediate send, clear on acceptance, preserve on busy/oversize rejection, including an existing chat")
 FixtureProtocol.mode = "slow"
 precondition(quick.submit("close while generating"))
 quick.closeChat()
@@ -289,11 +350,281 @@ RunLoop.current.run(until: Date().addingTimeInterval(0.7))
 precondition(!quick.isInChat && !quick.running && quick.turns.isEmpty)
 print("PASS AI Chat handoff: same active turn after launcher leaves; closing discards the session and late results")
 
+let formattedResponse = AIResponseFormatting.attributed("# Heading\n**bold** and *italic* with `code` and [link](https://example.invalid)\n- item")
+let richString = formattedResponse.string as NSString
+let boldFont = formattedResponse.attribute(.font, at: richString.range(of: "bold").location, effectiveRange: nil) as! NSFont
+let italicFont = formattedResponse.attribute(.font, at: richString.range(of: "italic").location, effectiveRange: nil) as! NSFont
+let codeFont = formattedResponse.attribute(.font, at: richString.range(of: "code").location, effectiveRange: nil) as! NSFont
+precondition(NSFontManager.shared.traits(of: boldFont).contains(.boldFontMask))
+precondition(NSFontManager.shared.traits(of: italicFont).contains(.italicFontMask))
+precondition(codeFont.fontDescriptor.symbolicTraits.contains(.monoSpace))
+precondition(formattedResponse.string.contains("• item"))
+precondition(formattedResponse.attribute(.link, at: richString.range(of: "link").location, effectiveRange: nil) as? URL == URL(string: "https://example.invalid"))
+let richData = AIResponseFormatting.rtf("**rich text**")!
+let richRoundTrip = try NSAttributedString(data: richData, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+precondition(richRoundTrip.string == "rich text")
+print("PASS formatted paste: real heading/bold/italic/code/link styles and RTF round trip")
+
+// Progress is driven by public provider data, not timers or fabricated tool execution.
+func progressFixture(_ connection: AIConnection) throws -> AIConversationSession {
+    let name = "org.keylane.progress-fixture." + UUID().uuidString
+    let preferences = UserDefaults(suiteName: name)!
+    defer { preferences.removePersistentDomain(forName: name) }
+    preferences.set(try JSONEncoder().encode(AIConfiguration.State(enabled: true, connections: [connection], selectedID: connection.id)), forKey: "aiConnections.v1")
+    return AIConversationSession(configuration: AIConfiguration(preferences: preferences), runtime: AIRuntime(configuration: configuration),
+                             observesDefaultConnection: false, readKey: { connection in connection.protocolKind == .anthropic ? "fixture-anthropic-key" : nil })
+}
+var progressConnection = second
+progressConnection.mode = .streaming
+let progressQuick = try progressFixture(progressConnection)
+FixtureProtocol.mode = "reasoning-stream"
+precondition(progressQuick.submit("Progress fixture"))
+wait("Reasoning stream completes") { !progressQuick.running }
+precondition(progressQuick.lastAnswer == "你好")
+precondition(progressQuick.turns.last?.progress?.phase == .completed)
+precondition(progressQuick.turns.last?.progress?.activities.count == 1)
+precondition(progressQuick.turns.last?.progress?.activities.first?.text == "Provider reasoning summary")
+let previousProgressID = progressQuick.turns.last!.id
+precondition(progressQuick.regenerate())
+wait("Regeneration gets a fresh progress trace") { !progressQuick.running }
+precondition(progressQuick.turns.count == 1 && progressQuick.turns.last?.id != previousProgressID)
+precondition(progressQuick.turns.last?.progress?.activities.count == 1)
+progressQuick.reset()
+FixtureProtocol.mode = "reasoning-pause"
+precondition(progressQuick.submit("Cancel while thinking"))
+wait("Thinking appears before answer") { progressQuick.turns.last?.progress?.phase == .thinking }
+progressQuick.stop()
+precondition(progressQuick.turns.last?.progress?.phase == .cancelled)
+FixtureProtocol.mode = "stream"
+precondition(progressQuick.submit("New request after cancellation"))
+wait("Next reply completes") { !progressQuick.running }
+RunLoop.current.run(until: Date().addingTimeInterval(0.6))
+precondition(progressQuick.turns.first?.progress?.phase == .cancelled)
+precondition(progressQuick.turns.last?.progress?.activities.isEmpty == true && progressQuick.lastAnswer == "你好")
+progressQuick.reset()
+FixtureProtocol.mode = "tool-stream"
+let requestsBeforeTool = FixtureProtocol.requests.count
+precondition(progressQuick.submit("Tool request fixture"))
+wait("Unsupported tool request is reported") { !progressQuick.running }
+precondition(progressQuick.turns.last?.progress?.activities.count == 1)
+precondition(progressQuick.turns.last?.progress?.activities.first?.state == .notExecuted)
+precondition(progressQuick.turns.last?.progress?.completedToolCount == 0)
+precondition(progressQuick.status.contains("没有执行"))
+precondition(FixtureProtocol.requests.count == requestsBeforeTool + 1, "Displaying a tool request must not execute it or create extra model requests")
+precondition(progressQuick.turns.last?.progress?.activities.first?.arguments.contains("private") == false)
+progressConnection.mode = .complete
+let completeProgress = try progressFixture(progressConnection)
+FixtureProtocol.mode = "reasoning-complete"
+precondition(completeProgress.submit("Complete fixture"))
+wait("Complete response metadata") { !completeProgress.running }
+precondition(completeProgress.turns.last?.progress?.hasThinking == true && completeProgress.lastAnswer == "final answer")
+progressConnection.wireProtocol = .anthropic
+progressConnection.mode = .streaming
+let anthropicProgress = try progressFixture(progressConnection)
+FixtureProtocol.mode = "anthropic-thinking-stream"
+precondition(anthropicProgress.submit("Anthropic fixture"))
+wait("Anthropic reasoning metadata") { !anthropicProgress.running }
+precondition(anthropicProgress.lastAnswer == "你好")
+precondition(anthropicProgress.turns.last?.progress?.activities.first?.text == "Anthropic visible summary")
+precondition(anthropicProgress.turns.last?.progress?.activities.first?.text.contains("must-not-display") == false)
+let nativeThought = CodexProgressAdapter.events(method: "item/reasoning/summaryTextDelta", params: ["itemId": "reasoning", "delta": "Public summary"])
+precondition(nativeThought == [.thinking(id: "codex-reasoning", delta: "Public summary")])
+precondition(CodexProgressAdapter.events(method: "item/reasoning/textDelta", params: ["itemId": "private", "delta": "hidden"]).isEmpty)
+let nativeTool = CodexProgressAdapter.events(method: "item/completed", params: ["item": ["id": "tool", "type": "mcpToolCall", "tool": "Read", "status": "completed", "arguments": ["path": "/Example"]]])
+var nativeTrace = AIResponseProgress()
+for event in nativeTool { nativeTrace.apply(event) }
+precondition(nativeTrace.completedToolCount == 1)
+let nativeFailed = CodexProgressAdapter.events(method: "item/completed", params: ["item": ["id": "failed", "type": "dynamicToolCall", "tool": "Read", "success": false]])
+if let event = nativeFailed.first, case let .tool(_, _, _, state) = event { precondition(state == .failed) } else { fatalError("Missing failed tool event") }
+let nativeSearch = CodexProgressAdapter.events(method: "item/completed", params: ["item": ["id": "search", "type": "webSearch", "query": "fixture", "action": NSNull()]])
+if let event = nativeSearch.first, case let .tool(_, _, arguments, _) = event { precondition(arguments.contains("fixture")) } else { fatalError("Missing search event") }
+print("PASS progress UI data: OpenAI streaming/complete and Anthropic thinking, reasoning-only phase, regeneration, cancellation/late events, tool-request redaction/non-execution and public Codex activity adapters")
+
+// Video parity: real file parsing and an isolated, simulated conversation lifecycle.
+let videoDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-video-" + UUID().uuidString)
+try FileManager.default.createDirectory(at: videoDirectory, withIntermediateDirectories: true)
+defer { try? FileManager.default.removeItem(at: videoDirectory) }
+let textURL = videoDirectory.appendingPathComponent("fixture.md")
+try Data("Attachment fixture content".utf8).write(to: textURL)
+let attachment = try AIFileAttachment.read(textURL)
+precondition(attachment.name == "fixture.md" && attachment.text == "Attachment fixture content")
+let symlink = videoDirectory.appendingPathComponent("alias.md")
+try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: textURL)
+do { _ = try AIFileAttachment.read(symlink); fatalError("Symbolic-link attachment was accepted") } catch {}
+do { _ = try AIFileAttachment.read(videoDirectory); fatalError("Directory attachment was accepted") } catch {}
+let binaryURL = videoDirectory.appendingPathComponent("binary.bin")
+try Data([0, 255, 0, 255]).write(to: binaryURL)
+do { _ = try AIFileAttachment.read(binaryURL); fatalError("Binary attachment was accepted") } catch {}
+let largeURL = videoDirectory.appendingPathComponent("large.txt")
+try Data(repeating: 65, count: 32_001).write(to: largeURL)
+do { _ = try AIFileAttachment.read(largeURL); fatalError("Oversize attachment was accepted") } catch {}
+let pdfURL = videoDirectory.appendingPathComponent("fixture.pdf")
+var mediaBox = CGRect(x: 0, y: 0, width: 300, height: 200)
+let pdfContext = CGContext(consumer: CGDataConsumer(url: pdfURL as CFURL)!, mediaBox: &mediaBox, nil)!
+pdfContext.beginPDFPage(nil)
+pdfContext.textPosition = CGPoint(x: 20, y: 100)
+CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: "PDF fixture", attributes: [.font: NSFont.systemFont(ofSize: 14)])), pdfContext)
+pdfContext.endPDFPage(); pdfContext.closePDF()
+let pdfAttachment = try AIFileAttachment.read(pdfURL)
+precondition(pdfAttachment.text.contains("PDF fixture"))
+let videoHistory = AIConversationRepository(url: videoDirectory.appendingPathComponent("history.sqlite"))
+let preferredQuick = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), preferredQuickModel: { legacy.id }, readKey: { _ in nil })
+precondition(preferredQuick.currentConnection?.id == legacy.id)
+precondition(preferredQuick.chooseModel(second.id, behavior: .forkContinuation) && preferredQuick.currentConnection?.id == second.id)
+preferredQuick.reset()
+precondition(preferredQuick.currentConnection?.id == legacy.id, "New questions must keep the configured automatic model preference")
+let video = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: videoHistory, readKey: { _ in nil })
+FixtureProtocol.mode = "stream"
+video.composer.attachments = [attachment.attachment]
+precondition(video.submit("Summarize the attachment"))
+precondition(video.composer.attachments.isEmpty && video.turns.last?.attachments == [attachment.attachment])
+wait("Attached prompt completes") { !video.running }
+precondition(video.messages(for: "follow up").contains { $0.content.contains("Attachment fixture content") })
+precondition(video.turns.first?.question == "Summarize the attachment", "UI question must not expose the extracted file body")
+video.composer.attachments = [attachment.attachment]
+precondition(video.regenerate())
+precondition(video.composer.attachments == [attachment.attachment], "Regenerate must preserve a newly drafted attachment")
+wait("Regenerated answer") { !video.running }
+precondition(video.turns.count == 1 && video.turns.first?.attachments == [attachment.attachment])
+precondition(video.chooseModel(legacy.id, behavior: .forkContinuation))
+precondition(video.currentConnection?.id == legacy.id && video.turns.count == 1)
+precondition(video.regenerate(modelID: second.id))
+wait("Regenerate with another model") { !video.running }
+precondition(video.currentConnection?.id == second.id && video.turns.count == 1)
+// Native sheet lifecycle: selecting files must not be an unrelated window that hides the Launcher.
+let fixtureApp = NSApplication.shared
+fixtureApp.setActivationPolicy(.accessory)
+fixtureApp.finishLaunching()
+let attachmentWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+attachmentWindow.isReleasedWhenClosed = false
+attachmentWindow.title = "Keylane attachment regression fixture"
+attachmentWindow.orderFront(nil)
+video.composer.attachments = [pdfAttachment.attachment]
+let attachmentChatID = video.chatID
+let attachmentTurnIDs = video.turns.map(\.id)
+AIConversationHostActions.chooseFiles(composer: video.composer, in: attachmentWindow)
+wait("File picker is attached to its originating window") { attachmentWindow.attachedSheet is NSOpenPanel }
+let attachmentPicker = attachmentWindow.attachedSheet as! NSOpenPanel
+attachmentPicker.directoryURL = videoDirectory
+AIConversationHostActions.chooseFiles(composer: video.composer, in: attachmentWindow)
+precondition(attachmentWindow.attachedSheet === attachmentPicker, "A second click must not replace the active picker")
+precondition(attachmentWindow.isVisible && video.chatID == attachmentChatID && video.turns.map(\.id) == attachmentTurnIDs)
+attachmentPicker.cancel(nil)
+wait("Cancelling the sheet returns to the originating window") { attachmentWindow.attachedSheet == nil }
+precondition(attachmentWindow.isVisible && video.composer.attachments == [pdfAttachment.attachment])
+precondition(video.chatID == attachmentChatID && video.turns.map(\.id) == attachmentTurnIDs)
+attachmentWindow.close()
+// Exercise the same import callback using a synthetic URL selection, without typing into the OS dialog.
+video.composer.attachFiles([textURL])
+wait("File selection appends into the same existing conversation") { !video.composer.loadingFiles }
+precondition(video.composer.attachments.map(\.title) == ["fixture.pdf", "fixture.md"])
+precondition(video.chatID == attachmentChatID && video.turns.map(\.id) == attachmentTurnIDs)
+video.composer.attachFiles([textURL])
+video.reset()
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(video.composer.attachments.isEmpty && !video.composer.loadingFiles, "An explicitly reset conversation must reject a late file read")
+// Restore the saved conversation for the remaining history-navigation checks.
+video.openChat(attachmentChatID!)
+wait("Restore attachment test conversation") { !video.loadingChat && video.chatID == attachmentChatID }
+print("PASS native file-picker sheet/cancel keeps its parent and conversation; synthetic URL import preserves attachments and explicit reset rejects late reads")
+
+let firstVideoChat = video.chatID!
+wait("First quick conversation saved") { video.chats.contains { $0.id == firstVideoChat } }
+video.reset()
+precondition(video.composer.attachments.isEmpty && video.submit("Second conversation"))
+wait("Second quick conversation saved") { !video.running && video.chats.count == 5 }
+let secondVideoChat = video.chatID!
+precondition(video.neighboringChat(-1) == firstVideoChat)
+video.navigateChat(-1)
+wait("Restore previous quick conversation") { !video.loadingChat && video.chatID == firstVideoChat }
+precondition(video.turns.first?.attachments == [attachment.attachment] && video.neighboringChat(1) == secondVideoChat)
+let restartedQuick = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: videoHistory, readKey: { _ in nil })
+wait("New controller loads local quick history") { restartedQuick.chats.count == 5 }
+restartedQuick.openChat(firstVideoChat)
+wait("Local Quick AI recovery after controller restart") { !restartedQuick.loadingChat && restartedQuick.chatID == firstVideoChat }
+precondition(restartedQuick.turns.first?.attachments == [attachment.attachment])
+// Read both shipped attachment shapes; write one canonical model without losing source data.
+let legacyFileData = try JSONEncoder().encode(attachment)
+let legacyFileObject = try JSONSerialization.jsonObject(with: legacyFileData)
+let legacyFileTurn = try JSONSerialization.data(withJSONObject: [
+    "id": UUID().uuidString, "question": "Legacy quick file", "answer": "saved", "complete": true,
+    "files": [legacyFileObject]
+])
+let migratedFileTurn = try JSONDecoder().decode(AIConversationTurn.self, from: legacyFileTurn)
+precondition(migratedFileTurn.attachments == [attachment.attachment])
+let canonicalFileData = try JSONEncoder().encode(migratedFileTurn)
+let roundTrippedFileTurn = try JSONDecoder().decode(AIConversationTurn.self, from: canonicalFileData)
+precondition(roundTrippedFileTurn == migratedFileTurn)
+let canonicalFileObject = try JSONSerialization.jsonObject(with: canonicalFileData) as! [String: Any]
+precondition(canonicalFileObject["files"] == nil)
+let promotion = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), readKey: { _ in nil })
+FixtureProtocol.mode = "reasoning-pause"
+precondition(promotion.submit("promote active request"))
+wait("Promotion receives genuine fixture activity") { promotion.turns.last?.progress?.phase == .thinking }
+let promotionTurnID = promotion.turns[0].id
+let requestCountBeforePromotion = FixtureProtocol.requests.count
+let sharedComposer = promotion.composer
+sharedComposer.text = "Unsent follow-up"
+sharedComposer.attachments = [attachment.attachment]
+promotion.beginChat()
+promotion.leaveLauncher()
+precondition(promotion.composer === sharedComposer && promotion.composer.text == "Unsent follow-up")
+precondition(promotion.composer.attachments == [attachment.attachment] && promotion.turns[0].id == promotionTurnID)
+wait("Promoted request completes") { !promotion.running }
+precondition(FixtureProtocol.requests.count == requestCountBeforePromotion)
+precondition(promotion.turns[0].complete && promotion.turns[0].progress?.phase == .completed)
+promotion.closeChat()
+FixtureProtocol.mode = "stream"
+print("PASS unified conversation: legacy files migrate losslessly; shared draft, attachments, progress and active request survive promotion without a duplicate request")
+
+let contextPromotion = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), readKey: { _ in nil })
+let contextDraft = contextPromotion.composer.draftID
+contextPromotion.composer.loadAttachments {
+    try await Task.sleep(nanoseconds: 80_000_000)
+    return [.init(title: "Synthetic async context", text: "No real OCR")]
+}
+contextPromotion.beginChat()
+contextPromotion.leaveLauncher()
+wait("Context import survives presentation change") { !contextPromotion.composer.loadingFiles }
+precondition(contextPromotion.composer.draftID == contextDraft && contextPromotion.composer.attachments.count == 1)
+contextPromotion.composer.loadAttachments {
+    try? await Task.sleep(nanoseconds: 80_000_000) // Deliberately deliver even after cancellation.
+    return [.init(title: "Late old context", text: "must not cross drafts")]
+}
+contextPromotion.reset()
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(contextPromotion.composer.attachments.isEmpty && !contextPromotion.composer.loadingFiles)
+contextPromotion.closeChat()
+print("PASS shared asynchronous context: presentation changes retain import; resetting the common draft rejects late OCR-like results")
+
+let link = URL(string: AIChatLink.make(firstVideoChat))!
+precondition(AIChatLink.parse(link) == firstVideoChat)
+precondition(AIChatLink.parse(URL(string: "keylane://ai/chat/" + firstVideoChat.uuidString + "?prompt=unsafe")!) == nil)
+precondition(AIChatLink.parse(URL(string: "https://ai/chat/" + firstVideoChat.uuidString)!) == nil)
+video.navigateChat(1)
+wait("Restore next quick conversation") { !video.loadingChat && video.chatID == secondVideoChat }
+video.deleteChat(secondVideoChat)
+wait("Quick chat deletion") { video.chatID == nil && video.chats.count == 4 }
+let persistedTurn = try JSONDecoder().decode(AIConversationSession.Turn.self, from: JSONEncoder().encode(video.turns.first ?? AIConversationSession.Turn(question: "legacy")))
+precondition(persistedTurn.attachments == nil)
+print("PASS Quick AI video workflow: text/PDF files, bounded reads, symlink/binary rejection, attachment context, regeneration/model switching, draft preservation, persistent previous/next chats, deletion and deep links")
+
+let interruptedHistory = AIConversationRepository(url: videoDirectory.appendingPathComponent("interrupted.sqlite"))
+let interruptedRecord = AIChatRecord(id: UUID(), content: .init(model: .init(second), turns: [AIConversationSession.Turn(question: "Interrupted", progress: .init())]))
+var interruptedSaved = false
+interruptedHistory.perform({ try $0.save(interruptedRecord) }) { _ in interruptedSaved = true }
+wait("Interrupted trace fixture stored") { interruptedSaved }
+let interruptedQuick = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: interruptedHistory, readKey: { _ in nil })
+interruptedQuick.openChat(interruptedRecord.id)
+wait("Interrupted trace restored") { !interruptedQuick.loadingChat && interruptedQuick.chatID == interruptedRecord.id }
+precondition(!interruptedQuick.running && interruptedQuick.turns.first?.progress?.phase == .cancelled, "Restoring an interrupted trace must not display a permanently running status")
+print("PASS interrupted history progress is restored as stopped, not a phantom active request")
+
 let historyDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-history-" + UUID().uuidString)
 defer { try? FileManager.default.removeItem(at: historyDirectory) }
 let historyURL = historyDirectory.appendingPathComponent("history.sqlite")
-let history = AIChatHistory(url: historyURL)
-let conversation = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
+let history = AIConversationRepository(url: historyURL)
+let conversation = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                      history: history, readKey: { _ in nil })
 var historyOpenEvents: [UUID] = []
 let allocationObserver = conversation.historyOpened.sink { historyOpenEvents.append($0) }
@@ -301,7 +632,7 @@ settings.setDefault(legacy.id, for: .chat)
 precondition(conversation.currentConnection?.id == second.id)
 FixtureProtocol.mode = "stream"
 precondition(conversation.submit("保留这段对话"))
-precondition(!FileManager.default.fileExists(atPath: historyURL.path))
+wait("Quick AI persists before transfer to AI Chat") { conversation.chatID != nil && FileManager.default.fileExists(atPath: historyURL.path) }
 conversation.beginChat()
 precondition(conversation.currentConnection?.id == second.id)
 let savedID = conversation.chatID!
@@ -332,7 +663,7 @@ wait("Additional instructions survive history writes") {
 }
 precondition(conversation.chats.first?.title == "重命名后的对话" && conversation.chats.first?.pinned == true)
 conversation.closeChat()
-let archivedRestore = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
+let archivedRestore = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                        history: history, readKey: { _ in nil })
 archivedRestore.beginChat(restoreLatest: true)
 wait("Archive history loaded") { !archivedRestore.chats.isEmpty && !archivedRestore.loadingChat }
@@ -341,9 +672,9 @@ archivedRestore.updateChat(savedID, change: .archive(false))
 wait("Unarchive preserves pin and title") { archivedRestore.chats.first?.archived == false }
 archivedRestore.closeChat()
 
-let reopened = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
-                                 history: AIChatHistory(url: historyURL), readKey: { _ in nil })
-let historyComposer = AIChatComposer()
+let reopened = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
+                                 history: AIConversationRepository(url: historyURL), readKey: { _ in nil })
+let historyComposer = AIConversationComposer()
 historyComposer.text = "只属于新对话的未发送草稿"
 let draftObserver = reopened.historyOpened.sink { _ in historyComposer.text = "" }
 reopened.beginChat(restoreLatest: true)
@@ -355,7 +686,7 @@ precondition(reopened.lastAnswer == "你好")
 precondition(reopened.chatInstructions == "简洁回答，保留技术术语。")
 precondition(reopened.chats.first?.pinned == true && reopened.chats.first?.title == "重命名后的对话")
 precondition(reopened.messages(for: "继续", instructions: reopened.chatInstructions).first?.role == .system)
-precondition(!reopened.chooseChatModel(legacy.id), "Existing history must stay bound to its original model")
+precondition(!reopened.chooseModel(legacy.id), "Existing history must stay bound to its original model")
 
 settings.select(legacy.id)
 precondition(reopened.currentConnection?.id == second.id && reopened.matchesCurrentModel)
@@ -396,8 +727,8 @@ precondition(permissions?.intValue == 0o600)
 print("PASS AI Chat history: lazy SQLite, handoff, reopen, model isolation, interrupted turns, deletion and file permissions")
 
 // A separate database keeps revision tests independent from existing history fixtures.
-let revisionStore = AIChatHistory(url: historyDirectory.appendingPathComponent("revisions.sqlite"))
-let revisions = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration),
+let revisionStore = AIConversationRepository(url: historyDirectory.appendingPathComponent("revisions.sqlite"))
+let revisions = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                  history: revisionStore, readKey: { _ in nil })
 revisions.beginChat()
 revisions.renameCurrentChat("预先命名 ")
@@ -405,7 +736,7 @@ precondition(revisions.chatTitle == "预先命名 ", "Typing spaces must not col
 revisions.renameCurrentChat("预先命名")
 revisions.chatInstructions = "仅使用本对话的指令"
 FixtureProtocol.mode = "stream"
-precondition(revisions.chooseChatModel(second.id))
+precondition(revisions.chooseModel(second.id))
 precondition(revisions.submit("第一问"))
 wait("Revision first turn") { !revisions.running }
 precondition(revisions.submit("第二问"))
@@ -455,39 +786,39 @@ precondition(settings.save(second, selectAsDefault: false))
 revisions.closeChat()
 print("PASS AI Chat revisions: edit/retry branches, prefix context, original history, names, instructions, busy/invalid/model isolation and persistence")
 
-let contextStore = AIChatHistory(url: historyDirectory.appendingPathComponent("context.sqlite"))
-let contextChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: contextStore, readKey: { _ in nil })
+let contextStore = AIConversationRepository(url: historyDirectory.appendingPathComponent("context.sqlite"))
+let contextChat = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: contextStore, readKey: { _ in nil })
 contextChat.beginChat()
-precondition(contextChat.chooseChatModel(second.id))
-let attachment = AIChatAttachment(title: "选择的文本", text: "Synthetic context only")
+precondition(contextChat.chooseModel(second.id))
+let contextAttachment = AIConversationAttachment(title: "选择的文本", text: "Synthetic context only")
 precondition(!contextChat.submit("问题", attachments: [.init(title: "too large", text: String(repeating: "x", count: 32_001))]))
 precondition(contextChat.turns.isEmpty)
 FixtureProtocol.mode = "stream"
-precondition(contextChat.submit("分析", attachments: [attachment]))
+precondition(contextChat.submit("分析", attachments: [contextAttachment]))
 wait("Chat context answer") { !contextChat.running }
 let contextOriginalID = contextChat.chatID!
 let contextFirstID = contextChat.turns[0].id
-precondition(contextChat.turns[0].question == "分析" && contextChat.turns[0].attachments == [attachment])
+precondition(contextChat.turns[0].question == "分析" && contextChat.turns[0].attachments == [contextAttachment])
 precondition(contextChat.messages(for: "继续").first?.content.contains("Synthetic context only") == true)
 precondition(contextChat.resubmit(contextFirstID))
 wait("Chat context retry") { !contextChat.running }
-precondition(contextChat.turns[0].attachments == [attachment])
+precondition(contextChat.turns[0].attachments == [contextAttachment])
 let contextRetryID = contextChat.chatID
 contextChat.duplicateChat(contextOriginalID)
 wait("Duplicate history including context") { !contextChat.loadingChat && contextChat.chatID != contextRetryID }
-precondition(contextChat.turns[0].attachments == [attachment] && contextChat.currentConnection?.id == second.id)
+precondition(contextChat.turns[0].attachments == [contextAttachment] && contextChat.currentConnection?.id == second.id)
 var copiedTranscript: String?
 contextChat.transcript(contextOriginalID) { copiedTranscript = $0 }
 wait("Export saved transcript with context") { copiedTranscript != nil }
 precondition(copiedTranscript!.contains("Synthetic context only") && copiedTranscript!.contains("你好"))
 let legacyTurn = try JSONSerialization.data(withJSONObject: ["id": UUID().uuidString, "question": "旧记录", "answer": "回答", "complete": true])
-let decodedLegacyTurn = try JSONDecoder().decode(QuickAIController.Turn.self, from: legacyTurn)
+let decodedLegacyTurn = try JSONDecoder().decode(AIConversationSession.Turn.self, from: legacyTurn)
 precondition(decodedLegacyTurn.attachments == nil)
 contextChat.closeChat()
 print("PASS chat context: bounded submission, persistent attachments, follow-up/retry/duplicate context, transcript export and legacy history decoding")
 
-let projectStore = AIChatHistory(url: historyDirectory.appendingPathComponent("projects.sqlite"))
-let projectChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: projectStore, readKey: { _ in nil })
+let projectStore = AIConversationRepository(url: historyDirectory.appendingPathComponent("projects.sqlite"))
+let projectChat = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: projectStore, readKey: { _ in nil })
 projectChat.beginChat()
 var project = AIChatProject()
 project.name = "测试项目"
@@ -501,7 +832,7 @@ precondition(projectChat.currentProjectID == project.id)
 projectChat.chatInstructions = "Additional synthetic chat instruction."
 precondition(projectChat.effectiveInstructions!.contains(project.instructions))
 precondition(projectChat.effectiveInstructions!.contains(projectChat.chatInstructions))
-precondition(projectChat.chooseChatModel(second.id) && projectChat.submit("项目中的会话"))
+precondition(projectChat.chooseModel(second.id) && projectChat.submit("项目中的会话"))
 wait("Project chat generated") { !projectChat.running }
 let projectChatID = projectChat.chatID!
 let projectTurn = projectChat.turns[0].id
@@ -549,7 +880,7 @@ INSERT INTO chat_metadata VALUES('\(legacyRecordID.uuidString)', 'existing alias
 """
 precondition(sqlite3_exec(legacyDatabase, legacySQL, nil, nil, nil) == SQLITE_OK)
 sqlite3_close(legacyDatabase)
-let migratedStore = AIChatHistory(url: legacyHistoryURL)
+let migratedStore = AIConversationRepository(url: legacyHistoryURL)
 let migratedRows = try migratedStore.list()
 precondition(migratedRows.count == 1 && migratedRows[0].title == "existing alias" && migratedRows[0].pinned && migratedRows[0].archived && migratedRows[0].projectID == nil)
 try migratedStore.saveProject(project)
@@ -564,8 +895,8 @@ precondition(retainedLegacyRecord?.content.instructions == "old instructions" &&
 print("PASS chat project additive migration: pre-project SQLite, aliases, pinned/archive metadata, old turn content, project moves and group removal")
 
 // PR #191 regressions run only against temporary stores and the intercepted URLSession.
-let reviewStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-branch.sqlite"))
-let reviewChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: reviewStore, readKey: { _ in nil })
+let reviewStore = AIConversationRepository(url: historyDirectory.appendingPathComponent("review-branch.sqlite"))
+let reviewChat = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: reviewStore, readKey: { _ in nil })
 reviewChat.beginChat()
 var reviewProject = AIChatProject()
 reviewProject.name = "Review project"
@@ -576,7 +907,7 @@ wait("Review project stored") { reviewProjectSaved }
 reviewChat.reset(projectID: reviewProject.id)
 reviewChat.chatInstructions = "Synthetic conversation policy"
 FixtureProtocol.mode = "stream"
-precondition(reviewChat.chooseChatModel(second.id) && reviewChat.submit("source question one"))
+precondition(reviewChat.chooseModel(second.id) && reviewChat.submit("source question one"))
 wait("Review source first answer") { !reviewChat.running }
 precondition(reviewChat.submit("source question two"))
 wait("Review source second answer") { !reviewChat.running }
@@ -626,17 +957,17 @@ precondition(FixtureProtocol.requests.count == reviewRequestsBeforeInvalidRetry 
 reviewChat.closeChat()
 print("PASS review retry validation: combined UTF-8 instruction limit checked before mutation, original ID/title/project/turns and editor target retained, corrected retry succeeds")
 
-let deletionStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-delete.sqlite"))
-let deletionChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: deletionStore, readKey: { _ in nil })
+let deletionStore = AIConversationRepository(url: historyDirectory.appendingPathComponent("review-delete.sqlite"))
+let deletionChat = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: deletionStore, readKey: { _ in nil })
 deletionChat.beginChat()
-precondition(deletionChat.chooseChatModel(second.id) && deletionChat.submit("other saved conversation"))
+precondition(deletionChat.chooseModel(second.id) && deletionChat.submit("other saved conversation"))
 wait("Other deletion fixture ready") { !deletionChat.running }
 let otherDeletionID = deletionChat.chatID!
 deletionChat.reset()
 precondition(deletionChat.submit("current saved conversation"))
 wait("Current deletion fixture ready") { !deletionChat.running }
 let currentDeletionID = deletionChat.chatID!
-let deletionDraft = AIChatComposer()
+let deletionDraft = AIConversationComposer()
 var draftResets = 0
 let deletionObserver = deletionChat.chatReset.sink { draftResets += 1; deletionDraft.clear() }
 deletionDraft.offer("draft @context")
@@ -658,10 +989,10 @@ deletionObserver.cancel()
 deletionChat.closeChat()
 print("PASS review deletion: non-current draft retained, current draft fully cleared and late old-draft OCR rejected")
 
-let streamingStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-copy.sqlite"))
-let streamingChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: streamingStore, readKey: { _ in nil })
+let streamingStore = AIConversationRepository(url: historyDirectory.appendingPathComponent("review-copy.sqlite"))
+let streamingChat = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: streamingStore, readKey: { _ in nil })
 streamingChat.beginChat()
-precondition(streamingChat.chooseChatModel(second.id) && streamingChat.submit("other transcript fixture"))
+precondition(streamingChat.chooseModel(second.id) && streamingChat.submit("other transcript fixture"))
 wait("Other transcript saved") { !streamingChat.running }
 let storedTranscriptID = streamingChat.chatID!
 streamingChat.reset()
@@ -692,8 +1023,8 @@ print("PASS review duplicate snapshot: current partial response and pending inst
 print("PASS review transcript: current visible streaming snapshot copied before persistence, other conversation still loaded from its own history")
 
 
-let raceStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-project-race.sqlite"))
-let raceChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: raceStore, readKey: { _ in nil })
+let raceStore = AIConversationRepository(url: historyDirectory.appendingPathComponent("review-project-race.sqlite"))
+let raceChat = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: raceStore, readKey: { _ in nil })
 raceChat.beginChat()
 var removedProject = AIChatProject()
 removedProject.name = "Removed synthetic group"
@@ -702,7 +1033,7 @@ var raceProjectSaved = false
 raceChat.saveProject(removedProject) { raceProjectSaved = $0 }
 wait("Project race fixture stored") { raceProjectSaved }
 raceChat.reset(projectID: removedProject.id)
-precondition(raceChat.chooseChatModel(second.id) && raceChat.submit("grouped conversation"))
+precondition(raceChat.chooseModel(second.id) && raceChat.submit("grouped conversation"))
 wait("Project race conversation ready") { !raceChat.running }
 let raceChatID = raceChat.chatID!
 raceChat.reset()
@@ -1224,8 +1555,8 @@ reconnectConfig.select(secondSubscription.id)
 for route in AIRoute.allCases { reconnectConfig.setDefault(secondSubscription.id, for: route) }
 reconnectConfig.recordChatModel(secondSubscription.id)
 let oldReference = AIChatRecord.ModelReference(secondSubscription)
-let reconnectHistory = AIChatHistory(url: cliDirectory.appendingPathComponent("reconnect-history.sqlite"))
-let oldChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration), history: reconnectHistory)
+let reconnectHistory = AIConversationRepository(url: cliDirectory.appendingPathComponent("reconnect-history.sqlite"))
+let oldChat = AIConversationSession(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration), history: reconnectHistory)
 oldChat.beginChat()
 wait("Prepare old subscription chat") { !oldChat.loadingChat }
 precondition(oldChat.submit("fixture old-account conversation"))
@@ -1253,14 +1584,14 @@ let repeatedReconnect = reconnectConfig.reconnectSubscription(reconnectedRoot, a
 precondition(repeatedReconnect.added == 0 && reconnectConfig.state.connections.count == 4)
 precondition(Set(reconnectConfig.state.connections.map(\.model)).count == 4)
 precondition(reconnectConfig.reconnectSubscription(cliConnection, accountID: "stale@example.invalid", models: ["fixture-codex"]) == nil)
-let restoredOldChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration), history: reconnectHistory)
+let restoredOldChat = AIConversationSession(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration), history: reconnectHistory)
 restoredOldChat.beginChat()
 wait("Load subscription chat list") { !restoredOldChat.loadingChat }
 restoredOldChat.openChat(oldChatID)
 wait("Load old subscription conversation") { !restoredOldChat.loadingChat && restoredOldChat.chatID == oldChatID }
 precondition(!restoredOldChat.matchesCurrentModel && !restoredOldChat.submit("must not redirect restored history"))
 try "other@example.invalid".write(to: cliDirectory.appendingPathComponent("active-account"), atomically: true, encoding: .utf8)
-let newAccountChat = QuickAIController(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration))
+let newAccountChat = AIConversationSession(configuration: reconnectConfig, runtime: AIRuntime(configuration: configuration))
 precondition(newAccountChat.submit("fixture fresh new-account conversation"))
 wait("New conversation uses stable rebound model") { !newAccountChat.running }
 precondition(newAccountChat.lastAnswer == "CLI fixture answer")

@@ -4,7 +4,8 @@ import Foundation
 
 // Inert services keep the real window/toolbar test independent of models, credentials and history.
 final class AIConfiguration: ObservableObject {}
-final class QuickAIController: ObservableObject {
+final class AIConversationSession: ObservableObject {
+    let composer = AIConversationComposer()
     struct Summary { let id: UUID; let title: String }
     struct Connection { let displayName: String }
     @Published var chats: [Summary] = []
@@ -21,8 +22,8 @@ enum WindowActivationBehavior {
     func apply(to window: NSWindow) {}
 }
 final class AIChatSplitViewController: NSSplitViewController {
-    init(controller: QuickAIController, configuration: AIConfiguration,
-         interaction: AIInteractionPreferences, composer: AIChatComposer,
+    init(controller: AIConversationSession, configuration: AIConfiguration,
+         interaction: AIInteractionPreferences, composer: AIConversationComposer,
          presentation: AIChatPresentation) {
         super.init(nibName: nil, bundle: nil)
         splitView.isVertical = true
@@ -36,7 +37,7 @@ app.setActivationPolicy(.prohibited)
 let suite = "org.keylane.ai-chat-toolbar-test.\(UUID().uuidString)"
 let preferences = UserDefaults(suiteName: suite)!
 defer { preferences.removePersistentDomain(forName: suite) }
-let controller = QuickAIController()
+let controller = AIConversationSession()
 let owner = AIChatWindow(controller: controller, configuration: AIConfiguration(),
                          interaction: AIInteractionPreferences(preferences: preferences),
                          appearance: Just("dark").eraseToAnyPublisher())
@@ -57,7 +58,7 @@ func check(_ window: NSWindow, visible: Bool) {
 }
 let window = show()
 check(window, visible: false)
-let composer = Mirror(reflecting: owner).children.first { $0.label == "composer" }!.value as! AIChatComposer
+let composer = controller.composer
 var composerFocusRequests = 0
 let focusObserver = composer.focusRequested.sink { composerFocusRequests += 1 }
 composer.text = "An unsent draft"

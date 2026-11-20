@@ -17,11 +17,11 @@ struct AIChatContextSheet: View {
         let load: (@escaping (String?) -> Void) -> Void
     }
     let source: Source
-    let add: (AIChatAttachment) -> Void
+    let add: (AIConversationAttachment) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var rows: [Candidate] = []
-    @StateObject private var loadState = AIChatContextLoadState()
+    @StateObject private var loadState = AIContextLoadState()
     @State private var message = ""
 
     var body: some View {
@@ -107,7 +107,7 @@ struct AIChatContextSheet: View {
 }
 
 enum AIChatImageContext {
-    static func read(_ url: URL) async throws -> AIChatAttachment {
+    static func read(_ url: URL) async throws -> AIConversationAttachment {
         let work = ImageTextRecognitionWork()
         let result = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {

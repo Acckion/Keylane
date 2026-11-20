@@ -7,67 +7,49 @@ enum QuickAILauncher {
     static let pageID = PageID(rawValue: "quick-ai")
     static let commandID = CommandID(rawValue: "quick-ai")
 
-    static func page(model: Model, controller: QuickAIController, openChat: @escaping () -> Void) -> LauncherPage {
+    static func page(model: Model, controller: AIConversationSession, openChat: @escaping () -> Void) -> LauncherPage {
         var page = LauncherPage(id: pageID, placeholder: "向 AI 提问…", badge: ("Quick AI", "sparkles"),
                      contentPlacement: .conversation, content: {
                          AnyView(QuickAIConversationPage(model: model, controller: controller, openChat: openChat))
                      },
                      leave: controller.leaveLauncher, submit: { [weak model] in
                          guard let model, !SearchField.isComposing else { return }
-                         if model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                             useResponse(controller)
+                         if model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && controller.composer.attachments.isEmpty {
+                             useResponse(controller, copyOnly: model.aiInteraction.primaryAction == .copy)
                          } else if controller.submit(model.query) { model.query = "" }
                      }, primaryTitle: { "发送" }, primaryEnabled: { [weak model] in
                          guard let model else { return false }
-                         return controller.currentConnection != nil && !controller.running
-                             && (!model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller.lastAnswer != nil)
+                         return controller.currentConnection != nil && !controller.running && !controller.loadingChat && !controller.composer.loadingFiles
+                             && (!model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controller.lastAnswer != nil || !controller.composer.attachments.isEmpty)
                      }, actions: { [weak model] in
-                         var actions = [LauncherAction(id: "quick-ai-copy", title: "复制回复", icon: "doc.on.doc",
-                                                       enabled: controller.lastAnswer != nil) {
-                             AIConversationTranscript.copy(controller.lastAnswer)
-                         }]
-                         actions.append(.init(id: "quick-ai-paste", title: "粘贴回复", icon: "doc.on.clipboard",
-                                              enabled: controller.lastAnswer != nil && !controller.running) {
-                             useResponse(controller)
-                         })
-                         if controller.running {
-                             actions.append(.init(id: "quick-ai-stop", title: "停止生成", icon: "stop.fill",
-                                                  perform: controller.stop))
-                         }
-                         actions.append(.init(id: "quick-ai-reset", title: "新对话", icon: "plus") {
-                             controller.reset()
-                             model?.query = ""
-                         })
-                         actions.append(.init(id: "quick-ai-continue", title: "在 AI Chat 中继续",
-                                              icon: "bubble.left.and.bubble.right", shortcut: .init("j", modifiers: .command),
-                                              perform: openChat))
-                         return actions
-                     }, updates: Publishers.Merge3(
-                         controller.$running.removeDuplicates().map { _ in () },
-                         controller.$turns.map { $0.contains { !$0.answer.isEmpty } }.removeDuplicates().map { _ in () },
-                         ViewObservation.changes(model.aiSettings.$state.map { $0.connection(for: .quick) != nil })
-                     ).eraseToAnyPublisher(), actionShortcutsEnabled: true)
-        page.badgeActions = { [weak model] in
-            [
-                .init(id: "quick-ai-new", title: "新对话", icon: "plus",
-                      shortcut: .init("n", modifiers: .command)) {
-                    controller.reset()
-                    model?.query = ""
-                },
-                .init(id: "quick-ai-settings", title: "AI 设置", icon: "gearshape") {
-                    model?.openSettings(page: "ai")
-                }
-            ]
+                         guard let model else { return [] }
+                         return QuickAIActions.items(model: model, controller: controller, openChat: openChat)
+                     }, updates: Publishers.MergeMany([
+                         controller.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+                         controller.composer.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+                         model.aiInteraction.objectWillChange.map { _ in () }.eraseToAnyPublisher(),
+                         model.aiSettings.objectWillChange.map { _ in () }.eraseToAnyPublisher()
+                     ]).eraseToAnyPublisher(), actionShortcutsEnabled: true)
+        page.badgeActions = {
+            [.init(id: "quick-ai-file", title: "附加文件…", icon: "doc.badge.plus", enabled: !controller.composer.loadingFiles && !controller.loadingChat, perform: { AIConversationHostActions.chooseFiles(composer: controller.composer) })]
         }
+        page.returnBindings = .init(primary: .plain, alternates: [
+            .command: .init(perform: { useResponse(controller, copyOnly: model.aiInteraction.primaryAction == .paste) }),
+            .option: .init(perform: { useResponse(controller, formatted: true) })
+        ])
+        page.actionContextTitle = { controller.conversationTitle }
+        page.enter = controller.consumeEntry
+        page.keepsStateWhenHidden = true
         page.fullBleed = true
         return page
     }
-    static func useResponse(_ controller: QuickAIController) {
+    static func useResponse(_ controller: AIConversationSession, formatted: Bool = false, copyOnly: Bool = false) {
         guard !controller.running, let answer = controller.lastAnswer else { return }
         let board = NSPasteboard.general
         board.clearContents()
         guard board.setString(answer, forType: .string) else { return }
-        if let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil {
+        if formatted, let data = AIResponseFormatting.rtf(answer) { board.setData(data, forType: .rtf) }
+        if !copyOnly, let delegate = NSApp.delegate as? Delegate, delegate.pasteTargetName != nil {
             delegate.pasteIntoPreviousApplication(clipboardGeneration: board.changeCount)
         }
     }
@@ -76,72 +58,69 @@ enum QuickAILauncher {
 
 private struct QuickAIConversationPage: View {
     let model: Model
-    @ObservedObject var controller: QuickAIController
+    @ObservedObject var controller: AIConversationSession
     let openChat: () -> Void
-    @State private var input = ""
     @Environment(\.conversationInputEnabled) private var inputEnabled
     @Environment(\.conversationInputFocusToken) private var inputFocusToken
 
     var body: some View {
-        ConversationLayout(title: controller.turns.first?.question ?? "新对话",
-                           subtitle: controller.currentConnection?.displayName ?? "请选择模型",
+        QuickAIConversationContent(model: model, controller: controller, composer: controller.composer,
+                                   openChat: openChat, inputEnabled: inputEnabled, focusToken: inputFocusToken)
+    }
+}
+
+private struct QuickAIConversationContent: View {
+    let model: Model
+    @ObservedObject var controller: AIConversationSession
+    @ObservedObject var composer: AIConversationComposer
+    let openChat: () -> Void
+    let inputEnabled: Bool
+    let focusToken: Int
+    @State private var usageTarget: AIConnection?
+
+    var body: some View {
+        ConversationLayout(title: controller.conversationTitle,
+                           subtitle: controller.quickModelIsAutomatic
+                               ? "自动 · " + model.aiInteraction.modelPreference.title + " · " + (controller.currentConnection?.displayName ?? "请选择模型")
+                               : controller.currentConnection?.displayName ?? "请选择模型",
                            isEmpty: controller.turns.isEmpty && controller.status.isEmpty,
                            back: { model.goBackInLauncher() }) {
             AIConversationTranscript(controller: controller, inLauncher: true)
         } composer: {
-            ConversationComposer {
-                Color.clear.allowsHitTesting(false)
-            } input: {
-                HStack(spacing: 8) {
-                    SearchField(text: $input, placeholder: "向 AI 提问…", focusToken: inputFocusToken, wantsFocus: inputEnabled, compact: true,
-                                submit: submit, move: { _ in },
-                                escape: {
-                                    if controller.running { controller.stop() }
-                                    else { model.cancelLauncherPage() }
-                                })
-                    if controller.running {
-                        NativeHoverButton(title: "停止生成", action: controller.stop) {
-                            Image(systemName: "stop.fill")
-                        }.frame(width: 28, height: 28)
-                    } else if !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        NativeHoverButton(title: "发送", action: submit) {
-                            Image(systemName: "arrow.up")
-                        }.frame(width: 28, height: 28)
-                            .disabled(controller.currentConnection == nil)
-                    } else if controller.lastAnswer != nil {
-                        NativeHoverButton(title: responseTitle, action: paste) {
-                            HStack(spacing: 6) {
-                                Text(responseTitle).font(.system(size: 12))
-                                Keycap(text: "↩")
-                            }
-                        }.fixedSize(horizontal: true, vertical: false)
-                    }
-                }
-            } trailing: {
-                Color.clear.allowsHitTesting(false)
-            }
+            AIConversationComposerView(controller: controller, configuration: model.aiSettings,
+                interaction: model.aiInteraction, composer: composer,
+                canSubmit: controller.canSendDraft,
+                submit: submit, newChat: { controller.reset(); model.query = "" },
+                chooseModel: { _ = controller.chooseModel($0, behavior: .forkContinuation) },
+                showUsage: { usageTarget = controller.currentConnection },
+                openAISettings: { model.openSettings(page: "ai") }, compact: true,
+                inputEnabled: inputEnabled, focusToken: focusToken,
+                emptyAction: { QuickAILauncher.useResponse(controller, copyOnly: model.aiInteraction.primaryAction == .copy) },
+                emptyActionTitle: responseTitle, escape: {
+                    if controller.running { controller.stop() } else { model.cancelLauncherPage() }
+                }, commandReturn: {
+                    QuickAILauncher.useResponse(controller, copyOnly: model.aiInteraction.primaryAction == .paste)
+                }, optionReturn: { QuickAILauncher.useResponse(controller, formatted: true) })
         } trailing: {
             NativeHoverButton(title: "在 AI Chat 中继续", action: openChat) {
                 Image(systemName: "arrow.up.forward.app").font(.system(size: 18))
             }.frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
         }
-        .onAppear { input = model.query }
-        .onChange(of: input) { _, value in if model.query != value { model.query = value } }
-        .onReceive(model.$query) { value in if input != value { input = value } }
+        .sheet(item: $usageTarget) { connection in AISubscriptionUsage(connection: connection) }
+        .onAppear { if composer.text.isEmpty { composer.offer(model.query) } }
+        .onChange(of: composer.text) { _, value in if model.query != value { model.query = value } }
+        .onReceive(model.$query) { value in if composer.text != value { composer.text = value } }
     }
 
     private var responseTitle: String {
-        if let app = (NSApp.delegate as? Delegate)?.pasteTargetName { return "粘贴到 \(app)" }
+        if model.aiInteraction.primaryAction == .paste, let app = (NSApp.delegate as? Delegate)?.pasteTargetName { return "粘贴到 \(app)" }
         return "复制回复"
     }
 
     private func submit() {
-        guard !SearchField.isComposing, !controller.running else { return }
-        if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { paste() }
-        else if controller.submit(input) { input = "" }
-    }
-
-    private func paste() {
-        QuickAILauncher.useResponse(controller)
+        guard !SearchField.isComposing else { return }
+        if composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && composer.attachments.isEmpty {
+            QuickAILauncher.useResponse(controller, copyOnly: model.aiInteraction.primaryAction == .copy)
+        } else { _ = controller.submit(composer.text) }
     }
 }

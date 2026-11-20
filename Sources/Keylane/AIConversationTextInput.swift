@@ -3,8 +3,8 @@ import Combine
 import SwiftUI
 
 /// One native input owns caret-aware completion, IME and send/newline behavior.
-struct AIChatTextInput: NSViewRepresentable {
-    @ObservedObject var composer: AIChatComposer
+struct AIConversationTextInput: NSViewRepresentable {
+    @ObservedObject var composer: AIConversationComposer
     @Binding var height: CGFloat
     let enabled: Bool
     let sendWithReturn: Bool
@@ -13,6 +13,9 @@ struct AIChatTextInput: NSViewRepresentable {
     let moveMenu: (Int) -> Void
     let chooseMenu: () -> Void
     let dismissMenu: () -> Void
+    var escape: (() -> Void)? = nil
+    var commandReturn: (() -> Void)? = nil
+    var optionReturn: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -55,20 +58,26 @@ struct AIChatTextInput: NSViewRepresentable {
         context.coordinator.parent = self
         guard let input = scroll.documentView as? Input else { return }
         input.isEditable = enabled
-        if input.string != composer.text, !input.hasMarkedText() {
+        if context.coordinator.draftID != composer.draftID {
+            context.coordinator.draftID = composer.draftID
+            input.undoManager?.removeAllActions()
+        }
+        let textChanged = input.string != composer.text && !input.hasMarkedText()
+        if textChanged {
             input.string = composer.text
             let range = composer.selection
             input.setSelectedRange(NSRange(location: min(range.location, input.string.utf16.count),
                                            length: min(range.length, max(0, input.string.utf16.count - range.location))))
         }
-        context.coordinator.resize()
+        if textChanged { context.coordinator.resize() }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: AIChatTextInput
+        var parent: AIConversationTextInput
         weak var input: Input?
         var focus: AnyCancellable?
-        init(_ parent: AIChatTextInput) { self.parent = parent }
+        var draftID: UUID
+        init(_ parent: AIConversationTextInput) { self.parent = parent; draftID = parent.composer.draftID }
 
         func textDidChange(_ notification: Notification) {
             guard let input else { return }
@@ -98,6 +107,11 @@ struct AIChatTextInput: NSViewRepresentable {
 
     final class Input: NSTextView {
         weak var owner: Coordinator?
+        override func setFrameSize(_ newSize: NSSize) {
+            let widthChanged = abs(frame.width - newSize.width) > 0.5
+            super.setFrameSize(newSize)
+            if widthChanged { owner?.resize() }
+        }
         override func keyDown(with event: NSEvent) {
             guard let owner, !hasMarkedText() else { super.keyDown(with: event); return }
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting([.capsLock, .numericPad, .function])
@@ -110,7 +124,10 @@ struct AIChatTextInput: NSViewRepresentable {
                 default: break
                 }
             }
+            if event.keyCode == 53, modifiers.isEmpty, let escape = owner.parent.escape { escape(); return }
             if event.keyCode == 36 || event.keyCode == 76 {
+                if modifiers == .command, let action = owner.parent.commandReturn { action(); return }
+                if modifiers == .option, let action = owner.parent.optionReturn { action(); return }
                 if modifiers == .command || (owner.parent.sendWithReturn && modifiers.isEmpty) {
                     owner.parent.submit(); return
                 }

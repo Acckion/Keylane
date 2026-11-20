@@ -1,6 +1,15 @@
 import XCTest
 @testable import KeylaneCore
 final class LauncherTests: XCTestCase {
+    func testPageEntryConsumesExplicitQueryOrPreservesRejectedDraft() {
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "hello", pageResult: "", restored: nil), "")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "hello", pageResult: "hello", restored: nil), "hello")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "hello", pageResult: nil, restored: nil), "hello")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: nil, pageResult: "seed", restored: nil), "seed")
+        XCTAssertNil(LauncherPagePresentation.entryQuery(explicit: nil, pageResult: "", restored: "saved draft"))
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "new", pageResult: "", restored: "saved draft"), "")
+    }
+
     func testCatalogDiscoversAddedRenamedRemovedAndExcludedBundles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

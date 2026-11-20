@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct AIChatProjectEditor: View {
-    @ObservedObject var controller: QuickAIController
+    @ObservedObject var controller: AIConversationSession
     @State var project: AIChatProject
     let completed: (AIChatProject) -> Void
     @Environment(\.dismiss) private var dismiss
