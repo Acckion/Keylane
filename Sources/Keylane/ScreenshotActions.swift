@@ -32,6 +32,14 @@ enum ScreenshotActions {
             })
         }
         actions += [
+            .init(id: "screenshot-shelf", title: "加入暂存架", icon: "tray.and.arrow.down",
+                  shortcut: .init("s", modifiers: [.shift, .command]), group: 1) {
+                withFile(item, model: model) {
+                    guard model.dropShelf.addFiles([item.url]) else {
+                        throw NSError(domain: "Keylane.Screenshots", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先启用暂存架。截图未改动。"])
+                    }
+                }
+            },
             .init(id: "screenshot-open", title: "打开", icon: "doc", shortcut: .init("o", modifiers: .command), group: 1) {
                 withFile(item, model: model) {
                     guard NSWorkspace.shared.open(item.url) else { throw CocoaError(.fileReadUnknown) }
