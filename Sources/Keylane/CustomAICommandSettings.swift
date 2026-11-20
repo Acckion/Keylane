@@ -104,7 +104,7 @@ extension CustomAICommand {
                 if enabled { model.disabledCommands.remove(commandID) }
                 else { model.disabledCommands.insert(commandID) }
             }
-        ), perform: edit, menu: menu) { SettingsIcon(symbol: "sparkles") }
+        ), perform: edit, menu: menu) { SettingsIcon(symbol: "sparkles", artwork: ModuleArtwork.settings(AIModule.textCommandsItem.page)) }
     }
 }
 

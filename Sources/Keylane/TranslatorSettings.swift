@@ -74,7 +74,7 @@ struct TranslatorSettings: View {
             SettingsSectionTitle(title: "命令").settingsAnchor(TranslatorModule.commandsItem)
             CommandSettingsList(items: [TranslatorModule.commandID], id: \.rawValue) { id in
                 CommandSettingsEntry(title: "翻译", model: model, commandID: id,
-                                     perform: { model.runCommand(id, origin: .menu) }, icon: { SettingsIcon(symbol: "translate") })
+                                     perform: { model.runCommand(id, origin: .menu) }, icon: { SettingsIcon(symbol: "translate", artwork: ModuleArtwork.settings(TranslatorModule.settingsID)) })
             }
             SettingsSectionTitle(title: "自定义命令")
             SettingsGroup {
@@ -141,7 +141,7 @@ struct TranslatorSettings: View {
     private func customEntry(_ item: TranslateCommand) -> CommandSettingsEntry<SettingsIcon> {
         var entry = CommandSettingsEntry(title: item.name, model: model, commandID: .init(rawValue: item.commandID),
                                          perform: { model.runCommand(.init(rawValue: item.commandID), origin: .menu) },
-                                         icon: { SettingsIcon(symbol: "translate") })
+                                         icon: { SettingsIcon(symbol: "translate", artwork: ModuleArtwork.settings(TranslatorModule.settingsID)) })
         entry.menu = [
             .init(title: "编辑") { editing = item },
             .init(title: "复制为新命令") {
