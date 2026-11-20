@@ -29,12 +29,31 @@ final class DropShelfController: ObservableObject {
     @Published var pendingRemoval: DropShelfStore.Shelf?
     @Published var pendingRename: DropShelfStore.Shelf?
     private var managementQuery = ""
+    private var launcherShelfOrder: [UUID]?
     var openManager: (() -> Void)?
     var selectedShelf: DropShelfStore.Shelf? { managedShelves.first { $0.id == selectedShelfID } }
     func searchShelves(_ query: String) { managementQuery = query; refreshManagement() }
+    func launcherShown() {
+        launcherShelfOrder = store?.shelves.map(\.id) ?? []
+        refreshManagement()
+    }
+    func launcherHidden() { launcherShelfOrder = nil }
+
+    private func shelvesInManagementOrder() -> [DropShelfStore.Shelf] {
+        let shelves = store?.shelves ?? []
+        guard var order = launcherShelfOrder else { return shelves }
+        let byID = Dictionary(uniqueKeysWithValues: shelves.map { ($0.id, $0) })
+        order.removeAll { byID[$0] == nil }
+        let knownIDs = Set(order)
+        // New shelves appear at the end without moving an existing pointer target.
+        order.append(contentsOf: shelves.map(\.id).filter { !knownIDs.contains($0) })
+        launcherShelfOrder = order
+        return order.compactMap { byID[$0] }
+    }
+
     func refreshManagement() {
         let terms = managementQuery.split(whereSeparator: \.isWhitespace).map(String.init)
-        let values = (store?.shelves ?? []).filter { shelf in
+        let values = shelvesInManagementOrder().filter { shelf in
             (shelfFilter == "all" || (shelfFilter == "pinned") == isShelfOpen(shelf.id)) && terms.allSatisfy { term in
                 ([shelf.title] + shelf.items.flatMap { [$0.title, $0.value ?? "", $0.url?.path ?? ""] }).contains { $0.localizedStandardContains(term) }
             }
@@ -242,6 +261,7 @@ final class DropShelfController: ObservableObject {
         active = false; timer?.invalidate(); timer = nil
         notchTarget?.hide(); notchTarget = nil
         endManagement()
+        launcherHidden()
         for window in Array(windows.values) { window.close() }
         windows.removeAll()
         syncDisplayedShelves()

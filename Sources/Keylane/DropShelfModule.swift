@@ -81,7 +81,8 @@ enum DropShelfModule {
         })], services: [.init(start: { [weak model] in if let model {
             controller.openManager = { [weak model] in model?.runCommand(historyID, origin: .menu) }
             controller.start(registry: model.menuBar)
-        } }, stop: controller.stop)])
+        } }, stop: controller.stop)],
+        launcherShown: controller.launcherShown, launcherHidden: controller.launcherHidden)
     }
 }
 

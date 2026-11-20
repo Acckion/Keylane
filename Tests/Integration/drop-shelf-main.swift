@@ -381,7 +381,13 @@ let placementIDs = try (0..<3).map { index -> UUID in
 }
 let preexistingFrames = NSApp.windows.compactMap { $0 as? DropShelfWindow }
     .filter { $0.isVisible && $0.controller === shelves }.map(\.frame)
-for id in placementIDs { shelves.toggleManagedPin(id) }
+shelves.launcherShown()
+let openingOrder = shelves.managedShelves.map(\.id)
+let activationOrder = [placementIDs[2], placementIDs[0], placementIDs[1]]
+for id in activationOrder {
+    shelves.toggleManagedPin(id)
+    expect(shelves.managedShelves.map(\.id) == openingOrder, "pinning keeps every card in its position for this Launcher opening")
+}
 let placementWindows = NSApp.windows.compactMap { $0 as? DropShelfWindow }
     .filter { $0.isVisible && placementIDs.contains($0.shelfID) }
 expect(placementWindows.count == placementIDs.count, "consecutive pins open each shelf once")
@@ -390,13 +396,24 @@ for (index, window) in placementWindows.enumerated() {
     expect(otherFrames.allSatisfy { $0.intersection(window.frame).isEmpty },
            "newly pinned shelf avoids every already visible shelf")
 }
-expect(Array(shelves.managedShelves.prefix(3).map(\.id)) == Array(placementIDs.reversed()),
-       "grid orders pinned shelves by last use")
 placementWindows.first { $0.shelfID == placementIDs[0] }?.close()
+shelves.endManagement()
 shelves.beginManagement("")
+expect(shelves.managedShelves.map(\.id) == openingOrder, "returning to the manager in the same Launcher keeps the original order")
+shelves.toggleManagedPin(placementIDs[0])
+expect(shelves.isShelfOpen(placementIDs[0]) && shelves.managedShelves.map(\.id) == openingOrder,
+       "the same card can be pinned again without moving")
+shelves.toggleManagedPin(placementIDs[0]); drain(0.25)
+expect(shelves.managedShelves.map(\.id) == openingOrder, "unpinning keeps the card in the same position")
 expect(!shelves.isShelfOpen(placementIDs[0]) && shelves.isShelfOpen(placementIDs[1]) && shelves.isShelfOpen(placementIDs[2]),
        "desktop close and reopening management reflect each window independently")
-expect(shelves.managedShelves.first?.id == placementIDs[2], "closing a shelf does not count as using it")
+shelves.launcherHidden(); shelves.launcherShown()
+expect(Array(shelves.managedShelves.prefix(3).map(\.id)) == [placementIDs[0], placementIDs[1], placementIDs[2]],
+       "the next Launcher opening applies actual use order without promoting closes")
+let newDuringSession = try shelves.store!.create()
+expect(shelves.managedShelves.last?.id == newDuringSession, "new shelves append without displacing current card positions")
+try shelves.store!.deleteShelf(newDuringSession)
+shelves.launcherHidden()
 for id in placementIDs { shelves.removeManagedShelf(id) }
 let navigationFixtureIDs = try (0..<5).map { _ in try shelves.store!.create() }
 for id in navigationFixtureIDs { try shelves.store!.rename(id, title: "grid-navigation-token") }
@@ -827,7 +844,10 @@ if CommandLine.arguments.contains("--manager-preview") {
         NSApp.activate(ignoringOtherApps: true)
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         expect(previewWindow.isVisible && previewWindow.isKeyWindow, "Launcher is visible and key before pinning")
+        let launcherOpeningOrder = previewModel.dropShelf.managedShelves.map(\.id)
         previewModel.dropShelf.toggleManagedPin(id)
+        expect(previewModel.dropShelf.managedShelves.map(\.id) == launcherOpeningOrder,
+               "registered Launcher lifecycle freezes grid order while its pin is pressed")
         let pinnedWindow = NSApp.windows.compactMap { $0 as? DropShelfWindow }.first { $0.shelfID == id }
         guard let pinnedWindow else { fatalError("pinned shelf did not open") }
         expect(previewWindow.isVisible && previewWindow.isKeyWindow && pinnedWindow.isVisible,
