@@ -456,6 +456,11 @@ final class ScreenshotLibrary: ObservableObject {
         if showingProgress && (pageActive || !autoShelf) { scanning = true }
         let includeAll = includeAll
         let watchForShelf = autoShelf
+        // A temporarily unavailable configured scope is filtered out before scanning.
+        // Its absence is not an empty snapshot: retain the previous incoming baseline.
+        let scansEveryScope = Set(folders.map { $0.standardizedFileURL.path }) == Set(scopes.map {
+            URL(fileURLWithPath: $0.path, isDirectory: true).standardizedFileURL.path
+        })
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             let snapshot = ScreenshotCatalog.scan(folders: folders, includeAllMedia: includeAll)
             // Classification/metadata reads stay off the UI thread; reuse this scan for both consumers.
@@ -470,7 +475,7 @@ final class ScreenshotLibrary: ObservableObject {
                 self.inaccessibleFolders = snapshot.inaccessibleFolders
                 self.checkFolders()
                 self.reconcilePins(in: snapshot.items)
-                self.receiveNewCaptures(incoming, complete: snapshot.inaccessibleFolders == 0)
+                self.receiveNewCaptures(incoming, complete: scansEveryScope && snapshot.inaccessibleFolders == 0 && self.unavailableScopePaths.isEmpty)
                 if self.items != snapshot.items || showingProgress {
                     let preferred = self.selectionAfterRename(in: snapshot.items)
                     self.items = snapshot.items

@@ -28,7 +28,7 @@ enum DownloadsModule {
             actionContextTitle: { controller.selected?.url.lastPathComponent },
             primaryTitle: { "打开" }, primaryEnabled: { controller.selected != nil },
             actions: { actions(controller, model: model) },
-            updates: Publishers.Merge3(ViewObservation.changes(controller.$files), ViewObservation.changes(controller.$selectedID), ViewObservation.changes(controller.$error)).eraseToAnyPublisher(),
+            updates: Publishers.Merge4(ViewObservation.changes(controller.$files), ViewObservation.changes(controller.$selectedID), ViewObservation.changes(controller.$operationError), ViewObservation.changes(controller.$scanError)).eraseToAnyPublisher(),
             enter: { controller.query = $0; controller.refresh(); return nil },
             resume: { controller.refresh() },
             badgeActions: { [
@@ -51,8 +51,12 @@ enum DownloadsModule {
             })])
     }
     private static func actions(_ controller: DownloadsController, model: Model) -> [LauncherAction] {
-        guard controller.selected != nil else { return [] }
-        return [
+        let dismissError: [LauncherAction] = controller.operationError.isEmpty ? [] : [
+            .init(id: "download-dismiss-error", title: "关闭操作错误提示", icon: "xmark.circle", group: 3,
+                  perform: controller.dismissOperationError)
+        ]
+        guard controller.selected != nil else { return dismissError }
+        return dismissError + [
             .init(id: "download-open", title: "打开", icon: "arrow.up.forward.app", perform: controller.openSelected),
             .init(id: "download-shelf", title: "加入暂存架", icon: "tray.and.arrow.down", shortcut: .init("s", modifiers: [.command, .shift]), perform: controller.sendSelectedToShelf),
             .init(id: "download-reveal", title: "在 Finder 中显示", icon: "folder", group: 1, perform: {

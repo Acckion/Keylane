@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import KeylaneCore
 
 // Only the unused launcher dismissal is stubbed; the production catalog, watcher and controller run unchanged.
@@ -24,6 +25,24 @@ final class Delegate: NSObject, NSApplicationDelegate { func hideLauncher() {} }
         try require(received.isEmpty && !controller.autoShelf, "Automatic shelf delivery must default off")
         controller.sendSelectedToShelf()
         try require(received.count == 1, "Manual action must use shared integration callback")
+        // A successful background scan must not acknowledge an unsuccessful user action.
+        controller.addToShelf = { _ in false }
+        controller.sendSelectedToShelf()
+        let failure = controller.operationError
+        try require(!failure.isEmpty, "The failed shelf action must have a visible operation error")
+        var scanCompleted = false
+        let observation = controller.$files.dropFirst().sink { _ in scanCompleted = true }
+        controller.refresh()
+        try await wait { scanCompleted }
+        try require(controller.scanError.isEmpty && controller.operationError == failure && controller.error.contains(failure),
+                    "A successful refresh must preserve the unhandled operation error")
+        observation.cancel()
+        controller.withSelected { _ in }
+        try require(controller.operationError == failure, "An unrelated successful action must not dismiss the failure")
+        controller.dismissOperationError()
+        try require(controller.operationError.isEmpty, "Explicit dismissal should clear the operation error")
+        controller.addToShelf = { received += $0; return true }
+        print("PASS downloads operation error survives background refresh and unrelated actions until explicit dismissal")
         controller.query = "missing"
         try require(controller.selected == nil, "Filtering must clear stale action targets")
         controller.query = ""

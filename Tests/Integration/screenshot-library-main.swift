@@ -13,7 +13,7 @@ struct ScreenshotLibraryCheck {
 
     @MainActor private static func run() async throws {
         _ = NSApplication.shared
-        if CommandLine.arguments.contains("--shelf-only") { try await verifyShelfIntegration(); return }
+        if CommandLine.arguments.contains("--shelf-only") { try await verifyShelfIntegration(); try await verifyUnavailableShelfScope(); return }
         let identifier = "org.keylane.test.screenshots." + UUID().uuidString
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(identifier, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
@@ -146,6 +146,7 @@ struct ScreenshotLibraryCheck {
         try await verifyOCRLifecycle(in: folder, defaults: defaults)
         try await verifyRetention()
         try await verifyShelfIntegration()
+        try await verifyUnavailableShelfScope()
         print("Screenshot scope, live changes, mixed media, latest image, Quick Look thumbnail, OCR and QR, file copy, pinning, grid zoom, and trash passed")
     }
 
@@ -485,6 +486,40 @@ struct ScreenshotLibraryCheck {
         try await Task.sleep(for: .seconds(3))
         try require(received.count == 1, "Disabling screenshots must stop background delivery")
         print("PASS screenshot shelf integration: baseline, shared background watcher, new capture, dedupe, disable")
+    }
+
+    @MainActor private static func verifyUnavailableShelfScope() async throws {
+        let suite = "org.keylane.test.shelf-scope." + UUID().uuidString
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        let first = root.appendingPathComponent("first"), second = root.appendingPathComponent("second")
+        let offline = root.appendingPathComponent("offline")
+        try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(try JSONEncoder().encode([first, second].map { ScreenshotScope(path: $0.path, bookmark: nil) }), forKey: "screenshotScopes")
+        try writeImage(first.appendingPathComponent("Screenshot first-old.png"))
+        try writeImage(second.appendingPathComponent("Screenshot second-old.png"))
+        let library = ScreenshotLibrary(defaults: defaults)
+        defer { library.enabled = false }
+        var received: [URL] = []
+        library.addToShelf = { received += $0; return true }
+        library.autoShelf = true; library.enabled = true; library.start()
+        try await wait("two-scope baseline") { !library.scanning && library.results.count == 2 }
+        // Rename only a synthetic directory to make one configured scope unavailable.
+        try FileManager.default.moveItem(at: second, to: offline)
+        library.refresh()
+        try await wait("scope unavailable") { !library.scanning && library.unavailableScopePaths == [second.path] }
+        try FileManager.default.moveItem(at: offline, to: second)
+        library.refresh()
+        try await wait("scope restored") { !library.scanning && library.unavailableScopePaths.isEmpty && library.results.count == 2 }
+        try await Task.sleep(for: .seconds(3))
+        try require(received.isEmpty, "Restoring an unavailable scope must not re-deliver its old files")
+        try writeImage(second.appendingPathComponent("Screenshot truly-new.png"))
+        try await wait("new capture after restoration") { received.count == 1 }
+        try require(received[0].lastPathComponent == "Screenshot truly-new.png", "Only the newly created capture may be delivered")
+        print("PASS screenshot unavailable scope preserves baseline and still delivers new captures")
     }
 
     @MainActor private static func wait(_ label: String = "", line: Int = #line, _ condition: () -> Bool) async throws {

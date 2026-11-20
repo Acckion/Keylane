@@ -6,7 +6,9 @@ final class DownloadsController: ObservableObject {
     @Published private(set) var files: [IncomingFile] = []
     @Published var selectedID: String?
     @Published var query = "" { didSet { reconcileSelection() } }
-    @Published private(set) var error = ""
+    @Published private(set) var operationError = ""
+    @Published private(set) var scanError = ""
+    var error: String { [operationError, scanError].filter { !$0.isEmpty }.joined(separator: "\n") }
     @Published private(set) var folder: ScreenshotScope?
     @Published var autoShelf: Bool { didSet { defaults.set(autoShelf, forKey: "downloads.autoShelf"); tracker.reset(); refresh() } }
     private let defaults: UserDefaults
@@ -52,10 +54,10 @@ final class DownloadsController: ObservableObject {
                 let bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
                 let scope = ScreenshotScope(path: url.path, bookmark: bookmark)
                 self.defaults.set(try JSONEncoder().encode(scope), forKey: "downloads.folder")
-                self.folder = scope; self.tracker.reset()
+                self.folder = scope; self.tracker.reset(); self.operationError = ""
                 if self.enabled { self.configure() }
                 finish(true)
-            } catch { self.error = error.localizedDescription; finish(false) }
+            } catch { self.operationError = error.localizedDescription; finish(false) }
         }
         if let window = NSApp.keyWindow {
             guard window.attachedSheet == nil else { finish(false); return }
@@ -91,12 +93,12 @@ final class DownloadsController: ObservableObject {
             self.task = nil
             switch outcome {
             case .success(let snapshot):
-                self.error = ""; self.files = snapshot; self.reconcileSelection()
+                self.scanError = ""; self.files = snapshot; self.reconcileSelection()
                 let ready = self.tracker.update(snapshot)
                 if self.autoShelf, !ready.isEmpty {
                     // Directories are browsable but their recursive contents may still be downloading.
                     let urls = ready.filter { !$0.directory }.map(\.url)
-                    if !urls.isEmpty, self.addToShelf?(urls) != true { self.error = "自动加入失败，请先启用暂存架。文件仍保留在下载目录。" }
+                    if !urls.isEmpty, self.addToShelf?(urls) != true { self.scanError = "自动加入失败，请先启用暂存架。文件仍保留在下载目录。" }
                 }
                 if self.tracker.needsRescan {
                     self.retry = Task { @MainActor [weak self] in
@@ -104,7 +106,7 @@ final class DownloadsController: ObservableObject {
                         self?.refresh()
                     }
                 }
-            case .failure(let error): self.error = "无法读取下载文件夹：" + error.localizedDescription
+            case .failure(let error): self.scanError = "无法读取下载文件夹：" + error.localizedDescription
             }
             if self.needsRefresh { self.needsRefresh = false; self.refresh() }
         }
@@ -118,8 +120,9 @@ final class DownloadsController: ObservableObject {
                   try file.url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true,
                   FileManager.default.fileExists(atPath: file.url.path) else { throw CocoaError(.fileNoSuchFile) }
             try action(file.url)
-        } catch { self.error = error.localizedDescription; refresh() }
+        } catch { self.operationError = error.localizedDescription; refresh() }
     }
+    func dismissOperationError() { operationError = "" }
     func sendSelectedToShelf() { withSelected { url in
         guard addToShelf?([url]) == true else { throw NSError(domain: "Keylane.Downloads", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先启用暂存架。下载文件未改动。"]) }
     } }
