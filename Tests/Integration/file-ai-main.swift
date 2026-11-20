@@ -23,10 +23,14 @@ final class FixtureProtocol: URLProtocol {
         Self.requestLock.unlock()
         DispatchQueue.global().asyncAfter(deadline:.now()+(mode == "slow" ? 0.5 : 0.02)) {
             self.lock.lock(); let stopped = self.stopped; self.lock.unlock(); if stopped { return }
-            let code = mode == "error" ? 401 : 200
+            let code = mode == "error" ? 401 : mode == "forbidden" || (mode == "key-valid-model-forbidden" && self.request.url?.path != "/api/v1/key") ? 403 : 200
             let response = HTTPURLResponse(url:self.request.url!,statusCode:code,httpVersion:"HTTP/1.1",headerFields:["Content-Type":"application/json"])!
             let text: String
-            if self.request.url?.path == "/v1/messages" {
+            if self.request.url?.path == "/api/v1/key" {
+                precondition(self.request.httpMethod == "GET" && self.request.httpBody == nil)
+                precondition(self.request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
+                text = mode == "bad" ? "{}" : #"{"data":{"label":"synthetic-key","limit_remaining":0}}"#
+            } else if self.request.url?.path == "/v1/messages" {
                 precondition(self.request.value(forHTTPHeaderField: "x-api-key") == "fixture-anthropic-key")
                 precondition(self.request.value(forHTTPHeaderField: "anthropic-version") == "2023-06-01")
                 precondition(self.request.value(forHTTPHeaderField: "Authorization") == nil)
@@ -556,6 +560,38 @@ settings.setModelVisible(sharedChild.id, visible: false)
 precondition(settings.state.connections.first { $0.id == sharedChild.id }?.hiddenFromPicker == true)
 precondition(settings.state.selectedID == selectedBeforeHiding)
 print("PASS provider presets, native Anthropic streaming/complete, shared credentials and model visibility")
+
+// Key authentication is independent of model eligibility, credit and generation.
+let keyRuntime = AIRuntime(configuration: configuration)
+var openRouter = AIProviderPreset.all.first { $0.id == "openrouter" }!.connection
+openRouter.model = "unavailable/model"
+for mode in ["key-valid-model-forbidden", "error", "forbidden", "bad"] {
+    FixtureProtocol.mode = mode
+    let before = FixtureProtocol.requests.count
+    var verified: Bool?
+    Task {
+        do { try await keyRuntime.verifyAPIKey(connection: openRouter, readKey: { _ in "fixture-key" }); verified = true }
+        catch { verified = false }
+    }
+    wait("OpenRouter key verification " + mode) { verified != nil }
+    precondition(verified == (mode == "key-valid-model-forbidden"))
+    let added = Array(FixtureProtocol.requests.dropFirst(before))
+    precondition(added.count == 1 && added[0].url?.absoluteString == "https://openrouter.ai/api/v1/key")
+}
+var spoofedRouter = openRouter
+spoofedRouter.endpoint = "https://example.invalid/api/v1"
+precondition(spoofedRouter.keyVerificationURL == nil)
+FixtureProtocol.mode = "ok"
+var fallbackVerified = false
+var verificationFallback = second
+verificationFallback.mode = .complete
+Task {
+    try! await keyRuntime.verifyAPIKey(connection: verificationFallback, readKey: { _ in "fixture-key" })
+    fallbackVerified = true
+}
+wait("Other provider verification retained") { fallbackVerified }
+precondition(FixtureProtocol.requests.last?.httpMethod == "POST")
+print("PASS OpenRouter key validation: authenticated zero-credit key with inaccessible model accepted without generation; 401, 403 and malformed response rejected; other providers unchanged")
 
 // Reject duplicate incoming identities before any Keychain access; recover legacy duplicates without a trap.
 let collisionPrefs = UserDefaults(suiteName: suite + ".collisions")!
