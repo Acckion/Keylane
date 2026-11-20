@@ -104,6 +104,14 @@ final class AITextCommandSession: ObservableObject {
             !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// Result actions always use the successful turn's immutable submitted source.
+    var completedResult: (context: AIActionContext, answer: String)? {
+        guard isInvocationAvailable, !destinationChanged, !reply.running,
+              let turn = reply.turns.last, turn.complete, turn.progress?.phase == .completed,
+              !turn.answer.isEmpty else { return nil }
+        return (.init(sourceID: turn.id.uuidString, title: title, text: turn.question), turn.answer)
+    }
+
     func prepare(_ command: AITextCommand, selection: String?, canInvoke: @escaping () -> Bool = { true }) {
         clear()
         self.canInvoke = canInvoke

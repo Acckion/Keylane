@@ -102,7 +102,7 @@
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
 | AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 待合并 | PR #224 在 #215 合入后重整增量；#226 的临时引用链与审批仍须整合复验，Office/OCR 与实机待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
-| AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 尚未合入基线，确认权限和副作用行为 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
+| AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 待合并；同步已合入 #212 的 dev，片段模板/成功结果校验、备忘录附加授权与 Emoji 导入关键词已保留；383 项核心与 5 项提供方测试、合成 AI/Emoji/注册表及签名原生窗口回归通过，真实服务未验收 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-17 | MCP 客户端及 Keylane MCP 服务端 | 待核对 | 两个方向分别调查传输、发现、授权及宿主动作 | [参考](https://manual.raycast.com/ai/model-context-protocol) |
@@ -190,3 +190,6 @@
 维护记录：2026-11-21，AI-13 / AI-13-a：确认 #215 已合入 dev `9a51fd9`，#224 重整为 PDF/结果续读/受限索引增量；保留 #215 目录身份、不覆盖及结果不确定语义，补测续读取消与创建边界，54 项定向 Swift / 8 组隔离集成 / 27 项脚本测试通过；#226 的工具命名及待整合点见 [读取与续读](AI-FILE-READING.md)。
 
 维护记录：2026-11-21，AI-13-a / PR #224 同步 dev `426b844`（#212），保留共享 AISettings 装配及 #215 最终创建范围；补强每页独立审批、拒绝后重试与审批期间撤权的合成回归，54 项定向 Swift、8 组文件工具集成、27 项脚本测试通过。准确整合提交与 CI 见 PR，不代表安装版或真实模型验收。
+维护记录：2026-11-21，AI-14 / PR #214 同步 dev `426b844`（#212 已合入），剔除已进入基线的等价改动，仅保留片段、备忘录、Emoji 及必要公共结果支持；保留 Emoji 导入关键词共用加载和附件来源/权限代次检查。383 项核心 + 5 项提供方、27 项发行保障及合成 AI/Emoji/注册表/签名原生窗口回归通过，结果见 PR；不访问真实备忘录、模型或用户文件，未安装、未合并、未发布。
+
+维护记录：2026-11-21，AI-13-a / PR #224 在验证期间跟随 dev 更新到 `886dcda`；仅保留已合入 #214 的源码与进度记录并解决总表冲突，不修改其他功能分支。此前 `e7f5821` 在 `426b844` 上的 Checks 已通过，新整合提交另行复验。

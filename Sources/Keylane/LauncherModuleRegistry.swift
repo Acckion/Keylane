@@ -283,6 +283,7 @@ struct LauncherModule {
         var acceptsFallbackQuery = false
         var fallbackAvailable: () -> Bool = { true }
         var isAICommand = false
+        var isInternal = false
         var aiExecute: ((LauncherCommandOrigin, AIActionSource?) -> Void)?
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
         var arguments: Arguments?
@@ -482,16 +483,19 @@ final class LauncherModuleRegistry {
             for definition in module.aiActions {
                 try definition.validate()
                 guard module.commands.contains(where: { $0.declaration.id == definition.commandID }) else { throw AIActionError.invalidDefinition }
+                if let destination = definition.resultDestination {
+                    guard module.commands.contains(where: { $0.declaration.id == destination.commandID && $0.arguments?.count.contains(1) == true }) else { throw AIActionError.invalidDefinition }
+                }
             }
         }
         moduleRegistrations = Dictionary(uniqueKeysWithValues: modules.compactMap { module in
             module.registration.map { (module.id, $0) }
         })
         registeredShortcutGroups = modules.compactMap { module in
-            guard !module.commands.isEmpty || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
+            guard module.commands.contains(where: { !$0.isInternal }) || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
             else { return nil }
             return ShortcutCommandGroup(id: module.id, title: module.displayTitle,
-                                        symbol: module.displaySymbol, commands: module.commands,
+                                        symbol: module.displaySymbol, commands: module.commands.filter { !$0.isInternal },
                                         dynamicCommands: module.dynamicCommandSettings, binding: module.shortcutSettingsBinding)
         }
         commandSettingsUpdates = modules.flatMap(\.shortcutSettingsUpdates)
@@ -682,6 +686,14 @@ final class LauncherModuleRegistry {
         moduleRegistrations[id]?.isPresent() ?? true
     }
 
+    func aiResultDestination(for id: CommandID) -> AIActionDefinition.ResultDestination? {
+        guard currentAction(for: id, origin: .menu, arguments: []) != nil,
+              let owner = byID[id]?.module else { return nil }
+        guard let destination = modules.first(where: { $0.id == owner })?.aiActions.first(where: { $0.commandID == id })?.resultDestination,
+              currentAction(for: destination.commandID, origin: .menu, arguments: [""]) != nil else { return nil }
+        return destination
+    }
+
     func aiCommands(in moduleID: ModuleID) -> [LauncherModule.Command] {
         guard let module = modules.first(where: { $0.id == moduleID }) else { return [] }
         let ids = Set(module.aiActions.map(\.commandID))
@@ -869,7 +881,7 @@ final class LauncherModuleRegistry {
         commands.compactMap { owned in
             let command = owned.value
             let item = command.declaration
-            guard input.namespace?.contains(item.id) != false,
+            guard !command.isInternal, input.namespace?.contains(item.id) != false,
                   isCommandEnabled(owned),
                   command.permission?.available != false else { return nil }
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
@@ -956,6 +968,7 @@ final class LauncherModuleRegistry {
         -> (perform: () -> Void, destination: LauncherCommandDeclaration.Destination?)? {
         if let owned = byID[id] {
             let command = owned.value
+            guard !owned.value.isInternal || origin == .menu else { return nil }
             guard isCommandEnabled(owned),
                   command.arguments?.count.contains(arguments.count) ?? arguments.isEmpty,
                   permissionAllowsExecution(command.permission) else { return nil }

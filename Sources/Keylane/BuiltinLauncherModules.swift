@@ -613,7 +613,7 @@ enum BuiltinLauncherModules {
                 permissionChanges?.cancel()
                 permissionChanges = nil
                 permission.stopObserving()
-                model.moduleAIAction.clear()
+                model.moduleAIAction.clear(for: ClipboardAIActions.moduleID)
                 controller.stopRuntime()
                 linkVisualChanges?.cancel()
                 linkVisualChanges = nil

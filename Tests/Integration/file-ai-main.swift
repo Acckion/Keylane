@@ -91,8 +91,14 @@ final class FixtureProtocol: URLProtocol {
                 text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             }
             self.client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-            if mode == "held-stream" {
+            if mode == "held-stream" || mode == "partial-error" {
                 self.client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{\"content\":\"visible streaming fragment\"}}]}\n\n".utf8))
+                if mode == "partial-error" {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+                        self.lock.lock(); let stopped = self.stopped; self.lock.unlock()
+                        if !stopped { self.client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)) }
+                    }
+                }
                 return // Deliberately leave the synthetic stream open until stop/cancellation.
             }
             if mode == "reasoning-stream" || mode == "reasoning-pause" {
@@ -2335,6 +2341,118 @@ let disabledTextRequestCount = FixtureProtocol.requests.count
 disabledTextCommand.send()
 precondition(FixtureProtocol.requests.count == disabledTextRequestCount)
 print("PASS legacy AI command shares irreversible availability revocation; fast disable/reenable requires fresh invocation")
+
+// Buffered policies never publish raw, unvalidated model output.
+let validatedAction = AIActionSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+validatedAction.prepare(actionDefinition, source: questionSource, resultTransform: { _, _ in throw AIActionError.invalidResult }, allowed: { true })
+wait("Buffered action prepared") { !validatedAction.preparing }
+FixtureProtocol.mode = "ok"
+validatedAction.send()
+wait("Buffered invalid result rejected") { !validatedAction.preparing && !validatedAction.running }
+precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult && validatedAction.status == AIActionError.invalidResult.localizedDescription)
+validatedAction.prepare(questionDefinition, source: questionSource, initialQuestion: "Original question", resultTransform: { _, _ in .init("validated output", commandArgument: "validated-command-payload") }, allowed: { true })
+wait("Buffered valid action prepared") { !validatedAction.preparing }
+validatedAction.send()
+wait("Buffered valid result accepted") { !validatedAction.preparing && !validatedAction.running }
+precondition(validatedAction.answer == "validated output" && validatedAction.resultArgument == "validated-command-payload" && validatedAction.canUseResult)
+precondition(validatedAction.continuationContext?.text.contains("Original question") == true)
+validatedAction.question = "Edited question"
+precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult)
+print("PASS buffered module policy: raw output withheld, invalid result rejected, validated output admitted and question edits revoke old result")
+
+var snippetFixture: Snippet? = Snippet(id: "fixture-snippet", title: "Template", text: "Hello {clipboard} {cursor}")
+let snippetSource = SnippetAIContextSource.make(id: "fixture-snippet") { snippetFixture }
+var librarySourcesFinished = false
+Task { @MainActor in
+    do {
+        let snapshot = try await snippetSource.load()
+        precondition(snapshot.text == "Hello {clipboard} {cursor}", "AI must never expand placeholders")
+        snippetFixture?.text = "Edited"
+        let snippetCurrent = try await snippetSource.isCurrent(snapshot)
+        precondition(!snippetCurrent)
+        snippetFixture = nil
+        do { _ = try await snippetSource.load(); preconditionFailure("Deleted snippet accepted") } catch { }
+        let request = ExtensionProcessRequest()
+        let exact = try AppleNotesAutomation.readText("fixture-\"id", request: request) { script, _ in
+            precondition(script.contains("password protected") && script.contains("deletedNoteIDs") && script.contains("32000"))
+            precondition(script.contains("fixture-\\\"id"))
+            return "KEYLANE_TEXT:\nExact body\n\n"
+        }
+        precondition(exact == "\nExact body\n\n")
+        do {
+            _ = try AppleNotesAutomation.readText("large", request: request) { _, _ in "KEYLANE_TEXT:" + String(repeating: "中", count: 11_000) }
+            preconditionFailure("Oversize note accepted")
+        } catch { }
+        let reader = AppleNotesAIReader(available: { true }, read: { _, _ in "One selected note" }, search: { _, _ in [.init(id: "n", title: "Title only")] })
+        let rows = try await reader.directory("")
+        precondition(rows.map(\.id) == ["n"])
+        let note = try await reader.source(id: "n", title: "Title").load()
+        precondition(note.text == "One selected note")
+        let cancellationReader = AppleNotesAIReader(available: { true }, read: { _, request in
+            while !request.isCancelled { Thread.sleep(forTimeInterval: 0.002) }
+            throw CancellationError()
+        })
+        let read = Task { try await cancellationReader.text("cancelled") }
+        try await Task.sleep(for: .milliseconds(20))
+        cancellationReader.cancel()
+        do { _ = try await read.value; preconditionFailure("Note read survived cancellation") } catch { }
+    } catch { preconditionFailure("Library AI source fixture: \(error)") }
+    librarySourcesFinished = true
+}
+wait("Snippet and Apple Notes AI sources") { librarySourcesFinished }
+print("PASS library AI sources: literal snippet snapshot, edit/deletion revocation; bounded note text, locked/deleted guards, exact newlines and cancellable injected reader; no real Notes")
+
+validatedAction.prepare(actionDefinition, source: questionSource, allowed: { true })
+wait("Module-scoped cleanup prepared") { !validatedAction.preparing }
+let cleanupInvocation = validatedAction.invocationID
+validatedAction.clear(for: .init(rawValue: "unrelated-module"))
+precondition(validatedAction.context != nil && validatedAction.invocationID == cleanupInvocation)
+validatedAction.clear(for: questionSource.moduleID)
+precondition(validatedAction.context == nil && validatedAction.invocationID != cleanupInvocation)
+print("PASS module-scoped AI cleanup: stopping another extension preserves the active invocation")
+
+
+// PR214: cancelled/failed fragments are display-only; successful results carry their submitted source.
+let continuationSuite = "KeylaneTextContinuation-" + UUID().uuidString
+let continuationPrefs = UserDefaults(suiteName: continuationSuite)!
+defer { continuationPrefs.removePersistentDomain(forName: continuationSuite) }
+continuationPrefs.set("http://127.0.0.1:43991/v1", forKey: "fileAIEndpoint")
+continuationPrefs.set("fixture", forKey: "fileAIModel")
+let continuationConfiguration = AIConfiguration(preferences: continuationPrefs)
+var continuationProfile = continuationConfiguration.selected!
+continuationProfile.mode = .streaming
+precondition(continuationConfiguration.save(continuationProfile))
+let continuationCommand = AITextCommandSession(configuration: continuationConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+FixtureProtocol.mode = "held-stream"
+continuationCommand.prepare(.polish, selection: "Originally submitted source")
+continuationCommand.send()
+wait("Text command partial result") { continuationCommand.reply.running && continuationCommand.reply.lastAnswer != nil }
+precondition(continuationCommand.completedResult == nil)
+continuationCommand.reply.stop()
+precondition(continuationCommand.reply.lastAnswer != nil && continuationCommand.completedResult == nil)
+FixtureProtocol.mode = "partial-error"
+continuationCommand.prepare(.polish, selection: "Failing source")
+continuationCommand.send()
+wait("Text command failed partial result") { !continuationCommand.reply.running }
+precondition(continuationCommand.reply.lastAnswer != nil && continuationCommand.completedResult == nil)
+FixtureProtocol.mode = "stream"
+continuationCommand.prepare(.polish, selection: "Submitted before editor changed")
+continuationCommand.send()
+continuationCommand.input = "Unsubmitted edit while running"
+wait("Text command successful result") { !continuationCommand.reply.running }
+precondition(continuationCommand.completedResult?.context.text == "Submitted before editor changed")
+precondition(continuationCommand.completedResult?.answer == continuationCommand.reply.turns.last?.answer)
+continuationCommand.input = "Edited after success"
+precondition(continuationCommand.completedResult == nil)
+let customContinuation = CustomAICommand(title: "Continuation fixture", prompt: #"Tone: {argument name="tone"}"#, connectionID: nil)
+continuationCommand.prepare(customContinuation, template: DynamicTemplate(customContinuation.prompt, usage: .aiCommand), context: .init(), canInvoke: { true })
+continuationCommand.setArgument("tone", value: "formal")
+continuationCommand.send()
+wait("Custom command successful result") { !continuationCommand.reply.running }
+precondition(continuationCommand.completedResult?.context.text.contains("formal") == true)
+continuationCommand.setArgument("tone", value: "casual")
+precondition(continuationCommand.completedResult == nil)
+print("PASS PR214 result actions: running/stopped/failed partial outputs rejected, successful output bound to submitted source, subsequent input and template edits revoke result")
 
 
 // Preserve an active response through a deferred page leave without resending or stopping it.
