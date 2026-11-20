@@ -24,6 +24,7 @@ struct AIChatTextInput: NSViewRepresentable {
         scroll.borderType = .noBorder
         let input = Input(frame: NSRect(x: 0, y: 0, width: 400, height: 36))
         input.isRichText = false
+        input.allowsUndo = true
         input.drawsBackground = false
         input.font = .systemFont(ofSize: 14)
         input.textColor = .labelColor
