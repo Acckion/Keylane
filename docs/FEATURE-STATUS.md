@@ -28,7 +28,7 @@
 | --- | --- | --- | --- | --- |
 | BASE-01 | 主搜索、应用/文件/命令统一检索 | 部分实现 | 持续核对排序、收藏、备用命令、中文输入与性能 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md)、[细项](TODO.md) |
 | BASE-02 | 紧凑模式、展开/收起、横向页面切换 | 已实现 | 实际键盘、减少动态效果、多显示器回归 | 安装版观感待持续验收；[交互](LAUNCHER-COMPACT-NAVIGATION.md) |
-| BASE-03 | 标准操作面板、菜单搜索与键盘导航 | 部分实现；动作与页面会话迁移待合并 | 所有内置及第三方入口逐项接入公共组件 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md) |
+| BASE-03 | 标准操作面板、菜单搜索与键盘导航 | 部分实现 | 所有内置及第三方入口逐项接入公共组件 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md) |
 | BASE-04 | 命令别名、热键、启用状态 | 部分实现 | 确认左右修饰键、fn、冲突、IME 与实体键盘支持边界 | [实现](../Sources/Keylane/ShortcutSettingsPreferences.swift)、[细项](TODO.md) |
 | BASE-05 | Hyper Key、双击与导航绑定 | 部分实现 | 对照物理键映射、短按及 Secure Input 行为 | 实机待验收；[历史清单](archive/FEATURES.csv) |
 | BASE-06 | 设置全文搜索、定位到模块与命令 | 已实现 | 新增设置页持续补搜索关键词与定位锚点 | [设置入口](../Sources/Keylane/Settings.swift) |
@@ -36,7 +36,7 @@
 | BASE-08 | 主题与自定义主题导入/共享 | 待合并 | Theme Studio 三栏编辑、滚动交互预览、深浅色分配、JSON/链接导入共享已在功能分支实现；使用 Keylane 自有主题格式，完整安装版验收仍待完成 | [实现与验证](features/THEME-STUDIO.md)、[issue #196](https://github.com/Acckion/Keylane/issues/196)、[PR #220](https://github.com/Acckion/Keylane/pull/220)；已通过隔离交互、341 项 Swift 与 27 项脚本测试，本机安装与签名已核对；审查增加紧凑栏主题透明间隙与独立表面回归 |
 | BASE-09 | 通用动态占位符及修饰符 | 部分实现 | 片段、快捷链接分别支持部分语法，核对共用解析与完整修饰符 | [片段](SNIPPETS.md)、[快捷链接](QUICKLINKS.md)、[参考](https://manual.raycast.com/dynamic-placeholders) |
 | BASE-10 | 首次引导、权限、辅助使用与本地化 | 部分实现 | 持续核对默认状态、拒绝/撤销、VoiceOver、对比度和中文输入 | [协作规范](../AGENTS.md)、[架构](LAUNCHER-ARCHITECTURE.md) |
-| BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现；定向评分复用待合并 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
+| BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
 
 ## 应用、文件与个人资料
 
@@ -127,7 +127,7 @@
 
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
-| EXT-01 | 扩展发现、安装、启用、卸载与生命周期 | 部分实现 | 固定真实扩展样本持续回归，完善失败及权限体验 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
+| EXT-01 | 扩展发现、安装、启用、卸载与生命周期 | 部分实现；目录快照事务待合并 | 固定真实扩展样本持续回归，完善失败及权限体验 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
 | EXT-02 | no-view / view / menu-bar 三类命令 | 部分实现 | 按命令依赖验证，不能由一个样本推断全生态兼容 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
 | EXT-03 | List / Grid / Detail / Form / Actions | 部分实现 | 动态回调、生命周期、资源加载与字段事件逐项推进 | [API 表](RAYCAST-API-COVERAGE.csv)、[说明](RAYCAST-API-COVERAGE.md) |
 | EXT-04 | 存储、网络、文件、系统工具和 Utilities | 部分实现 | 用公开契约和隔离运行证据缩小 partial 项 | [API 表](RAYCAST-API-COVERAGE.csv) |
@@ -195,4 +195,11 @@
 
 维护记录：2026-11-21，AI-13-a / PR #224 在验证期间跟随 dev 更新到 `886dcda`；仅保留已合入 #214 的源码与进度记录并解决总表冲突，不修改其他功能分支。此前 `e7f5821` 在 `426b844` 上的 Checks 已通过，新整合提交另行复验。
 
+维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用已随 #218 合入 dev；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。
+
+维护记录：2026-11-21，EXT-01/BASE-11 第三批 [PR #223](https://github.com/Acckion/Keylane/pull/223)（b55cca4，草稿）目录快照与运行激活分层，动态声明插入/替换/卸载及验证失败保留旧目录开发完成，待合并及安装版验收。前序 #218、#221，见 [目录事务](CATALOG-TRANSACTIONS.md)。
+
+维护记录：2026-11-21，EXT-01 / PR #223 在 dev `fc44e8b` 上修复生命周期期间注册事件丢失的 P2，保留防重入并协调瞬时撤权、服务清理和最终状态；403 项 Swift、27 项脚本及目录集成通过。仍待合并，非安装版验收；见 [目录事务审查记录](CATALOG-TRANSACTIONS.md)。
 维护记录：2026-11-21，AI-12-a / PR #217 同步 dev `fc44e8b`，去除 #212/#214 等价差异，保留已合入 #224 的 PDF/续读/受限索引工具。搜索引用使用独立名称和请求/五分钟有效期；补测暂停索引后即时排除目录的元数据隔离。#224/#226 分支未改，未访问真实文件、剪贴板或模型，未安装/合并/发布。
+
+维护记录：2026-11-21，EXT-01 / PR #223 整合 dev `7f6a01b`（#217），保留 AI 工具运行域引用和功能代次快照，以及目录替换／卸载／重新启用的激活撤销；新增合成工具租约回归，验证结果见目录事务记录。仍待合并及安装版验收。
