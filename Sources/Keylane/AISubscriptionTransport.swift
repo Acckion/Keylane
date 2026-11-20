@@ -191,11 +191,12 @@ enum AISubscriptionTransport {
             "-c", "features.image_generation=false", "-c", "features.skill_search=false",
             "-c", "features.shell_snapshot=false"
         ]
-        if fastTranslation {
-            // A text translation worker needs neither project instructions nor plugin startup.
+        if fastTranslation || tools != nil {
+            // Host tools must not inherit plugins, skills or unrelated MCP servers from the CLI account.
             arguments += ["-c", "features.plugins=false", "-c", "features.plugin_discovery_prefetch=false",
                           "-c", "features.remote_plugin=false", "-c", "features.skip_host_skill_discovery=true",
-                          "-c", "features.omit_skill_descriptions=true", "-c", "project_doc_max_bytes=0"]
+                          "-c", "features.omit_skill_descriptions=true", "-c", "features.skill_mcp_dependency_install=false",
+                          "-c", "project_doc_max_bytes=0"]
         }
         let process = try cached?.process ?? AICLIProcess(connection: connection, arguments: arguments, directory: directory)
         defer { if !retained { process.stop() } }
@@ -269,17 +270,17 @@ enum AISubscriptionTransport {
                                                       "params": ["idempotencyKey": key]])
                                 } else if case .generate = operation {
                                     checkedAccount = try verifiedAccount(result, expected: connection.subscriptionAccountID)
-                                    if fastTranslation {
+                                    if fastTranslation || tools != nil {
                                         try process.send(["id": 5, "method": "config/read", "params": ["includeLayers": false]])
                                     } else {
                                         try startTextThread(process, connection: connection, directory: directory, tools: tools)
                                     }
                                 } else { return result }
-                            } else if id == 5, fastTranslation, checkedAccount != nil {
+                            } else if id == 5, fastTranslation || tools != nil, checkedAccount != nil {
                                 let config = result["config"] as? [String: Any] ?? [:]
                                 let servers = config["mcp_servers"] as? [String: Any] ?? [:]
                                 let disabled = servers.mapValues { _ in ["enabled": false] }
-                                try startTextThread(process, connection: connection, directory: directory, disabledServers: disabled)
+                                try startTextThread(process, connection: connection, directory: directory, disabledServers: disabled, tools: tools)
                             } else if id == 4, case .generate(let messages, let effort) = operation, checkedAccount != nil {
                                 guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else {
                                     throw AISubscriptionError.failed
@@ -314,7 +315,7 @@ enum AISubscriptionTransport {
                                 default: break
                                 }
                             }
-                            if fastTranslation, method == "item/agentMessage/delta" || method == "turn/completed" {
+                            if fastTranslation || tools != nil, method == "item/agentMessage/delta" || method == "turn/completed" {
                                 guard let currentThread, params["threadId"] as? String == currentThread else { continue }
                             }
                             if case .generate = operation, checkedAccount != nil {

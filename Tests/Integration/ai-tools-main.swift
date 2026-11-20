@@ -214,7 +214,11 @@ else:
             assert request['params']['capabilities']['experimentalApi'] is True
             result = {}
         elif method == 'account/read': result = {'account':{'type':'chatgpt','email':'fixture@example.invalid'}}
+        elif method == 'config/read':
+            assert 'features.plugins=false' in sys.argv and 'features.skill_mcp_dependency_install=false' in sys.argv
+            result = {'config':{'mcp_servers':{'external-fixture':{'command':'must-not-start'}}}}
         elif method == 'thread/start':
+            assert request['params']['config']['mcp_servers']['external-fixture']['enabled'] is False
             tools = request['params']['dynamicTools']
             assert tools[0]['name'] == 'fixture_add' and tools[0]['type'] == 'function'
             assert tools[0]['inputSchema']['additionalProperties'] is False
