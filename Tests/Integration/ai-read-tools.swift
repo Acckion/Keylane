@@ -20,7 +20,7 @@ import KeylaneCore
     var approvals: [String] = []
     var allowed = true
     func run(_ registrations: [AIToolRegistration]) throws -> AIToolRun {
-        try .init(registrations: registrations.map { $0.forRun() }, isCurrent: { true }, approve: { _, detail in
+        try .init(registrations: registrations.map { $0.forRun() }, recipient: .init(destination: "https://synthetic.invalid/v1", model: "synthetic"), isCurrent: { true }, approve: { _, detail in
             approvals.append(detail); return allowed
         })
     }
@@ -99,22 +99,141 @@ import KeylaneCore
     print("PASS clipboard preview budget: 20 long combining-scalar records remain bounded and fit the tool result")
     print("PASS clipboard tools: per-operation consent, text-only, opaque isolated references, capture-off history, unchanged page, off/on revocation, deleted source")
 
-    // The merged file foundation owns file names, authorization and reads. It must coexist
-    // with module clipboard tools without duplicate schemas or a second file permission path.
-    let folder = root.appendingPathComponent("files")
+    do {
+    let scope = root.appendingPathComponent("files")
+    try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true)
+    let url = scope.appendingPathComponent("fixture.md")
+    try Data("fixture file body".utf8).write(to: url)
+    let outside = root.appendingPathComponent("outside.md")
+    try Data("outside body must never be read".utf8).write(to: outside)
+    let symlink = scope.appendingPathComponent("fixture-link.md")
+    try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: outside)
+    let indexDirectory = root.appendingPathComponent("index")
+    let index = try FileSearchIndex(url: indexDirectory.appendingPathComponent("index.sqlite"))
+    for file in [url, symlink] {
+        try index.put(.init(path: file.path, name: file.lastPathComponent, volume: "/", modified: 1, directory: false, symlink: file == symlink), root: scope.path, epoch: "n:fixture")
+    }
+    for indexInBatch in 0..<20 {
+        let file = scope.appendingPathComponent("batchref-\(indexInBatch).txt")
+        try Data("Synthetic capacity body \(indexInBatch)".utf8).write(to: file)
+        try index.put(.init(path: file.path, name: file.lastPathComponent, volume: "/", modified: 1, directory: false, symlink: false), root: scope.path, epoch: "n:fixture")
+    }
+    preferences.set([scope.path], forKey: "fileSearchSelectedScopes")
+    let files = FileSearchController(directory: indexDirectory, preferences: preferences, defaultOptions: .init(roots: [scope.path]), watchChanges: false)
+    defer { files.stopRuntime() }
+    let deadline = ContinuousClock.now + .seconds(5)
+    while (try? await files.aiSearch("fixture", limit: 1).isEmpty) != false && ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    try await verifyReferenceBatch(AIReadTools.files(files), resultKey: "files", query: "batchref")
+    let mixedScope = AIToolRunScope()
+    let clipTools = AIReadTools.clipboard(clipboard), fileTools = AIReadTools.files(files)
+    var mixedOldReference = ""
+    for batch in 0..<3 {
+        let result = try await clipTools[0].performInRun!(["query": .string("bounded"), "limit": .number(20)], mixedScope)
+        if batch == 0 { mixedOldReference = try rows(result, "untrusted_data")[0]["reference"] as! String }
+    }
+    let mixedFiles = try rows(await fileTools[0].performInRun!(["query": .string("batchref"), "limit": .number(20)], mixedScope), "files")
+    precondition(mixedFiles.count == 20)
+    for row in mixedFiles {
+        _ = try fileTools[1].confirmationDetail!(["reference": .string(row["reference"] as! String)], mixedScope)
+    }
+    do {
+        _ = try clipTools[1].confirmationDetail!(["reference": .string(mixedOldReference)], mixedScope)
+        preconditionFailure("Mixed clipboard/file directory did not share its capacity")
+    } catch AIToolContractError.unavailable { }
+    print("PASS file/mixed reference capacity: all new batch entries survive eviction across shared clipboard/file scope")
+    let fileRun = try run(AIReadTools.files(files))
+    let fileSearch = try await execute(fileRun, "keylane_search_files", ["query": .string("fixture")])
+    let fileRows = try rows(fileSearch, "files")
+    let fileReference = fileRows.first { $0["path"] as? String == url.path }!["reference"] as! String
+    precondition(fileRows.first { $0["path"] as? String == symlink.path }?["reference"] == nil)
+    let fileRead = try await execute(fileRun, "keylane_read_searched_file", ["reference": .string(fileReference)])
+    precondition(!fileRead.isError && fileRead.text.contains("fixture file body"))
+    precondition(approvals.last!.contains(url.path) && !files.isSearching && files.lastPublishedQuery.isEmpty)
+    let arbitrary = try await execute(fileRun, "keylane_read_searched_file", ["reference": .string(outside.path)])
+    precondition(arbitrary.isError)
+    let otherRun = try run(AIReadTools.files(files))
+    let foreignFile = try await execute(otherRun, "keylane_read_searched_file", ["reference": .string(fileReference)])
+    precondition(foreignFile.isError)
+    allowed = false
+    let deniedFile = try await execute(fileRun, "keylane_read_searched_file", ["reference": .string(fileReference)])
+    precondition(deniedFile.isError && !deniedFile.text.contains("fixture file body"))
+    allowed = true
+    try Data("replaced private body".utf8).write(to: url, options: .atomic)
+    let replaced = try await execute(fileRun, "keylane_read_searched_file", ["reference": .string(fileReference)])
+    precondition(replaced.isError && !replaced.text.contains("replaced private body"))
+    files.options.enabled = false; files.options.enabled = true
+    let revoked = try await execute(fileRun, "keylane_search_files", ["query": .string("fixture")])
+    precondition(revoked.isError)
+    print("PASS file tools: indexed authorized scope, descriptor-bound content, path approval, no visible search mutation, arbitrary/foreign references rejected, symlink escape blocked, denial/replacement/off-on rejected")
+
+    // A reference expires before confirmation, and can also expire while confirmation is pending.
+    var fixtureNow = Date()
+    let expiringTools = AIReadTools.files(files, now: { fixtureNow })
+    let expiring = try run(expiringTools)
+    let expiringRows = try rows(await execute(expiring, "keylane_search_files", ["query": .string("fixture")]), "files")
+    let expiringRef = expiringRows.first { $0["path"] as? String == url.path }!["reference"] as! String
+    fixtureNow = fixtureNow.addingTimeInterval(301)
+    let beforeExpiryApproval = approvals.count
+    let expired = try await execute(expiring, "keylane_read_searched_file", ["reference": .string(expiringRef)])
+    precondition(expired.isError && approvals.count == beforeExpiryApproval)
+    var expireOnApproval = false
+    let pendingExpiry = try AIToolRun(registrations: expiringTools.map { $0.forRun() },
+        recipient: .init(destination: "https://synthetic.invalid/v1", model: "synthetic"),
+        isCurrent: { true }, approve: { _, detail in
+            approvals.append(detail)
+            if expireOnApproval { fixtureNow = fixtureNow.addingTimeInterval(301) }
+            return true
+        })
+    let pendingRows = try rows(await execute(pendingExpiry, "keylane_search_files", ["query": .string("fixture")]), "files")
+    let pendingRef = pendingRows.first { $0["path"] as? String == url.path }!["reference"] as! String
+    expireOnApproval = true
+    let lateApproved = try await execute(pendingExpiry, "keylane_read_searched_file", ["reference": .string(pendingRef)])
+    precondition(lateApproved.isError && !lateApproved.text.contains("replaced private body"))
+    let deletionRun = try run(AIReadTools.files(files))
+    let deletionRows = try rows(await execute(deletionRun, "keylane_search_files", ["query": .string("fixture")]), "files")
+    let deletedRef = deletionRows.first { $0["path"] as? String == url.path }!["reference"] as! String
+    try FileManager.default.removeItem(at: url)
+    let deletedFile = try await execute(deletionRun, "keylane_read_searched_file", ["reference": .string(deletedRef)])
+    precondition(deletedFile.isError)
+    try Data("after-delete body".utf8).write(to: url)
+    var revokeAtConfirmation = false
+    let revokedDuringApproval = try AIToolRun(registrations: AIReadTools.files(files).map { $0.forRun() },
+        recipient: .init(destination: "https://synthetic.invalid/v1", model: "synthetic"),
+        isCurrent: { true }, approve: { _, _ in
+            if revokeAtConfirmation { files.options.roots = [] }
+            return true
+        })
+    let scopedRows = try rows(await execute(revokedDuringApproval, "keylane_search_files", ["query": .string("fixture")]), "files")
+    let scopedRef = scopedRows.first { $0["path"] as? String == url.path }!["reference"] as! String
+    revokeAtConfirmation = true
+    let removedScope = try await execute(revokedDuringApproval, "keylane_read_searched_file", ["reference": .string(scopedRef)])
+    precondition(removedScope.isError && !removedScope.text.contains("after-delete body"))
+    precondition(approvals.contains { $0.contains("synthetic.invalid") })
+    print("PASS searched-file source checks: deletion and authorization removal during confirmation reject the old reference")
+    print("PASS searched-file expiry: five-minute lifetime checked before approval and again after pending confirmation; only current run references accepted")
+    }
+
+    // Independently authorized path tools coexist with request-scoped search references.
+    let folder = root.appendingPathComponent("authorized-path-files")
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     try Data("Unified synthetic file body".utf8).write(to: folder.appendingPathComponent("fixture.md"))
     let filePreferences = AIFileToolPreferences(store: preferences)
     filePreferences.enabled = true
     filePreferences.add(.init(path: folder.path))
     let fileTools = AIFileToolProvider.registrations(preferences: filePreferences, project: nil, currentProject: { nil })
-    let combined = AIReadTools.clipboard(clipboard) + fileTools
+    let scopedController = FileSearchController(directory: root.appendingPathComponent("unused-index"), preferences: preferences, defaultOptions: .init(roots: []), watchChanges: false, startImmediately: false)
+    let combined = AIReadTools.clipboard(clipboard) + AIReadTools.files(scopedController) + fileTools
     _ = try AIToolCatalog(combined.map(\.definition))
     precondition(combined.filter { $0.definition.name == "keylane_read_file" }.count == 1)
-    precondition(!combined.contains { $0.definition.name == "keylane_search_files" })
+    precondition(combined.filter { $0.definition.name == "keylane_read_searched_file" }.count == 1)
     let unified = try AIToolRun(registrations: combined.map { $0.forRun() },
         recipient: .init(destination: "https://synthetic.invalid/v1", model: "synthetic"),
         isCurrent: { true }, approve: { _, detail in approvals.append(detail); return allowed })
+    let wrongReference = try await execute(unified, "keylane_read_file", ["reference": .string("not-a-path")])
+    let wrongPath = try await execute(unified, "keylane_read_searched_file", ["path": .string("fixture.md")])
+    precondition(wrongReference.isError && wrongPath.isError)
     let readArgs: [String: AIToolValue] = ["path": .string("fixture.md")]
     allowed = false
     let deniedFile = try await execute(unified, "keylane_read_file", readArgs)
@@ -126,7 +245,7 @@ import KeylaneCore
     filePreferences.enabled = false; filePreferences.enabled = true
     let revokedFile = try await execute(unified, "keylane_read_file", readArgs)
     precondition(revokedFile.isError && !revokedFile.text.contains("Unified synthetic file body"))
-    print("PASS unified file/clipboard catalog: one read schema, recipient-aware consent, denial and off/on lease revocation; no legacy index permission bypass")
+    print("PASS unified file/clipboard catalog: distinct path/reference schemas, cross-parameter rejection, recipient-aware consent, denial and independent off/on lease revocation")
 
 }
 

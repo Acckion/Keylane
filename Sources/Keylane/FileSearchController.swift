@@ -12,8 +12,9 @@ struct AutomaticFileExclusion: Codable, Identifiable, Equatable {
     var id: String { path }; let path: String; let reason: String; var events: Int
 }
 final class FileSearchController: ObservableObject {
-    @Published var options: FileSearchOptions { didSet { if options != oldValue { configure(old: oldValue) } } }
-    @Published private(set) var automaticExclusions: [AutomaticFileExclusion] = []
+    private(set) var aiAccessRevision = UUID()
+    @Published var options: FileSearchOptions { didSet { if options != oldValue { aiAccessRevision = UUID(); configure(old: oldValue) } } }
+    @Published private(set) var automaticExclusions: [AutomaticFileExclusion] = [] { didSet { if oldValue != automaticExclusions { aiAccessRevision = UUID() } } }
     @Published private(set) var stats = FileIndexStats()
     @Published private(set) var indexStatus = "尚未建立本地补充索引"
     @Published private(set) var inaccessible: [String] = []
@@ -73,7 +74,7 @@ final class FileSearchController: ObservableObject {
     private var recoverEvents = false
     private static let maxQueuedEvents = 8192
     private var pendingRefresh: DispatchWorkItem?
-    private var restored: Set<String> = []
+    private var restored: Set<String> = [] { didSet { if oldValue != restored { aiAccessRevision = UUID() } } }
     private var dirtyPaths = Set<String>()
     private var needsFullScan = false
     static var defaults: FileSearchOptions {
@@ -199,6 +200,7 @@ final class FileSearchController: ObservableObject {
         else { indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
     private func resolveGrants() {
+        aiAccessRevision = UUID()
         activeURLs.forEach { $0.stopAccessingSecurityScopedResource() }; activeURLs = []
         guard isRunning else { return }
         for (_,data) in grants {
@@ -459,6 +461,13 @@ final class FileSearchController: ObservableObject {
         let query = currentQuery
         hasQuery = false
         search(query, includeContents: includesQueryContents, standalone: standalone, showPathItself: showPathItself)
+    }
+
+    /// Capture authorization metadata only. Filesystem validation runs off the UI actor.
+    @MainActor func aiReadScope() throws -> (@Sendable () -> FileSearchLocation) {
+        guard isRunning, options.enabled else { throw AIToolContractError.unavailable }
+        let options = authorizedOptions, exclusions = automaticExclusions.map(\.path), restored = restored
+        return { FileSearchLocation(options: options, automaticExclusions: exclusions, restored: restored) }
     }
 
     /// Independent bounded filename query. Never changes the visible page or starts an index scan.
