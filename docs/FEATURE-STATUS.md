@@ -101,6 +101,7 @@
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 待合并 | PR #215 尚未合入基线，后续按实际工具逐项验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
+| AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 待合并 | 本批依赖 #215；实现不等于 dev 已有，#217 的文件入口仍须整合；Office/OCR 未实现 | [实现与合成验证](AI-FILE-READING.md) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 尚未合入基线，确认权限和副作用行为 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
@@ -167,3 +168,4 @@
 | 日期 | 范围 | 基线与证据 |
 | --- | --- | --- |
 | 2026-11-21 | 建立全仓库总表，纳入 macOS 功能、AI、扩展、同步、平台及长期项目 | dev `9e73f01`；Raycast 官方手册目录及专项页面；仓库模块文档；PR #201/#211/#212/#214/#215 当前均未合并 |
+| 2026-11-21 | AI-13-a：新增 PDF 公共提取、请求内结果快照与续读、根内索引查询；保持待合并并记录 #215/#217 依赖 | 本批基线 dev `1eea4a6` + #215 `65f4a8d`；定向与合成验证见 [读取与续读](AI-FILE-READING.md)，无安装版/真实模型验收 |
