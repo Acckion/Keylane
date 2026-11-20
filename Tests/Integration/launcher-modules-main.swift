@@ -772,6 +772,110 @@ while !toolRegistryFinished, Date() < toolRegistryDeadline { RunLoop.main.run(un
 precondition(toolRegistryFinished)
 print("PASS module tools: inert catalog construction, duplicate rejection and live module enablement for captured declarations")
 
+// Context discovery is metadata-only; captured sources cannot outlive their module activation.
+var contextRegistryFinished = false
+Task { @MainActor in
+    let suite = "keylane.context-registry." + UUID().uuidString
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let owner = ModuleID(rawValue: "fixture.contexts")
+    let commandID = CommandID(rawValue: "fixture-ai-command")
+    var reads = 0
+    let contextAvailability = PassthroughSubject<Bool, Never>()
+    let registration = AIContextRegistration(id: "fixture.context", title: "Fixture", symbol: "doc", availabilityUpdates: contextAvailability.eraseToAnyPublisher()) { query in
+        [AIContextCandidate(id: "item", title: query, detail: "metadata", source: .init(moduleID: owner, load: {
+            reads += 1
+            return AIActionContext(sourceID: "item", title: "Fixture", text: "synthetic context")
+        }, isCurrent: { _ in true }))]
+    }
+    var commandEnabled = true
+    let command = LauncherModule.Command(declaration: .init(id: commandID, title: "AI fixture", detail: "", symbol: "sparkles", keywords: []), isAICommand: true)
+    let registry = try! LauncherModuleRegistry(modules: [LauncherModule(id: owner, commands: [command], aiContexts: [registration])], preferences: defaults, commandEnabled: { _ in commandEnabled })
+    precondition(registry.aiCommandEntries().map(\.commandID) == [commandID])
+    commandEnabled = false
+    precondition(registry.aiCommandEntries().isEmpty)
+    let context = registry.availableAIContexts[0]
+    precondition(reads == 0)
+    do {
+        let rows = try await context.search("fixture")
+        precondition(rows.count == 1 && reads == 0)
+        let loaded = try await rows[0].source.load()
+        precondition(loaded.text == "synthetic context" && reads == 1)
+        _ = registry.setModuleEnabled(owner, false)
+        _ = registry.setModuleEnabled(owner, true)
+        do { _ = try await rows[0].source.load(); preconditionFailure("Old context revived") } catch { }
+        do { _ = try await context.search(""); preconditionFailure("Old context directory revived") } catch { }
+        precondition(reads == 1 && registry.availableAIContexts.count == 1)
+        let freshRows = try await registry.availableAIContexts[0].search("fresh")
+        contextAvailability.send(false); contextAvailability.send(true)
+        do { _ = try await freshRows[0].source.load(); preconditionFailure("Feature off/on revived an old candidate") } catch { }
+        precondition(reads == 1)
+        // Suspend precisely inside the source version check, after the first generation check.
+        for revocation in ["feature-off", "feature-off-on", "module-off-on"] {
+            var validation: CheckedContinuation<Bool, Never>?
+            let slow = AIActionSource(moduleID: owner, load: {
+                .init(sourceID: "deferred", title: "Fixture", text: "Must not enter a draft")
+            }, isCurrent: { _ in await withCheckedContinuation { validation = $0 } })
+            let guarded = registry.guardedAIContextSource(slow)
+            let pending = Task { @MainActor in try await guarded.load() }
+            let deadline = ContinuousClock.now + .seconds(2)
+            while validation == nil && ContinuousClock.now < deadline { await Task.yield() }
+            precondition(validation != nil, "Fixture did not suspend inside asynchronous validation")
+            if revocation == "module-off-on" {
+                _ = registry.setModuleEnabled(owner, false)
+                _ = registry.setModuleEnabled(owner, true)
+            } else {
+                contextAvailability.send(false)
+                if revocation == "feature-off-on" { contextAvailability.send(true) }
+            }
+            validation?.resume(returning: true)
+            do { _ = try await pending.value; preconditionFailure("Late validated context survived \(revocation)") }
+            catch AIActionError.staleSource { }
+            contextAvailability.send(true)
+        }
+        print("PASS PR212 context validation race: feature off, off/on and module off/on reject a read suspended inside isCurrent")
+    } catch { preconditionFailure("Context fixture failed: \(error)") }
+    do {
+        _ = try LauncherModuleRegistry(modules: [LauncherModule(id: owner, aiContexts: [registration, registration])], preferences: defaults)
+        preconditionFailure("Duplicate contexts accepted")
+    } catch { }
+    contextRegistryFinished = true
+}
+let contextDeadline = Date().addingTimeInterval(5)
+while !contextRegistryFinished, Date() < contextDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+precondition(contextRegistryFinished)
+print("PASS module context directory: no eager body reads, command admission, duplicate rejection and irreversible activation revocation")
+
+// Result destinations use the same command executor, including internal-only grid presentation.
+do {
+    let suite = "keylane.ai-result-routing." + UUID().uuidString
+    let prefs = UserDefaults(suiteName: suite)!
+    defer { prefs.removePersistentDomain(forName: suite) }
+    let sourceID = CommandID(rawValue: "fixture-result-source")
+    let destinationID = CommandID(rawValue: "fixture-result-target")
+    let definition = AIActionDefinition(commandID: sourceID, title: "AI result", instructions: "Transform", resultDestination: .init(commandID: destinationID, title: "Preview result"))
+    let source = LauncherModule.Command(declaration: .init(id: sourceID, title: "Source", detail: "", symbol: "sparkles", keywords: []))
+    var delivered: [String] = []
+    let destination = LauncherModule.Command(declaration: .init(id: destinationID, title: "Internal", detail: "", symbol: "doc", keywords: []), isInternal: true, arguments: .init(count: 1...1) { _, args in delivered = args })
+    let module = LauncherModule(id: .init(rawValue: "fixture-result"), commands: [source, destination], aiActions: [definition])
+    let registry = try LauncherModuleRegistry(modules: [module], preferences: prefs)
+    precondition(registry.aiResultDestination(for: sourceID) == definition.resultDestination)
+    let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
+    precondition(!registry.candidates(for: input).contains { $0.commandID == destinationID })
+    precondition(!registry.shortcutCommandGroups.flatMap(\.commands).contains { $0.declaration.id == destinationID })
+    precondition(!registry.invoke(destinationID, origin: .shortcut, arguments: ["result"]) { _ in })
+    precondition(registry.invoke(destinationID, origin: .menu, arguments: ["result"]) { _ in })
+    precondition(delivered == ["result"])
+    _ = registry.setModuleEnabled(module.id, false)
+    precondition(registry.aiResultDestination(for: sourceID) == nil)
+    precondition(!registry.invoke(destinationID, origin: .menu, arguments: ["stale"]) { _ in })
+    do {
+        _ = try LauncherModuleRegistry(modules: [.init(id: module.id, commands: [source], aiActions: [definition])], preferences: prefs)
+        preconditionFailure("Missing result destination accepted")
+    } catch { }
+}
+print("PASS AI result routing: validated target, normal command admission, hidden internal action, shortcut denial and module revocation")
+
 // A module refresh must update its own rows without re-scoring an unchanged catalog.
 let appOwner = ModuleID(rawValue: "fixture.apps")
 let fileOwner = ModuleID(rawValue: "fixture.files")

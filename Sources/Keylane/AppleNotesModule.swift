@@ -11,6 +11,8 @@ enum AppleNotesModule {
     static func make(model: Model) -> LauncherModule {
         let permission = PermissionFeature("appleNotes.enabled", authorization: .automation("com.apple.Notes", appName: "备忘录"), observeImmediately: false)
         let notes = AppleNotesController(permission: permission)
+        let aiReader = AppleNotesAIReader(available: { permission.available })
+        var aiPermissionChanges: AnyCancellable?
         let create: (LauncherCommandOrigin) -> Void = { [weak model] origin in
             notes.resetDraft()
             model?.openPage(createPage, origin: origin)
@@ -21,11 +23,18 @@ enum AppleNotesModule {
             queryChanged: notes.search, leave: notes.clearSearch, move: notes.move,
             submit: notes.openSelected, actionSelectionID: { notes.selectedID }, primaryTitle: { "打开备忘录" },
             primaryEnabled: { notes.selectedID != nil && !notes.saving },
-            actions: {
+            actions: { [weak model] in
                 var actions: [LauncherAction] = [.init(id: "create-apple-note", title: "新建 Apple 备忘录", icon: "plus") { create(.menu) }]
                 if notes.selectedID != nil {
                     actions.insert(.init(id: "open-apple-note", title: "在独立窗口打开", icon: "macwindow", shortcut: .init(.return, modifiers: []),
                                          enabled: !notes.saving, perform: notes.openSelected), at: 0)
+                }
+                if let model, let id = notes.selectedID, let row = notes.results.first(where: { $0.id == id }) {
+                    let source = aiReader.source(id: id, title: row.title)
+                    actions.append(ModuleAICommands.menu(definitions: AppleNotesAIActions.definitions, source: source, model: model))
+                    actions.append(.init(id: "apple-note-ai-attach", title: "附加到 AI 聊天", icon: "sparkles", enabled: model.aiSettings.isAvailable && !model.disabledCommands.contains(AppleNotesAIActions.attachID.rawValue)) { [weak model] in
+                        _ = model?.runCommand(AppleNotesAIActions.attachID, origin: .menu, aiSource: source)
+                    })
                 }
                 return actions
             },
@@ -63,15 +72,20 @@ enum AppleNotesModule {
                       }
                       model?.openPage(createPage, origin: origin)
                   })
-        ], pages: [search, editor], services: [.init(start: permission.startObserving, stop: {
+        ] + AppleNotesAIActions.commands(model: model, notes: notes, permission: permission, reader: aiReader), aiActions: AppleNotesAIActions.definitions, pages: [search, editor], services: [.init(start: {
+            permission.startObserving()
+            aiPermissionChanges = permission.$enabled.sink { if !$0 { aiReader.cancel() } }
+        }, stop: {
+            aiPermissionChanges?.cancel(); aiPermissionChanges = nil
+            aiReader.cancel()
             permission.stopObserving()
             notes.stop()
         })], searchUpdates: [permission.updates],
-           permissionTitlebar: permission.titlebar("启用 Apple 备忘录"))
+           permissionTitlebar: permission.titlebar("启用 Apple 备忘录")).withAIContexts([AppleNotesAIActions.context(permission: permission, reader: aiReader)])
     }
 }
 
-private final class AppleNotesController: ObservableObject {
+final class AppleNotesController: ObservableObject {
     @Published private(set) var results: [AppleNoteResult] = []
     @Published var selectedID: String?
     @Published private(set) var searching = false

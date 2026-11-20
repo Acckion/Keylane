@@ -31,7 +31,7 @@ struct AIConversationComposerView: View {
     @State private var menuSelection: String?
     @State private var menuScrollTarget: String?
     @State private var suppressedCompletion: AIChatCompletionToken?
-    @State private var contextRequest: AIConversationDraftContextRequest<AIChatContextSheet.Source>?
+    @State private var contextRequest: AIConversationDraftContextRequest<AIContextRegistration>?
     @State private var toolsPresented = false
     @State private var capability: AIChatCapabilityInfo?
 
@@ -44,6 +44,9 @@ struct AIConversationComposerView: View {
                 Button("好") { composer.fileError = "" }
             } message: { Text(composer.fileError) }
             .onChange(of: composer.draftID) { _, _ in contextRequest = nil; dismissComposerMenu() }
+            .onReceive(configuration.$state.map(\.enabled).removeDuplicates()) { enabled in
+                if !enabled { contextRequest = nil; dismissComposerMenu() }
+            }
             .onReceive(composer.contextRequested) { request in
                 switch request {
                 case .file: addTextFile()
@@ -56,6 +59,7 @@ struct AIConversationComposerView: View {
             .sheet(item: $capability) { AIChatCapabilityInfoView(feature: $0) }
             .sheet(item: $contextRequest) { request in
                 AIChatContextSheet(source: request.source) { attachment in
+                    guard configuration.state.enabled, contextRequest?.id == request.id else { return }
                     if composer.appendAttachment(attachment, from: request) {
                         composer.focusRequested.send()
                     } else if composer.draftID == request.draftID {
@@ -185,9 +189,13 @@ struct AIConversationComposerView: View {
             if controller.currentConnection?.protocolKind.isSubscription == true {
                 items.insert(Item(id: "usage", section: "命令", title: "/usage", symbol: "gauge.with.dots.needle.33percent", detail: "账户用量", action: showUsage), at: 0)
             }
-            items += AITextCommand.allCases.map { command in
-                Item(id: command.id, section: "AI 命令", title: command.title, symbol: command.icon) {
-                    appendContext(command.instructions)
+            let registry = (NSApp.delegate as? Delegate)?.model.launcherModules
+            items += (registry?.aiCommandEntries() ?? []).map { command in
+                Item(id: command.id, section: "AI 命令", title: command.name, symbol: command.symbol) {
+                    guard let delegate = NSApp.delegate as? Delegate else { return }
+                    controller.preservingLauncherConversationDuring {
+                        _ = delegate.model.runCommand(command.commandID, origin: .menu)
+                    }
                 }
             }
             items += controller.projects.map { project in
@@ -206,12 +214,16 @@ struct AIConversationComposerView: View {
         } else {
             items = [
                 Item(id: "file", section: "上下文", title: "附加文件…", symbol: "doc.badge.plus", action: addTextFile),
-                Item(id: "clipboard-history", section: "上下文", title: "剪贴板历史…", symbol: "clipboard") { contextRequest = composer.contextRequest(AIChatContextSheet.Source.clipboard) },
                 Item(id: "clipboard", section: "上下文", title: "当前剪贴板文字", symbol: "doc.on.clipboard", action: insertClipboard),
-                Item(id: "screenshot", section: "上下文", title: "截图文字…", symbol: "viewfinder", action: addImageText),
-                Item(id: "calendar", section: "上下文", title: "日历日程…", symbol: "calendar") { contextRequest = composer.contextRequest(AIChatContextSheet.Source.calendar) },
+                Item(id: "screenshot", section: "上下文", title: "从图片文件提取文字…", symbol: "viewfinder", action: addImageText),
                 Item(id: "selection", section: "上下文", title: "选中文字", symbol: "text.cursor", action: insertSelectedText)
             ]
+            let registry = (NSApp.delegate as? Delegate)?.model.launcherModules
+            items += (registry?.availableAIContexts ?? []).map { source in
+                Item(id: source.id, section: "上下文", title: source.title + "…", symbol: source.symbol) {
+                    contextRequest = composer.contextRequest(source)
+                }
+            }
             if !contextMenuOpen {
                 items += [
                     Item(id: "tools", section: "基础入口", title: "扩展工具…", symbol: "puzzlepiece.extension", detail: interaction.toolsEnabled ? "已开启" : "已关闭") { toolsPresented = true },

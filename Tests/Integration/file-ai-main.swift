@@ -91,8 +91,14 @@ final class FixtureProtocol: URLProtocol {
                 text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             }
             self.client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-            if mode == "held-stream" {
+            if mode == "held-stream" || mode == "partial-error" {
                 self.client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{\"content\":\"visible streaming fragment\"}}]}\n\n".utf8))
+                if mode == "partial-error" {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+                        self.lock.lock(); let stopped = self.stopped; self.lock.unlock()
+                        if !stopped { self.client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)) }
+                    }
+                }
                 return // Deliberately leave the synthetic stream open until stop/cancellation.
             }
             if mode == "reasoning-stream" || mode == "reasoning-pause" {
@@ -496,6 +502,15 @@ let textURL = videoDirectory.appendingPathComponent("fixture.md")
 try Data("Attachment fixture content".utf8).write(to: textURL)
 let attachment = try AIFileAttachment.read(textURL)
 precondition(attachment.name == "fixture.md" && attachment.text == "Attachment fixture content")
+let capturedVersion = try AIFileReadVersion(textURL)
+let versionedAttachment = try AIFileAttachment.read(textURL, maximumTextBytes: 24_000, expectedVersion: capturedVersion)
+precondition(versionedAttachment.text == attachment.text)
+try Data("Replacement fixture content".utf8).write(to: textURL, options: .atomic)
+do { _ = try AIFileAttachment.read(textURL, expectedVersion: capturedVersion); fatalError("Replaced file was accepted") } catch {}
+let editedVersion = try AIFileReadVersion(textURL)
+try Data("Edited in-place fixture content".utf8).write(to: textURL)
+do { _ = try AIFileAttachment.read(textURL, expectedVersion: editedVersion); fatalError("Edited file was accepted") } catch {}
+print("PASS file identity: descriptor-bound version accepts unchanged source, rejects replacement and in-place edits")
 let symlink = videoDirectory.appendingPathComponent("alias.md")
 try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: textURL)
 do { _ = try AIFileAttachment.read(symlink); fatalError("Symbolic-link attachment was accepted") } catch {}
@@ -2201,3 +2216,210 @@ func verifyCatalogReviewRegressions() {
     action.clear(); files.cancel()
     print("PASS PR209 reviews: cross-task endpoint/credentials, unavailable model and endpoint repair, rename guard, persisted defaults, and active module/file requests survive catalog names while destination edits cancel")
 }
+
+// Question commands prepare locally, then submit the question and selected data together.
+FixtureProtocol.mode = "ok"
+let questionAction = AIActionSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let questionDefinition = AIActionDefinition(commandID: .init(rawValue: "fixture-question"), title: "Ask selected text", instructions: "Use only the supplied source", acceptsQuestion: true)
+let questionSource = AIActionSource(moduleID: .init(rawValue: "fixture"), load: {
+    .init(sourceID: "question-source", title: "Selected record", text: "Synthetic record: delivery on Friday")
+}, isCurrent: { _ in true })
+let requestsBeforeQuestion = FixtureProtocol.requests.count
+questionAction.prepare(questionDefinition, source: questionSource, allowed: { true })
+wait("Question source prepared") { !questionAction.preparing }
+precondition(questionAction.context != nil && !questionAction.canSend && FixtureProtocol.requests.count == requestsBeforeQuestion)
+questionAction.question = String(repeating: "中", count: 2_667)
+precondition(!questionAction.canSend)
+questionAction.question = "What day is the delivery?"
+precondition(questionAction.canSend)
+questionAction.send()
+wait("Question command completed") { !questionAction.preparing && !questionAction.running }
+precondition(FixtureProtocol.requests.count == requestsBeforeQuestion + 1)
+precondition(FixtureProtocol.lastMessages.last?["content"]?.contains("What day is the delivery?") == true)
+precondition(FixtureProtocol.lastMessages.last?["content"]?.contains("Synthetic record: delivery on Friday") == true)
+questionAction.clear()
+print("PASS module question command: local preview, required bounded question, explicit send with exactly selected source")
+
+let preservedSession = AIConversationSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+preservedSession.composer.text = "Existing draft"
+preservedSession.composer.attachments = [.init(title: "Existing", text: "Keep me", symbol: "doc")]
+let preservedDraft = preservedSession.composer.draftID
+preservedSession.preservingLauncherConversationDuring { preservedSession.leaveLauncher() }
+precondition(preservedSession.composer.text == "Existing draft" && preservedSession.composer.attachments.count == 1 && preservedSession.composer.draftID == preservedDraft)
+preservedSession.leaveLauncher()
+precondition(preservedSession.composer.text.isEmpty && preservedSession.composer.attachments.isEmpty)
+print("PASS AI command navigation: scoped conversation preservation retains draft and attachments; normal leave still clears")
+
+// PR212: attachments use the actual Quick AI/AI Chat session, never the file route.
+do {
+    let suite = "KeylaneAttachmentDestination-" + UUID().uuidString
+    let prefs = UserDefaults(suiteName: suite)!
+    defer { prefs.removePersistentDomain(forName: suite) }
+    let quickModel = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "quick-fixture")
+    let chatModel = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "chat-fixture")
+    let unavailableModel = AIConnection(endpoint: "", model: "")
+    var state = AIConfiguration.State(enabled: true, connections: [quickModel, chatModel, unavailableModel], selectedID: unavailableModel.id,
+        defaults: [.quick: quickModel.id, .chat: chatModel.id, .files: unavailableModel.id], usesLastChatModel: false)
+    prefs.set(try JSONEncoder().encode(state), forKey: "aiConnections.v1")
+    let config = AIConfiguration(preferences: prefs)
+    let session = AIConversationSession(configuration: config, runtime: actionRuntime, readKey: { _ in preconditionFailure("Availability cannot read credentials") })
+    precondition(!config.isAvailable && session.currentConnection?.id == quickModel.id && session.canAttachModuleContext)
+    session.beginChat()
+    precondition(session.currentConnection?.id == chatModel.id && session.canAttachModuleContext)
+    session.closeChat()
+    session.composer.loadAttachments { try? await Task.sleep(for: .milliseconds(50)); return [] }
+    precondition(!session.canAttachModuleContext)
+    wait("Attachment destination import finished") { !session.composer.loadingFiles }
+    precondition(session.canAttachModuleContext)
+
+    state.defaults = [.quick: unavailableModel.id, .chat: unavailableModel.id, .files: quickModel.id]
+    prefs.set(try JSONEncoder().encode(state), forKey: "aiConnections.v1")
+    let fileOnlyConfig = AIConfiguration(preferences: prefs)
+    let fileOnlySession = AIConversationSession(configuration: fileOnlyConfig, runtime: actionRuntime, readKey: { _ in nil })
+    precondition(fileOnlyConfig.isAvailable && !fileOnlySession.canAttachModuleContext)
+    fileOnlySession.beginChat()
+    precondition(!fileOnlySession.canAttachModuleContext)
+    let preferredQuick = AIConversationSession(configuration: fileOnlyConfig, runtime: actionRuntime, preferredQuickModel: { quickModel.id }, readKey: { _ in nil })
+    precondition(preferredQuick.currentConnection?.id == quickModel.id && preferredQuick.canAttachModuleContext)
+    precondition(FixtureProtocol.requests.count == requestsBeforeQuestion + 1)
+    print("PASS PR212 attachment destination: Quick/Chat remain available with broken files route; files-only cannot enable attachments; explicit Quick model and busy import respected; zero model requests")
+}
+
+let cancelledAttachmentComposer = AIConversationComposer()
+cancelledAttachmentComposer.text = "Keep this draft"
+let attachmentAvailability = PassthroughSubject<Bool, Never>()
+cancelledAttachmentComposer.loadAttachments(availability: attachmentAvailability.eraseToAnyPublisher()) {
+    try? await Task.sleep(for: .milliseconds(100))
+    return [.init(title: "Stale", text: "Must not be appended", symbol: "doc")]
+}
+attachmentAvailability.send(false)
+attachmentAvailability.send(true)
+wait("Unavailable attachment cancelled") { !cancelledAttachmentComposer.loadingFiles }
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(cancelledAttachmentComposer.text == "Keep this draft" && cancelledAttachmentComposer.attachments.isEmpty)
+print("PASS direct context attachment: off/on revokes pending read without replacing draft or appending stale data")
+
+let disabledTextCommand = AITextCommandSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let textCommandAvailability = PassthroughSubject<Bool, Never>()
+disabledTextCommand.prepare(.polish, selection: "Synthetic text", canInvoke: { true })
+disabledTextCommand.observeAvailability(textCommandAvailability.eraseToAnyPublisher())
+precondition(disabledTextCommand.canSend)
+textCommandAvailability.send(false); textCommandAvailability.send(true)
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+precondition(!disabledTextCommand.canSend && !disabledTextCommand.reply.running)
+let disabledTextRequestCount = FixtureProtocol.requests.count
+disabledTextCommand.send()
+precondition(FixtureProtocol.requests.count == disabledTextRequestCount)
+print("PASS legacy AI command shares irreversible availability revocation; fast disable/reenable requires fresh invocation")
+
+// Buffered policies never publish raw, unvalidated model output.
+let validatedAction = AIActionSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+validatedAction.prepare(actionDefinition, source: questionSource, resultTransform: { _, _ in throw AIActionError.invalidResult }, allowed: { true })
+wait("Buffered action prepared") { !validatedAction.preparing }
+FixtureProtocol.mode = "ok"
+validatedAction.send()
+wait("Buffered invalid result rejected") { !validatedAction.preparing && !validatedAction.running }
+precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult && validatedAction.status == AIActionError.invalidResult.localizedDescription)
+validatedAction.prepare(questionDefinition, source: questionSource, initialQuestion: "Original question", resultTransform: { _, _ in .init("validated output", commandArgument: "validated-command-payload") }, allowed: { true })
+wait("Buffered valid action prepared") { !validatedAction.preparing }
+validatedAction.send()
+wait("Buffered valid result accepted") { !validatedAction.preparing && !validatedAction.running }
+precondition(validatedAction.answer == "validated output" && validatedAction.resultArgument == "validated-command-payload" && validatedAction.canUseResult)
+precondition(validatedAction.continuationContext?.text.contains("Original question") == true)
+validatedAction.question = "Edited question"
+precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult)
+print("PASS buffered module policy: raw output withheld, invalid result rejected, validated output admitted and question edits revoke old result")
+
+var snippetFixture: Snippet? = Snippet(id: "fixture-snippet", title: "Template", text: "Hello {clipboard} {cursor}")
+let snippetSource = SnippetAIContextSource.make(id: "fixture-snippet") { snippetFixture }
+var librarySourcesFinished = false
+Task { @MainActor in
+    do {
+        let snapshot = try await snippetSource.load()
+        precondition(snapshot.text == "Hello {clipboard} {cursor}", "AI must never expand placeholders")
+        snippetFixture?.text = "Edited"
+        let snippetCurrent = try await snippetSource.isCurrent(snapshot)
+        precondition(!snippetCurrent)
+        snippetFixture = nil
+        do { _ = try await snippetSource.load(); preconditionFailure("Deleted snippet accepted") } catch { }
+        let request = ExtensionProcessRequest()
+        let exact = try AppleNotesAutomation.readText("fixture-\"id", request: request) { script, _ in
+            precondition(script.contains("password protected") && script.contains("deletedNoteIDs") && script.contains("32000"))
+            precondition(script.contains("fixture-\\\"id"))
+            return "KEYLANE_TEXT:\nExact body\n\n"
+        }
+        precondition(exact == "\nExact body\n\n")
+        do {
+            _ = try AppleNotesAutomation.readText("large", request: request) { _, _ in "KEYLANE_TEXT:" + String(repeating: "中", count: 11_000) }
+            preconditionFailure("Oversize note accepted")
+        } catch { }
+        let reader = AppleNotesAIReader(available: { true }, read: { _, _ in "One selected note" }, search: { _, _ in [.init(id: "n", title: "Title only")] })
+        let rows = try await reader.directory("")
+        precondition(rows.map(\.id) == ["n"])
+        let note = try await reader.source(id: "n", title: "Title").load()
+        precondition(note.text == "One selected note")
+        let cancellationReader = AppleNotesAIReader(available: { true }, read: { _, request in
+            while !request.isCancelled { Thread.sleep(forTimeInterval: 0.002) }
+            throw CancellationError()
+        })
+        let read = Task { try await cancellationReader.text("cancelled") }
+        try await Task.sleep(for: .milliseconds(20))
+        cancellationReader.cancel()
+        do { _ = try await read.value; preconditionFailure("Note read survived cancellation") } catch { }
+    } catch { preconditionFailure("Library AI source fixture: \(error)") }
+    librarySourcesFinished = true
+}
+wait("Snippet and Apple Notes AI sources") { librarySourcesFinished }
+print("PASS library AI sources: literal snippet snapshot, edit/deletion revocation; bounded note text, locked/deleted guards, exact newlines and cancellable injected reader; no real Notes")
+
+validatedAction.prepare(actionDefinition, source: questionSource, allowed: { true })
+wait("Module-scoped cleanup prepared") { !validatedAction.preparing }
+let cleanupInvocation = validatedAction.invocationID
+validatedAction.clear(for: .init(rawValue: "unrelated-module"))
+precondition(validatedAction.context != nil && validatedAction.invocationID == cleanupInvocation)
+validatedAction.clear(for: questionSource.moduleID)
+precondition(validatedAction.context == nil && validatedAction.invocationID != cleanupInvocation)
+print("PASS module-scoped AI cleanup: stopping another extension preserves the active invocation")
+
+
+// PR214: cancelled/failed fragments are display-only; successful results carry their submitted source.
+let continuationSuite = "KeylaneTextContinuation-" + UUID().uuidString
+let continuationPrefs = UserDefaults(suiteName: continuationSuite)!
+defer { continuationPrefs.removePersistentDomain(forName: continuationSuite) }
+continuationPrefs.set("http://127.0.0.1:43991/v1", forKey: "fileAIEndpoint")
+continuationPrefs.set("fixture", forKey: "fileAIModel")
+let continuationConfiguration = AIConfiguration(preferences: continuationPrefs)
+var continuationProfile = continuationConfiguration.selected!
+continuationProfile.mode = .streaming
+precondition(continuationConfiguration.save(continuationProfile))
+let continuationCommand = AITextCommandSession(configuration: continuationConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+FixtureProtocol.mode = "held-stream"
+continuationCommand.prepare(.polish, selection: "Originally submitted source")
+continuationCommand.send()
+wait("Text command partial result") { continuationCommand.reply.running && continuationCommand.reply.lastAnswer != nil }
+precondition(continuationCommand.completedResult == nil)
+continuationCommand.reply.stop()
+precondition(continuationCommand.reply.lastAnswer != nil && continuationCommand.completedResult == nil)
+FixtureProtocol.mode = "partial-error"
+continuationCommand.prepare(.polish, selection: "Failing source")
+continuationCommand.send()
+wait("Text command failed partial result") { !continuationCommand.reply.running }
+precondition(continuationCommand.reply.lastAnswer != nil && continuationCommand.completedResult == nil)
+FixtureProtocol.mode = "stream"
+continuationCommand.prepare(.polish, selection: "Submitted before editor changed")
+continuationCommand.send()
+continuationCommand.input = "Unsubmitted edit while running"
+wait("Text command successful result") { !continuationCommand.reply.running }
+precondition(continuationCommand.completedResult?.context.text == "Submitted before editor changed")
+precondition(continuationCommand.completedResult?.answer == continuationCommand.reply.turns.last?.answer)
+continuationCommand.input = "Edited after success"
+precondition(continuationCommand.completedResult == nil)
+let customContinuation = CustomAICommand(title: "Continuation fixture", prompt: #"Tone: {argument name="tone"}"#, connectionID: nil)
+continuationCommand.prepare(customContinuation, template: DynamicTemplate(customContinuation.prompt, usage: .aiCommand), context: .init(), canInvoke: { true })
+continuationCommand.setArgument("tone", value: "formal")
+continuationCommand.send()
+wait("Custom command successful result") { !continuationCommand.reply.running }
+precondition(continuationCommand.completedResult?.context.text.contains("formal") == true)
+continuationCommand.setArgument("tone", value: "casual")
+precondition(continuationCommand.completedResult == nil)
+print("PASS PR214 result actions: running/stopped/failed partial outputs rejected, successful output bound to submitted source, subsequent input and template edits revoke result")

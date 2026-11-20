@@ -50,6 +50,9 @@
 - 变更消息编码须兼容旧 `files` 与 `attachments`；补测活动请求转入完整窗口不重复发送、草稿/附件保留和各异步代次失效。架构与验证边界见 `docs/AI-CONVERSATION-ARCHITECTURE.md`。
 - 内置模块的 AI 动作使用普通 CommandID 和 `LauncherModule.aiActions` 登记，来源由模块提供 `AIActionSource`；不得在菜单或视图中直接读取全文并另写请求循环。聊天和模块动作共用 `AIRunHandle`，结果复用公共 Markdown／过程组件。样板与额度见 `docs/AI-MODULE-ACTIONS.md`。
 - AI 输入只在显式调用后准备，发送前重查来源、命令和模型；逐片段更新不得转发根搜索评分。加入聊天草稿须保留现有草稿和附件，不因路由进入而自动提交。停用后重新启用不能复活旧调用。
+- 聊天上下文通过所属模块的 `LauncherModule.aiContexts` 登记；目录只提供元数据和 `AIActionSource`，选中后才读取正文。使用注册表包装的模块／功能代次，不在聊天宿主添加模块 switch，不在读取目录时做 OCR、权限请求或网络操作。来源读取与核对在主线程进入，耗时提取交给可取消后台任务。
+- 聊天 `/` 菜单复用注册表的 AI 命令投影，内置动作使用 `aiActions`，动态命令提供方用 `isAICommand` 标记；仍按普通 CommandID 执行。结果复用 `AIResultContent`／`AIActionResultView`，不另写 Markdown 或过程展示；命令切换保留已有会话和草稿，但不得自动发送。
+
 
 ## 版本规范
 
@@ -101,3 +104,12 @@ python3 scripts/verify-package.py
 - Actions 的 `Checks` 必须通过。失败时定位并修复，不得以删测试、跳过检查或放宽发布条件掩盖问题。
 - CI 保留分支保护所需 `Checks` 名称，对所有 PR 和 dev/main push 运行版本、脚本检查及 Swift 编译测试。main PR 只允许同仓库 dev 来源；普通同步不强制 release 标题、版本递增或发布说明。改动 workflows、scripts、Resources、Swift 包配置、许可证/第三方声明或 version.json 时按上述规则验证 Apple Development 签名 DMG；未知 push 基线保守执行打包。手动 CI 不签名或打包；PR 仅执行无密钥检查。CI 无发布权限，签名 secrets 仅供签名打包任务使用。
 - 正式发布仅手动运行 `.github/workflows/release.yml`，固定 main 提交，重新执行版本/构建号、发布说明、脚本、Swift 测试、Developer ID 签名、公证和票据验证。只有全部成功后 publish job 才获得 contents:write；不可覆盖其他提交的 tag 或已发布资产。不得使用普通 push 或 workflow_run 自动发布。未完成验证前，不得宣称支持 Intel 或通用二进制。
+
+## 模块 AI 结果与生成
+
+- 优先使用 `ModuleAICommands` 接入新的模块动作；业务模块负责来源与结果校验。片段转换不展开模板，并校验占位符原文／数量；Emoji 结果必须映射到本地目录。
+- 需要校验的结果使用公共会话的缓冲策略，不提前显示或复制未经验证的流式原文。保存／展示结果用 `AIActionDefinition.resultDestination` 指向普通命令；新建预览仍由用户明确保存，不直接修改源记录。
+- 内部结果展示命令标记 `isInternal`，不列入搜索和热键设置；不要为 UI 结果操作建立另一套绕过注册表的分派链。
+- `AIActionOutput.text` 是用户可读结果，内部结构参数放入 `commandArgument`；不要将传输 JSON 或协议字段直接显示给用户。结果动作必须以成功完成状态为准，不能仅凭存在部分正文判断可执行。
+
+- 读取私人数据的 AI 工具须复用 `AIToolRun` 逐次确认与运行域；模型只能通过本次搜索返回的临时引用读取正文，不能直接传文件路径或数据库 ID。`snapshotAvailability` 在目录快照时冻结功能代次，停用／重新启用不能恢复旧权限。授权范围与文件版本由业务模块校验；声明目录不读正文、不申请权限。样板见 `AIReadTools` 与 `docs/AI-MODULE-ACTIONS.md`。

@@ -111,6 +111,9 @@ final class AIConversationSession: ObservableObject {
         (!composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachments.isEmpty)
     }
 
+    /// The attachment follows this live session, including its explicit model selection.
+    var canAttachModuleContext: Bool { currentConnection != nil && !loadingChat && !composer.loadingFiles }
+
     var lastAnswer: String? { turns.last(where: { !$0.answer.isEmpty })?.answer }
     var currentConnection: AIConnection? { connection(in: configuration.state) }
 
@@ -174,7 +177,7 @@ final class AIConversationSession: ObservableObject {
             prepareTools: { [weak self] in
                 guard let self, self.toolEnabled() else { return nil }
                 guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
-                return try AIToolRun(registrations: self.toolSource(), isCurrent: { [weak self] in
+                return try AIToolRun(registrations: self.toolSource().map { $0.forRun() }, isCurrent: { [weak self] in
                     guard let self else { return false }
                     return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
                         self.currentConnection == connection
@@ -482,8 +485,17 @@ final class AIConversationSession: ObservableObject {
         }
     }
 
+    private var preservingLauncherConversation = false
+    /// Synchronous command navigation may suspend Quick AI without destroying its conversation/draft.
+    func preservingLauncherConversationDuring(_ navigate: () -> Void) {
+        let previous = preservingLauncherConversation
+        preservingLauncherConversation = true
+        defer { preservingLauncherConversation = previous }
+        navigate()
+    }
+
     func leaveLauncher() {
-        if !isInChat { reset() }
+        if !isInChat && !preservingLauncherConversation { reset() }
     }
 
     func closeChat() {

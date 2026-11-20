@@ -6,6 +6,7 @@
     func event(_ event: AIResponseEvent) { events.append(event) }
     func append(_ delta: String) { text += delta }
 }
+@MainActor final class ToolFixtureReferences { var reference: String? }
 @MainActor final class ToolFixtureAvailability { var allowed = true }
 
 final class ToolFixtureProtocol: URLProtocol {
@@ -145,6 +146,44 @@ Task { @MainActor in
         catch AIToolContractError.invalidArguments { }
         catch AIToolContractError.limitReached { }
         precondition(performed == 5)
+        // Capabilities are private to this run and require a human-readable confirmation.
+        let referenceDefinition = try AIToolDefinition(name: "fixture_reference", title: "Read fixture", description: "Fixture", parameters: [])
+        var revision = UUID()
+        var reads = 0
+        let scoped = AIToolRegistration(definition: referenceDefinition, requiresConfirmation: true,
+            snapshotAvailability: { let expected = revision; return { revision == expected } },
+            confirmationDetail: { _, scope in
+                let store = scope.state(ToolFixtureReferences.self) { ToolFixtureReferences() }
+                return store.reference ?? "synthetic document.txt"
+            }, performInRun: { _, scope in
+                reads += 1
+                let store = scope.state(ToolFixtureReferences.self) { ToolFixtureReferences() }
+                let result = store.reference ?? "new-run"
+                store.reference = "same-run"
+                return try .init(text: result)
+            })
+        do { _ = try run([scoped]); preconditionFailure("Unfrozen private-data tool accepted") }
+        catch AIToolContractError.unavailable { }
+        let frozen = scoped.forRun()
+        let referenceRun = try AIToolRun(registrations: [frozen], isCurrent: { true }, approve: { _, detail in
+            precondition(detail == "synthetic document.txt" || detail == "same-run"); return true
+        })
+        let firstReference = try AIToolCall(id: "ref-one", name: "fixture_reference", arguments: [:])
+        let secondReference = try AIToolCall(id: "ref-two", name: "fixture_reference", arguments: [:])
+        let firstResult = try await referenceRun.execute(firstReference, scope: "fixture", progress: { _ in })
+        let secondResult = try await referenceRun.execute(secondReference, scope: "fixture", progress: { _ in })
+        precondition(firstResult.text == "new-run" && secondResult.text == "same-run")
+        let separateRun = try run([frozen])
+        let separateResult = try await separateRun.execute(firstReference, scope: "fixture", progress: { _ in })
+        precondition(separateResult.text == "new-run")
+        let deniedReference = try AIToolRun(registrations: [frozen], isCurrent: { true }, approve: { _, _ in false })
+        let beforeReads = reads
+        _ = try await deniedReference.execute(firstReference, scope: "fixture", progress: { _ in })
+        precondition(reads == beforeReads)
+        let revokedReference = try AIToolRun(registrations: [frozen], isCurrent: { true }, approve: { _, _ in revision = UUID(); return true })
+        let revokedResult = try await revokedReference.execute(firstReference, scope: "fixture", progress: { _ in })
+        precondition(revokedResult.isError && reads == beforeReads)
+        print("PASS run-scoped tools: frozen feature lease, human confirmation, isolated references, denial and revocation before read")
         let broker = AIToolApprovalBroker()
         let approval = Task { @MainActor in await broker.request(title: "Synthetic", arguments: "{}") }
         await Task.yield()

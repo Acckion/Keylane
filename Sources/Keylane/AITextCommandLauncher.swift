@@ -15,11 +15,15 @@ enum AITextCommandLauncher {
                 symbol: command.icon, keywords: [command.rawValue, "AI", "选中文字"], destination: .action,
                 settingsPage: AIModule.textCommandsItem.page
             ), available: { [weak model] in model?.aiSettings.state.connection(for: .commands) != nil }, execute: { [weak model] origin in
-                guard let model else { return }
+                guard let model, let registry = model.launcherModules else { return }
                 session.prepare(command, selection: selectedText()) { [weak model] in
                     model?.launcherModules?.isCommandModuleEnabled(id) == true &&
                         model?.disabledCommands.contains(id.rawValue) == false
                 }
+                session.observeAvailability(Publishers.Merge(
+                    model.$disabledCommands.map { !$0.contains(id.rawValue) },
+                    registry.availabilityChanges.map { [weak model] in model?.launcherModules?.isCommandModuleEnabled(id) == true }
+                ).eraseToAnyPublisher())
                 model.openPage(pageID, origin: origin)
             })
         }
@@ -35,7 +39,7 @@ enum AITextCommandLauncher {
         }, resolve: { [weak model] id, origin in
             guard let model, let command = library.commandsByID[id.rawValue] else { return nil }
             return { [weak model] in
-                guard let model else { return }
+                guard let model, let registry = model.launcherModules else { return }
                 let template = DynamicTemplate(command.prompt, usage: .aiCommand)
                 var context = model.snippets.templateContext()
                 let selection = template.placeholderKinds.contains(.selection) ? selectedText() : nil
@@ -44,6 +48,11 @@ enum AITextCommandLauncher {
                     model?.launcherModules?.isCommandModuleEnabled(id) == true &&
                         model?.disabledCommands.contains(id.rawValue) == false && library.commandsByID[id.rawValue] == command
                 }
+                session.observeAvailability(Publishers.Merge3(
+                    model.$disabledCommands.map { !$0.contains(id.rawValue) },
+                    library.$commands.map { $0.contains(command) },
+                    registry.availabilityChanges.map { [weak model] in model?.launcherModules?.isCommandModuleEnabled(id) == true }
+                ).eraseToAnyPublisher())
                 model.openPage(pageID, origin: origin)
             }
         }, actions: { [weak model] entry in
@@ -54,7 +63,7 @@ enum AITextCommandLauncher {
         }, available: { id in
             guard let command = library.commandsByID[id.rawValue] else { return false }
             return AITextCommandSession.connection(for: command, in: session.configuration.state) != nil
-        })
+        }, isAICommand: true)
     }
 
     static func selectedText() -> String? {
@@ -85,7 +94,9 @@ enum AITextCommandLauncher {
                 .removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.$command.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             session.reply.$running.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            session.reply.$turns.map { $0.last?.answer.isEmpty == false }
+            session.reply.$turns.map { turns in
+                turns.last.map { $0.complete && $0.progress?.phase == .completed && !$0.answer.isEmpty } ?? false
+            }
                 .removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ]).eraseToAnyPublisher()
         return LauncherPage(id: pageID, placeholder: "", badge: ("AI 命令", "sparkles"),
@@ -98,9 +109,17 @@ enum AITextCommandLauncher {
                             primaryTitle: { "发送给模型" }, primaryEnabled: { session.canSend },
                             actions: {
                                 var actions = [LauncherAction(id: "copy-ai-command-result", title: "复制结果",
-                                                               icon: "doc.on.doc", enabled: session.reply.lastAnswer != nil) {
-                                    AIConversationHostActions.copyText(session.reply.lastAnswer)
+                                                               icon: "doc.on.doc", enabled: session.completedResult != nil) {
+                                    guard let result = session.completedResult else { return }
+                                    AIConversationHostActions.copyText(result.answer)
                                 }]
+                                actions.append(.init(id: "continue-ai-command", title: "继续到 Quick AI", icon: "bubble.left.and.bubble.right",
+                                                     enabled: session.completedResult != nil) { [weak model] in
+                                    guard let result = session.completedResult else { return }
+                                    if model?.continueModuleAIAction?(result.context, result.answer) != true {
+                                        (NSApp.delegate as? Delegate)?.showLauncherFeedback("无法加入草稿，请等待附件处理完成或缩小内容范围。", style: .failure)
+                                    }
+                                })
                                 if session.reply.running {
                                     actions.append(.init(id: "stop-ai-command", title: "停止生成", icon: "stop.fill",
                                                          perform: session.reply.stop))
@@ -164,7 +183,7 @@ private struct AITextCommandForm: View {
                 if session.customCommand == nil, session.input.isEmpty {
                     Text("无法读取选区时，可在此手动输入。").font(.caption).foregroundStyle(.secondary)
                 }
-                AITextCommandResult(reply: session.reply)
+                AITextCommandResult(session: session, reply: session.reply)
             }
             .padding(.horizontal, 26)
         }
@@ -180,6 +199,7 @@ private struct AITextCommandForm: View {
 }
 
 private struct AITextCommandResult: View {
+    @ObservedObject var session: AITextCommandSession
     @ObservedObject var reply: AIConversationSession
 
     var body: some View {
@@ -189,16 +209,15 @@ private struct AITextCommandResult: View {
                 Text("结果").font(.headline)
                 Spacer()
                 if reply.running { Button("停止", action: reply.stop) }
-                if let answer = reply.lastAnswer {
-                    Button("复制") { AIConversationHostActions.copyText(answer) }
+                if reply.lastAnswer != nil {
+                    Button("复制") {
+                        guard let result = session.completedResult else { return }
+                        AIConversationHostActions.copyText(result.answer)
+                    }.disabled(session.completedResult == nil)
                 }
             }
-            if let answer = reply.lastAnswer { Text(answer).textSelection(.enabled) }
-            if !reply.status.isEmpty {
-                Text(reply.status).font(.caption).foregroundStyle(.secondary)
-            } else if reply.running {
-                ProgressView().controlSize(.small).accessibilityLabel("正在生成")
-            }
+            AIResultContent(answer: reply.lastAnswer ?? "", status: reply.status,
+                            running: reply.running, progress: reply.turns.last?.progress ?? .init())
         }
     }
 }

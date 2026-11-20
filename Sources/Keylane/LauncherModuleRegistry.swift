@@ -233,6 +233,8 @@ struct LauncherModule {
         var permission: PermissionFeature?
         var acceptsFallbackQuery = false
         var fallbackAvailable: () -> Bool = { true }
+        var isAICommand = false
+        var isInternal = false
         var aiExecute: ((LauncherCommandOrigin, AIActionSource?) -> Void)?
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
         var arguments: Arguments?
@@ -255,6 +257,7 @@ struct LauncherModule {
         var available: (CommandID) -> Bool = { _ in true }
         var permission: (CommandID) -> PermissionFeature? = { _ in nil }
         var fallback: Fallback?
+        var isAICommand = false
     }
 
     /// Runtime-discovered modules expose their current presence from validated in-memory metadata.
@@ -285,6 +288,7 @@ struct LauncherModule {
     var settings: [LauncherSettingsPage] = []
     var services: [Service] = []
     var aiTools: [AIToolRegistration] = []
+    var aiContexts: [AIContextRegistration] = []
     var searchUpdates: [AnyPublisher<Void, Never>] = []
     var launcherShown: (() -> Void)?
     var launcherHidden: (() -> Void)?
@@ -296,6 +300,9 @@ struct LauncherModule {
     var permissionTitlebar: SettingsTitlebarContribution?
     var registration: Registration?
     var canDisable: Bool { origin != .application }
+    func withAIContexts(_ contexts: [AIContextRegistration]) -> Self {
+        var copy = self; copy.aiContexts = contexts; return copy
+    }
     func withAITools(_ tools: [AIToolRegistration]) -> Self {
         var copy = self; copy.aiTools = tools; return copy
     }
@@ -374,6 +381,8 @@ final class LauncherModuleRegistry {
     var registrationUpdates: AnyPublisher<Void, Never> { registrationChanges.eraseToAnyPublisher() }
     private var registrationObservation: AnyCancellable?
     private var activations: [ModuleID: Activation] = [:]
+    private var contextGenerations: [ModuleID: UUID] = [:]
+    private var contextObservations: [AnyCancellable] = []
     private var toolGenerations: [ModuleID: UUID] = [:]
     private var runningModules: Set<ModuleID> = []
     private var reconcilingModules: Set<ModuleID> = []
@@ -407,6 +416,8 @@ final class LauncherModuleRegistry {
 
     init(modules: [LauncherModule], preferences: UserDefaults = .standard,
          commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
+        let contextIDs = modules.flatMap(\.aiContexts).map(\.id)
+        guard contextIDs.allSatisfy({ !$0.isEmpty }), Set(contextIDs).count == contextIDs.count else { throw AIActionError.invalidDefinition }
         _ = try AIToolCatalog(modules.flatMap(\.aiTools).map(\.definition))
         self.commandEnabled = commandEnabled
         self.modules = modules
@@ -423,16 +434,19 @@ final class LauncherModuleRegistry {
             for definition in module.aiActions {
                 try definition.validate()
                 guard module.commands.contains(where: { $0.declaration.id == definition.commandID }) else { throw AIActionError.invalidDefinition }
+                if let destination = definition.resultDestination {
+                    guard module.commands.contains(where: { $0.declaration.id == destination.commandID && $0.arguments?.count.contains(1) == true }) else { throw AIActionError.invalidDefinition }
+                }
             }
         }
         moduleRegistrations = Dictionary(uniqueKeysWithValues: modules.compactMap { module in
             module.registration.map { (module.id, $0) }
         })
         registeredShortcutGroups = modules.compactMap { module in
-            guard !module.commands.isEmpty || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
+            guard module.commands.contains(where: { !$0.isInternal }) || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
             else { return nil }
             return ShortcutCommandGroup(id: module.id, title: module.displayTitle,
-                                        symbol: module.displaySymbol, commands: module.commands,
+                                        symbol: module.displaySymbol, commands: module.commands.filter { !$0.isInternal },
                                         dynamicCommands: module.dynamicCommandSettings, binding: module.shortcutSettingsBinding)
         }
         commandSettingsUpdates = modules.flatMap(\.shortcutSettingsUpdates)
@@ -463,6 +477,16 @@ final class LauncherModuleRegistry {
         for module in registeredModules {
             if let generation = enabledGeneration(for: module.id) {
                 activations[module.id] = Activation(generation: generation)
+            }
+        }
+        for module in modules {
+            for context in module.aiContexts {
+                if let changes = context.availabilityUpdates {
+                    contextObservations.append(changes.sink { [weak self] available in
+                        precondition(Thread.isMainThread)
+                        if !available { self?.contextGenerations[module.id] = UUID() }
+                    })
+                }
             }
         }
         registrationObservation = Publishers.MergeMany(registeredModules.compactMap { module in
@@ -613,16 +637,107 @@ final class LauncherModuleRegistry {
         moduleRegistrations[id]?.isPresent() ?? true
     }
 
+    func aiResultDestination(for id: CommandID) -> AIActionDefinition.ResultDestination? {
+        guard currentAction(for: id, origin: .menu, arguments: []) != nil,
+              let owner = byID[id]?.module else { return nil }
+        guard let destination = modules.first(where: { $0.id == owner })?.aiActions.first(where: { $0.commandID == id })?.resultDestination,
+              currentAction(for: destination.commandID, origin: .menu, arguments: [""]) != nil else { return nil }
+        return destination
+    }
+
+    func aiCommands(in moduleID: ModuleID) -> [LauncherModule.Command] {
+        guard let module = modules.first(where: { $0.id == moduleID }) else { return [] }
+        let ids = Set(module.aiActions.map(\.commandID))
+        return module.commands.filter { $0.isAICommand || ids.contains($0.declaration.id) }
+    }
+
+    /// Uses the ordinary command catalog and current admission; no second executor.
+    func aiCommandEntries() -> [Entry] {
+        let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
+        let fixed = commands.filter { owned in
+            owned.value.isAICommand || modules.first(where: { $0.id == owned.module })?.aiActions.contains(where: { $0.commandID == owned.value.declaration.id }) == true
+        }.compactMap { owned -> Entry? in
+            let declaration = owned.value.declaration
+            guard currentAction(for: declaration.id, origin: .menu, arguments: []) != nil else { return nil }
+            return Entry(id: declaration.id.rawValue, commandID: declaration.id, name: declaration.title,
+                         detail: "AI 命令", symbol: declaration.symbol)
+        }
+        let dynamic = providers.filter { $0.value.isAICommand && isModuleEnabled($0.module) }.flatMap { owned in
+            owned.value.entries(input).filter { currentAction(for: $0.commandID, origin: .menu, arguments: []) != nil }
+        }
+        return fixed + dynamic
+    }
+
+    /// A captured source cannot survive disable/re-enable, replacement or uninstallation.
+    func guardedAIContextSource(_ source: AIActionSource) -> AIActionSource {
+        let module = source.moduleID
+        let generation = toolGenerations[module]
+        let contextGeneration = contextGenerations[module]
+        let activation = activation(for: module)
+        let current = { [weak self] in
+            guard let self else { return false }
+            return self.isModuleEnabled(module) && self.toolGenerations[module] == generation && self.contextGenerations[module] == contextGeneration && self.activation(for: module) == activation
+        }
+        return AIActionSource(moduleID: module, load: {
+            guard current() else { throw AIActionError.unavailable }
+            let value = try await source.load()
+            try Task.checkCancellation()
+            guard current(), try await source.isCurrent(value), current() else { throw AIActionError.staleSource }
+            try Task.checkCancellation()
+            try value.validate(maximumBytes: 32_000)
+            return value
+        }, isCurrent: { value in
+            guard current(), try await source.isCurrent(value) else { return false }
+            return current()
+        })
+    }
+
+    var availableAIContexts: [AIContextRegistration] {
+        modules.filter { isModuleEnabled($0.id) }.flatMap { module in
+            module.aiContexts.filter { $0.available() }.map { contribution in
+                let generation = toolGenerations[module.id]
+                let contextGeneration = contextGenerations[module.id]
+                let activation = activation(for: module.id)
+                let current = { [weak self] in
+                    guard let self else { return false }
+                    return self.isModuleEnabled(module.id) && self.toolGenerations[module.id] == generation &&
+                        self.contextGenerations[module.id] == contextGeneration && self.activation(for: module.id) == activation && contribution.available()
+                }
+                return AIContextRegistration(id: contribution.id, title: contribution.title, symbol: contribution.symbol,
+                    available: current, search: { [weak self] query in
+                        guard current(), let self else { throw AIActionError.unavailable }
+                        let rows = try await contribution.search(query)
+                        try Task.checkCancellation()
+                        guard current() else { throw AIActionError.unavailable }
+                        return rows.filter { $0.source.moduleID == module.id }.prefix(100).map { row in
+                            let source = self.guardedAIContextSource(row.source)
+                            return AIContextCandidate(id: row.id, title: row.title, detail: row.detail,
+                                source: AIActionSource(moduleID: module.id, load: {
+                                    guard current() else { throw AIActionError.unavailable }
+                                    let value = try await source.load()
+                                    guard current() else { throw AIActionError.unavailable }
+                                    return value
+                                }, isCurrent: { value in
+                                    guard current(), try await source.isCurrent(value) else { return false }
+                                    return current()
+                                }))
+                        }
+                    })
+            }
+        }
+    }
+
     @MainActor var availableAITools: [AIToolRegistration] {
         modules.flatMap { module in
             module.aiTools.map { contribution in
-                var tool = contribution
+                let frozen = contribution.forRun()
+                var tool = frozen
                 let generation = toolGenerations[module.id]
                 let activation = activation(for: module.id)
                 tool.available = { [weak self] in
                     guard let self, self.isModuleEnabled(module.id), self.toolGenerations[module.id] == generation,
                           self.activation(for: module.id) == activation else { return false }
-                    return contribution.available()
+                    return frozen.available()
                 }
                 return tool
             }
@@ -718,7 +833,7 @@ final class LauncherModuleRegistry {
         commands.compactMap { owned in
             let command = owned.value
             let item = command.declaration
-            guard input.namespace?.contains(item.id) != false,
+            guard !command.isInternal, input.namespace?.contains(item.id) != false,
                   isCommandEnabled(owned),
                   command.permission?.available != false else { return nil }
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
@@ -805,6 +920,7 @@ final class LauncherModuleRegistry {
         -> (perform: () -> Void, destination: LauncherCommandDeclaration.Destination?)? {
         if let owned = byID[id] {
             let command = owned.value
+            guard !owned.value.isInternal || origin == .menu else { return nil }
             guard isCommandEnabled(owned),
                   command.arguments?.count.contains(arguments.count) ?? arguments.isEmpty,
                   permissionAllowsExecution(command.permission) else { return nil }
