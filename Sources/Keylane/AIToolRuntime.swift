@@ -2,10 +2,23 @@ import Combine
 import Foundation
 import KeylaneCore
 
+struct AIToolRecipient: Sendable {
+    let destination: String
+    let model: String
+}
+
+struct AIToolPreparedOperation: Sendable {
+    static let unapprovedResult = "目标未获核实与披露许可。本次未执行；不得据此判断目标是否存在，请用户在本机检查设置。不要重试或声称成功。"
+    let displayArguments: String
+    let approvalArguments: String
+    let perform: @MainActor @Sendable () async throws -> AIToolResult
+}
+
 /// A module contributes declarations and handlers; catalog reads never execute handlers.
 struct AIToolRegistration: Sendable {
     let definition: AIToolDefinition
     var requiresConfirmation = false
+    var prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil
     var available: @MainActor @Sendable () -> Bool = { true }
     let perform: @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult
 }
@@ -57,6 +70,7 @@ final class AIToolApprovalBroker: ObservableObject {
 actor AIToolRun {
     nonisolated let catalog: AIToolCatalog
     private let registrations: [String: AIToolRegistration]
+    private let recipient: AIToolRecipient?
     private let isCurrent: @MainActor @Sendable () -> Bool
     private let approve: @MainActor @Sendable (String, String) async -> Bool
     private var budget = AIToolRunBudget()
@@ -72,10 +86,11 @@ actor AIToolRun {
         else { waiters.removeFirst().resume() }
     }
 
-    init(registrations: [AIToolRegistration], isCurrent: @escaping @MainActor @Sendable () -> Bool,
+    init(registrations: [AIToolRegistration], recipient: AIToolRecipient? = nil, isCurrent: @escaping @MainActor @Sendable () -> Bool,
          approve: @escaping @MainActor @Sendable (String, String) async -> Bool) throws {
         catalog = try AIToolCatalog(registrations.map(\.definition))
         self.registrations = Dictionary(uniqueKeysWithValues: registrations.map { ($0.definition.name, $0) })
+        self.recipient = recipient
         self.isCurrent = isCurrent
         self.approve = approve
     }
@@ -99,23 +114,30 @@ actor AIToolRun {
         // Reserve a whole bounded result before an operation can have effects.
         guard budget.resultBytes <= 131_072 - 32_768 else { throw AIToolContractError.limitReached }
         try budget.admit([call])
-        let arguments = try AIToolWire.string(call.arguments)
+        let registration = registrations[call.name]
+        var arguments = registration?.prepare == nil ? try AIToolWire.string(call.arguments) : "目标尚未核实"
         let name = registrations[call.name]?.definition.title ?? call.name
-        await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: .requested))
         var result: AIToolResult
+        var disclosureAllowed = false
         do {
             try catalog.validate(call)
             guard let tool = registrations[call.name], await tool.available() else { throw AIToolContractError.unavailable }
-            if tool.requiresConfirmation {
-                guard await approve(name, arguments) else {
+            let prepared = try await tool.prepare?(call.arguments, recipient)
+            if let prepared { arguments = prepared.displayArguments }
+            try await validateCurrent()
+            guard await tool.available() else { throw AIToolContractError.unavailable }
+            await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: .requested))
+            if tool.requiresConfirmation || prepared != nil {
+                guard await approve(name, prepared?.approvalArguments ?? arguments) else {
                     try await validateCurrent()
-                    let denied = try AIToolResult(text: "用户未允许本次操作。不要重试该操作，向用户说明未执行。", isError: true)
+                    let denied = try AIToolResult(text: prepared == nil ? "用户未允许本次操作。不要重试该操作，向用户说明未执行。" : AIToolPreparedOperation.unapprovedResult, isError: true)
                     try budget.record(denied, for: call.id)
                     await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: .notExecuted))
                     await progress(.toolResult(id: ledgerID, text: denied.text))
                     return denied
                 }
             }
+            disclosureAllowed = true
             try await validateCurrent()
             guard await tool.available() else { throw AIToolContractError.unavailable }
             await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: .running))
@@ -124,6 +146,7 @@ actor AIToolRun {
                 // Check and enter the native handler on the same actor as stop/disable.
                 try Task.checkCancellation()
                 guard isCurrent(), tool.available() else { throw CancellationError() }
+                if let prepared { return try await prepared.perform() }
                 return try await tool.perform(call.arguments)
             }
             result = try await invoke()
@@ -131,8 +154,15 @@ actor AIToolRun {
             guard await tool.available() else { throw AIToolContractError.unavailable }
         } catch is CancellationError { throw CancellationError() }
         catch {
-            let detail = (error as? AIToolContractError)?.localizedDescription ?? "功能无法完成，数据可能不可用。"
-            result = try AIToolResult(text: "工具未完成：" + detail + " 不要声称操作成功。", isError: true)
+            if registration?.prepare != nil, !disclosureAllowed {
+                // Match denied approval exactly: errors must not become an
+                // unapproved existence/protected-path oracle through tool results.
+                result = try AIToolResult(text: AIToolPreparedOperation.unapprovedResult, isError: true)
+            } else {
+                let detail = (error as? AIToolContractError)?.localizedDescription ??
+                    (error as? AIFileToolError)?.localizedDescription ?? "功能无法完成，数据可能不可用。"
+                result = try AIToolResult(text: "工具未完成：" + detail + " 不要声称操作成功。", isError: true)
+            }
         }
         try budget.record(result, for: call.id)
         await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: result.isError ? .failed : .completed))

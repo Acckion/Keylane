@@ -100,7 +100,7 @@
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
-| AI-13 | 通用文件读写、目录操作等基础工具 | 待合并 | PR #215 尚未合入基线，后续按实际工具逐项验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
+| AI-13 | 通用文件读写、目录操作等基础工具 | 待合并 | PR #215 待合并；仅根内一级不覆盖创建，目录移动后的不确定结果、无覆盖竞争与不支持条件有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 尚未合入基线，确认权限和副作用行为 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
@@ -140,6 +140,7 @@
 | DATA-01 | Keylane 配置导出、预览冲突与恢复 | 部分实现 | 安装版恢复、旧数据和异常中断验收 | [配置迁移](CONFIGURATION-MIGRATION.md) |
 | DATA-02 | Raycast 配置迁移 | 部分实现 | 基础配置已有；分类数据扩展见 DATA-02-a（待合并），尚非完整兼容 | [配置迁移](CONFIGURATION-MIGRATION.md)、[分类支持进度](RAYCAST-IMPORT-COVERAGE.md) |
 | DATA-02-a | Raycast 分类数据导入、预览与启动恢复 | 待合并 | 片段、文本剪贴板、AI 只读历史/命令、Emoji、专注分类；笔记暂缓，未支持内容不保存；实际导入/重启/撤销待验收 | [PR #219](https://github.com/Acckion/Keylane/pull/219)；补充 12 个强制退出恢复场景及附件轮次回归；[范围及验证](RAYCAST-IMPORT-COVERAGE.md) |
+| DATA-02-b | 分类迁移：校验与安装之间的目标占用保护 | 待合并 | 将校验快照中的目标缺失状态传入安装；意外出现的合法库拒绝覆盖并保留恢复记录；实机场景待验收 | [PR #225](https://github.com/Acckion/Keylane/pull/225)、[实现 d27da3f](https://github.com/Acckion/Keylane/commit/d27da3f)、[竞态回归与验证](RAYCAST-IMPORT-COVERAGE.md#校验至安装之间的目标占用竞态) |
 | DATA-03 | 跨设备设置、聊天与剪贴板同步 | 待合并 | iCloud Drive 方案 PR #201，合并前不计为已有云同步 | [PR #201](https://github.com/Acckion/Keylane/pull/201)、[Raycast Cloud Sync](https://manual.raycast.com/cloud-sync) |
 | DATA-04 | 完整用户数据备份与恢复 | 待核对 | 配置备份之外，核对聊天、历史、附件及冲突恢复范围 | [配置边界](CONFIGURATION-MIGRATION.md)、[原计划](archive/FEATURES.csv) |
 | RELEASE-01 | GitHub 更新检查、测试版渠道与更新日志 | 部分实现 | 真实下载/替换/重启、签名迁移和失败恢复验收 | [应用工具](APP-UTILITIES.md)、[发行](CI-RELEASE.md) |
@@ -174,6 +175,11 @@
 | 2026-11-21 | BASE-08：Theme Studio 及设置颜色隔离，标记待合并 | 功能分支 `feat/theme-studio`，[PR #220](https://github.com/Acckion/Keylane/pull/220)，`d414663` / `d8e5c96`；自动化与本机安装证据见 [模块记录](features/THEME-STUDIO.md)，用户最终验收仍待完成 |
 维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用待合并；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。
 
+维护记录：2026-11-21，AI-13 / PR #215 修复 Grep 的 CRLF 换行识别；使用文件后部匹配及混合换行合成样本回归；23 项定向 Swift 测试、27 项脚本测试通过，未安装验收。
 | 2026-11-21 | BASE-08：修复紧凑自定义主题连成整块背景的审查问题 | [PR #220](https://github.com/Acckion/Keylane/pull/220)；原生窗口透明像素、独立表面、点击、减少透明度和展开渐显回归；旧行为对照能复现失败 |
 
 维护记录：2026-11-21，BASE-03 页面 ActionSnapshot 公共契约及词典/文件/Emoji/表单样板、替代 Return 与页面会话作用域见 [PR #221](https://github.com/Acckion/Keylane/pull/221)（20a170c），待合并、未安装；完整构建、动作/会话、文件与 Emoji 隔离回归通过；见 [页面动作契约](PAGE-ACTION-CONTRACT.md)。
+
+维护记录：2026-11-21，DATA-02-b：从 dev `8b2fa648` 独立提交 SQLite 安装预期状态修复，原 #219 的实现不重复携带。旧逻辑在隔离合成库中确定性复现覆盖；补丁不改变附件轮次处理；实现 `d27da3f`，独立补丁 [PR #225](https://github.com/Acckion/Keylane/pull/225) 已同步 dev `2ad472e`，全量 356+3 项 Swift、18 项迁移专项、12 个强制退出场景和 27 项 ReleaseTests 通过。验证结果见 [分类支持进度](RAYCAST-IMPORT-COVERAGE.md)。
+
+维护记录：2026-11-21，AI-13 / PR #215 同步 dev `d99d1d9`，澄清仅不覆盖创建、授权目录对象身份与移动后结果不确定的边界；补测提交前拒绝、发布前后移动、目标竞争和不支持系统调用；28 项定向 Swift、6 组集成、27 项脚本测试通过，无真实模型/用户资料/安装验收。
