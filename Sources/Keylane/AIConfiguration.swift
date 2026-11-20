@@ -23,6 +23,7 @@ final class AIConfiguration: ObservableObject {
         var defaults: [AIRoute: UUID]?
         var usesLastChatModel: Bool?
         var lastChatModelID: UUID?
+        var providerCatalogs: [String: AIProviderCatalogCache]?
         var selected: AIConnection? { connections.first { $0.id == selectedID } }
         var isAvailable: Bool { connection(for: .files) != nil }
 
@@ -40,7 +41,9 @@ final class AIConfiguration: ObservableObject {
         }
     }
 
+    @Published private(set) var catalogSyncStatus: [String: String] = [:]
     @Published private(set) var state: State
+    private var modelCatalogSync: AIProviderCatalogSync?
     private let preferences: UserDefaults
     private static let storageKey = "aiConnections.v1"
     private static let service = "org.keylane.ai"
@@ -75,6 +78,90 @@ final class AIConfiguration: ObservableObject {
 
     var selected: AIConnection? { state.selected }
     var isAvailable: Bool { state.isAvailable }
+
+    /// Start once from the application composition root, never from a model menu.
+    @MainActor func startModelCatalogSync(runtime: AIRuntime) {
+        guard modelCatalogSync == nil else { return }
+        modelCatalogSync = AIProviderCatalogSync(configuration: self, runtime: runtime)
+        modelCatalogSync?.start()
+    }
+
+    @MainActor func refreshModelCatalogs(runtime: AIRuntime, connection: AIConnection? = nil) {
+        startModelCatalogSync(runtime: runtime)
+        modelCatalogSync?.refresh(force: true, connection: connection)
+    }
+
+    @MainActor func setCatalogSyncStatus(_ status: String, for identity: String) {
+        catalogSyncStatus[identity] = status
+    }
+
+    /// Merge one provider atomically into the same persistent snapshot all pickers read.
+    /// Existing IDs, defaults and visibility survive; failed/stale requests never replace it.
+    @discardableResult
+    func applyProviderCatalog(_ models: [AIProviderModel], snapshot: AIConnection, at date: Date) -> Bool {
+        guard !models.isEmpty, state.enabled,
+              let current = state.connections.first(where: { $0.id == snapshot.id }),
+              current.catalogIdentity == snapshot.catalogIdentity, current.model == snapshot.model,
+              current.additionalParametersJSON == snapshot.additionalParametersJSON,
+              current.modelTask == snapshot.modelTask else { return false }
+        let key = snapshot.catalogIdentity
+        let previous = state.providerCatalogs?[key]
+        let available = Set(models.map(\.id))
+        var updated = state
+        var members = [String: Int]()
+        for index in updated.connections.indices where updated.connections[index].catalogIdentity == key {
+            let member = updated.connections[index]
+            if members[member.model] == nil { members[member.model] = index }
+            if previous?.modelIDs.contains(member.id) == true {
+                updated.connections[index].catalogUnavailable = available.contains(member.model) ? nil : true
+            }
+        }
+        var catalogIDs = Set<UUID>()
+        for model in models {
+            let index: Int
+            if let existing = members[model.id] { index = existing }
+            else {
+                var copy = snapshot
+                copy.id = UUID()
+                copy.model = model.id
+                copy.name = model.name ?? model.id
+                copy.credentialOwnerID = snapshot.credentialOwnerID ?? snapshot.id
+                copy.contextTokens = nil
+                copy.supportsImages = nil
+                copy.supportsTools = nil
+                copy.hiddenFromPicker = nil
+                copy.modelTask = nil
+                if copy.taskKind != snapshot.taskKind, let base = snapshot.apiBaseURL {
+                    copy.endpoint = base.absoluteString
+                }
+                updated.connections.append(copy)
+                index = updated.connections.count - 1
+                members[model.id] = index
+            }
+            catalogIDs.insert(updated.connections[index].id)
+            updated.connections[index].catalogUnavailable = nil
+            let member = updated.connections[index]
+            if let name = model.name, !name.isEmpty, name.utf8.count <= 512,
+               name.rangeOfCharacter(from: .controlCharacters) == nil {
+                if member.name.isEmpty || member.name == member.catalogName || member.name == member.model
+                    || member.name == member.providerLabel || member.name == member.providerLabel + " · " + member.model {
+                    updated.connections[index].name = name
+                }
+                updated.connections[index].catalogName = name
+            }
+            if let tokens = model.contextLength, tokens > 0 { updated.connections[index].contextTokens = tokens }
+            if let modalities = model.architecture?.inputModalities {
+                updated.connections[index].supportsImages = modalities.contains("image")
+            }
+            if let parameters = model.supportedParameters {
+                updated.connections[index].supportsTools = parameters.contains("tools")
+            }
+        }
+        updated.providerCatalogs = updated.providerCatalogs ?? [:]
+        updated.providerCatalogs?[key] = .init(updatedAt: date, modelIDs: catalogIDs.union(previous?.modelIDs ?? []))
+        persist(updated)
+        return true
+    }
 
     func setEnabled(_ enabled: Bool) {
         var updated = state
@@ -125,6 +212,8 @@ final class AIConfiguration: ObservableObject {
             var copy = connection
             copy.id = UUID()
             copy.model = model
+            copy.catalogUnavailable = nil
+            copy.catalogName = nil
             copy.name = connection.providerLabel + " · " + model
             copy.contextTokens = nil
             copy.supportsImages = nil
@@ -255,6 +344,16 @@ final class AIConfiguration: ObservableObject {
         var updated = state
         if let index = updated.connections.firstIndex(where: { $0.id == connection.id }) {
             let original = updated.connections[index]
+            if original.model != connection.model || original.apiBaseURL != connection.apiBaseURL
+                || original.protocolKind != connection.protocolKind || original.taskKind != connection.taskKind
+                || (original.protocolKind.isSubscription && original.requestIdentity != connection.requestIdentity) {
+                // Availability belongs to the old model/destination, not the edited connection UUID.
+                connection.catalogUnavailable = nil
+                connection.catalogName = nil
+            } else {
+                // Renaming or changing display options cannot revive an unavailable model.
+                connection.catalogUnavailable = original.catalogUnavailable
+            }
             connection.legacyAccount = original.legacyAccount
             if original.credentialURL != connection.credentialURL {
                 if let oldEndpoint = original.credentialURL?.absoluteString {
@@ -373,6 +472,115 @@ final class AIConfiguration: ObservableObject {
         for query in credentialQueries(for: connection, includingPreviousEndpoints: includingPreviousEndpoints).reversed() {
             let status = SecItemDelete(query as CFDictionary)
             guard status == errSecSuccess || status == errSecItemNotFound else { throw CredentialError.unavailable }
+        }
+    }
+}
+
+/// Cache bookkeeping contains no credentials. Model data itself lives in State.connections,
+/// so settings, Quick AI, chat and commands never need a network request to open a menu.
+struct AIProviderCatalogCache: Codable, Equatable {
+    let updatedAt: Date
+    let modelIDs: Set<UUID>
+}
+
+extension AIConnection {
+    var catalogIdentity: String {
+        [(credentialOwnerID ?? id).uuidString, credentialURL?.absoluteString ?? "",
+         protocolKind.rawValue, providerID ?? ""].joined(separator: "|")
+    }
+}
+
+@MainActor
+final class AIProviderCatalogSync {
+    private weak var configuration: AIConfiguration?
+    private let runtime: AIRuntime
+    private let readKey: @Sendable (AIConnection) throws -> String?
+    private let now: () -> Date
+    private var observation: AnyCancellable?
+    private var timer: Task<Void, Never>?
+    private var requests = [String: Task<Void, Never>]()
+    private var generations = [String: UUID]()
+    private var attempts = [String: Date]()
+    nonisolated static let cacheLifetime: TimeInterval = 6 * 60 * 60
+
+    init(configuration: AIConfiguration, runtime: AIRuntime,
+         now: @escaping () -> Date = Date.init,
+         readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
+        self.configuration = configuration
+        self.runtime = runtime
+        self.readKey = readKey
+        self.now = now
+    }
+
+    func start() {
+        observation = configuration?.$state.sink { [weak self] _ in
+            // @Published sends before the stored state changes.
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
+        timer = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 30 * 60 * 1_000_000_000) }
+                catch { return }
+                self?.refresh()
+            }
+        }
+    }
+
+    deinit {
+        timer?.cancel()
+        for request in requests.values { request.cancel() }
+    }
+
+    func refresh(force: Bool = false, connection: AIConnection? = nil) {
+        guard let configuration else { return }
+        let state = configuration.state
+        var sources = [String: AIConnection]()
+        // YAML declares its own explicit catalog, subscriptions have their own account lifecycle.
+        for source in state.connections where state.enabled && !source.protocolKind.isSubscription
+            && source.customConfigID == nil && source.isValidConfiguration {
+            let key = source.catalogIdentity
+            if sources[key] == nil || source.credentialOwnerID == nil { sources[key] = source }
+        }
+        for key in Array(requests.keys) where sources[key] == nil {
+            requests.removeValue(forKey: key)?.cancel()
+            generations[key] = nil
+            configuration.setCatalogSyncStatus("同步已停止，保留已有目录。", for: key)
+        }
+        for (key, source) in sources {
+            if let connection, connection.catalogIdentity != key { continue }
+            if force { requests.removeValue(forKey: key)?.cancel() }
+            guard requests[key] == nil else { continue }
+            let date = now()
+            if !force {
+                if let cached = state.providerCatalogs?[key], date.timeIntervalSince(cached.updatedAt) < Self.cacheLifetime { continue }
+                // Failed/empty endpoints do not cause a retry loop on unrelated settings changes.
+                if let attempted = attempts[key], date.timeIntervalSince(attempted) < 5 * 60 { continue }
+            }
+            attempts[key] = date
+            let generation = UUID()
+            generations[key] = generation
+            let runtime = runtime
+            let readKey = readKey
+            configuration.setCatalogSyncStatus("正在同步模型…", for: key)
+            requests[key] = Task { [weak self] in
+                do {
+                    let models = try await runtime.listModelCatalog(connection: source, readKey: readKey)
+                    guard !Task.isCancelled, let self, self.generations[key] == generation else { return }
+                    if self.configuration?.applyProviderCatalog(models, snapshot: source, at: self.now()) == true {
+                        self.configuration?.setCatalogSyncStatus("已同步 \(models.count) 个模型。", for: key)
+                    } else {
+                        self.configuration?.setCatalogSyncStatus("目录未返回模型或连接已变更，保留已有目录。", for: key)
+                    }
+                } catch {
+                    // Offline, unsupported and denied catalogs keep the last working snapshot.
+                    // No provider error bodies or credentials are persisted.
+                    if !Task.isCancelled, let self, self.generations[key] == generation {
+                        self.configuration?.setCatalogSyncStatus("同步失败，保留已有目录；请检查网络、Key 和目录访问权限后重试。", for: key)
+                    }
+                }
+                guard let self, self.generations[key] == generation else { return }
+                self.requests[key] = nil
+            }
         }
     }
 }

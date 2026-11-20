@@ -41,7 +41,7 @@ final class AIRunHandle {
 // Presentation-only catalog edits do not change an in-flight request's destination.
 extension AIConnection {
     var executionSnapshot: AIConnection {
-        var value = self; value.name = ""; value.hiddenFromPicker = nil
+        var value = self; value.name = ""; value.hiddenFromPicker = nil; value.catalogName = nil
         return value
     }
 }
