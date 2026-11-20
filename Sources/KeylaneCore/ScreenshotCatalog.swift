@@ -93,7 +93,7 @@ public enum ScreenshotCatalog {
         }
     }
 
-    private static func isSystemCapture(_ url: URL) -> Bool {
+    public static func isSystemCapture(_ url: URL) -> Bool {
         let filename = url.lastPathComponent.lowercased()
         if ["screenshot", "screen shot", "screen recording", "截屏", "截图", "录屏", "螢幕快照", "螢幕錄製",
             "bildschirmfoto", "bildschirmaufnahme", "capture d’écran", "capture d'écran",

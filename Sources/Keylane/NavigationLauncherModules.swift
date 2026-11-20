@@ -168,6 +168,7 @@ enum NavigationLauncherModules {
         return LauncherModule(id: .init(rawValue: "keylane.screenshots"), commands: commands + ScreenshotAIActions.commands(model: model),
                               aiActions: ScreenshotAIActions.definitions,
                               pages: [screenshotsPage(id, model: model)], settings: [settings], services: [.init(start: {
+            library.addToShelf = { [weak model] in model?.dropShelf.addFiles($0) ?? false }
             permission.startObserving()
             library.enabled = permission.available
             permissionChanges = Publishers.Merge3(permission.updates, ViewObservation.changes(library.$scopes),
@@ -182,6 +183,7 @@ enum NavigationLauncherModules {
             permissionChanges = nil
             permission.stopObserving()
             library.enabled = false
+            library.addToShelf = nil
             ScreenshotThumbnail.releaseCache()
             FilePreview.shared.dismiss(owner: .screenshots)
             FileActionsWindow.shared.dismiss(owner: .screenshots)
