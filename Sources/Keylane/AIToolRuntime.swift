@@ -213,6 +213,11 @@ actor AIToolRun {
             result = try await invoke()
             try await validateCurrent()
             guard await tool.available() else { throw AIToolContractError.unavailable }
+            if tool.performInRun != nil, !result.isError {
+                // Retain the frozen lease until transport publication, including other
+                // tool approvals in this response and subsequent model rounds.
+                sourceGuards.append(tool.available)
+            }
         } catch is CancellationError { throw CancellationError() }
         catch {
             if registration?.prepare != nil, !disclosureAllowed {

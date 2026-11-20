@@ -86,8 +86,10 @@ import KeylaneCore
     let rawID = try await execute(clipboardRun, "keylane_read_clipboard", ["reference": .string(id)])
     precondition(foreign.isError && rawID.isError && approvals.count == approvalsBefore)
     clipboard.historyCommandEnabled = false; clipboard.historyCommandEnabled = true
-    let stale = try await execute(clipboardRun, "keylane_read_clipboard", ["reference": .string(clipboardReference)])
-    precondition(stale.isError)
+    do {
+        _ = try await execute(clipboardRun, "keylane_read_clipboard", ["reference": .string(clipboardReference)])
+        preconditionFailure("Clipboard publication lease survived revocation")
+    } catch is CancellationError { }
     let freshClipboard = try run(AIReadTools.clipboard(clipboard))
     let freshRows = try rows(await execute(freshClipboard, "keylane_search_clipboard", ["query": .string("fixture")]), "untrusted_data")
     try store.remove(id: id)
@@ -176,8 +178,10 @@ import KeylaneCore
         let replaced = try await execute(fileRun, "keylane_read_searched_file", ["reference": .string(fileReference)])
         precondition(replaced.isError && !replaced.text.contains("replaced private body"))
         files.options.enabled = false; files.options.enabled = true
-        let revoked = try await execute(fileRun, "keylane_search_files", ["query": .string("fixture")])
-        precondition(revoked.isError)
+        do {
+            _ = try await execute(fileRun, "keylane_search_files", ["query": .string("fixture")])
+            preconditionFailure("Searched-file publication lease survived off/on")
+        } catch is CancellationError { }
         print("PASS file tools: indexed authorized scope, descriptor-bound content, path approval, no visible search mutation, arbitrary/foreign references rejected, symlink escape blocked, denial/replacement/off-on rejected")
 
         // A reference expires before confirmation, and can also expire while confirmation is pending.
@@ -214,8 +218,10 @@ import KeylaneCore
         precondition(!excludedSearch.text.contains(blockedFile.lastPathComponent) && !excludedSearch.text.contains(blockedFolder.path))
         let controllerRows = try await files.aiSearch("private-indexed", limit: 20)
         precondition(controllerRows.isEmpty && files.indexPaused)
-        let excludedRead = try await execute(beforeExclusion, "keylane_read_searched_file", ["reference": .string(privateRef)])
-        precondition(excludedRead.isError && !excludedRead.text.contains("Excluded synthetic body"))
+        do {
+            _ = try await execute(beforeExclusion, "keylane_read_searched_file", ["reference": .string(privateRef)])
+            preconditionFailure("Excluded search metadata source did not cancel the old run")
+        } catch is CancellationError { }
         print("PASS explicit exclusion: paused/stale index exposes no excluded name, path, reference or body; old reference revoked immediately")
         let deletionRun = try run(AIReadTools.files(files))
         let deletionRows = try rows(await execute(deletionRun, "keylane_search_files", ["query": .string("fixture")]), "files")
@@ -234,8 +240,10 @@ import KeylaneCore
         let scopedRows = try rows(await execute(revokedDuringApproval, "keylane_search_files", ["query": .string("fixture")]), "files")
         let scopedRef = scopedRows.first { $0["path"] as? String == url.path }!["reference"] as! String
         fixtureClock.revokeAtConfirmation = true
-        let removedScope = try await execute(revokedDuringApproval, "keylane_read_searched_file", ["reference": .string(scopedRef)])
-        precondition(removedScope.isError && !removedScope.text.contains("after-delete body"))
+        do {
+            _ = try await execute(revokedDuringApproval, "keylane_read_searched_file", ["reference": .string(scopedRef)])
+            preconditionFailure("Authorization removal during approval did not cancel the run")
+        } catch is CancellationError { }
         precondition(approvals.contains { $0.contains("synthetic.invalid") })
         print("PASS searched-file source checks: deletion and authorization removal during confirmation reject the old reference")
         print("PASS searched-file expiry: five-minute lifetime checked before approval and again after pending confirmation; only current run references accepted")

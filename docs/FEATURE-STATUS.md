@@ -100,7 +100,7 @@
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
-| AI-12-a | 聊天中的剪贴板与文件搜索引用工具 | 待合并 | PR #217 同步 dev `fc44e8b`；按路径与按引用协议分离，逐次确认，运行内/五分钟引用及来源校验；403+5 项 Swift、合成文件工具/会话与即时排除回归通过，真实服务未验收 | [PR #217](https://github.com/Acckion/Keylane/pull/217)、[验证](AI-READ-TOOLS-VALIDATION.md) |
+| AI-12-a | 聊天中的剪贴板与文件搜索引用工具 | 待合并 | PR #217 同步 dev `fc44e8b`；按路径与按引用协议分离，逐次确认，运行内/五分钟引用及来源校验；403+5 项 Swift、合成文件工具/会话、即时排除及发送前撤销回归通过，真实服务未验收 | [PR #217](https://github.com/Acckion/Keylane/pull/217)、[验证](AI-READ-TOOLS-VALIDATION.md) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
 | AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 待合并 | PR #224 在 #215 合入后重整增量；#226 的临时引用链与审批仍须整合复验，Office/OCR 与实机待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 待合并；同步已合入 #212 的 dev，片段模板/成功结果校验、备忘录附加授权与 Emoji 导入关键词已保留；383 项核心与 5 项提供方测试、合成 AI/Emoji/注册表及签名原生窗口回归通过，真实服务未验收 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
