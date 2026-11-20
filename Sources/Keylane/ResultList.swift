@@ -1,4 +1,5 @@
 import SwiftUI
+import KeylaneCore
 
 /// Shared scrolling surface. Secondary screens supply only rows and their empty state.
 struct ResultListScrollView<Content: View>: View {
@@ -123,13 +124,14 @@ struct ResultListRow<Icon: View, Content: View>: View {
     var layout: ResultListRowLayout = .standard
     @ViewBuilder let icon: () -> Icon
     @ViewBuilder let content: () -> Content
-    @Environment(\.colorSchemeContrast) private var contrast
     var body: some View {
         HStack(spacing: layout.horizontalInset) {
             icon().frame(width: 26, height: 26)
             content().frame(maxWidth: .infinity, alignment: .leading)
         }.padding(.horizontal, layout.horizontalInset).frame(height: height)
-            .background(selected ? Color.primary.opacity(contrast == .increased ? 0.22 : 0.10) : .clear, in: RoundedRectangle(cornerRadius: 9))
+            .background {
+                if selected { RoundedRectangle(cornerRadius: 9).fill(ThemeSelectionStyle(normalOpacity: 0.10, increasedOpacity: 0.22)) }
+            }
             .contentShape(Rectangle())
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
