@@ -10,7 +10,7 @@ final class FocusApplicationExitsTests: XCTestCase {
         XCTAssertTrue(ledger.request(process, application: application, url: url, session: first))
         let sentAt = Date(timeIntervalSince1970: 1000)
         ledger.sent(process, now: sentAt)
-        ledger.observedExit(process, now: sentAt.addingTimeInterval(3))
+        ledger.observedExit(process, now: sentAt.addingTimeInterval(0.25))
         XCTAssertTrue(ledger.restorable(blocked: { _ in false }).isEmpty)
         ledger.finish(first, restore: true)
         ledger = try JSONDecoder().decode(FocusApplicationExits.self, from: JSONEncoder().encode(ledger))
@@ -39,7 +39,31 @@ final class FocusApplicationExitsTests: XCTestCase {
         XCTAssertFalse(ledger.receipts[0].exited)
         XCTAssertFalse(ledger.request(process, application: application, url: url, session: UUID()))
         ledger.reconcile(process, running: true, launched: process.launched.addingTimeInterval(1))
-        XCTAssertTrue(ledger.receipts[0].exited)
+        XCTAssertTrue(ledger.receipts.isEmpty)
+    }
+    func testAcceptedRequestThenSaveDialogCanceledAndManualQuitIsNotAttributed() throws {
+        let now = Date(timeIntervalSince1970: 1000)
+        var ledger = FocusApplicationExits(); let session = UUID()
+        XCTAssertTrue(ledger.request(process, application: application, url: url, session: session))
+        ledger.sent(process, now: now) // terminate() returned true, but no confirmed quit.
+        ledger.reconcile(process, running: true, launched: process.launched, now: now.addingTimeInterval(0.1))
+        XCTAssertFalse(ledger.request(process, application: application, url: url, session: session))
+        ledger = try JSONDecoder().decode(FocusApplicationExits.self, from: JSONEncoder().encode(ledger))
+        // The user manually quits while the same Focus session is still active,
+        // even inside the short deadline. This must not turn into a reopen ticket.
+        ledger.observedExit(process, now: now.addingTimeInterval(0.2))
+        ledger.finish(session, restore: true)
+        XCTAssertTrue(ledger.receipts.isEmpty)
+        XCTAssertTrue(ledger.restorable(blocked: { _ in false }).isEmpty)
+    }
+    func testDelayedUncertainExitExpiresEvenWhenFocusSessionRemainsActive() {
+        let now = Date(timeIntervalSince1970: 1000)
+        var ledger = FocusApplicationExits(); let session = UUID()
+        XCTAssertTrue(ledger.request(process, application: application, url: url, session: session))
+        ledger.sent(process, now: now)
+        ledger.observedExit(process, now: now.addingTimeInterval(1.1))
+        ledger.finish(session, restore: true)
+        XCTAssertTrue(ledger.restorable(blocked: { _ in false }).isEmpty)
     }
     func testManualQuitAfterCanceledSessionIsNotRestoredInsideOrOutsideWindow() {
         let now = Date(timeIntervalSince1970: 1000)

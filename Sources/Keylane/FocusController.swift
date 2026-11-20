@@ -465,6 +465,7 @@ final class FocusController: ObservableObject {
         let workspace = NSWorkspace.shared
         settleApplicationExits()
         let current = workspace.frontmostApplication
+        var verifyQuitDispatch = false
         for app in workspace.runningApplications {
             guard app.activationPolicy == .regular, !app.isTerminated, let id = app.bundleIdentifier,
                   app.processIdentifier != ProcessInfo.processInfo.processIdentifier, id != Bundle.main.bundleIdentifier,
@@ -488,10 +489,17 @@ final class FocusController: ObservableObject {
                     // Journal before asking; even a canceled request consumes this
                     // process's attempt. Never re-open its save/permission dialog on a timer.
                     guard persist() else { archive.applicationExits = previous; continue }
-                    if app.terminate() { archive.applicationExits.sent(process) }
+                    if app.terminate() { archive.applicationExits.sent(process); verifyQuitDispatch = true }
                     else { archive.applicationExits.rejected(process) }
                     persist()
                 }
+            }
+        }
+        if verifyQuitDispatch {
+            // A still-running app may have shown/canceled a save dialog. Revoke
+            // automatic-reopen attribution promptly instead of waiting for a later quit.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self, self.running else { return }; self.settleApplicationExits()
             }
         }
         if let current, current.processIdentifier != ProcessInfo.processInfo.processIdentifier,

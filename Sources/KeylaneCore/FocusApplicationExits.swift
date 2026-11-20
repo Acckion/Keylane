@@ -16,6 +16,7 @@ public struct FocusApplicationExits: Codable, Equatable, Sendable {
         public var restore: Bool?
         public var exited = false
         public var attributionDeadline: Date?
+        public var attributionUncertain: Bool?
     }
     public private(set) var receipts: [Receipt] = []
     public private(set) var attempted: Set<Process> = []
@@ -27,16 +28,17 @@ public struct FocusApplicationExits: Codable, Equatable, Sendable {
     }
     public mutating func rejected(_ process: Process) { receipts.removeAll { $0.process == process } }
     /// AppKit only acknowledges dispatch, not whether the user accepted Quit.
-    /// Outside this short window a later manual exit is indistinguishable, so
-    /// keep the one-attempt policy but give up automatic reopen attribution.
+    /// Only an immediate exit with no intervening evidence of continued life
+    /// is eligible. A save dialog, slow quit or uncertain identity loses attribution;
+    /// a later manual quit must not reopen an app the user chose to close.
     public mutating func sent(_ process: Process, now: Date = Date()) {
-        for index in receipts.indices where receipts[index].process == process {
-            receipts[index].attributionDeadline = now.addingTimeInterval(10)
+        for index in receipts.indices where receipts[index].process == process && receipts[index].attributionDeadline == nil {
+            receipts[index].attributionDeadline = now.addingTimeInterval(1)
         }
     }
     public mutating func observedExit(_ process: Process, now: Date = Date()) {
         receipts.removeAll { $0.process == process && !$0.exited &&
-            ($0.restore == false || ($0.attributionDeadline ?? .distantPast) < now) }
+            ($0.restore == false || $0.attributionUncertain == true || ($0.attributionDeadline ?? .distantPast) < now) }
         for index in receipts.indices where receipts[index].process == process { receipts[index].exited = true }
         attempted.remove(process)
     }
@@ -59,6 +61,12 @@ public struct FocusApplicationExits: Codable, Equatable, Sendable {
     public mutating func restored(_ process: Process) { receipts.removeAll { $0.process == process } }
     public mutating func reconcile(_ process: Process, running: Bool, launched: Date?, now: Date = Date()) {
         // Missing launch metadata for a still-running process is not proof of exit.
-        if !running || (launched != nil && launched != process.launched) { observedExit(process, now: now) }
+        if !running { observedExit(process, now: now); return }
+        // Being alive after dispatch is ambiguous even inside the deadline.
+        // Preserve the one-attempt guard but revoke automatic reopen eligibility.
+        for index in receipts.indices where receipts[index].process == process && !receipts[index].exited {
+            receipts[index].attributionUncertain = true
+        }
+        if launched != nil && launched != process.launched { observedExit(process, now: now) }
     }
 }

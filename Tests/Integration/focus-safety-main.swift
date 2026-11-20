@@ -147,6 +147,23 @@ let persistedFullBytes = try Data(contentsOf: saturatedPath)
 check(saturationIssue?.contains("已满") == true && fullFake.writes == 0 && fullBytes == persistedFullBytes,
       "capacity is reported without redirecting or losing existing recovery records")
 
+// The production controller must pause, not just report an isolated transport error.
+var capacityArchive = FocusArchive(); capacityArchive.preferences.playSound = false
+capacityArchive.session = .init(configuration: policy, now: Date())
+try FocusStore(url: saturatedDirectory.appendingPathComponent("state.json")).save(capacityArchive)
+let capacityController = FocusController(registry: registry, defaults: defaults, directory: saturatedDirectory,
+    authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic"), observeSystemFocus: false,
+    browserDriver: fullFake.driver, browserAccess: .init(running: { ["com.apple.Safari"] }, permission: { _, _ in 0 }))
+var capacityAnnounced = false
+let capacityObservation = capacityController.$message.sink { if $0.contains("已满") { capacityAnnounced = true } }
+capacityController.startService(); capacityController.resume()
+until { capacityAnnounced && capacityController.session?.paused == true }
+capacityController.stopService(); check(capacityController.browser.flush(), "capacity pause drains synthetic recovery")
+let retainedAtCapacity = Dictionary(uniqueKeysWithValues: records(saturatedDirectory).map { ($0.blocked, $0.original) })
+check(fullFake.writes == 0 && retainedAtCapacity == Dictionary(uniqueKeysWithValues: full.map { ($0.blocked, $0.original) }),
+      "full journal pauses the controller and retains every unresolved original URL")
+capacityObservation.cancel()
+
 // An injected transient launch failure releases the URL slot but not the receipt.
 let retryDirectory = root.appendingPathComponent("app-retry")
 let retryState = FocusStore(url: retryDirectory.appendingPathComponent("state.json"))
@@ -175,6 +192,23 @@ until { restoreLaunches == 2 }
 check(applicationRetryController.archive.applicationExits.receipts.isEmpty,
       "bounded retry reopens after transient failure and clears receipt only on success")
 applicationRetryController.stopService()
+
+// A permanently failing synthetic opener has a finite retry budget, including
+// restarting the module in the same process. The persisted ticket is never consumed.
+let exhaustedDirectory = root.appendingPathComponent("app-retry-exhausted")
+try FocusStore(url: exhaustedDirectory.appendingPathComponent("state.json")).save(retryArchive)
+var exhaustedLaunches = 0
+let exhaustedController = FocusController(registry: registry, defaults: defaults, directory: exhaustedDirectory,
+    authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic"), observeSystemFocus: false,
+    browserDriver: fullFake.driver, openApplicationForRestore: { _, completion in exhaustedLaunches += 1; completion(false) })
+exhaustedController.startService()
+check(exhaustedLaunches == 1, "permanent launch failure begins one attempt")
+until { exhaustedLaunches == 2 }; until { exhaustedLaunches == 3 }
+exhaustedController.stopService(); exhaustedController.startService()
+RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+check(exhaustedLaunches == 3 && exhaustedController.archive.applicationExits.receipts.count == 1,
+      "launch retries stop at three attempts without losing the persistent receipt")
+exhaustedController.stopService()
 
 // Preferences cancel a queued policy, then safely restore its existing marker.
 let preferenceFake = Fake(); preferenceFake.tabs = [tab()]
