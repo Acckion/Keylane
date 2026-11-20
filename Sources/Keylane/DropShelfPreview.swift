@@ -1,4 +1,6 @@
 import AppKit
+import KeylaneCore
+import QuickLookThumbnailing
 
 /// Match the drawn image or text instead of the full layout rectangle around it.
 private enum DropShelfContentHit {
@@ -419,10 +421,70 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
     override func scrollWheel(with event: NSEvent) { target(event)?.scrollWheel(with: event) }
 }
 
+/// Reuses the same file icons and Quick Look thumbnails in the window and the Launcher card.
+final class DropShelfThumbnails {
+    private var items: [DropShelfStore.Item]?
+    private var generation = UUID()
+    private var requests: [QLThumbnailGenerator.Request] = []
+    private var images: [NSImage] = []
+
+    deinit { cancel() }
+
+    func cancel() {
+        generation = UUID()
+        items = nil
+        requests.forEach { QLThumbnailGenerator.shared.cancel($0) }
+        requests.removeAll()
+        images.removeAll()
+    }
+
+    func update(items: [DropShelfStore.Item], store: DropShelfStore, scale: CGFloat,
+                imagesChanged: @escaping ([NSImage]) -> Void, failed: (Error) -> Void = { _ in }) {
+        let visible = Array(items.prefix(3))
+        guard visible != self.items else { return }
+        cancel()
+        self.items = visible
+        let generation = generation
+        let urls = visible.map { item -> URL? in
+            do { return try store.resolve(item) }
+            catch { failed(error); return nil }
+        }
+        images = zip(visible, urls).map { item, url in
+            if let url { return NSWorkspace.shared.icon(forFile: url.path) }
+            let symbol = item.kind == .link ? "link" : item.kind == .image ? "photo" : "doc.text"
+            return NSImage(systemSymbolName: symbol, accessibilityDescription: item.title) ?? NSImage()
+        }
+        imagesChanged(images)
+        for (index, url) in urls.enumerated() {
+            guard let url else { continue }
+            let access = DropShelfFileAccess(url)
+            let request = QLThumbnailGenerator.Request(fileAt: url, size: NSSize(width: 140, height: 140),
+                                                       scale: scale, representationTypes: .all)
+            request.iconMode = visible[index].kind != .image
+            requests.append(request)
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self, access] representation, _ in
+                DispatchQueue.main.async {
+                    _ = access
+                    guard let self, self.generation == generation, let representation else { return }
+                    self.images[index] = representation.nsImage
+                    imagesChanged(self.images)
+                }
+            }
+        }
+    }
+}
+
+/// The preview constraints size these layers. Quick Look's image dimensions must not size the window.
+private final class DropShelfPreviewImageView: NSImageView {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+}
+
 /// Compact preview, serving as both a drop destination and drag source.
 final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
-    let imageView = NSImageView()
-    private let backImages = [NSImageView(), NSImageView()]
+    let imageView: NSImageView = DropShelfPreviewImageView()
+    private let backImages: [NSImageView] = [DropShelfPreviewImageView(), DropShelfPreviewImageView()]
     func setImages(_ images: [NSImage]) {
         imageView.image = images.first
         for (index, view) in backImages.enumerated() { view.image = images.count > index + 1 ? images[index + 1] : nil; view.isHidden = view.image == nil }
@@ -454,12 +516,14 @@ final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
         addSubview(placeholder); placeholder.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             imageView.centerXAnchor.constraint(equalTo: centerXAnchor), imageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            imageView.widthAnchor.constraint(equalToConstant: 110),
+            imageView.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -14),
             imageView.heightAnchor.constraint(lessThanOrEqualToConstant: 104),
             imageView.heightAnchor.constraint(lessThanOrEqualTo: heightAnchor, constant: -8),
             placeholder.centerXAnchor.constraint(equalTo: centerXAnchor), placeholder.centerYAnchor.constraint(equalTo: centerYAnchor),
             placeholder.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -12)
         ])
+        let imageWidth = imageView.widthAnchor.constraint(equalToConstant: 110)
+        imageWidth.priority = .defaultHigh; imageWidth.isActive = true
         let imageHeight = imageView.heightAnchor.constraint(equalToConstant: 104)
         imageHeight.priority = .defaultHigh; imageHeight.isActive = true
         setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel("暂存内容预览，可拖入或拖出")

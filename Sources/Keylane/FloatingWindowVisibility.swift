@@ -2,6 +2,7 @@ import AppKit
 
 /// Opacity-only transitions keep the window's drag destination and hit regions stable.
 final class FloatingWindowVisibility {
+    static let defaultShowDuration: TimeInterval = 0.18
     private weak var window: NSWindow?
     private var timer: Timer?
     private var disappearing = false
@@ -9,14 +10,14 @@ final class FloatingWindowVisibility {
     init(window: NSWindow) { self.window = window }
     deinit { timer?.invalidate() }
 
-    func show(animated: Bool = true) {
+    func show(animated: Bool = true, duration: TimeInterval = defaultShowDuration) {
         guard let window else { return }
         if window.isVisible, !disappearing { window.orderFrontRegardless(); return }
         cancel()
         if !window.isVisible { window.alphaValue = 0 }
         window.ignoresMouseEvents = false
         window.orderFrontRegardless()
-        transition(to: 1, duration: 0.18, animated: animated) {}
+        transition(to: 1, duration: duration, animated: animated) {}
     }
 
     func hide(animated: Bool = true, completion: @escaping () -> Void) {
