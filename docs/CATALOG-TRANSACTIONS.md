@@ -1,6 +1,6 @@
 # 动态目录事务（第三批）
 
-前序：第一批 [#218](https://github.com/Acckion/Keylane/pull/218) 已合入 dev；第二批 [#221](https://github.com/Acckion/Keylane/pull/221) 为页面动作与会话收敛，尚待集成。第三批从 dev 8bacfa8 建立，不包含 #221 的实现；建议按批次集成，并复验撤销目录时页面会话清理。
+前序：第一批 [#218](https://github.com/Acckion/Keylane/pull/218) 已合入 dev；第二批 [#221](https://github.com/Acckion/Keylane/pull/221) 为页面动作与会话收敛，已合入 dev。本分支现已同步 dev 8b2fa64，完成跨批编译与模块/动作/会话/目录集成回归；安装版撤销目录时的真实页面交互仍待验收。
 
 对应 EXT-01、BASE-03、BASE-11。模块目录索引集中为一个不可变 CatalogSnapshot，catalogRevision 表示目录替换；Activation 的 UUID/代次表示运行实例。启用/禁用或注册状态变化无需伪装成目录替换；相同命令和页 ID 的版本替换也会撤销旧 Activation。
 
@@ -29,3 +29,5 @@ registry.install(module) 和 uninstall(id) 是宿主内部的逻辑目录入口�
 适配器测试使用受控的 LauncherModule 声明，不是实际第三方扩展安装验收。完整构建与隔离结果单独记录；本轮未安装、发布或自动合并。
 
 本批验证：目录事务/模块集成与完整应用构建通过（12.68 秒最终增量），版本检查通过；实机第三方安装与跨批集成仍待验证。
+
+后续整合验证：同步 #221、#219 后完整应用构建通过（65.33 秒），合并两批测试后集成通过；未安装或自动合并。
