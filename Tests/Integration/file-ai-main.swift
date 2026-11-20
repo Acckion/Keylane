@@ -2235,6 +2235,41 @@ preservedSession.leaveLauncher()
 precondition(preservedSession.composer.text.isEmpty && preservedSession.composer.attachments.isEmpty)
 print("PASS AI command navigation: scoped conversation preservation retains draft and attachments; normal leave still clears")
 
+// PR212: attachments use the actual Quick AI/AI Chat session, never the file route.
+do {
+    let suite = "KeylaneAttachmentDestination-" + UUID().uuidString
+    let prefs = UserDefaults(suiteName: suite)!
+    defer { prefs.removePersistentDomain(forName: suite) }
+    let quickModel = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "quick-fixture")
+    let chatModel = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "chat-fixture")
+    let unavailableModel = AIConnection(endpoint: "", model: "")
+    var state = AIConfiguration.State(enabled: true, connections: [quickModel, chatModel, unavailableModel], selectedID: unavailableModel.id,
+        defaults: [.quick: quickModel.id, .chat: chatModel.id, .files: unavailableModel.id], usesLastChatModel: false)
+    prefs.set(try JSONEncoder().encode(state), forKey: "aiConnections.v1")
+    let config = AIConfiguration(preferences: prefs)
+    let session = AIConversationSession(configuration: config, runtime: actionRuntime, readKey: { _ in preconditionFailure("Availability cannot read credentials") })
+    precondition(!config.isAvailable && session.currentConnection?.id == quickModel.id && session.canAttachModuleContext)
+    session.beginChat()
+    precondition(session.currentConnection?.id == chatModel.id && session.canAttachModuleContext)
+    session.closeChat()
+    session.composer.loadAttachments { try? await Task.sleep(for: .milliseconds(50)); return [] }
+    precondition(!session.canAttachModuleContext)
+    wait("Attachment destination import finished") { !session.composer.loadingFiles }
+    precondition(session.canAttachModuleContext)
+
+    state.defaults = [.quick: unavailableModel.id, .chat: unavailableModel.id, .files: quickModel.id]
+    prefs.set(try JSONEncoder().encode(state), forKey: "aiConnections.v1")
+    let fileOnlyConfig = AIConfiguration(preferences: prefs)
+    let fileOnlySession = AIConversationSession(configuration: fileOnlyConfig, runtime: actionRuntime, readKey: { _ in nil })
+    precondition(fileOnlyConfig.isAvailable && !fileOnlySession.canAttachModuleContext)
+    fileOnlySession.beginChat()
+    precondition(!fileOnlySession.canAttachModuleContext)
+    let preferredQuick = AIConversationSession(configuration: fileOnlyConfig, runtime: actionRuntime, preferredQuickModel: { quickModel.id }, readKey: { _ in nil })
+    precondition(preferredQuick.currentConnection?.id == quickModel.id && preferredQuick.canAttachModuleContext)
+    precondition(FixtureProtocol.requests.count == requestsBeforeQuestion + 1)
+    print("PASS PR212 attachment destination: Quick/Chat remain available with broken files route; files-only cannot enable attachments; explicit Quick model and busy import respected; zero model requests")
+}
+
 let cancelledAttachmentComposer = AIConversationComposer()
 cancelledAttachmentComposer.text = "Keep this draft"
 let attachmentAvailability = PassthroughSubject<Bool, Never>()

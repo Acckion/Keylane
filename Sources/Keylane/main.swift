@@ -70,6 +70,7 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let aiSettings = AIConfiguration()
     let aiInteraction = AIInteractionPreferences()
+    var canAttachModuleAIContext: () -> Bool = { false }
     var attachModuleAIContext: ((AIActionSource, CommandID) -> Bool)?
     var continueModuleAIAction: ((AIActionContext, String) -> Bool)?
     var openAIChatLink: ((UUID) -> Void)?
@@ -454,10 +455,10 @@ final class Model: ObservableObject {
             FileActionsWindow.shared.dismiss(owner: owner)
             if self.launcherModules?.module(forPage: self.pageID) == revocation.module { self.pageID = .root }
         }
-        moduleSearchChanges = launcherModules?.searchUpdates
+        moduleSearchChanges = launcherModules?.searchInvalidations
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in
-                self?.commandSearch.invalidate()
+            .sink { [weak self] module in
+                self?.commandSearch.invalidate(module: module)
                 self?.rootSearchUpdates.send()
             }
     }
