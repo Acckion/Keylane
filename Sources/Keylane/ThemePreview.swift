@@ -92,7 +92,7 @@ final class ThemePreviewState: ObservableObject {
         if submenu != nil { submenu = nil; menuQuery = ""; menuSelection = nil; focusToken += 1 }
         else { closeMenu() }
     }
-    func notice(_ text: String) { closeMenu(); feedback = .init(message: "预览：" + text, style: .success) }
+    func notice(_ text: String) { closeMenu(); feedback = .init(message: text, style: .success) }
     private func action(_ id: String, _ title: String, _ icon: String, group: Int = 0, shortcut: KeyboardShortcut? = nil) -> LauncherAction {
         .init(id: id, title: title, icon: icon, shortcut: shortcut, group: group) { [weak self] in self?.notice(title) }
     }

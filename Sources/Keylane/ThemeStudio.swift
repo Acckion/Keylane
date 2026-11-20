@@ -108,16 +108,16 @@ final class ThemeStudio: NSObject, ObservableObject, NSWindowDelegate {
     func perform(_ action: () throws -> Void) { do { try action(); error = nil } catch { self.error = error.localizedDescription } }
     func show(rememberFrame: Bool = true) {
         if window == nil {
-            let window = ThemeStudioWindow(contentRect: NSRect(x: 0, y: 0, width: 1260, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            let window = ThemeStudioWindow(contentRect: NSRect(x: 0, y: 0, width: 1160, height: 620), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.title = "Theme Studio"; window.isReleasedWhenClosed = false; window.delegate = self
-            window.minSize = NSSize(width: 1080, height: 620)
+            window.minSize = NSSize(width: 1000, height: 500)
             window.studioUndo = undo
             let host = NSHostingController(rootView: ThemeStudioView(studio: self))
             host.sceneBridgingOptions = .all
             window.contentViewController = host
             window.toolbarStyle = .unified
             window.titlebarAppearsTransparent = true
-            window.setContentSize(NSSize(width: 1260, height: 780))
+            window.setContentSize(NSSize(width: 1160, height: 620))
             if rememberFrame { window.setFrameAutosaveName("ThemeStudio") }
             window.center(); self.window = window
         }
@@ -173,12 +173,7 @@ struct ThemeStudioView: View {
         } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    Text("实时预览").font(.title3.bold())
                     ThemePreview(theme: studio.selected, state: studio.preview)
-                    Text("输入搜索文字不会改变示例结果；菜单操作只在预览内生效。")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Text(studio.selected.isBuiltin ? "内置主题只读，复制后即可编辑。" : "编辑只影响此预览。保存后，点击“应用主题”更新 Keylane。")
-                        .font(.callout).foregroundStyle(.secondary)
                     HStack {
                         if studio.selected.isBuiltin { Button("复制并编辑", systemImage: "plus.square.on.square", action: studio.duplicate) }
                         Spacer()
@@ -261,8 +256,7 @@ struct ThemeStudioView: View {
                 Button("复制分享链接") { studio.copy(link: true) }
                 Button("复制 JSON") { studio.copy(link: false) }
                 Button("导出 JSON…", action: studio.export)
-            }.padding(.horizontal, 12)
-            Text("✓ 当前深色／浅色主题").font(.caption2).foregroundStyle(.secondary).padding(12)
+            }.padding(.horizontal, 12).padding(.bottom, 12)
         }
     }
     private func binding<T>(_ key: WritableKeyPath<ThemeDefinition, T>) -> Binding<T> {
