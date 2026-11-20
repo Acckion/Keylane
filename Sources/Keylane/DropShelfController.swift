@@ -42,15 +42,43 @@ final class DropShelfController: ObservableObject {
         if managedShelves != ordered { managedShelves = ordered }
         if !ordered.contains(where: { $0.id == selectedShelfID }) { selectedShelfID = ordered.first?.id }
     }
-    func moveShelf(_ delta: Int) {
+    var managementGridColumns = 1
+    func moveShelf(_ delta: Int, vertical: Bool = false) {
         guard !managedShelves.isEmpty else { return }
         let index = managedShelves.firstIndex { $0.id == selectedShelfID } ?? 0
-        selectedShelfID = managedShelves[min(max(index + delta, 0), managedShelves.count - 1)].id
+        if let target = NavigationBounds.moveGrid(section: 0, item: index, by: delta, vertical: vertical,
+                                                  columns: managementGridColumns, counts: [managedShelves.count]) {
+            selectedShelfID = managedShelves[target.item].id
+        }
     }
-    func openSelectedShelf() { if let id = selectedShelfID { _ = reveal(id) } }
-    func toggleSelectedPin() {
-        guard let shelf = selectedShelf else { return }
-        do { try store?.pin(shelf.id, value: !shelf.pinned); windows[shelf.id]?.refresh() } catch { report(error) }
+    func openSelectedShelf() { if let id = selectedShelfID { openManagedShelf(id) } }
+    func openManagedShelf(_ id: UUID) {
+        guard active, store?.shelf(id) != nil else { return }
+        if managedShelves.contains(where: { $0.id == id }) { selectedShelfID = id }
+        if let launcher = NSApp.delegate as? Delegate, launcher.window?.isVisible == true {
+            launcher.hideLauncher()
+        }
+        reveal(id)
+    }
+    func toggleSelectedPin() { if let id = selectedShelfID { toggleManagedPin(id) } }
+    func toggleManagedPin(_ id: UUID) {
+        guard let store, let shelf = store.shelf(id) else { return }
+        do {
+            try store.pin(id, value: !shelf.pinned)
+            if !shelf.pinned { openManagedShelf(id) }
+            else { windows[id]?.refresh() }
+        } catch { report(error) }
+    }
+    func isShelfOpen(_ id: UUID) -> Bool { windows[id] != nil }
+    func closeManagedShelf(_ id: UUID) {
+        guard let window = windows[id], let shelf = store?.shelf(id) else { return }
+        // Explicitly closing this card leaves even an empty saved shelf available to reopen.
+        if shelf.items.isEmpty && !shelf.pinned {
+            windows.removeValue(forKey: id)
+            window.close()
+        } else {
+            window.dismissAnimated()
+        }
     }
     func removeManagedShelf(_ id: UUID) {
         guard store?.shelf(id) != nil else { return }
@@ -66,7 +94,7 @@ final class DropShelfController: ObservableObject {
     private let preferences: UserDefaults
     private let directory: URL
     private(set) var store: DropShelfStore?
-    private var windows: [UUID: DropShelfWindow] = [:]
+    @Published private var windows: [UUID: DropShelfWindow] = [:]
     private weak var registry: MenuBarRegistry?
     private var timer: Timer?
     private var automaticShelves = Set<UUID>()
@@ -422,9 +450,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private lazy var visibility = FloatingWindowVisibility(window: self)
     private var outsideMonitors: [Any] = []
     private var detailWidth: NSLayoutConstraint?
-    private var thumbnailKey: String?
-    private var thumbnailRequests: [QLThumbnailGenerator.Request] = []
-    private var previewImages: [NSImage] = []
+    private let compactThumbnails = DropShelfThumbnails()
     private var dropSurface: DropShelfDropView? { dropOverlay }
     func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard contentView?.bounds.contains(sender.draggingLocation) == true else { dropSurface?.draggingExited(sender); return [] }
@@ -756,33 +782,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         filename.imagePosition = .imageTrailing
         filename.toolTip = rows.map(\.title).joined(separator: "\n")
         preview.placeholder.isHidden = !rows.isEmpty
-        let items = Array(rows.prefix(3))
-        let key = items.map { $0.id.uuidString + $0.title }.joined(separator: ":")
-        guard key != thumbnailKey else { return }
-        thumbnailKey = key
-        thumbnailRequests.forEach { QLThumbnailGenerator.shared.cancel($0) }; thumbnailRequests.removeAll()
-        previewImages = items.map { item in
-            if let url = try? store.resolve(item) { return NSWorkspace.shared.icon(forFile: url.path) }
-            return NSImage(systemSymbolName: item.kind == .link ? "link" : "doc.text", accessibilityDescription: item.title)!
-        }
-        preview.setImages(previewImages)
-        for (index, item) in items.enumerated() {
-            do {
-                guard let url = try store.resolve(item) else { continue }
-                let access = DropShelfFileAccess(url)
-                let request = QLThumbnailGenerator.Request(fileAt: url, size: NSSize(width: 140, height: 140), scale: backingScaleFactor, representationTypes: .all)
-                request.iconMode = item.kind != .image
-                thumbnailRequests.append(request)
-                QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self, access] representation, _ in
-                    DispatchQueue.main.async {
-                        _ = access
-                        guard let self, self.thumbnailKey == key, let representation else { return }
-                        self.previewImages[index] = representation.nsImage
-                        self.preview.setImages(self.previewImages)
-                    }
-                }
-            } catch { message(error.localizedDescription, failed: true) }
-        }
+        compactThumbnails.update(items: rows, store: store, scale: backingScaleFactor, imagesChanged: { [weak self] in
+            self?.preview.setImages($0)
+        }, failed: { [weak self] in self?.message($0.localizedDescription, failed: true) })
     }
     private func beginCompactDrag(_ event: NSEvent) -> [NSDraggingItem] {
         var items: [NSDraggingItem] = []
@@ -1231,7 +1233,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         if !operation.isEmpty {
             refreshFiles()
             message(operation.contains(.move) ? "已由目标接收（移动）" : "已由目标接收（复制）")
-            if controller?.keepOpen != true { dismissAnimated() }
+            if controller?.keepOpen != true, store.shelf(shelfID)?.pinned != true { dismissAnimated() }
         } else { message("拖动已取消或目标未接收，暂存内容已保留") }
     }
     @objc private func copyContents() {
@@ -1329,13 +1331,12 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         dropOverlay.cancelDockAnimation()
         resizeTimer?.invalidate(); resizeTimer = nil
         outsideMonitors.forEach(NSEvent.removeMonitor); outsideMonitors.removeAll()
-        thumbnailKey = nil
-        thumbnailRequests.forEach { QLThumbnailGenerator.shared.cancel($0) }; thumbnailRequests.removeAll()
+        compactThumbnails.cancel()
         cancelImports(); releaseAccess(); FilePreview.shared.dismiss(owner: .dropShelf(shelfID)); controller?.closed(self)
     }
 }
 
-private final class DropShelfFileAccess {
+final class DropShelfFileAccess {
     let url: URL
     let scoped: Bool
     init(_ url: URL) { self.url = url; scoped = url.startAccessingSecurityScopedResource() }

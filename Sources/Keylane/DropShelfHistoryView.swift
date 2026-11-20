@@ -6,37 +6,36 @@ import KeylaneCore
 struct DropShelfHistoryView: View {
     @ObservedObject var controller: DropShelfController
     let query: String
+    private let spacing: CGFloat = 12
     var body: some View {
-        ResultDetailLayout(hasResults: !controller.managedShelves.isEmpty) {
-            SelectableResultList(selection: controller.selectedShelfID, query: query, firstResult: controller.managedShelves.first?.id) {
-                shelfSection("已固定", pinned: true)
-                shelfSection("最近的暂存架", pinned: false)
-            }
-        } detail: {
-            if let shelf = controller.selectedShelf {
-                ResultDetailPane(scrollsPreview: false) { height in
-                    DropShelfHistoryPreview(shelf: shelf, store: controller.store, active: controller.managementActive)
-                        .id(shelf.id).frame(height: height)
-                } information: {
-                    if shelf.items.isEmpty {
-                        Text("此暂存架为空。打开浮动暂存架后可拖入内容。")
-                            .font(VisualStyle.rowText).foregroundStyle(.secondary)
-                    }
-                    ForEach(shelf.items) { item in
-                        VStack(alignment: .leading, spacing: 5) {
-                            Label(item.title, systemImage: symbol(item.kind)).font(VisualStyle.rowText)
-                            if let value = item.value {
-                                Text(String(value.prefix(4000))).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                            } else if let url = item.url {
-                                Text(url.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+        GeometryReader { geometry in
+            let width = geometry.size.width - 2 * VisualStyle.launcherEdgeInset
+            let columns = max(1, Int((width + spacing) / (150 + spacing)))
+            ScrollViewReader { proxy in
+                ResultListScrollView {
+                    if controller.managedShelves.isEmpty {
+                        ResultDetailEmptyState(title: query.isEmpty && controller.shelfFilter == "all" ? "没有暂存架" : "没有匹配结果",
+                                               message: controller.error.isEmpty ? "使用「新建暂存架」或拖入菜单栏图标来收集内容。" : controller.error)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns),
+                                  spacing: spacing) {
+                            ForEach(controller.managedShelves) { shelf in
+                                DropShelfHistoryCard(shelf: shelf, controller: controller)
+                                    .id(shelf.id)
                             }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.vertical, spacing)
                     }
                 }
+                .onChange(of: controller.selectedShelfID) { _, id in
+                    if let id { proxy.scrollTo(id) }
+                }
+                .onChange(of: columns, initial: true) { _, value in
+                    controller.managementGridColumns = value
+                    if let id = controller.selectedShelfID { proxy.scrollTo(id) }
+                }
             }
-        } emptyState: {
-            ResultDetailEmptyState(title: query.isEmpty && controller.shelfFilter == "all" ? "没有暂存架" : "没有匹配结果",
-                                   message: controller.error.isEmpty ? "使用「新建暂存架」或拖入菜单栏图标来收集内容。" : controller.error)
         }
         .onAppear { controller.beginManagement(query) }
         .onChange(of: query) { _, value in controller.searchShelves(value) }
@@ -54,28 +53,116 @@ struct DropShelfHistoryView: View {
             DropShelfRenameForm(shelf: shelf, controller: controller)
         }
     }
-    @ViewBuilder private func shelfSection(_ title: String, pinned: Bool) -> some View {
-        let shelves = controller.managedShelves.filter { $0.pinned == pinned }
-        if !shelves.isEmpty {
-            ResultListSection(title: title, isFirst: pinned || !controller.managedShelves.contains(where: \.pinned)) {
-                ForEach(shelves) { shelf in
-                    ResultListButton(id: shelf.id, action: { controller.selectedShelfID = shelf.id }) {
-                        ResultListRow(selected: shelf.id == controller.selectedShelfID) {
-                            Image(systemName: shelf.pinned ? "pin.fill" : "tray.full").foregroundStyle(.secondary)
-                        } content: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                HighlightedResultText(text: shelf.title, query: query).font(VisualStyle.rowText).lineLimit(1)
-                                Text("\(shelf.items.count) 项 · " + (shelf.items.first?.title ?? "空暂存架"))
-                                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                        }
-                    }
-                }
-            }
-        }
+}
+
+private struct DropShelfHistoryCard: View {
+    let shelf: DropShelfStore.Shelf
+    @ObservedObject var controller: DropShelfController
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @State private var hovered = false
+    @State private var pinHovered = false
+    @State private var menuHovered = false
+
+    private var selected: Bool { controller.selectedShelfID == shelf.id }
+    private var hasCustomName: Bool { shelf.title != "暂存架" }
+    private var summary: String {
+        if shelf.items.isEmpty { return "空暂存架" }
+        if shelf.items.count == 1 { return shelf.items[0].title }
+        return "\(shelf.items.count) 项"
     }
-    private func symbol(_ kind: DropShelfStore.Item.Kind) -> String {
-        switch kind { case .file: "doc"; case .image: "photo"; case .text: "text.alignleft"; case .link: "link" }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: VisualStyle.launcherCornerRadius, style: .continuous)
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .background {
+                shape.fill(reduceTransparency ? Color(nsColor: .windowBackgroundColor) : .clear)
+                    .glassEffect(reduceTransparency ? .identity : LauncherGlassMaterial.swiftUI, in: shape)
+            }
+            .overlay {
+                Button { controller.openManagedShelf(shelf.id) } label: {
+                    GeometryReader { geometry in
+                        let topInset: CGFloat = 33
+                        let bottomInset: CGFloat = 10
+                        let capsuleHeight: CGFloat = 26
+                        let nameHeight: CGFloat = hasCustomName ? 17 : 0
+                        let previewHeight = max(0, geometry.size.height - topInset - bottomInset - capsuleHeight - nameHeight - 3)
+                        VStack(spacing: 3) {
+                            DropShelfCardPreview(shelf: shelf, store: controller.store, active: controller.managementActive)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: previewHeight)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                            if hasCustomName {
+                                Text(shelf.title)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .frame(height: nameHeight - 3)
+                            }
+                            Text(summary)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .padding(.horizontal, 12)
+                                .frame(height: capsuleHeight)
+                                .background(.primary.opacity(0.08), in: Capsule())
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.top, topInset)
+                        .padding(.bottom, bottomInset)
+                    }
+                    .contentShape(shape)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(shelf.title + "，" + summary)
+                .accessibilityHint("打开浮动暂存架")
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+            .overlay(alignment: .top) {
+                HStack {
+                    Button { controller.toggleManagedPin(shelf.id) } label: {
+                        control(shelf.pinned ? "pin.fill" : "pin", hovered: pinHovered)
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { pinHovered = $0 }
+                    .accessibilityLabel(shelf.pinned ? "取消固定" : "固定到桌面")
+                    .help(shelf.pinned ? "取消固定" : "固定到桌面")
+                    Spacer()
+                    Menu {
+                        Button("重命名…") { controller.pendingRename = shelf }
+                        Button("从桌面关闭") { controller.closeManagedShelf(shelf.id) }
+                            .disabled(!controller.isShelfOpen(shelf.id))
+                        Divider()
+                        Button("删除暂存架…", role: .destructive) { controller.pendingRemoval = shelf }
+                    } label: {
+                        control("ellipsis", hovered: menuHovered)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .onHover { menuHovered = $0 }
+                    .accessibilityLabel("暂存架操作")
+                    .help("暂存架操作")
+                }
+                .padding(7)
+            }
+            .overlay {
+                shape.strokeBorder(.primary.opacity(selected ? 0.55 : hovered ? 0.24 : 0.10),
+                                   lineWidth: selected ? 1.5 : 1)
+                    .allowsHitTesting(false)
+            }
+            .onHover { hovered = $0 }
+    }
+
+    private func control(_ symbol: String, hovered: Bool) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 13, weight: .semibold))
+            .frame(width: 30, height: 30)
+            .background(.primary.opacity(hovered ? 0.19 : 0.07), in: Circle())
+            .glassEffect(reduceTransparency ? .identity : LauncherGlassMaterial.swiftUI, in: Circle())
+            .contentShape(Circle())
     }
 }
 
@@ -100,46 +187,34 @@ private struct DropShelfRenameForm: View {
     }
 }
 
-private struct DropShelfHistoryPreview: View {
+private struct DropShelfCardPreview: NSViewRepresentable {
     let shelf: DropShelfStore.Shelf
     let store: DropShelfStore?
     let active: Bool
-    @State private var urls: [URL] = []
-    @State private var access: DropShelfHistoryAccess?
-    @State private var failure = ""
-    var body: some View {
-        Group {
-            if !urls.isEmpty {
-                ResultFilePreview(urls: urls)
-            } else if let first = shelf.items.first, let value = first.value {
-                ScrollView { Text(String(value.prefix(8000))).font(VisualStyle.rowText).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-            } else {
-                VStack(spacing: 10) {
-                    Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(.secondary)
-                    Text(failure.isEmpty ? "此暂存架为空" : failure).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .onAppear { if active { load() } }
-        .onChange(of: shelf.items) { _, _ in if active { load() } }
-        .onChange(of: active) { _, value in if value { load() } else { urls = []; access = nil } }
-        .onDisappear { urls = []; access = nil }
-    }
-    private func load() {
-        urls = []; access = nil; failure = ""
-        do {
-            let resolved = try shelf.items.prefix(3).compactMap { try store?.resolve($0) }
-            let grants = DropShelfHistoryAccess(resolved)
-            guard resolved.allSatisfy({ FileManager.default.isReadableFile(atPath: $0.path) }) else {
-                failure = "原文件不可用或需要重新授权"; return
-            }
-            access = grants; urls = resolved
-        } catch { failure = error.localizedDescription }
-    }
-}
 
-private final class DropShelfHistoryAccess {
-    let scoped: [URL]
-    init(_ urls: [URL]) { scoped = urls.filter { $0.startAccessingSecurityScopedResource() } }
-    deinit { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
+    func makeCoordinator() -> DropShelfThumbnails { DropShelfThumbnails() }
+
+    func makeNSView(context: Context) -> DropShelfPreview {
+        let view = DropShelfPreview(frame: .zero)
+        view.unregisterDraggedTypes()
+        view.setAccessibilityElement(false)
+        return view
+    }
+
+    func updateNSView(_ view: DropShelfPreview, context: Context) {
+        view.placeholder.isHidden = !shelf.items.isEmpty
+        view.placeholder.stringValue = "暂无内容"
+        guard active, let store else {
+            context.coordinator.cancel()
+            view.setImages([])
+            return
+        }
+        context.coordinator.update(items: shelf.items, store: store, scale: context.environment.displayScale) { [weak view] images in
+            view?.setImages(images)
+        }
+    }
+
+    static func dismantleNSView(_ view: DropShelfPreview, coordinator: DropShelfThumbnails) {
+        coordinator.cancel()
+    }
 }

@@ -348,9 +348,22 @@ try shelves.store!.addFile(source, to: managed)
 shelves.searchShelves("payload token")
 expect(shelves.managedShelves.map(\.id) == [managed], "manager searches nested content with all query terms")
 expect(shelves.selectedShelfID == managed, "manager maintains a valid selection")
-shelves.toggleSelectedPin()
+shelves.shelfFilter = "recent"
+shelves.toggleManagedPin(managed)
+expect(shelves.isShelfOpen(managed) && shelves.store!.shelf(managed)?.pinned == true,
+       "pinning a manager card opens the corresponding desktop shelf")
+expect(shelves.selectedShelfID == nil, "pinning from the recent filter never leaves a hidden selection")
 shelves.shelfFilter = "pinned"
 expect(shelves.selectedShelf?.id == managed && shelves.selectedShelf!.pinned, "manager pin and filter update live")
+shelves.closeManagedShelf(managed); drain(0.25)
+expect(!shelves.isShelfOpen(managed) && shelves.store!.shelf(managed)?.items.count == 2,
+       "closing from the desktop keeps the pinned record and contents")
+shelves.openSelectedShelf()
+expect(shelves.isShelfOpen(managed), "opening the selected card brings back the same saved shelf")
+shelves.toggleSelectedPin()
+expect(shelves.isShelfOpen(managed) && shelves.store!.shelf(managed)?.pinned == false,
+       "unpinning restores normal behavior without closing the desktop shelf")
+shelves.toggleManagedPin(managed)
 shelves.renameManagedShelf(managed, title: "Renamed manager fixture")
 expect(shelves.selectedShelf?.title == "Renamed manager fixture", "manager rename refreshes snapshots")
 shelves.searchShelves("unmatched manager query")
@@ -362,6 +375,18 @@ expect(shelves.store!.shelf(managed) == nil, "manager removes the selected shelf
 expect(FileManager.default.fileExists(atPath: source.path), "manager removal preserves source files")
 shelves.shelfFilter = "all"
 shelves.searchShelves("")
+let navigationFixtureIDs = try (0..<5).map { _ in try shelves.store!.create() }
+for id in navigationFixtureIDs { try shelves.store!.rename(id, title: "grid-navigation-token") }
+shelves.searchShelves("grid-navigation-token")
+let gridOrder = shelves.managedShelves.map(\.id)
+shelves.managementGridColumns = 3
+shelves.selectedShelfID = gridOrder[1]
+shelves.moveShelf(1, vertical: true)
+expect(shelves.selectedShelfID == gridOrder[4], "down moves to the same grid column")
+shelves.moveShelf(-1)
+expect(shelves.selectedShelfID == gridOrder[3], "left moves to the adjacent card")
+for id in navigationFixtureIDs { try shelves.store!.deleteShelf(id) }
+shelves.managementGridColumns = 1
 shelves.beginManagement("")
 shelves.pendingRemoval = shelves.selectedShelf
 shelves.pendingRename = shelves.selectedShelf
@@ -722,9 +747,9 @@ if CommandLine.arguments.contains("--manager-preview") {
     previewDelegate.window = previewWindow
     previewWindow.title = "Keylane Shelf Manager — Isolated Preview"
     previewWindow.isOpaque = false; previewWindow.backgroundColor = .clear
-    let glass = NSGlassEffectView(); glass.style = .regular; glass.cornerRadius = 28
     let hosted = NSHostingView(rootView: Launcher(model: previewModel))
-    glass.contentView = hosted; previewWindow.contentView = glass
+    hosted.sizingOptions = []
+    previewWindow.contentView = LauncherGlassHostView(content: hosted)
     previewWindow.orderFrontRegardless()
     RunLoop.main.run(until: Date().addingTimeInterval(0.15))
     NotificationCenter.default.post(name: .launcherShown, object: nil)

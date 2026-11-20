@@ -22,14 +22,14 @@ enum DropShelfModule {
         let historyID = CommandID(rawValue: "drop-shelf-history")
         commands.append(.init(declaration: .init(id: historyID, title: "暂存架", detail: "搜索和管理最近与固定的暂存架", symbol: "tray.full",
                                                  keywords: ["Dropover", "Shelf History", "暂存架历史", "暂存架管理"], destination: .page(pageID), settingsPage: settingsID)))
-        let page = LauncherPage(
+        var page = LauncherPage(
             id: pageID, placeholder: "搜索暂存架与内容…", badge: ("暂存架", "tray.full"), actionTitle: "暂存架操作",
             contentPlacement: .underChrome,
             content: { [weak model] in AnyView(DropShelfHistoryView(controller: controller, query: model?.query ?? "")) },
             queryChanged: controller.searchShelves,
             leave: controller.endManagement,
             move: { [weak model] delta in
-                controller.searchShelves(model?.query ?? ""); controller.moveShelf(delta)
+                controller.searchShelves(model?.query ?? ""); controller.moveShelf(delta, vertical: true)
             },
             submit: { [weak model] in
                 controller.searchShelves(model?.query ?? ""); controller.openSelectedShelf()
@@ -69,6 +69,7 @@ enum DropShelfModule {
             },
             actionShortcutsEnabled: true
         )
+        page.moveHorizontal = { controller.moveShelf($0) }
         let anchor = SettingsItem(id: "dropShelf.behavior", page: settingsID, title: "暂存架交互", keywords: "晃动 摇晃 灵敏度 按键 快捷键 刘海 默认位置 添加文件 忽略应用 复制 拖出 最近 固定")
         return .init(id: .init(rawValue: settingsID), title: "暂存架", symbol: "tray", commands: commands, pages: [page],
                      settings: [.init(id: settingsID, title: "暂存架", symbol: "tray", subtitle: "收集文件、图片、链接与文字，再拖到目标应用。", order: 85,
