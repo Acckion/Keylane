@@ -474,10 +474,17 @@ final class DropShelfThumbnails {
     }
 }
 
+/// The preview constraints size these layers. Quick Look's image dimensions must not size the window.
+private final class DropShelfPreviewImageView: NSImageView {
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+}
+
 /// Compact preview, serving as both a drop destination and drag source.
 final class DropShelfPreview: DropShelfDropView, NSDraggingSource {
-    let imageView = NSImageView()
-    private let backImages = [NSImageView(), NSImageView()]
+    let imageView: NSImageView = DropShelfPreviewImageView()
+    private let backImages: [NSImageView] = [DropShelfPreviewImageView(), DropShelfPreviewImageView()]
     func setImages(_ images: [NSImage]) {
         imageView.image = images.first
         for (index, view) in backImages.enumerated() { view.image = images.count > index + 1 ? images[index + 1] : nil; view.isHidden = view.image == nil }

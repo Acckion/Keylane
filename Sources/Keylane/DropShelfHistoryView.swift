@@ -82,6 +82,8 @@ private struct DropShelfHistoryCard: View {
             .overlay {
                 Button { controller.openManagedShelf(shelf.id) } label: {
                     GeometryReader { geometry in
+                        let horizontalInset: CGFloat = 10
+                        let contentWidth = max(0, geometry.size.width - 2 * horizontalInset)
                         let topInset: CGFloat = 33
                         let bottomInset: CGFloat = 10
                         let capsuleHeight: CGFloat = 26
@@ -89,8 +91,8 @@ private struct DropShelfHistoryCard: View {
                         let previewHeight = max(0, geometry.size.height - topInset - bottomInset - capsuleHeight - nameHeight - 3)
                         VStack(spacing: 3) {
                             DropShelfCardPreview(shelf: shelf, store: controller.store, active: controller.managementActive)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: previewHeight)
+                                .frame(width: contentWidth, height: previewHeight)
+                                .clipped()
                                 .allowsHitTesting(false)
                                 .accessibilityHidden(true)
                             if hasCustomName {
@@ -108,9 +110,10 @@ private struct DropShelfHistoryCard: View {
                                 .frame(height: capsuleHeight)
                                 .background(.primary.opacity(0.08), in: Capsule())
                         }
-                        .padding(.horizontal, 10)
+                        .frame(width: contentWidth)
                         .padding(.top, topInset)
                         .padding(.bottom, bottomInset)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
                     }
                     .contentShape(shape)
                 }
@@ -199,6 +202,13 @@ private struct DropShelfCardPreview: NSViewRepresentable {
         view.unregisterDraggedTypes()
         view.setAccessibilityElement(false)
         return view
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: DropShelfPreview, context: Context) -> CGSize? {
+        // Stacked AppKit images can report a wider fitting size once their rotated layers load.
+        // The card defines the preview's bounds regardless of those intrinsic dimensions.
+        guard let width = proposal.width, let height = proposal.height else { return nil }
+        return CGSize(width: width, height: height)
     }
 
     func updateNSView(_ view: DropShelfPreview, context: Context) {

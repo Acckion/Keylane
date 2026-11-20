@@ -104,6 +104,7 @@ window.title = "Keylane Shelf — Isolated Fixtures"
 if CommandLine.arguments.contains("--dark") { window.appearance = NSAppearance(named: .darkAqua) }
 if CommandLine.arguments.contains("--light") { window.appearance = NSAppearance(named: .aqua) }
 func expect(_ value: @autoclosure () -> Bool, _ label: String) { precondition(value(), label); print("PASS " + label) }
+func descendantViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendantViews) }
 if !CommandLine.arguments.contains("--empty") {
 expect(abs(window.frame.width - window.frame.height) < 1, "compact shelf is square: \(window.frame)")
 expect(!window.styleMask.contains(.titled), "no standard titlebar or traffic lights")
@@ -494,7 +495,6 @@ expect(transferDestination.receive(board), "external mixed representation accept
 expect(shelves.store!.shelf(transferDestination.shelfID)?.items.last?.kind == .file, "external mixed input still prefers its file URL")
 transferSource.close(); transferDestination.close()
 
-func descendantViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendantViews) }
 let gridWindow = shelves.create()!
 for name in ["first", "second", "third"] { try shelves.store!.addText(name, to: gridWindow.shelfID) }
 gridWindow.refresh(); gridWindow.toggleDetails()
@@ -741,6 +741,17 @@ if CommandLine.arguments.contains("--manager-preview") {
     try managerStore.rename(documentShelf, title: "本周资料")
     try managerStore.addText("页面草稿与待整理的资料", to: documentShelf)
     try managerStore.addText("https://example.invalid/reference", link: true, to: documentShelf)
+    let sampleFolders = try (1...3).map { index in
+        let folder = fixtures.appendingPathComponent("manager-folder-\(index)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+    var folderShelfIDs: [UUID] = []
+    for _ in 0..<6 {
+        let folderShelf = try managerStore.create()
+        folderShelfIDs.append(folderShelf)
+        for url in sampleFolders { try managerStore.addFile(url, to: folderShelf) }
+    }
     previewModel.runCommand(.init(rawValue: "drop-shelf-history"), origin: .search)
     expect(previewModel.pageID == PageID(rawValue: "DropShelfHistory"), "registered manager command opens Launcher page")
     let previewWindow = LauncherPanel(contentRect: NSRect(x: 100, y: 100, width: 760, height: 470), styleMask: [.borderless], backing: .buffered, defer: false)
@@ -758,6 +769,24 @@ if CommandLine.arguments.contains("--manager-preview") {
         previewWindow.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         hosted.layoutSubtreeIfNeeded()
+        let previews = descendantViews(hosted).compactMap { $0 as? DropShelfPreview }
+            .filter { $0.imageView.image != nil && !$0.isHiddenOrHasHiddenAncestor }
+        let gridColumns = previewModel.dropShelf.managementGridColumns
+        let spacing: CGFloat = 12
+        let inset = VisualStyle.launcherEdgeInset
+        let cellWidth = (hosted.bounds.width - 2 * inset - CGFloat(gridColumns - 1) * spacing) / CGFloat(gridColumns)
+        let centers = (0..<gridColumns).map { inset + cellWidth / 2 + CGFloat($0) * (cellWidth + spacing) }
+        var stackedCount = 0
+        for preview in previews {
+            let imageViews: [NSImageView] = preview.subviews.compactMap { $0 as? NSImageView }
+            let visibleImages = imageViews.filter { view in view.image != nil && !view.isHidden }
+            if visibleImages.count == 3 { stackedCount += 1 }
+        }
+        expect(gridColumns == 4 && stackedCount > 0, "manager loads three-image stacks in the four-column grid")
+        expect(previews.allSatisfy { preview in
+            let frame = preview.convert(preview.bounds, to: hosted)
+            return abs(frame.width - (cellWidth - 20)) < 2 && centers.contains { abs($0 - frame.midX) < 2 }
+        }, "single and stacked thumbnails stay centered within their own card")
         guard let bitmap = hosted.bitmapImageRepForCachingDisplay(in: hosted.bounds) else { fatalError("manager snapshot allocation") }
         hosted.cacheDisplay(in: hosted.bounds, to: bitmap)
         var visibleSamples = 0
@@ -771,6 +800,19 @@ if CommandLine.arguments.contains("--manager-preview") {
 
     }
     withExtendedLifetime(previewDelegate) { print("PASS registered Launcher manager mounted in light and dark appearance (visual QA separate)") }
+    if !CommandLine.arguments.contains("--manager-interactive"), let id = folderShelfIDs.first {
+        previewModel.dropShelf.toggleManagedPin(id)
+        guard let pinnedWindow = previewModel.dropShelf.reveal(id) else { fatalError("pinned shelf did not open") }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        let contentFrame = pinnedWindow.contentView?.frame.size
+        expect(pinnedWindow.frame.size == DropShelfWindow.compactSize && contentFrame == pinnedWindow.frame.size,
+               "pinning a saved three-folder shelf opens a square desktop window and glass: \(pinnedWindow.frame), \(String(describing: contentFrame))")
+        pinnedWindow.toggleDetails(); RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        expect(pinnedWindow.frame.width > pinnedWindow.frame.height, "pinned desktop shelf can still expand")
+        pinnedWindow.toggleDetails(); RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        expect(pinnedWindow.frame.size == DropShelfWindow.compactSize, "pinned desktop shelf collapses to a square")
+        pinnedWindow.close()
+    }
     if CommandLine.arguments.contains("--manager-interactive") {
         previewModel.appearance = "dark"
         previewWindow.appearance = NSAppearance(named: .darkAqua)
