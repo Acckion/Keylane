@@ -200,18 +200,33 @@ import KeylaneCore
         let firstObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(firstPage.text.utf8))
         guard case .string(let cursor) = firstObject["cursor"] else { preconditionFailure("No continuation") }
         allow = false
+        let beforeDeclinedPage = approvals.count
         let declinedPage = try await execute(continuedRun, "read_result", ["cursor": .string(cursor)])
+        precondition(approvals.count == beforeDeclinedPage + 1)
         precondition(declinedPage.isError && !declinedPage.text.contains("continuation fixture"))
         allow = true
+        let beforeAllowedPage = approvals.count
         let nextPage = try await execute(continuedRun, "read_result", ["cursor": .string(cursor), "limit": .number(64)])
+        precondition(approvals.count == beforeAllowedPage + 1)
         precondition(!nextPage.isError && !nextPage.text.contains(root.path))
         let nextObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(nextPage.text.utf8))
         guard case .string(let stillLiveCursor) = nextObject["cursor"] else { preconditionFailure("No live continuation") }
         let otherRun = try await execute(run(shared), "read_result", ["cursor": .string(stillLiveCursor)])
         precondition(otherRun.isError)
+        let beforeOriginalPage = approvals.count
         let originalRun = try await execute(continuedRun, "read_result", ["cursor": .string(stillLiveCursor), "limit": .number(64)])
-        precondition(!originalRun.isError)
-        print("PASS read continuation: per-page consent, private references, no pathname disclosure or cross-run registration reuse")
+        precondition(!originalRun.isError && approvals.count == beforeOriginalPage + 1)
+        let originalObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(originalRun.text.utf8))
+        guard case .string(let pendingCursor) = originalObject["cursor"] else { preconditionFailure("No page awaiting independent approval") }
+        onApproval = { preferences.enabled = false; preferences.enabled = true }
+        let beforeRevokedPage = approvals.count
+        do {
+            _ = try await execute(continuedRun, "read_result", ["cursor": .string(pendingCursor), "limit": .number(64)])
+            preconditionFailure("Revocation during page approval did not cancel disclosure")
+        } catch { precondition(error is CancellationError) }
+        precondition(approvals.count == beforeRevokedPage + 1)
+        onApproval = nil
+        print("PASS read continuation: independent per-page approval, refusal retains cursor, approval-time revocation cancels, no pathname disclosure or cross-run registration reuse")
 
         let indexState = IndexFixtureState()
         for i in 0..<3 { try Data("indexed fixture".utf8).write(to: root.appendingPathComponent("indexed-\(i).txt")) }
