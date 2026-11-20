@@ -126,7 +126,7 @@ private struct AIConversationMessage: View, Equatable {
                 AIResponseProgressView(progress: progress)
             }
             if !turn.answer.isEmpty {
-                ReleaseNotesBody(notes: turn.answer, textScale: textScale)
+                AIConversationMarkdownBody(text: turn.answer, scale: textScale)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 8)
             }
