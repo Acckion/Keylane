@@ -66,7 +66,6 @@ enum DropShelfModule {
                                                    .init(id: "recent", title: "最近", symbol: "clock")],
                                          open: open, navigation: model?.navigation ?? "arrows"))
             },
-            maximumActionWidth: 280,
             actionShortcutsEnabled: true
         )
         let anchor = SettingsItem(id: "dropShelf.behavior", page: settingsID, title: "暂存架交互", keywords: "摇晃 复制 拖出 最近 固定")

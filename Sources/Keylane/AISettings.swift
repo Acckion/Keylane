@@ -142,17 +142,6 @@ private struct AIModelSettings: View {
     var body: some View {
         SettingsPageSections {
             AIModelDefaultsSettings(configuration: configuration).settingsAnchor(AIModule.models)
-            SettingsGroup {
-                SettingsRow("模型与提供方", detail: "支持 OpenAI 兼容接口，可以添加多个连接。") {
-                    HStack {
-                        Button("添加 Ollama") {
-                            editingConnection = AIConnection(name: "Ollama", endpoint: "http://127.0.0.1:11434/v1")
-                        }
-                        SettingsIconButton("添加连接", symbol: "plus") { editingConnection = AIConnection() }
-                    }
-                }
-            }
-
             AIProviderSetupSettings(configuration: configuration, runtime: runtime)
             AICustomProviderSettings(configuration: configuration)
             AIModelCatalogSettings(configuration: configuration) { editingConnection = $0 }

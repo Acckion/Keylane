@@ -971,19 +971,15 @@ struct Launcher: View {
             : feedback.map { LauncherFooterFeedbackLabel.width(for: $0.label) }
                 ?? (secondary ? min(420, SecondaryPageBadge.width(for: badgeTitle)) : 36)
         let showsActions = rootScriptArguments == nil && (page?.contentPlacement != .form || !rootMenuItems(applicationMenu: false).isEmpty)
-        let primaryLabel = LauncherFooterButtonLabel(title: primaryTitle,
-            keys: (page?.returnBindings.primary ?? .plain).shortcut.launcherKeycaps)
-        let actionsLabel = LauncherFooterButtonLabel(title: "操作", keys: ["⌘", "K"])
-        let actionsWidth = showsActions ? actionsLabel.width : 0
-        let capsuleInset: CGFloat = 4
-        let maximumActionWidth: CGFloat = page?.maximumActionWidth ?? (showsActions ? 196 : 126)
-        let primaryWidth = min(primaryLabel.width, max(0, maximumActionWidth - actionsWidth - 2 * capsuleInset))
-        let actionWidth = conversation ? VisualStyle.launcherControlDiameter : primaryWidth + actionsWidth + 2 * capsuleInset
+        let actionBar = LauncherFooterActionBar(title: primaryTitle,
+            keys: (page?.returnBindings.primary ?? .plain).shortcut.launcherKeycaps,
+            enabled: primaryActionEnabled, showsActions: showsActions,
+            perform: { run() }, showActions: { toggleMenu(application: false) })
+        let actionWidth = conversation ? VisualStyle.launcherControlDiameter : actionBar.width
         let rightWidth = actions ? Self.footerMenuWidth : actionWidth
         let availableApplicationWidth = VisualStyle.launcherWidth - 2 * VisualStyle.launcherEdgeInset
             - Self.footerMinimumGap - rightWidth
         let applicationWidth = min(preferredApplicationWidth, availableApplicationWidth)
-        let primaryEnabled = application || primaryActionEnabled
         let open = application ? appMenu : actions
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
         let items = open ? filteredMenu(applicationMenu: application) : []
@@ -1020,19 +1016,7 @@ struct Launcher: View {
                     Image(systemName: "text.menu").font(.system(size: 16)).frame(width: 36, height: 36)
                 }.frame(width: 36, height: 36).clipShape(Circle()).transition(.opacity)
             } else {
-                HStack(spacing: 0) {
-                    NativeHoverButton(title: primaryLabel.title, action: { run() }) {
-                        primaryLabel
-                    }
-                    .frame(width: primaryWidth, height: 28)
-                    .disabled(!primaryEnabled)
-                    .opacity(primaryEnabled ? 1 : 0.45)
-                    if showsActions {
-                        NativeHoverButton(title: actionsLabel.title, action: { toggleMenu(application: false) }) {
-                            actionsLabel
-                        }.frame(width: actionsWidth, height: 28)
-                    }
-                }.padding(capsuleInset).frame(width: actionWidth, height: 36).transition(.opacity)
+                actionBar.transition(.opacity)
             }
         }
         // The container remains in the same hierarchy. Only its size changes; its bottom
@@ -1452,33 +1436,6 @@ struct LauncherBackButton: View {
         .controlSize(.large)
         .help("返回")
         .accessibilityLabel("返回")
-    }
-}
-
-private struct LauncherFooterButtonLabel: View {
-    let title: String
-    let keys: [String]
-    private let fontSize: CGFloat = 13
-    private let titleSpacing: CGFloat = 7
-    private let keySpacing: CGFloat = 3
-    private let horizontalPadding: CGFloat = 10
-
-    var width: CGFloat {
-        let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
-        let titleWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
-        let keyWidth = CGFloat(keys.count) * Keycap.side + CGFloat(keys.count - 1) * keySpacing
-        return titleWidth + titleSpacing + keyWidth + 2 * horizontalPadding
-    }
-
-    var body: some View {
-        HStack(spacing: titleSpacing) {
-            Text(title).lineLimit(1).truncationMode(.tail)
-            HStack(spacing: keySpacing) {
-                ForEach(keys, id: \.self) { Keycap(text: $0) }
-            }.fixedSize()
-        }
-        .font(.system(size: fontSize, weight: .medium))
-        .padding(.horizontal, horizontalPadding)
     }
 }
 
