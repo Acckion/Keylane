@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 task_directory="$(mktemp -d /private/tmp/keylane-navigation-check.XXXXXX)"
 trap 'rm -rf "$task_directory"' EXIT
 target="$(uname -m)-apple-macos26.0"
-swiftc -target "$target" -module-cache-path "$task_directory/cache" -emit-module -emit-library \
+swiftc -package-name Keylane -target "$target" -module-cache-path "$task_directory/cache" -emit-module -emit-library \
     -module-name KeylaneCore Sources/KeylaneCore/*.swift -lsqlite3 \
     -emit-module-path "$task_directory/KeylaneCore.swiftmodule" -o "$task_directory/libKeylaneCore.dylib"
 swiftc -target "$target" -module-cache-path "$task_directory/cache" \

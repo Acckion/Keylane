@@ -213,9 +213,10 @@ final class Model: ObservableObject {
     @Published var apps: [URL] = [] { didSet { applicationEntries = nil } }
     private var applicationEntries: (locale: Locale, rows: [Entry])?
     private let commandSearch = LauncherCommandSearch()
+    private let storeProduct: RaycastStoreProductIngress?
     private(set) lazy var launcherModules: LauncherModuleRegistry? = {
         do {
-            let modules = BuiltinLauncherModules.make(model: self)
+            let modules = BuiltinLauncherModules.make(model: self, storeProduct: storeProduct)
             if let system = modules.first(where: { $0.id == SystemActionsModule.id }) {
                 SystemActionsModule.migratePreferences(model: self, commands: system.commands)
             }
@@ -416,7 +417,8 @@ final class Model: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
 
-    init() {
+    init(storeProduct: RaycastStoreProductIngress? = nil) {
+        self.storeProduct = storeProduct
         let defaults = UserDefaults.standard
         // Install the documented shelf defaults once; never replace a user's existing binding
         // or occupy a combination already configured for another Keylane command.
