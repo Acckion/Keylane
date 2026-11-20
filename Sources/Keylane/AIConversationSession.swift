@@ -55,7 +55,7 @@ final class AIConversationSession: ObservableObject {
     private let preferredQuickModel: (() -> UUID?)?
     private let readKey: @Sendable (AIConnection) throws -> String?
     private var configurationChanges: AnyCancellable?
-    private var task: Task<Void, Never>?
+    private var task: AIRunHandle?
     private var pendingSave: Task<Void, Never>?
     private var activeID: UUID?
     enum Presentation { case quick, chat }
@@ -170,47 +170,36 @@ final class AIConversationSession: ObservableObject {
         running = true
         status = ""
         saveChat()
-        task = Task { @MainActor [weak self, runtime, readKey] in
-            do {
-                var tools: AIToolRun?
-                if let self, self.toolEnabled() {
-                    guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
-                    tools = try AIToolRun(registrations: self.toolSource(), isCurrent: { [weak self] in
-                        guard let self else { return false }
-                        return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
-                            self.currentConnection == connection
-                    }, approve: { [weak self] title, arguments in
-                        guard let self else { return false }
-                        return await self.toolApproval.request(title: title, arguments: arguments)
-                    })
-                }
-                _ = try await runtime.generate(connection: connection, readKey: readKey, messages: requestMessages, tools: tools, progress: { [weak self] event in
-                    await MainActor.run { [weak self] in
-                        guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
-                        self.turns[index].progress?.apply(event)
-                    }
-                }) { [weak self] delta in
-                    try await MainActor.run { [weak self] in
-                        guard let self, self.activeID == turn.id, let index = self.turns.indices.last
-                        else { throw CancellationError() }
-                        self.turns[index].progress?.apply(.writing)
-                        self.turns[index].answer += delta
-                    }
-                }
+        task = AIRunHandle.start(runtime: runtime, connection: connection, readKey: readKey, messages: requestMessages,
+            prepareTools: { [weak self] in
+                guard let self, self.toolEnabled() else { return nil }
+                guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
+                return try AIToolRun(registrations: self.toolSource(), isCurrent: { [weak self] in
+                    guard let self else { return false }
+                    return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
+                        self.currentConnection == connection
+                }, approve: { [weak self] title, arguments in
+                    guard let self else { return false }
+                    return await self.toolApproval.request(title: title, arguments: arguments)
+                })
+            }, progress: { [weak self] event in
                 guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
-                self.turns[index].progress?.apply(.completed)
-                self.turns[index].complete = true
-                self.finish()
-                if self.isInChat { self.configuration.recordChatModel(connection.id) }
+                self.turns[index].progress?.apply(event)
+            }, text: { [weak self] delta in
+                guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
+                self.turns[index].progress?.apply(.writing); self.turns[index].answer += delta
+            }, completion: { [weak self] result in
+                guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }
+                switch result {
+                case .success:
+                    self.turns[index].progress?.apply(.completed); self.turns[index].complete = true
+                    self.finish()
+                    if self.isInChat { self.configuration.recordChatModel(connection.id) }
+                case .failure(let error):
+                    self.turns[index].progress?.apply(.failed); self.finish(); self.status = error.localizedDescription
+                }
                 self.saveChat()
-            } catch {
-                guard let self, self.activeID == turn.id else { return }
-                if let index = self.turns.indices.last { self.turns[index].progress?.apply(.failed) }
-                self.finish()
-                self.saveChat()
-                self.status = error.localizedDescription
-            }
-        }
+            })
         return true
     }
 

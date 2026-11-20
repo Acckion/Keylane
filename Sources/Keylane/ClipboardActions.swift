@@ -183,6 +183,7 @@ enum ClipboardActions {
         }
         actions.append(.init(id: "delete-clip", title: "删除记录", icon: "trash", shortcut: .init("x", modifiers: .control),
                              group: 3, destructive: true, perform: controller.removeSelected))
+        if item.kind == .text { actions.append(ClipboardAIActions.menu(id: item.id, model: model)) }
         return actions + bulkRemovalActions(controller)
     }
 

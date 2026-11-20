@@ -15,7 +15,8 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
         return result
     }
 
-    static func read(_ url: URL) throws -> Self {
+    static func read(_ url: URL, maximumFileBytes: Int = 8_388_608, maximumTextBytes: Int = 32_000) throws -> Self {
+        guard (0...8_388_608).contains(maximumFileBytes), (0...40_000).contains(maximumTextBytes) else { throw Failure("读取额度无效。") }
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
@@ -24,9 +25,9 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
         defer { try? handle.close() }
         var info = stat()
         guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-              info.st_size <= 8_388_608 else { throw Failure("请选择不超过 8 MB 的普通文件。") }
-        let data = try handle.read(upToCount: 8_388_609) ?? Data()
-        guard data.count <= 8_388_608 else { throw Failure("文件超过 8 MB。") }
+              info.st_size <= maximumFileBytes else { throw Failure("请选择未超出当前大小上限的普通文件。") }
+        let data = try handle.read(upToCount: maximumFileBytes + 1) ?? Data()
+        guard data.count <= maximumFileBytes else { throw Failure("文件超过 8 MB。") }
         let text: String
         if url.pathExtension.lowercased() == "pdf" {
             guard let pdf = PDFDocument(data: data), !pdf.isLocked, pdf.pageCount <= 100,
@@ -39,7 +40,7 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
             }
             text = extracted
         }
-        guard text.utf8.count <= 32_000 else { throw Failure("文件文字超过 32,000 字节，请缩短后重试。") }
+        guard text.utf8.count <= maximumTextBytes else { throw Failure("文件文字超过当前处理额度，请缩小范围后重试。") }
         return .init(name: url.lastPathComponent, text: text, byteCount: data.count)
     }
 

@@ -1796,6 +1796,117 @@ precondition(noMatchingMenu.choices(inherits: true, allowsLastUsed: true).isEmpt
 precondition(orderedMenu.choices(inherits: true, allowsLastUsed: true).prefix(2) == [.inherit, .lastUsed])
 print("PASS model menu search: matching models precede Return selection, no matches offer no selection, clearing search restores special choices")
 
+// Module actions share the production transport but never implicitly create chat history.
+let actionSuite = "org.keylane.tests.module-ai." + UUID().uuidString
+let actionPrefs = UserDefaults(suiteName: actionSuite)!
+actionPrefs.set("http://localhost/v1", forKey: "fileAIEndpoint")
+actionPrefs.set("action-model", forKey: "fileAIModel")
+let actionConfiguration = AIConfiguration(preferences: actionPrefs)
+let actionRuntime = AIRuntime(configuration: configuration)
+let actionSession = AIActionSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let actionDefinition = AIActionDefinition(commandID: .init(rawValue: "fixture-summary"), title: "Summary", instructions: "Summarize only")
+var actionAllowed = true, actionCurrent = true
+let actionUpdates = PassthroughSubject<Bool, Never>()
+func actionSource(_ value: String, delay: UInt64 = 0) -> AIActionSource {
+    .init(moduleID: .init(rawValue: "fixture"), load: {
+        if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+        return .init(sourceID: value, title: "Selected fixture", text: value)
+    }, isCurrent: { _ in actionCurrent })
+}
+FixtureProtocol.mode = "ok"
+let beforeActionRequests = FixtureProtocol.requests.count
+actionSession.prepare(actionDefinition, source: actionSource("first", delay: 100_000_000), allowed: { actionAllowed })
+actionSession.prepare(actionDefinition, source: actionSource("selected only"), allowed: { actionAllowed })
+wait("module source preparation") { actionSession.canSend }
+RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+precondition(actionSession.context?.text == "selected only" && FixtureProtocol.requests.count == beforeActionRequests)
+actionSession.send(); wait("module explicit send") { !actionSession.running && !actionSession.preparing }
+precondition(actionSession.answer == "synthetic answer")
+precondition(FixtureProtocol.lastMessages.map { $0["content"] ?? "" } == ["Summarize only", "selected only"])
+print("PASS module AI: preparation is local, stale source load dropped, explicit send carries exactly selected input")
+let beforeStaleAction = FixtureProtocol.requests.count
+actionCurrent = false; actionSession.send(); wait("module stale source rejected") { !actionSession.preparing }
+precondition(actionSession.status.contains("来源") && FixtureProtocol.requests.count == beforeStaleAction)
+actionCurrent = true
+FixtureProtocol.mode = "held-stream"
+var actionStreamingProfile = actionConfiguration.selected!
+actionStreamingProfile.mode = .streaming
+precondition(actionConfiguration.save(actionStreamingProfile))
+actionSession.prepare(actionDefinition, source: actionSource("cancel fixture"), allowed: { actionAllowed })
+actionSession.observeAvailability(actionUpdates.eraseToAnyPublisher())
+wait("module ready before cancel") { actionSession.canSend }; actionSession.send()
+wait("module stream active") { actionSession.running && !actionSession.answer.isEmpty }
+actionAllowed = false; actionUpdates.send(false)
+wait("module disabled cancels network") { !actionSession.running }
+let frozenActionAnswer = actionSession.answer
+RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+precondition(actionSession.answer == frozenActionAnswer && !actionSession.canSend)
+actionAllowed = true
+precondition(!actionSession.canSend, "Re-enabling must not resurrect an invalidated invocation")
+actionSession.clear()
+
+print("PASS module AI: source version checked before network; disabling a command cancels an active stream")
+FixtureProtocol.mode = "ok"
+actionStreamingProfile.mode = .complete
+precondition(actionConfiguration.save(actionStreamingProfile))
+actionSession.prepare(actionDefinition, source: actionSource("budget"), allowed: { true })
+wait("module ready before route change") { actionSession.canSend }
+actionConfiguration.setDefault(nil, for: .commands)
+// Unrelated catalog bookkeeping must not invalidate this fixed destination.
+actionConfiguration.recordChatModel(actionConfiguration.selected!.id)
+precondition(actionSession.canSend)
+actionSession.observeAvailability(actionUpdates.eraseToAnyPublisher())
+actionUpdates.send(false); actionUpdates.send(true)
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(!actionSession.canSend, "A quick off/on transition must retain its revocation")
+actionSession.clear()
+let contextDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-ai-context-" + UUID().uuidString)
+try FileManager.default.createDirectory(at: contextDirectory, withIntermediateDirectories: true)
+let contextFile = contextDirectory.appendingPathComponent("fixture.txt")
+try Data("selected file body".utf8).write(to: contextFile)
+func loadActionContext(_ source: AIActionSource) -> AIActionContext {
+    var value: AIActionContext?
+    Task { @MainActor in value = try! await source.load() }
+    wait("load selected file context") { value != nil }
+    return value!
+}
+let metadataSource = FileAIContextSource.make(files: [contextFile], question: "question", includePaths: false, includeContents: false)
+let metadataContext = loadActionContext(metadataSource)
+precondition(metadataContext.text.contains("fixture.txt") && !metadataContext.text.contains(contextDirectory.path) && !metadataContext.text.contains("selected file body"))
+let bodySource = FileAIContextSource.make(files: [contextFile], question: "question", includePaths: false, includeContents: true)
+let bodyContext = loadActionContext(bodySource)
+precondition(bodyContext.text.contains("selected file body") && !bodyContext.text.contains(contextDirectory.path))
+try Data("edited file body".utf8).write(to: contextFile, options: .atomic)
+var oldFileIsCurrent: Bool?
+Task { @MainActor in oldFileIsCurrent = try! await bodySource.isCurrent(bodyContext) }
+wait("changed file fingerprint") { oldFileIsCurrent != nil }
+precondition(oldFileIsCurrent == false)
+try FileManager.default.removeItem(at: contextDirectory)
+actionPrefs.removePersistentDomain(forName: actionSuite)
+print("PASS module file context: metadata-only default, explicit body, path exclusion, changed file identity rejected")
+
+let actionFollowup = AIConversationComposer()
+actionFollowup.text = "保留下一条问题"
+actionFollowup.attachments = [.init(title: "existing", text: "existing attachment", symbol: "doc")]
+let followupDraft = actionFollowup.draftID, followupRequests = FixtureProtocol.requests.count
+precondition(actionFollowup.attachActionResult(.init(sourceID: "fixture", title: "Selected source", text: "selected"), answer: "summary"))
+precondition(actionFollowup.text == "保留下一条问题" && actionFollowup.draftID == followupDraft && actionFollowup.attachments.count == 2)
+precondition(FixtureProtocol.requests.count == followupRequests)
+let followupBeforeRejected = actionFollowup.snapshot
+precondition(!actionFollowup.attachActionResult(.init(sourceID: "fixture", title: "", text: "selected"), answer: String(repeating: "x", count: 32_000)))
+precondition(actionFollowup.text == followupBeforeRejected.text && actionFollowup.attachments == followupBeforeRejected.attachments)
+print("PASS completed module result continues as an attachment: existing draft and attachments retained, no automatic send, oversize rejected without mutation")
+
+let resumedModuleDraft = AIConversationSession(configuration: actionConfiguration, runtime: actionRuntime, observesDefaultConnection: false, readKey: { _ in nil })
+resumedModuleDraft.composer.text = "尚未发送的问题"
+precondition(resumedModuleDraft.composer.attachActionResult(.init(sourceID: "fixture", title: "source", text: "source text"), answer: "answer"))
+let beforeDraftResume = FixtureProtocol.requests.count
+let moduleDraftQuery = LauncherPagePresentation.EntryIntent.existingDraft.resolve(current: "", restored: nil, pageConsumesEntryQuery: true,
+    existingDraft: { resumedModuleDraft.composer.text }, enter: { resumedModuleDraft.consumeEntry($0) })
+precondition(moduleDraftQuery == "尚未发送的问题")
+precondition(!resumedModuleDraft.running && FixtureProtocol.requests.count == beforeDraftResume && resumedModuleDraft.composer.attachments.count == 1)
+print("PASS module result page handoff: explicit draft entry does not auto-submit a preserved question")
+
 // Dictation uses the same catalog and credential scope as text AI; it stores only model IDs.
 let sharedSpeechName = "KeylaneSharedSpeech-" + UUID().uuidString
 let sharedSpeechDefaults = UserDefaults(suiteName: sharedSpeechName)!
