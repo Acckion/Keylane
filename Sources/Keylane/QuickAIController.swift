@@ -253,6 +253,9 @@ final class QuickAIController: ObservableObject {
 
     func duplicateChat(_ id: UUID) {
         guard isInChat, let history else { return }
+        // Queue the displayed snapshot before the copy, including partial output
+        // and instruction edits still inside the save debounce.
+        if id == chatID { saveChat() }
         let revision = historyRevision
         let title = chats.first { $0.id == id }?.title ?? "对话"
         let projectID = chats.first { $0.id == id }?.projectID
@@ -375,8 +378,18 @@ final class QuickAIController: ObservableObject {
         if currentProjectID == id { setProject(nil) }
         history.perform({ store in try store.removeProject(id); return (try store.projects(), try store.list()) }) { [weak self] result in
             guard let self, self.isInChat else { return }
-            if case .success(let (projects, chats)) = result { self.projects = projects; self.chats = chats; self.projectError = "" }
-            else { self.projectError = "无法移除项目。" }
+            if case .success(let (projects, chats)) = result {
+                self.projects = projects
+                self.chats = chats
+                self.projectError = ""
+                // A queued open may have restored the removed group after the
+                // initial check. Reconcile before stopping/saving any response.
+                if self.currentProjectID == id {
+                    self.currentProjectID = nil
+                    self.stop()
+                    self.saveChat()
+                }
+            } else { self.projectError = "无法移除项目。" }
         }
     }
 

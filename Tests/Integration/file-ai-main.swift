@@ -676,11 +676,49 @@ var otherTranscript: String?
 streamingChat.transcript(storedTranscriptID) { otherTranscript = $0 }
 wait("Copy other persisted conversation during streaming") { otherTranscript != nil }
 precondition(otherTranscript!.contains("other transcript fixture") && otherTranscript!.contains("你好") && !otherTranscript!.contains("visible streaming fragment"))
-streamingChat.stop()
+streamingChat.chatInstructions = "Pending synthetic instruction edit"
+streamingChat.duplicateChat(streamingTranscriptID)
+wait("Duplicate current stream and pending instructions") { !streamingChat.loadingChat && streamingChat.chatID != streamingTranscriptID }
+precondition(streamingChat.turns.last?.answer == "visible streaming fragment" && !streamingChat.running)
+precondition(streamingChat.chatInstructions == "Pending synthetic instruction edit")
+precondition(streamingChat.currentConnection?.id == second.id)
 streamingChat.closeChat()
 FixtureProtocol.mode = "stream"
+print("PASS review duplicate snapshot: current partial response and pending instruction edits included in the branch")
 print("PASS review transcript: current visible streaming snapshot copied before persistence, other conversation still loaded from its own history")
 
+
+let raceStore = AIChatHistory(url: historyDirectory.appendingPathComponent("review-project-race.sqlite"))
+let raceChat = QuickAIController(configuration: settings, runtime: AIRuntime(configuration: configuration), history: raceStore, readKey: { _ in nil })
+raceChat.beginChat()
+var removedProject = AIChatProject()
+removedProject.name = "Removed synthetic group"
+removedProject.instructions = "This removed policy must not return."
+var raceProjectSaved = false
+raceChat.saveProject(removedProject) { raceProjectSaved = $0 }
+wait("Project race fixture stored") { raceProjectSaved }
+raceChat.reset(projectID: removedProject.id)
+precondition(raceChat.chooseChatModel(second.id) && raceChat.submit("grouped conversation"))
+wait("Project race conversation ready") { !raceChat.running }
+let raceChatID = raceChat.chatID!
+raceChat.reset()
+// Both operations are enqueued before yielding the main loop: load reads the old
+// association, then deletion runs before its completion can reconcile the UI.
+raceChat.openChat(raceChatID)
+raceChat.removeProject(removedProject.id)
+wait("Project deletion races incoming chat") { !raceChat.loadingChat && raceChat.chatID == raceChatID && raceChat.projects.isEmpty }
+precondition(raceChat.currentProjectID == nil)
+raceChat.chatInstructions = "A later save must keep this conversation ungrouped."
+precondition(raceChat.submit("after project deletion"))
+wait("Send and save after project deletion") { !raceChat.running }
+precondition(!(FixtureProtocol.lastMessages.first { $0["role"] == "system" }?["content"] ?? "").contains(removedProject.instructions))
+var raceRows: [AIChatSummary]?
+raceStore.perform({ try $0.list() }) { raceRows = try! $0.get() }
+wait("Project reconciliation persists") { raceRows != nil }
+precondition(raceRows?.first { $0.id == raceChatID }?.projectID == nil)
+precondition(raceChat.chats.contains { $0.id == raceChatID && $0.projectID == nil && !$0.pinned && !$0.archived })
+raceChat.closeChat()
+print("PASS review project deletion race: incoming project cleared, later requests omit removed instructions and saves keep the chat visible ungrouped")
 
 let commandSession = AITextCommandSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                            readKey: { "fixture-" + $0.id.uuidString })
