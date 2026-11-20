@@ -12,6 +12,8 @@
 - **切换主题** 命令在 Launcher 中提供主题列表与预览，回车应用。
 - JSON 文件、复制 JSON、分享链接和剪贴板粘贴均通过明确的用户操作执行。打开分享链接会打开工作室并导入草稿，绝不自动应用。
 
+窗口采用 SwiftUI `NavigationSplitView` 与 `inspector`；栏宽、侧栏／检查器显隐及工具栏由系统管理，通过 `NSHostingController.sceneBridgingOptions` 接入现有 AppKit 窗口。
+
 ## 格式与边界
 
 这是 **Keylane 自己的主题格式**，并非 Raycast JSON 格式兼容实现。没有复制其他应用的内置主题或图片，不下载远程主题或执行导入内容。
@@ -28,6 +30,8 @@
 - Debug 程序的 `--verify-theme-ui`：隔离偏好域，验证编辑／保存／应用边界、切换草稿、撤销、重新载入与损坏数据保留，渲染深浅色工作室与生产共用组件。不会启动真实 Model 或读取用户内容。
 - 自动化渲染和本地打包不等同于安装版的用户验收；本轮未替换用户的已安装应用。
 
-本轮验证：326 项 Swift 测试、27 项发布脚本测试通过；隔离偏好域集成验证通过，并在本机打开、截取和检查深浅色原生 Theme Studio 窗口。未执行安装版用户验收。
+本轮验证：KeylaneCore 的 326 项测试、ProviderConfig 的 3 项测试及 27 项发布脚本测试通过；隔离偏好域集成验证通过，并在本机打开、截取和检查深浅色原生 Theme Studio 窗口。未执行安装版用户验收。
 
 共用组件回归：紧凑 Launcher 的 9 个中心／边缘点击、文件 AI 现有回归通过。Release 构建、Apple Development 签名测试包及 DMG 挂载完整性／签名检查通过。
+
+原生分栏复验：工作室使用 SwiftUI 提供的两条工具栏跟踪分隔线，自动检查两条 `NSTrackingSeparatorToolbarItem` 均存在；本机深浅色窗口截图已核对。

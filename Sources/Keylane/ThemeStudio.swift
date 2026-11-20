@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 
 /// Drafts belong to the editor, never to the active palette. Closing the window
 /// keeps them in memory; only Save writes to the theme library.
-final class ThemeStudio: NSObject, ObservableObject, NSToolbarDelegate, NSToolbarItemValidation, NSWindowDelegate {
+final class ThemeStudio: NSObject, ObservableObject, NSWindowDelegate {
     let store: ThemeStore
     let undo = UndoManager()
     @Published var selectedID = ThemeDefinition.darkID
@@ -107,13 +107,16 @@ final class ThemeStudio: NSObject, ObservableObject, NSToolbarDelegate, NSToolba
     func perform(_ action: () throws -> Void) { do { try action(); error = nil } catch { self.error = error.localizedDescription } }
     func show(rememberFrame: Bool = true) {
         if window == nil {
-            let window = ThemeStudioWindow(contentRect: NSRect(x: 0, y: 0, width: 1260, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            let window = ThemeStudioWindow(contentRect: NSRect(x: 0, y: 0, width: 1260, height: 780), styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
             window.title = "Theme Studio"; window.isReleasedWhenClosed = false; window.delegate = self
             window.minSize = NSSize(width: 1080, height: 620)
             window.studioUndo = undo
-            window.contentView = NSHostingView(rootView: ThemeStudioView(studio: self))
-            let toolbar = NSToolbar(identifier: "ThemeStudio")
-            toolbar.delegate = self; toolbar.displayMode = .iconAndLabel; window.toolbar = toolbar
+            let host = NSHostingController(rootView: ThemeStudioView(studio: self))
+            host.sceneBridgingOptions = .all
+            window.contentViewController = host
+            window.toolbarStyle = .unified
+            window.titlebarAppearsTransparent = true
+            window.setContentSize(NSSize(width: 1260, height: 780))
             if rememberFrame { window.setFrameAutosaveName("ThemeStudio") }
             window.center(); self.window = window
         }
@@ -124,17 +127,20 @@ final class ThemeStudio: NSObject, ObservableObject, NSToolbarDelegate, NSToolba
         // Retain drafts, but release previews and their animations while the Studio is closed.
         DispatchQueue.main.async { [weak self, weak closed] in
             guard let self, let closed, closed === self.window, !closed.isVisible else { return }
-            closed.contentView = nil; closed.toolbar = nil; self.window = nil
+            closed.contentViewController = nil; closed.contentView = nil; closed.toolbar = nil; self.window = nil
         }
     }
 #if DEBUG
     func captureWindow(to url: URL, appearance: NSAppearance.Name) throws {
         NSApp.setActivationPolicy(.regular)
         show(rememberFrame: false)
-        guard let window, let toolbar = window.toolbar, toolbar.items.count == 5 else { throw ThemeError.invalid("主题工具栏缺失。") }
+        guard let window else { throw ThemeError.invalid("主题窗口缺失。") }
         window.appearance = NSAppearance(named: appearance)
         window.display(); window.orderFrontRegardless()
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        guard let toolbar = window.toolbar, !toolbar.items.isEmpty else { throw ThemeError.invalid("主题工具栏缺失。") }
+        let separators = toolbar.items.filter { $0 is NSTrackingSeparatorToolbarItem }.count
+        guard separators == 2 else { throw ThemeError.invalid("原生分栏工具栏分隔线缺失。") }
         let capture = Process(); capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
         capture.arguments = ["-x", "-o", "-l", String(window.windowNumber), url.path]
         try capture.run(); capture.waitUntilExit()
@@ -143,30 +149,6 @@ final class ThemeStudio: NSObject, ObservableObject, NSToolbarDelegate, NSToolba
         guard capture.terminationStatus == 0 else { throw ThemeError.invalid("无法截取主题窗口。") }
     }
 #endif
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.init("theme-new"), .flexibleSpace, .init("theme-import"), .init("theme-undo"), .init("theme-save")]
-    }
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        let item = NSToolbarItem(itemIdentifier: id)
-        let labels: [String: (String, String)] = ["theme-new": ("新建主题", "plus"), "theme-import": ("导入主题", "square.and.arrow.down"), "theme-undo": ("还原更改", "arrow.uturn.backward"), "theme-save": ("保存", "checkmark")]
-        guard let pair = labels[id.rawValue] else { return nil }
-        item.label = pair.0; item.toolTip = pair.0; item.image = NSImage(systemSymbolName: pair.1, accessibilityDescription: pair.0)
-        item.target = self; item.action = #selector(toolbarAction(_:)); return item
-    }
-    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
-        if ["theme-undo", "theme-save"].contains(item.itemIdentifier.rawValue) { return dirty }
-        return true
-    }
-    @objc private func toolbarAction(_ sender: NSToolbarItem) {
-        switch sender.itemIdentifier.rawValue {
-        case "theme-new": create()
-        case "theme-import": importFile()
-        case "theme-undo": reset()
-        case "theme-save": save()
-        default: break
-        }
-    }
 
 }
 
@@ -174,13 +156,20 @@ struct ThemeStudioView: View {
     @ObservedObject var studio: ThemeStudio
     @State private var filter = "all"
     @State private var query = ""
+    @State private var inspectorVisible = true
     private var matches: [ThemeDefinition] {
         studio.themes.filter { (filter == "all" || $0.appearance.rawValue == filter) && (query.isEmpty || $0.name.localizedStandardContains(query)) }
     }
     var body: some View {
-        HStack(spacing: 0) {
-            sidebar.frame(width: 226)
-            Divider()
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 200, ideal: 226, max: 300)
+                .toolbar {
+                    ToolbarItem(placement: .navigation) {
+                        Button("新建主题", systemImage: "plus", action: studio.create)
+                    }
+                }
+        } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     Text("实时预览").font(.title3.bold())
@@ -193,11 +182,28 @@ struct ThemeStudioView: View {
                         Button("应用主题", action: studio.apply).buttonStyle(.borderedProminent)
                     }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(minWidth: 460, maxWidth: .infinity).background(.quaternary.opacity(0.3))
-            Divider()
-            inspector.frame(width: 278)
+            }.frame(minWidth: 460, maxWidth: .infinity)
+                .navigationTitle("Theme Studio")
+                .toolbar {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("显示检查器", systemImage: "sidebar.trailing") { inspectorVisible.toggle() }
+                            .help(inspectorVisible ? "隐藏检查器" : "显示检查器")
+                    }
+                }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .navigationSplitViewStyle(.balanced)
+        .inspector(isPresented: $inspectorVisible) {
+            inspector
+                .inspectorColumnWidth(min: 250, ideal: 278, max: 380)
+                .toolbar {
+                    ToolbarItem {
+                        Button("还原更改", systemImage: "arrow.uturn.backward", action: studio.reset).disabled(!studio.dirty)
+                    }
+                    ToolbarItem {
+                        Button("保存", systemImage: "checkmark", action: studio.save).disabled(!studio.dirty)
+                    }
+                }
+        }
         .onChange(of: studio.selectedID) { _, id in
             if let theme = studio.themes.first(where: { $0.id == id }), !matches.contains(where: { $0.id == id }) {
                 filter = theme.appearance.rawValue; query = ""
