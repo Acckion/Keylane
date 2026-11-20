@@ -351,20 +351,18 @@ expect(shelves.managedShelves.map(\.id) == [managed], "manager searches nested c
 expect(shelves.selectedShelfID == managed, "manager maintains a valid selection")
 shelves.shelfFilter = "recent"
 shelves.toggleManagedPin(managed)
-expect(shelves.isShelfOpen(managed) && shelves.store!.shelf(managed)?.pinned == true,
-       "pinning a manager card opens the corresponding desktop shelf")
-expect(shelves.selectedShelfID == nil, "pinning from the recent filter never leaves a hidden selection")
+expect(shelves.isShelfOpen(managed), "pinning a manager card opens its corresponding desktop shelf")
+expect(shelves.selectedShelfID == nil, "pinning from the closed filter never leaves a hidden selection")
 shelves.shelfFilter = "pinned"
-expect(shelves.selectedShelf?.id == managed && shelves.selectedShelf!.pinned, "manager pin and filter update live")
-shelves.closeManagedShelf(managed); drain(0.25)
+expect(shelves.selectedShelf?.id == managed, "the fixed filter contains the desktop shelf")
+shelves.toggleSelectedPin(); drain(0.25)
 expect(!shelves.isShelfOpen(managed) && shelves.store!.shelf(managed)?.items.count == 2,
-       "closing from the desktop keeps the pinned record and contents")
+       "unpinning closes only the window and preserves its contents")
+expect(shelves.selectedShelfID == nil, "the fixed filter drops a shelf as soon as its window closes")
+shelves.shelfFilter = "recent"
 shelves.openSelectedShelf()
-expect(shelves.isShelfOpen(managed), "opening the selected card brings back the same saved shelf")
-shelves.toggleSelectedPin()
-expect(shelves.isShelfOpen(managed) && shelves.store!.shelf(managed)?.pinned == false,
-       "unpinning restores normal behavior without closing the desktop shelf")
-shelves.toggleManagedPin(managed)
+expect(shelves.isShelfOpen(managed), "opening a saved card normally also activates its desktop status")
+shelves.shelfFilter = "all"
 shelves.renameManagedShelf(managed, title: "Renamed manager fixture")
 expect(shelves.selectedShelf?.title == "Renamed manager fixture", "manager rename refreshes snapshots")
 shelves.searchShelves("unmatched manager query")
@@ -376,6 +374,30 @@ expect(shelves.store!.shelf(managed) == nil, "manager removes the selected shelf
 expect(FileManager.default.fileExists(atPath: source.path), "manager removal preserves source files")
 shelves.shelfFilter = "all"
 shelves.searchShelves("")
+let placementIDs = try (0..<3).map { index -> UUID in
+    let id = try shelves.store!.create()
+    try shelves.store!.addText("A distinct placement shelf \(index)", to: id)
+    return id
+}
+let preexistingFrames = NSApp.windows.compactMap { $0 as? DropShelfWindow }
+    .filter { $0.isVisible && $0.controller === shelves }.map(\.frame)
+for id in placementIDs { shelves.toggleManagedPin(id) }
+let placementWindows = NSApp.windows.compactMap { $0 as? DropShelfWindow }
+    .filter { $0.isVisible && placementIDs.contains($0.shelfID) }
+expect(placementWindows.count == placementIDs.count, "consecutive pins open each shelf once")
+for (index, window) in placementWindows.enumerated() {
+    let otherFrames = preexistingFrames + placementWindows.dropFirst(index + 1).map(\.frame)
+    expect(otherFrames.allSatisfy { $0.intersection(window.frame).isEmpty },
+           "newly pinned shelf avoids every already visible shelf")
+}
+expect(Array(shelves.managedShelves.prefix(3).map(\.id)) == Array(placementIDs.reversed()),
+       "grid orders pinned shelves by last use")
+placementWindows.first { $0.shelfID == placementIDs[0] }?.close()
+shelves.beginManagement("")
+expect(!shelves.isShelfOpen(placementIDs[0]) && shelves.isShelfOpen(placementIDs[1]) && shelves.isShelfOpen(placementIDs[2]),
+       "desktop close and reopening management reflect each window independently")
+expect(shelves.managedShelves.first?.id == placementIDs[2], "closing a shelf does not count as using it")
+for id in placementIDs { shelves.removeManagedShelf(id) }
 let navigationFixtureIDs = try (0..<5).map { _ in try shelves.store!.create() }
 for id in navigationFixtureIDs { try shelves.store!.rename(id, title: "grid-navigation-token") }
 shelves.searchShelves("grid-navigation-token")
@@ -401,7 +423,7 @@ var savedHistory = Set<UUID>()
 for index in 0..<10 {
     let id = try deletionStore.create()
     try deletionStore.addText("history \(index)", to: id)
-    try deletionStore.remember(id)
+    try deletionStore.trimHistory()
     savedHistory.insert(id)
 }
 let removedWindow = deletionController.create()!

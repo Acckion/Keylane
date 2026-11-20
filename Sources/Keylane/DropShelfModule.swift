@@ -40,9 +40,10 @@ enum DropShelfModule {
             actions: { [weak model] in
                 var actions: [LauncherAction] = []
                 if let shelf = controller.selectedShelf {
+                    let onDesktop = controller.isShelfOpen(shelf.id)
                     actions += [
                         .init(id: "shelf-open", title: "打开浮动暂存架", icon: "arrow.up.forward.app", perform: controller.openSelectedShelf),
-                        .init(id: "shelf-pin", title: shelf.pinned ? "取消固定" : "固定暂存架", icon: shelf.pinned ? "pin.slash" : "pin", perform: controller.toggleSelectedPin),
+                        .init(id: "shelf-pin", title: onDesktop ? "取消固定" : "固定暂存架", icon: onDesktop ? "pin.slash" : "pin", perform: controller.toggleSelectedPin),
                         .init(id: "shelf-rename", title: "重命名…", icon: "pencil", perform: { controller.pendingRename = shelf }),
                         .init(id: "shelf-remove", title: "移除暂存架…", icon: "trash", group: 2, destructive: true, perform: { controller.pendingRemoval = shelf })
                     ]
@@ -53,9 +54,10 @@ enum DropShelfModule {
                 ]
                 return actions
             },
-            updates: Publishers.Merge(
+            updates: Publishers.Merge3(
                 ViewObservation.changes(controller.$managedShelves),
-                ViewObservation.changes(controller.$selectedShelfID)
+                ViewObservation.changes(controller.$selectedShelfID),
+                ViewObservation.changes(controller.$displayedShelfIDs)
             ).eraseToAnyPublisher(),
             enter: { query in controller.beginManagement(query); return nil },
             resume: { [weak model] in controller.beginManagement(model?.query ?? "") },
@@ -64,7 +66,7 @@ enum DropShelfModule {
                 AnyView(ResultTypeFilter(selection: Binding(get: { controller.shelfFilter }, set: { controller.shelfFilter = $0 }),
                                          options: [.init(id: "all", title: "全部暂存架", symbol: "tray.full"),
                                                    .init(id: "pinned", title: "已固定", symbol: "pin"),
-                                                   .init(id: "recent", title: "最近", symbol: "clock")],
+                                                   .init(id: "recent", title: "未在桌面显示", symbol: "clock")],
                                          open: open, navigation: model?.navigation ?? "arrows"))
             },
             actionShortcutsEnabled: true

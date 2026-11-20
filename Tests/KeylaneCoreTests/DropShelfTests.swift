@@ -47,6 +47,22 @@ final class DropShelfTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: sameName.path))
         }
     }
+    func testUseOrderPersistsAndHistoryTrimDoesNotPromoteClosingShelf() throws {
+        try fixture { _, store in
+            let first = try store.create()
+            try store.addText("first", to: first)
+            let second = try store.create()
+            try store.addText("second", to: second)
+            try store.pin(second, value: true)
+            try store.markUsed(first)
+            XCTAssertEqual(store.shelves.map(\.id), [first, second])
+            try store.addText("new content", to: second)
+            try store.trimHistory()
+            let reopened = try DropShelfStore(directory: store.directory)
+            XCTAssertEqual(reopened.shelves.map(\.id), [second, first])
+        }
+    }
+
     func testHistoryPinsAndOwnedAssetCleanup() throws {
         try fixture { _, store in
             let pinned = try store.create()
@@ -54,7 +70,7 @@ final class DropShelfTests: XCTestCase {
             XCTAssertFalse(try store.addAsset(Data([1,2,3]), name: "duplicate.png", kind: .image, to: pinned))
             try store.pin(pinned, value: true)
             for n in 0..<15 {
-                let id = try store.create(); try store.addText("text \(n)", to: id); try store.remember(id)
+                let id = try store.create(); try store.addText("text \(n)", to: id); try store.trimHistory()
             }
             XCTAssertEqual(store.shelves.count, 11)
             XCTAssertEqual(store.shelf(pinned)?.pinned, true)
@@ -70,11 +86,11 @@ final class DropShelfTests: XCTestCase {
             for n in 0..<10 {
                 let id = try store.create()
                 try store.addText("saved \(n)", to: id)
-                try store.remember(id)
+                try store.trimHistory()
                 saved.append(id)
             }
             let empty = try store.create()
-            try store.remember(empty)
+            try store.trimHistory()
             XCTAssertNil(store.shelf(empty))
             XCTAssertEqual(Set(store.shelves.map(\.id)), Set(saved))
             XCTAssertEqual(try DropShelfStore(directory: store.directory).shelves.count, 10)

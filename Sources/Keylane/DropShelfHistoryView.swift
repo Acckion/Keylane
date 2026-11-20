@@ -63,6 +63,7 @@ private struct DropShelfHistoryCard: View {
     @State private var pinHovered = false
     @State private var menuHovered = false
 
+    private var onDesktop: Bool { controller.isShelfOpen(shelf.id) }
     private var selected: Bool { controller.selectedShelfID == shelf.id }
     private var hasCustomName: Bool { shelf.title != "暂存架" }
     private var summary: String {
@@ -125,12 +126,12 @@ private struct DropShelfHistoryCard: View {
             .overlay(alignment: .top) {
                 HStack {
                     Button { controller.toggleManagedPin(shelf.id) } label: {
-                        control(shelf.pinned ? "pin.fill" : "pin", hovered: pinHovered)
+                        control(onDesktop ? "pin.fill" : "pin", hovered: pinHovered)
                     }
                     .buttonStyle(.plain)
                     .onHover { pinHovered = $0 }
-                    .accessibilityLabel(shelf.pinned ? "取消固定" : "固定到桌面")
-                    .help(shelf.pinned ? "取消固定" : "固定到桌面")
+                    .accessibilityLabel(onDesktop ? "取消固定" : "固定到桌面")
+                    .help(onDesktop ? "取消固定" : "固定到桌面")
                     Spacer()
                     Menu {
                         Button("重命名…") { controller.pendingRename = shelf }
