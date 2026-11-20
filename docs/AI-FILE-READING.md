@@ -54,6 +54,8 @@
 | `keylane_search_files`（#226） | 文件搜索模块自己的授权、规则和单次运行作用域，返回模块临时引用 |
 | `keylane_read_search_file`（#226） | 仅接收该模块本次搜索的 `reference`，保留版本复核和单次调用许可 |
 
+只读 `git merge-tree` 预演（本批源码 `b6eb563` 对 #226 `6dd3772`）实际发现 3 处文本冲突：`AISettings.swift`、`FileSearchController.swift`、`docs/FEATURE-STATUS.md`。预演只生成合并对象，没有更新任何分支或工作树。运行器、附件和文件服务在预演中可自动合并，但尚未编译或执行该组合，以下语义检查仍不能省略。
+
 沿用 #226 的命名：授权目录读取保留 `keylane_read_file`，搜索引用读取保留 `keylane_read_search_file`，不恢复同名双工具。两种授权通道不可互换：不能把 `reference` 当作路径或续读 `cursor`，也不能由文件搜索授权隐式新增 AI 根。与早期 #217 衔接草案相比，此处明确保留两个参数/权限不同的入口；共享执行器和 PDF 提取不等于合并授权。
 
 后续组合仍须逐项处理，当前不是已验收的集成版：
