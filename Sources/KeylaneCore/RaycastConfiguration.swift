@@ -9,6 +9,8 @@ public enum RaycastConfiguration {
     public struct Preview {
         public var archive: ConfigurationArchive
         public let warnings: [String]
+        public var categories: [RaycastImportCategory] = []
+        public var data = RaycastMigrationData()
     }
     public static func decode(_ data: Data, password: String = "", applicationPaths: Set<String> = []) throws -> Preview {
         guard !data.isEmpty, data.count <= 16 * 1024 * 1024 else { throw ConfigurationError("Raycast 文件为空或超过 16 MB。") }
@@ -25,7 +27,10 @@ public enum RaycastConfiguration {
         guard let root = try JSONSerialization.jsonObject(with: plain) as? [String: Any] else {
             throw ConfigurationError("Raycast 数据格式无效。")
         }
-        if root["settings"] != nil || root["quicklinks"] != nil { return try modern(root, applicationPaths: applicationPaths) }
+        if root["settings"] != nil || root["quicklinks"] != nil ||
+            (root["raycast_version"] == nil && root.values.contains { ($0 as? [String: Any])?["schemaVersion"] is Int }) {
+            return try modern(root, applicationPaths: applicationPaths)
+        }
         guard root["raycast_version"] is String else {
             throw ConfigurationError("无法识别 Raycast 备份格式。请从 Raycast 导出 .rayconfig 或 Quicklinks JSON。")
         }
@@ -143,17 +148,17 @@ public enum RaycastConfiguration {
                     link.hiddenFromRoot = record["isEnabled"] as? Bool == false
                     links.append(link)
                 }
-            } else {
-                let count = category.values.compactMap { ($0 as? [Any])?.count }.reduce(0, +)
-                warnings.append("其他类别包含 \(count) 条记录，未迁移。")
             }
+
         }
         if !links.isEmpty { archive.quicklinks = links }
         if !aliases.isEmpty { archive.aliases = aliases }
         if !shortcuts.isEmpty { archive.shortcuts = shortcuts }
         if !enabledCommands.isEmpty { archive.commandEnabled = enabledCommands }
-        warnings.append("跳过不能可靠对应或不支持的记录 \(skipped) 项。其他现代偏好、扩展及 storedValues、片段、笔记、历史、脚本和权限均不迁移。")
-        return Preview(archive: archive, warnings: warnings)
+        warnings.append("跳过不能可靠对应或不支持的记录 \(skipped) 项。未映射的偏好、扩展 storedValues、笔记、脚本和权限不迁移。数据类别的转换结果在下方列出。")
+        let categories = RaycastImportCategory.inventory(root)
+        warnings += categories.map(\.summary)
+        return Preview(archive: archive, warnings: warnings, categories: categories, data: RaycastMigrationData.parse(root))
     }
     private static func modernHotkey(_ raw: [String: Any]) -> Shortcut? {
         guard (raw["locality"] as? String)?.lowercased() == "global", let kind = raw["kind"] as? [String: Any],

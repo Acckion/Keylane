@@ -10,5 +10,5 @@ swiftc -swift-version 5 -target "$(uname -m)-apple-macos26.0" -emit-library -emi
 cp Tests/Integration/compact-launcher-main.swift "$task_directory/main.swift"
 swiftc -swift-version 5 -target "$(uname -m)-apple-macos26.0" \
   -I "$task_directory" -L "$task_directory" -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" \
-  Sources/Keylane/VisualStyle.swift Sources/Keylane/CompactLauncherBar.swift "$task_directory/main.swift" -o "$task_directory/verify"
+  Sources/Keylane/ThemeStore.swift Sources/Keylane/ThemeStyle.swift Sources/Keylane/VisualStyle.swift Sources/Keylane/CompactLauncherBar.swift "$task_directory/main.swift" -o "$task_directory/verify"
 "$task_directory/verify"

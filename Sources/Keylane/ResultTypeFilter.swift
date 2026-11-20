@@ -210,7 +210,6 @@ struct LauncherMenuRow<Trailing: View>: View {
     let activate: () -> Void
     let highlight: () -> Void
     @ViewBuilder let trailing: () -> Trailing
-    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         Button(action: activate) {
@@ -229,9 +228,10 @@ struct LauncherMenuRow<Trailing: View>: View {
             }
             .padding(.horizontal, style == .action ? 11 : 10)
             .frame(height: compact ? 30 : (style == .action ? 39 : 40))
-            .background(selected ? Color.primary.opacity(contrast == .increased ? 0.24 : 0.12) : .clear,
-                        in: RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
-            .foregroundStyle(destructive ? Color.red : Color.primary)
+            .background {
+                if selected { RoundedRectangle(cornerRadius: VisualStyle.selectionRadius).fill(ThemeSelectionStyle(normalOpacity: 0.12, increasedOpacity: 0.24)) }
+            }
+            .foregroundStyle(destructive ? ThemeColorStyle(role: .red) : .text)
             .opacity(enabled ? 1 : 0.45)
             .contentShape(Rectangle())
         }
@@ -247,11 +247,13 @@ struct LauncherMenuSurface: ViewModifier {
     let open: Bool
     var tint: Color? = nil
     var cornerRadius: CGFloat = 18
+    @Environment(\.keylaneTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: open ? 21 : cornerRadius)
         content
+            .background { if let theme, !theme.usesSystemMaterial { ThemeBackgroundView(theme: theme) } }
             .clipShape(shape)
             .glassEffect(tint.map { Glass.regular.tint($0) } ?? .regular, in: shape)
             .glassEffectTransition(.identity)

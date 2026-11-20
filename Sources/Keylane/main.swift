@@ -8,6 +8,13 @@ import ApplicationServices
 import KeylaneCore
 
 final class Model: ObservableObject {
+    let themeStore = ThemeStore.shared
+    lazy var themeStudio: ThemeStudio = {
+        let studio = ThemeStudio(store: themeStore)
+        studio.applyAppearance = { [weak self] in self?.appearance = $0 }
+        return studio
+    }()
+
     let updates = KeylaneReleaseCheck()
     private let dataStoreURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Keylane/data.sqlite")
@@ -1267,6 +1274,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
     func application(_ application: NSApplication, open urls: [URL]) {
+        if let themeURL = urls.first(where: { $0.scheme?.lowercased() == "keylane" && $0.host == "theme" }) {
+            model.themeStudio.open(url: themeURL)
+            return
+        }
         guard let id = urls.compactMap(AIChatLink.parse).first else { return }
         model.openAIChatLink?(id)
     }
@@ -1616,9 +1627,23 @@ if CommandLine.arguments.dropFirst() == [DictionaryProcess.argument] { Dictionar
 
 let application = NSApplication.shared
 #if DEBUG
+if CommandLine.arguments.dropFirst() == ["--verify-theme-ui"] {
+    do { try ThemeUIFixture.run(); exit(0) }
+    catch { fputs("Theme UI fixture failed: \(error)\n", stderr); exit(1) }
+}
 if CommandLine.arguments.dropFirst() == ["--verify-dictation-ui"] {
     do { try DictationUIFixture.run(); exit(0) }
     catch { fputs("Dictation UI fixture failed: \(error)\n", stderr); exit(1) }
+}
+#endif
+#if DEBUG
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--inspect-raycast-import" {
+    do { try RaycastMigrationFixture.inspect(URL(fileURLWithPath:CommandLine.arguments[2])); exit(0) }
+    catch { fputs("Read-only Raycast inspection failed. No settings applied.\n", stderr); exit(1) }
+}
+if CommandLine.arguments.dropFirst() == ["--verify-raycast-migration"] {
+    do { try RaycastMigrationFixture.run(); exit(0) }
+    catch { fputs("Raycast migration fixture failed: \(error)\n", stderr); exit(1) }
 }
 #endif
 ConfigurationTransfer.finishPending()
