@@ -128,6 +128,7 @@ struct LauncherPage {
     }
     var headerInput: HeaderInput = .searchField
     var enter: ((String) -> String?)?
+    var consumesEntryQuery = false
     var resume: (() -> Void)?
     var moveHorizontal: ((Int) -> Void)?
     var navigateWhileTyping = false

@@ -672,7 +672,8 @@ struct Launcher: View {
             let explicitQuery = model.takeInitialQuery(for: current)
             let initialQuery = page?.enter?(explicitQuery ?? model.query)
             if let seed = LauncherPagePresentation.entryQuery(explicit: explicitQuery, pageResult: initialQuery,
-                                                              restored: restoredQuery) {
+                                                              restored: restoredQuery,
+                                                              pageConsumesEntryQuery: page?.consumesEntryQuery == true) {
                 if showsFileResults { fileType = "all" }
                 model.query = seed
             }

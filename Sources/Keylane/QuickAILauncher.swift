@@ -39,6 +39,7 @@ enum QuickAILauncher {
         ])
         page.actionContextTitle = { controller.conversationTitle }
         page.enter = controller.consumeEntry
+        page.consumesEntryQuery = true
         page.keepsStateWhenHidden = true
         page.fullBleed = true
         return page
