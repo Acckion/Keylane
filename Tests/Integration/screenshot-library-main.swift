@@ -13,6 +13,7 @@ struct ScreenshotLibraryCheck {
 
     @MainActor private static func run() async throws {
         _ = NSApplication.shared
+        if CommandLine.arguments.contains("--shelf-only") { try await verifyShelfIntegration(); return }
         let identifier = "org.keylane.test.screenshots." + UUID().uuidString
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(identifier, isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
@@ -144,6 +145,7 @@ struct ScreenshotLibraryCheck {
         try await verifyLiveChanges(library, folder: folder, image: qr, movie: movie)
         try await verifyOCRLifecycle(in: folder, defaults: defaults)
         try await verifyRetention()
+        try await verifyShelfIntegration()
         print("Screenshot scope, live changes, mixed media, latest image, Quick Look thumbnail, OCR and QR, file copy, pinning, grid zoom, and trash passed")
     }
 
@@ -455,10 +457,40 @@ struct ScreenshotLibraryCheck {
         print("PASS screenshot retention: unlimited, cancellation, background trash, pin rename, ordinary media, scope, and permission failure")
     }
 
-    @MainActor private static func wait(_ label: String = "", _ condition: () -> Bool) async throws {
+    @MainActor private static func verifyShelfIntegration() async throws {
+        let identifier = "org.keylane.test.screenshot-shelf." + UUID().uuidString
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(identifier)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let defaults = UserDefaults(suiteName: identifier)!
+        defer { defaults.removePersistentDomain(forName: identifier) }
+        defaults.set(try JSONEncoder().encode([ScreenshotScope(path: root.path, bookmark: nil)]), forKey: "screenshotScopes")
+        try writeImage(root.appendingPathComponent("Screenshot old.png"))
+        let library = ScreenshotLibrary(defaults: defaults)
+        var received: [URL] = []
+        library.addToShelf = { received += $0; return true }
+        library.autoShelf = true; library.enabled = true; library.start()
+        try await wait("screenshot baseline") { !library.scanning && library.results.count == 1 }
+        try require(received.isEmpty, "Existing captures must not auto-open shelves")
+        library.stop() // Closing the page retains the SAME library watcher for opted-in delivery.
+        try writeImage(root.appendingPathComponent("Screenshot new.png"))
+        try await wait("background capture delivered") { received.count == 1 }
+        try require(received[0].lastPathComponent == "Screenshot new.png", "Only the new capture should be delivered")
+        try writeImage(root.appendingPathComponent("ordinary.png"))
+        library.refresh()
+        try await Task.sleep(for: .seconds(3))
+        try require(received.count == 1, "Ordinary images and duplicate events must not create shelves")
+        library.enabled = false
+        try writeImage(root.appendingPathComponent("Screenshot disabled.png"))
+        try await Task.sleep(for: .seconds(3))
+        try require(received.count == 1, "Disabling screenshots must stop background delivery")
+        print("PASS screenshot shelf integration: baseline, shared background watcher, new capture, dedupe, disable")
+    }
+
+    @MainActor private static func wait(_ label: String = "", line: Int = #line, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(8)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
-        try require(condition(), "Timed out " + label)
+        try require(condition(), "Timed out at line \(line): " + label)
     }
 
     private enum CheckError: Error { case failure(String) }

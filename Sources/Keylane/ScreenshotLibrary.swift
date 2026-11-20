@@ -66,32 +66,6 @@ enum ScreenshotRetention: String, CaseIterable {
     }
 }
 
-struct ScreenshotScope: Codable, Identifiable, Equatable {
-    let path: String
-    let bookmark: Data?
-    var id: String { path }
-    var accessibleURL: URL? {
-        let original = URL(fileURLWithPath: path, isDirectory: true)
-        let url: URL
-        if let bookmark {
-            var stale = false
-            guard let resolved = try? URL(resolvingBookmarkData: bookmark,
-                                          options: [.withSecurityScope, .withoutUI, .withoutMounting],
-                                          relativeTo: nil, bookmarkDataIsStale: &stale),
-                  !stale, resolved.standardizedFileURL.path == original.standardizedFileURL.path else { return nil }
-            url = resolved
-        } else {
-            url = original
-        }
-
-        let started = url.startAccessingSecurityScopedResource()
-        defer { if started { url.stopAccessingSecurityScopedResource() } }
-        guard let directory = opendir(url.path) else { return nil }
-        closedir(directory)
-        return url
-    }
-}
-
 final class ScreenshotLibrary: ObservableObject {
     static let columnCounts = 3...6
     private static let defaultColumnCount = 3
@@ -113,8 +87,20 @@ final class ScreenshotLibrary: ObservableObject {
                 inaccessibleFolders = 0
                 publish([])
             }
+            configureShelfMonitoring()
         }
     }
+    @Published var autoShelf: Bool {
+        didSet {
+            guard autoShelf != oldValue else { return }
+            defaults.set(autoShelf, forKey: "screenshots.autoShelf")
+            configureShelfMonitoring()
+        }
+    }
+    @Published private(set) var shelfError = ""
+    var addToShelf: (([URL]) -> Bool)?
+    private var incomingTracker = IncomingFileTracker()
+    private var incomingTimer: Task<Void, Never>?
     @Published var disabledCommands: Set<String> { didSet { defaults.set(Array(disabledCommands), forKey: "disabledScreenshotCommands") } }
     @Published var columns: Int { didSet { defaults.set(columns, forKey: "screenshotColumns") } }
     @Published private(set) var pinnedIDs: Set<String> {
@@ -191,6 +177,7 @@ final class ScreenshotLibrary: ObservableObject {
         pinIdentities = defaults.data(forKey: "pinnedScreenshotIdentities").flatMap {
             try? JSONDecoder().decode([String: ScreenshotMedia.Identity].self, from: $0)
         } ?? [:]
+        autoShelf = defaults.bool(forKey: "screenshots.autoShelf")
         enabled = false
         disabledCommands = Set(defaults.stringArray(forKey: "disabledScreenshotCommands") ?? [])
         let savedColumns = defaults.object(forKey: "screenshotColumns") as? Int ?? Self.defaultColumnCount
@@ -303,6 +290,7 @@ final class ScreenshotLibrary: ObservableObject {
         checkFolders()
         latestTask?.cancel()
         latestTask = nil
+        configureShelfMonitoring()
         if pageActive { refresh() }
     }
 
@@ -394,14 +382,33 @@ final class ScreenshotLibrary: ObservableObject {
         defaults.set(try? JSONEncoder().encode(updated), forKey: "pinnedScreenshotIdentities")
     }
 
+    private func configureShelfMonitoring() {
+        incomingTracker.reset()
+        incomingTimer?.cancel(); incomingTimer = nil
+        shelfError = ""
+        if enabled && (autoShelf || pageActive) { refresh() }
+        else if !pageActive { stop() }
+    }
+
+    private func receiveNewCaptures(_ candidates: [IncomingFile], complete: Bool) {
+        guard autoShelf, enabled, complete else { return }
+        let ready = incomingTracker.update(candidates)
+        if !ready.isEmpty {
+            let access = scopes.compactMap(\.accessibleURL).filter { $0.startAccessingSecurityScopedResource() }
+            defer { access.forEach { $0.stopAccessingSecurityScopedResource() } }
+            if addToShelf?(ready.map(\.url)) != true { shelfError = "自动加入失败，请先启用暂存架。截图仍在原位置。" }
+        }
+        incomingTimer?.cancel(); incomingTimer = nil
+        if incomingTracker.needsRescan {
+            incomingTimer = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .milliseconds(2100)) } catch { return }
+                self?.refresh()
+            }
+        }
+    }
+
     func start() {
         pageActive = true
-        watcher.changed = { [weak self] rebuild in
-            guard let self, self.pageActive else { return }
-            if rebuild { self.refresh() }
-            else if self.scanTask != nil { self.needsRefresh = true }
-            else { self.scan(self.scopes.compactMap(\.accessibleURL), showingProgress: false) }
-        }
         refresh()
     }
 
@@ -412,7 +419,13 @@ final class ScreenshotLibrary: ObservableObject {
         needsRefresh = false
         checkFolders()
         let folders = scopes.compactMap(\.accessibleURL)
-        if pageActive {
+        if pageActive || autoShelf {
+            watcher.changed = { [weak self] rebuild in
+                guard let self, self.enabled, self.pageActive || self.autoShelf else { return }
+                if rebuild { self.refresh() }
+                else if self.scanTask != nil { self.needsRefresh = true }
+                else { self.scan(self.scopes.compactMap(\.accessibleURL), showingProgress: false) }
+            }
             watcher.stop()
             releaseScopeAccess()
             scopeAccess = folders.filter { $0.startAccessingSecurityScopedResource() }
@@ -440,10 +453,15 @@ final class ScreenshotLibrary: ObservableObject {
             inaccessibleFolders = 0
             return
         }
-        if showingProgress { scanning = true }
+        if showingProgress && (pageActive || !autoShelf) { scanning = true }
         let includeAll = includeAll
+        let watchForShelf = autoShelf
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             let snapshot = ScreenshotCatalog.scan(folders: folders, includeAllMedia: includeAll)
+            // Classification/metadata reads stay off the UI thread; reuse this scan for both consumers.
+            let incoming = watchForShelf ? snapshot.items.filter {
+                !$0.needsCloudAccess && (!includeAll || ScreenshotCatalog.isSystemCapture($0.url))
+            }.map { IncomingFile(url: $0.url, modified: $0.modified, size: Int64($0.size)) } : []
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard !Task.isCancelled, let self else { return }
@@ -452,11 +470,12 @@ final class ScreenshotLibrary: ObservableObject {
                 self.inaccessibleFolders = snapshot.inaccessibleFolders
                 self.checkFolders()
                 self.reconcilePins(in: snapshot.items)
+                self.receiveNewCaptures(incoming, complete: snapshot.inaccessibleFolders == 0)
                 if self.items != snapshot.items || showingProgress {
                     let preferred = self.selectionAfterRename(in: snapshot.items)
                     self.items = snapshot.items
-                    self.applySearch(self.query, preservingResults: true, preferred: preferred)
-                } else if self.results.isEmpty && self.searchingText == false {
+                    if self.pageActive || !self.autoShelf { self.applySearch(self.query, preservingResults: true, preferred: preferred) }
+                } else if (self.pageActive || !self.autoShelf) && self.results.isEmpty && self.searchingText == false {
                     self.applySearch(self.query, preservingResults: true)
                 }
                 if self.needsRefresh {
@@ -483,6 +502,10 @@ final class ScreenshotLibrary: ObservableObject {
 
     func stop() {
         pageActive = false
+        cancelSearch(); cancelImageTextCopies()
+        searchingText = false; scanning = false; skippedOCR = 0
+        guard !enabled || !autoShelf else { return }
+        incomingTimer?.cancel(); incomingTimer = nil; incomingTracker.reset()
         watcher.stop()
         releaseScopeAccess()
         needsRefresh = false
