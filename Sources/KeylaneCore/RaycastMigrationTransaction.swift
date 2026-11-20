@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import SQLite3
+import Darwin
 
 /// Fixed destination IDs: a source export can never select an arbitrary filesystem path.
 public enum MigrationResourceID: String, Codable, CaseIterable {
@@ -77,6 +78,14 @@ public enum RaycastMigrationTransaction {
 
     @discardableResult public static func finish(directory: URL, root: URL,
         read: () -> [String:Any], persist: ([String:Any]) -> Bool) throws -> Bool {
+        try finish(directory: directory, root: root, read: read, persist: persist, installationObserver: { _, _ in })
+    }
+
+    // An instance-scoped seam for isolated interruption tests; no process-global fault state.
+    enum InstallationEvent: String, CaseIterable { case created, copying, verified, published }
+    @discardableResult static func finish(directory: URL, root: URL,
+        read: () -> [String:Any], persist: ([String:Any]) -> Bool,
+        installationObserver: (InstallationEvent, URL) throws -> Void) throws -> Bool {
         guard hasPending(in: directory) else { return false }
         var intent = try load(pending(directory))
         let before = try dictionary(intent.before), after = try dictionary(intent.after)
@@ -108,7 +117,7 @@ public enum RaycastMigrationTransaction {
         for resource in intent.resources {
             let target: Data? = intent.undo && resource.after.isEmpty ? nil : resource.after
             if try fingerprint(snapshot(resource.id, root: root), id: resource.id) != fingerprint(target, id: resource.id) {
-                try install(target, id: resource.id, root: root)
+                try install(target, id: resource.id, root: root, observer: installationObserver)
             }
         }
         for resource in intent.resources {
@@ -221,7 +230,8 @@ public enum RaycastMigrationTransaction {
             return hash.finalize().map { String(format: "%02x", $0) }.joined()
         }
     }
-    private static func install(_ data: Data?, id: MigrationResourceID, root: URL) throws {
+    private static func install(_ data: Data?, id: MigrationResourceID, root: URL,
+                                observer: (InstallationEvent, URL) throws -> Void) throws {
         try parents(id, root: root)
         let destination = root.appendingPathComponent(id.relativePath)
         if exists(destination) { try regular(destination) }
@@ -236,11 +246,41 @@ public enum RaycastMigrationTransaction {
         if !id.sqlite { try privateWrite(data, to: destination); return }
         try temporary { temp in
             let source = temp.appendingPathComponent("source.sqlite"); try privateWrite(data, to: source)
-            try backup(from: source, to: destination)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+            if exists(destination) {
+                // Keep SQLite's transactional backup for existing stores, including live WAL readers.
+                try backup(from: source, to: destination)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+            } else {
+                // Never create a partial database at the final path. The candidate lives on the
+                // same volume, is closed and verified before an exclusive atomic rename.
+                var name = Array(destination.deletingLastPathComponent().appendingPathComponent(".keylane-migration-XXXXXX").path.utf8CString)
+                let descriptor = mkstemp(&name)
+                guard descriptor >= 0 else { throw ConfigurationError("无法准备迁移资料库。") }
+                let candidate = URL(fileURLWithPath: String(cString: name))
+                close(descriptor) // mkstemp creates the file with mode 0600.
+                defer {
+                    for suffix in ["", "-wal", "-shm", "-journal"] {
+                        try? FileManager.default.removeItem(atPath: candidate.path + suffix)
+                    }
+                }
+                try observer(.created, candidate)
+                try backup(from: source, to: candidate, standalone: true, pagesPerStep: 16) {
+                    try observer(.copying, candidate)
+                }
+                guard try fingerprint(boundedRead(candidate), id: id) == fingerprint(data, id: id) else {
+                    throw ConfigurationError("新资料库校验失败，未发布迁移结果。")
+                }
+                try observer(.verified, candidate)
+                // RENAME_EXCL also rejects a destination created after the absence check.
+                guard renamex_np(candidate.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+                    throw ConfigurationError("无法发布新资料库，目标可能已改变。恢复记录已保留。")
+                }
+                try observer(.published, destination)
+            }
         }
     }
-    private static func backup(from source: URL, to destination: URL) throws {
+    private static func backup(from source: URL, to destination: URL, standalone: Bool = false,
+                               pagesPerStep: Int32 = -1, progress: () throws -> Void = {}) throws {
         let newDestination = !exists(destination)
         var input: OpaquePointer?, output: OpaquePointer?
         guard sqlite3_open_v2(source.path, &input, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { sqlite3_close(input); throw ConfigurationError("无法创建迁移数据库快照。") }
@@ -249,12 +289,23 @@ public enum RaycastMigrationTransaction {
         defer { sqlite3_close(output) }
         sqlite3_busy_timeout(input, 2000); sqlite3_busy_timeout(output, 2000)
         guard let backup = sqlite3_backup_init(output, "main", input, "main") else { throw ConfigurationError("资料库正在使用，请重试。") }
-        let status = sqlite3_backup_step(backup, -1); let finished = sqlite3_backup_finish(backup)
+        var status: Int32
+        do {
+            repeat {
+                status = sqlite3_backup_step(backup, pagesPerStep)
+                if status == SQLITE_OK || status == SQLITE_DONE { try progress() }
+            } while status == SQLITE_OK
+        } catch { sqlite3_backup_finish(backup); throw error }
+        let finished = sqlite3_backup_finish(backup)
         guard status == SQLITE_DONE, finished == SQLITE_OK else {
             throw ConfigurationError("资料库快照未完成，未确认迁移成功。") }
         // Backup copies the source header's WAL mode. Normalize standalone snapshots before
         // reading their bytes, or reopening a copied header can require a missing WAL/shm.
-        guard !newDestination || sqlite3_exec(output, "PRAGMA journal_mode=DELETE", nil, nil, nil) == SQLITE_OK else { throw ConfigurationError("无法完成迁移快照。") }
+        guard !(newDestination || standalone) || sqlite3_exec(output, "PRAGMA journal_mode=DELETE", nil, nil, nil) == SQLITE_OK else { throw ConfigurationError("无法完成迁移快照。") }
+        guard sqlite3_close(output) == SQLITE_OK else { throw ConfigurationError("无法关闭迁移快照。") }
+        output = nil
+        guard sqlite3_close(input) == SQLITE_OK else { throw ConfigurationError("无法关闭迁移来源。") }
+        input = nil
     }
     private static func matches(_ source: [String:Any], _ expected: [String:Any], keys: [String]) -> Bool {
         NSDictionary(dictionary: source.filter { keys.contains($0.key) }).isEqual(to: expected)

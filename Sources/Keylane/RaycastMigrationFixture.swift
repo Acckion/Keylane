@@ -30,6 +30,7 @@ enum RaycastMigrationFixture {
         print(String(decoding:try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys,.prettyPrinted]),as:UTF8.self))
     }
     static func run() throws {
+        try attachmentTurnBoundaries()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("RaycastFixture-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions:0o700])
         defer { try? FileManager.default.removeItem(at: root) }
@@ -73,6 +74,24 @@ enum RaycastMigrationFixture {
         try require(prefs.isEmpty,"undo preferences")
         try require(!FileManager.default.fileExists(atPath:root.appendingPathComponent("AI/history.sqlite").path),"undo missing store")
         print("Raycast migration fixture passed: preview, 4 stores, metadata, history, repeat import and undo")
+    }
+
+    private static func attachmentTurnBoundaries() throws {
+        let date = "2026-11-01T00:00:00Z"
+        func message(_ id: String, _ role: String, _ content: [String:Any]) -> [String:Any] {
+            ["id":id,"chatId":"chat","role":role,"content":content,"createdAt":date]
+        }
+        let source: [String:Any] = ["ai":["schemaVersion":2,"chats":[["id":"chat","title":"Synthetic"]],"messages":[
+            message("1","user",["text":"First question"]), message("2","assistant",["text":"First answer"]),
+            message("3","user",["attachments":[["path":"/synthetic/never-read","content":"never-import"]]]),
+            message("4","assistant",["reasoning":"Attachment reasoning"]), message("5","assistant",["text":"Attachment answer"]),
+            message("6","user",["text":"Next question"]), message("7","assistant",["text":"Next answer"])]]]
+        let imported = try RaycastConfiguration.decode(JSONSerialization.data(withJSONObject:source)).data
+        let turns = RaycastDataMigration.turns(imported.chats[0].messages)
+        try require(turns.map(\.question) == ["First question","Next question"],"attachment boundary questions")
+        try require(turns.map(\.answer) == ["First answer","Next answer"],"attachment boundary answers")
+        try require(turns.allSatisfy { $0.progress == nil && $0.attachments == nil },"attachment content or reasoning reassigned")
+        print("Raycast attachment-only user boundary fixture passed")
     }
 }
 #endif

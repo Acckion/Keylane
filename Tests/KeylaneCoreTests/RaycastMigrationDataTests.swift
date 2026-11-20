@@ -48,4 +48,24 @@ final class RaycastMigrationDataTests: XCTestCase {
                                "focusCategories":["schemaVersion":1,"focusCategories":[["title":"bad","applicationIds":["/private/path"]]]]])
         XCTAssertTrue(data.snippets.isEmpty); XCTAssertTrue(data.focusCategories.isEmpty)
     }
+
+    func testAttachmentOnlyUserMessageRetainsBoundaryWithoutPayload() throws {
+        let timestamp = "2026-11-01T00:00:00Z"
+        func message(_ id: String, _ role: String, _ content: [String:Any]) -> [String:Any] {
+            ["id":id,"chatId":"chat","role":role,"content":content,"createdAt":timestamp]
+        }
+        let data = try decode(["ai":["schemaVersion":2,"chats":[["id":"chat","title":"Example"]],
+            "messages":[message("1","user",["text":"First question"]), message("2","assistant",["text":"First answer"]),
+                        message("3","user",["attachments":[["path":"/synthetic/never-read","content":"never-import"]]]),
+                        message("4","assistant",["text":"Attachment answer"]),
+                        message("5","user",["text":"Next question"]), message("6","assistant",["text":"Next answer"])]]])
+        let messages = try XCTUnwrap(data.chats.first?.messages)
+        XCTAssertEqual(messages.map(\.role), ["user","assistant","user","assistant","user","assistant"])
+        XCTAssertEqual(messages[2].text, "")
+        XCTAssertEqual(messages[2].reasoning, "")
+        XCTAssertEqual(data.omissions["ai.nonTextMessages"], 1)
+        XCTAssertEqual(data.omissions["ai.attachments"], 1)
+        let encoded = String(decoding: try JSONEncoder().encode(data), as: UTF8.self)
+        XCTAssertFalse(encoded.contains("never-read")); XCTAssertFalse(encoded.contains("never-import"))
+    }
 }

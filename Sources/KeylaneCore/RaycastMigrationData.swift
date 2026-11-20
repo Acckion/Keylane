@@ -99,13 +99,18 @@ public struct RaycastMigrationData: Codable, Equatable {
                   let content = record["content"] as? [String:Any], let created = date(record["createdAt"]) else { reject("ai.messages"); continue }
             let body = text(content["text"]) ?? "", reasoning = text(content["reasoning"]) ?? ""
             if reasoning.utf8.count > 16_000 { reject("ai.reasoningTruncated") }
-            guard !body.isEmpty || !reasoning.isEmpty else { reject("ai.nonTextMessages"); continue }
             if let attachments = content["attachments"] as? [Any], !attachments.isEmpty { result.omissions["ai.attachments", default: 0] += attachments.count }
+            if body.isEmpty && reasoning.isEmpty {
+                reject("ai.nonTextMessages")
+                // Keep only the boundary metadata for an unsupported user message. Removing
+                // it would attach its following assistant replies to the previous question.
+                guard role.lowercased() == "user" else { continue }
+            }
             grouped[chatID, default: []].append(.init(id: stableID(sourceID, namespace: "message"), role: role.lowercased(), text: body, reasoning: reasoning, date: created))
         }
         for chat in records("ai", "chats") {
             guard let sourceID = chat["id"] as? String, let title = text(chat["title"], limit: 4096),
-                  let messages = grouped[sourceID], messages.contains(where: { $0.role == "user" }) else { reject("ai.chats"); continue }
+                  let messages = grouped[sourceID], messages.contains(where: { $0.role == "user" && !$0.text.isEmpty }) else { reject("ai.chats"); continue }
             result.chats.append(.init(id: stableID(sourceID, namespace: "chat"), title: title,
                 modelName: modelNames[chat["modelId"] as? String ?? ""] ?? "Raycast imported model",
                 updated: date(chat["updatedAt"]) ?? messages.last!.date, archived: date(chat["archivedAt"]) != nil,

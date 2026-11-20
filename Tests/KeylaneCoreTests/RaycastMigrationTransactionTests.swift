@@ -2,6 +2,7 @@ import XCTest
 @testable import KeylaneCore
 
 final class RaycastMigrationTransactionTests: XCTestCase {
+    private enum Interrupted: Error { case injected }
     private var root: URL!
     private var recovery: URL { root.appendingPathComponent("ConfigurationRecovery") }
     override func setUpWithError() throws {
@@ -106,12 +107,60 @@ final class RaycastMigrationTransactionTests: XCTestCase {
         let other = root.appendingPathComponent("prepared",isDirectory:true)
         try FileManager.default.createDirectory(at:other,withIntermediateDirectories:true)
         try before.write(to:other.appendingPathComponent("data.sqlite"))
+        let owner = try Store(url: other.appendingPathComponent("data.sqlite"))
+        let inode = try FileManager.default.attributesOfItem(atPath: other.appendingPathComponent("data.sqlite").path)[.systemFileNumber] as? NSNumber
         let transaction = other.appendingPathComponent("recovery")
         try RaycastMigrationTransaction.stage(changes:[:],current:[:],resources:[.init(id:.snippets,before:before,after:after)],directory:transaction)
         _ = try RaycastMigrationTransaction.finish(directory:transaction,root:other,read:{[:]},persist:{_ in true})
-        XCTAssertEqual(try Store(url:other.appendingPathComponent("data.sqlite")).records(kind:"snippet").count,2)
+        XCTAssertEqual(try owner.records(kind:"snippet").count,2)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: other.appendingPathComponent("data.sqlite").path)[.systemFileNumber] as? NSNumber, inode)
         try RaycastMigrationTransaction.stageUndo(directory:transaction,root:other,current:[:])
         _ = try RaycastMigrationTransaction.finish(directory:transaction,root:other,read:{[:]},persist:{_ in true})
-        XCTAssertEqual(try Store(url:other.appendingPathComponent("data.sqlite")).records(kind:"snippet").map(\.id),["one"])
+        XCTAssertEqual(try owner.records(kind:"snippet").map(\.id),["one"])
+    }
+
+    func testNewSQLiteInterruptionLeavesOnlyMissingOrCompleteTargetAndCanReplay() throws {
+        let source = root.appendingPathComponent("source")
+        do {
+            let store = try Store(url: source.appendingPathComponent("data.sqlite"))
+            try store.save(Record(id:"one",kind:"snippet",title:"Synthetic",body:String(repeating:"text ",count:100_000)))
+        }
+        let payload = try XCTUnwrap(RaycastMigrationTransaction.snapshot(.snippets,root:source))
+        for point in RaycastMigrationTransaction.InstallationEvent.allCases {
+            let targetRoot = root.appendingPathComponent(point.rawValue)
+            let directory = targetRoot.appendingPathComponent("recovery")
+            let destination = targetRoot.appendingPathComponent("data.sqlite")
+            var prefs: [String:Any] = [:]
+            try RaycastMigrationTransaction.stage(changes:["imported":true], current:prefs,
+                resources:[.init(id:.snippets,before:nil,after:payload)],directory:directory)
+            XCTAssertThrowsError(try RaycastMigrationTransaction.finish(directory:directory,root:targetRoot,
+                read:{prefs},persist:{prefs=$0;return true},installationObserver:{ event, _ in
+                    if event == point { throw Interrupted.injected }
+                }))
+            XCTAssertTrue(RaycastMigrationTransaction.hasStarted(in:directory))
+            XCTAssertTrue(prefs.isEmpty)
+            if point == .published {
+                XCTAssertEqual(try RaycastMigrationTransaction.fingerprint(RaycastMigrationTransaction.snapshot(.snippets,root:targetRoot),id:.snippets), try RaycastMigrationTransaction.fingerprint(payload,id:.snippets))
+            } else { XCTAssertFalse(FileManager.default.fileExists(atPath:destination.path)) }
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath:targetRoot.path).contains { $0.hasPrefix(".keylane-migration-") })
+            XCTAssertTrue(try RaycastMigrationTransaction.finish(directory:directory,root:targetRoot,read:{prefs},persist:{prefs=$0;return true}))
+            XCTAssertEqual(prefs["imported"] as? Bool,true)
+            try RaycastMigrationTransaction.stageUndo(directory:directory,root:targetRoot,current:prefs)
+            _ = try RaycastMigrationTransaction.finish(directory:directory,root:targetRoot,read:{prefs},persist:{prefs=$0;return true})
+            XCTAssertFalse(FileManager.default.fileExists(atPath:destination.path))
+        }
+    }
+
+    func testPublishingNewSQLiteDoesNotReplaceUnexpectedDestination() throws {
+        let source = root.appendingPathComponent("source")
+        do { let store = try Store(url:source.appendingPathComponent("data.sqlite")); try store.save(Record(id:"one",kind:"snippet",title:"Synthetic",body:"Text")) }
+        let payload = try XCTUnwrap(RaycastMigrationTransaction.snapshot(.snippets,root:source))
+        let destination = root.appendingPathComponent("data.sqlite")
+        try RaycastMigrationTransaction.stage(changes:[:],current:[:],resources:[.init(id:.snippets,before:nil,after:payload)],directory:recovery)
+        XCTAssertThrowsError(try RaycastMigrationTransaction.finish(directory:recovery,root:root,read:{[:]},persist:{_ in true},installationObserver:{ event, _ in
+            if event == .verified { try Data("external".utf8).write(to:destination) }
+        }))
+        XCTAssertEqual(try Data(contentsOf:destination),Data("external".utf8))
+        XCTAssertTrue(RaycastMigrationTransaction.hasPending(in:recovery))
     }
 }

@@ -136,12 +136,17 @@ enum RaycastDataMigration {
 
     static func turns(_ messages: [RaycastMigrationData.Message]) -> [AIConversationTurn] {
         var turns: [AIConversationTurn] = []
+        var currentTurn: Int?
         for message in messages {
             if message.role == "user" {
+                currentTurn = nil
+                // A boundary without imported text intentionally suppresses that whole turn,
+                // including its assistant text/reasoning, without importing any attachment.
+                guard !message.text.isEmpty else { continue }
                 var turn = AIConversationTurn(question: message.text); turn.id = message.id; turn.complete = true
                 turns.append(turn)
-            } else if !turns.isEmpty {
-                let index = turns.count - 1
+                currentTurn = turns.count - 1
+            } else if let index = currentTurn {
                 if !message.text.isEmpty { turns[index].answer += message.text }
                 if !message.reasoning.isEmpty {
                     var progress = turns[index].progress ?? AIResponseProgress()
