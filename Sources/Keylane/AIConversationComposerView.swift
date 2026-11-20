@@ -134,22 +134,22 @@ struct AIConversationComposerView: View {
                     }
                 }
             } addButton: {
-                ConversationFooterButton(title: "添加上下文（@）", symbol: "plus") {
+                ConversationFooterButton(title: "添加上下文（@）", symbol: "plus", diameter: style.controlDiameter) {
                     contextMenuOpen.toggle()
                     menuQuery = ""
                     menuSelection = nil
                 }
-                .modifier(LauncherMenuSurface(open: false))
+                .modifier(LauncherMenuSurface(open: false, cornerRadius: style.controlDiameter / 2))
                 .disabled(controller.loadingChat || composer.loadingFiles)
             }
         }
-        .overlay(alignment: .topLeading) {
+        .overlay(alignment: .bottomLeading) {
             if composerMenuVisible {
                 AIConversationComposerMenu(items: composerMenuItems, query: $menuQuery,
-                    selection: $menuSelection, scrollTarget: $menuScrollTarget, searchable: contextMenuOpen,
+                    selection: $menuSelection, scrollTarget: $menuScrollTarget, searchable: contextMenuOpen, menuTitle: compact ? "Quick AI" : "AI Chat",
                     activate: activateComposerItem, dismiss: dismissComposerMenu)
                     .offset(x: contextMenuOpen ? 0 : style.reservedControlWidth,
-                            y: -AIConversationComposerMenu.height(items: composerMenuItems, searchable: contextMenuOpen) - 8)
+                            y: contextMenuOpen ? 0 : -(max(style.fieldMinimumHeight, inputHeight + 12) + 8))
                     .zIndex(10)
             }
         }
@@ -195,7 +195,7 @@ struct AIConversationComposerView: View {
             }
         } else {
             items = [
-                Item(id: "file", section: "上下文", title: "添加文件…", symbol: "doc", action: addTextFile),
+                Item(id: "file", section: "上下文", title: "附加文件…", symbol: "doc.badge.plus", action: addTextFile),
                 Item(id: "clipboard-history", section: "上下文", title: "剪贴板历史…", symbol: "clipboard") { contextRequest = composer.contextRequest(AIChatContextSheet.Source.clipboard) },
                 Item(id: "clipboard", section: "上下文", title: "当前剪贴板文字", symbol: "doc.on.clipboard", action: insertClipboard),
                 Item(id: "screenshot", section: "上下文", title: "截图文字…", symbol: "viewfinder", action: addImageText),

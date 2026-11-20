@@ -1237,12 +1237,7 @@ struct Launcher: View {
         }
         let focus = focusToken
         let selectedID = selectedAction(in: items)?.id
-        return VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal, 16).padding(.top, 13).padding(.bottom, 8)
+        return LauncherActionMenuPanel(title: title) {
             if items.isEmpty {
                 Text("没有匹配的操作").font(.caption).foregroundStyle(.secondary).padding(16)
             } else {
@@ -1282,7 +1277,7 @@ struct Launcher: View {
                     }
                 }
             }
-            Divider().padding(.top, 9)
+        } search: {
             SearchField(text: Binding(get: { actionQuery }, set: { query in
                 guard actionQuery != query else { return }
                 actionQuery = query
@@ -1292,11 +1287,11 @@ struct Launcher: View {
                 activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus)
             }, move: moveSelection, escape: escape, back: { escape() }, forward: {
                 activateSelectedMenuItem(applicationMenu: applicationMenu, focus: focus, requiresSubmenu: true)
-            }).frame(height: 22).padding(.horizontal, 16).padding(.vertical, 10)
+            })
                 .onChange(of: items.filter(\.enabled).map(\.id), initial: true) { _, enabledIDs in
                     actionSelectionID = LauncherActionSelection.reconcile(actionSelectionID, enabledIDs: enabledIDs)
                 }
-        }.frame(width: Self.footerMenuWidth)
+        }
     }
     private func toggleMenu(application: Bool) {
         if rootScriptArguments != nil {

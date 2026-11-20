@@ -8,11 +8,12 @@ python3 - "$task_directory/LauncherMenuSurface.swift" <<'PY'
 from pathlib import Path
 import sys
 source = Path('Sources/Keylane/ResultTypeFilter.swift').read_text()
-Path(sys.argv[1]).write_text('import SwiftUI\n' + source[source.index('struct LauncherMenuSurface: ViewModifier {'):])
+Path(sys.argv[1]).write_text('import SwiftUI\n' + source[source.index('struct LauncherMenuRow<Trailing: View>: View {'):])
+Path(sys.argv[1]).write_text(Path(sys.argv[1]).read_text() + '\nstruct WorkspaceItemIcon: View { let path: String; var body: some View { EmptyView() } }\n')
 PY
 cp Tests/Integration/ai-composer-layout-main.swift "$task_directory/main.swift"
 swiftc -Xfrontend -disable-sandbox -swift-version 5 -target "$(uname -m)-apple-macos26.0" \
   Sources/Keylane/AIInteractionPreferences.swift Sources/Keylane/AIConversationComposer.swift Sources/Keylane/AIContextLoadState.swift Sources/Keylane/AIFileAttachment.swift Sources/Keylane/AIConversationTextInput.swift \
-  Sources/Keylane/VisualStyle.swift Sources/Keylane/NativeHoverButton.swift Sources/Keylane/ConversationComposer.swift \
+  Sources/Keylane/VisualStyle.swift Sources/Keylane/NativeHoverButton.swift Sources/Keylane/ConversationComposer.swift Sources/Keylane/LauncherActionMenuPanel.swift Sources/Keylane/AIConversationComposerMenu.swift \
   "$task_directory/LauncherMenuSurface.swift" "$task_directory/main.swift" -o "$task_directory/verify"
 "$task_directory/verify"

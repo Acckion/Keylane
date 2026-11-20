@@ -6,7 +6,8 @@ enum ConversationComposerStyle {
     var editorMinimumHeight: CGFloat { self == .launcher ? 24 : 36 }
     var fieldMinimumHeight: CGFloat { editorMinimumHeight + 12 }
     var actionControlSide: CGFloat { self == .launcher ? 28 : 32 }
-    var reservedControlWidth: CGFloat { VisualStyle.launcherControlDiameter + 8 }
+    var controlDiameter: CGFloat { fieldMinimumHeight }
+    var reservedControlWidth: CGFloat { controlDiameter + 8 }
 }
 
 /// One shell keeps control centers aligned to the final text line as the editor grows upward.
@@ -22,7 +23,7 @@ struct ConversationComposer<Editor: View, Actions: View, AddButton: View>: View 
                 Color.clear.frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
                     .allowsHitTesting(false).accessibilityHidden(true)
             } else {
-                addButton().padding(.bottom, 6)
+                addButton()
             }
             field
             if style == .launcher {
@@ -52,13 +53,14 @@ struct ConversationComposer<Editor: View, Actions: View, AddButton: View>: View 
 struct ConversationFooterButton: View {
     let title: String
     let symbol: String
+    var diameter: CGFloat = VisualStyle.launcherControlDiameter
     let action: () -> Void
     var body: some View {
         NativeHoverButton(title: title, action: action) {
             Image(systemName: symbol).font(.system(size: 18))
-                .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
+                .frame(width: diameter, height: diameter)
         }
-        .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
+        .frame(width: diameter, height: diameter)
         .help(title)
     }
 }
