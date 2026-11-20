@@ -1,8 +1,10 @@
 import AppKit
+import ApplicationServices
 import KeylaneCore
 import SwiftUI
 
 final class ShortcutKeyboardSelection: ObservableObject {
+    let map = ShortcutMapController()
     @Published var input = ShortcutKeyboardInput()
     var shortcut: Shortcut? { input.selected }
     var previewModifiers: UInt32? { input.previewModifiers }
@@ -22,20 +24,18 @@ struct ShortcutKeyboardPage: View {
     @ObservedObject var selection: ShortcutKeyboardSelection
     let menuOpen: Binding<Bool>?
     @StateObject private var observation: ViewObservation
+    @ObservedObject private var map: ShortcutMapController
+    @State private var source: ShortcutMapEntry.Source? = nil
     @State private var query = ""
-    @State private var change: Change?
+    @State private var confirmationState = ShortcutBindingConfirmation()
     @State private var inputMonitor: Any?
-
-    private struct Change {
-        let target: Shortcut
-        let commandID: String
-        let previous: Shortcut?
-        let displaced: String?
-    }
+    private typealias Change = ShortcutBindingConfirmation.Proposal
+    private var change: Change? { confirmationState.proposal }
 
     init(model: Model, selection: ShortcutKeyboardSelection, menuOpen: Binding<Bool>? = nil) {
         self.model = model
         self.selection = selection
+        self.map = selection.map
         self.menuOpen = menuOpen
         _observation = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(model.$bindings),
@@ -69,20 +69,76 @@ struct ShortcutKeyboardPage: View {
     private func keyboardContent(names: [String: String]) -> some View {
         let bindingsByShortcut = Dictionary(model.bindings.sorted { $0.key < $1.key }.map { ($0.value, $0.key) },
                                             uniquingKeysWith: { first, _ in first })
-        return keyboard(bindings: bindingsByShortcut, names: names)
+        let local: [ShortcutMapEntry] = model.bindings.sorted { $0.key < $1.key }.map { id, shortcut in
+            .init(id: id, shortcut: shortcut, title: names[id] ?? id, source: .keylane,
+                  enabled: !model.disabledCommands.contains(id) && model.launcherModules?.isCommandModuleEnabled(.init(rawValue: id)) != false)
+        }
+        let entries = (local + map.entries).filter { source == nil || $0.source == source }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Menu {
+                    ForEach(map.applications, id: \.processIdentifier) { app in
+                        Button(app.localizedName ?? "应用") { map.load(app) }
+                    }
+                } label: { Label(map.target?.localizedName ?? "选择应用", systemImage: "app") }
+                Spacer()
+                Picker("来源", selection: $source) {
+                    Text("全部").tag(ShortcutMapEntry.Source?.none)
+                    Text("Keylane").tag(ShortcutMapEntry.Source?.some(.keylane))
+                    Text("当前应用").tag(ShortcutMapEntry.Source?.some(.application))
+                    Text("系统").tag(ShortcutMapEntry.Source?.some(.system))
+                }.labelsHidden().frame(width: 125)
+                Button { map.load(map.target) } label: { Image(systemName: "arrow.clockwise") }.help("刷新快捷键")
+            }.buttonStyle(.plain)
+            keyboard(bindings: bindingsByShortcut, names: names, entries: entries)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    if let shortcut {
+                        Text(shortcut.label).font(.headline)
+                        let matches = entries.filter { $0.shortcut == shortcut }
+                        ForEach(matches) { item in
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.title)
+                                    if !item.path.isEmpty { Text(item.path).font(.caption).foregroundStyle(.secondary) }
+                                }
+                                Spacer()
+                                Text(item.source == .keylane ? "Keylane · 全局" : item.source == .system ? "系统 · 全局" : "当前应用")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                if !item.enabled { Text("当前不可用").font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                        if map.overlaps(shortcut).isEmpty {
+                            Text(map.loading ? "正在检查已知快捷键…" : "未发现已知外部冲突").font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Text("存在系统占用或应用快捷键重叠，绑定前需要确认。").font(.caption).foregroundStyle(.orange)
+                        }
+                        if let validation { Text(validation).font(.caption).foregroundStyle(.secondary) }
+                    } else { Text("按下修饰键查看命令，点击按键查看详情。").foregroundStyle(.secondary) }
+                    Text(map.coverage).font(.caption).foregroundStyle(.secondary)
+                    if !AXIsProcessTrusted() {
+                        Button("设置辅助功能权限…") { model.openSettings(page: "keylane.navigation") }
+                    }
+                    Button("系统键盘快捷键设置…") {
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.keyboard?Shortcuts") { NSWorkspace.shared.open(url) }
+                    }.font(.caption)
+                    if let feedback = selection.feedback { Text(feedback).font(.caption).foregroundStyle(.secondary) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
             .accessibilityElement(children: .contain)
             .accessibilityLabel("MacBook Air ANSI 键盘")
             .padding(.horizontal, 22)
             .padding(.top, VisualStyle.launcherTopInset + 10)
             .frame(maxHeight: .infinity, alignment: .top)
-        .onAppear(perform: startCapturing)
-        .onDisappear(perform: stopCapturing)
+        .onAppear { map.load(ShortcutMapController.previousApplication); startCapturing() }
+        .onDisappear { map.stop(); stopCapturing() }
         .onChange(of: selection.choosing) { _, choosing in
             if choosing {
                 stopCapturing()
             } else { startCapturing() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in startCapturing() }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in map.load(ShortcutMapController.previousApplication); startCapturing() }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { event in
             guard (event.object as? NSWindow) === (NSApp.delegate as? Delegate)?.window else { return }
             startCapturing()
@@ -200,11 +256,10 @@ struct ShortcutKeyboardPage: View {
             }
         }
         .modifier(LauncherMenuSurface(open: open.wrappedValue && selection.choosing))
+        .onDisappear { confirmationState.cancel() }
         .onChange(of: selection.choosing, initial: true) { _, choosing in
-            if choosing {
-                query = ""
-                change = nil
-            }
+            confirmationState.cancel()
+            if choosing { query = "" }
             if open.wrappedValue != choosing { open.wrappedValue = choosing }
         }
         .onChange(of: open.wrappedValue) { _, isOpen in
@@ -217,11 +272,15 @@ struct ShortcutKeyboardPage: View {
         let moved = proposed.previous.map { "（原快捷键 \($0.label) 将解除）" } ?? ""
         let removed = proposed.displaced.map { "\n\(names[$0] ?? $0) 将解除 \(proposed.target.label)。" } ?? ""
         return SettingsGroup {
-            SettingsTitle("确认改绑")
+            SettingsTitle("确认绑定")
             SettingsDescription("\(name)将绑定到 \(proposed.target.label)\(moved)。" + removed)
+            ForEach(proposed.evidence) { item in
+                SettingsDescription("\(item.source == .system ? "系统占用" : "应用内快捷键可能受影响")：\(item.title) \(item.path)")
+            }
+            SettingsDescription(map.coverage)
             HStack {
                 Spacer()
-                Button("取消") { change = nil }
+                Button("取消") { confirmationState.cancel() }
                 Button("确认改绑") { save(proposed, registry: registry) }
             }
         }
@@ -229,7 +288,7 @@ struct ShortcutKeyboardPage: View {
 
     private func closePicker() {
         selection.choosing = false
-        change = nil
+        confirmationState.cancel()
     }
 
     private static let unbindID = "keylane.unbind-shortcut"
@@ -255,7 +314,7 @@ struct ShortcutKeyboardPage: View {
         return options
     }
 
-    private func keyboard(bindings: [Shortcut: String], names: [String: String]) -> some View {
+    private func keyboard(bindings: [Shortcut: String], names: [String: String], entries: [ShortcutMapEntry]) -> some View {
         GeometryReader { proxy in
             let unit = proxy.size.width / 1030
             ZStack(alignment: .topLeading) {
@@ -263,7 +322,8 @@ struct ShortcutKeyboardPage: View {
                     let displayedModifiers = selection.previewModifiers ?? shortcut?.modifiers ?? 0
                     let chord = cap.code.map { Shortcut(key: $0, modifiers: displayedModifiers) }
                     let bound = chord.flatMap { bindings[$0] }
-                    let name = bound.map { names[$0] ?? $0 }
+                    let matches = entries.filter { $0.shortcut == chord }
+                    let name = matches.first.map { $0.title + (matches.count > 1 ? " +\(matches.count - 1)" : "") }
                     let active = cap.modifier != 0 && displayedModifiers & cap.modifier != 0
                     let selected = selection.previewModifiers == nil && cap.code != nil && cap.code == shortcut?.key
                     Group {
@@ -277,7 +337,7 @@ struct ShortcutKeyboardPage: View {
                                 selection.choosing = false
                                 selection.feedback = nil
                             } label: {
-                                keycap(cap, name: name, iconID: selection.previewModifiers == nil ? nil : bound,
+                                keycap(cap, name: name, iconID: source == nil || source == .keylane ? (selection.previewModifiers == nil ? nil : bound) : nil,
                                        active: active, selected: selected)
                             }.buttonStyle(.plain)
                                 .help(name ?? cap.description)
@@ -320,23 +380,37 @@ struct ShortcutKeyboardPage: View {
 
     private func assign(_ id: String, registry: LauncherModuleRegistry?) {
         guard let shortcut, validation == nil, id != owner else { return }
-        let proposed = Change(target: shortcut, commandID: id, previous: model.bindings[id], displaced: owner)
-        if proposed.previous != nil || proposed.displaced != nil { change = proposed }
-        else { save(proposed, registry: registry) }
+        map.load(map.target) {
+            guard selection.choosing, selection.shortcut == shortcut else { return }
+            // Always show refreshed coverage, including when no known conflict was found.
+            confirmationState.begin(target: shortcut, commandID: id, previous: model.bindings[id],
+                                    displaced: owner, evidence: map.overlaps(shortcut))
+        }
     }
 
     private func save(_ proposed: Change, registry: LauncherModuleRegistry?) {
-        guard registry?.canBindFromShortcutKeyboard(.init(rawValue: proposed.commandID)) == true,
-              model.bindings[proposed.commandID] == proposed.previous,
-              model.bindings.first(where: { $0.value == proposed.target })?.key == proposed.displaced else {
-            closePicker()
-            selection.feedback = "快捷键或命令已变化，请重新选择。"
-            return
+        guard confirmationState.isCurrent(proposed.id), selection.choosing,
+              menuOpen?.wrappedValue != false else { return }
+        map.load(map.target) {
+            // This must precede validation, conflict updates and all binding changes.
+            guard confirmationState.isCurrent(proposed.id), selection.choosing,
+                  menuOpen?.wrappedValue != false else { return }
+            guard selection.shortcut == proposed.target,
+                  registry?.canBindFromShortcutKeyboard(.init(rawValue: proposed.commandID)) == true else {
+                closePicker()
+                selection.feedback = "快捷键或命令已变化，请重新选择。"
+                return
+            }
+            switch confirmationState.complete(proposed.id, evidence: map.overlaps(proposed.target), bindings: model.bindings) {
+            case .ignored, .needsConfirmation:
+                return
+            case .invalid:
+                closePicker()
+                selection.feedback = "快捷键或命令已变化，请重新选择。"
+            case .save(let bindings):
+                saveBindings(bindings, message: "已保存")
+            }
         }
-        var bindings = model.bindings
-        if let displaced = proposed.displaced { bindings.removeValue(forKey: displaced) }
-        bindings[proposed.commandID] = proposed.target
-        saveBindings(bindings, message: "已保存")
     }
 
     private func unbind() {
