@@ -75,10 +75,18 @@ final class FixtureProtocol: URLProtocol {
                 } else {
                     text = #"{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"你好"}],"usage":{"input_tokens":2,"output_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":0},"service_tier":"standard"}}"#
                 }
-            } else if self.request.url?.path == "/v1/models" {
+            } else if self.request.url?.path == "/v1/models" || self.request.url?.path == "/api/v1/models" {
                 precondition(self.request.httpMethod == "GET" && self.request.httpBody == nil)
                 precondition(self.request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key")
-                text = mode == "bad" ? "{}" : #"{"data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":" "}]}"#
+                if mode == "catalog-large" {
+                    let models: [[String: Any]] = (0..<300).map { index in
+                        ["id": "fixture/model-\(index)", "name": "Fixture Model \(index)",
+                         "context_length": 131072, "architecture": ["input_modalities": ["text", "image"]],
+                         "supported_parameters": ["tools"], "description": String(repeating: "x", count: 4200)]
+                    }
+                    text = String(data: try! JSONSerialization.data(withJSONObject: ["data": models]), encoding: .utf8)!
+                } else if mode == "catalog-empty" { text = #"{"data":[]}"# }
+                else { text = mode == "bad" ? "{}" : #"{"data":[{"id":"b"},{"id":"a"},{"id":"b"},{"id":" "}]}"# }
             } else {
                 text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             }
@@ -133,6 +141,10 @@ final class FixtureProtocol: URLProtocol {
         }
     }
     override func stopLoading() { lock.lock(); stopped = true; lock.unlock() }
+}
+if ProcessInfo.processInfo.environment["KEYLANE_PROVIDER_CATALOG_ONLY"] == "1" {
+    verifyProviderCatalog()
+    exit(0)
 }
 let suite = "org.keylane.file-ai-test."+UUID().uuidString
 try verifyDictatedChatKeepsDraft()
@@ -1796,6 +1808,117 @@ precondition(noMatchingMenu.choices(inherits: true, allowsLastUsed: true).isEmpt
 precondition(orderedMenu.choices(inherits: true, allowsLastUsed: true).prefix(2) == [.inherit, .lastUsed])
 print("PASS model menu search: matching models precede Return selection, no matches offer no selection, clearing search restores special choices")
 
+// Module actions share the production transport but never implicitly create chat history.
+let actionSuite = "org.keylane.tests.module-ai." + UUID().uuidString
+let actionPrefs = UserDefaults(suiteName: actionSuite)!
+actionPrefs.set("http://localhost/v1", forKey: "fileAIEndpoint")
+actionPrefs.set("action-model", forKey: "fileAIModel")
+let actionConfiguration = AIConfiguration(preferences: actionPrefs)
+let actionRuntime = AIRuntime(configuration: configuration)
+let actionSession = AIActionSession(configuration: actionConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+let actionDefinition = AIActionDefinition(commandID: .init(rawValue: "fixture-summary"), title: "Summary", instructions: "Summarize only")
+var actionAllowed = true, actionCurrent = true
+let actionUpdates = PassthroughSubject<Bool, Never>()
+func actionSource(_ value: String, delay: UInt64 = 0) -> AIActionSource {
+    .init(moduleID: .init(rawValue: "fixture"), load: {
+        if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+        return .init(sourceID: value, title: "Selected fixture", text: value)
+    }, isCurrent: { _ in actionCurrent })
+}
+FixtureProtocol.mode = "ok"
+let beforeActionRequests = FixtureProtocol.requests.count
+actionSession.prepare(actionDefinition, source: actionSource("first", delay: 100_000_000), allowed: { actionAllowed })
+actionSession.prepare(actionDefinition, source: actionSource("selected only"), allowed: { actionAllowed })
+wait("module source preparation") { actionSession.canSend }
+RunLoop.main.run(until: Date().addingTimeInterval(0.15))
+precondition(actionSession.context?.text == "selected only" && FixtureProtocol.requests.count == beforeActionRequests)
+actionSession.send(); wait("module explicit send") { !actionSession.running && !actionSession.preparing }
+precondition(actionSession.answer == "synthetic answer")
+precondition(FixtureProtocol.lastMessages.map { $0["content"] ?? "" } == ["Summarize only", "selected only"])
+print("PASS module AI: preparation is local, stale source load dropped, explicit send carries exactly selected input")
+let beforeStaleAction = FixtureProtocol.requests.count
+actionCurrent = false; actionSession.send(); wait("module stale source rejected") { !actionSession.preparing }
+precondition(actionSession.status.contains("来源") && FixtureProtocol.requests.count == beforeStaleAction)
+actionCurrent = true
+FixtureProtocol.mode = "held-stream"
+var actionStreamingProfile = actionConfiguration.selected!
+actionStreamingProfile.mode = .streaming
+precondition(actionConfiguration.save(actionStreamingProfile))
+actionSession.prepare(actionDefinition, source: actionSource("cancel fixture"), allowed: { actionAllowed })
+actionSession.observeAvailability(actionUpdates.eraseToAnyPublisher())
+wait("module ready before cancel") { actionSession.canSend }; actionSession.send()
+wait("module stream active") { actionSession.running && !actionSession.answer.isEmpty }
+actionAllowed = false; actionUpdates.send(false)
+wait("module disabled cancels network") { !actionSession.running }
+let frozenActionAnswer = actionSession.answer
+RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+precondition(actionSession.answer == frozenActionAnswer && !actionSession.canSend)
+actionAllowed = true
+precondition(!actionSession.canSend, "Re-enabling must not resurrect an invalidated invocation")
+actionSession.clear()
+
+print("PASS module AI: source version checked before network; disabling a command cancels an active stream")
+FixtureProtocol.mode = "ok"
+actionStreamingProfile.mode = .complete
+precondition(actionConfiguration.save(actionStreamingProfile))
+actionSession.prepare(actionDefinition, source: actionSource("budget"), allowed: { true })
+wait("module ready before route change") { actionSession.canSend }
+actionConfiguration.setDefault(nil, for: .commands)
+// Unrelated catalog bookkeeping must not invalidate this fixed destination.
+actionConfiguration.recordChatModel(actionConfiguration.selected!.id)
+precondition(actionSession.canSend)
+actionSession.observeAvailability(actionUpdates.eraseToAnyPublisher())
+actionUpdates.send(false); actionUpdates.send(true)
+RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+precondition(!actionSession.canSend, "A quick off/on transition must retain its revocation")
+actionSession.clear()
+let contextDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-ai-context-" + UUID().uuidString)
+try FileManager.default.createDirectory(at: contextDirectory, withIntermediateDirectories: true)
+let contextFile = contextDirectory.appendingPathComponent("fixture.txt")
+try Data("selected file body".utf8).write(to: contextFile)
+func loadActionContext(_ source: AIActionSource) -> AIActionContext {
+    var value: AIActionContext?
+    Task { @MainActor in value = try! await source.load() }
+    wait("load selected file context") { value != nil }
+    return value!
+}
+let metadataSource = FileAIContextSource.make(files: [contextFile], question: "question", includePaths: false, includeContents: false)
+let metadataContext = loadActionContext(metadataSource)
+precondition(metadataContext.text.contains("fixture.txt") && !metadataContext.text.contains(contextDirectory.path) && !metadataContext.text.contains("selected file body"))
+let bodySource = FileAIContextSource.make(files: [contextFile], question: "question", includePaths: false, includeContents: true)
+let bodyContext = loadActionContext(bodySource)
+precondition(bodyContext.text.contains("selected file body") && !bodyContext.text.contains(contextDirectory.path))
+try Data("edited file body".utf8).write(to: contextFile, options: .atomic)
+var oldFileIsCurrent: Bool?
+Task { @MainActor in oldFileIsCurrent = try! await bodySource.isCurrent(bodyContext) }
+wait("changed file fingerprint") { oldFileIsCurrent != nil }
+precondition(oldFileIsCurrent == false)
+try FileManager.default.removeItem(at: contextDirectory)
+actionPrefs.removePersistentDomain(forName: actionSuite)
+print("PASS module file context: metadata-only default, explicit body, path exclusion, changed file identity rejected")
+
+let actionFollowup = AIConversationComposer()
+actionFollowup.text = "保留下一条问题"
+actionFollowup.attachments = [.init(title: "existing", text: "existing attachment", symbol: "doc")]
+let followupDraft = actionFollowup.draftID, followupRequests = FixtureProtocol.requests.count
+precondition(actionFollowup.attachActionResult(.init(sourceID: "fixture", title: "Selected source", text: "selected"), answer: "summary"))
+precondition(actionFollowup.text == "保留下一条问题" && actionFollowup.draftID == followupDraft && actionFollowup.attachments.count == 2)
+precondition(FixtureProtocol.requests.count == followupRequests)
+let followupBeforeRejected = actionFollowup.snapshot
+precondition(!actionFollowup.attachActionResult(.init(sourceID: "fixture", title: "", text: "selected"), answer: String(repeating: "x", count: 32_000)))
+precondition(actionFollowup.text == followupBeforeRejected.text && actionFollowup.attachments == followupBeforeRejected.attachments)
+print("PASS completed module result continues as an attachment: existing draft and attachments retained, no automatic send, oversize rejected without mutation")
+
+let resumedModuleDraft = AIConversationSession(configuration: actionConfiguration, runtime: actionRuntime, observesDefaultConnection: false, readKey: { _ in nil })
+resumedModuleDraft.composer.text = "尚未发送的问题"
+precondition(resumedModuleDraft.composer.attachActionResult(.init(sourceID: "fixture", title: "source", text: "source text"), answer: "answer"))
+let beforeDraftResume = FixtureProtocol.requests.count
+let moduleDraftQuery = LauncherPagePresentation.EntryIntent.existingDraft.resolve(current: "", restored: nil, pageConsumesEntryQuery: true,
+    existingDraft: { resumedModuleDraft.composer.text }, enter: { resumedModuleDraft.consumeEntry($0) })
+precondition(moduleDraftQuery == "尚未发送的问题")
+precondition(!resumedModuleDraft.running && FixtureProtocol.requests.count == beforeDraftResume && resumedModuleDraft.composer.attachments.count == 1)
+print("PASS module result page handoff: explicit draft entry does not auto-submit a preserved question")
+
 // Dictation uses the same catalog and credential scope as text AI; it stores only model IDs.
 let sharedSpeechName = "KeylaneSharedSpeech-" + UUID().uuidString
 let sharedSpeechDefaults = UserDefaults(suiteName: sharedSpeechName)!
@@ -1839,3 +1962,242 @@ let reloadedSpeechConfig = AIConfiguration(preferences: sharedSpeechDefaults)
 precondition(reloadedSpeechConfig.state.connections.first { $0.id == sharedSpeech.id } == sharedSpeech)
 precondition(AIProviderPreset.all.first { $0.id == "elevenlabs" }!.connection.taskKind == .elevenLabsTranscription)
 print("PASS shared dictation models: common catalog and model picker, sibling credential reuse, endpoint isolation, explicit capabilities and unchanged text defaults")
+
+
+verifyProviderCatalog()
+
+// Provider catalog sync publishes one durable snapshot, independently of UI lifetime.
+func verifyProviderCatalog() {
+    func wait(_ label: String, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(condition(), label)
+    }
+let catalogSuite = "org.keylane.synthetic-catalog.\(UUID())"
+let catalogPreferences = UserDefaults(suiteName: catalogSuite)!
+let catalogConfiguration = AIConfiguration(preferences: catalogPreferences)
+var catalogOwner = AIProviderPreset.all.first { $0.id == "openrouter" }!.connection
+catalogOwner.model = "fixture/model-0"
+precondition(catalogConfiguration.save(catalogOwner))
+catalogConfiguration.setEnabled(true)
+let catalogURLConfig = URLSessionConfiguration.ephemeral
+catalogURLConfig.protocolClasses = [FixtureProtocol.self]
+let catalogRuntime = AIRuntime(configuration: catalogURLConfig)
+var catalogClock = Date(timeIntervalSince1970: 2_000_000_000)
+var catalogSync: AIProviderCatalogSync?
+var catalogTaskDone = false
+FixtureProtocol.mode = "catalog-large"
+Task { @MainActor in
+    catalogSync = AIProviderCatalogSync(configuration: catalogConfiguration, runtime: catalogRuntime,
+                                       now: { catalogClock }, readKey: { _ in "fixture-key" })
+    catalogSync!.start()
+    catalogTaskDone = true
+}
+wait("Start automatic provider discovery") { catalogTaskDone }
+wait("Catalog over 1 MiB merges without opening settings") { catalogConfiguration.state.connections.count == 300 }
+let firstCatalog = catalogConfiguration.state
+let visionModel = firstCatalog.connections.first { $0.model == "fixture/model-1" }!
+precondition(visionModel.contextTokens == 131072 && visionModel.supportsImages == true && visionModel.supportsTools == true)
+precondition(visionModel.credentialOwnerID == catalogOwner.id)
+precondition(firstCatalog.selectedID == catalogOwner.id)
+precondition(firstCatalog.defaults?[.quick] == catalogOwner.id)
+catalogConfiguration.setModelVisible(visionModel.id, visible: false)
+var renamedCatalogModel = catalogConfiguration.state.connections.first { $0.id == visionModel.id }!
+renamedCatalogModel.name = "My saved model name"
+precondition(catalogConfiguration.save(renamedCatalogModel, selectAsDefault: false))
+let requestsBeforeCachedMenu = FixtureProtocol.requests.count
+let restoredCatalog = AIConfiguration(preferences: catalogPreferences)
+let cachedMenu = AIModelMenuCatalog(connections: restoredCatalog.state.connections, selection: .model(catalogOwner.id), query: "", purpose: .text)
+precondition(cachedMenu.groups.flatMap(\.models).count == 299)
+precondition(restoredCatalog.state.providerCatalogs == catalogConfiguration.state.providerCatalogs)
+Task { @MainActor in catalogSync!.refresh() }
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(FixtureProtocol.requests.count == requestsBeforeCachedMenu)
+// Force refresh updates existing IDs and does not reset hidden/default selections.
+Task { @MainActor in catalogSync!.refresh(force: true) }
+wait("Force provider refresh") { FixtureProtocol.requests.count > requestsBeforeCachedMenu }
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+precondition(catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.hiddenFromPicker == true)
+precondition(catalogConfiguration.state.connections.count == 300)
+precondition(catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.name == "My saved model name")
+precondition(catalogConfiguration.state.selectedID == catalogOwner.id)
+// A catalog refresh makes removed models unavailable without losing defaults or hidden flags.
+let currentOwner = catalogConfiguration.state.connections.first { $0.id == catalogOwner.id }!
+precondition(catalogConfiguration.applyProviderCatalog([.init(id: currentOwner.model)], snapshot: currentOwner, at: catalogClock))
+precondition(catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.isConfigured == false)
+precondition(catalogConfiguration.state.selectedID == catalogOwner.id)
+Task { @MainActor in catalogSync!.refresh(force: true) }
+wait("Rediscovered models recover the same identity") {
+    catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.isConfigured == true
+}
+precondition(catalogConfiguration.state.connections.first { $0.id == visionModel.id }?.hiddenFromPicker == true)
+// Expiry refreshes in the service. A denied or empty response keeps the last valid catalog.
+let validCatalogState = catalogConfiguration.state
+FixtureProtocol.mode = "error"
+let beforeDeniedCatalog = FixtureProtocol.requests.count
+catalogClock.addTimeInterval(AIProviderCatalogSync.cacheLifetime + 1)
+Task { @MainActor in catalogSync!.refresh() }
+wait("Expired cache refreshes in background") { FixtureProtocol.requests.count > beforeDeniedCatalog }
+RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+precondition(catalogConfiguration.state == validCatalogState)
+FixtureProtocol.mode = "catalog-empty"
+Task { @MainActor in catalogSync!.refresh(force: true) }
+RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+precondition(catalogConfiguration.state == validCatalogState)
+FixtureProtocol.mode = "ok"
+var newlySaved = catalogOwner
+newlySaved.id = UUID()
+newlySaved.model = "a"
+precondition(catalogConfiguration.save(newlySaved, selectAsDefault: false))
+wait("Saving a new provider automatically schedules discovery") {
+    catalogConfiguration.state.connections.contains { $0.catalogIdentity == newlySaved.catalogIdentity && $0.model == "b" }
+}
+let beforeDisabledCatalog = catalogConfiguration.state.connections
+// Disabling AI cancels outstanding catalog work and discards late results.
+FixtureProtocol.mode = "slow"
+Task { @MainActor in
+    catalogSync!.refresh(force: true)
+    catalogConfiguration.setEnabled(false)
+    catalogSync!.refresh()
+}
+RunLoop.current.run(until: Date().addingTimeInterval(0.65))
+precondition(catalogConfiguration.state.connections == beforeDisabledCatalog)
+Task { @MainActor in catalogSync = nil }
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+var staleCatalogOwner = catalogOwner
+staleCatalogOwner.endpoint = "https://different.example/v1"
+precondition(catalogConfiguration.save(staleCatalogOwner))
+catalogConfiguration.setEnabled(true)
+precondition(!catalogConfiguration.applyProviderCatalog([.init(id: "stale-model")], snapshot: catalogOwner, at: catalogClock))
+precondition(!catalogConfiguration.state.connections.contains { $0.model == "stale-model" })
+catalogPreferences.removePersistentDomain(forName: catalogSuite)
+print("PASS provider catalog: large payload, metadata, persistence, shared cached picker, IDs/defaults/visibility, expiry, failure and cancellation")
+
+verifyCatalogReviewRegressions()
+
+if ProcessInfo.processInfo.environment["KEYLANE_VERIFY_OPENROUTER_PUBLIC_CATALOG"] == "1" {
+    var completed = false
+    Task { @MainActor in
+        do {
+            let publicCatalog = try await AIRuntime().listModelCatalog(connection: catalogOwner, readKey: { _ in nil })
+            precondition(publicCatalog.count > 1 && publicCatalog.contains { $0.contextLength != nil })
+            print("PASS live OpenRouter public directory: \(publicCatalog.count) models; no account Key or generation request")
+        } catch { preconditionFailure("Public OpenRouter directory: \(error)") }
+        completed = true
+    }
+    let deadline = Date().addingTimeInterval(35)
+    while !completed, Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+    precondition(completed)
+}
+}
+
+// PR #209: task routing, repairability and display metadata during active requests.
+func verifyCatalogReviewRegressions() {
+    func wait(_ label: String, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(condition(), label)
+    }
+    let suite = "org.keylane.synthetic-catalog-review.\(UUID())"
+    let prefs = UserDefaults(suiteName: suite)!
+    defer { prefs.removePersistentDomain(forName: suite) }
+    let settings = AIConfiguration(preferences: prefs)
+    settings.setEnabled(true)
+    let speech = AIConnection(endpoint: "https://example.com/v1/audio/transcriptions", model: "whisper-1", mode: .complete, providerID: "openai")
+    precondition(settings.save(speech))
+    precondition(settings.applyProviderCatalog([.init(id: "whisper-1"), .init(id: "text-model")], snapshot: speech, at: Date()))
+    let text = settings.state.connections.first { $0.model == "text-model" }!
+    precondition(text.taskKind == .text && text.completionURL?.absoluteString == "https://example.com/v1/chat/completions")
+    precondition(AIConfiguration.credentialQueries(for: text) as NSArray == AIConfiguration.credentialQueries(for: speech) as NSArray)
+    let transportConfig = URLSessionConfiguration.ephemeral
+    transportConfig.protocolClasses = [FixtureProtocol.self]
+    let runtime = AIRuntime(configuration: transportConfig)
+    FixtureProtocol.mode = "ok"
+    var generated = false
+    Task { @MainActor in
+        _ = try! await runtime.generate(connection: text, readKey: { _ in "fixture-key" },
+                                       messages: [.init(role: .user, content: "fixture")]) { _ in }
+        generated = true
+    }
+    wait("Discovered text model uses the chat endpoint") { generated }
+    precondition(FixtureProtocol.requests.last?.url?.absoluteString == "https://example.com/v1/chat/completions")
+    precondition(settings.applyProviderCatalog([.init(id: text.model)], snapshot: speech, at: Date()))
+    var renamedSpeech = settings.state.connections.first { $0.id == speech.id }!
+    precondition(!renamedSpeech.isConfigured)
+    renamedSpeech.name = "Renamed retired transcription model"
+    renamedSpeech.catalogUnavailable = nil
+    precondition(settings.save(renamedSpeech, selectAsDefault: false))
+    precondition(settings.state.connections.first { $0.id == speech.id }?.catalogUnavailable == true)
+    var fullChat = text
+    fullChat.endpoint = "https://example.com/v1/chat/completions"
+    precondition(settings.save(fullChat))
+    precondition(settings.applyProviderCatalog([.init(id: "whisper-1"), .init(id: "text-model"), .init(id: "gpt-transcribe")], snapshot: fullChat, at: Date()))
+    let discoveredSpeech = settings.state.connections.first { $0.model == "gpt-transcribe" }!
+    precondition(discoveredSpeech.transcriptionOptions()?.transcriptionURL?.absoluteString == "https://example.com/v1/audio/transcriptions")
+    precondition(discoveredSpeech.credentialURL == fullChat.credentialURL)
+
+    // A real upstream removal marks the selected connection unavailable.
+    for route in AIRoute.allCases { settings.setDefault(text.id, for: route) }
+    settings.select(text.id)
+    precondition(settings.applyProviderCatalog([.init(id: "whisper-1")], snapshot: fullChat, at: Date()))
+    var unavailable = settings.state.connections.first { $0.id == text.id }!
+    precondition(!unavailable.isConfigured && unavailable.isValidConfiguration)
+    precondition(settings.addProviderModels(["manual-discovered-model"], from: unavailable, discoveredUsing: unavailable) == 1)
+    let manualDiscovered = settings.state.connections.first { $0.model == "manual-discovered-model" }!
+    precondition(manualDiscovered.isConfigured && manualDiscovered.catalogName == nil)
+    unavailable.name = "A rename cannot restore upstream access"
+    unavailable.catalogUnavailable = nil
+    precondition(settings.save(unavailable, selectAsDefault: false))
+    precondition(settings.state.connections.first { $0.id == text.id }?.catalogUnavailable == true)
+    var repaired = settings.state.connections.first { $0.id == text.id }!
+    repaired.model = "replacement-model"
+    precondition(repaired.isValidConfiguration && !repaired.isConfigured)
+    precondition(settings.save(repaired, selectAsDefault: false))
+    repaired = settings.state.connections.first { $0.id == text.id }!
+    precondition(repaired.isConfigured && repaired.catalogUnavailable == nil && repaired.catalogName == nil)
+    precondition(settings.state.selectedID == text.id && AIRoute.allCases.allSatisfy { settings.state.defaults?[$0] == text.id })
+    precondition(settings.applyProviderCatalog([.init(id: "whisper-1")], snapshot: repaired, at: Date()))
+    var moved = settings.state.connections.first { $0.id == text.id }!
+    precondition(!moved.isConfigured)
+    moved.endpoint = "https://replacement.example/v1"
+    precondition(settings.save(moved, selectAsDefault: false))
+    let active = settings.state.connections.first { $0.id == text.id }!
+    precondition(active.isConfigured && active.id == repaired.id)
+    precondition(AIConfiguration(preferences: prefs).state.connection(for: .files)?.id == text.id)
+    precondition(!settings.applyProviderCatalog([.init(id: "stale")], snapshot: repaired, at: Date()))
+
+    // Exercise production observers with requests held open across a catalog-name update.
+    var streaming = active
+    streaming.mode = .streaming
+    precondition(settings.save(streaming, selectAsDefault: false))
+    let action = AIActionSession(configuration: settings, runtime: runtime, readKey: { _ in nil })
+    let source = AIActionSource(moduleID: .init(rawValue: "fixture"),
+                              load: { .init(sourceID: "fixture", title: "Fixture", text: "selected text") },
+                              isCurrent: { _ in true })
+    let definition = AIActionDefinition(commandID: .init(rawValue: "fixture-summary"), title: "Summary", instructions: "Summarize")
+    FixtureProtocol.mode = "held-stream"
+    action.prepare(definition, source: source, allowed: { true })
+    wait("Prepare held module action") { action.canSend }
+    action.send()
+    let files = FileAIController(settings: settings, runtime: runtime, preferences: prefs, readKey: { _ in nil })
+    files.setFiles([URL(fileURLWithPath: "/synthetic/catalog-fixture.txt")])
+    files.question = "What is this file?"
+    files.send()
+    wait("Module and file requests remain active") { action.running && !action.answer.isEmpty && files.action.running && !files.answer.isEmpty }
+    let invocationID = action.invocationID
+    var presentation = streaming
+    presentation.name = "Presentation name"
+    presentation.hiddenFromPicker = true
+    presentation.catalogName = "Discovered display name"
+    precondition(presentation.executionSnapshot == streaming.executionSnapshot)
+    precondition(settings.applyProviderCatalog([.init(id: streaming.model, name: "Discovered display name")], snapshot: streaming, at: Date()))
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    precondition(action.running && files.action.running && action.invocationID == invocationID)
+    var realChange = settings.state.connections.first { $0.id == text.id }!
+    realChange.endpoint = "https://another.example/v1"
+    precondition(realChange.executionSnapshot != streaming.executionSnapshot)
+    precondition(settings.save(realChange, selectAsDefault: false))
+    precondition(!action.running && !files.action.running)
+    action.clear(); files.cancel()
+    print("PASS PR209 reviews: cross-task endpoint/credentials, unavailable model and endpoint repair, rename guard, persisted defaults, and active module/file requests survive catalog names while destination edits cancel")
+}

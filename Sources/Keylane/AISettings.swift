@@ -32,6 +32,13 @@ enum AIModule {
                 if fromQuickAI { model.pageID = .root }
             }
         }
+        model.continueModuleAIAction = { [weak model, weak quickAI] context, answer in
+            guard let model, let quickAI, configuration.state.enabled, !quickAI.loadingChat,
+                  quickAI.composer.attachActionResult(context, answer: answer) else { return false }
+            if quickAI.isInChat { openChat(nil) }
+            else { model.openPageWithExistingDraft(QuickAILauncher.pageID) }
+            return true
+        }
         model.dictation.deliverAI = { [weak model, weak quickAI] text, prefersChat in
             guard let model, let quickAI else { return }
             guard configuration.state.enabled, configuration.state.connection(for: .quick) != nil || prefersChat || quickAI.isInChat else {
@@ -87,7 +94,7 @@ enum AIModule {
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
                               title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand] + textCommands,
                               providers: [AITextCommandLauncher.customCommands(model: model, session: textSession, library: library)],
-                              pages: [QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
+                              pages: [AIActionLauncher.page(model: model), QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
                                       AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
                   order: 8, items: [interactions],
@@ -302,7 +309,7 @@ private struct AIConnectionEditor: View {
                     HStack {
                         SecureField(hasKey ? "已保存，可输入新密钥" : "输入密钥", text: $key).frame(width: 150)
                         if !isNew {
-                            Button("保存") { withStatus("密钥已保存。") { try AIConfiguration.saveKey(key, for: connection) } }
+                            Button("保存") { withStatus("密钥已保存。") { try AIConfiguration.saveKey(key, for: connection); configuration.refreshModelCatalogs(runtime: runtime, connection: connection) } }
                                 .disabled(key.isEmpty || draft != connection)
                         }
                         if hasKey { Button("删除…") { confirmKeyDeletion = true }.disabled(draft != connection) }
@@ -356,7 +363,7 @@ private struct AIConnectionEditor: View {
         }
         var edited = draft
         edited.contextTokens = Int(tokens)
-        guard edited.isConfigured else { status = "请填写有效的接口地址和模型 ID。"; return }
+        guard edited.isValidConfiguration else { status = "请填写有效的接口地址和模型 ID。"; return }
         if isNew && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             do { try AIConfiguration.saveKey(key, for: edited) }
             catch { status = error.localizedDescription; return }
