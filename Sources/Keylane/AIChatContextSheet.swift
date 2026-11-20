@@ -21,8 +21,7 @@ struct AIChatContextSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var rows: [Candidate] = []
-    @State private var generation = UUID()
-    @State private var loading = false
+    @StateObject private var loadState = AIChatContextLoadState()
     @State private var message = ""
 
     var body: some View {
@@ -40,11 +39,11 @@ struct AIChatContextSheet: View {
                                 Text(row.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }.frame(maxWidth: .infinity, alignment: .leading).padding(10)
                                 .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                        }.buttonStyle(.plain).disabled(loading)
+                        }.buttonStyle(.plain).disabled(loadState.loading)
                     }
                     if !message.isEmpty { Text(message).foregroundStyle(.secondary).padding(20) }
                 }
-            }.overlay { if loading { ProgressView() } }
+            }.overlay { if loadState.loading { ProgressView() } }
             HStack {
                 Spacer()
                 Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -54,21 +53,23 @@ struct AIChatContextSheet: View {
                 do { try await Task.sleep(nanoseconds: 150_000_000) } catch { return }
                 load()
             }
-            .onChange(of: query) { _, _ in generation = UUID(); loading = true }
-            .onDisappear { generation = UUID() }
+            .onChange(of: query) { _, _ in loadState.begin() }
+            .onDisappear { loadState.cancel() }
     }
 
     private func load() {
-        let current = UUID()
-        generation = current
-        guard let model = (NSApp.delegate as? Delegate)?.model else { return }
+        guard let model = (NSApp.delegate as? Delegate)?.model else {
+            loadState.cancel()
+            rows = []
+            message = "上下文服务不可用。"
+            return
+        }
         message = ""
         switch source {
         case .clipboard:
-            loading = true
+            let current = loadState.begin()
             model.clipboard.aiTextContexts(query: query) { items in
-                guard generation == current else { return }
-                loading = false
+                guard loadState.complete(current) else { return }
                 rows = items.map { item in
                     Candidate(id: item.id, title: item.preview, detail: item.source) { done in
                         model.clipboard.aiTextContext(id: item.id, completion: done)
@@ -77,26 +78,26 @@ struct AIChatContextSheet: View {
                 if rows.isEmpty { message = "没有可用的文本记录。可在剪贴板设置中确认历史功能是否启用。" }
             }
         case .calendar:
-            guard model.calendar.enabled, model.calendar.access == .allowed else {
-                rows = []; message = "请先在日历设置中启用功能并允许读取日历。"; return
+            loadState.performSynchronously {
+                guard model.calendar.enabled, model.calendar.access == .allowed else {
+                    rows = []; message = "请先在日历设置中启用功能并允许读取日历。"; return
+                }
+                var seen = Set<String>()
+                rows = (model.calendar.events + model.calendar.upcoming).filter {
+                    seen.insert($0.id).inserted && (query.isEmpty || ($0.title + " " + $0.notes).localizedCaseInsensitiveContains(query))
+                }.prefix(100).map { event in
+                    let body = "标题：\(event.title)\n开始：\(event.start.formatted())\n结束：\(event.end.formatted())\n地点：\(event.location)\n备注：\(event.notes)"
+                    return Candidate(id: event.id, title: event.title, detail: event.start.formatted()) { $0(body) }
+                }
+                if rows.isEmpty { message = "当前已加载的日期范围内没有匹配的日程。" }
             }
-            var seen = Set<String>()
-            rows = (model.calendar.events + model.calendar.upcoming).filter {
-                seen.insert($0.id).inserted && (query.isEmpty || ($0.title + " " + $0.notes).localizedCaseInsensitiveContains(query))
-            }.prefix(100).map { event in
-                let body = "标题：\(event.title)\n开始：\(event.start.formatted())\n结束：\(event.end.formatted())\n地点：\(event.location)\n备注：\(event.notes)"
-                return Candidate(id: event.id, title: event.title, detail: event.start.formatted()) { $0(body) }
-            }
-            if rows.isEmpty { message = "当前已加载的日期范围内没有匹配的日程。" }
         }
     }
 
     private func select(_ row: Candidate) {
-        let current = generation
-        loading = true
+        let current = loadState.begin()
         row.load { text in
-            guard current == generation else { return }
-            loading = false
+            guard loadState.complete(current) else { return }
             guard let text, !text.isEmpty else { message = "无法读取这项内容，请刷新后重试。"; return }
             add(.init(title: String(row.title.prefix(60)), text: text,
                       symbol: source == .clipboard ? "clipboard" : "calendar"))

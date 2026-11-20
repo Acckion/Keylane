@@ -90,8 +90,8 @@ struct AIChatView: View {
                 composer.clear(); transcriptSearch = ""; searchIndex = 0; composer.focusRequested.send()
             }
         }
-        .onChange(of: controller.chatID) { old, current in
-            if column == .conversation, old != nil && current == nil { composer.text = "" }
+        .onReceive(controller.chatReset) { _ in
+            if column == .conversation { composer.clear() }
         }
         .onExitCommand {
             if presentation.actionsVisible { presentation.actionsVisible = false }

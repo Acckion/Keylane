@@ -240,13 +240,14 @@ struct AIChatComposerView: View {
         composer.selection = NSRange(location: composer.text.utf16.count, length: 0)
         composer.focusRequested.send()
     }
-    private func addAttachment(_ attachment: AIChatAttachment) {
-        let text = AIChatAttachment.requestText(question: composer.text, attachments: composer.attachments + [attachment])
-        guard text.utf8.count <= 32_000 else {
-            attachmentError = "问题与上下文合计不能超过 32,000 字节，请缩短内容后重试。"
+    private func addAttachment(_ attachment: AIChatAttachment, for draft: UUID? = nil) {
+        let expectedDraft = draft ?? composer.draftID
+        guard composer.appendAttachment(attachment, for: expectedDraft) else {
+            if composer.draftID == expectedDraft {
+                attachmentError = "问题与上下文合计不能超过 32,000 字节，请缩短内容后重试。"
+            }
             return
         }
-        composer.attachments.append(attachment)
         composer.focusRequested.send()
     }
 
@@ -263,8 +264,8 @@ struct AIChatComposerView: View {
             contextReadTask = Task { @MainActor in
                 do {
                     let attachment = try await AIChatImageContext.read(url)
-                    guard !Task.isCancelled, composer.draftID == draft else { return }
-                    addAttachment(attachment)
+                    guard !Task.isCancelled else { return }
+                    addAttachment(attachment, for: draft)
                 } catch is CancellationError { }
                 catch { if composer.draftID == draft { attachmentError = error.localizedDescription } }
             }

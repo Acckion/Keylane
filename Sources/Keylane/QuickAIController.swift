@@ -32,6 +32,8 @@ final class QuickAIController: ObservableObject {
     }
     /// Emitted after successfully restoring history, independently of first-send ID allocation.
     let historyOpened = PassthroughSubject<UUID, Never>()
+    /// A controller reset invalidates the whole draft, including asynchronous context work.
+    let chatReset = PassthroughSubject<Void, Never>()
     private var historyRevision = UUID()
     @Published private var conversationModel: AIChatRecord.ModelReference?
     private var restoringChat = false
@@ -117,7 +119,7 @@ final class QuickAIController: ObservableObject {
         }
 
         let system = instructions ?? (isInChat ? effectiveInstructions : nil)
-        guard (system?.utf8.count ?? 0) <= 32_000 else { status = "项目与会话指令过长，请缩短后重试。"; return false }
+        guard validateInstructions(system) else { return false }
         let requestMessages = messages(for: requestText, instructions: system)
         if !isInChat && turns.count >= turnLimit { turns.removeFirst(turns.count - turnLimit + 1) }
         let turn = Turn(question: question, attachments: attachments.isEmpty ? nil : attachments)
@@ -204,11 +206,12 @@ final class QuickAIController: ObservableObject {
         let revision = UUID()
         historyRevision = revision
         loadingChat = true
-        history.perform({ try $0.load(id) }) { [weak self] result in
+        history.perform({ store in (try store.load(id), try store.list()) }) { [weak self] result in
             guard let self, self.isInChat, self.historyRevision == revision else { return }
             self.loadingChat = false
             switch result {
-            case .success(let record?):
+            case .success(let (record?, summaries)):
+                self.applyHistory(.success(summaries))
                 self.restoringChat = true
                 defer { self.restoringChat = false }
                 self.currentProjectID = self.chats.first { $0.id == record.id }?.projectID
@@ -220,7 +223,7 @@ final class QuickAIController: ObservableObject {
                 self.status = ""
                 self.historyError = ""
                 self.historyOpened.send(record.id)
-            case .success(nil), .failure:
+            case .success, .failure:
                 self.historyError = "无法读取这段对话。"
             }
         }
@@ -268,11 +271,19 @@ final class QuickAIController: ObservableObject {
     }
 
     func transcript(_ id: UUID, completion: @escaping (String?) -> Void) {
+        if id == chatID {
+            completion(Self.transcript(turns))
+            return
+        }
         guard let history else { completion(nil); return }
         history.perform({ try $0.load(id) }) { result in
             guard case .success(let record?) = result else { completion(nil); return }
-            completion(record.content.turns.map { "## 用户\n\n" + $0.requestText + "\n\n## 助手\n\n" + $0.answer }.joined(separator: "\n\n"))
+            completion(Self.transcript(record.content.turns))
         }
+    }
+
+    private static func transcript(_ turns: [Turn]) -> String {
+        turns.map { "## 用户\n\n" + $0.requestText + "\n\n## 助手\n\n" + $0.answer }.joined(separator: "\n\n")
     }
 
     @discardableResult
@@ -293,6 +304,7 @@ final class QuickAIController: ObservableObject {
         guard !input.isEmpty, input.utf8.count <= 32_000 else { return false }
         let attachments = turns[index].attachments ?? []
         guard AIChatAttachment.requestText(question: input, attachments: attachments).utf8.count <= 32_000 else { return false }
+        guard validateInstructions(effectiveInstructions) else { return false }
         startBranch(with: Array(turns.prefix(index)))
         return submit(input, attachments: attachments)
     }
@@ -313,6 +325,14 @@ final class QuickAIController: ObservableObject {
         guard isInChat, !loadingChat else { return }
         chatTitle = String(title.prefix(120))
         scheduleChatSave()
+    }
+
+    private func validateInstructions(_ instructions: String?) -> Bool {
+        guard (instructions?.utf8.count ?? 0) <= 32_000 else {
+            status = "项目与会话指令过长，请缩短后重试。"
+            return false
+        }
+        return true
     }
 
     private func startBranch(with prefix: [Turn]) {
@@ -394,6 +414,7 @@ final class QuickAIController: ObservableObject {
         chatInstructions = ""
         restoringChat = false
         status = ""
+        chatReset.send()
     }
 
     private func scheduleChatSave() {
