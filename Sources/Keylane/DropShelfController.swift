@@ -10,6 +10,14 @@ final class DropShelfController: ObservableObject {
     @Published var copyByDefault: Bool { didSet { preferences.set(copyByDefault, forKey: "dropShelf.copy"); updateDragOperations() } }
     @Published var keepOpen: Bool { didSet { preferences.set(keepOpen, forKey: "dropShelf.keepOpen") } }
     @Published var shakeEnabled: Bool { didSet { preferences.set(shakeEnabled, forKey: "dropShelf.shake") } }
+    @Published var shakeSensitivity: ShelfShakeSensitivity { didSet { preferences.set(shakeSensitivity.rawValue, forKey: "dropShelf.shakeSensitivity") } }
+    @Published var keyActivation: Bool { didSet { preferences.set(keyActivation, forKey: "dropShelf.keyActivation") } }
+    @Published var activationKey: ShelfActivationKey { didSet { preferences.set(activationKey.rawValue, forKey: "dropShelf.activationKey") } }
+    @Published var dropToNotch: Bool { didSet { preferences.set(dropToNotch, forKey: "dropShelf.notch"); if !dropToNotch { notchTarget?.hide() } } }
+    @Published var notchHighlight: ShelfNotchHighlight { didSet { preferences.set(notchHighlight.rawValue, forKey: "dropShelf.notchHighlight") } }
+    @Published var defaultPosition: ShelfDefaultPosition { didSet { preferences.set(defaultPosition.rawValue, forKey: "dropShelf.defaultPosition") } }
+    @Published var addBehavior: ShelfAddBehavior { didSet { preferences.set(addBehavior.rawValue, forKey: "dropShelf.addBehavior") } }
+    @Published var ignoredApps: [String: String] { didSet { preferences.set(ignoredApps, forKey: "dropShelf.ignoredApps") } }
     @Published var error = ""
     @Published private(set) var managedShelves: [DropShelfStore.Shelf] = []
     @Published var selectedShelfID: UUID?
@@ -62,21 +70,28 @@ final class DropShelfController: ObservableObject {
     private weak var registry: MenuBarRegistry?
     private var timer: Timer?
     private var automaticShelves = Set<UUID>()
-    @discardableResult func createForDrag() -> DropShelfWindow? {
+    @discardableResult func createForDrag(nearPointer: Bool = true) -> DropShelfWindow? {
         let mouse = NSEvent.mouseLocation
         let screens = NSScreen.screens
         let current = screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         let areas = [current].compactMap { $0?.visibleFrame }
             + screens.filter { $0 != current }.map(\.visibleFrame)
         let occupied = windows.values.filter { $0.isVisible && !$0.isMiniaturized }.map(\.frame)
-        guard let origin = Self.dragShelfOrigin(near: mouse, in: areas, avoiding: occupied),
-              let window = create(activate: false, origin: origin) else { return nil }
+        let origin = nearPointer ? Self.dragShelfOrigin(near: mouse, in: areas, avoiding: occupied)
+            : areas.lazy.compactMap { area in
+                let preferred = self.defaultPosition.origin(size: DropShelfWindow.compactSize, in: area, mouse: mouse)
+                return Self.availableShelfOrigin(preferred: preferred, in: [area], avoiding: occupied)
+            }.first
+        guard let origin, let window = create(activate: false, origin: origin, dragEntry: nearPointer) else { return nil }
         automaticShelves.insert(window.shelfID)
         return window
     }
     static func dragShelfOrigin(near mouse: NSPoint, in areas: [NSRect], avoiding occupied: [NSRect]) -> NSPoint? {
+        let preferred = NSPoint(x: mouse.x + 25, y: mouse.y - DropShelfWindow.compactSize.height / 2)
+        return availableShelfOrigin(preferred: preferred, in: areas, avoiding: occupied)
+    }
+    private static func availableShelfOrigin(preferred: NSPoint, in areas: [NSRect], avoiding occupied: [NSRect]) -> NSPoint? {
         let size = DropShelfWindow.compactSize
-        let preferred = NSPoint(x: mouse.x + 25, y: mouse.y - size.height / 2)
         for area in areas where area.width >= size.width && area.height >= size.height {
             func clampX(_ x: CGFloat) -> CGFloat { min(max(x, area.minX), area.maxX - size.width) }
             func clampY(_ y: CGFloat) -> CGFloat { min(max(y, area.minY), area.maxY - size.height) }
@@ -119,7 +134,10 @@ final class DropShelfController: ObservableObject {
     private var lastX: CGFloat?
     private var direction: CGFloat = 0
     private var turns: [TimeInterval] = []
-    private var shookThisDrag = false
+    private var activatedThisDrag = false
+    private var dragSourceApp: String?
+    private var idleDragPasteboardChange = NSPasteboard(name: .drag).changeCount
+    private var notchTarget: ShelfNotchTarget?
     private var refreshTick = 0
     private var appearance: NSAppearance?
     func applyAppearance(_ value: String) {
@@ -137,6 +155,14 @@ final class DropShelfController: ObservableObject {
         copyByDefault = preferences.bool(forKey: "dropShelf.copy")
         keepOpen = preferences.bool(forKey: "dropShelf.keepOpen")
         shakeEnabled = (preferences.object(forKey: "dropShelf.shake") as? Bool) ?? true
+        shakeSensitivity = ShelfShakeSensitivity(rawValue: preferences.string(forKey: "dropShelf.shakeSensitivity") ?? "") ?? .standard
+        keyActivation = (preferences.object(forKey: "dropShelf.keyActivation") as? Bool) ?? false
+        activationKey = ShelfActivationKey(rawValue: preferences.string(forKey: "dropShelf.activationKey") ?? "") ?? .command
+        dropToNotch = preferences.bool(forKey: "dropShelf.notch")
+        notchHighlight = ShelfNotchHighlight(rawValue: preferences.string(forKey: "dropShelf.notchHighlight") ?? "") ?? .hover
+        defaultPosition = ShelfDefaultPosition(rawValue: preferences.string(forKey: "dropShelf.defaultPosition") ?? "") ?? .topLeft
+        addBehavior = ShelfAddBehavior(rawValue: preferences.string(forKey: "dropShelf.addBehavior") ?? "") ?? .newWindow
+        ignoredApps = (preferences.dictionary(forKey: "dropShelf.ignoredApps") as? [String: String]) ?? [:]
     }
     func start(registry: MenuBarRegistry) {
         guard !active else { return }
@@ -150,39 +176,37 @@ final class DropShelfController: ObservableObject {
         registry.register(id: Self.menuID, owner: "keylane.drop-shelf", title: "暂存架", defaultVisible: true,
                           presentation: .init(symbol: "tray", toolTip: "拖入内容创建暂存架")) { [weak self] in self?.menu() ?? [] }
         registry.setDropHandler(id: Self.menuID, types: Self.types) { [weak self] board in
-            guard let self, let window = self.createForDrag() else { return false }
-            return window.receive(board, isDrag: true)
+            self?.addContents(board, dragging: true) ?? false
         }
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in self?.tick() }
     }
     func stop() {
         active = false; timer?.invalidate(); timer = nil
+        notchTarget?.hide(); notchTarget = nil
         endManagement()
         for window in Array(windows.values) { window.close() }
         windows.removeAll()
         registry?.unregister(owner: "keylane.drop-shelf"); registry = nil
         // Keep the store until promise callbacks finish; old windows revoke their import batches.
     }
-    @discardableResult func create(activate: Bool = true, origin: NSPoint? = nil) -> DropShelfWindow? {
+    @discardableResult func create(activate: Bool = true, origin: NSPoint? = nil, dragEntry: Bool = false) -> DropShelfWindow? {
         guard active, let store else { return nil }
-        do { let id = try store.create(); return reveal(id, activate: activate, origin: origin) }
+        do { let id = try store.create(); return reveal(id, activate: activate, origin: origin, dragEntry: dragEntry) }
         catch { report(error); return nil }
     }
-    @discardableResult func reveal(_ id: UUID, activate: Bool = true, origin: NSPoint? = nil) -> DropShelfWindow? {
+    @discardableResult func reveal(_ id: UUID, activate: Bool = true, origin: NSPoint? = nil, dragEntry: Bool = false) -> DropShelfWindow? {
         guard active, let store, store.shelf(id) != nil else { return nil }
         let window: DropShelfWindow
         if let existing = windows[id] { window = existing }
         else {
-            window = DropShelfWindow(id: id, store: store, controller: self)
+            window = DropShelfWindow(id: id, store: store, controller: self, dragEntry: dragEntry)
             windows[id] = window
             window.appearance = appearance
             let mouse = NSEvent.mouseLocation
             let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
             if let origin { window.setFrameOrigin(origin) }
             else if let frame = screen?.visibleFrame {
-                let x = min(max(mouse.x + 25, frame.minX), frame.maxX - window.frame.width)
-                let y = min(max(mouse.y - window.frame.height / 2, frame.minY), frame.maxY - window.frame.height)
-                window.setFrameOrigin(NSPoint(x: x, y: y))
+                window.setFrameOrigin(defaultPosition.origin(size: window.frame.size, in: frame, mouse: mouse))
             }
         }
         window.refresh()
@@ -195,7 +219,16 @@ final class DropShelfController: ObservableObject {
         guard windows.removeValue(forKey: window.shelfID) != nil else { return }
         do { try store?.remember(window.shelfID, keeping: Set(windows.keys)) } catch { report(error) }
     }
-    func clipboardShelf() { _ = create()?.receive(.general) }
+    func clipboardShelf() { _ = addContents(.general, dragging: false) }
+    @discardableResult func addContents(_ board: NSPasteboard, dragging: Bool) -> Bool {
+        let existing = addBehavior == .existingWindow ? NSApp.orderedWindows.compactMap { $0 as? DropShelfWindow }
+            .first { $0.controller === self && $0.isVisible && !$0.isMiniaturized && !$0.showsDragEntry } : nil
+        guard let window = existing ?? (dragging ? createForDrag(nearPointer: false) : create()) else { return false }
+        let accepted = window.receive(board, isDrag: dragging)
+        if accepted, existing != nil { _ = reveal(window.shelfID, activate: !dragging) }
+        if !accepted, dragging, existing == nil { window.close() }
+        return accepted
+    }
     func selectShelf() {
         if let window = windows.values.sorted(by: { $0.shelfID.uuidString < $1.shelfID.uuidString }).first { _ = reveal(window.shelfID) }
         else if let id = store?.shelves.first?.id { _ = reveal(id) }
@@ -225,24 +258,52 @@ final class DropShelfController: ObservableObject {
     private func tick() {
         refreshTick += 1
         if refreshTick % 40 == 0 { windows.values.forEach { $0.refreshFiles() } }
-        guard NSEvent.pressedMouseButtons & 1 != 0 else {
-            finishDragActivation()
-            lastX = nil; direction = 0; turns = []; shookThisDrag = false; return
-        }
-        guard shakeEnabled, !shookThisDrag else { return }
         let board = NSPasteboard(name: .drag)
-        guard board.types?.contains(where: { Self.types.contains($0) }) == true,
-              board.data(forType: Self.marker) == nil else { return }
-        let x = NSEvent.mouseLocation.x
+        guard NSEvent.pressedMouseButtons & 1 != 0 else {
+            idleDragPasteboardChange = board.changeCount
+            finishDragActivation()
+            if notchTarget?.receiving != true { notchTarget?.hide() }
+            lastX = nil; direction = 0; turns = []; activatedThisDrag = false; dragSourceApp = nil
+            return
+        }
+        guard board.changeCount != idleDragPasteboardChange,
+              board.types?.contains(where: { Self.types.contains($0) }) == true,
+              board.data(forType: Self.marker) == nil else { notchTarget?.hide(); return }
+        if dragSourceApp == nil { dragSourceApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
+        guard dragSourceApp.map({ ignoredApps[$0] == nil }) ?? true else { notchTarget?.hide(); return }
+        let mouse = NSEvent.mouseLocation
+        updateNotchTarget(at: mouse)
+        guard !activatedThisDrag else { return }
+        if keyActivation, activationKey.matches(NSEvent.modifierFlags) {
+            activatedThisDrag = createForDrag() != nil
+            return
+        }
+        guard shakeEnabled else { return }
+        let x = mouse.x
         defer { lastX = x }
-        guard let lastX, abs(x - lastX) > 12 else { return }
+        guard let lastX, abs(x - lastX) > shakeSensitivity.distance else { return }
         let next: CGFloat = x > lastX ? 1 : -1
         let now = ProcessInfo.processInfo.systemUptime
         turns = turns.filter { now - $0 < 0.8 }
         if direction != 0 && next != direction { turns.append(now) }
         direction = next
-        if turns.count >= 3 { shookThisDrag = true; createForDrag() }
+        if turns.count >= shakeSensitivity.reversals { activatedThisDrag = createForDrag() != nil }
     }
+
+    private func updateNotchTarget(at mouse: NSPoint) {
+        guard dropToNotch,
+              let region = NSScreen.screens.compactMap(ShelfNotchTarget.region).first(where: { $0.insetBy(dx: -18, dy: -26).contains(mouse) }) else {
+            notchTarget?.hide()
+            return
+        }
+        if notchTarget == nil {
+            notchTarget = ShelfNotchTarget { [weak self] board in
+                self?.addContents(board, dragging: true) ?? false
+            }
+        }
+        notchTarget?.show(in: region, highlight: notchHighlight)
+    }
+
 }
 
 /// Separate the revocable import transaction from AppKit's drag-callback-only receiver.
@@ -347,6 +408,9 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     private var receivedSequence: Int?
     private var refreshInProgress = false
     private var internalReorder = false
+    private let shelfChrome = NSStackView()
+    private let entryPrompt = NSTextField(labelWithString: "放置你的内容项")
+    private(set) var showsDragEntry: Bool
     private let preview = DropShelfPreview(frame: .zero)
     let dropOverlay = DropShelfCaptureOverlay(frame: .zero)
     private let filename = NSButton(title: "暂存架", target: nil, action: nil)
@@ -377,7 +441,8 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         return super.performKeyEquivalent(with: event)
     }
     override var canBecomeKey: Bool { true }
-    init(id: UUID, store: DropShelfStore, controller: DropShelfController) {
+    init(id: UUID, store: DropShelfStore, controller: DropShelfController, dragEntry: Bool = false) {
+        showsDragEntry = dragEntry
         shelfID = id; self.store = store; self.controller = controller
         super.init(contentRect: NSRect(origin: .zero, size: Self.compactSize), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         // Child controls (including the filename capsule) are not registered destinations.
@@ -409,7 +474,20 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
             if clip.bounds.contains(clip.convert(point, from: nil)) { self.table.deselectAll(nil) }
         }
         dropOverlay.receive = { [weak self] in self?.receive($0, isDrag: true) ?? false }
-        dropOverlay.dragActivity = { [weak self] in self?.receivingDrag = $0 }
+        dropOverlay.landingCenter = { [weak self] in
+            guard let self else { return .zero }
+            if !self.showsDragEntry && !self.expanded, !self.preview.imageView.bounds.isEmpty {
+                let bounds = self.preview.imageView.bounds
+                return self.preview.imageView.convert(NSPoint(x: bounds.midX, y: bounds.midY), to: self.dropOverlay)
+            }
+            return NSPoint(x: self.dropOverlay.bounds.midX, y: self.dropOverlay.bounds.midY)
+        }
+        dropOverlay.landingDidFinish = { [weak self] in self?.finishDragEntryIfReady() }
+        dropOverlay.dragActivity = { [weak self] active in
+            guard let self else { return }
+            self.receivingDrag = active
+            self.dropOverlay.setEntryHighlight(self.showsDragEntry && active)
+        }
         dropOverlay.setAccessibilityElement(false)
         card.addSubview(dropOverlay, positioned: .above, relativeTo: surface)
         let closeChrome = configureRound(closeControl, symbol: "xmark", label: "关闭暂存架", action: #selector(closeShelf))
@@ -456,12 +534,28 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         details.addArrangedSubview(scroll)
         details.isHidden = true
         for view in [NSView(), filename, NSView()] { capsule.addArrangedSubview(view) }; capsule.distribution = .equalCentering
-        let stack = NSStackView(views: [top, preview, capsule, details, status])
+        let stack = shelfChrome
+        for view in [top, preview, capsule, details, status] { stack.addArrangedSubview(view) }
+        stack.isHidden = dragEntry
+        stack.wantsLayer = true
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
         surface.addSubview(stack); stack.translatesAutoresizingMaskIntoConstraints = false
         let grabber = NSView(); grabber.wantsLayer = true; grabber.layer?.cornerRadius = 2
         grabber.layer?.backgroundColor = NSColor.tertiaryLabelColor.cgColor
         surface.addSubview(grabber); grabber.translatesAutoresizingMaskIntoConstraints = false
+        entryPrompt.isHidden = !dragEntry
+        entryPrompt.wantsLayer = true
+        entryPrompt.font = .systemFont(ofSize: 15, weight: .semibold)
+        entryPrompt.textColor = .secondaryLabelColor
+        entryPrompt.alignment = .center
+        entryPrompt.lineBreakMode = .byTruncatingTail
+        surface.addSubview(entryPrompt)
+        entryPrompt.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            entryPrompt.centerXAnchor.constraint(equalTo: surface.centerXAnchor),
+            entryPrompt.centerYAnchor.constraint(equalTo: surface.centerYAnchor),
+            entryPrompt.widthAnchor.constraint(lessThanOrEqualTo: surface.widthAnchor, constant: -24)
+        ])
         NSLayoutConstraint.activate([grabber.centerXAnchor.constraint(equalTo: surface.centerXAnchor), grabber.topAnchor.constraint(equalTo: surface.topAnchor, constant: 5), grabber.widthAnchor.constraint(equalToConstant: 36), grabber.heightAnchor.constraint(equalToConstant: 4)])
         for view in [top, preview, capsule, status] {
             view.translatesAutoresizingMaskIntoConstraints = false
@@ -502,6 +596,27 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         table.selectRowIndexes(IndexSet(rows.indices.filter { selected.contains(rows[$0].id) }), byExtendingSelection: false)
         updateCompactPreview()
         expandedTitle.stringValue = contentTitle
+        finishDragEntryIfReady()
+    }
+
+    private func finishDragEntryIfReady() {
+        guard showsDragEntry, !rows.isEmpty, !dropOverlay.waitsForNativeLanding else { return }
+        showsDragEntry = false
+        dropOverlay.setEntryHighlight(false)
+        shelfChrome.isHidden = false
+        guard isVisible, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+            entryPrompt.isHidden = true
+            return
+        }
+        shelfChrome.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.36
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            self.shelfChrome.animator().alphaValue = 1
+            self.entryPrompt.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            self?.entryPrompt.isHidden = true
+        }
     }
     @discardableResult
     private func configureRound(_ button: DropShelfHoverButton, in chrome: NSView = NSView(), symbol: String, label: String, action: Selector) -> NSView {
@@ -572,6 +687,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
 
     @objc private func closeShelf() { if expanded { toggleDetails() } else { dismissAnimated() } }
     @objc func toggleDetails() {
+        guard !showsDragEntry else { return }
         expanded.toggle(); details.isHidden = !expanded; detailWidth?.isActive = expanded
         preview.isHidden = expanded; capsule.isHidden = expanded
         expandedTitle.isHidden = !expanded; sortChrome.isHidden = !expanded; viewControl.isHidden = !expanded
@@ -1199,6 +1315,10 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
     }
     var feedbackText: String { status.stringValue }
     private func message(_ text: String, failed: Bool = false) {
+        if showsDragEntry {
+            entryPrompt.stringValue = failed ? text : batches.isEmpty ? "放置你的内容项" : "正在接收文件…"
+            return
+        }
         status.stringValue = text; status.textColor = failed ? .systemRed : .secondaryLabelColor; status.setAccessibilityValue(text)
         let show = failed || !batches.isEmpty
         if status.isHidden == show { status.isHidden = !show; resizeCard() }
