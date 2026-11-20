@@ -139,6 +139,7 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
     private var didMoveWindow = false
     private(set) var dock: DropShelfDock?
     private let dockHandle = NSImageView()
+    private let entryOutline = NSView()
     private var dockAnimation: Timer?
     private weak var hoveredButton: DropShelfHoverButton?
     private var hoverArea: NSTrackingArea?
@@ -149,8 +150,24 @@ final class DropShelfCaptureOverlay: DropShelfDropView {
         dockHandle.isHidden = true
         dockHandle.setAccessibilityElement(false)
         addSubview(dockHandle)
+        entryOutline.frame = bounds
+        entryOutline.autoresizingMask = [.width, .height]
+        entryOutline.wantsLayer = true
+        entryOutline.layer?.cornerRadius = VisualStyle.launcherCornerRadius
+        entryOutline.layer?.cornerCurve = .continuous
+        entryOutline.layer?.borderWidth = 4
+        entryOutline.layer?.borderColor = NSColor.systemBlue.cgColor
+        entryOutline.isHidden = true
+        entryOutline.setAccessibilityElement(false)
+        addSubview(entryOutline)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    var showsEntryHighlight: Bool { !entryOutline.isHidden }
+
+    func setEntryHighlight(_ highlighted: Bool) {
+        entryOutline.isHidden = !highlighted
+    }
 
     override func layout() {
         super.layout()
