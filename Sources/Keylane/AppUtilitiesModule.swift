@@ -8,8 +8,13 @@ enum AppUtilitiesModule {
     static let settingsID = "keylane.app-utilities"
     static let cameraPageID = PageID(rawValue: "CameraPreview")
 
-    static func make(model: Model) -> LauncherModule {
+    static func make(
+        model: Model,
+        storeCapability: RaycastStoreAppCapability? = nil,
+        storeSetup: RaycastStoreSetupProvider? = nil
+    ) -> LauncherModule {
         let releaseNotes = ReleaseNotesLauncher(model: model)
+        let store = ExtensionStoreController(capability: storeCapability, setup: storeSetup)
         let capture = PermissionFeature("screenCapture.enabled", authorization: .screenCapture, observeImmediately: false)
         let windowCapture = PermissionFeature("keylaneWindowCapture.enabled", authorization: .screenCapture, observeImmediately: false)
         let camera = model.cameraPreview
@@ -53,7 +58,7 @@ enum AppUtilitiesModule {
             command("send-keylane-feedback", "发送 Keylane 反馈", "exclamationmark.bubble", ["Send Feedback", "报告问题"],
                     action: KeylaneToolActions.sendFeedback),
             command("share-keylane", "分享 Keylane", "square.and.arrow.up", ["Share Keylane"], action: KeylaneToolActions.share),
-            placeholder("keylane-extension-store", "扩展商店", "bag", "Store"),
+            store.command,
             .init(declaration: .init(id: .init(rawValue: "screenshot"), title: "Screenshot / 截图", detail: "截取屏幕区域",
                                      symbol: "camera.viewfinder", keywords: ["屏幕截取", "截屏"], destination: .action,
                                      settingsPage: "keylane.app-utilities"),
@@ -82,7 +87,7 @@ enum AppUtilitiesModule {
             return AnyView(KeylaneToolPreferences(model: model, camera: camera, commands: commands))
         })
         return LauncherModule(id: .init(rawValue: settingsID), title: "Keylane 工具", symbol: "wrench.and.screwdriver",
-                              commands: commands, pages: releaseNotes.pages + [cameraPage(model: model, permission: cameraPermission)],
+                              commands: commands, pages: releaseNotes.pages + [store.page(model: model), cameraPage(model: model, permission: cameraPermission)],
                               settings: [settings], services: [.init(start: { [weak model] in
             capture.startObserving()
             windowCapture.startObserving()

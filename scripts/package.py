@@ -7,6 +7,7 @@ import sys
 import tempfile
 from signing import signing_identity
 from app_intents import extract_metadata
+from store_guest_packaging import stage_store_guest
 from versioning import load_version
 root = pathlib.Path(__file__).resolve().parent.parent
 version = load_version()
@@ -51,6 +52,12 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     with (app/'Contents/Info.plist').open('wb') as file:
         plistlib.dump(metadata, file)
     signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--timestamp=none']
+    store_assets = os.environ.get('KEYLANE_STORE_GUEST_ASSETS')
+    if store_assets:
+        try:
+            stage_store_guest(app, root, pathlib.Path(store_assets), binary.resolve(), identity, signing_options)
+        except (OSError, ValueError) as error:
+            raise SystemExit(f'Store guest is not eligible for packaging: {error}')
     entitlements = root / 'Resources/Keylane.entitlements'
     if not distribution:
         test_entitlements = plistlib.loads(entitlements.read_bytes())
