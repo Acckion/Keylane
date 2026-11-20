@@ -207,8 +207,16 @@ final class AIFileReadContinuationTests: XCTestCase {
             let retry = try await service.prepare("keylane_read_result", arguments: args, scopes: [.init(path: root.path)], lease: scopedLease, session: context)
             _ = try await service.execute(retry, lease: scopedLease, cancellation: .init(), session: context)
             await rejects(.stale) { _ = try await self.service.prepare("keylane_read_result", arguments: args, scopes: [.init(path: self.root.path)], lease: scopedLease, session: context) }
+            let renewed = try await service.prepare("keylane_read_file", arguments: ["path": .string(path), "limit": .number(path == "." ? 1 : 64)], scopes: [.init(path: root.path)], lease: scopedLease, session: context)
+            let renewedResult = try await service.execute(renewed, lease: scopedLease, cancellation: .init(), session: context)
+            let activePage = try JSONDecoder().decode([String: AIToolValue].self, from: Data(renewedResult.text.utf8))
+            let activeArgs = ["cursor": try XCTUnwrap(activePage["cursor"])]
+            let queued = try await service.prepare("keylane_read_result", arguments: activeArgs, scopes: [.init(path: root.path)], lease: scopedLease, session: context)
             scopedLease.revoke()
-            await rejects { _ = try await self.service.prepare("keylane_read_file", arguments: ["path": .string(path)], scopes: [.init(path: self.root.path)], lease: scopedLease, session: context) }
+            do {
+                _ = try await service.execute(queued, lease: scopedLease, cancellation: .init(), session: context)
+                XCTFail("Revoked source must not disclose a prepared cached page")
+            } catch { XCTAssertTrue(error is CancellationError) }
         }
     }
     func testCreationWithAReadSessionRetainsUncertainOutcomeAndNoOverwrite() async throws {
