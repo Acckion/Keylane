@@ -1,5 +1,7 @@
 # 配置备份、恢复与 Raycast 迁移
 
+> Raycast 数据导入已扩展：当前范围、逐类别进度及未支持项目见 [Raycast 导入支持进度](RAYCAST-IMPORT-COVERAGE.md)。下文 configuration v2 的有限范围仍适用于 Keylane 原生导出；历史验证记录不代表新增数据类别已经实机验收。
+
 ## 存储范围
 
 配置并不是一个可直接复制的文件。主模型的行为偏好、命令别名、热键和禁用命令在应用 UserDefaults 域；Quicklinks 在同域 `quicklinkLibrary.v1` 的 JSON Data。文件索引、剪贴板和片段等在 Application Support 内的独立存储；文件访问书签、系统权限、钥匙串及扩展原型有不同生命周期，不能随偏好直接恢复。
@@ -26,7 +28,7 @@
 
 确认导入后只在 `Application Support/Keylane/ConfigurationRecovery` 写入私有事务文件。目录权限 0700，文件 0600，只包含受影响的原值与新值，不备份整个偏好域。`pending.plist` 同时保存原值和拟写入值；成功应用后才更新 `last-import.plist`，所以暂存后取消不会破坏上一次成功导入的撤销依据。运行中的控制器继续使用原配置，需用户完全退出后重新打开。重启前可取消。
 
-下次启动在 `Delegate/Model` 和服务创建前处理事务：检查当前值与预览前快照一致，合并非相关的最新偏好，将整个域一次提交给 UserDefaults，并同步、核对受影响值。失败时回写原域，保留事务供重试或取消；退出中断后可重放已完成的事务。受影响值已变化则停止，不覆盖。该方案依赖 macOS 偏好域提交，不是跨数据库事务；本轮因此不恢复任何独立数据库。
+下次启动在 `Delegate/Model` 和服务创建前处理事务：检查当前值与预览前快照一致，合并非相关的最新偏好，将整个域一次提交给 UserDefaults，并同步、核对受影响值。失败时回写原域，保留事务供重试或取消；退出中断后可重放已完成的事务。受影响值已变化则停止，不覆盖。该方案依赖 macOS 偏好域提交，不是跨数据库事务；原生 configuration v2 因此不恢复独立数据库。Raycast 数据采用独立的启动事务，参见上方进度文档。
 
 「撤销上次导入」使用最近一次本地备份，恢复受影响键的原值，原先不存在的键会移除。只有这些值仍等于上次导入结果时才接受撤销，避免抹掉后续编辑。撤销同样重启后生效。最近一次导入覆盖上次恢复记录；这不是备份历史管理器。请在重要操作前另行导出。
 
@@ -34,7 +36,7 @@
 
 - [Raycast 官方 Settings 手册](https://manual.raycast.com/settings) 说明通过 Export & Import Settings 迁移配置；用户需先在 Raycast 导出文件，本功能不扫描其私有数据库或读取 Keychain 密码。
 - 核对 [SuperCMD V1 原始迁移实现](https://github.com/SuperCmdLabs/SuperCmd/blob/2da7b9e5dec0199a972a59cece402c85f729d5d7/src/main/raycast-config-import.ts) 与同提交 [MIT 许可](https://github.com/SuperCmdLabs/SuperCmd/blob/2da7b9e5dec0199a972a59cece402c85f729d5d7/LICENSE)。只研究公开的交换字段、加密包装与边界，未复制其实现、资源或分发产物，亦未读取闭源 V2 代码。
-- 当前 Raycast `RAYCFG3\n`：8 字节 magic、u32LE gzip 头长度、gzip JSON 头、AES-256-GCM 密文及末尾 16 字节认证标签。头版本为 3，`encryption.iv`/`encryption.salt` 为十六进制编码的各 16 字节；scrypt 固定 N=16384、r=8、p=1、dkLen=32，无 AAD。先认证再解压 payload。头与解压头上限均 64 KiB；解压 payload 上限 64 MiB，较大的历史备份会明确拒绝，建议只导出 Quicklinks。
+- 当前 Raycast `RAYCFG3\n`：8 字节 magic、u32LE gzip 头长度、gzip JSON 头、AES-256-GCM 密文及末尾 16 字节认证标签。头版本为 3，`encryption.iv`/`encryption.salt` 为十六进制编码的各 16 字节；scrypt 固定 N=16384、r=8、p=1、dkLen=32，无 AAD。先认证再解压 payload。头与解压头上限均 64 KiB；解压 payload 上限 64 MiB，较大的历史备份会明确拒绝，建议在 Raycast 中选择较少的导出类别或拆分备份。
 - 容器事实由本任务提供的脱敏结构说明与[公开格式文档](https://github.com/abue-ammar/tinycast/blob/main/docs/features/raycast-import.md)交叉核对。后者项目为 AGPL，未读取或复用其解码器源码；本实现独立编写，scrypt 使用 RFC 7914 算法与公开测试向量，并对照 Python hashlib.scrypt。
 - 兼容 SuperCMD V1 所述旧 CBC/gzip 包装与旧 `builtin_package_*` JSON，使用 CommonCrypto/CryptoKit/zlib 本地处理。旧 CBC 没有认证保障，应仅使用可信文件。密码只在内存中使用，不作为进程参数，不写临时明文、日志或导入备份。Swift 运行时无法保证所有密码副本立即清零。
 

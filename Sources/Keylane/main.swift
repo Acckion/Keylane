@@ -1619,6 +1619,16 @@ if CommandLine.arguments.dropFirst() == ["--verify-dictation-ui"] {
     catch { fputs("Dictation UI fixture failed: \(error)\n", stderr); exit(1) }
 }
 #endif
+#if DEBUG
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--inspect-raycast-import" {
+    do { try RaycastMigrationFixture.inspect(URL(fileURLWithPath:CommandLine.arguments[2])); exit(0) }
+    catch { fputs("Read-only Raycast inspection failed. No settings applied.\n", stderr); exit(1) }
+}
+if CommandLine.arguments.dropFirst() == ["--verify-raycast-migration"] {
+    do { try RaycastMigrationFixture.run(); exit(0) }
+    catch { fputs("Raycast migration fixture failed: \(error)\n", stderr); exit(1) }
+}
+#endif
 ConfigurationTransfer.finishPending()
 let delegate = Delegate()
 application.delegate = delegate
