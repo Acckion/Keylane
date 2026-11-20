@@ -87,7 +87,7 @@ struct CompactLauncherBar<Search: View>: View, Animatable {
                         Capsule()
                             .fill(reduceTransparency ? Color(nsColor: .windowBackgroundColor) : .clear)
                             .frame(width: searchWidth, height: diameter)
-                            .glassEffect(reduceTransparency ? .identity : .regular, in: Capsule())
+                            .glassEffect(reduceTransparency ? .identity : LauncherGlassMaterial.swiftUI, in: Capsule())
                             .opacity(glassOpacity)
                     }
                     if progress > 0 {
@@ -95,7 +95,7 @@ struct CompactLauncherBar<Search: View>: View, Animatable {
                             Circle()
                                 .fill(reduceTransparency ? Color(nsColor: .windowBackgroundColor) : .clear)
                                 .frame(width: diameter, height: diameter)
-                                .glassEffect(reduceTransparency ? .identity : .regular, in: Circle())
+                                .glassEffect(reduceTransparency ? .identity : LauncherGlassMaterial.swiftUI, in: Circle())
                                 .scaleEffect(button.scale)
                                 .opacity(button.opacity)
                                 .offset(x: button.offset)

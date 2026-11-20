@@ -47,6 +47,8 @@
 
 ## 启动器界面组件
 
+右下角主动作统一使用 `LauncherFooterActionBar`。按标题和键帽的实际宽度收紧，总宽度最大 360pt；超出时仅标题尾部省略，键帽和操作入口保留。单动作表单也沿用相同规则。页面不再指定独立的动作宽度上限，避免普通应用名称被提前截断。
+
 - 普通结果用 `ResultListRow`。主搜索使用 `.root` 布局，二级列表使用标准布局。带选中状态的列表用 `SelectableResultList` 管理滚动定位。主搜索和文件结果用 `CommandID` 保持选中项，结果重排后按同一 ID 执行。文件类型随查询结果发布，筛选与结果行复用同一份元数据。
 - 左右分栏使用 `ResultDetailLayout`，预览和信息由 `ResultDetailPane` 独立滚动。Quick Look 保留自身滚动，固定尺寸的图片预览直接填入预览区。页面提供内容、查询和预览生命周期。便笺使用独立的编辑分栏。
 - 截图与 Emoji 通过 `ResultGrid` 显示内容，用 `ResultGridSelection` 处理方向键和结果变化。模块负责分组、图片和激活动作。

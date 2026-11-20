@@ -4,7 +4,7 @@ AI 设置的「模型与提供方」提供 API Key、订阅 CLI、Ollama 和自�
 
 ## API Key
 
-选择提供商、输入 Key 并验证后保存。接口地址由预设提供。模型 ID 留空采用预设，也可以修改。验证会发送简短测试消息并产生提供方用量。预设覆盖 OpenAI、Anthropic、Google、OpenRouter、DeepSeek、Groq、xAI、Mistral、Cerebras、Together AI、Fireworks、Perplexity、Cohere、Moonshot、Zhipu、Z.AI、MiniMax、Alibaba、SiliconFlow、NVIDIA、SambaNova、Hugging Face、Vercel AI Gateway 和 OpenCode，并包含部分服务的国内与国际地址。
+选择提供商、输入 Key 并验证后保存。接口地址由预设提供。模型 ID 留空采用预设，也可以修改。OpenRouter 使用官方 `GET /api/v1/key` 验证 Key，不发送生成消息，不要求默认模型可用；验证通过不保证模型权限或余额。其他提供商验证仍会发送简短测试消息并可能产生提供方用量。预设覆盖 OpenAI、Anthropic、Google、OpenRouter、DeepSeek、Groq、xAI、Mistral、Cerebras、Together AI、Fireworks、Perplexity、Cohere、Moonshot、Zhipu、Z.AI、MiniMax、Alibaba、SiliconFlow、NVIDIA、SambaNova、Hugging Face、Vercel AI Gateway 和 OpenCode，并包含部分服务的国内与国际地址。
 
 名称和地址参考 [OpenCode](https://opencode.ai/docs/providers/) 和 [models.dev](https://models.dev/)。29 条预设使用固定地址，默认模型仅为初始建议，其可用性由用户账户的验证结果确定。需要云资源标识、区域或多项凭据的 Azure、Bedrock、Vertex 等入口尚未提供一键接入。
 
@@ -44,3 +44,5 @@ Host 默认 `http://127.0.0.1:11434`，同步通过 `/v1/models` 获取已有模
 - 订阅整组重连回归：多个导入模型及入口默认绑定保持稳定，无重复导入；过期快照不能应用。旧/恢复历史不可跨账户发送，在途请求取消，新建会话才允许使用新账户；全部使用合成 CLI。
 
 - Codex 同进程身份回归：合成 CLI 在账户查询后切换后续进程的登录，生成仍绑定已核对的进程账户；新进程账户不匹配时连 thread/start 都不会发出。没有真实账户或付费调用。
+
+OpenRouter Key 验证回归使用合成响应，覆盖 Key 有效但余额为零且模型不可访问、401/403、异常响应及其他提供商原行为。未使用真实 Key 或发送真实模型请求。接口依据：https://openrouter.ai/docs/api/api-reference/api-keys/get-current-api-key 。

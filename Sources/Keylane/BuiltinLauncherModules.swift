@@ -574,7 +574,6 @@ enum BuiltinLauncherModules {
                     }
                 ]
             },
-            maximumActionWidth: 280,
             releasePreview: { FilePreview.shared.dismiss() },
             actionShortcutsEnabled: true,
             loading: controller.$searching.combineLatest(controller.$loadingDetail, controller.$indexingImageText)

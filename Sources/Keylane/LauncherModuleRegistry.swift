@@ -135,7 +135,6 @@ struct LauncherPage {
     var typeFilter: ((Binding<Bool>) -> AnyView)?
     var badgeTitle: (() -> String)?
     var badgeActions: (() -> [LauncherAction])?
-    var maximumActionWidth: CGFloat?
     var releasePreview: (() -> Void)?
     var actionShortcutsEnabled = false
     var loading: AnyPublisher<Bool, Never>?

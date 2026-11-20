@@ -1137,28 +1137,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
         window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isMovableByWindowBackground = true
-        let glass = LauncherGlassView(frame: .zero)
-        let backing = NSView()
-        backing.wantsLayer = true
-        backing.layer?.cornerRadius = VisualStyle.launcherCornerRadius
-        backing.layer?.cornerCurve = .continuous
-        backing.layer?.masksToBounds = true
         let hosting = NSHostingView(rootView: Launcher(model: model))
-        // The panel owns the viewport. SwiftUI's scaled ideal size can differ
-        // from it by a point and must not feed back into AppKit window sizing.
+        // The panel owns the viewport, including fractional interface scales.
         hosting.sizingOptions = []
-        for view in [glass as NSView, hosting as NSView] {
-            backing.addSubview(view)
-            view.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                view.leadingAnchor.constraint(equalTo: backing.leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: backing.trailingAnchor),
-                view.topAnchor.constraint(equalTo: backing.topAnchor),
-                view.bottomAnchor.constraint(equalTo: backing.bottomAnchor)
-            ])
-        }
-        launcherGlassSubscription = model.$presentedLauncherHeight.sink { [weak glass] height in
-            glass?.alphaValue = Model.launcherBackdropOpacity(at: height)
+        let backing = LauncherGlassHostView(content: hosting)
+        launcherGlassSubscription = model.$presentedLauncherHeight.sink { [weak backing] height in
+            backing?.glass.alphaValue = Model.launcherBackdropOpacity(at: height)
         }
         window.contentView = backing; window.isReleasedWhenClosed = false; window.center()
         window.delegate = self

@@ -97,7 +97,7 @@ enum NavigationLauncherModules {
         var page = LauncherPage(id: id, placeholder: placeholder, badge: (mode.title, mode.symbol))
         page.contentPlacement = .underChrome
         page.loading = controller.$status.map { $0 == .loading }.removeDuplicates().eraseToAnyPublisher()
-        page.maximumActionWidth = 258
+
         page.content = { [weak model] in
             AnyView(NavigationPage(controller: controller, mode: mode, requestAccess: { [weak model] in
                 model?.openSettings(page: "keylane.navigation")
@@ -219,7 +219,7 @@ enum NavigationLauncherModules {
         }
         var page = LauncherPage(id: id, placeholder: "按 name:、text: 或 date: 搜索截图…", badge: ("截图管理", "viewfinder"))
         page.contentPlacement = .underChrome
-        page.maximumActionWidth = 258
+
         page.releasePreview = { FilePreview.shared.dismiss() }
         page.loading = library.$scanning.combineLatest(library.$searchingText)
             .map { scanning, searchingText in scanning || searchingText }.removeDuplicates().eraseToAnyPublisher()
