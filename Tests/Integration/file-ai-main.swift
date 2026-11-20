@@ -747,6 +747,26 @@ precondition(raceChat.chatTitle == "Latest queued title · 分支")
 raceChat.closeChat()
 print("PASS review queued copy metadata: removed project stays ungrouped; immediate move and rename inherited from current storage")
 
+raceChat.beginChat()
+var moveTarget = AIChatProject()
+moveTarget.name = "Incoming move destination"
+moveTarget.instructions = "Use the latest incoming destination policy."
+var moveTargetSaved = false
+raceChat.saveProject(moveTarget) { moveTargetSaved = $0 }
+wait("Incoming destination stored") { moveTargetSaved }
+raceChat.openChat(raceChatID)
+raceChat.moveChat(raceChatID, to: moveTarget.id)
+wait("Move reconciles incoming load") { !raceChat.loadingChat && raceChat.chatID == raceChatID && raceChat.currentProjectID == moveTarget.id }
+precondition(raceChat.submit("after incoming move"))
+wait("Incoming move next request") { !raceChat.running }
+precondition((FixtureProtocol.lastMessages.first { $0["role"] == "system" }?["content"] ?? "").contains(moveTarget.instructions))
+var movedRows: [AIChatSummary]?
+raceStore.perform({ try $0.list() }) { movedRows = try! $0.get() }
+wait("Incoming move persisted") { movedRows != nil }
+precondition(movedRows?.first { $0.id == raceChatID }?.projectID == moveTarget.id)
+raceChat.closeChat()
+print("PASS review incoming move: load cannot restore old project; next request and saved metadata use destination")
+
 let commandSession = AITextCommandSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                            readKey: { "fixture-" + $0.id.uuidString })
 commandSession.prepare(.translate, selection: nil)

@@ -247,7 +247,16 @@ final class QuickAIController: ObservableObject {
             chatTitle = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
         }
         history.perform({ store in try store.update(id, change: change); return try store.list() }) { [weak self] result in
-            self?.applyHistory(result)
+            guard let self else { return }
+            self.applyHistory(result)
+            // A load queued before the move can restore the source's old group.
+            if case .project = change, case .success(let rows) = result,
+               self.isInChat, self.chatID == id,
+               let row = rows.first(where: { $0.id == id }), self.currentProjectID != row.projectID {
+                self.currentProjectID = row.projectID
+                self.stop()
+                self.saveChat()
+            }
         }
     }
 
