@@ -143,7 +143,7 @@ enum AppUtilitiesModule {
                 ViewObservation.changes(camera.$primaryDestination)
             ]).eraseToAnyPublisher(),
             enter: { _ in start(); return nil }, resume: start,
-            maximumActionWidth: 330, fullBleed: true
+            fullBleed: true
         )
     }
 
