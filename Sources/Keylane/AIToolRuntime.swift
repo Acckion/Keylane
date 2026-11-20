@@ -5,12 +5,14 @@ import KeylaneCore
 struct AIToolRecipient: Sendable {
     let destination: String
     let model: String
+    let runID = UUID()
 }
 
 struct AIToolPreparedOperation: Sendable {
     static let unapprovedResult = "目标未获核实与披露许可。本次未执行；不得据此判断目标是否存在，请用户在本机检查设置。不要重试或声称成功。"
     let displayArguments: String
     let approvalArguments: String
+    var isCurrent: @MainActor @Sendable () -> Bool = { true }
     let perform: @MainActor @Sendable () async throws -> AIToolResult
 }
 
@@ -117,6 +119,7 @@ actor AIToolRun {
     private let approve: @MainActor @Sendable (String, String) async -> Bool
     private let runScope = AIToolRunScope()
     private var budget = AIToolRunBudget()
+    private var sourceGuards: [@MainActor @Sendable () -> Bool] = []
     private var executing = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
@@ -134,7 +137,9 @@ actor AIToolRun {
         guard registrations.allSatisfy({ $0.snapshotAvailability == nil }) else { throw AIToolContractError.unavailable }
         catalog = try AIToolCatalog(registrations.map(\.definition))
         self.registrations = Dictionary(uniqueKeysWithValues: registrations.map { ($0.definition.name, $0) })
-        self.recipient = recipient
+        // A reused registration array must not turn an opaque read cursor into a
+        // cross-request or cross-model capability.
+        self.recipient = recipient.map { AIToolRecipient(destination: $0.destination, model: $0.model) }
         self.isCurrent = isCurrent
         self.approve = approve
     }
@@ -147,6 +152,7 @@ actor AIToolRun {
     func validateCurrent() async throws {
         try Task.checkCancellation()
         guard await isCurrent() else { throw CancellationError() }
+        for source in sourceGuards { guard await source() else { throw CancellationError() } }
     }
 
     func execute(_ call: AIToolCall, scope: String,
@@ -167,7 +173,7 @@ actor AIToolRun {
             try catalog.validate(call)
             guard let tool = registrations[call.name], await tool.available() else { throw AIToolContractError.unavailable }
             let prepared = try await tool.prepare?(call.arguments, recipient)
-            if let prepared { arguments = prepared.displayArguments }
+            if let prepared { arguments = prepared.displayArguments; sourceGuards.append(prepared.isCurrent) }
             try await validateCurrent()
             guard await tool.available() else { throw AIToolContractError.unavailable }
             await progress(.tool(id: ledgerID, name: name, arguments: arguments, state: .requested))

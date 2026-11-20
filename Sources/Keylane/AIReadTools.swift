@@ -94,8 +94,10 @@ enum AIReadTools {
                       let expiresAt = now().addingTimeInterval(300)
                       let prepared = try await background {
                           var locations = authorization()
-                          return try files.map { file -> (SpotlightFile, FileReference?) in
+                          return try files.compactMap { file -> (SpotlightFile, FileReference?)? in
                               try Task.checkCancellation()
+                              // A stale index must not disclose even names/paths outside current policy.
+                              guard (try? locations.item(at: file.url)) != nil else { return nil }
                               let ref: FileReference?
                               do {
                                   let url = file.url.standardizedFileURL

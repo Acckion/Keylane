@@ -124,6 +124,11 @@ import KeylaneCore
             try Data("Synthetic capacity body \(indexInBatch)".utf8).write(to: file)
             try index.put(.init(path: file.path, name: file.lastPathComponent, volume: "/", modified: 1, directory: false, symlink: false), root: scope.path, epoch: "n:fixture")
         }
+        let blockedFolder = scope.appendingPathComponent("excluded-fixture")
+        try FileManager.default.createDirectory(at: blockedFolder, withIntermediateDirectories: true)
+        let blockedFile = blockedFolder.appendingPathComponent("private-indexed.md")
+        try Data("Excluded synthetic body".utf8).write(to: blockedFile)
+        try index.put(.init(path: blockedFile.path, name: blockedFile.lastPathComponent, volume: "/", modified: 1, directory: false, symlink: false), root: scope.path, epoch: "n:fixture")
         preferences.set([scope.path], forKey: "fileSearchSelectedScopes")
         let files = FileSearchController(directory: indexDirectory, preferences: preferences, defaultOptions: .init(roots: [scope.path]), watchChanges: false)
         defer { files.stopRuntime() }
@@ -197,6 +202,21 @@ import KeylaneCore
         fixtureClock.expireOnApproval = true
         let lateApproved = try await execute(pendingExpiry, "keylane_read_searched_file", ["reference": .string(pendingRef)])
         precondition(lateApproved.isError && !lateApproved.text.contains("replaced private body"))
+        let beforeExclusion = try run(AIReadTools.files(files))
+        let privateRows = try rows(await execute(beforeExclusion, "keylane_search_files", ["query": .string("private-indexed")]), "files")
+        precondition(privateRows.count == 1)
+        let privateRef = privateRows[0]["reference"] as! String
+        files.options.excludedPaths.append(blockedFolder.path)
+        let afterExclusion = try run(AIReadTools.files(files))
+        let excludedSearch = try await execute(afterExclusion, "keylane_search_files", ["query": .string("private-indexed")])
+        let excludedRows = try rows(excludedSearch, "files")
+        precondition(!excludedSearch.isError && excludedRows.isEmpty)
+        precondition(!excludedSearch.text.contains(blockedFile.lastPathComponent) && !excludedSearch.text.contains(blockedFolder.path))
+        let controllerRows = try await files.aiSearch("private-indexed", limit: 20)
+        precondition(controllerRows.isEmpty && files.indexPaused)
+        let excludedRead = try await execute(beforeExclusion, "keylane_read_searched_file", ["reference": .string(privateRef)])
+        precondition(excludedRead.isError && !excludedRead.text.contains("Excluded synthetic body"))
+        print("PASS explicit exclusion: paused/stale index exposes no excluded name, path, reference or body; old reference revoked immediately")
         let deletionRun = try run(AIReadTools.files(files))
         let deletionRows = try rows(await execute(deletionRun, "keylane_search_files", ["query": .string("fixture")]), "files")
         let deletedRef = deletionRows.first { $0["path"] as? String == url.path }!["reference"] as! String
