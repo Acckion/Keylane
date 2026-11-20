@@ -131,6 +131,9 @@ final class AIConfiguration: ObservableObject {
                 copy.supportsTools = nil
                 copy.hiddenFromPicker = nil
                 copy.modelTask = nil
+                if copy.taskKind != snapshot.taskKind, let base = snapshot.apiBaseURL {
+                    copy.endpoint = base.absoluteString
+                }
                 updated.connections.append(copy)
                 index = updated.connections.count - 1
                 members[model.id] = index
@@ -209,6 +212,8 @@ final class AIConfiguration: ObservableObject {
             var copy = connection
             copy.id = UUID()
             copy.model = model
+            copy.catalogUnavailable = nil
+            copy.catalogName = nil
             copy.name = connection.providerLabel + " · " + model
             copy.contextTokens = nil
             copy.supportsImages = nil
@@ -339,6 +344,16 @@ final class AIConfiguration: ObservableObject {
         var updated = state
         if let index = updated.connections.firstIndex(where: { $0.id == connection.id }) {
             let original = updated.connections[index]
+            if original.model != connection.model || original.apiBaseURL != connection.apiBaseURL
+                || original.protocolKind != connection.protocolKind || original.taskKind != connection.taskKind
+                || (original.protocolKind.isSubscription && original.requestIdentity != connection.requestIdentity) {
+                // Availability belongs to the old model/destination, not the edited connection UUID.
+                connection.catalogUnavailable = nil
+                connection.catalogName = nil
+            } else {
+                // Renaming or changing display options cannot revive an unavailable model.
+                connection.catalogUnavailable = original.catalogUnavailable
+            }
             connection.legacyAccount = original.legacyAccount
             if original.credentialURL != connection.credentialURL {
                 if let oldEndpoint = original.credentialURL?.absoluteString {

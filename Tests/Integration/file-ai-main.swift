@@ -2073,6 +2073,8 @@ precondition(!catalogConfiguration.state.connections.contains { $0.model == "sta
 catalogPreferences.removePersistentDomain(forName: catalogSuite)
 print("PASS provider catalog: large payload, metadata, persistence, shared cached picker, IDs/defaults/visibility, expiry, failure and cancellation")
 
+verifyCatalogReviewRegressions()
+
 if ProcessInfo.processInfo.environment["KEYLANE_VERIFY_OPENROUTER_PUBLIC_CATALOG"] == "1" {
     var completed = false
     Task { @MainActor in
@@ -2087,4 +2089,115 @@ if ProcessInfo.processInfo.environment["KEYLANE_VERIFY_OPENROUTER_PUBLIC_CATALOG
     while !completed, Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
     precondition(completed)
 }
+}
+
+// PR #209: task routing, repairability and display metadata during active requests.
+func verifyCatalogReviewRegressions() {
+    func wait(_ label: String, _ condition: () -> Bool) {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition(), Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
+        precondition(condition(), label)
+    }
+    let suite = "org.keylane.synthetic-catalog-review.\(UUID())"
+    let prefs = UserDefaults(suiteName: suite)!
+    defer { prefs.removePersistentDomain(forName: suite) }
+    let settings = AIConfiguration(preferences: prefs)
+    settings.setEnabled(true)
+    let speech = AIConnection(endpoint: "https://example.com/v1/audio/transcriptions", model: "whisper-1", mode: .complete, providerID: "openai")
+    precondition(settings.save(speech))
+    precondition(settings.applyProviderCatalog([.init(id: "whisper-1"), .init(id: "text-model")], snapshot: speech, at: Date()))
+    let text = settings.state.connections.first { $0.model == "text-model" }!
+    precondition(text.taskKind == .text && text.completionURL?.absoluteString == "https://example.com/v1/chat/completions")
+    precondition(AIConfiguration.credentialQueries(for: text) as NSArray == AIConfiguration.credentialQueries(for: speech) as NSArray)
+    let transportConfig = URLSessionConfiguration.ephemeral
+    transportConfig.protocolClasses = [FixtureProtocol.self]
+    let runtime = AIRuntime(configuration: transportConfig)
+    FixtureProtocol.mode = "ok"
+    var generated = false
+    Task { @MainActor in
+        _ = try! await runtime.generate(connection: text, readKey: { _ in "fixture-key" },
+                                       messages: [.init(role: .user, content: "fixture")]) { _ in }
+        generated = true
+    }
+    wait("Discovered text model uses the chat endpoint") { generated }
+    precondition(FixtureProtocol.requests.last?.url?.absoluteString == "https://example.com/v1/chat/completions")
+    precondition(settings.applyProviderCatalog([.init(id: text.model)], snapshot: speech, at: Date()))
+    var renamedSpeech = settings.state.connections.first { $0.id == speech.id }!
+    precondition(!renamedSpeech.isConfigured)
+    renamedSpeech.name = "Renamed retired transcription model"
+    renamedSpeech.catalogUnavailable = nil
+    precondition(settings.save(renamedSpeech, selectAsDefault: false))
+    precondition(settings.state.connections.first { $0.id == speech.id }?.catalogUnavailable == true)
+    var fullChat = text
+    fullChat.endpoint = "https://example.com/v1/chat/completions"
+    precondition(settings.save(fullChat))
+    precondition(settings.applyProviderCatalog([.init(id: "whisper-1"), .init(id: "text-model"), .init(id: "gpt-transcribe")], snapshot: fullChat, at: Date()))
+    let discoveredSpeech = settings.state.connections.first { $0.model == "gpt-transcribe" }!
+    precondition(discoveredSpeech.transcriptionOptions()?.transcriptionURL?.absoluteString == "https://example.com/v1/audio/transcriptions")
+    precondition(discoveredSpeech.credentialURL == fullChat.credentialURL)
+
+    // A real upstream removal marks the selected connection unavailable.
+    for route in AIRoute.allCases { settings.setDefault(text.id, for: route) }
+    settings.select(text.id)
+    precondition(settings.applyProviderCatalog([.init(id: "whisper-1")], snapshot: fullChat, at: Date()))
+    var unavailable = settings.state.connections.first { $0.id == text.id }!
+    precondition(!unavailable.isConfigured && unavailable.isValidConfiguration)
+    precondition(settings.addProviderModels(["manual-discovered-model"], from: unavailable, discoveredUsing: unavailable) == 1)
+    let manualDiscovered = settings.state.connections.first { $0.model == "manual-discovered-model" }!
+    precondition(manualDiscovered.isConfigured && manualDiscovered.catalogName == nil)
+    unavailable.name = "A rename cannot restore upstream access"
+    unavailable.catalogUnavailable = nil
+    precondition(settings.save(unavailable, selectAsDefault: false))
+    precondition(settings.state.connections.first { $0.id == text.id }?.catalogUnavailable == true)
+    var repaired = settings.state.connections.first { $0.id == text.id }!
+    repaired.model = "replacement-model"
+    precondition(repaired.isValidConfiguration && !repaired.isConfigured)
+    precondition(settings.save(repaired, selectAsDefault: false))
+    repaired = settings.state.connections.first { $0.id == text.id }!
+    precondition(repaired.isConfigured && repaired.catalogUnavailable == nil && repaired.catalogName == nil)
+    precondition(settings.state.selectedID == text.id && AIRoute.allCases.allSatisfy { settings.state.defaults?[$0] == text.id })
+    precondition(settings.applyProviderCatalog([.init(id: "whisper-1")], snapshot: repaired, at: Date()))
+    var moved = settings.state.connections.first { $0.id == text.id }!
+    precondition(!moved.isConfigured)
+    moved.endpoint = "https://replacement.example/v1"
+    precondition(settings.save(moved, selectAsDefault: false))
+    let active = settings.state.connections.first { $0.id == text.id }!
+    precondition(active.isConfigured && active.id == repaired.id)
+    precondition(AIConfiguration(preferences: prefs).state.connection(for: .files)?.id == text.id)
+    precondition(!settings.applyProviderCatalog([.init(id: "stale")], snapshot: repaired, at: Date()))
+
+    // Exercise production observers with requests held open across a catalog-name update.
+    var streaming = active
+    streaming.mode = .streaming
+    precondition(settings.save(streaming, selectAsDefault: false))
+    let action = AIActionSession(configuration: settings, runtime: runtime, readKey: { _ in nil })
+    let source = AIActionSource(moduleID: .init(rawValue: "fixture"),
+                              load: { .init(sourceID: "fixture", title: "Fixture", text: "selected text") },
+                              isCurrent: { _ in true })
+    let definition = AIActionDefinition(commandID: .init(rawValue: "fixture-summary"), title: "Summary", instructions: "Summarize")
+    FixtureProtocol.mode = "held-stream"
+    action.prepare(definition, source: source, allowed: { true })
+    wait("Prepare held module action") { action.canSend }
+    action.send()
+    let files = FileAIController(settings: settings, runtime: runtime, preferences: prefs, readKey: { _ in nil })
+    files.setFiles([URL(fileURLWithPath: "/synthetic/catalog-fixture.txt")])
+    files.question = "What is this file?"
+    files.send()
+    wait("Module and file requests remain active") { action.running && !action.answer.isEmpty && files.action.running && !files.answer.isEmpty }
+    let invocationID = action.invocationID
+    var presentation = streaming
+    presentation.name = "Presentation name"
+    presentation.hiddenFromPicker = true
+    presentation.catalogName = "Discovered display name"
+    precondition(presentation.executionSnapshot == streaming.executionSnapshot)
+    precondition(settings.applyProviderCatalog([.init(id: streaming.model, name: "Discovered display name")], snapshot: streaming, at: Date()))
+    RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    precondition(action.running && files.action.running && action.invocationID == invocationID)
+    var realChange = settings.state.connections.first { $0.id == text.id }!
+    realChange.endpoint = "https://another.example/v1"
+    precondition(realChange.executionSnapshot != streaming.executionSnapshot)
+    precondition(settings.save(realChange, selectAsDefault: false))
+    precondition(!action.running && !files.action.running)
+    action.clear(); files.cancel()
+    print("PASS PR209 reviews: cross-task endpoint/credentials, unavailable model and endpoint repair, rename guard, persisted defaults, and active module/file requests survive catalog names while destination edits cancel")
 }

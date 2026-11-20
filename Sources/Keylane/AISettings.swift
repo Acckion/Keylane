@@ -363,7 +363,7 @@ private struct AIConnectionEditor: View {
         }
         var edited = draft
         edited.contextTokens = Int(tokens)
-        guard edited.isConfigured else { status = "请填写有效的接口地址和模型 ID。"; return }
+        guard edited.isValidConfiguration else { status = "请填写有效的接口地址和模型 ID。"; return }
         if isNew && !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             do { try AIConfiguration.saveKey(key, for: edited) }
             catch { status = error.localizedDescription; return }
