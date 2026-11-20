@@ -8,7 +8,7 @@ enum ModuleAICommands {
                         permission: PermissionFeature? = nil, available: @escaping () -> Bool = { true },
                         updates: [AnyPublisher<Bool, Never>] = [], source: @escaping () -> AIActionSource?,
                         initialQuestion: @escaping () -> String = { "" }, fallback: @escaping (LauncherCommandOrigin) -> Void,
-                        transform: ((AIActionContext, String) throws -> String)? = nil) -> LauncherModule.Command {
+                        transform: ((AIActionContext, String) throws -> AIActionOutput)? = nil) -> LauncherModule.Command {
         .init(declaration: .init(id: definition.commandID, title: definition.title, detail: "预览后明确发送给模型",
               symbol: "sparkles", keywords: ["AI", definition.title], destination: .action, settingsPage: settings),
               available: { [weak model] in available() && model?.aiSettings.state.connection(for: .commands) != nil }, permission: permission,

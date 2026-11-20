@@ -29,7 +29,7 @@ enum AIActionLauncher {
                     AIConversationHostActions.copyText(session.answer)
                 }]
                 result.append(.init(id: "continue-ai-action", title: "继续到 Quick AI", icon: "bubble.left.and.bubble.right",
-                                    enabled: !session.answer.isEmpty && !session.running && !session.preparing) { [weak model] in
+                                    enabled: session.canUseResult) { [weak model] in
                     guard let context = session.continuationContext else { return }
                     if model?.continueModuleAIAction?(context, session.answer) != true {
                         (NSApp.delegate as? Delegate)?.showLauncherFeedback("无法加入草稿：请等待附件处理完成，或缩小内容范围。", style: .failure)
@@ -38,7 +38,7 @@ enum AIActionLauncher {
                 if let id = session.commandID, let destination = model?.launcherModules?.aiResultDestination(for: id) {
                     result.append(.init(id: "ai-result-destination", title: destination.title, icon: "square.and.arrow.down", enabled: session.canUseResult) { [weak model] in
                         guard session.canUseResult, model?.launcherModules?.aiResultDestination(for: id) == destination else { return }
-                        _ = model?.runCommand(destination.commandID, origin: .menu, arguments: [session.answer])
+                        _ = model?.runCommand(destination.commandID, origin: .menu, arguments: [session.resultArgument])
                     })
                 }
                 if session.running || session.preparing { result.append(.init(id: "stop-ai-action", title: "停止", icon: "stop.fill", perform: session.cancel)) }

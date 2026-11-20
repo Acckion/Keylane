@@ -43,7 +43,7 @@ private final class ModelFixtureProtocol: URLProtocol {
                             if definition.acceptsQuestion { try await Task.sleep(for: .milliseconds(150)) }
                             return .init(sourceID: "fixture", title: "合成剪贴板记录", text: "Keylane brings your commands together. This is sample text for the shared AI action UI.")
                         }, isCurrent: { _ in true })
-                    session.prepare(definition, source: source, resultTransform: definition.commandID == EmojiAIActions.definition.commandID ? { _, result in try EmojiAIResult.normalized(result, allowed: ["😄", "❤️"]) } : nil, allowed: { true })
+                    session.prepare(definition, source: source, resultTransform: definition.commandID == EmojiAIActions.definition.commandID ? { _, result in try EmojiAIActions.output(result, allowed: ["😄", "❤️"]) } : nil, allowed: { true })
                     if definition.acceptsQuestion {
                         try await display(AnyView(LauncherCreationForm(back: {}, spacing: 16) {
                             Text(definition.title).font(.headline)

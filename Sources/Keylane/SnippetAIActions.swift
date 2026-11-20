@@ -35,7 +35,7 @@ enum SnippetAIActions {
                     }
                     return current()
                 }, initialQuestion: { index == 2 ? AITextCommandLauncher.selectedText() ?? "" : "" }, fallback: fallback,
-                transform: index == 2 ? nil : { context, result in try AITextResultValidation.preservingPlaceholders(source: context.text, result: result) })
+                transform: index == 2 ? nil : { context, result in .init(try AITextResultValidation.preservingPlaceholders(source: context.text, result: result)) })
         }
         return commands + [ModuleAICommands.attachment(model: model, moduleID: moduleID, id: attachID, title: "附加文字片段到 AI 聊天", settings: "snippets", source: current, fallback: fallback)]
     }

@@ -2270,11 +2270,11 @@ FixtureProtocol.mode = "ok"
 validatedAction.send()
 wait("Buffered invalid result rejected") { !validatedAction.preparing && !validatedAction.running }
 precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult && validatedAction.status == AIActionError.invalidResult.localizedDescription)
-validatedAction.prepare(questionDefinition, source: questionSource, initialQuestion: "Original question", resultTransform: { _, _ in "validated output" }, allowed: { true })
+validatedAction.prepare(questionDefinition, source: questionSource, initialQuestion: "Original question", resultTransform: { _, _ in .init("validated output", commandArgument: "validated-command-payload") }, allowed: { true })
 wait("Buffered valid action prepared") { !validatedAction.preparing }
 validatedAction.send()
 wait("Buffered valid result accepted") { !validatedAction.preparing && !validatedAction.running }
-precondition(validatedAction.answer == "validated output" && validatedAction.canUseResult)
+precondition(validatedAction.answer == "validated output" && validatedAction.resultArgument == "validated-command-payload" && validatedAction.canUseResult)
 precondition(validatedAction.continuationContext?.text.contains("Original question") == true)
 validatedAction.question = "Edited question"
 precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult)

@@ -11,6 +11,12 @@ enum EmojiAIActions {
         questionPlaceholder: "描述你想表达的情绪、事物或场景…", showsSourcePreview: false,
         resultDestination: .init(commandID: resultsID, title: "在 Emoji 网格中查看推荐"))
 
+    static func output(_ result: String, allowed: Set<String>) throws -> AIActionOutput {
+        let glyphs = try EmojiAIResult.glyphs(result, allowed: allowed)
+        let payload = String(decoding: try JSONEncoder().encode(glyphs), as: UTF8.self)
+        return .init(glyphs.joined(separator: "  "), commandArgument: payload)
+    }
+
     static func modelIdentity(_ connection: AIConnection?) -> String {
         guard let connection else { return "" }
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
@@ -28,7 +34,7 @@ enum EmojiAIActions {
             }, initialQuestion: { controller.query }, fallback: { [weak model] in model?.openPage(EmojiSearchController.pageID, origin: $0) },
             transform: { context, result in
                 let allowed = Set(controller.aiCatalog.filter { context.sourceID == "all" || $0.category == context.sourceID }.map(\.glyph))
-                return try EmojiAIResult.normalized(result, allowed: allowed)
+                return try output(result, allowed: allowed)
             })
         let show = LauncherModule.Command(declaration: .init(id: resultsID, title: "查看 Emoji AI 推荐", detail: "仅使用校验后的本地字符", symbol: "face.smiling", keywords: [], destination: .action),
             available: { [weak model] in model?.moduleAIAction.commandID == definition.commandID && model?.moduleAIAction.canUseResult == true }, isInternal: true,
