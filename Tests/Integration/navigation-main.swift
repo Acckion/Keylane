@@ -25,6 +25,9 @@ struct NavigationChecks {
         precondition(NavigationShortcut.keys(character: nil, virtualKey: kVK_LeftArrow, glyph: nil, modifiers: 14) == ["⌃", "⌥", "←"])
         precondition(NavigationShortcut.keys(character: nil, virtualKey: nil, glyph: kMenuF5Glyph, modifiers: 8) == ["F5"])
         precondition(NavigationShortcut.keys(character: "", virtualKey: nil, glyph: nil, modifiers: 0).isEmpty)
+        let physicalKeys = NavigationShortcut.physicalKeys()
+        try require(NavigationShortcut.chord(character: "J", virtualKey: nil, glyph: nil, modifiers: 1, physicalKeys: physicalKeys)
+                    == Shortcut(key: 38, modifiers: 256 | 512), "Character-only menu shortcut did not map to the active layout")
         let request = NavigationScanRequest()
         request.cancel()
         precondition(request.isCancelled)
@@ -67,6 +70,21 @@ struct NavigationChecks {
             AXUIElementSetAttributeValue(fixtureAX, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
             return nil
         }) == true, "Fixture did not become frontmost")
+
+        if CommandLine.arguments.contains("--shortcut-map-only") {
+            var snapshot: NavigationScan?
+            SystemNavigation.shared.scan(.menus, target: fixture) { snapshot = $0 }
+            let items = awaitValue(timeout: 8, { snapshot })?.items ?? []
+            guard let item = items.first(where: { $0.title == "Run Fixture Action" }) else {
+                throw CheckError.failed("Missing fixture menu shortcut")
+            }
+            try require(item.shortcut == Shortcut(key: 38, modifiers: 256 | 512),
+                        "Native menu physical key mapping failed: \(String(describing: item.shortcut))")
+            try require(item.detail == "Fixture › Nested", "Native shortcut lost its menu path")
+            try require(!FileManager.default.fileExists(atPath: marker.path), "Reading shortcuts executed an action")
+            print("PASS native shortcut map: physical key, modifiers, nested path; no menu action executed")
+            return
+        }
 
         let navigation = SystemNavigation.shared
         navigation.observeFocus(of: fixture)
@@ -144,6 +162,7 @@ struct NavigationChecks {
               let disabled = commands.first(where: { $0.title == "Disabled Fixture Action" }) else { throw CheckError.failed("Missing menu commands") }
         try require(command.detail == "Fixture › Nested", "Nested menu path was incorrect")
         try require(command.keys == ["⇧", "⌘", "J"], "Menu shortcut was incorrect")
+        try require(command.shortcut == Shortcut(key: 38, modifiers: 256 | 512), "Menu physical key mapping was incorrect: \(String(describing: command.shortcut))")
         try require(!disabled.enabled, "Disabled command was reported as enabled")
         try require(try !perform(disabled, mode: .menus).isEmpty, "Disabled command did not return an error")
         try require(!FileManager.default.fileExists(atPath: marker.path), "Disabled command executed")

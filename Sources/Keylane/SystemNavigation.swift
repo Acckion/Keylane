@@ -34,6 +34,7 @@ struct NavigationItem: Identifiable {
     let application: NSRunningApplication
     let element: AXUIElement
     var keys: [String] = []
+    var shortcut: Shortcut? = nil
     var minimized = false
     var enabled = true
     let identity = UUID()
@@ -660,6 +661,7 @@ final class SystemNavigation {
         let (error, raw) = read(application, kAXMenuBarAttribute)
         guard let bar = asElement(raw) else { return NavigationScan(incomplete: error == .cannotComplete) }
         var scan = NavigationScan()
+        let physicalKeys = NavigationShortcut.physicalKeys()
         let deadline = ProcessInfo.processInfo.systemUptime + (matchingShortcut == nil ? 5 : 0.5)
         var visited = Set<AXUIElement>()
 
@@ -679,7 +681,7 @@ final class SystemNavigation {
                 guard matchingShortcut == nil || matchingShortcut == keys else { return }
                 scan.items.append(NavigationItem(id: scan.items.count, title: title,
                                                  detail: path.joined(separator: " › "), application: app,
-                                                 element: node, keys: keys, enabled: attrs[3] as? Bool ?? true))
+                                                 element: node, keys: keys, shortcut: NavigationShortcut.chord(character: attrs[4] as? String, virtualKey: attrs[5] as? Int, glyph: attrs[6] as? Int, modifiers: attrs[7] as? Int, physicalKeys: physicalKeys), enabled: attrs[3] as? Bool ?? true))
             } else {
                 let childPath = title.isEmpty || role == kAXMenuRole || role == kAXMenuBarRole ? path : path + [title]
                 for child in children { visit(child, path: childPath, depth: depth + 1) }
@@ -753,6 +755,52 @@ enum NavigationShortcut {
         kMenuDownArrowGlyph: "↓", kMenuPageUpGlyph: "⇞", kMenuPageDownGlyph: "⇟",
         kMenuNorthwestArrowGlyph: "↖", kMenuSoutheastArrowGlyph: "↘"
     ]
+
+    /// Some AX menu providers omit CmdVirtualKey. Resolve their character using the
+    /// current ASCII-capable layout rather than assuming US key positions.
+    static func physicalKeys() -> [String: UInt32] {
+        let readLayout: () -> Data? = {
+            guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
+                  let pointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }
+            return Unmanaged<CFData>.fromOpaque(pointer).takeUnretainedValue() as Data
+        }
+        let data = Thread.isMainThread ? readLayout() : DispatchQueue.main.sync(execute: readLayout)
+        guard let data else { return [:] }
+        return data.withUnsafeBytes { bytes in
+            guard let layout = bytes.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else { return [:] }
+            var result: [String: UInt32] = [:]
+            for modifiers in [UInt32(0), UInt32(shiftKey >> 8), UInt32(optionKey >> 8), UInt32((shiftKey | optionKey) >> 8)] {
+                for code in UInt16(0)..<128 {
+                    var dead: UInt32 = 0
+                    var length = 0
+                    var characters = [UniChar](repeating: 0, count: 8)
+                    let error = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDisplay), modifiers,
+                                               UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysMask),
+                                               &dead, characters.count, &length, &characters)
+                    guard error == noErr, length > 0 else { continue }
+                    let text = String(utf16CodeUnits: characters, count: length).uppercased()
+                    // Modifier-specific entries disambiguate symbols produced by Shift/Option.
+                    let key = "\(modifiers):\(text)"
+                    if result[key] == nil { result[key] = UInt32(code) }
+                }
+            }
+            return result
+        }
+    }
+
+    static func chord(character: String?, virtualKey: Int?, glyph: Int?, modifiers: Int?,
+                      physicalKeys: [String: UInt32]) -> Shortcut? {
+        if let shortcut = ShortcutMapConversion.menu(virtualKey: virtualKey, modifiers: modifiers) { return shortcut }
+        let flags = modifiers ?? 0
+        guard flags & ~15 == 0 else { return nil }
+        let label = keys(character: character, virtualKey: nil, glyph: glyph, modifiers: modifiers).last
+        let layoutModifiers = UInt32((flags & 1 != 0 ? shiftKey : 0) | (flags & 2 != 0 ? optionKey : 0)) >> 8
+        let code = label.flatMap { label in
+            special.first { $0.value == label }.map { UInt32($0.key) }
+                ?? physicalKeys["\(layoutModifiers):\(label)"] ?? physicalKeys["0:\(label)"]
+        }
+        return ShortcutMapConversion.menu(virtualKey: code.map(Int.init), modifiers: modifiers)
+    }
 
     static func keys(character: String?, virtualKey: Int?, glyph: Int?, modifiers: Int?) -> [String] {
         let function = glyph.flatMap { (kMenuF1Glyph...kMenuF12Glyph).contains($0) ? "F\($0 - kMenuF1Glyph + 1)" : nil }
