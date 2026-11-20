@@ -36,7 +36,7 @@
 | BASE-08 | 主题与自定义主题导入/共享 | 部分实现 | 已有外观设置；Raycast 自定义主题完整范围待核对 | [设置](../Sources/Keylane/Settings.swift)、[Raycast 主题](https://manual.raycast.com/themes) |
 | BASE-09 | 通用动态占位符及修饰符 | 部分实现 | 片段、快捷链接分别支持部分语法，核对共用解析与完整修饰符 | [片段](SNIPPETS.md)、[快捷链接](QUICKLINKS.md)、[参考](https://manual.raycast.com/dynamic-placeholders) |
 | BASE-10 | 首次引导、权限、辅助使用与本地化 | 部分实现 | 持续核对默认状态、拒绝/撤销、VoiceOver、对比度和中文输入 | [协作规范](../AGENTS.md)、[架构](LAUNCHER-ARCHITECTURE.md) |
-| BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现；定向评分复用待合并 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
+| BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
 
 ## 应用、文件与个人资料
 
@@ -125,7 +125,7 @@
 
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
-| EXT-01 | 扩展发现、安装、启用、卸载与生命周期 | 部分实现 | 固定真实扩展样本持续回归，完善失败及权限体验 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
+| EXT-01 | 扩展发现、安装、启用、卸载与生命周期 | 部分实现；目录快照事务待合并 | 固定真实扩展样本持续回归，完善失败及权限体验 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
 | EXT-02 | no-view / view / menu-bar 三类命令 | 部分实现 | 按命令依赖验证，不能由一个样本推断全生态兼容 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
 | EXT-03 | List / Grid / Detail / Form / Actions | 部分实现 | 动态回调、生命周期、资源加载与字段事件逐项推进 | [API 表](RAYCAST-API-COVERAGE.csv)、[说明](RAYCAST-API-COVERAGE.md) |
 | EXT-04 | 存储、网络、文件、系统工具和 Utilities | 部分实现 | 用公开契约和隔离运行证据缩小 partial 项 | [API 表](RAYCAST-API-COVERAGE.csv) |
@@ -169,4 +169,6 @@
 | 2026-11-21 | 建立全仓库总表，纳入 macOS 功能、AI、扩展、同步、平台及长期项目 | dev `9e73f01`；Raycast 官方手册目录及专项页面；仓库模块文档；PR #201/#211/#212/#214/#215 当前均未合并 |
 | 2026-11-21 | EXTRA-01 暂存架网格审查修复待合并 | [PR #211](https://github.com/Acckion/Keylane/pull/211)，覆盖空架后续裁剪及存档恢复、搜索时横向选择；验收结果见 PR |
 
-维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用待合并；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。
+维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用已随 #218 合入 dev；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。
+
+维护记录：2026-11-21，EXT-01/BASE-11 第三批目录快照与运行激活分层，动态声明插入/替换/卸载及验证失败保留旧目录开发完成，待合并及安装版验收。前序 #218、#221，见 [目录事务](CATALOG-TRANSACTIONS.md)。
