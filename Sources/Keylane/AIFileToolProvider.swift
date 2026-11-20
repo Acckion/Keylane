@@ -61,8 +61,8 @@ enum AIFileToolProvider {
             ("keylane_file_info", "查看文件信息", "返回文件或目录的元数据与 revision，不读取正文。", [root, path]),
             ("keylane_glob", "匹配文件路径", "Glob：在授权目录内按通配模式寻找文件或目录，不读取正文、不启动索引。", [root, path, pattern, count, depth, hidden]),
             ("keylane_grep", "搜索文件文字", "Grep：在普通 UTF-8 文件中查找文字（非正则），返回路径、行号与短摘录；跳过凭据、隐藏项及超大文件，扫描有预算。", [root, path, pattern, .init("query", description: "要搜索的文字，忽略大小写。", kind: .string(maximumLength: 512)), count, depth]),
-            ("keylane_write_file", "创建文本文件", "仅在匹配授权根中创建一级 UTF-8 文件，每次确认；不支持子目录写入、覆盖、replace 或编辑；原子创建不可用时失败。", [root, path, .init("content", description: "完整文本内容。", kind: .string(maximumLength: 12_000))]),
-            ("keylane_create_directory", "创建文件夹", "仅在匹配授权根中创建一级文件夹，每次确认；不覆盖。子目录创建须先单独授权该父目录。", [root, path])
+            ("keylane_write_file", "创建文本文件", "仅在匹配授权根中创建一级 UTF-8 文件，每次确认；不支持子目录写入、覆盖、replace 或编辑；安全创建不可用时不回退。目录被外部移动时结果可能无法确认，勿自动重试。", [root, path, .init("content", description: "完整文本内容。", kind: .string(maximumLength: 12_000))]),
+            ("keylane_create_directory", "创建文件夹", "仅在匹配授权根中创建一级文件夹，每次确认；不覆盖。子目录创建须先单独授权该父目录。目录被外部移动时结果可能无法确认，勿自动重试。", [root, path])
         ]
         declarations.append(("keylane_read_result", "继续读取结果", "读取本次请求返回的opaque cursor，仍逐次确认；不是文件路径或永久文件引用。文本limit最大4096字节，列表limit最大100条；来源变化后需重新发起。", [
             .init("cursor", description: "上一次文件工具返回的原样cursor。", kind: .string(maximumLength: 64)), limit
@@ -108,7 +108,10 @@ enum AIFileToolProvider {
                       encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
                       let review = String(decoding: try encoder.encode(reviewValues), as: UTF8.self) +
                           "\n名称、元数据或读取正文将发送给上述直接接收方。根目录路径只在本机确认界面显示。"
-                      return AIToolPreparedOperation(displayArguments: display, approvalArguments: review, isCurrent: operationAvailable) {
+                      let creationNotice = ["keylane_write_file", "keylane_create_directory"].contains(name)
+                          ? "\n创建绑定已确认的目录对象。其他进程仍可能移动它；创建后核对失败不能证明未写入。结果无法确认时请人工核对，勿直接重试；不自动回滚。"
+                          : ""
+                      return AIToolPreparedOperation(displayArguments: display, approvalArguments: review + creationNotice, isCurrent: operationAvailable) {
                           guard operationAvailable() else { throw CancellationError() }
                           let cancellation = AIFileAccessLease()
                           return try await withTaskCancellationHandler {

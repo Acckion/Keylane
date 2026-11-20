@@ -193,6 +193,107 @@ final class AIFileToolsTests: XCTestCase {
             XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".keylane-ai-") })
         }
     }
+    func testRootRelocationBeforeCommitRefusesBothKindsOfCreation() async throws {
+        for tool in ["keylane_write_file", "keylane_create_directory"] {
+            let original = root.appendingPathComponent(tool), moved = root.appendingPathComponent(tool + "-moved")
+            try FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+            let service = AIFileToolService(beforeCommit: {
+                try FileManager.default.moveItem(at: original, to: moved)
+                try FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+            })
+            let lease = AIFileAccessLease()
+            let plan = try await service.prepare(tool, arguments: ["path": .string("target"), "content": .string("approved")], scopes: [.init(path: original.path)], lease: lease)
+            await rejects(.stale) { _ = try await service.execute(plan, lease: lease, cancellation: .init()) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: original.appendingPathComponent("target").path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: moved.appendingPathComponent("target").path))
+        }
+    }
+    func testRootRelocationAtPublicationKeepsIdentityAndReportsUncertainty() async throws {
+        for tool in ["keylane_write_file", "keylane_create_directory"] {
+            for beforeSyscall in [true, false] {
+                let original = root.appendingPathComponent(tool + "-" + String(beforeSyscall))
+                let moved = original.appendingPathExtension("moved")
+                try FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+                let relocate: @Sendable () -> Void = {
+                    try! FileManager.default.moveItem(at: original, to: moved)
+                    try! FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+                }
+                let native = AIFileToolService.CreationSyscalls.live
+                let syscalls = AIFileToolService.CreationSyscalls(cloneFile: { source, parent, name in
+                    if beforeSyscall { relocate() }
+                    let result = native.cloneFile(source, parent, name)
+                    if !beforeSyscall { relocate() }
+                    return result
+                }, createDirectory: { parent, name in
+                    if beforeSyscall { relocate() }
+                    let result = native.createDirectory(parent, name)
+                    if !beforeSyscall { relocate() }
+                    return result
+                })
+                let service = AIFileToolService(creationSyscalls: syscalls), lease = AIFileAccessLease()
+                let plan = try await service.prepare(tool, arguments: ["path": .string("target"), "content": .string("approved")], scopes: [.init(path: original.path)], lease: lease)
+                await rejects(.creationUnconfirmed) { _ = try await service.execute(plan, lease: lease, cancellation: .init()) }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: original.appendingPathComponent("target").path), "Never redirect to the replacement directory")
+                var directory = ObjCBool(false)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: moved.appendingPathComponent("target").path, isDirectory: &directory), "The original directory object may already contain the new entry")
+                XCTAssertEqual(directory.boolValue, tool == "keylane_create_directory")
+                if tool == "keylane_write_file" {
+                    XCTAssertEqual(try String(contentsOf: moved.appendingPathComponent("target"), encoding: .utf8), "approved")
+                }
+            }
+        }
+        let warning = AIFileToolError.creationUnconfirmed.localizedDescription
+        XCTAssertTrue(warning.contains("可能") && warning.contains("勿直接重试"))
+        XCTAssertFalse(warning.contains("未写入"))
+    }
+    func testDestinationAppearingAfterFinalValidationIsNotOverwritten() async throws {
+        for tool in ["keylane_write_file", "keylane_create_directory"] {
+            let destination = root.appendingPathComponent(tool + "-race")
+            let native = AIFileToolService.CreationSyscalls.live
+            let compete: @Sendable () -> Void = { try! Data("other process".utf8).write(to: destination, options: .withoutOverwriting) }
+            let syscalls = AIFileToolService.CreationSyscalls(cloneFile: { source, parent, name in
+                compete(); return native.cloneFile(source, parent, name)
+            }, createDirectory: { parent, name in
+                compete(); return native.createDirectory(parent, name)
+            })
+            let service = AIFileToolService(creationSyscalls: syscalls), lease = AIFileAccessLease()
+            let plan = try await service.prepare(tool, arguments: ["path": .string(destination.lastPathComponent), "content": .string("approved")], scopes: [.init(path: root.path)], lease: lease)
+            await rejects(.exists) { _ = try await service.execute(plan, lease: lease, cancellation: .init()) }
+            XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "other process")
+        }
+    }
+    func testUnsupportedCreationFailsWithoutAnyFallback() async throws {
+        // Deterministic syscall fault injection, not a claim about a tested external volume.
+        for code in [EOPNOTSUPP, EXDEV, ENOSYS] {
+            let syscalls = AIFileToolService.CreationSyscalls(cloneFile: { _, _, _ in .init(code: -1, error: code) },
+                                                          createDirectory: { _, _ in .init(code: -1, error: code) })
+            for tool in ["keylane_write_file", "keylane_create_directory"] {
+                let service = AIFileToolService(creationSyscalls: syscalls), lease = AIFileAccessLease()
+                let name = tool + "-unsupported-" + String(code)
+                let plan = try await service.prepare(tool, arguments: ["path": .string(name), "content": .string("approved")], scopes: [.init(path: root.path)], lease: lease)
+                await rejects(.creationUnsupported) { _ = try await service.execute(plan, lease: lease, cancellation: .init()) }
+                XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(name).path))
+            }
+        }
+    }
+    func testUnknownCreationFailureDoesNotPromiseNoFilesystemEffect() async throws {
+        let native = AIFileToolService.CreationSyscalls.live
+        // Model an ambiguous error after a native effect, without damaging any real filesystem.
+        let syscalls = AIFileToolService.CreationSyscalls(cloneFile: { source, parent, name in
+            let result = native.cloneFile(source, parent, name)
+            return result.code == 0 ? .init(code: -1, error: EIO) : result
+        }, createDirectory: { parent, name in
+            let result = native.createDirectory(parent, name)
+            return result.code == 0 ? .init(code: -1, error: EIO) : result
+        })
+        for tool in ["keylane_write_file", "keylane_create_directory"] {
+            let service = AIFileToolService(creationSyscalls: syscalls), lease = AIFileAccessLease()
+            let plan = try await service.prepare(tool, arguments: ["path": .string(tool + "-uncertain"), "content": .string("approved")], scopes: [.init(path: root.path)], lease: lease)
+            await rejects(.creationUnconfirmed) { _ = try await service.execute(plan, lease: lease, cancellation: .init()) }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent(tool + "-uncertain").path))
+        }
+    }
+
     func testPreparedOperationsCannotBeReplayed() async throws {
         try file("note", "fixture")
         let lease = AIFileAccessLease()

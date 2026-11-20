@@ -26,7 +26,7 @@ public final class AIFileAccessLease: @unchecked Sendable {
 }
 
 public enum AIFileToolError: LocalizedError, Equatable {
-    case outsideScope, unavailable, unsupported, stale, exists, invalidPath, invalidText, tooLarge, restricted, creationScope
+    case outsideScope, unavailable, unsupported, stale, exists, invalidPath, invalidText, tooLarge, restricted, creationScope, creationUnsupported, creationUnconfirmed
     public var errorDescription: String? {
         switch self {
         case .outsideScope: "路径不在本次匹配的 AI 授权目录内。"
@@ -38,6 +38,8 @@ public enum AIFileToolError: LocalizedError, Equatable {
         case .invalidText: "内容不是有效 UTF-8 文本，或 offset 不在字符边界。"
         case .tooLarge: "超过本次文件操作的数据限制，请缩小范围或分段读取。"
         case .restricted: "该路径属于受保护数据，文件工具不披露其内容、名称或元数据。"
+        case .creationUnsupported: "当前文件系统不支持此安全创建操作；未启用覆盖、复制或改名回退。"
+        case .creationUnconfirmed: "创建结果无法确认：文件或文件夹可能已在原授权目录对象中创建，该目录也可能已移动。请人工核对，勿直接重试；未执行自动回滚。"
         case .creationScope: "创建仅支持授权根目录内的一级名称。请先将目标父目录单独设为授权根。"
         }
     }
@@ -135,10 +137,33 @@ public actor AIFileToolService {
     }
     private struct Disclosure { let fd: FD; let relative: String; let revision: String }
     private struct Scan { var visited = 0; var bytes = 0; var truncated = false; var exhausted = false; var outputBytes = 0 }
+    /// Internal syscall seam for deterministic synthetic races/failures, never configurable by tools.
+    struct CreationSyscalls: Sendable {
+        struct Result: Sendable { let code: Int32; let error: Int32 }
+        var cloneFile: @Sendable (Int32, Int32, String) -> Result
+        var createDirectory: @Sendable (Int32, String) -> Result
+        static let live = Self(cloneFile: { source, parent, name in
+            let code = fclonefileat(source, parent, name, 0)
+            return .init(code: code, error: code == 0 ? 0 : errno)
+        }, createDirectory: { parent, name in
+            let code = mkdirat(parent, name, 0o700)
+            return .init(code: code, error: code == 0 ? 0 : errno)
+        })
+    }
     private let beforeCommit: @Sendable () throws -> Void
-    public init() { beforeCommit = {} }
-    // Deterministic race injection for synthetic tests; not exposed to the application.
-    init(beforeCommit: @escaping @Sendable () throws -> Void) { self.beforeCommit = beforeCommit }
+    private let creationSyscalls: CreationSyscalls
+    public init() { beforeCommit = {}; creationSyscalls = .live }
+    init(beforeCommit: @escaping @Sendable () throws -> Void = {}, creationSyscalls: CreationSyscalls) {
+        self.beforeCommit = beforeCommit; self.creationSyscalls = creationSyscalls
+    }
+    init(beforeCommit: @escaping @Sendable () throws -> Void) {
+        self.beforeCommit = beforeCommit; creationSyscalls = .live
+    }
+    private func creationError(_ code: Int32) -> AIFileToolError {
+        if code == EEXIST { return .exists }
+        if [ENOTSUP, EOPNOTSUPP, EXDEV, ENOSYS].contains(code) { return .creationUnsupported }
+        return .creationUnconfirmed
+    }
 
     public static func isSensitive(_ path: String) -> Bool {
         path.lowercased().split(separator: "/").contains { component in
@@ -220,6 +245,7 @@ public actor AIFileToolService {
         var disclosed: [Disclosure] = []
         var continuation: ReadReference?
         let arguments = plan.arguments, path = plan.relativePath
+        var creationCompleted = false
         switch plan.tool {
         case "keylane_file_roots":
             values = ["directories": .array(plan.roots.map { .object(["root": .string($0.id), "path": .string(".")]) }), "default_root": .string(plan.rootID)]
@@ -333,8 +359,9 @@ public actor AIFileToolService {
             try lease.withValidAccess { try cancellation.withValidAccess {
                 try validate(plan)
                 let name = (path as NSString).lastPathComponent
-                let code = fclonefileat(fd.raw, parent.raw, name, 0)
-                guard code == 0 else { throw errno == EEXIST ? AIFileToolError.exists : AIFileToolError.unavailable }
+                let result = creationSyscalls.cloneFile(fd.raw, parent.raw, name)
+                guard result.code == 0 else { throw creationError(result.error) }
+                creationCompleted = true
             } }
             values = ["path": .string(path), "written": .bool(true)]
         case "keylane_create_directory":
@@ -343,24 +370,32 @@ public actor AIFileToolService {
                 try validate(plan)
                 guard plan.parents.isEmpty else { throw AIFileToolError.creationScope }
                 let parent = plan.roots[0].fd
-                guard mkdirat(parent.raw, (path as NSString).lastPathComponent, 0o700) == 0 else { throw errno == EEXIST ? AIFileToolError.exists : AIFileToolError.unavailable }
+                let result = creationSyscalls.createDirectory(parent.raw, (path as NSString).lastPathComponent)
+                guard result.code == 0 else { throw creationError(result.error) }
+                creationCompleted = true
             } }
             values = ["path": .string(path), "created": .bool(true)]
         default: throw AIFileToolError.unsupported
         }
         // Results carry root handles and relative paths, never the host's root path.
         values["root"] = .string(plan.rootID)
-        return try lease.withValidAccess { try cancellation.withValidAccess {
-            // For creates the absent target is now present; parent/root identity still must match.
-            try validate(plan, checkTarget: !["keylane_write_file", "keylane_create_directory"].contains(plan.tool))
-            for entry in disclosed { try validateDisclosure(entry, root: plan.roots[0]) }
-            guard let session else { return try output(values) }
-            return try session.publish(consuming: plan.continuation == nil ? nil : string(arguments, "cursor"),
-                                       expected: plan.continuation, next: continuation, lease: lease) { token in
-                if let token { values["cursor"] = .string(token) }
-                return try output(values)
-            }
-        } }
+        do {
+            return try lease.withValidAccess { try cancellation.withValidAccess {
+                // For creates the absent target is now present; parent/root identity still must match.
+                try validate(plan, checkTarget: !["keylane_write_file", "keylane_create_directory"].contains(plan.tool))
+                for entry in disclosed { try validateDisclosure(entry, root: plan.roots[0]) }
+                guard let session else { return try output(values) }
+                return try session.publish(consuming: plan.continuation == nil ? nil : string(arguments, "cursor"),
+                                           expected: plan.continuation, next: continuation, lease: lease) { token in
+                    if let token { values["cursor"] = .string(token) }
+                    return try output(values)
+                }
+            } }
+        } catch {
+            // A post-publication check/cancellation cannot roll back a filesystem effect.
+            if creationCompleted { throw AIFileToolError.creationUnconfirmed }
+            throw error
+        }
     }
 
     public static func systemPath(_ path: String) -> String { LocalFilePath.systemCanonical(path) }

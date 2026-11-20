@@ -191,6 +191,46 @@ final class AIFileReadContinuationTests: XCTestCase {
         try Self.pdf(["changed document"]).write(to: root.appendingPathComponent("document.pdf"))
         await rejects(.stale) { _ = try await self.call("read_result", ["cursor": first["cursor"]!]) }
     }
+    func testPDFAndDirectoryContinuationRechecksCancellationAndRevocation() async throws {
+        try Self.pdf([String(repeating: "Synthetic page. ", count: 30)]).write(to: root.appendingPathComponent("document.pdf"))
+        try file("other", "fixture")
+        for path in ["document.pdf", "."] {
+            let context = AIFileToolService.ReadSession(), scopedLease = AIFileAccessLease()
+            let firstPlan = try await service.prepare("keylane_read_file", arguments: ["path": .string(path), "limit": .number(path == "." ? 1 : 64)], scopes: [.init(path: root.path)], lease: scopedLease, session: context)
+            let result = try await service.execute(firstPlan, lease: scopedLease, cancellation: .init(), session: context)
+            let first = try JSONDecoder().decode([String: AIToolValue].self, from: Data(result.text.utf8))
+            let args = ["cursor": try XCTUnwrap(first["cursor"])]
+            let prepared = try await service.prepare("keylane_read_result", arguments: args, scopes: [.init(path: root.path)], lease: scopedLease, session: context)
+            let cancelled = AIFileAccessLease(); cancelled.revoke()
+            await rejects { _ = try await self.service.execute(prepared, lease: scopedLease, cancellation: cancelled, session: context) }
+            // An unexecuted page retains its cursor, but every new attempt needs fresh preparation.
+            let retry = try await service.prepare("keylane_read_result", arguments: args, scopes: [.init(path: root.path)], lease: scopedLease, session: context)
+            _ = try await service.execute(retry, lease: scopedLease, cancellation: .init(), session: context)
+            await rejects(.stale) { _ = try await self.service.prepare("keylane_read_result", arguments: args, scopes: [.init(path: self.root.path)], lease: scopedLease, session: context) }
+            scopedLease.revoke()
+            await rejects { _ = try await self.service.prepare("keylane_read_file", arguments: ["path": .string(path)], scopes: [.init(path: self.root.path)], lease: scopedLease, session: context) }
+        }
+    }
+    func testCreationWithAReadSessionRetainsUncertainOutcomeAndNoOverwrite() async throws {
+        let original = root.appendingPathComponent("authorized"), moved = root.appendingPathComponent("moved")
+        try FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+        let native = AIFileToolService.CreationSyscalls.live
+        let syscalls = AIFileToolService.CreationSyscalls(cloneFile: { source, parent, name in
+            let result = native.cloneFile(source, parent, name)
+            try! FileManager.default.moveItem(at: original, to: moved)
+            try! FileManager.default.createDirectory(at: original, withIntermediateDirectories: false)
+            return result
+        }, createDirectory: native.createDirectory)
+        let scopedService = AIFileToolService(creationSyscalls: syscalls)
+        let plan = try await scopedService.prepare("keylane_write_file", arguments: ["path": .string("created"), "content": .string("approved")], scopes: [.init(path: original.path)], lease: lease, session: session)
+        await rejects(.creationUnconfirmed) { _ = try await scopedService.execute(plan, lease: self.lease, cancellation: .init(), session: self.session) }
+        XCTAssertEqual(try String(contentsOf: moved.appendingPathComponent("created"), encoding: .utf8), "approved")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: original.appendingPathComponent("created").path))
+        try file("existing", "keep me")
+        await rejects(.exists) { _ = try await self.call("write_file", ["path": .string("existing"), "content": .string("overwrite")]) }
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("existing"), encoding: .utf8), "keep me")
+    }
+
     func testSharedPDFParserRejectsLockedEmptyOversizedAndCancelledDocuments() throws {
         let data = Self.pdf(["First synthetic page", "Second synthetic page"])
         XCTAssertEqual(try AIFileDocumentText.pdfPages(data).count, 2)

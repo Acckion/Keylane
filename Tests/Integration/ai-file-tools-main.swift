@@ -56,6 +56,12 @@ import KeylaneCore
             deniedResults.append(result.text)
             precondition(!result.text.contains("synthetic needle") && !result.text.contains(root.path))
             precondition(approvals.last!.contains(recipient.destination) && approvals.last!.contains(recipient.model))
+            if ["write_file", "create_directory"].contains(name) {
+                precondition(approvals.last!.contains("创建绑定已确认的目录对象") && approvals.last!.contains("不能证明未写入"))
+                precondition(approvals.last!.contains("勿直接重试") && approvals.last!.contains("不自动回滚"))
+            } else {
+                precondition(!approvals.last!.contains("创建绑定已确认的目录对象"))
+            }
         }
         precondition(!FileManager.default.fileExists(atPath: root.path + "/created.txt"))
         precondition(!FileManager.default.fileExists(atPath: root.path + "/folder"))
