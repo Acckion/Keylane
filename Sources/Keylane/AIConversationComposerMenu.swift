@@ -15,51 +15,66 @@ struct AIConversationComposerMenu: View {
     @Binding var selection: String?
     @Binding var scrollTarget: String?
     var searchable = false
+    var menuTitle = "AI Chat"
+    var embedded = false
     let activate: (Item) -> Void
     let dismiss: () -> Void
-    @FocusState private var searchFocused: Bool
 
     static func height(items: [Item], searchable: Bool) -> CGFloat {
+        if searchable { return min(320, CGFloat(max(items.count, 1)) * 39) + 87 }
         let sections = items.indices.filter { $0 == 0 || items[$0 - 1].section != items[$0].section }.count
         return min(320, CGFloat(max(items.count, 1)) * 32 + CGFloat(sections) * 24 + 12) + (searchable ? 42 : 0)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            if index == 0 || items[index - 1].section != item.section {
-                                Text(item.section).font(.system(size: 11)).foregroundStyle(.secondary)
-                                    .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 3)
-                            }
-                            LauncherMenuRow(title: item.title, symbol: item.symbol,
-                                selected: selection == item.id, compact: true,
-                                activate: { activate(item) }, highlight: { selection = item.id }) {
-                                    Text(item.detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                                }.id(item.id)
-                        }
-                        if items.isEmpty { Text("没有匹配的项目").foregroundStyle(.secondary).padding(16) }
-                    }.padding(6)
-                }.onChange(of: scrollTarget) { _, id in if let id { proxy.scrollTo(id) } }
-            }
+        Group {
             if searchable {
-                Divider()
-                TextField("搜索上下文…", text: $query).textFieldStyle(.plain).font(.system(size: 12))
-                    .padding(12).focused($searchFocused)
-                    .onSubmit { if let item = items.first(where: { $0.id == selection }) { activate(item) } }
-                    .onKeyPress(.downArrow) { move(1); return .handled }
-                    .onKeyPress(.upArrow) { move(-1); return .handled }
-                    .onExitCommand(perform: dismiss)
+                if embedded { searchablePanel }
+                else { searchablePanel.modifier(LauncherMenuSurface(open: true)) }
+            } else {
+                menuRows(compact: true)
+                    .frame(width: 290, height: Self.height(items: items, searchable: false))
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay { RoundedRectangle(cornerRadius: 12).stroke(.primary.opacity(0.12)) }
             }
         }
-        .frame(width: 290, height: Self.height(items: items, searchable: searchable))
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay { RoundedRectangle(cornerRadius: 12).stroke(.primary.opacity(0.12)) }
-        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
-        .onAppear { searchFocused = searchable; selection = items.first?.id }
+        .shadow(color: .black.opacity(embedded ? 0 : 0.22), radius: 16, y: 6)
+        .onAppear { selection = items.first?.id }
         .onChange(of: items.map(\.id)) { _, ids in if !ids.contains(selection ?? "") { selection = ids.first } }
+    }
+
+    private var searchablePanel: some View {
+        LauncherActionMenuPanel(title: menuTitle) {
+            menuRows(compact: false)
+                .frame(height: min(320, CGFloat(max(items.count, 1)) * 39))
+        } search: {
+            SearchField(text: $query, placeholder: "搜索操作…", focusToken: 0, compact: true,
+                submit: { if let item = items.first(where: { $0.id == selection }) { activate(item) } },
+                move: move, escape: dismiss)
+        }
+    }
+
+    private func menuRows(compact: Bool) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: compact ? 2 : 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        if compact && (index == 0 || items[index - 1].section != item.section) {
+                            Text(item.section).font(.system(size: 11)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 3)
+                        }
+                        LauncherMenuRow(title: item.title, symbol: item.symbol,
+                            selected: selection == item.id, compact: compact,
+                            activate: { activate(item) }, highlight: { selection = item.id }) {
+                                Text(item.detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                            }.id(item.id)
+                    }
+                    if items.isEmpty { Text("没有匹配的操作").foregroundStyle(.secondary).padding(16) }
+                }
+                .padding(.horizontal, compact ? 6 : 8)
+                .padding(.vertical, compact ? 6 : 0)
+            }.onChange(of: scrollTarget) { _, id in if let id { proxy.scrollTo(id) } }
+        }
     }
 
     private func move(_ delta: Int) {

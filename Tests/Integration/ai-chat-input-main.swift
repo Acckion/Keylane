@@ -36,6 +36,7 @@ precondition(moved == 1 && chosen == 1 && dismissed == 1 && submitted == 0)
 input.setMarkedText("中", selectedRange: NSRange(location: 1, length: 0), replacementRange: input.selectedRange())
 input.owner!.textDidChange(Notification(name: NSText.didChangeNotification, object: input))
 precondition(composer.completion == nil, "Marked text must not open a command menu")
+precondition(!input.showsPlaceholder, "IME candidate text must not overlap a placeholder")
 input.unmarkText()
 input.owner!.parent = AIConversationTextInput(composer: composer, height: .constant(36), enabled: true,
     sendWithReturn: true, menuVisible: false, submit: { submitted += 1 }, moveMenu: { moved += $0 },
@@ -83,5 +84,6 @@ precondition(compactCopy == 1 && compactFormatted == 1 && submitted == submitted
 composer.clear()
 RunLoop.current.run(until: Date().addingTimeInterval(0.15))
 precondition(input.string.isEmpty && !undo.canUndo, "A new draft must not undo into a sent/deleted conversation")
+precondition(input.showsPlaceholder, "Clearing the draft must restore the native placeholder")
 window.close()
 print("PASS native chat input: caret and IME composition, menu arrows/Return/Esc, send preference, Shift Return, Command Return and focus routing")
