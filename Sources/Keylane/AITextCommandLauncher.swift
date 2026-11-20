@@ -131,15 +131,6 @@ private struct AITextCommandForm: View {
             Text(session.title).font(.headline)
         } fields: {
             VStack(alignment: .leading, spacing: 12) {
-                if session.customCommand == nil, session.command == .translate {
-                    Picker("目标语言", selection: $session.language) {
-                        ForEach(AITextCommand.Language.allCases) { language in
-                            Text(language.rawValue).tag(language)
-                        }
-                    }
-                    .fixedSize()
-                    .disabled(running)
-                }
                 if session.customCommand != nil {
                     ForEach(session.arguments) { argument in
                         let value = Binding(get: { session.argumentValues[argument.id] ?? argument.defaultValue ?? "" },

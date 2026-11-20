@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 import KeylaneCore
 
 enum DropShelfModule {
@@ -68,7 +69,7 @@ enum DropShelfModule {
             },
             actionShortcutsEnabled: true
         )
-        let anchor = SettingsItem(id: "dropShelf.behavior", page: settingsID, title: "暂存架交互", keywords: "摇晃 复制 拖出 最近 固定")
+        let anchor = SettingsItem(id: "dropShelf.behavior", page: settingsID, title: "暂存架交互", keywords: "晃动 摇晃 灵敏度 按键 快捷键 刘海 默认位置 添加文件 忽略应用 复制 拖出 最近 固定")
         return .init(id: .init(rawValue: settingsID), title: "暂存架", symbol: "tray", commands: commands, pages: [page],
                      settings: [.init(id: settingsID, title: "暂存架", symbol: "tray", subtitle: "收集文件、图片、链接与文字，再拖到目标应用。", order: 85,
                                       items: [anchor], content: { [weak model] in
@@ -86,12 +87,67 @@ private struct DropShelfPreferences: View {
     @ObservedObject var model: Model
     let commands: [LauncherModule.Command]
     let anchor: SettingsItem
+    @State private var editingShortcuts = false
+    @State private var editingIgnoredApps = false
     var body: some View {
         SettingsPageSections {
             SettingsCard(anchor: anchor) {
-                SettingsRow("摇晃指针创建暂存架", detail: "拖动内容时左右摇晃指针，在指针附近显示暂存架。") {
-                    Toggle("摇晃指针创建暂存架", isOn: $controller.shakeEnabled).labelsHidden()
+                SettingsRowWithSuboptions {
+                    activationRow("晃动激活", symbol: "cursorarrow.motionlines", detail: "拖动时晃动光标。") {
+                        SettingsInlineSwitch(title: "晃动激活", isOn: $controller.shakeEnabled)
+                    }
+                } suboptions: {
+                    Picker("晃动灵敏度", selection: $controller.shakeSensitivity) {
+                        ForEach(ShelfShakeSensitivity.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.disabled(!controller.shakeEnabled)
                 }
+                Divider()
+                SettingsRowWithSuboptions {
+                    activationRow("按键激活", symbol: "shift", detail: "拖动时按住所选按键。") {
+                        SettingsInlineSwitch(title: "按键激活", isOn: $controller.keyActivation)
+                    }
+                } suboptions: {
+                    Picker("激活按键", selection: $controller.activationKey) {
+                        ForEach(ShelfActivationKey.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.disabled(!controller.keyActivation)
+                }
+            }
+            SettingsCard {
+                activationRow("键盘快捷键", symbol: "keyboard") {
+                    Button(editingShortcuts ? "完成" : "编辑…") { editingShortcuts.toggle() }
+                }
+                if editingShortcuts { ExtensionCommandPreferences(model: model, commands: commands) }
+            }
+            SettingsCard {
+                SettingsRowWithSuboptions {
+                    activationRow("拖放到刘海", symbol: "tray", detail: "在带刘海的 MacBook 显示器上，将内容拖到刘海下缘。") {
+                        SettingsInlineSwitch(title: "拖放到刘海", isOn: $controller.dropToNotch)
+                    }
+                } suboptions: {
+                    Picker("高亮时机", selection: $controller.notchHighlight) {
+                        ForEach(ShelfNotchHighlight.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.disabled(!controller.dropToNotch)
+                }
+            }
+            SettingsCard {
+                activationRow("默认架子位置", symbol: "rectangle.inset.filled", detail: "适用于未通过晃动或按键创建的窗口。") {
+                    Picker("默认架子位置", selection: $controller.defaultPosition) {
+                        ForEach(ShelfDefaultPosition.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.labelsHidden()
+                }
+                Divider()
+                activationRow("添加文件的行为", symbol: "document.badge.plus", detail: "适用于剪贴板快捷键、菜单栏和刘海投放。") {
+                    Picker("添加文件的行为", selection: $controller.addBehavior) {
+                        ForEach(ShelfAddBehavior.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }.labelsHidden()
+                }
+                Divider()
+                activationRow("已忽略应用程序", symbol: "rectangle.slash", detail: "从这些应用拖动时，暂停自动激活与刘海投放。") {
+                    Button(editingIgnoredApps ? "完成" : "编辑…") { editingIgnoredApps.toggle() }
+                }
+                if editingIgnoredApps { ignoredApplications }
+            }
+            SettingsCard {
                 SettingsRow("默认复制到目标", detail: "关闭时遵循 macOS 拖放规则：同卷默认移动，按 Option 复制。移动由目标应用执行。") {
                     Toggle("默认复制到目标", isOn: $controller.copyByDefault).labelsHidden()
                 }
@@ -101,7 +157,44 @@ private struct DropShelfPreferences: View {
                 SettingsRow("最近与固定", detail: "最近 10 个暂存架可从菜单栏重新打开；固定架持续保留。清空与移除只影响暂存记录，不删除源文件。") { EmptyView() }
                 if !controller.error.isEmpty { Text(controller.error).foregroundStyle(.red) }
             }
-            ExtensionCommandPreferences(model: model, commands: commands)
+        }
+    }
+
+    private func activationRow<Control: View>(_ title: String, symbol: String, detail: String? = nil,
+                                               @ViewBuilder control: @escaping () -> Control) -> some View {
+        SettingsRow {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 18).accessibilityHidden(true)
+                SettingsRowLabel(title: title, detail: detail)
+            }
+        } control: { control() }
+    }
+
+    private var ignoredApplications: some View {
+        SettingsListCard(title: "已忽略应用程序", detail: "按应用保存，移除后恢复自动激活。") {
+            SettingsIconButton("添加应用", symbol: "plus", action: addIgnoredApplications)
+        } content: {
+            if controller.ignoredApps.isEmpty {
+                SettingsListEmptyState(title: "没有忽略的应用")
+            } else {
+                SettingsCompactList(items: controller.ignoredApps.keys.sorted(), id: \.self) { id in
+                    SettingsExcludedApplicationRow(id: id, name: controller.ignoredApps[id] ?? id) {
+                        controller.ignoredApps.removeValue(forKey: id)
+                    }
+                }
+            }
+        }
+    }
+
+    private func addIgnoredApplications() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            guard let id = Bundle(url: url)?.bundleIdentifier else { continue }
+            controller.ignoredApps[id] = FileManager.default.displayName(atPath: url.path)
         }
     }
 }
