@@ -23,7 +23,7 @@ struct ConversationComposer<Editor: View, Actions: View, AddButton: View>: View 
                 Color.clear.frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
                     .allowsHitTesting(false).accessibilityHidden(true)
             } else {
-                addButton()
+                addButton().zIndex(1)
             }
             field
             if style == .launcher {

@@ -16,6 +16,7 @@ struct AIConversationComposerMenu: View {
     @Binding var scrollTarget: String?
     var searchable = false
     var menuTitle = "AI Chat"
+    var embedded = false
     let activate: (Item) -> Void
     let dismiss: () -> Void
 
@@ -28,15 +29,8 @@ struct AIConversationComposerMenu: View {
     var body: some View {
         Group {
             if searchable {
-                LauncherActionMenuPanel(title: menuTitle) {
-                    menuRows(compact: false)
-                        .frame(height: min(320, CGFloat(max(items.count, 1)) * 39))
-                } search: {
-                    SearchField(text: $query, placeholder: "搜索操作…", focusToken: 0, compact: true,
-                        submit: { if let item = items.first(where: { $0.id == selection }) { activate(item) } },
-                        move: move, escape: dismiss)
-                }
-                .modifier(LauncherMenuSurface(open: true))
+                if embedded { searchablePanel }
+                else { searchablePanel.modifier(LauncherMenuSurface(open: true)) }
             } else {
                 menuRows(compact: true)
                     .frame(width: 290, height: Self.height(items: items, searchable: false))
@@ -44,9 +38,20 @@ struct AIConversationComposerMenu: View {
                     .overlay { RoundedRectangle(cornerRadius: 12).stroke(.primary.opacity(0.12)) }
             }
         }
-        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+        .shadow(color: .black.opacity(embedded ? 0 : 0.22), radius: 16, y: 6)
         .onAppear { selection = items.first?.id }
         .onChange(of: items.map(\.id)) { _, ids in if !ids.contains(selection ?? "") { selection = ids.first } }
+    }
+
+    private var searchablePanel: some View {
+        LauncherActionMenuPanel(title: menuTitle) {
+            menuRows(compact: false)
+                .frame(height: min(320, CGFloat(max(items.count, 1)) * 39))
+        } search: {
+            SearchField(text: $query, placeholder: "搜索操作…", focusToken: 0, compact: true,
+                submit: { if let item = items.first(where: { $0.id == selection }) { activate(item) } },
+                move: move, escape: dismiss)
+        }
     }
 
     private func menuRows(compact: Bool) -> some View {

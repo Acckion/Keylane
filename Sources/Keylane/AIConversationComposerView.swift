@@ -134,22 +134,31 @@ struct AIConversationComposerView: View {
                     }
                 }
             } addButton: {
-                ConversationFooterButton(title: "添加上下文（@）", symbol: "plus", diameter: style.controlDiameter) {
-                    contextMenuOpen.toggle()
-                    menuQuery = ""
-                    menuSelection = nil
+                LauncherExpandingMenu(open: contextMenuOpen,
+                    closedSize: CGSize(width: style.controlDiameter, height: style.controlDiameter),
+                    menuSize: CGSize(width: 345, height: AIConversationComposerMenu.height(items: composerMenuItems, searchable: true))) {
+                    ConversationFooterButton(title: "添加上下文（@）", symbol: "plus", diameter: style.controlDiameter) {
+                        contextMenuOpen.toggle()
+                        menuQuery = ""
+                        menuSelection = nil
+                    }
+                    .disabled(controller.loadingChat || composer.loadingFiles)
+                } menu: {
+                    AIConversationComposerMenu(items: composerMenuItems, query: $menuQuery,
+                        selection: $menuSelection, scrollTarget: $menuScrollTarget, searchable: true,
+                        menuTitle: "AI Chat", embedded: true,
+                        activate: activateComposerItem, dismiss: dismissComposerMenu)
                 }
-                .modifier(LauncherMenuSurface(open: false, cornerRadius: style.controlDiameter / 2))
-                .disabled(controller.loadingChat || composer.loadingFiles)
+                .frame(width: style.controlDiameter, height: style.controlDiameter, alignment: .bottomLeading)
             }
         }
         .overlay(alignment: .bottomLeading) {
-            if composerMenuVisible {
+            if composerMenuVisible && !contextMenuOpen {
                 AIConversationComposerMenu(items: composerMenuItems, query: $menuQuery,
-                    selection: $menuSelection, scrollTarget: $menuScrollTarget, searchable: contextMenuOpen, menuTitle: compact ? "Quick AI" : "AI Chat",
+                    selection: $menuSelection, scrollTarget: $menuScrollTarget,
                     activate: activateComposerItem, dismiss: dismissComposerMenu)
-                    .offset(x: contextMenuOpen ? 0 : style.reservedControlWidth,
-                            y: contextMenuOpen ? 0 : -(max(style.fieldMinimumHeight, inputHeight + 12) + 8))
+                    .offset(x: style.reservedControlWidth,
+                            y: -(max(style.fieldMinimumHeight, inputHeight + 12) + 8))
                     .zIndex(10)
             }
         }

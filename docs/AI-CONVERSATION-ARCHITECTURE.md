@@ -114,3 +114,5 @@ OpenRouter 的流式续接分别处理文本/摘要增量和不可拆解的加�
 `verify-ai-composer-layout.sh` 使用真实共享外壳与原生编辑器验证两种宿主的单行、多行尺寸、按钮中心和左右留位，可选捕获合成内容窗口；`verify-ai-chat-input.sh` 复验中文组合、菜单快捷键、回车策略、焦点与 Undo/Redo。隔离窗口截图用于组件验收，不代表已替换安装版或通过真实模型测试。
 
 加号展开菜单和 Launcher 共用 `LauncherActionMenuPanel`、`LauncherMenuRow`、`SearchField` 与 `LauncherMenuSurface`，固定为标题、操作列表、底部搜索。AI Chat 菜单从加号底边向上展开；@ 和 / 保留紧凑补全列表。
+
+`LauncherExpandingMenu` 共用按钮与菜单的持久容器，按 `LauncherMenuSurface` 的 0.2 秒 smooth 动画从固定底角展开、收起，并尊重减少动态效果。Chat 只保留闭合按钮的布局占位，菜单扩展不会推动输入框；补全列表不使用该展开动画。

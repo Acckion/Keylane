@@ -1012,17 +1012,15 @@ struct Launcher: View {
         let alignment: Alignment = application ? .bottomLeading : .bottomTrailing
         let items = open ? filteredMenu(applicationMenu: application) : []
         let menuHeight = menuRowsHeight(items) + 87
-        return ZStack(alignment: alignment) {
-            if open {
-                menuPanel(applicationMenu: application, items: items)
-                    .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
-                    .transition(.opacity)
-            } else if conversation {
+        return LauncherExpandingMenu(open: open,
+            closedSize: CGSize(width: application ? applicationWidth : actionWidth, height: 36),
+            menuSize: CGSize(width: Self.footerMenuWidth, height: menuHeight), alignment: alignment,
+            tint: open ? nil : feedback?.style.color.opacity(0.16)) {
+            if conversation {
                 ConversationFooterButton(title: application ? "对话选项" : "操作",
                                          symbol: application ? "plus" : "command") {
                     toggleMenu(application: application)
                 }
-                .transition(.opacity)
             } else if let feedback {
                 NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开\(menuTitle)" : feedback.label, action: {
                     if feedback.actionTitle != nil { model.footerFeedback.performAction() }
@@ -1031,24 +1029,21 @@ struct Launcher: View {
                     LauncherFooterFeedbackLabel(feedback: feedback)
                 }
                 .frame(width: applicationWidth, height: 36)
-                .transition(.opacity)
             } else if application && secondary {
                 NativeHoverButton(title: "打开\(menuTitle)", action: { toggleMenu(application: true) }) {
                     SecondaryPageBadge(title: badgeTitle, symbol: badgeSymbol,
                                        artwork: model.launcherModules?.module(forPage: model.pageID).flatMap(ModuleArtwork.module))
-                }.frame(width: applicationWidth, height: 36).transition(.opacity)
+                }.frame(width: applicationWidth, height: 36)
             } else if application {
                 NativeHoverButton(title: "Keylane 菜单", action: { toggleMenu(application: true) }) {
                     Image(systemName: "text.menu").font(.system(size: 16)).frame(width: 36, height: 36)
-                }.frame(width: 36, height: 36).clipShape(Circle()).transition(.opacity)
+                }.frame(width: 36, height: 36).clipShape(Circle())
             } else {
-                actionBar.transition(.opacity)
+                actionBar
             }
+        } menu: {
+            menuPanel(applicationMenu: application, items: items)
         }
-        // The container remains in the same hierarchy. Only its size changes; its bottom
-        // corner stays fixed. No matched-position or automatic glass transition can slide it.
-        .frame(width: open ? Self.footerMenuWidth : (application ? applicationWidth : actionWidth), height: open ? menuHeight : 36, alignment: alignment)
-        .modifier(LauncherMenuSurface(open: open, tint: open ? nil : feedback?.style.color.opacity(0.16)))
         .animation(reduceMotion ? nil : .smooth(duration: 0.20), value: feedback?.message)
     }
     private var shortcutActions: [LauncherAction] {

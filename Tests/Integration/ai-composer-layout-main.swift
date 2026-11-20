@@ -128,3 +128,52 @@ if ProcessInfo.processInfo.environment["KEYLANE_COMPOSER_CAPTURE"] == "1" {
 }
 menuWindow.close()
 print("PASS shared corner menu: 345pt panel, title and full-size action rows, bottom search; same shell as Launcher")
+
+final class MenuMotionState: ObservableObject { @Published var open = false }
+struct MenuMotionPreview: View {
+    @ObservedObject var state: MenuMotionState
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            LauncherExpandingMenu(open: state.open, closedSize: CGSize(width: 48, height: 48),
+                                  menuSize: CGSize(width: 345, height: 126)) {
+                ConversationFooterButton(title: "添加", symbol: "plus", diameter: 48, action: {})
+            } menu: {
+                LauncherActionMenuPanel(title: "AI Chat") {
+                    Text("附加文件…").frame(height: 39)
+                } search: { Text("搜索操作…") }
+            }
+            .background(Probe(name: "expanding-surface"))
+            .frame(width: 48, height: 48, alignment: .bottomLeading).zIndex(1)
+            Color.clear.frame(width: 300, height: 48).background(Probe(name: "stationary-input"))
+        }.padding(20)
+    }
+}
+let motionState = MenuMotionState()
+let motionHost = NSHostingView(rootView: MenuMotionPreview(state: motionState))
+let motionWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 396, height: 260),
+    styleMask: [.borderless], backing: .buffered, defer: false)
+motionWindow.isReleasedWhenClosed = false
+motionWindow.contentView = motionHost
+motionWindow.orderFrontRegardless()
+func motionRect(_ name: String) -> NSRect {
+    motionHost.layoutSubtreeIfNeeded()
+    let view = descendants(motionHost).first { $0.identifier?.rawValue == name }!
+    return motionHost.convert(view.bounds, from: view)
+}
+RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+let closedSurface = motionRect("expanding-surface")
+let stationaryInput = motionRect("stationary-input")
+motionState.open = true
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+let openSurface = motionRect("expanding-surface")
+precondition(abs(openSurface.width - 345) < 0.5 && abs(openSurface.height - 126) < 0.5)
+precondition(abs(openSurface.minX - closedSurface.minX) < 0.5)
+precondition(abs((motionHost.isFlipped ? openSurface.maxY : openSurface.minY) -
+                 (motionHost.isFlipped ? closedSurface.maxY : closedSurface.minY)) < 0.5,
+             "The bottom corner must stay fixed while the menu expands")
+precondition(motionRect("stationary-input") == stationaryInput, "Menu expansion must not move the input")
+motionState.open = false
+RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+precondition(motionRect("expanding-surface") == closedSurface)
+motionWindow.close()
+print("PASS shared expanding surface: anchored bottom corner, 48pt/345pt open-close sizes, stationary input and reversible collapse")
