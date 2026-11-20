@@ -187,6 +187,7 @@ final class ApplicationSettingsCatalog: ObservableObject {
     private weak var model: Model?
 
     init(model: Model) { self.model = model }
+    init(items: [ApplicationPreferenceItem]) { self.items = items }
 
     func start() {
         guard changes == nil, let model else { return }

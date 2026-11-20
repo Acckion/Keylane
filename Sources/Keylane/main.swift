@@ -94,6 +94,7 @@ final class Model: ObservableObject {
     let systemNavigation = NavigationController()
     let cameraPreview = CameraPreview()
     let menuBar = MenuBarRegistry()
+    lazy var focus = FocusController(registry: menuBar)
     let dropShelf = DropShelfController()
     lazy var calendar = CalendarController(registry: menuBar)
     @Published var roots = UserDefaults.standard.stringArray(forKey: "applicationRoots") ?? ApplicationCatalog.defaultRoots
@@ -178,7 +179,7 @@ final class Model: ObservableObject {
     let applicationAutoQuit = ApplicationAutoQuit()
     private(set) lazy var applicationSettingsCatalog = ApplicationSettingsCatalog(model: self)
     @Published var runningPaths: Set<String> = []
-    enum ApplicationCatalogConsumer { case applications, windowLayout }
+    enum ApplicationCatalogConsumer { case applications, windowLayout, focus }
     private var applicationCatalogConsumers: Set<ApplicationCatalogConsumer> = []
     private var workspaceObservers: [NSObjectProtocol] = []
     @Published var apps: [URL] = [] { didSet { applicationEntries = nil } }
@@ -1277,6 +1278,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func applicationWillTerminate(_ notification: Notification) {
         model.launcherModules?.stopServices()
+        model.focus.browser.flush()
         model.menuBar.shutdown()
         if let outsideMonitor { NSEvent.removeMonitor(outsideMonitor) }
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }

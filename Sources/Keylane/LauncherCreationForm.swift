@@ -63,13 +63,13 @@ struct LauncherCreationForm<Accessory: View, Fields: View>: View {
     }
 }
 
-private struct CreationPickerMenu {
+struct CreationPickerMenu {
     let id: String
     let anchor: Anchor<CGRect>
     let content: (CGFloat, Int) -> AnyView
 }
 
-private struct CreationPickerMenuPreference: PreferenceKey {
+struct CreationPickerMenuPreference: PreferenceKey {
     static var defaultValue: CreationPickerMenu? { nil }
 
     static func reduce(value: inout CreationPickerMenu?, nextValue: () -> CreationPickerMenu?) {
