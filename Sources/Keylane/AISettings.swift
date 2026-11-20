@@ -43,10 +43,7 @@ enum AIModule {
             } else {
                 let draft = quickAI.composer
                 _ = draft.appendDictation(text, for: draft.draftID)
-                if model.pageID == QuickAILauncher.pageID {
-                    model.query = draft.text
-                }
-                model.openPage(QuickAILauncher.pageID, origin: .menu, initialQuery: draft.text)
+                model.openPageWithExistingDraft(QuickAILauncher.pageID)
                 return
             }
             _ = quickAI.composer.appendDictation(text, for: quickAI.composer.draftID)

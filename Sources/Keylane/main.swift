@@ -239,16 +239,20 @@ final class Model: ObservableObject {
             rootSearchUpdates.send()
         }
     }
-    private var pendingPageQuery: (page: PageID, query: String)?
+    private var pendingPageEntry: (page: PageID, intent: LauncherPagePresentation.EntryIntent)?
 
     var fallbackCommandIDs: [String] {
         get { fallbackCommandOrder.custom ?? fallbackCommandOrder.ids(in: launcherModules?.fallbackCatalog() ?? []) }
         set { fallbackCommandOrder.custom = newValue }
     }
 
-    func takeInitialQuery(for page: PageID) -> String? {
-        defer { pendingPageQuery = nil }
-        return pendingPageQuery?.page == page ? pendingPageQuery?.query : nil
+    func isOpeningExistingDraft(_ page: PageID) -> Bool {
+        pendingPageEntry?.page == page && pendingPageEntry?.intent == .existingDraft
+    }
+
+    func takePageEntry(for page: PageID) -> LauncherPagePresentation.EntryIntent {
+        defer { pendingPageEntry = nil }
+        return pendingPageEntry?.page == page ? pendingPageEntry?.intent ?? .standard : .standard
     }
 
     @Published var favorites = Set(UserDefaults.standard.stringArray(forKey: "favorites") ?? [])
@@ -502,9 +506,15 @@ final class Model: ObservableObject {
     }
     func openPage(_ page: PageID, origin: LauncherCommandOrigin, initialQuery: String? = nil) {
         guard launcherModules?.page(page) != nil else { return }
-        if pageID != page, let initialQuery { pendingPageQuery = (page, initialQuery) }
+        if pageID != page { pendingPageEntry = initialQuery.map { (page, .query($0)) } }
         pageID = page
         if origin != .search { (NSApp.delegate as? Delegate)?.revealLauncherDestination() }
+    }
+    func openPageWithExistingDraft(_ page: PageID) {
+        guard launcherModules?.page(page)?.entryDraft != nil else { return }
+        pendingPageEntry = (page, .existingDraft)
+        pageID = page
+        (NSApp.delegate as? Delegate)?.revealLauncherDestination()
     }
     func goBackInLauncher() {
         guard pageID != .root else { return }

@@ -81,6 +81,36 @@ private func verifyDictationReviewRegressions(in directory: URL) async throws {
     require(speechDraft.appendDictation("语音结果", for: speechDraftID), "speech appends to its initiating draft")
     require(speechDraft.text == "已有 😀 语音结果" && speechDraft.selection.location == speechDraft.text.utf16.count,
             "speech preserves draft and advances the UTF-16 selection")
+    let attachment = AIConversationAttachment(title: "Generated attachment", text: "Synthetic content", symbol: "doc")
+    speechDraft.attachments = [attachment]
+    for source in [PageID.root, PageID(rawValue: "fixture-other-page")] {
+        let destination = PageID(rawValue: "quick-ai")
+        var presentation = LauncherPagePresentation(page: source)
+        _ = presentation.update(page: source, visible: true)
+        require(presentation.update(page: destination, visible: true).activation == .enter, "opens Quick AI from each source")
+        var entrySubmissions = 0
+        let requestsBefore = FixtureProtocol.requests
+        let seed = LauncherPagePresentation.EntryIntent.existingDraft.resolve(current: "previous page query",
+            restored: nil, pageConsumesEntryQuery: true, existingDraft: { speechDraft.text }, enter: { _ in
+                entrySubmissions += 1; return ""
+            })
+        require(entrySubmissions == 0 && FixtureProtocol.requests == requestsBefore, "voice navigation never submits the draft")
+        require(seed == speechDraft.text && speechDraft.attachments == [attachment], "voice navigation preserves draft and attachments")
+
+        var manualSubmission: String?
+        let explicitlySend = { manualSubmission = AIConversationAttachment.requestText(question: speechDraft.text, attachments: speechDraft.attachments) }
+        require(manualSubmission == nil, "draft-only activation leaves manual submission untouched")
+        explicitlySend()
+        require(manualSubmission?.contains("Synthetic content") == true && manualSubmission?.contains("语音结果") == true,
+                "manual submission still includes voice and existing attachments")
+
+        let tab = LauncherPagePresentation.EntryIntent.query("explicit Tab")
+        let tabResult = tab.resolve(current: "previous page query", restored: nil, pageConsumesEntryQuery: true,
+            existingDraft: { fatalError("Tab is not a draft-only activation") }, enter: { query in
+                require(query == "explicit Tab", "explicit Tab still forwards a question"); entrySubmissions += 1; return ""
+            })
+        require(tabResult == "" && entrySubmissions == 1, "accepted Tab entry continues to submit and clear")
+    }
     speechDraft.clear()
     speechDraft.offer("新对话")
     require(!speechDraft.appendDictation("旧结果", for: speechDraftID) && speechDraft.text == "新对话",

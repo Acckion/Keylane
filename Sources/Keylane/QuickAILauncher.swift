@@ -39,6 +39,7 @@ enum QuickAILauncher {
         ])
         page.actionContextTitle = { controller.conversationTitle }
         page.enter = controller.consumeEntry
+        page.entryDraft = { controller.composer.text }
         page.consumesEntryQuery = true
         page.keepsStateWhenHidden = true
         page.fullBleed = true
@@ -112,8 +113,14 @@ private struct QuickAIConversationContent: View {
         }
         .sheet(item: $usageTarget) { connection in AISubscriptionUsage(connection: connection) }
         .onAppear { if composer.text.isEmpty { composer.offer(model.query) } }
-        .onChange(of: composer.text) { _, value in if model.query != value { model.query = value } }
-        .onReceive(model.$query) { value in if composer.text != value { composer.text = value } }
+        .onChange(of: composer.text) { _, value in
+            guard model.pageID == QuickAILauncher.pageID, !model.isOpeningExistingDraft(QuickAILauncher.pageID) else { return }
+            if model.query != value { model.query = value }
+        }
+        .onReceive(model.$query) { value in
+            guard model.pageID == QuickAILauncher.pageID, !model.isOpeningExistingDraft(QuickAILauncher.pageID) else { return }
+            if composer.text != value { composer.text = value }
+        }
     }
 
     private var responseTitle: String {
