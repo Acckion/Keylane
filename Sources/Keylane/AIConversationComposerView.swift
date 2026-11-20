@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The complete composer is reused as a unit: input, attachments, completion and context lifecycle.
+/// Shared editing and menus; the shell reserves host controls in Launcher and owns them in Chat.
 struct AIConversationComposerView: View {
     @ObservedObject var controller: AIConversationSession
     @ObservedObject var configuration: AIConfiguration
@@ -24,7 +24,8 @@ struct AIConversationComposerView: View {
     var commandReturn: (() -> Void)? = nil
     var optionReturn: (() -> Void)? = nil
     @State private var attachmentError: String?
-    @State private var inputHeight: CGFloat = 36
+    @State private var inputHeight: CGFloat = 0
+    private var style: ConversationComposerStyle { compact ? .launcher : .chat }
     @State private var contextMenuOpen = false
     @State private var menuQuery = ""
     @State private var menuSelection: String?
@@ -99,61 +100,56 @@ struct AIConversationComposerView: View {
                     Button("AI 设置") { openAISettings() }.buttonStyle(ContentActionButtonStyle())
                 }
             }
-            HStack(alignment: .bottom, spacing: 8) {
-                Button {
+            ConversationComposer(style: style) {
+                AIConversationTextInput(composer: composer, height: $inputHeight,
+                    enabled: inputEnabled && !controller.loadingChat && controller.matchesCurrentModel,
+                    sendWithReturn: compact || interaction.chatReturn, menuVisible: composerMenuVisible,
+                    submit: submit, moveMenu: moveComposerMenu, chooseMenu: chooseComposerMenu,
+                    dismissMenu: dismissComposerMenu, placeholder: compact ? "向 AI 提问…" : "输入问题…",
+                    minimumHeight: style.editorMinimumHeight,
+                    escape: escape, commandReturn: commandReturn, optionReturn: optionReturn)
+                    .frame(height: max(style.editorMinimumHeight, inputHeight))
+            } actions: {
+                HStack(spacing: 8) {
+                    if let dictation, !controller.running, !controller.loadingChat, inputEnabled {
+                        DictationComposerButton(controller: dictation, composer: composer, controlSide: style.actionControlSide)
+                    }
+                    if composer.loadingFiles {
+                        ProgressView().controlSize(.small).frame(width: style.actionControlSide, height: style.actionControlSide)
+                    } else if controller.running {
+                        Button("停止生成", systemImage: "stop.fill", action: controller.stop)
+                            .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: style.actionControlSide, height: style.actionControlSide)
+                    } else if compact && composer.text.isEmpty && composer.attachments.isEmpty, let emptyAction, controller.lastAnswer != nil {
+                        Button(emptyActionTitle, action: emptyAction).buttonStyle(.plain).font(.system(size: 12))
+                    } else if dictation == nil && composer.text.isEmpty && composer.attachments.isEmpty {
+                        Button("语音输入（尚未接入）", systemImage: "mic") { capability = .voice }
+                            .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: style.actionControlSide, height: style.actionControlSide)
+                            .foregroundStyle(.secondary).help("语音输入：基础入口，尚未接入")
+                    } else if !composer.text.isEmpty || !composer.attachments.isEmpty {
+                        Button("发送", systemImage: "arrow.up", action: submit)
+                            .labelStyle(.iconOnly).buttonStyle(.plain)
+                            .frame(width: style.actionControlSide, height: style.actionControlSide)
+                            .background(.primary.opacity(0.09), in: Circle())
+                            .disabled(!canSubmit)
+                    }
+                }
+            } addButton: {
+                ConversationFooterButton(title: "添加上下文（@）", symbol: "plus") {
                     contextMenuOpen.toggle()
                     menuQuery = ""
                     menuSelection = nil
-                } label: {
-                    Image(systemName: "plus").font(.system(size: 22, weight: .regular))
-                        .frame(width: 34, height: 34).contentShape(Rectangle())
-                }.buttonStyle(.plain).help("添加上下文（@）")
-                    .accessibilityLabel("添加上下文").disabled(controller.loadingChat || composer.loadingFiles)
-
-                ZStack(alignment: .leading) {
-                    if composer.text.isEmpty {
-                        Text("输入问题，@ 添加上下文，/ 选择命令或模型…")
-                            .font(.system(size: 14)).foregroundStyle(.tertiary)
-                            .allowsHitTesting(false)
-                    }
-                    AIConversationTextInput(composer: composer, height: $inputHeight,
-                        enabled: inputEnabled && !controller.loadingChat && controller.matchesCurrentModel,
-                        sendWithReturn: compact || interaction.chatReturn, menuVisible: composerMenuVisible,
-                        submit: submit, moveMenu: moveComposerMenu, chooseMenu: chooseComposerMenu,
-                        dismissMenu: dismissComposerMenu, escape: escape, commandReturn: commandReturn, optionReturn: optionReturn)
-                        .frame(height: inputHeight)
                 }
-                if let dictation, !controller.running, !controller.loadingChat, inputEnabled {
-                    DictationComposerButton(controller: dictation, composer: composer)
-                }
-                if composer.loadingFiles {
-                    ProgressView().controlSize(.small).frame(width: 30, height: 34)
-                } else if controller.running {
-                    Button("停止生成", systemImage: "stop.fill", action: controller.stop)
-                        .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 34, height: 34)
-                } else if compact && composer.text.isEmpty && composer.attachments.isEmpty, let emptyAction, controller.lastAnswer != nil {
-                    Button(emptyActionTitle, action: emptyAction).buttonStyle(.plain).font(.system(size: 12))
-                } else if dictation == nil && composer.text.isEmpty && composer.attachments.isEmpty {
-                    Button("语音输入（尚未接入）", systemImage: "mic") { capability = .voice }
-                        .labelStyle(.iconOnly).buttonStyle(.plain).frame(width: 30, height: 34)
-                        .foregroundStyle(.secondary).help("语音输入：基础入口，尚未接入")
-                } else if !composer.text.isEmpty || !composer.attachments.isEmpty {
-                    Button("发送", systemImage: "arrow.up", action: submit)
-                        .labelStyle(.iconOnly).buttonStyle(.plain)
-                        .frame(width: 30, height: 30)
-                        .background(.primary.opacity(0.09), in: Circle())
-                        .disabled(!canSubmit)
-                }
+                .modifier(LauncherMenuSurface(open: false))
+                .disabled(controller.loadingChat || composer.loadingFiles)
             }
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: compact ? 14 : 20))
         }
         .overlay(alignment: .topLeading) {
             if composerMenuVisible {
                 AIConversationComposerMenu(items: composerMenuItems, query: $menuQuery,
                     selection: $menuSelection, scrollTarget: $menuScrollTarget, searchable: contextMenuOpen,
                     activate: activateComposerItem, dismiss: dismissComposerMenu)
-                    .offset(y: -AIConversationComposerMenu.height(items: composerMenuItems, searchable: contextMenuOpen) - 8)
+                    .offset(x: contextMenuOpen ? 0 : style.reservedControlWidth,
+                            y: -AIConversationComposerMenu.height(items: composerMenuItems, searchable: contextMenuOpen) - 8)
                     .zIndex(10)
             }
         }

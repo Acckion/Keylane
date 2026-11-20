@@ -64,25 +64,6 @@ struct ConversationLayout<Content: View, Composer: View, Trailing: View>: View {
     }
 }
 
-struct ConversationComposer<Leading: View, Input: View, Trailing: View>: View {
-    var inputHeight: CGFloat = VisualStyle.launcherControlDiameter
-    @ViewBuilder let leading: () -> Leading
-    @ViewBuilder let input: () -> Input
-    @ViewBuilder let trailing: () -> Trailing
-
-    var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            leading().frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
-            input()
-                .padding(.horizontal, 14)
-                .frame(height: inputHeight)
-                .modifier(LauncherMenuSurface(open: false))
-            trailing().frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
-        }
-    }
-}
-
-
 private struct ConversationInputEnabledKey: EnvironmentKey {
     static let defaultValue = true
 }

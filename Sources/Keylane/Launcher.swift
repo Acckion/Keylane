@@ -1018,12 +1018,10 @@ struct Launcher: View {
                     .frame(width: Self.footerMenuWidth, height: menuHeight, alignment: .bottom)
                     .transition(.opacity)
             } else if conversation {
-                NativeHoverButton(title: application ? "对话选项" : "操作", action: { toggleMenu(application: application) }) {
-                    Image(systemName: application ? "plus" : "command")
-                        .font(.system(size: 18))
-                        .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
+                ConversationFooterButton(title: application ? "对话选项" : "操作",
+                                         symbol: application ? "plus" : "command") {
+                    toggleMenu(application: application)
                 }
-                .frame(width: VisualStyle.launcherControlDiameter, height: VisualStyle.launcherControlDiameter)
                 .transition(.opacity)
             } else if let feedback {
                 NativeHoverButton(title: feedback.actionTitle == nil ? "\(feedback.message) · 打开\(menuTitle)" : feedback.label, action: {

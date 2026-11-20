@@ -103,3 +103,11 @@ Quick AI 与 AI Chat 的同一个 `AIConversationSession` 创建每次生成的 
 OpenRouter 的流式续接分别处理文本/摘要增量和不可拆解的加密块；加密块保留原顺序、标识和内容，不拼接或展示到界面。协议依据：[OpenRouter reasoning_details](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#reasoning_details-array-structure)。
 
 普通 OpenAI 响应、Anthropic 响应和工具响应共用 `AISSEEventDecoder` 分帧：逐字节保留 UTF-8，兼容 LF、CR、CRLF，多条 `data:` 在空行后才组成 JSON 事件。各协议在自己的结束标记处停止读取，避免等待仍开放的连接；公共组件限制单事件大小，传输层限制总响应大小。
+
+## 输入区的宿主布局
+
+`AIConversationComposerView` 继续共用草稿、原生编辑器、附件及 @ / 命令菜单。`ConversationComposer` 按语义样式适配外壳：AI Chat 单行输入区高 48pt、半圆端部，左侧独立 36pt 加号；Launcher 恢复原来的 36pt 输入区，左右各留出宿主底部按钮及间距，不再内置第二个加号。两边的圆形入口共用 `ConversationFooterButton`，Launcher 仍负责菜单展开与原有操作。
+
+编辑器的最小高度由宿主样式提供，文字边距按原生字体行高居中计算；多行输入向上增长，操作按钮与最后一行保持同一中心。占位文字由原生编辑器根据实际文本与中文组合状态绘制，避免未提交的拼音/汉字与占位文字重叠。文字和宿主尺寸未变化时不重新安排输入高度，避免回复流式更新反复触发布局。
+
+`verify-ai-composer-layout.sh` 使用真实共享外壳与原生编辑器验证两种宿主的单行、多行尺寸、按钮中心和左右留位，可选捕获合成内容窗口；`verify-ai-chat-input.sh` 复验中文组合、菜单快捷键、回车策略、焦点与 Undo/Redo。隔离窗口截图用于组件验收，不代表已替换安装版或通过真实模型测试。
