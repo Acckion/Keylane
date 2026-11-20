@@ -8,7 +8,7 @@ import KeylaneCore
 enum BuiltinLauncherModules {
     static let clipboardPage = PageID(rawValue: "Clipboard")
     static func make(model: Model) -> [LauncherModule] {
-        let modules = [applications(model).withAITools(AIBuiltinTools.applications(model)), host(model).withAITools(AIBuiltinTools.time), AIModule.make(model: model), TranslatorModule.make(model: model), DictationModule.make(model: model), files(model).withAITools(AIBuiltinTools.files(model)), clipboard(model).withAIContexts([BuiltinAIContexts.clipboard(model)]), AppleNotesModule.make(model: model),
+        let modules = [applications(model).withAITools(AIBuiltinTools.applications(model)), host(model).withAITools(AIBuiltinTools.time), ThemeModule.make(model: model), AIModule.make(model: model), TranslatorModule.make(model: model), DictationModule.make(model: model), files(model).withAITools(AIBuiltinTools.files(model)), clipboard(model).withAIContexts([BuiltinAIContexts.clipboard(model)]), AppleNotesModule.make(model: model),
                        QuicklinksModule.make(model: model), CalculatorLauncherModule.make(model: model).withAITools(AIBuiltinTools.calculator), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model).withAITools(AIBuiltinTools.calendar(model)).withAIContexts([BuiltinAIContexts.calendar(model)]),
                        ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model), SnippetsModule.make(model: model), WindowManagementModule.make(model: model), DropShelfModule.make(model: model), FocusModule.make(model: model), DownloadsModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
@@ -634,7 +634,7 @@ enum BuiltinLauncherModules {
                                      _ subtitle: String, _ order: Int, titlebar: SettingsTitlebarContribution? = nil,
                                      trailingToolbar: (() -> AnyView)? = nil, loading: AnyPublisher<Bool, Never>? = nil,
                                      content: @escaping (Model) -> Content) -> LauncherSettingsPage {
-        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id }, titlebar: titlebar, trailingToolbar: trailingToolbar, loading: loading) { [weak model] in
+        .init(id: id, title: title, symbol: symbol, subtitle: subtitle, order: order, items: SettingsItem.all.filter { $0.page == id } + (id == "general" ? [ThemeModule.settingsItem] : []), titlebar: titlebar, trailingToolbar: trailingToolbar, loading: loading) { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(content(model))
         }
