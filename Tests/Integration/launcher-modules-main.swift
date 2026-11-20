@@ -771,3 +771,19 @@ let toolRegistryDeadline = Date().addingTimeInterval(3)
 while !toolRegistryFinished, Date() < toolRegistryDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
 precondition(toolRegistryFinished)
 print("PASS module tools: inert catalog construction, duplicate rejection and live module enablement for captured declarations")
+
+// Menu and primary invocation share one definition; refresh derives from live state.
+var actionReady = false
+var actionRuns = 0
+let snapshotPage = LauncherPage(id: PageID(rawValue: "Snapshot"), placeholder: "", actionSnapshot: {
+    let primary = LauncherAction(id: "save", title: "Save", icon: "checkmark", enabled: actionReady,
+                                 perform: { actionRuns += 1 })
+    return .init(primary: primary, items: [.init(id: "save", title: "Stale title", icon: "xmark")])
+})
+precondition(snapshotPage.actionSnapshot?().primary.enabled == false)
+precondition(snapshotPage.resolvedActions.first?.title == "Save")
+precondition(snapshotPage.resolvedActions.first?.invoke() == false && actionRuns == 0)
+actionReady = true
+precondition(snapshotPage.actionSnapshot?().primary.invoke() == true)
+precondition(snapshotPage.resolvedActions.first?.invoke() == true && actionRuns == 2)
+print("PASS shared action snapshot, disabled invocation, live state and primary/menu identity")

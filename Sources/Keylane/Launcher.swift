@@ -1049,7 +1049,7 @@ struct Launcher: View {
     private var shortcutActions: [LauncherAction] {
         let entryActions: [LauncherAction]
         if page?.actionShortcutsEnabled == true {
-            entryActions = page?.actions?() ?? []
+            entryActions = page?.resolvedActions ?? []
         } else if page == nil, !appMenu, submenuPath.isEmpty, argumentTarget == nil,
                   let entry = selectedEntry, entry.commandID.rawValue.hasPrefix("app:") {
             entryActions = model.applicationResultActions.shortcutActions(for: entry, model: model)
@@ -1116,7 +1116,7 @@ struct Launcher: View {
                 MenuAction(id: "quit", title: "退出 Keylane", icon: "rectangle.portrait.and.arrow.right", perform: { NSApp.terminate(nil) })
             ].filter { model.launcherModules?.isCommandModuleEnabled(CommandID(rawValue: $0.id)) != false }
         }
-        if let page, !showsFileResults { return page.actions?() ?? [] }
+        if let page, !showsFileResults { return page.resolvedActions }
         guard let row = selectedEntry else { return [] }
         if row.isFallback {
             return [
@@ -1174,7 +1174,7 @@ struct Launcher: View {
             dismissSubmenu()
         } else {
             closeMenus()
-            item.perform()
+            item.invoke()
         }
     }
 
@@ -1331,12 +1331,13 @@ struct Launcher: View {
             guard let row = selectedEntry else { return false }
             return row.detail != "File" || !model.fileSearch.isSearching
         }
-        return page?.primaryEnabled?() != false
+        return page?.actionSnapshot?().primary.enabled ?? (page?.primaryEnabled?() != false)
     }
 
     private var primaryTitle: String {
         if argumentTarget != nil { return "启动新实例" }
         if rootScriptArguments != nil { return "运行脚本" }
+        if let action = page?.actionSnapshot?().primary { return action.title }
         if let title = page?.primaryTitle?() { return title }
         if let row = selectedEntry {
             if row.isFallback { return "运行备选命令" }
@@ -1424,6 +1425,7 @@ struct Launcher: View {
             catch { model.error = "参数引号或转义未完成。" }
             return
         }
+        if let action = page?.actionSnapshot?().primary { action.invoke(); return }
         if let submit = page?.submit { submit(); return }
         if model.pageID != .root && !showsFileResults { goBack(); return }
         if let row = selectedEntry { performRootEntry(row) }

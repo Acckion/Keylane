@@ -44,6 +44,12 @@ struct LauncherAction: Identifiable {
     var enabled = true
     var destructive = false
     var perform: () -> Void = {}
+
+    @discardableResult func invoke() -> Bool {
+        guard enabled else { return false }
+        perform()
+        return true
+    }
 }
 
 extension KeyboardShortcut {
@@ -60,6 +66,15 @@ extension KeyboardShortcut {
 }
 
 struct LauncherPage {
+    /// Produced together from current selection/state, never retained across page visits.
+    struct ActionSnapshot {
+        let primary: LauncherAction
+        var items: [LauncherAction] = []
+        var menuActions: [LauncherAction] {
+            items.map { $0.id == primary.id ? primary : $0 }
+        }
+    }
+
     enum ContentPlacement {
         case inset
         case underChrome
@@ -141,6 +156,8 @@ struct LauncherPage {
     var actionShortcutsEnabled = false
     var loading: AnyPublisher<Bool, Never>?
     var fullBleed = false
+    var actionSnapshot: (() -> ActionSnapshot)?
+    var resolvedActions: [LauncherAction] { actionSnapshot?().menuActions ?? actions?() ?? [] }
 }
 
 struct SettingsTitlebarContribution {

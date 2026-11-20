@@ -76,29 +76,26 @@ enum DictionaryLauncherModule {
                 if model?.pageID != detailID { controller.search("") }
             },
             move: controller.move,
-            submit: {
-                guard let selected = controller.selected else {
-                    if controller.canSubmit { open(controller) }
-                    return
-                }
-                perform(primary(), word: selected, controller: controller, details: openDetails)
-            },
             actionSelectionID: { controller.selectedID },
             actionContextTitle: { controller.selected?.word },
-            primaryTitle: { controller.selected == nil ? Action.open.title : actionTitle(primary()) },
-            primaryEnabled: { controller.canSubmit },
-            actions: {
-                guard let selected = controller.selected else {
-                    return controller.canSubmit ? [.init(id: "dictionary-open", title: Action.open.title,
-                                                         icon: Action.open.symbol, shortcut: .init(.return, modifiers: []), perform: { open(controller) })] : []
-                }
-                return actions(for: selected, controller: controller, primary: primary(), details: openDetails)
-            }, updates: updates,
+            updates: updates,
             enter: { _ in
                 defer { controller.initialTerm = "" }
                 return controller.initialTerm
             },
-            actionShortcutsEnabled: true, loading: controller.$loading.eraseToAnyPublisher()
+            actionShortcutsEnabled: true, loading: controller.$loading.eraseToAnyPublisher(),
+            actionSnapshot: {
+                let items = controller.selected.map {
+                    actions(for: $0, controller: controller, primary: primary(), details: openDetails)
+                } ?? []
+                let fallback = LauncherAction(id: "dictionary-open", title: Action.open.title,
+                    icon: Action.open.symbol, shortcut: .init(.return, modifiers: []),
+                    enabled: controller.canSubmit, perform: { open(controller) })
+                var selectedAction = items.first ?? fallback
+                selectedAction.enabled = controller.canSubmit
+                return .init(primary: selectedAction,
+                             items: items.isEmpty ? (controller.canSubmit ? [fallback] : []) : items)
+            }
         )
         let openSelected = { if let selected = controller.selected { open(controller, word: selected.word) } }
         let detail = LauncherPage(
@@ -110,18 +107,20 @@ enum DictionaryLauncherModule {
             leave: { [weak model] in
                 if model?.pageID != listID { controller.search("") }
             }, keepsStateWhenHidden: true, parent: listID,
-            submit: openSelected, returnBindings: .init(primary: .plain),
+            returnBindings: .init(primary: .plain),
             actionSelectionID: { controller.selectedID },
             actionContextTitle: { controller.selected?.word },
-            primaryTitle: { Action.open.title }, primaryEnabled: { controller.selected != nil },
-            actions: {
-                controller.selected.map { actions(for: $0, controller: controller, primary: .open) } ?? []
-            }, updates: updates, headerInput: .none,
+            updates: updates, headerInput: .none,
             typeFilterWidth: 174, typeFilter: { [weak model] isOpen in
                 AnyView(DictionarySourceFilter(word: controller.selected, options: options,
                                                isOpen: isOpen, navigation: model?.navigation ?? "arrows"))
             }, badgeTitle: { controller.selected?.word ?? title },
-            actionShortcutsEnabled: true
+            actionShortcutsEnabled: true,
+            actionSnapshot: {
+                let items = controller.selected.map { actions(for: $0, controller: controller, primary: .open) } ?? []
+                return .init(primary: items.first ?? LauncherAction(id: "dictionary-open", title: Action.open.title,
+                    icon: Action.open.symbol, enabled: false, perform: openSelected), items: items)
+            }
         )
         let settings = LauncherSettingsPage(
             id: settingsID, title: "词典", symbol: symbol, subtitle: "查询本机词库中的词语释义。",
