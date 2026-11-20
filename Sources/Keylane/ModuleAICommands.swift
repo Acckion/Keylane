@@ -44,7 +44,7 @@ extension ModuleAICommands {
                            permission: PermissionFeature? = nil, available: @escaping () -> Bool = { true },
                            source: @escaping () -> AIActionSource?, fallback: @escaping (LauncherCommandOrigin) -> Void) -> LauncherModule.Command {
         .init(declaration: .init(id: id, title: title, detail: "仅加入草稿，不自动发送", symbol: "sparkles", keywords: ["AI", "聊天"], destination: .action, settingsPage: settings),
-              available: { [weak model] in available() && model?.aiSettings.isAvailable == true }, permission: permission, isAICommand: true,
+              available: { [weak model] in available() && model?.canAttachModuleAIContext() == true }, permission: permission, isAICommand: true,
               aiExecute: { [weak model] origin, provided in
             guard let model else { return }
             guard let selected = provided ?? source(), selected.moduleID == moduleID else { fallback(origin); return }

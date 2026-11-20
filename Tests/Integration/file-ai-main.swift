@@ -91,8 +91,14 @@ final class FixtureProtocol: URLProtocol {
                 text = mode == "bad" ? "{}" : "{\"choices\":[{\"message\":{\"content\":\"synthetic answer\"}}],\"usage\":{\"total_tokens\":3}}"
             }
             self.client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
-            if mode == "held-stream" {
+            if mode == "held-stream" || mode == "partial-error" {
                 self.client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{\"content\":\"visible streaming fragment\"}}]}\n\n".utf8))
+                if mode == "partial-error" {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
+                        self.lock.lock(); let stopped = self.stopped; self.lock.unlock()
+                        if !stopped { self.client?.urlProtocol(self, didFailWithError: URLError(.networkConnectionLost)) }
+                    }
+                }
                 return // Deliberately leave the synthetic stream open until stop/cancellation.
             }
             if mode == "reasoning-stream" || mode == "reasoning-pause" {
@@ -2365,3 +2371,46 @@ precondition(validatedAction.context != nil && validatedAction.invocationID == c
 validatedAction.clear(for: questionSource.moduleID)
 precondition(validatedAction.context == nil && validatedAction.invocationID != cleanupInvocation)
 print("PASS module-scoped AI cleanup: stopping another extension preserves the active invocation")
+
+
+// PR214: cancelled/failed fragments are display-only; successful results carry their submitted source.
+let continuationSuite = "KeylaneTextContinuation-" + UUID().uuidString
+let continuationPrefs = UserDefaults(suiteName: continuationSuite)!
+defer { continuationPrefs.removePersistentDomain(forName: continuationSuite) }
+continuationPrefs.set("http://127.0.0.1:43991/v1", forKey: "fileAIEndpoint")
+continuationPrefs.set("fixture", forKey: "fileAIModel")
+let continuationConfiguration = AIConfiguration(preferences: continuationPrefs)
+var continuationProfile = continuationConfiguration.selected!
+continuationProfile.mode = .streaming
+precondition(continuationConfiguration.save(continuationProfile))
+let continuationCommand = AITextCommandSession(configuration: continuationConfiguration, runtime: actionRuntime, readKey: { _ in nil })
+FixtureProtocol.mode = "held-stream"
+continuationCommand.prepare(.polish, selection: "Originally submitted source")
+continuationCommand.send()
+wait("Text command partial result") { continuationCommand.reply.running && continuationCommand.reply.lastAnswer != nil }
+precondition(continuationCommand.completedResult == nil)
+continuationCommand.reply.stop()
+precondition(continuationCommand.reply.lastAnswer != nil && continuationCommand.completedResult == nil)
+FixtureProtocol.mode = "partial-error"
+continuationCommand.prepare(.polish, selection: "Failing source")
+continuationCommand.send()
+wait("Text command failed partial result") { !continuationCommand.reply.running }
+precondition(continuationCommand.reply.lastAnswer != nil && continuationCommand.completedResult == nil)
+FixtureProtocol.mode = "stream"
+continuationCommand.prepare(.polish, selection: "Submitted before editor changed")
+continuationCommand.send()
+continuationCommand.input = "Unsubmitted edit while running"
+wait("Text command successful result") { !continuationCommand.reply.running }
+precondition(continuationCommand.completedResult?.context.text == "Submitted before editor changed")
+precondition(continuationCommand.completedResult?.answer == continuationCommand.reply.turns.last?.answer)
+continuationCommand.input = "Edited after success"
+precondition(continuationCommand.completedResult == nil)
+let customContinuation = CustomAICommand(title: "Continuation fixture", prompt: #"Tone: {argument name="tone"}"#, connectionID: nil)
+continuationCommand.prepare(customContinuation, template: DynamicTemplate(customContinuation.prompt, usage: .aiCommand), context: .init(), canInvoke: { true })
+continuationCommand.setArgument("tone", value: "formal")
+continuationCommand.send()
+wait("Custom command successful result") { !continuationCommand.reply.running }
+precondition(continuationCommand.completedResult?.context.text.contains("formal") == true)
+continuationCommand.setArgument("tone", value: "casual")
+precondition(continuationCommand.completedResult == nil)
+print("PASS PR214 result actions: running/stopped/failed partial outputs rejected, successful output bound to submitted source, subsequent input and template edits revoke result")
