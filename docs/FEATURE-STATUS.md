@@ -98,7 +98,7 @@
 | AI-08 | 自动发现/缓存模型、失效恢复与任务路由 | 已实现 | 真实账户和各服务商差异继续验收 | [模型目录](AI-PROVIDER-CATALOG.md) |
 | AI-09 | 本地模型 | 部分实现 | 已有 Ollama 等连接方式，模型能力与工具协议逐项核对 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/local-models) |
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
-| AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
+| AI-11 | 内置工具调用、结果展示与确认 | 部分实现；能力选择与审批整合待合并 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 待合并 | PR #215 尚未合入基线，后续按实际工具逐项验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 尚未合入基线，确认权限和副作用行为 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
@@ -181,3 +181,5 @@
 维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用已随 #218 合入 dev；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。
 
 维护记录：2026-11-21，EXT-01/BASE-11 第三批 [PR #223](https://github.com/Acckion/Keylane/pull/223)（b55cca4，草稿）目录快照与运行激活分层，动态声明插入/替换/卸载及验证失败保留旧目录开发完成，待合并及安装版验收。前序 #218、#221，见 [目录事务](CATALOG-TRANSACTIONS.md)。
+
+维护记录：2026-11-21，AI-11/EXT-01 第四批第一步（823d35d、1f20432 及后续整合）实现 owner 权威标注、共用会话能力选择、过滤工具发现及目录动态 AI 验证；整合 #212/#214/#215/#217，前序架构 #218/#221/#223。见 [能力契约](AI-CAPABILITY-CONTRACT.md)，URI 等后续项尚未完成。

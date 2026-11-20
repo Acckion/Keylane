@@ -87,7 +87,15 @@ import KeylaneCore
     while (try? await files.aiSearch("fixture", limit: 1).isEmpty) != false && ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
-    let fileRun = try run(AIReadTools.files(files))
+    let foundationPreferences = AIFileToolPreferences(store: preferences)
+    foundationPreferences.enabled = true
+    let indexedTools = AIReadTools.files(files)
+    let directoryTools = AIFileToolProvider.registrations(preferences: foundationPreferences, project: nil, currentProject: { nil })
+    _ = try AIToolCatalog((indexedTools + directoryTools).map(\.definition))
+    precondition(indexedTools.contains { $0.definition.name == "keylane_read_search_file" })
+    precondition(directoryTools.contains { $0.definition.name == "keylane_read_file" })
+    print("PASS combined file tool catalog: independent indexed-reference and authorized-path readers, no duplicate wire names")
+    let fileRun = try run(indexedTools)
     let fileSearch = try await execute(fileRun, "keylane_search_files", ["query": .string("fixture")])
     let fileRows = try rows(fileSearch, "files")
     let fileReference = fileRows.first { $0["path"] as? String == url.path }!["reference"] as! String

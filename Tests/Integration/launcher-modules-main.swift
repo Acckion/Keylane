@@ -751,13 +751,17 @@ var toolRegistryFinished = false
 Task { @MainActor in
     let definition = try! AIToolDefinition(name: "module_fixture", title: "Fixture", description: "Synthetic tool")
     var probes = 0
+    var leaseSnapshots = 0
     var contribution = AIToolRegistration(definition: definition, available: { probes += 1; return true }) { _ in try .init(text: "fixture") }
     contribution.owner = .init(rawValue: "fixture.spoofed")
+    contribution.snapshotAvailability = { leaseSnapshots += 1; return { true } }
     let toolModule = LauncherModule(id: ModuleID(rawValue: "fixture.tools"), aiTools: [contribution])
     let tools = try! LauncherModuleRegistry(modules: [toolModule], preferences: extensionPreferences)
     precondition(probes == 0, "Registration cannot query services or permissions")
     let frozen = tools.availableAITools
-    precondition(frozen.count == 1 && frozen[0].owner == toolModule.id)
+    precondition(frozen.count == 1 && frozen[0].owner == toolModule.id && leaseSnapshots == 0)
+    _ = frozen[0].forRun()
+    precondition(leaseSnapshots == 1)
     precondition(tools.setModuleEnabled(toolModule.id, false))
     precondition(!frozen[0].available() && tools.availableAITools.isEmpty)
     precondition(tools.setModuleEnabled(toolModule.id, true))
@@ -834,6 +838,29 @@ Task { @MainActor in
             catch AIActionError.staleSource { }
             contextAvailability.send(true)
         }
+        let dynamic = try LauncherModuleRegistry(modules: [], preferences: defaults)
+        let dynamicModule = LauncherModule(id: owner, aiContexts: [registration],
+            registration: .init(isPresent: { true }, updates: Empty().eraseToAnyPublisher()))
+        try dynamic.install(dynamicModule)
+        let retiredDirectory = dynamic.availableAIContexts[0]
+        let retiredRows = try await retiredDirectory.search("before replacement")
+        let revisionBeforeDuplicate = dynamic.catalogRevision
+        do {
+            try dynamic.install(.init(id: .init(rawValue: "fixture.duplicate-context"), aiContexts: [registration],
+                registration: .init(isPresent: { true }, updates: Empty().eraseToAnyPublisher())))
+            preconditionFailure("Duplicate dynamic AI context accepted")
+        } catch AIActionError.invalidDefinition { }
+        precondition(dynamic.catalogRevision == revisionBeforeDuplicate)
+        try dynamic.install(dynamicModule)
+        let readsBeforeRetired = reads
+        do { _ = try await retiredRows[0].source.load(); preconditionFailure("Catalog replacement revived an AI source") } catch { }
+        precondition(reads == readsBeforeRetired)
+        let currentRows = try await dynamic.availableAIContexts[0].search("after replacement")
+        contextAvailability.send(false); contextAvailability.send(true)
+        do { _ = try await currentRows[0].source.load(); preconditionFailure("New catalog lost context availability subscription") } catch { }
+        try dynamic.uninstall(owner)
+        precondition(dynamic.availableAIContexts.isEmpty)
+        print("PASS AI contexts participate in catalog validation, replacement revocation and subscription rebinding")
         print("PASS PR212 context validation race: feature off, off/on and module off/on reject a read suspended inside isCurrent")
     } catch { preconditionFailure("Context fixture failed: \(error)") }
     do {

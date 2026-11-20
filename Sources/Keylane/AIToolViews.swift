@@ -28,7 +28,9 @@ struct AIToolSettingsSheet: View {
             Text("扩展工具").font(.headline)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("当前会话使用的模块").font(.subheadline)
+                    Text("工具模块").font(.subheadline)
+                    Text("Quick AI 与 AI Chat 共用；选择保留到退出应用，文件等权限仍需单独授予。")
+                        .font(.caption).foregroundStyle(.secondary)
                     ForEach(controller.toolCapabilities) { capability in
                         Toggle(capability.title, isOn: Binding(
                             get: { controller.toolSelection.permits(capability.id) },

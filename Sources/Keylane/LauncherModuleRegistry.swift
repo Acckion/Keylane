@@ -897,7 +897,9 @@ final class LauncherModuleRegistry {
     @MainActor var availableAITools: [AIToolRegistration] {
         modules.flatMap { module in
             module.aiTools.map { contribution in
-                let frozen = contribution.forRun()
+                // Browsing the tool catalog must not acquire a private-data lease.
+                // The conversation freezes selected registrations only when a run starts.
+                let frozen = contribution
                 var tool = frozen
                 // Ownership comes from the registry, never from a contribution's self-label.
                 tool.owner = module.id
