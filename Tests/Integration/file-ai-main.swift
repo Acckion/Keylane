@@ -618,6 +618,21 @@ let persistedTurn = try JSONDecoder().decode(AIConversationSession.Turn.self, fr
 precondition(persistedTurn.attachments == nil)
 print("PASS Quick AI video workflow: text/PDF files, bounded reads, symlink/binary rejection, attachment context, regeneration/model switching, draft preservation, persistent previous/next chats, deletion and deep links")
 
+let catalogSession = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: configuration), history: videoHistory, readKey: { _ in nil })
+wait("Shared history catalog ready") { !catalogSession.chats.isEmpty }
+catalogSession.beginChat()
+var catalogProject = AIChatProject()
+catalogProject.name = "Shared catalog fixture"
+var catalogProjectSaved = false
+catalogSession.saveProject(catalogProject) { catalogProjectSaved = $0 }
+wait("Shared project catalog ready") { catalogProjectSaved }
+catalogSession.reset()
+let catalogBeforeClose = catalogSession.chats
+catalogSession.closeChat()
+precondition(catalogSession.chats == catalogBeforeClose && catalogSession.neighboringChat(-1) != nil)
+precondition(catalogSession.projects.contains { $0.id == catalogProject.id })
+print("PASS shared catalogs: closing an empty full chat retains Quick AI history navigation and project choices")
+
 let interruptedHistory = AIConversationRepository(url: videoDirectory.appendingPathComponent("interrupted.sqlite"))
 let interruptedRecord = AIChatRecord(id: UUID(), content: .init(model: .init(second), turns: [AIConversationSession.Turn(question: "Interrupted", progress: .init())]))
 var interruptedSaved = false

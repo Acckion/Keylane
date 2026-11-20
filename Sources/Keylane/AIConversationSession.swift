@@ -475,8 +475,7 @@ final class AIConversationSession: ObservableObject {
     func closeChat() {
         reset()
         presentation = .quick
-        chats = []
-        projects = []
+        // Catalogs belong to the shared session, not the lifetime of the window.
         historyError = ""
     }
 
