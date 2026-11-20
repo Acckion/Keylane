@@ -16,6 +16,29 @@ private final class ModelFixtureProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+@MainActor private final class DeferredAINavigationState: ObservableObject {
+    @Published var pageID = PageID(rawValue: "quick-ai")
+    var presentation = LauncherPagePresentation()
+    var callbacks = 0
+    let session: AIConversationSession
+    init(session: AIConversationSession) {
+        self.session = session
+        _ = presentation.update(page: pageID, visible: true)
+    }
+    func changed() {
+        callbacks += 1
+        let change = presentation.update(page: pageID, visible: true)
+        if change.deactivation == PageID(rawValue: "quick-ai") { session.leaveLauncher() }
+    }
+}
+
+private struct DeferredAINavigationView: View {
+    @ObservedObject var state: DeferredAINavigationState
+    var body: some View {
+        Text("隔离的页面生命周期验证").onChange(of: state.pageID) { _, _ in state.changed() }
+    }
+}
+
 @MainActor private final class ModuleAIWindowFixture: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private let suite = "org.keylane.tests.module-ai-window." + UUID().uuidString
@@ -28,6 +51,26 @@ private final class ModelFixtureProtocol: URLProtocol {
                 let config = AIConfiguration(preferences: prefs)
                 let transport = URLSessionConfiguration.ephemeral; transport.protocolClasses = [ModelFixtureProtocol.self]
                 let runtime = AIRuntime(configuration: transport)
+                let conversation = AIConversationSession(configuration: config, runtime: runtime, readKey: { _ in nil })
+                conversation.composer.text = "Existing unsent draft"
+                conversation.composer.attachments = [.init(title: "Existing", text: "Synthetic attachment", symbol: "doc")]
+                let draftID = conversation.composer.draftID
+                let navigation = DeferredAINavigationState(session: conversation)
+                try await display(AnyView(DeferredAINavigationView(state: navigation)), name: "deferred-ai-navigation")
+                let turnsBeforeNavigation = conversation.turns.count
+                let admitted = conversation.navigatePreservingLauncherConversation(currentPage: { navigation.pageID }, changes: navigation.$pageID.eraseToAnyPublisher()) {
+                    navigation.pageID = .init(rawValue: "module-ai-action"); return true
+                }
+                precondition(admitted && navigation.callbacks == 0)
+                try await wait { navigation.callbacks == 1 }
+                precondition(conversation.composer.text == "Existing unsent draft" && conversation.composer.attachments.count == 1)
+                precondition(conversation.composer.draftID == draftID && conversation.turns.count == turnsBeforeNavigation)
+                navigation.pageID = .init(rawValue: "quick-ai")
+                try await wait { navigation.callbacks == 2 }
+                navigation.pageID = .root
+                try await wait { navigation.callbacks == 3 }
+                precondition(conversation.composer.text.isEmpty && conversation.composer.attachments.isEmpty)
+                print("PASS PR212 native SwiftUI onChange: asynchronous page leave retains the draft once, normal later departure clears it")
                 let session = AIActionSession(configuration: config, runtime: runtime, readKey: { _ in nil })
                 for definition in ClipboardAIActions.definitions + ScreenshotAIActions.definitions {
                     let source = AIActionSource(moduleID: .init(rawValue: "keylane.clipboard"),

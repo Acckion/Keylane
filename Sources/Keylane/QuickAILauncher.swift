@@ -12,7 +12,13 @@ enum QuickAILauncher {
                      contentPlacement: .conversation, content: {
                          AnyView(QuickAIConversationPage(model: model, controller: controller, openChat: openChat))
                      },
-                     leave: controller.leaveLauncher, submit: { [weak model] in
+                     leave: { [weak model] in
+                         let allowed = model.map {
+                             $0.aiSettings.state.enabled && !$0.disabledCommands.contains(commandID.rawValue) &&
+                                 $0.launcherModules?.isCommandModuleEnabled(commandID) == true
+                         } ?? false
+                         controller.leaveLauncher(allowPreservation: allowed)
+                     }, submit: { [weak model] in
                          guard let model, !SearchField.isComposing else { return }
                          if model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && controller.composer.attachments.isEmpty {
                              useResponse(controller, copyOnly: model.aiInteraction.primaryAction == .copy)
