@@ -57,6 +57,14 @@ import KeylaneCore
     try store.remove(id: id)
     let deleted = try await execute(freshClipboard, "keylane_read_clipboard", ["reference": .string(freshRows[0]["reference"] as! String)])
     precondition(deleted.isError)
+    for index in 0..<20 {
+        _ = try store.capture(.text("bounded-\(index)-" + String(repeating: "\u{0301}", count: 2000)))
+    }
+    let bounded = try await execute(freshClipboard, "keylane_search_clipboard", ["query": .string("bounded"), "limit": .number(20)])
+    precondition(!bounded.isError)
+    let boundedRows = try rows(bounded, "untrusted_data")
+    precondition(boundedRows.count == 20 && boundedRows.allSatisfy { ($0["preview"] as! String).utf8.count <= 640 })
+    print("PASS clipboard preview budget: 20 long combining-scalar records remain bounded and fit the tool result")
     print("PASS clipboard tools: per-operation consent, text-only, opaque isolated references, capture-off history, unchanged page, off/on revocation, deleted source")
 
     let scope = root.appendingPathComponent("files")

@@ -27,6 +27,8 @@ enum AIReadTools {
     private static func limit(_ args: [String: AIToolValue]) -> Int {
         if case .number(let n) = args["limit"] { return Int(n) }; return 10
     }
+    // A grapheme can contain arbitrarily many combining scalars. Bound both bytes and wire escaping.
+    private static func preview(_ text: String) -> String { String(text.unicodeScalars.prefix(160)) }
     @MainActor private static func references(_ scope: AIToolRunScope) -> References { scope.state(References.self) { References() } }
 
     private static func background<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
@@ -52,8 +54,8 @@ enum AIReadTools {
                       let refs = references(scope)
                       let results = rows.prefix(limit(args)).map { item -> AIToolValue in
                           refs.clearIfFull()
-                          let key = UUID().uuidString; refs.clipboard[key] = (item.id, String(item.preview.prefix(160)))
-                          return .object(["reference": .string(key), "preview": .string(String(item.preview.prefix(160)))])
+                          let key = UUID().uuidString; refs.clipboard[key] = (item.id, preview(item.preview))
+                          return .object(["reference": .string(key), "preview": .string(preview(item.preview))])
                       }
                       return try AIToolWire.result(["untrusted_data": .array(results)])
                   }),
