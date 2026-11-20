@@ -5,6 +5,7 @@ import KeylaneCore
 enum AIToolHTTPTransport {
     struct Reply {
         var text = ""
+        var thinking = ""
         var calls: [AIToolCall] = []
         var assistant: [String: Any] = [:]
         var tokens: Int?
@@ -68,6 +69,7 @@ enum AIToolHTTPTransport {
                 }
                 guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw AIResponseError.invalidResponse }
                 reply = try decode(object, anthropic: anthropic)
+                if !reply.thinking.isEmpty { await progress(.thinking(id: UUID().uuidString, delta: reply.thinking)) }
                 if !reply.text.isEmpty { try await emit(reply.text) }
             }
             try await tools.validateCurrent()
@@ -100,6 +102,7 @@ enum AIToolHTTPTransport {
                   let stop = object["stop_reason"] as? String, ["end_turn", "tool_use"].contains(stop) else { throw AIResponseError.incomplete }
             reply.assistant = ["role": "assistant", "content": content]
             for block in content {
+                if block["type"] as? String == "thinking" { reply.thinking += block["thinking"] as? String ?? "" }
                 if block["type"] as? String == "text" { reply.text += block["text"] as? String ?? "" }
                 if block["type"] as? String == "tool_use" {
                     guard let id = block["id"] as? String, let name = block["name"] as? String else { throw AIResponseError.invalidResponse }
@@ -115,6 +118,16 @@ enum AIToolHTTPTransport {
             reply.assistant = message
             reply.assistant["role"] = "assistant"
             reply.text = message["content"] as? String ?? ""
+            reply.thinking = message["reasoning_content"] as? String ?? message["reasoning"] as? String ?? ""
+            if reply.thinking.isEmpty {
+                reply.thinking = (message["reasoning_details"] as? [[String: Any]] ?? []).compactMap { detail in
+                    switch detail["type"] as? String {
+                    case "reasoning.summary": return detail["summary"] as? String
+                    case "reasoning.text": return detail["text"] as? String
+                    default: return nil
+                    }
+                }.joined(separator: "\n")
+            }
             for call in message["tool_calls"] as? [[String: Any]] ?? [] {
                 guard call["type"] as? String == "function", let id = call["id"] as? String,
                       let function = call["function"] as? [String: Any], let name = function["name"] as? String,
@@ -148,7 +161,7 @@ enum AIToolHTTPTransport {
             line.removeAll(keepingCapacity: true)
             if text.hasPrefix("data:") {
                 let payload = text.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                if payload == "[DONE]" { continue }
+                if payload == "[DONE]", !anthropic { break }
                 let data = Data(payload.utf8)
                 guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw AIResponseError.invalidResponse }
                 pending += try collector.consume(object)
@@ -156,6 +169,7 @@ enum AIToolHTTPTransport {
                 if clock.now >= nextUpdate, !pending.isEmpty {
                     try await emit(pending); pending = ""; nextUpdate = clock.now + .milliseconds(40)
                 }
+                if anthropic, collector.ended { break }
             }
         }
         guard line.allSatisfy({ $0 == 13 || $0 == 32 }) else { throw AIResponseError.incomplete }
@@ -218,12 +232,12 @@ enum AIToolHTTPTransport {
                 if !reasoningDetails.isEmpty { message["reasoning_details"] = reasoningDetails }
                 for (key, value) in delta where key != "tool_calls" && key != "reasoning_details" {
                     if let string = value as? String { message[key] = (message[key] as? String ?? "") + string }
-                    else { message[key] = value }
+                    else if !(value is NSNull) || message[key] == nil { message[key] = value }
                 }
                 for call in delta["tool_calls"] as? [[String: Any]] ?? [] {
                     guard let index = call["index"] as? Int, (0..<12).contains(index) else { throw AIResponseError.invalidResponse }
                     var current = calls[index] ?? ["type": "function"]
-                    for (key, value) in call where key != "index" && key != "function" {
+                    for (key, value) in call where key != "index" && key != "function" && !(value is NSNull) {
                         if key == "id", let part = value as? String {
                             let previous = current[key] as? String ?? ""
                             current[key] = part.hasPrefix(previous) ? part : previous + part
@@ -231,7 +245,7 @@ enum AIToolHTTPTransport {
                     }
                     if let function = call["function"] as? [String: Any] {
                         var accumulated = current["function"] as? [String: Any] ?? [:]
-                        for (key, value) in function {
+                        for (key, value) in function where !(value is NSNull) {
                             if let text = value as? String {
                                 let previous = accumulated[key] as? String ?? ""
                                 accumulated[key] = key == "name" && text.hasPrefix(previous) ? text : previous + text

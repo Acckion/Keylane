@@ -2,6 +2,8 @@
 // Tool tests use synthetic HTTP/CLI data and never load an account, real file or calendar.
 @MainActor final class ToolFixtureOutput {
     var text = ""
+    var events: [AIResponseEvent] = []
+    func event(_ event: AIResponseEvent) { events.append(event) }
     func append(_ delta: String) { text += delta }
 }
 @MainActor final class ToolFixtureAvailability { var allowed = true }
@@ -47,7 +49,7 @@ final class ToolFixtureProtocol: URLProtocol {
                     ["type": "tool_use", "id": id, "name": "fixture_add", "input": ["number": 21]]],
                     "stop_reason": next ? "end_turn" : "tool_use", "usage": ["input_tokens": 1, "output_tokens": 2]]
             } else {
-                var message: [String: Any] = ["role": "assistant", "content": next ? "verified answer" : ""]
+                var message: [String: Any] = ["role": "assistant", "content": next ? "verified answer" : "", "reasoning_content": "synthetic public reasoning"]
                 if !next { message["tool_calls"] = [["id": id, "type": "function", "function": ["name": "fixture_add", "arguments": "{\"number\":21}"]]] }
                 object = ["choices": [["message": message, "finish_reason": next ? "stop" : "tool_calls"]], "usage": ["total_tokens": 3]]
             }
@@ -71,9 +73,11 @@ final class ToolFixtureProtocol: URLProtocol {
                 }
                 responseData = Data(try events.map { "data: " + String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) + "\n\n" }.joined().utf8)
             }
-            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [:])!, cacheStoragePolicy: .notAllowed)
+            if Self.scenario == "held-open", !anthropic { responseData.append(Data("data: [DONE]\n\n".utf8)) }
+            if Self.scenario == "held-open" { responseData.append(Data((":" + String(repeating: " ", count: 65_536) + "\n\n").utf8)) }
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": body["stream"] as? Bool == true ? "text/event-stream" : "application/json"])!, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: responseData)
-            client?.urlProtocolDidFinishLoading(self)
+            if Self.scenario != "held-open" { client?.urlProtocolDidFinishLoading(self) }
         } catch { client?.urlProtocol(self, didFailWithError: error) }
     }
 }
@@ -96,17 +100,21 @@ Task { @MainActor in
         for proto in [AIWireProtocol.openAI, .anthropic] {
             for stream in [false, true] {
                 ToolFixtureProtocol.bodies = []; ToolFixtureProtocol.rounds = 0
+                ToolFixtureProtocol.scenario = stream ? "held-open" : "ok"
                 let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ToolFixtureProtocol.self]
                 let runtime = AIRuntime(configuration: config)
                 let endpoint = proto == .anthropic ? "https://synthetic.invalid/v1" : (stream ? "http://127.0.0.1:11434/v1" : "https://custom.invalid/advanced/v1")
                 var connection = AIConnection(endpoint: endpoint, model: "synthetic", mode: stream ? .streaming : .complete, wireProtocol: proto)
                 connection.additionalParametersJSON = "{\"temperature\":0.2}"
                 let output = ToolFixtureOutput()
-                let tokens = try await runtime.generate(connection: connection, readKey: { _ in "synthetic-key" }, messages: [.init(role: .user, content: "fixture")], tools: run()) { await output.append($0) }
+                let tokens = try await runtime.generate(connection: connection, readKey: { _ in "synthetic-key" }, messages: [.init(role: .user, content: "fixture")], tools: run(), progress: { await output.event($0) }) { await output.append($0) }
                 precondition(output.text == "verified answer" && tokens == 6 && ToolFixtureProtocol.rounds == 2)
                 precondition(ToolFixtureProtocol.bodies[0]["temperature"] as? Double == 0.2)
+                let thoughts = output.events.compactMap { event -> String? in if case .thinking(_, let delta) = event { return delta }; return nil }.joined()
+                precondition(!thoughts.isEmpty && !thoughts.contains("opaque-fixture"))
             }
         }
+        ToolFixtureProtocol.scenario = "ok"
         precondition(performed == 4)
         let invalid = try AIToolCall(id: "invalid", name: "not_registered", arguments: [:])
         let invalidResult = try await run().execute(invalid, scope: "fixture", progress: { _ in })
@@ -155,7 +163,11 @@ Task { @MainActor in
         _ = try collector.consume(["choices": [["delta": ["reasoning_details": [
             ["index": 0, "type": "reasoning.text", "text": "second"],
             ["type": "reasoning.encrypted", "id": "opaque-two", "data": "opaque-two"]]]]]])
+        _ = try collector.consume(["choices": [["delta": ["reasoning_content": "complete reasoning"]]]])
+        _ = try collector.consume(["choices": [["delta": ["reasoning_content": NSNull(), "content": NSNull()]]]])
+        _ = try collector.consume(["choices": [["delta": ["tool_calls": [["index": 0, "id": NSNull(), "function": ["name": NSNull(), "arguments": NSNull()]]]]]]])
         let fragmented = try collector.finish()
+        precondition(fragmented.assistant["reasoning_content"] as? String == "complete reasoning")
         let continuation = fragmented.assistant["reasoning_details"] as! [[String: Any]]
         precondition(continuation[0]["text"] as? String == "First second" && continuation.count == 3 && continuation[1]["data"] as? String == "opaque-one" && continuation[2]["data"] as? String == "opaque-two")
         precondition(fragmented.calls.first?.name == "fixture_add" && fragmented.calls.first?.arguments["number"] == .number(21))
