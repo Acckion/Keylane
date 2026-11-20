@@ -720,6 +720,33 @@ precondition(raceChat.chats.contains { $0.id == raceChatID && $0.projectID == ni
 raceChat.closeChat()
 print("PASS review project deletion race: incoming project cleared, later requests omit removed instructions and saves keep the chat visible ungrouped")
 
+// Copy a non-current source before deletion/move/rename callbacks refresh summaries.
+raceChat.beginChat()
+var copyProject = AIChatProject()
+copyProject.name = "Copy source group"
+var copyProjectSaved = false
+raceChat.saveProject(copyProject) { copyProjectSaved = $0 }
+wait("Copy source project saved") { copyProjectSaved }
+raceChat.moveChat(raceChatID, to: copyProject.id)
+wait("Copy source grouped") { raceChat.chats.first { $0.id == raceChatID }?.projectID == copyProject.id }
+raceChat.removeProject(copyProject.id)
+raceChat.duplicateChat(raceChatID)
+wait("Copy immediately after project removal") { !raceChat.loadingChat && raceChat.chatID != nil && raceChat.chatID != raceChatID }
+precondition(raceChat.currentProjectID == nil)
+precondition(raceChat.chats.contains { $0.id == raceChat.chatID && $0.projectID == nil })
+raceChat.reset()
+copyProjectSaved = false
+raceChat.saveProject(copyProject) { copyProjectSaved = $0 }
+wait("Copy destination project saved") { copyProjectSaved }
+raceChat.moveChat(raceChatID, to: copyProject.id)
+raceChat.updateChat(raceChatID, change: .rename("Latest queued title"))
+raceChat.duplicateChat(raceChatID)
+wait("Copy immediately after metadata edits") { !raceChat.loadingChat && raceChat.chatID != nil && raceChat.chatID != raceChatID }
+precondition(raceChat.currentProjectID == copyProject.id)
+precondition(raceChat.chatTitle == "Latest queued title · 分支")
+raceChat.closeChat()
+print("PASS review queued copy metadata: removed project stays ungrouped; immediate move and rename inherited from current storage")
+
 let commandSession = AITextCommandSession(configuration: settings, runtime: AIRuntime(configuration: configuration),
                                            readKey: { "fixture-" + $0.id.uuidString })
 commandSession.prepare(.translate, selection: nil)

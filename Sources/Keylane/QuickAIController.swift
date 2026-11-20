@@ -257,10 +257,12 @@ final class QuickAIController: ObservableObject {
         // and instruction edits still inside the save debounce.
         if id == chatID { saveChat() }
         let revision = historyRevision
-        let title = chats.first { $0.id == id }?.title ?? "对话"
-        let projectID = chats.first { $0.id == id }?.projectID
         history.perform({ store -> UUID? in
-            guard let record = try store.load(id) else { return nil }
+            guard let record = try store.load(id),
+                  let summary = try store.list().first(where: { $0.id == id }) else { return nil }
+            // Read metadata after earlier queued edits, never from sidebar state.
+            let title = summary.title
+            let projectID = try store.projects().contains(where: { $0.id == summary.projectID }) ? summary.projectID : nil
             let copy = AIChatRecord(id: UUID(), content: record.content)
             try store.save(copy)
             try store.update(copy.id, change: .rename(title + " · 分支"))
