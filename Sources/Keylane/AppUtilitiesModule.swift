@@ -11,10 +11,11 @@ enum AppUtilitiesModule {
     static func make(
         model: Model,
         storeCapability: RaycastStoreAppCapability? = nil,
-        storeSetup: RaycastStoreSetupProvider? = nil
+        storeSetup: RaycastStoreSetupProvider? = nil,
+        storeProduct: RaycastStoreProductIngress? = nil
     ) -> LauncherModule {
         let releaseNotes = ReleaseNotesLauncher(model: model)
-        let store = ExtensionStoreController(capability: storeCapability, setup: storeSetup)
+        let store = ExtensionStoreController(capability: storeCapability, setup: storeSetup, product: storeProduct)
         let capture = PermissionFeature("screenCapture.enabled", authorization: .screenCapture, observeImmediately: false)
         let windowCapture = PermissionFeature("keylaneWindowCapture.enabled", authorization: .screenCapture, observeImmediately: false)
         let camera = model.cameraPreview

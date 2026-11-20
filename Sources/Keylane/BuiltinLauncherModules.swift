@@ -8,10 +8,10 @@ import KeylaneCore
 enum BuiltinLauncherModules {
     static let clipboardPage = PageID(rawValue: "Clipboard")
     static func make(model: Model, storeCapability: RaycastStoreAppCapability? = nil,
-                     storeSetup: RaycastStoreSetupProvider? = nil) -> [LauncherModule] {
+                     storeSetup: RaycastStoreSetupProvider? = nil, storeProduct: RaycastStoreProductIngress? = nil) -> [LauncherModule] {
         let modules = [applications(model).withAITools(AIBuiltinTools.applications(model)), host(model).withAITools(AIBuiltinTools.time), AIModule.make(model: model), TranslatorModule.make(model: model), DictationModule.make(model: model), files(model).withAITools(AIBuiltinTools.files(model)), clipboard(model), AppleNotesModule.make(model: model),
                        QuicklinksModule.make(model: model), CalculatorLauncherModule.make(model: model).withAITools(AIBuiltinTools.calculator), SystemActionsModule.make(model: model), CalendarLauncherModule.make(model: model).withAITools(AIBuiltinTools.calendar(model)),
-                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model, storeCapability: storeCapability, storeSetup: storeSetup), SnippetsModule.make(model: model), WindowManagementModule.make(model: model), DropShelfModule.make(model: model), FocusModule.make(model: model), DownloadsModule.make(model: model)]
+                       ScriptCommandsModule.make(model: model), AppUtilitiesModule.make(model: model, storeCapability: storeCapability, storeSetup: storeSetup, storeProduct: storeProduct), SnippetsModule.make(model: model), WindowManagementModule.make(model: model), DropShelfModule.make(model: model), FocusModule.make(model: model), DownloadsModule.make(model: model)]
             + NavigationLauncherModules.make(model: model) + UtilityLauncherModules.make(model: model)
         return modules.enumerated().map { index, module in
             guard module.canDisable, module.settings.isEmpty else {

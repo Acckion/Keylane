@@ -104,6 +104,7 @@ window.title = "Keylane Shelf — Isolated Fixtures"
 if CommandLine.arguments.contains("--dark") { window.appearance = NSAppearance(named: .darkAqua) }
 if CommandLine.arguments.contains("--light") { window.appearance = NSAppearance(named: .aqua) }
 func expect(_ value: @autoclosure () -> Bool, _ label: String) { precondition(value(), label); print("PASS " + label) }
+func descendantViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendantViews) }
 if !CommandLine.arguments.contains("--empty") {
 expect(abs(window.frame.width - window.frame.height) < 1, "compact shelf is square: \(window.frame)")
 expect(!window.styleMask.contains(.titled), "no standard titlebar or traffic lights")
@@ -348,11 +349,31 @@ try shelves.store!.addFile(source, to: managed)
 shelves.searchShelves("payload token")
 expect(shelves.managedShelves.map(\.id) == [managed], "manager searches nested content with all query terms")
 expect(shelves.selectedShelfID == managed, "manager maintains a valid selection")
-shelves.toggleSelectedPin()
+shelves.shelfFilter = "recent"
+shelves.toggleManagedPin(managed)
+expect(shelves.isShelfOpen(managed), "pinning a manager card opens its corresponding desktop shelf")
+expect(shelves.selectedShelfID == nil, "pinning from the closed filter never leaves a hidden selection")
 shelves.shelfFilter = "pinned"
-expect(shelves.selectedShelf?.id == managed && shelves.selectedShelf!.pinned, "manager pin and filter update live")
+expect(shelves.selectedShelf?.id == managed, "the fixed filter contains the desktop shelf")
+shelves.toggleSelectedPin(); drain(0.25)
+expect(!shelves.isShelfOpen(managed) && shelves.store!.shelf(managed)?.items.count == 2,
+       "unpinning closes only the window and preserves its contents")
+expect(shelves.selectedShelfID == nil, "the fixed filter drops a shelf as soon as its window closes")
+shelves.shelfFilter = "recent"
+shelves.openSelectedShelf()
+expect(shelves.isShelfOpen(managed), "opening a saved card normally also activates its desktop status")
+shelves.shelfFilter = "all"
 shelves.renameManagedShelf(managed, title: "Renamed manager fixture")
 expect(shelves.selectedShelf?.title == "Renamed manager fixture", "manager rename refreshes snapshots")
+let emptySavedWindow = shelves.create()!
+let emptySavedID = emptySavedWindow.shelfID
+shelves.renameManagedShelf(emptySavedID, title: "Saved empty fixture")
+shelves.toggleManagedPin(emptySavedID); drain(0.25)
+expect(!shelves.isShelfOpen(emptySavedID), "unpinning a named empty shelf closes its window")
+shelves.closeManagedShelf(managed); drain(0.25)
+let afterClose = try DropShelfStore(directory: shelves.store!.directory)
+expect(afterClose.shelf(emptySavedID)?.title == "Saved empty fixture", "a later window close and reopening the archive preserve a saved empty shelf")
+shelves.removeManagedShelf(emptySavedID)
 shelves.searchShelves("unmatched manager query")
 expect(shelves.managedShelves.isEmpty && shelves.selectedShelfID == nil, "empty search clears stale selection")
 shelves.searchShelves("")
@@ -362,6 +383,59 @@ expect(shelves.store!.shelf(managed) == nil, "manager removes the selected shelf
 expect(FileManager.default.fileExists(atPath: source.path), "manager removal preserves source files")
 shelves.shelfFilter = "all"
 shelves.searchShelves("")
+let placementIDs = try (0..<3).map { index -> UUID in
+    let id = try shelves.store!.create()
+    try shelves.store!.addText("A distinct placement shelf \(index)", to: id)
+    return id
+}
+let preexistingFrames = NSApp.windows.compactMap { $0 as? DropShelfWindow }
+    .filter { $0.isVisible && $0.controller === shelves }.map(\.frame)
+shelves.launcherShown()
+let openingOrder = shelves.managedShelves.map(\.id)
+let activationOrder = [placementIDs[2], placementIDs[0], placementIDs[1]]
+for id in activationOrder {
+    shelves.toggleManagedPin(id)
+    expect(shelves.managedShelves.map(\.id) == openingOrder, "pinning keeps every card in its position for this Launcher opening")
+}
+let placementWindows = NSApp.windows.compactMap { $0 as? DropShelfWindow }
+    .filter { $0.isVisible && placementIDs.contains($0.shelfID) }
+expect(placementWindows.count == placementIDs.count, "consecutive pins open each shelf once")
+for (index, window) in placementWindows.enumerated() {
+    let otherFrames = preexistingFrames + placementWindows.dropFirst(index + 1).map(\.frame)
+    expect(otherFrames.allSatisfy { $0.intersection(window.frame).isEmpty },
+           "newly pinned shelf avoids every already visible shelf")
+}
+placementWindows.first { $0.shelfID == placementIDs[0] }?.close()
+shelves.endManagement()
+shelves.beginManagement("")
+expect(shelves.managedShelves.map(\.id) == openingOrder, "returning to the manager in the same Launcher keeps the original order")
+shelves.toggleManagedPin(placementIDs[0])
+expect(shelves.isShelfOpen(placementIDs[0]) && shelves.managedShelves.map(\.id) == openingOrder,
+       "the same card can be pinned again without moving")
+shelves.toggleManagedPin(placementIDs[0]); drain(0.25)
+expect(shelves.managedShelves.map(\.id) == openingOrder, "unpinning keeps the card in the same position")
+expect(!shelves.isShelfOpen(placementIDs[0]) && shelves.isShelfOpen(placementIDs[1]) && shelves.isShelfOpen(placementIDs[2]),
+       "desktop close and reopening management reflect each window independently")
+shelves.launcherHidden(); shelves.launcherShown()
+expect(Array(shelves.managedShelves.prefix(3).map(\.id)) == [placementIDs[0], placementIDs[1], placementIDs[2]],
+       "the next Launcher opening applies actual use order without promoting closes")
+let newDuringSession = try shelves.store!.create()
+expect(shelves.managedShelves.last?.id == newDuringSession, "new shelves append without displacing current card positions")
+try shelves.store!.deleteShelf(newDuringSession)
+shelves.launcherHidden()
+for id in placementIDs { shelves.removeManagedShelf(id) }
+let navigationFixtureIDs = try (0..<5).map { _ in try shelves.store!.create() }
+for id in navigationFixtureIDs { try shelves.store!.rename(id, title: "grid-navigation-token") }
+shelves.searchShelves("grid-navigation-token")
+let gridOrder = shelves.managedShelves.map(\.id)
+shelves.managementGridColumns = 3
+shelves.selectedShelfID = gridOrder[1]
+shelves.moveShelf(1, vertical: true)
+expect(shelves.selectedShelfID == gridOrder[4], "down moves to the same grid column")
+shelves.moveShelf(-1)
+expect(shelves.selectedShelfID == gridOrder[3], "left moves to the adjacent card")
+for id in navigationFixtureIDs { try shelves.store!.deleteShelf(id) }
+shelves.managementGridColumns = 1
 shelves.beginManagement("")
 shelves.pendingRemoval = shelves.selectedShelf
 shelves.pendingRename = shelves.selectedShelf
@@ -375,7 +449,7 @@ var savedHistory = Set<UUID>()
 for index in 0..<10 {
     let id = try deletionStore.create()
     try deletionStore.addText("history \(index)", to: id)
-    try deletionStore.remember(id)
+    try deletionStore.trimHistory()
     savedHistory.insert(id)
 }
 let removedWindow = deletionController.create()!
@@ -469,7 +543,6 @@ expect(transferDestination.receive(board), "external mixed representation accept
 expect(shelves.store!.shelf(transferDestination.shelfID)?.items.last?.kind == .file, "external mixed input still prefers its file URL")
 transferSource.close(); transferDestination.close()
 
-func descendantViews(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendantViews) }
 let gridWindow = shelves.create()!
 for name in ["first", "second", "third"] { try shelves.store!.addText(name, to: gridWindow.shelfID) }
 gridWindow.refresh(); gridWindow.toggleDetails()
@@ -716,15 +789,40 @@ if CommandLine.arguments.contains("--manager-preview") {
     try managerStore.rename(documentShelf, title: "本周资料")
     try managerStore.addText("页面草稿与待整理的资料", to: documentShelf)
     try managerStore.addText("https://example.invalid/reference", link: true, to: documentShelf)
+    let sampleFolders = try (1...3).map { index in
+        let folder = fixtures.appendingPathComponent("manager-folder-\(index)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+    var folderShelfIDs: [UUID] = []
+    for _ in 0..<6 {
+        let folderShelf = try managerStore.create()
+        folderShelfIDs.append(folderShelf)
+        for url in sampleFolders { try managerStore.addFile(url, to: folderShelf) }
+    }
     previewModel.runCommand(.init(rawValue: "drop-shelf-history"), origin: .search)
     expect(previewModel.pageID == PageID(rawValue: "DropShelfHistory"), "registered manager command opens Launcher page")
+    guard let managerPage = previewModel.activeLauncherPage else { fatalError("manager page registration missing") }
+    do {
+        let controller = previewModel.dropShelf
+        let matches = Array(folderShelfIDs.prefix(3))
+        for id in matches { try managerStore.rename(id, title: "Keyboard fixture match") }
+        controller.managementGridColumns = 4
+        controller.searchShelves("Keyboard fixture match")
+        let filtered = controller.managedShelves.map(\.id)
+        expect(filtered.count == 3 && managerPage.navigateWhileTyping, "search field enables Option-arrow navigation for a single filtered row")
+        controller.selectedShelfID = filtered[0]
+        managerPage.moveHorizontal?(1)
+        expect(controller.selectedShelfID == filtered[1], "horizontal movement reaches the neighboring filtered card")
+        controller.searchShelves("")
+    }
     let previewWindow = LauncherPanel(contentRect: NSRect(x: 100, y: 100, width: 760, height: 470), styleMask: [.borderless], backing: .buffered, defer: false)
     previewDelegate.window = previewWindow
     previewWindow.title = "Keylane Shelf Manager — Isolated Preview"
     previewWindow.isOpaque = false; previewWindow.backgroundColor = .clear
-    let glass = NSGlassEffectView(); glass.style = .regular; glass.cornerRadius = 28
     let hosted = NSHostingView(rootView: Launcher(model: previewModel))
-    glass.contentView = hosted; previewWindow.contentView = glass
+    hosted.sizingOptions = []
+    previewWindow.contentView = LauncherGlassHostView(content: hosted)
     previewWindow.orderFrontRegardless()
     RunLoop.main.run(until: Date().addingTimeInterval(0.15))
     NotificationCenter.default.post(name: .launcherShown, object: nil)
@@ -733,6 +831,24 @@ if CommandLine.arguments.contains("--manager-preview") {
         previewWindow.appearance = NSAppearance(named: mode == "dark" ? .darkAqua : .aqua)
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
         hosted.layoutSubtreeIfNeeded()
+        let previews = descendantViews(hosted).compactMap { $0 as? DropShelfPreview }
+            .filter { $0.imageView.image != nil && !$0.isHiddenOrHasHiddenAncestor }
+        let gridColumns = previewModel.dropShelf.managementGridColumns
+        let spacing: CGFloat = 12
+        let inset = VisualStyle.launcherEdgeInset
+        let cellWidth = (hosted.bounds.width - 2 * inset - CGFloat(gridColumns - 1) * spacing) / CGFloat(gridColumns)
+        let centers = (0..<gridColumns).map { inset + cellWidth / 2 + CGFloat($0) * (cellWidth + spacing) }
+        var stackedCount = 0
+        for preview in previews {
+            let imageViews: [NSImageView] = preview.subviews.compactMap { $0 as? NSImageView }
+            let visibleImages = imageViews.filter { view in view.image != nil && !view.isHidden }
+            if visibleImages.count == 3 { stackedCount += 1 }
+        }
+        expect(gridColumns == 4 && stackedCount > 0, "manager loads three-image stacks in the four-column grid")
+        expect(previews.allSatisfy { preview in
+            let frame = preview.convert(preview.bounds, to: hosted)
+            return abs(frame.width - (cellWidth - 20)) < 2 && centers.contains { abs($0 - frame.midX) < 2 }
+        }, "single and stacked thumbnails stay centered within their own card")
         guard let bitmap = hosted.bitmapImageRepForCachingDisplay(in: hosted.bounds) else { fatalError("manager snapshot allocation") }
         hosted.cacheDisplay(in: hosted.bounds, to: bitmap)
         var visibleSamples = 0
@@ -746,6 +862,35 @@ if CommandLine.arguments.contains("--manager-preview") {
 
     }
     withExtendedLifetime(previewDelegate) { print("PASS registered Launcher manager mounted in light and dark appearance (visual QA separate)") }
+    if !CommandLine.arguments.contains("--manager-interactive"), let id = folderShelfIDs.first {
+        previewWindow.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        expect(previewWindow.isVisible && previewWindow.isKeyWindow, "Launcher is visible and key before pinning")
+        let launcherOpeningOrder = previewModel.dropShelf.managedShelves.map(\.id)
+        previewModel.dropShelf.toggleManagedPin(id)
+        expect(previewModel.dropShelf.managedShelves.map(\.id) == launcherOpeningOrder,
+               "registered Launcher lifecycle freezes grid order while its pin is pressed")
+        let pinnedWindow = NSApp.windows.compactMap { $0 as? DropShelfWindow }.first { $0.shelfID == id }
+        guard let pinnedWindow else { fatalError("pinned shelf did not open") }
+        expect(previewWindow.isVisible && previewWindow.isKeyWindow && pinnedWindow.isVisible,
+               "pinning presents a desktop shelf and preserves Launcher keyboard focus")
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.12))
+            expect(pinnedWindow.alphaValue > 0 && pinnedWindow.alphaValue < 1,
+                   "pinning fades the desktop shelf through an intermediate opacity")
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+        expect(pinnedWindow.alphaValue == 1 && previewWindow.isKeyWindow, "pinned shelf finishes fading while Launcher stays key")
+        let contentFrame = pinnedWindow.contentView?.frame.size
+        expect(pinnedWindow.frame.size == DropShelfWindow.compactSize && contentFrame == pinnedWindow.frame.size,
+               "pinning a saved three-folder shelf opens a square desktop window and glass: \(pinnedWindow.frame), \(String(describing: contentFrame))")
+        pinnedWindow.toggleDetails(); RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        expect(pinnedWindow.frame.width > pinnedWindow.frame.height, "pinned desktop shelf can still expand")
+        pinnedWindow.toggleDetails(); RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        expect(pinnedWindow.frame.size == DropShelfWindow.compactSize, "pinned desktop shelf collapses to a square")
+        pinnedWindow.close()
+    }
     if CommandLine.arguments.contains("--manager-interactive") {
         previewModel.appearance = "dark"
         previewWindow.appearance = NSAppearance(named: .darkAqua)

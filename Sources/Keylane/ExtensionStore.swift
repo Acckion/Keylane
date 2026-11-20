@@ -14,6 +14,7 @@ final class ExtensionStoreController: ObservableObject {
     #endif
     @Published private var index: RaycastPublicCatalog.Index?
     @Published private(set) var metadata: [String: RaycastPublicCatalog.Details] = [:]
+    private var metadataSources: [String: RaycastStoreSource] = [:]
     @Published private(set) var selected: String?
     @Published private(set) var detail: String?
     private var detailSource: RaycastStoreSource?
@@ -28,6 +29,9 @@ final class ExtensionStoreController: ObservableObject {
     var backendReady: Bool { setupFlow.state == .active }
     @Published private(set) var setupFlow: RaycastStoreSetupFlow
     private let setupProvider: RaycastStoreSetupProvider?
+    private let product: RaycastStoreProductIngress?
+    @Published private(set) var productReadiness: RaycastStoreProductIngress.Readiness?
+    private var resolvingProduct = false
     private var preferencePersistence: (any RaycastStorePreferencePersistence)?
     @Published private var pendingInstallations: Set<String> = []
     @Published private(set) var inventoryStatus: String?
@@ -36,7 +40,9 @@ final class ExtensionStoreController: ObservableObject {
     var readinessMessages: [String: String] { presentation.readinessMessages }
     @Published private var installed: [String: RaycastStoreInstallation] = [:]
 
-    init(capability: RaycastStoreAppCapability? = nil, setup: RaycastStoreSetupProvider? = nil) {
+    init(capability: RaycastStoreAppCapability? = nil, setup: RaycastStoreSetupProvider? = nil,
+         product: RaycastStoreProductIngress? = nil) {
+        self.product = product
         setupProvider = setup
         setupFlow = .init(active: capability != nil)
         #if DEBUG
@@ -44,6 +50,20 @@ final class ExtensionStoreController: ObservableObject {
         #endif
         preferencePersistence = capability?.coordinator
         installer = RaycastStoreInstaller(backend: capability?.coordinator)
+    }
+
+    @MainActor func refreshProductCapability() async {
+        guard let product, !backendReady, !resolvingProduct else { return }
+        resolvingProduct = true
+        defer { resolvingProduct = false }
+        switch await product.open() {
+        case .blocked(let reason): productReadiness = reason
+        case .ready(let capability):
+            preferencePersistence = capability.coordinator
+            installer = RaycastStoreInstaller(backend: capability.coordinator)
+            setupFlow = .init(active: true)
+            productReadiness = nil
+        }
     }
 
     @MainActor func refreshSetup() {
@@ -160,9 +180,39 @@ final class ExtensionStoreController: ObservableObject {
                 }
             ]
         }
-        return [.init(id: "store-install", title: "安装扩展", icon: "arrow.down.circle", enabled: available && metadata[slug]?.supportsMacOS != false) {
-            Task { @MainActor in await self.mutate(source, operation: .install) }
+        return [.init(id: "store-install", title: "安装扩展", icon: "arrow.down.circle", enabled: available && metadataSources[slug] == source && metadata[slug] != nil && metadata[slug]?.supportsMacOS != false) {
+            Task { @MainActor in await self.confirmInstall(source) }
         }]
+    }
+
+    @MainActor private func confirmInstall(_ requested: RaycastStoreSource) async {
+        let slug = requested.slug
+        let outcome = await RaycastStoreInstallConsent.run(requested,
+            reserve: { self.pendingInstallations.insert(slug).inserted },
+            release: { self.pendingInstallations.remove(slug) },
+            snapshot: {
+                let compatible = self.metadata[slug].map { $0.supportsMacOS != false } ?? false
+                let selected = self.detail == slug && self.detailSource == requested ? self.source(slug) : nil
+                return .init(source: selected, metadataSource: self.metadataSources[slug],
+                             metadataCompatible: compatible,
+                             available: self.backendReady && self.protectedRecovery == nil && self.installed[slug] == nil)
+            },
+            prompt: {
+                let alert = NSAlert()
+                alert.messageText = "安装扩展「\(self.title(slug))」？"
+                alert.informativeText = "将按当前目录版本获取源码并在隔离环境中构建。只有兼容性及完整性检查通过才会安装；本操作不会运行扩展命令。"
+                alert.addButton(withTitle: "取消")
+                alert.addButton(withTitle: "安装")
+                return alert.runModal() == .alertSecondButtonReturn
+            },
+            dispatch: { await self.performReservedMutation(requested, operation: .install) })
+        switch outcome {
+        case .alreadyPending, .dispatched: break
+        case .cancelled:
+            if detailSource == requested { presentation.installationMessages[slug] = "已取消，未安装扩展。" }
+        case .selectionChanged:
+            if detailSource == requested { presentation.installationMessages[slug] = "扩展详情或安装状态已变化，请重新核对。" }
+        }
     }
 
     private enum Mutation { case install, toggle(Bool), uninstall, reconcile }
@@ -170,6 +220,11 @@ final class ExtensionStoreController: ObservableObject {
     @MainActor private func mutate(_ source: RaycastStoreSource, operation: Mutation) async {
         guard protectedRecovery == nil, pendingInstallations.insert(source.slug).inserted else { return }
         defer { pendingInstallations.remove(source.slug) }
+        await performReservedMutation(source, operation: operation)
+    }
+
+    @MainActor private func performReservedMutation(_ source: RaycastStoreSource, operation: Mutation) async {
+        guard protectedRecovery == nil, pendingInstallations.contains(source.slug) else { return }
         presentation.invalidateReadiness(installationID: installed[source.slug]?.id, slug: source.slug)
         presentation.installationMessages[source.slug] = "正在处理；尚未确认完成…"
         do {
@@ -240,6 +295,7 @@ final class ExtensionStoreController: ObservableObject {
             let receipts = try await installer.refreshInstalled()
             for receipt in receipts where source(receipt.source.slug)?.revision != receipt.source.revision {
                 metadata.removeValue(forKey: receipt.source.slug)
+                metadataSources.removeValue(forKey: receipt.source.slug)
                 unavailableDetails.remove(receipt.source.slug)
             }
             installed = Dictionary(uniqueKeysWithValues: receipts.map { ($0.source.slug, $0) })
@@ -340,7 +396,10 @@ final class ExtensionStoreController: ObservableObject {
     }
 
     private func closeDetail() {
-        if let pinned = detailSource, pinned.revision != index?.revision { metadata.removeValue(forKey: pinned.slug) }
+        if let pinned = detailSource, pinned.revision != index?.revision {
+            metadata.removeValue(forKey: pinned.slug)
+            metadataSources.removeValue(forKey: pinned.slug)
+        }
         detail = nil
         detailSource = nil
     }
@@ -420,6 +479,7 @@ final class ExtensionStoreController: ObservableObject {
             try Task.checkCancellation()
             if next.revision != index?.revision {
                 metadata = metadata.filter { $0.key == detailSource?.slug }
+                metadataSources = metadataSources.filter { $0.key == detailSource?.slug }
                 unavailableDetails.removeAll()
                 if category != "__installed" { category = "all" }
             }
@@ -432,15 +492,17 @@ final class ExtensionStoreController: ObservableObject {
     }
 
     @MainActor func loadDetails(_ slug: String) async {
-        let revision = revision(slug)
+        guard let requested = source(slug) else { return }
+        let revision = requested.revision
         guard metadata[slug] == nil, !unavailableDetails.contains(slug) else { return }
         do {
             let info = try await catalogDetails(slug, revision: revision)
-            guard !Task.isCancelled, self.revision(slug) == revision, metadata[slug] == nil else { return }
+            guard !Task.isCancelled, self.source(slug) == requested, metadata[slug] == nil else { return }
             unavailableDetails.remove(slug)
+            metadataSources[slug] = requested
             metadata[slug] = info
         } catch {
-            guard !Task.isCancelled, self.revision(slug) == revision, metadata[slug] == nil else { return }
+            guard !Task.isCancelled, self.source(slug) == requested, metadata[slug] == nil else { return }
             unavailableDetails.insert(slug)
         }
     }
@@ -472,7 +534,9 @@ private struct ExtensionStoreView: View {
             else { directory }
         }
         .task(id: store.refresh) {
-            await store.loadDirectory()
+            async let directory: Void = store.loadDirectory()
+            await store.refreshProductCapability()
+            _ = await directory
             store.refreshSetup()
             await store.restoreInstalled()
         }
@@ -483,7 +547,7 @@ private struct ExtensionStoreView: View {
             VStack(alignment: .leading, spacing: 5) {
                 switch store.setupFlow.state {
                 case .browseOnly:
-                    Text("商店可浏览。此版本未提供可验证的安装设置。")
+                    Text(store.productReadiness?.message ?? "商店可浏览。此版本未提供可验证的扩展运行环境。")
                 case .fresh:
                     Text("可新建空白扩展配置。这不会恢复旧扩展或旧配置。")
                 case .ready:
