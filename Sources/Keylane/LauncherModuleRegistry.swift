@@ -721,13 +721,14 @@ final class LauncherModuleRegistry {
     @MainActor var availableAITools: [AIToolRegistration] {
         modules.flatMap { module in
             module.aiTools.map { contribution in
-                var tool = contribution
+                let frozen = contribution.forRun()
+                var tool = frozen
                 let generation = toolGenerations[module.id]
                 let activation = activation(for: module.id)
                 tool.available = { [weak self] in
                     guard let self, self.isModuleEnabled(module.id), self.toolGenerations[module.id] == generation,
                           self.activation(for: module.id) == activation else { return false }
-                    return contribution.available()
+                    return frozen.available()
                 }
                 return tool
             }

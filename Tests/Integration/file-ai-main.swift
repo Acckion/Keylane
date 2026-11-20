@@ -496,6 +496,15 @@ let textURL = videoDirectory.appendingPathComponent("fixture.md")
 try Data("Attachment fixture content".utf8).write(to: textURL)
 let attachment = try AIFileAttachment.read(textURL)
 precondition(attachment.name == "fixture.md" && attachment.text == "Attachment fixture content")
+let capturedVersion = try AIFileReadVersion(textURL)
+let versionedAttachment = try AIFileAttachment.read(textURL, maximumTextBytes: 24_000, expectedVersion: capturedVersion)
+precondition(versionedAttachment.text == attachment.text)
+try Data("Replacement fixture content".utf8).write(to: textURL, options: .atomic)
+do { _ = try AIFileAttachment.read(textURL, expectedVersion: capturedVersion); fatalError("Replaced file was accepted") } catch {}
+let editedVersion = try AIFileReadVersion(textURL)
+try Data("Edited in-place fixture content".utf8).write(to: textURL)
+do { _ = try AIFileAttachment.read(textURL, expectedVersion: editedVersion); fatalError("Edited file was accepted") } catch {}
+print("PASS file identity: descriptor-bound version accepts unchanged source, rejects replacement and in-place edits")
 let symlink = videoDirectory.appendingPathComponent("alias.md")
 try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: textURL)
 do { _ = try AIFileAttachment.read(symlink); fatalError("Symbolic-link attachment was accepted") } catch {}
