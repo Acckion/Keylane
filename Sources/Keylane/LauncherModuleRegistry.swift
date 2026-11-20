@@ -440,9 +440,17 @@ final class LauncherModuleRegistry {
     let availabilityChanges = PassthroughSubject<Void, Never>()
     private var launcherVisible = false
     private var servicesRunning = false
-    private(set) lazy var searchUpdates: AnyPublisher<Void, Never> =
-        Publishers.MergeMany([updates(\.searchUpdates), availabilityChanges.eraseToAnyPublisher(), registrationUpdates])
+    /// nil means a host-wide change; module updates retain their owner identity.
+    private(set) lazy var searchInvalidations: AnyPublisher<ModuleID?, Never> =
+        Publishers.MergeMany(modules.flatMap { module in
+            module.searchUpdates.map { publisher in
+                publisher.map { Optional(module.id) }.eraseToAnyPublisher()
+            }
+        } + [availabilityChanges.map { nil as ModuleID? }.eraseToAnyPublisher(),
+             registrationUpdates.map { nil as ModuleID? }.eraseToAnyPublisher()])
             .eraseToAnyPublisher()
+    private(set) lazy var searchUpdates: AnyPublisher<Void, Never> =
+        searchInvalidations.map { _ in () }.eraseToAnyPublisher()
     private(set) lazy var presentationUpdates: AnyPublisher<Void, Never> =
         updates(\.presentationUpdates).receive(on: DispatchQueue.main).eraseToAnyPublisher()
 

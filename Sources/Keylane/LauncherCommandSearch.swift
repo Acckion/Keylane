@@ -50,7 +50,32 @@ final class LauncherCommandSearch {
     private var cached: (input: Input, date: Date, results: [Entry])?
     private var preparedNames: [String: SearchRanker.Name] = [:]
 
-    func invalidate() { cached = nil }
+    struct Diagnostics {
+        var scored = 0
+        var reused = 0
+        var cacheHit = false
+        var duration: TimeInterval = 0
+    }
+    private(set) var diagnostics = Diagnostics()
+    private struct Ranked {
+        let entry: Entry
+        let owner: ModuleID?
+        let rank: SearchResultRank?
+        func matches(_ other: Entry) -> Bool {
+            entry.commandID == other.commandID && entry.name == other.name && entry.aliases == other.aliases &&
+            entry.rankingKind == other.rankingKind && entry.matchScore == other.matchScore
+        }
+    }
+    private var ranked: [String: Ranked] = [:]
+    private var rankingInput: Input?
+    private var rankingDate = Date.distantPast
+    private var registryIdentity: ObjectIdentifier?
+
+    func invalidate(module: ModuleID? = nil) {
+        cached = nil
+        if let module { ranked = ranked.filter { $0.value.owner != module } }
+        else { ranked.removeAll(); rankingInput = nil }
+    }
 
     func releasePreparedNames() {
         invalidate()
@@ -58,8 +83,20 @@ final class LauncherCommandSearch {
     }
 
     func results(for input: Input, registry: LauncherModuleRegistry) -> [Entry] {
+        let start = ProcessInfo.processInfo.systemUptime
+        diagnostics = Diagnostics()
+        defer { diagnostics.duration = ProcessInfo.processInfo.systemUptime - start }
         let now = Date.now
-        if let cached, cached.input == input, now.timeIntervalSince(cached.date) < 60 { return cached.results }
+        if registryIdentity != ObjectIdentifier(registry) {
+            invalidate(); registryIdentity = ObjectIdentifier(registry)
+        }
+        if let cached, cached.input == input, now.timeIntervalSince(cached.date) < 60 {
+            diagnostics.cacheHit = true
+            return cached.results
+        }
+        if rankingInput != input || now.timeIntervalSince(rankingDate) >= 60 {
+            ranked.removeAll(); rankingInput = input; rankingDate = now
+        }
 
         let candidates = registry.candidates(for: input)
         let rank = LauncherSearchRanking(query: input.query, aliases: input.aliases,
@@ -73,13 +110,25 @@ final class LauncherCommandSearch {
             currentNames[name] = prepared
             return prepared
         }
+        var nextRanked: [String: Ranked] = [:]
         let results = candidates.compactMap { entry -> (Entry, SearchResultRank)? in
-            if let score = entry.matchScore {
-                return (entry, rank.explicitResult(id: entry.id, title: entry.name, score: score))
+            let score: SearchResultRank?
+            if let previous = ranked[entry.id], previous.matches(entry) {
+                diagnostics.reused += 1
+                score = previous.rank
+            } else {
+                diagnostics.scored += 1
+                if let explicit = entry.matchScore {
+                    score = rank.explicitResult(id: entry.id, title: entry.name, score: explicit)
+                } else {
+                    score = rank.match(id: entry.id, title: entry.name, names: entry.aliases,
+                                       kind: entry.rankingKind, prepareName: prepare)
+                }
             }
-            return rank.match(id: entry.id, title: entry.name, names: entry.aliases, kind: entry.rankingKind, prepareName: prepare)
-                .map { (entry, $0) }
+            nextRanked[entry.id] = Ranked(entry: entry, owner: registry.moduleOwningCommand(entry.commandID), rank: score)
+            return score.map { (entry, $0) }
         }.sorted { $0.1.precedes($1.1) }.map(\.0)
+        ranked = nextRanked
 
         // On the home screen, the user's order applies to the favorite slots.
         var ordered = results

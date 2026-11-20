@@ -15,10 +15,10 @@ import plistlib, sys, uuid
 from pathlib import Path
 main = Path(sys.argv[1]) / 'Sources/Keylane/main.swift'
 source = main.read_text()
-entry = 'let application = NSApplication.shared\nConfigurationTransfer.finishPending()\nlet delegate = Delegate()\napplication.delegate = delegate\napplication.run()\n'
-if not source.endswith(entry):
+prefix, marker, entry = source.rpartition('\nlet application = NSApplication.shared\n')
+if not marker or not entry.endswith('application.delegate = delegate\napplication.run()\n'):
     raise SystemExit('Update the fixture for the new Keylane entry point')
-main.write_text(source.removesuffix(entry) + '\n' + Path('Tests/Integration/drop-shelf-main.swift').read_text())
+main.write_text(prefix + '\n' + Path('Tests/Integration/drop-shelf-main.swift').read_text())
 (Path(sys.argv[2]) / 'Contents/Info.plist').write_bytes(plistlib.dumps({
     'CFBundleIdentifier': 'org.keylane.test.drop-shelf.' + str(uuid.uuid4()),
     'CFBundleExecutable': 'verify', 'CFBundleName': 'Keylane Shelf Fixture', 'CFBundlePackageType': 'APPL',
