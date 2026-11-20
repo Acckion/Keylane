@@ -445,6 +445,7 @@ final class AIConversationSession: ObservableObject {
 
     func saveProject(_ project: AIChatProject, completion: @escaping (Bool) -> Void) {
         guard let history else { completion(false); return }
+        if currentProjectID == project.id, currentProject != project { stop() }
         history.perform({ store in try store.saveProject(project); return try store.projects() }) { [weak self] result in
             guard let self else { completion(false); return }
             switch result {

@@ -6,6 +6,7 @@ import KeylaneCore
 struct AIToolRegistration: Sendable {
     let definition: AIToolDefinition
     var requiresConfirmation = false
+    var confirmationRequired: @MainActor @Sendable ([String: AIToolValue]) -> Bool = { _ in false }
     var available: @MainActor @Sendable () -> Bool = { true }
     let perform: @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult
 }
@@ -106,7 +107,8 @@ actor AIToolRun {
         do {
             try catalog.validate(call)
             guard let tool = registrations[call.name], await tool.available() else { throw AIToolContractError.unavailable }
-            if tool.requiresConfirmation {
+            let needsConfirmation = await tool.confirmationRequired(call.arguments)
+            if tool.requiresConfirmation || needsConfirmation {
                 guard await approve(name, arguments) else {
                     try await validateCurrent()
                     let denied = try AIToolResult(text: "用户未允许本次操作。不要重试该操作，向用户说明未执行。", isError: true)
