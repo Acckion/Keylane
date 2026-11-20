@@ -10,6 +10,12 @@ final class AIActionSession: ObservableObject {
         if running || preparing { cancel() }
         answer = ""; response = ""; progress = .init(); status = ""
     } }
+    var continuationContext: AIActionContext? {
+        guard let context else { return nil }
+        guard acceptsQuestion else { return context }
+        let text = "用户请求：\n" + question + (showsSourcePreview ? "\n\n来源内容：\n" + context.text : "")
+        return .init(sourceID: context.sourceID, title: title, text: text)
+    }
     var commandID: CommandID? { definition?.commandID }
     var questionPlaceholder: String { definition?.questionPlaceholder ?? "输入问题…" }
     var showsSourcePreview: Bool { definition?.showsSourcePreview != false }

@@ -30,7 +30,7 @@ enum AIActionLauncher {
                 }]
                 result.append(.init(id: "continue-ai-action", title: "继续到 Quick AI", icon: "bubble.left.and.bubble.right",
                                     enabled: !session.answer.isEmpty && !session.running && !session.preparing) { [weak model] in
-                    guard let context = session.context else { return }
+                    guard let context = session.continuationContext else { return }
                     if model?.continueModuleAIAction?(context, session.answer) != true {
                         (NSApp.delegate as? Delegate)?.showLauncherFeedback("无法加入草稿：请等待附件处理完成，或缩小内容范围。", style: .failure)
                     }

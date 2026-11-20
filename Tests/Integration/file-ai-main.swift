@@ -2275,6 +2275,7 @@ wait("Buffered valid action prepared") { !validatedAction.preparing }
 validatedAction.send()
 wait("Buffered valid result accepted") { !validatedAction.preparing && !validatedAction.running }
 precondition(validatedAction.answer == "validated output" && validatedAction.canUseResult)
+precondition(validatedAction.continuationContext?.text.contains("Original question") == true)
 validatedAction.question = "Edited question"
 precondition(validatedAction.answer.isEmpty && !validatedAction.canUseResult)
 print("PASS buffered module policy: raw output withheld, invalid result rejected, validated output admitted and question edits revoke old result")
