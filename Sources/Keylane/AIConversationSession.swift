@@ -111,6 +111,9 @@ final class AIConversationSession: ObservableObject {
         (!composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachments.isEmpty)
     }
 
+    /// The attachment follows this live session, including its explicit model selection.
+    var canAttachModuleContext: Bool { currentConnection != nil && !loadingChat && !composer.loadingFiles }
+
     var lastAnswer: String? { turns.last(where: { !$0.answer.isEmpty })?.answer }
     var currentConnection: AIConnection? { connection(in: configuration.state) }
 
@@ -174,7 +177,7 @@ final class AIConversationSession: ObservableObject {
             prepareTools: { [weak self] in
                 guard let self, self.toolEnabled() else { return nil }
                 guard connection.supportsTools != false else { throw AIResponseError.toolsUnavailable }
-                return try AIToolRun(registrations: self.toolSource(), isCurrent: { [weak self] in
+                return try AIToolRun(registrations: self.toolSource(), recipient: connection.toolRecipient, isCurrent: { [weak self] in
                     guard let self else { return false }
                     return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
                         self.currentConnection == connection
@@ -445,6 +448,7 @@ final class AIConversationSession: ObservableObject {
 
     func saveProject(_ project: AIChatProject, completion: @escaping (Bool) -> Void) {
         guard let history else { completion(false); return }
+        if currentProjectID == project.id, currentProject != project { stop() }
         history.perform({ store in try store.saveProject(project); return try store.projects() }) { [weak self] result in
             guard let self else { completion(false); return }
             switch result {
@@ -482,8 +486,44 @@ final class AIConversationSession: ObservableObject {
         }
     }
 
-    func leaveLauncher() {
-        if !isInChat { reset() }
+    private var launcherPreservation: (id: UUID, isCurrent: () -> Bool)?
+    private var launcherPreservationChanges: AnyCancellable?
+
+    /// A navigation arms a one-shot lease for the real, possibly deferred page-leave callback.
+    /// Failed/no-op commands and a subsequent route change cannot preserve an unrelated leave.
+    @discardableResult
+    func navigatePreservingLauncherConversation(currentPage: @escaping () -> PageID?,
+                                                 changes: AnyPublisher<PageID, Never>,
+                                                 _ navigate: () -> Bool) -> Bool {
+        cancelLauncherPreservation()
+        guard !isInChat, let origin = currentPage() else { return navigate() }
+        let id = UUID()
+        // Also support a host which dispatches leave synchronously after changing its route.
+        launcherPreservation = (id, { currentPage().map { $0 != origin } ?? false })
+        let admitted = navigate()
+        guard launcherPreservation?.id == id else { return admitted }
+        guard admitted, let destination = currentPage(), destination != origin else {
+            cancelLauncherPreservation()
+            return admitted
+        }
+        launcherPreservation = (id, { currentPage() == destination })
+        launcherPreservationChanges = changes.sink { [weak self] next in
+            precondition(Thread.isMainThread)
+            if next != destination { self?.cancelLauncherPreservation() }
+        }
+        return admitted
+    }
+
+    private func cancelLauncherPreservation() {
+        launcherPreservation = nil
+        launcherPreservationChanges?.cancel()
+        launcherPreservationChanges = nil
+    }
+
+    func leaveLauncher(allowPreservation: Bool = true) {
+        let preserve = allowPreservation && launcherPreservation?.isCurrent() == true
+        cancelLauncherPreservation()
+        if !isInChat && !preserve { reset() }
     }
 
     func closeChat() {
@@ -494,6 +534,7 @@ final class AIConversationSession: ObservableObject {
     }
 
     func reset(projectID: UUID? = nil) {
+        cancelLauncherPreservation()
         stop()
         saveChat()
         historyRevision = UUID()

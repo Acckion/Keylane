@@ -1,7 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
-import PDFKit
+import KeylaneCore
 
 struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
     var id = UUID()
@@ -30,10 +30,7 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
         guard data.count <= maximumFileBytes else { throw Failure("文件超过 8 MB。") }
         let text: String
         if url.pathExtension.lowercased() == "pdf" {
-            guard let pdf = PDFDocument(data: data), !pdf.isLocked, pdf.pageCount <= 100,
-                  let extracted = pdf.string, !extracted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { throw Failure("PDF 需要包含可提取文字，且不超过 100 页。") }
-            text = extracted
+            text = try AIFileDocumentText.pdfPages(data, maximumTextBytes: max(1, maximumTextBytes)).joined(separator: "\n\n")
         } else {
             guard let extracted = String(data: data, encoding: .utf8), !extracted.contains("\0") else {
                 throw Failure("目前支持 UTF-8 文本、代码、Markdown、CSV、JSON 和有文字的 PDF。")

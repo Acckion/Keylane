@@ -9,6 +9,8 @@ enum AIModule {
 
     static let textCommandsItem = SettingsItem(id: "ai-text-commands", page: "ai-text-commands", title: "AI 命令",
                                                keywords: "润色 摘要 自定义 提示词 导入 快捷键 polish summarize")
+    static let fileAccess = SettingsItem(id: "ai-file-access", page: "ai", title: "AI 文件访问", keywords: "AI 文件 目录 授权 Read Glob Grep Write")
+
     static let interactions = SettingsItem(id: "ai-interactions", page: "ai", title: "Quick AI 与聊天",
                                            keywords: "Tab 回车 发送 备选命令 窗口置顶")
 
@@ -20,7 +22,13 @@ enum AIModule {
             .appendingPathComponent("Keylane/AI/history.sqlite")
         let quickAI = AIConversationSession(configuration: configuration, runtime: runtime,
                                         history: AIConversationRepository(url: historyURL), preferredQuickModel: { interaction.preferredModelID })
-        quickAI.configureTools(preferences: interaction) { [weak model] in model?.launcherModules?.availableAITools ?? [] }
+        quickAI.configureTools(preferences: interaction) { [weak model, weak quickAI] in
+            guard let model, let quickAI else { return [] }
+            let tools = (model.launcherModules?.availableAITools ?? []) + AIFileToolProvider.registrations(
+                preferences: model.aiFileAccess, project: quickAI.currentProject,
+                currentProject: { [weak quickAI] in quickAI?.currentProject }, index: model.fileSearch.aiToolIndexSource())
+            return tools + [AIFileToolProvider.discovery(tools)]
+        }
         let chat = AIChatWindow(controller: quickAI, configuration: configuration, interaction: interaction,
                                 appearance: model.$appearance.eraseToAnyPublisher())
         let openChat: (String?) -> Void = { [weak model] initialQuery in
@@ -31,6 +39,25 @@ enum AIModule {
                 (NSApp.delegate as? Delegate)?.hideLauncher()
                 if fromQuickAI { model.pageID = .root }
             }
+        }
+        model.canAttachModuleAIContext = { [weak quickAI] in quickAI?.canAttachModuleContext == true }
+        model.attachModuleAIContext = { [weak model, weak quickAI] source, commandID in
+            guard let model, let quickAI, let registry = model.launcherModules,
+                  model.canAttachModuleAIContext(),
+                  registry.moduleOwningCommand(commandID) == source.moduleID, !model.disabledCommands.contains(commandID.rawValue) else { return false }
+            let guarded = registry.guardedAIContextSource(source)
+            let availability = Publishers.Merge3(
+                model.$disabledCommands.map { !$0.contains(commandID.rawValue) },
+                registry.availabilityChanges.map { registry.isCommandModuleEnabled(commandID) },
+                configuration.$state.map(\.enabled)
+            ).eraseToAnyPublisher()
+            quickAI.composer.loadAttachments(availability: availability) {
+                let context = try await guarded.load()
+                return [.init(title: context.title, text: context.text, symbol: "doc.text")]
+            }
+            if quickAI.isInChat { openChat("") }
+            else { model.openPageWithExistingDraft(QuickAILauncher.pageID) }
+            return true
         }
         model.continueModuleAIAction = { [weak model, weak quickAI] context, answer in
             guard let model, let quickAI, configuration.state.enabled, !quickAI.loadingChat,
@@ -93,11 +120,12 @@ enum AIModule {
         let textCommands = AITextCommandLauncher.commands(model: model, session: textSession)
         return LauncherModule(id: .init(rawValue: "keylane.ai"), origin: .application,
                               title: "AI", symbol: "sparkles", commands: [quickCommand, chatCommand] + textCommands,
+                              aiActions: AITextCommand.allCases.map { .init(commandID: .init(rawValue: $0.id), title: $0.title, instructions: $0.instructions) },
                               providers: [AITextCommandLauncher.customCommands(model: model, session: textSession, library: library)],
                               pages: [AIActionLauncher.page(model: model), QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
                                       AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
-                  order: 8, items: [interactions],
+                  order: 8, items: [interactions, fileAccess],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
@@ -143,6 +171,7 @@ private struct AISettingsHome: View {
                 link(AIModule.textCommandsItem)
             }
             AIInteractionSettings(preferences: model.aiInteraction, configuration: model.aiSettings).settingsAnchor(AIModule.interactions)
+            AIFileToolSettings(preferences: model.aiFileAccess)
         }
     }
 
@@ -188,7 +217,7 @@ private struct AIInteractionSettings: View {
             Divider()
             toggle("AI Chat 窗口置顶", value: $preferences.chatFloating)
             Divider()
-            toggle("允许 AI 调用基础工具", detail: "可查询时间、计算、应用名称、已授权文件名与日程。结果发送给所选模型；打开应用逐次确认。", value: $preferences.toolsEnabled)
+            toggle("允许 AI 调用基础工具", detail: "可查询时间、计算、应用与日程。文件访问与创建须另行启用并授权目录；披露、创建与打开应用逐次确认。结果发送给所选模型。", value: $preferences.toolsEnabled)
         }
     }
 

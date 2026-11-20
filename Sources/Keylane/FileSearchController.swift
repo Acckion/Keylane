@@ -12,8 +12,9 @@ struct AutomaticFileExclusion: Codable, Identifiable, Equatable {
     var id: String { path }; let path: String; let reason: String; var events: Int
 }
 final class FileSearchController: ObservableObject {
-    @Published var options: FileSearchOptions { didSet { if options != oldValue { configure(old: oldValue) } } }
-    @Published private(set) var automaticExclusions: [AutomaticFileExclusion] = []
+    private var aiIndexRevision = UUID()
+    @Published var options: FileSearchOptions { willSet { if newValue != options { aiIndexRevision = UUID() } } didSet { if options != oldValue { configure(old: oldValue) } } }
+    @Published private(set) var automaticExclusions: [AutomaticFileExclusion] = [] { willSet { if newValue != automaticExclusions { aiIndexRevision = UUID() } } }
     @Published private(set) var stats = FileIndexStats()
     @Published private(set) var indexStatus = "尚未建立本地补充索引"
     @Published private(set) var inaccessible: [String] = []
@@ -199,6 +200,7 @@ final class FileSearchController: ObservableObject {
         else { indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
     private func resolveGrants() {
+        aiIndexRevision = UUID()
         activeURLs.forEach { $0.stopAccessingSecurityScopedResource() }; activeURLs = []
         guard isRunning else { return }
         for (_,data) in grants {
@@ -461,9 +463,28 @@ final class FileSearchController: ObservableObject {
         search(query, includeContents: includesQueryContents, standalone: standalone, showPathItself: showPathItself)
     }
 
+    /// Pure declaration snapshot. Search runs only after the file tool's root-bound approval.
+    @MainActor func aiToolIndexSource() -> AIFileToolIndexSource? {
+        guard let runtime, !runtime.cancelled, options.enabled else { return nil }
+        let revision = aiIndexRevision, config = options, scopeGrants = grants, selected = selectedScopePaths
+        let exclusions = automaticExclusions, restoredPaths = restored
+        let current: @MainActor @Sendable () -> Bool = { [weak self] in
+            guard let self else { return false }
+            return self.runtime === runtime && !runtime.cancelled && self.aiIndexRevision == revision &&
+                self.options == config && self.grants == scopeGrants && self.selectedScopePaths == selected &&
+                self.automaticExclusions == exclusions && self.restored == restoredPaths
+        }
+        return .init(isCurrent: current, search: { [weak self] query, directory in
+            guard let self, current() else { throw CancellationError() }
+            let result = try await self.aiSearch(query, limit: 200, within: directory)
+            guard current() else { throw CancellationError() }
+            return result.map(\.url.path)
+        })
+    }
+
     /// Independent bounded filename query. Never changes the visible page or starts an index scan.
-    @MainActor func aiSearch(_ query: String, limit: Int) async throws -> [SpotlightFile] {
-        guard let runtime, options.enabled, (1...20).contains(limit) else { throw AIToolContractError.unavailable }
+    @MainActor func aiSearch(_ query: String, limit: Int, within: String? = nil) async throws -> [SpotlightFile] {
+        guard let runtime, options.enabled, (1...200).contains(limit) else { throw AIToolContractError.unavailable }
         var snapshot = authorizedOptions
         snapshot.contentSearch = false
         let config = snapshot
@@ -474,7 +495,7 @@ final class FileSearchController: ObservableObject {
                 reader.async(execute: DispatchWorkItem { [weak self] in
                     do {
                         guard let self, let db = self.readDB, !runtime.cancelled, !cancellation.cancelled else { throw CancellationError() }
-                        let files = try db.search(query, options: config, excluded: exclusions, limit: limit,
+                        let files = try db.search(query, options: config, excluded: exclusions, limit: limit, within: within,
                             isCancelled: { cancellation.cancelled || runtime.cancelled })
                         continuation.resume(returning: files)
                     } catch { continuation.resume(throwing: error) }

@@ -132,6 +132,8 @@ struct SnippetPreferences: View {
                     SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.settings("snippets"))
                 }
             }
+            SettingsSectionTitle(title: "AI 扩展")
+            ExtensionCommandPreferences(model: model, commands: model.launcherModules?.aiCommands(in: SnippetAIActions.moduleID) ?? [])
         }
     }
 

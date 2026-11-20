@@ -91,10 +91,10 @@ public final class FileSearchIndex {
         result.bytes = [url.path,url.path+"-wal",url.path+"-shm"].reduce(0) { $0 + ((try? FileManager.default.attributesOfItem(atPath: $1)[.size] as? Int) ?? 0) }
         return result
     }
-    public func search(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, isCancelled: @escaping () -> Bool = { false }) throws -> [SpotlightFile] {
-        try searchRanked(query, options: options, excluded: excluded, limit: limit, isCancelled: isCancelled).map(\.file)
+    public func search(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [SpotlightFile] {
+        try searchRanked(query, options: options, excluded: excluded, limit: limit, within: within, isCancelled: isCancelled).map(\.file)
     }
-    public func searchRanked(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, isCancelled: @escaping () -> Bool = { false }) throws -> [RankedFile] {
+    public func searchRanked(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [RankedFile] {
         guard !isCancelled() else { return [] }
         let cancellation = QueryCancellation(isCancelled)
         sqlite3_progress_handler(db, 1000, { raw in
@@ -123,6 +123,15 @@ public final class FileSearchIndex {
                     values.append(word)
                 }
             }
+        }
+        if let within {
+            guard within.hasPrefix("/"), !within.contains("\0") else { return [] }
+            var ranges: [String] = []
+            for root in LocalFilePath.indexAliases(within) {
+                let lower = root == "/" ? "/" : root + "/", upper = root == "/" ? "0" : root + "0"
+                ranges.append("(path=? OR (path>=? AND path<?))"); values += [root, lower, upper]
+            }
+            conditions.append("(" + ranges.joined(separator: " OR ") + ")")
         }
         if !options.externalVolumes { conditions.append("external=0") }
         // Root ownership is stored separately from the path: no user text becomes SQL.
