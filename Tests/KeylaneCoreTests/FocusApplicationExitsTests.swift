@@ -5,19 +5,21 @@ final class FocusApplicationExitsTests: XCTestCase {
     let process = FocusApplicationExits.Process(pid: 12, launched: Date(timeIntervalSince1970: 123))
     let application = FocusApplication(id: "fixture.app", name: "Fixture")
     let url = URL(fileURLWithPath: "/tmp/FocusFixture.app")
-    func testDelayedExitSurvivesSessionSwitchAndRoundTrip() throws {
+    func testConfirmedExitSurvivesSessionSwitchAndRoundTrip() throws {
         var ledger = FocusApplicationExits(); let first = UUID(), second = UUID()
         XCTAssertTrue(ledger.request(process, application: application, url: url, session: first))
+        let sentAt = Date(timeIntervalSince1970: 1000)
+        ledger.sent(process, now: sentAt)
+        ledger.observedExit(process, now: sentAt.addingTimeInterval(3))
+        XCTAssertTrue(ledger.restorable(blocked: { _ in false }).isEmpty)
         ledger.finish(first, restore: true)
         ledger = try JSONDecoder().decode(FocusApplicationExits.self, from: JSONEncoder().encode(ledger))
-        XCTAssertFalse(ledger.request(process, application: application, url: url, session: second))
-        XCTAssertTrue(ledger.restorable(blocked: { _ in false }).isEmpty)
-        ledger.observedExit(process)
+        ledger.discardUnconfirmed()
         XCTAssertTrue(ledger.restorable(blocked: { _ in true }).isEmpty)
         XCTAssertEqual(ledger.restorable(blocked: { _ in false }).map(\.url), [url])
-        // Failed/blocked reopen attempts do not consume the durable receipt.
+        XCTAssertTrue(ledger.request(.init(pid: 13, launched: process.launched), application: application, url: url, session: second))
+        ledger.restored(process)
         XCTAssertEqual(ledger.receipts.count, 1)
-        ledger.restored(process); XCTAssertTrue(ledger.receipts.isEmpty)
     }
     func testRejectedExitIsNotRepeatedForSameProcessButRelaunchIsIndependent() {
         var ledger = FocusApplicationExits(); let session = UUID()
@@ -32,15 +34,44 @@ final class FocusApplicationExitsTests: XCTestCase {
     func testMissingLaunchMetadataIsNotAnExitOrPermissionToRetry() {
         var ledger = FocusApplicationExits()
         XCTAssertTrue(ledger.request(process, application: application, url: url, session: UUID()))
+        ledger.sent(process)
         ledger.reconcile(process, running: true, launched: nil)
         XCTAssertFalse(ledger.receipts[0].exited)
         XCTAssertFalse(ledger.request(process, application: application, url: url, session: UUID()))
         ledger.reconcile(process, running: true, launched: process.launched.addingTimeInterval(1))
         XCTAssertTrue(ledger.receipts[0].exited)
     }
+    func testManualQuitAfterCanceledSessionIsNotRestoredInsideOrOutsideWindow() {
+        let now = Date(timeIntervalSince1970: 1000)
+        for delay: TimeInterval in [1, 45] {
+            var ledger = FocusApplicationExits(); let session = UUID()
+            XCTAssertTrue(ledger.request(process, application: application, url: url, session: session))
+            ledger.sent(process, now: now)
+            ledger.finish(session, restore: true)
+            XCTAssertFalse(ledger.request(process, application: application, url: url, session: UUID()))
+            ledger.observedExit(process, now: now.addingTimeInterval(delay))
+            XCTAssertTrue(ledger.receipts.isEmpty)
+            XCTAssertTrue(ledger.restorable(blocked: { _ in false }).isEmpty)
+        }
+    }
+    func testUnobservedExitWhileAppWasDownCannotAuthorizeReopen() {
+        var ledger = FocusApplicationExits(); let session = UUID()
+        XCTAssertTrue(ledger.request(process, application: application, url: url, session: session))
+        ledger.sent(process); ledger.discardUnconfirmed()
+        ledger.observedExit(process); ledger.finish(session, restore: true)
+        XCTAssertTrue(ledger.restorable(blocked: { _ in false }).isEmpty)
+    }
+    func testUnacknowledgedQuitCannotAuthorizeReopen() {
+        var ledger = FocusApplicationExits(); let session = UUID()
+        XCTAssertTrue(ledger.request(process, application: application, url: url, session: session))
+        ledger.finish(session, restore: true)
+        ledger.observedExit(process)
+        XCTAssertTrue(ledger.receipts.isEmpty)
+    }
     func testNoRestorePreferenceAndRestartOwnership() {
         var ledger = FocusApplicationExits(); let old = UUID(), new = UUID()
         XCTAssertTrue(ledger.request(process, application: application, url: url, session: old))
+        ledger.sent(process)
         ledger.transfer(old, to: new); ledger.finish(old, restore: true)
         ledger.observedExit(process)
         XCTAssertTrue(ledger.restorable(blocked: { _ in false }).isEmpty)

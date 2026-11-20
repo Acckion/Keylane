@@ -6,6 +6,7 @@ import KeylaneCore
 /// Serial browser automation. Every write compares the tab's current URL with
 /// the value just observed; restoration never replaces a tab the user changed.
 final class FocusBrowser {
+    static let recoveryCapacity = 4_000
     static let supported: [String: String] = [
         "com.apple.Safari": "Safari", "com.google.Chrome": "Chrome",
         "com.microsoft.edgemac": "Edge", "com.brave.Browser": "Brave",
@@ -68,7 +69,7 @@ final class FocusBrowser {
             do {
                 guard (try journal.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) <= 8_000_000 else { throw FocusError.storage }
                 redirects = try JSONDecoder().decode([Redirect].self, from: Data(contentsOf: journal))
-                guard redirects.count <= 4000, redirects.allSatisfy({ record in
+                guard redirects.count <= Self.recoveryCapacity, redirects.allSatisfy({ record in
                     guard let original = URL(string: record.original), let blocked = URL(string: record.blocked) else { return false }
                     return ["http", "https"].contains(original.scheme ?? "") && Self.supported[record.browser] != nil && blocked.isFileURL
                         && blocked.deletingLastPathComponent() == directory.appendingPathComponent("Blocked")
@@ -96,7 +97,7 @@ final class FocusBrowser {
             guard let self else { return }
             var notice: String?
             var blockedHost: String?
-            for (id, pid) in browsers {
+            browserLoop: for (id, pid) in browsers {
                 guard self.checkpoint == ticket else { break }
                 guard browsers.filter({ $0.0 == id }).count == 1 else { notice = "浏览器进程身份不唯一，已跳过写入。"; continue }
                 guard self.authorized(id) else {
@@ -106,10 +107,14 @@ final class FocusBrowser {
                 do {
                     let tabs = try self.tabs(id)
                     for tab in tabs {
-                        guard self.checkpoint == ticket, self.redirects.count < 4000 else { break }
+                        guard self.checkpoint == ticket else { break browserLoop }
                         guard let url = URL(string: tab.url), let host = url.host,
                               configuration.blocks(website: url, allowAllWebsites: preferences.allowAllWebsites),
                               !snoozes.contains(where: { FocusWebsite.matches(host, rule: $0) }) else { continue }
+                        guard self.redirects.count < Self.recoveryCapacity else {
+                            notice = "网页恢复记录已满，不能继续屏蔽。专注已暂停，现有恢复记录已保留。"
+                            break browserLoop
+                        }
                         guard Self.unique(tab, in: tabs) else {
                             notice = "无法安全识别 \(Self.supported[id] ?? id) 的标签，已跳过网站写入。"
                             continue

@@ -29,9 +29,10 @@ final class FocusController: ObservableObject {
         var permission: (String, Bool) -> OSStatus = { FocusBrowser.permission($0, prompt: $1) }
     }
     private let browserAccess: BrowserAccess
+    private let openApplicationForRestore: ((URL, @escaping (Bool) -> Void) -> Void)?
     private let defaults: UserDefaults
     private var deferredQuit = Set<String>()
-    private var restoreAttempted = Set<FocusApplicationExits.Process>()
+    private var restoreFailures: [FocusApplicationExits.Process: (count: Int, next: Date)] = [:]
     private var restoreURLs = Set<URL>()
     private var permissionObservation: AnyCancellable?
     @Published private(set) var browserMessage = ""
@@ -45,9 +46,11 @@ final class FocusController: ObservableObject {
 
     init(registry: MenuBarRegistry, defaults: UserDefaults = .standard, directory: URL? = nil,
          authorization: PermissionFeature.Authorization = .accessibility, observeSystemFocus: Bool = true,
-         browserDriver: FocusBrowser.Driver? = nil, browserAccess: BrowserAccess = .init()) {
+         browserDriver: FocusBrowser.Driver? = nil, browserAccess: BrowserAccess = .init(),
+         openApplicationForRestore: ((URL, @escaping (Bool) -> Void) -> Void)? = nil) {
         self.registry = registry
         self.defaults = defaults; self.browserAccess = browserAccess
+        self.openApplicationForRestore = openApplicationForRestore
         self.observeSystemFocus = observeSystemFocus
         let root = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Keylane/Focus", isDirectory: true)
@@ -57,6 +60,7 @@ final class FocusController: ObservableObject {
         do { archive = try store.load() }
         catch { archive = FocusArchive(); message = "专注数据读取失败，请检查数据文件后重试。"; loaded = false; return }
         loaded = true
+        archive.applicationExits.discardUnconfirmed()
         browser.onRestorationIssue = { [weak self] issue in
             guard let self else { return }
             let previous = self.browserMessage
@@ -371,13 +375,32 @@ final class FocusController: ObservableObject {
         let configuration = session?.paused == false ? session?.configuration : nil
         let ready = archive.applicationExits.restorable { configuration?.blocks(application: $0) == true }
         if previous != archive.applicationExits, !persist() { archive.applicationExits = previous; return }
-        for receipt in ready where !restoreAttempted.contains(receipt.process) && restoreURLs.insert(receipt.url).inserted {
-            restoreAttempted.insert(receipt.process)
+        for receipt in ready {
+            if let failure = restoreFailures[receipt.process], failure.count >= 3 || failure.next > Date() { continue }
+            guard restoreURLs.insert(receipt.url).inserted else { continue }
             restoreApplication(receipt.url) { [weak self] success in
-                guard let self, success else { return }
+                guard let self else { return }
                 self.restoreURLs.remove(receipt.url)
+                guard success else {
+                    let count = (self.restoreFailures[receipt.process]?.count ?? 0) + 1
+                    let delay = TimeInterval(count * 2)
+                    let next = Date().addingTimeInterval(delay)
+                    for failed in ready where failed.url == receipt.url {
+                        self.restoreFailures[failed.process] = (max(count, self.restoreFailures[failed.process]?.count ?? 0), next)
+                    }
+                    self.message = count < 3 ? "应用恢复失败，稍后重试。" : "应用恢复失败，已保留恢复记录。"
+                    if count < 3 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                            guard let self, self.running else { return }; self.settleApplicationExits()
+                        }
+                    }
+                    return
+                }
                 let old = self.archive.applicationExits
-                for completed in ready where completed.url == receipt.url { self.archive.applicationExits.restored(completed.process) }
+                for completed in ready where completed.url == receipt.url {
+                    self.restoreFailures.removeValue(forKey: completed.process)
+                    self.archive.applicationExits.restored(completed.process)
+                }
                 if !self.persist() { self.archive.applicationExits = old }
             }
         }
@@ -385,6 +408,7 @@ final class FocusController: ObservableObject {
 
     private func restoreApplication(_ url: URL, completion: @escaping (Bool) -> Void = { _ in }) {
         guard url.isFileURL, url.pathExtension == "app" else { completion(false); return }
+        if let openApplicationForRestore { openApplicationForRestore(url, completion); return }
         if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleURL == url }) { completion(true); return }
         let configuration = NSWorkspace.OpenConfiguration(); configuration.activates = false
         NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, error in
@@ -464,7 +488,9 @@ final class FocusController: ObservableObject {
                     // Journal before asking; even a canceled request consumes this
                     // process's attempt. Never re-open its save/permission dialog on a timer.
                     guard persist() else { archive.applicationExits = previous; continue }
-                    if !app.terminate() { archive.applicationExits.rejected(process); persist() }
+                    if app.terminate() { archive.applicationExits.sent(process) }
+                    else { archive.applicationExits.rejected(process) }
+                    persist()
                 }
             }
         }

@@ -15,6 +15,7 @@ public struct FocusApplicationExits: Codable, Equatable, Sendable {
         public var session: UUID
         public var restore: Bool?
         public var exited = false
+        public var attributionDeadline: Date?
     }
     public private(set) var receipts: [Receipt] = []
     public private(set) var attempted: Set<Process> = []
@@ -25,13 +26,29 @@ public struct FocusApplicationExits: Codable, Equatable, Sendable {
         return true
     }
     public mutating func rejected(_ process: Process) { receipts.removeAll { $0.process == process } }
-    public mutating func observedExit(_ process: Process) {
+    /// AppKit only acknowledges dispatch, not whether the user accepted Quit.
+    /// Outside this short window a later manual exit is indistinguishable, so
+    /// keep the one-attempt policy but give up automatic reopen attribution.
+    public mutating func sent(_ process: Process, now: Date = Date()) {
+        for index in receipts.indices where receipts[index].process == process {
+            receipts[index].attributionDeadline = now.addingTimeInterval(10)
+        }
+    }
+    public mutating func observedExit(_ process: Process, now: Date = Date()) {
+        receipts.removeAll { $0.process == process && !$0.exited &&
+            ($0.restore == false || ($0.attributionDeadline ?? .distantPast) < now) }
         for index in receipts.indices where receipts[index].process == process { receipts[index].exited = true }
         attempted.remove(process)
     }
     public mutating func finish(_ session: UUID, restore: Bool) {
-        for index in receipts.indices where receipts[index].session == session { receipts[index].restore = restore }
-        receipts.removeAll { $0.restore == false && $0.exited }
+        // End/cancel is a hard attribution boundary. A later process exit can
+        // be a manual quit even within the dispatch window; never reopen it.
+        receipts.removeAll { $0.session == session && (!$0.exited || !restore) }
+        for index in receipts.indices where receipts[index].session == session { receipts[index].restore = true }
+    }
+    public mutating func discardUnconfirmed() {
+        // Relaunch cannot establish which exits were observed by the old session.
+        receipts.removeAll { !$0.exited }
     }
     public mutating func transfer(_ old: UUID, to new: UUID) {
         for index in receipts.indices where receipts[index].session == old { receipts[index].session = new }
@@ -40,8 +57,8 @@ public struct FocusApplicationExits: Codable, Equatable, Sendable {
         receipts.filter { $0.exited && $0.restore == true && !blocked($0.application.id) }
     }
     public mutating func restored(_ process: Process) { receipts.removeAll { $0.process == process } }
-    public mutating func reconcile(_ process: Process, running: Bool, launched: Date?) {
+    public mutating func reconcile(_ process: Process, running: Bool, launched: Date?, now: Date = Date()) {
         // Missing launch metadata for a still-running process is not proof of exit.
-        if !running || (launched != nil && launched != process.launched) { observedExit(process) }
+        if !running || (launched != nil && launched != process.launched) { observedExit(process, now: now) }
     }
 }

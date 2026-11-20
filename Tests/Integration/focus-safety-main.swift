@@ -123,6 +123,59 @@ let agedBrowser = FocusBrowser(directory: agedDirectory, driver: aged.driver, re
 poll(agedBrowser); restore(agedBrowser)
 check(records(agedDirectory).first?.suspended == true && aged.writes == 1, "expired recovery stops writes without deleting evidence")
 
+// The full journal remains unchanged and reports a pause-worthy error.
+let saturatedDirectory = root.appendingPathComponent("capacity")
+try FileManager.default.createDirectory(at: saturatedDirectory.appendingPathComponent("Blocked", isDirectory: true),
+                                        withIntermediateDirectories: true)
+let saturatedPath = saturatedDirectory.appendingPathComponent("browser-recovery.json")
+let full = (0..<FocusBrowser.recoveryCapacity).map { index in
+    FocusBrowser.Redirect(browser: "com.apple.Safari", pid: 1, original: "https://news.example.com/\(index)",
+        blocked: saturatedDirectory.appendingPathComponent("Blocked/\(index).html").absoluteString)
+}
+let fullBytes = try JSONEncoder().encode(full)
+try fullBytes.write(to: saturatedPath)
+let fullFake = Fake()
+fullFake.tabs = [tab("https://news.example.com/new")]
+let saturated = FocusBrowser(directory: saturatedDirectory, driver: fullFake.driver)
+var saturatedDone = false
+var saturationIssue: String?
+saturated.poll(configuration: policy, preferences: .init(), snoozes: []) { issue, _ in
+    saturationIssue = issue; saturatedDone = true
+}
+until { saturatedDone }
+let persistedFullBytes = try Data(contentsOf: saturatedPath)
+check(saturationIssue?.contains("已满") == true && fullFake.writes == 0 && fullBytes == persistedFullBytes,
+      "capacity is reported without redirecting or losing existing recovery records")
+
+// An injected transient launch failure releases the URL slot but not the receipt.
+let retryDirectory = root.appendingPathComponent("app-retry")
+let retryState = FocusStore(url: retryDirectory.appendingPathComponent("state.json"))
+let fixtureProcess = FocusApplicationExits.Process(pid: -11, launched: Date())
+let fixtureSession = UUID()
+let fixtureURL = root.appendingPathComponent("Inert.app")
+var retryArchive = FocusArchive()
+check(retryArchive.applicationExits.request(fixtureProcess, application: .init(id: "fixture.fake", name: "Inert"),
+    url: fixtureURL, session: fixtureSession), "fixture receives quit ticket")
+retryArchive.applicationExits.sent(fixtureProcess)
+retryArchive.applicationExits.observedExit(fixtureProcess)
+retryArchive.applicationExits.finish(fixtureSession, restore: true)
+try retryState.save(retryArchive)
+var restoreLaunches = 0
+let applicationRetryController = FocusController(registry: registry, defaults: defaults, directory: retryDirectory,
+    authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic"), observeSystemFocus: false,
+    browserDriver: fullFake.driver, openApplicationForRestore: { url, completion in
+        precondition(url == fixtureURL)
+        restoreLaunches += 1
+        completion(restoreLaunches > 1)
+    })
+applicationRetryController.startService()
+check(restoreLaunches == 1 && applicationRetryController.archive.applicationExits.receipts.count == 1,
+      "failed application reopen retains durable receipt")
+until { restoreLaunches == 2 }
+check(applicationRetryController.archive.applicationExits.receipts.isEmpty,
+      "bounded retry reopens after transient failure and clears receipt only on success")
+applicationRetryController.stopService()
+
 // Preferences cancel a queued policy, then safely restore its existing marker.
 let preferenceFake = Fake(); preferenceFake.tabs = [tab()]
 let preferenceDirectory = root.appendingPathComponent("preferences")
