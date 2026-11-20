@@ -96,12 +96,6 @@ struct TranslatorView: View {
                 if !controller.input.isEmpty { controller.speech.stop(); controller.input = "" } else { back() }
             })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .topLeading) {
-                    if controller.input.isEmpty {
-                        Text("输入要翻译的文字…").font(.system(size: 23)).foregroundStyle(.tertiary)
-                            .padding(.horizontal, 13).padding(.top, 8).allowsHitTesting(false)
-                    }
-                }
                 .padding(.horizontal, 12)
             HStack(spacing: 13) {
                 SpeechControls(controller: controller)
@@ -202,7 +196,7 @@ private struct TranslatorInput: NSViewRepresentable {
         scroll.drawsBackground = false
         scroll.contentView.drawsBackground = false
         scroll.hasVerticalScroller = true
-        let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
+        let view = TranslatorTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 200))
         view.minSize = NSSize(width: 0, height: 0)
         view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isRichText = false
@@ -216,6 +210,9 @@ private struct TranslatorInput: NSViewRepresentable {
         view.autoresizingMask = [.width]
         view.textContainer?.widthTracksTextView = true
         view.delegate = context.coordinator
+        view.onCommittedChange = { [weak coordinator = context.coordinator] value in
+            if coordinator?.parent.text != value { coordinator?.parent.text = value }
+        }
         view.setAccessibilityLabel("翻译原文")
         scroll.documentView = view
         return scroll
@@ -245,9 +242,6 @@ private struct TranslatorInput: NSViewRepresentable {
             parent.escape()
             return true
         }
-        func textDidChange(_ notification: Notification) {
-            guard let view = notification.object as? NSTextView, !view.hasMarkedText() else { return }
-            parent.text = view.string
-        }
+
     }
 }

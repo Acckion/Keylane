@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import KeylaneCore
 
@@ -174,3 +175,20 @@ controller.begin(text: String(repeating: "中", count: 1667))
 precondition(controller.error == TranslationFailure.inputTooLong.localizedDescription && !controller.loading)
 controller.stop()
 print("TRANSLATOR_INTEGRATION_OK")
+
+let editor = TranslatorTextView(frame: NSRect(x: 0, y: 0, width: 300, height: 180))
+var committedText = ""
+editor.onCommittedChange = { committedText = $0 }
+precondition(editor.showsPlaceholder)
+editor.setMarkedText("a", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+precondition(editor.hasMarkedText() && !editor.showsPlaceholder && committedText.isEmpty)
+editor.unmarkText()
+precondition(!editor.hasMarkedText() && committedText == "a" && !editor.showsPlaceholder)
+editor.string = ""
+precondition(editor.showsPlaceholder)
+editor.insertText("你好", replacementRange: NSRange(location: 0, length: 0))
+precondition(committedText == "你好" && !editor.showsPlaceholder)
+editor.setSelectedRange(NSRange(location: 0, length: editor.string.utf16.count))
+editor.deleteBackward(nil)
+precondition(committedText.isEmpty && editor.showsPlaceholder)
+print("PASS native translator input: IME composition hides placeholder, commit publishes, deletion restores placeholder")

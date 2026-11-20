@@ -154,9 +154,9 @@ actor AIRuntime {
     }
 
     func generate(connection: AIConnection, readKey: @Sendable (AIConnection) throws -> String?, messages: [AIMessage],
-                  emit: @Sendable (String) async throws -> Void) async throws -> Int? {
+                  subscriptionReasoningEffort: String? = nil, emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         if connection.protocolKind.isSubscription {
-            return try await AISubscriptionTransport.generate(connection, messages: messages, emit: emit)
+            return try await AISubscriptionTransport.generate(connection, messages: messages, effort: subscriptionReasoningEffort, emit: emit)
         }
         guard let url = connection.completionURL, connection.isConfigured else { throw AIResponseError.invalidResponse }
         try Task.checkCancellation()
