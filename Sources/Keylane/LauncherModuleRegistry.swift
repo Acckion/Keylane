@@ -282,6 +282,8 @@ struct LauncherModule {
         var permission: PermissionFeature?
         var acceptsFallbackQuery = false
         var fallbackAvailable: () -> Bool = { true }
+        var isAICommand = false
+        var isInternal = false
         var aiExecute: ((LauncherCommandOrigin, AIActionSource?) -> Void)?
         var execute: (LauncherCommandOrigin) -> Void = { _ in }
         var arguments: Arguments?
@@ -304,6 +306,7 @@ struct LauncherModule {
         var available: (CommandID) -> Bool = { _ in true }
         var permission: (CommandID) -> PermissionFeature? = { _ in nil }
         var fallback: Fallback?
+        var isAICommand = false
     }
 
     /// Runtime-discovered modules expose their current presence from validated in-memory metadata.
@@ -334,6 +337,7 @@ struct LauncherModule {
     var settings: [LauncherSettingsPage] = []
     var services: [Service] = []
     var aiTools: [AIToolRegistration] = []
+    var aiContexts: [AIContextRegistration] = []
     var searchUpdates: [AnyPublisher<Void, Never>] = []
     var launcherShown: (() -> Void)?
     var launcherHidden: (() -> Void)?
@@ -345,6 +349,9 @@ struct LauncherModule {
     var permissionTitlebar: SettingsTitlebarContribution?
     var registration: Registration?
     var canDisable: Bool { origin != .application }
+    func withAIContexts(_ contexts: [AIContextRegistration]) -> Self {
+        var copy = self; copy.aiContexts = contexts; return copy
+    }
     func withAITools(_ tools: [AIToolRegistration]) -> Self {
         var copy = self; copy.aiTools = tools; return copy
     }
@@ -401,20 +408,112 @@ final class LauncherModuleRegistry {
         let value: Value
     }
 
-    private let registeredShortcutGroups: [ShortcutCommandGroup]
+    /// All declaration indexes are validated before becoming visible together.
+    private struct CatalogSnapshot {
+        let moduleIDs: Set<ModuleID>
+        let registeredShortcutGroups: [ShortcutCommandGroup]
+        let commandSettingsUpdates: [AnyPublisher<Void, Never>]
+        let commands: [Owned<LauncherModule.Command>]
+        let byID: [CommandID: Owned<LauncherModule.Command>]
+        let providers: [Owned<LauncherModule.Provider>]
+        let moduleRegistrations: [ModuleID: LauncherModule.Registration]
+        let pages: [PageID: Owned<LauncherPage>]
+        let registeredSettings: [Owned<LauncherSettingsPage>]
+        let settingsOrigins: [String: LauncherModuleOrigin]
+        let modules: [LauncherModule]
+        let disableableModules: Set<ModuleID>
+        init(modules: [LauncherModule]) throws {
+            let contextIDs = modules.flatMap(\.aiContexts).map(\.id)
+            guard contextIDs.allSatisfy({ !$0.isEmpty }), Set(contextIDs).count == contextIDs.count else { throw AIActionError.invalidDefinition }
+            _ = try AIToolCatalog(modules.flatMap(\.aiTools).map(\.definition))
+            self.modules = modules
+            moduleIDs = Set(modules.map(\.id))
+            disableableModules = Set(modules.filter(\.canDisable).map(\.id))
+            _ = try LauncherModuleCatalog(modules: modules.map {
+                LauncherModuleDeclaration(id: $0.id, commands: $0.commands.map(\.declaration),
+                                          pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
+                                          providers: $0.providers.map(\.namespace))
+            })
+            for module in modules {
+                guard Set(module.aiActions.map(\.commandID)).count == module.aiActions.count else { throw AIActionError.invalidDefinition }
+                for definition in module.aiActions {
+                    try definition.validate()
+                    guard module.commands.contains(where: { $0.declaration.id == definition.commandID }) else { throw AIActionError.invalidDefinition }
+                    if let destination = definition.resultDestination {
+                        guard module.commands.contains(where: { $0.declaration.id == destination.commandID && $0.arguments?.count.contains(1) == true }) else { throw AIActionError.invalidDefinition }
+                    }
+                }
+            }
+            moduleRegistrations = Dictionary(uniqueKeysWithValues: modules.compactMap { module in
+                module.registration.map { (module.id, $0) }
+            })
+            registeredShortcutGroups = modules.compactMap { module in
+                guard module.commands.contains(where: { !$0.isInternal }) || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
+                else { return nil }
+                return ShortcutCommandGroup(id: module.id, title: module.displayTitle,
+                                            symbol: module.displaySymbol, commands: module.commands.filter { !$0.isInternal },
+                                            dynamicCommands: module.dynamicCommandSettings, binding: module.shortcutSettingsBinding)
+            }
+            commandSettingsUpdates = modules.flatMap(\.shortcutSettingsUpdates)
+            commands = modules.flatMap { module in module.commands.map { Owned(module: module.id, value: $0) } }
+            byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.value.declaration.id, $0) })
+            providers = modules.flatMap { module in module.providers.map { Owned(module: module.id, value: $0) } }
+            pages = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
+                module.pages.map { ($0.id, Owned(module: module.id, value: $0)) }
+            })
+            let pageIDs = Set(pages.keys)
+            for page in modules.flatMap(\.pages) {
+                if let parent = page.parent, parent != .root, !pageIDs.contains(parent) {
+                    throw CatalogUpdateError.missingParent(page.id.rawValue, parent.rawValue)
+                }
+            }
+            let settingsPages = modules.flatMap(\.settings).sorted { $0.order < $1.order }
+            let settingIDs = Set(settingsPages.map(\.id))
+            for page in settingsPages {
+                if let parent = page.parentID, !settingIDs.contains(parent) {
+                    throw CatalogUpdateError.missingParent(page.id, parent)
+                }
+            }
+            var itemIDs: Set<String> = []
+            for page in settingsPages {
+                for item in page.items {
+                    guard item.page == page.id else {
+                        throw SettingsRegistrationError.wrongPage(item: item.id, expected: page.id)
+                    }
+                    guard itemIDs.insert(item.id).inserted else {
+                        throw SettingsRegistrationError.duplicateItem(item.id)
+                    }
+                }
+            }
+            settingsOrigins = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
+                module.settings.map { ($0.id, module.origin) }
+            })
+            registeredSettings = modules.flatMap { module in module.settings.map { Owned(module: module.id, value: $0) } }
+                .sorted { $0.value.order < $1.value.order }
+        }
+    }
+    private var catalog: CatalogSnapshot
+    private let catalogChanges = CurrentValueSubject<UInt64, Never>(0)
+    var catalogRevision: UInt64 { catalogChanges.value }
+    private var updatingCatalog = false
+    private var pendingRegistrationChanges: Set<ModuleID> = []
+    private var pendingRegistrationRevocations: Set<ModuleID> = []
+    private var drainingRegistrationChanges = false
+
+    private var registeredShortcutGroups: [ShortcutCommandGroup] { catalog.registeredShortcutGroups }
     var shortcutCommandGroups: [ShortcutCommandGroup] {
         registeredShortcutGroups.filter { isModulePresent($0.id) }
     }
 
-    private let commandSettingsUpdates: [AnyPublisher<Void, Never>]
-    private let commands: [Owned<LauncherModule.Command>]
+    private var commandSettingsUpdates: [AnyPublisher<Void, Never>] { catalog.commandSettingsUpdates }
+    private var commands: [Owned<LauncherModule.Command>] { catalog.commands }
     private let commandEnabled: (CommandID) -> Bool
-    private let byID: [CommandID: Owned<LauncherModule.Command>]
-    private let providers: [Owned<LauncherModule.Provider>]
-    private let moduleRegistrations: [ModuleID: LauncherModule.Registration]
-    private let pages: [PageID: Owned<LauncherPage>]
-    private let registeredSettings: [Owned<LauncherSettingsPage>]
-    private let settingsOrigins: [String: LauncherModuleOrigin]
+    private var byID: [CommandID: Owned<LauncherModule.Command>] { catalog.byID }
+    private var providers: [Owned<LauncherModule.Provider>] { catalog.providers }
+    private var moduleRegistrations: [ModuleID: LauncherModule.Registration] { catalog.moduleRegistrations }
+    private var pages: [PageID: Owned<LauncherPage>] { catalog.pages }
+    private var registeredSettings: [Owned<LauncherSettingsPage>] { catalog.registeredSettings }
+    private var settingsOrigins: [String: LauncherModuleOrigin] { catalog.settingsOrigins }
     private let registrationChanges = PassthroughSubject<Void, Never>()
     private let revokedActivations = PassthroughSubject<(module: ModuleID, activation: Activation), Never>()
     var activationRevocations: AnyPublisher<(module: ModuleID, activation: Activation), Never> {
@@ -423,6 +522,8 @@ final class LauncherModuleRegistry {
     var registrationUpdates: AnyPublisher<Void, Never> { registrationChanges.eraseToAnyPublisher() }
     private var registrationObservation: AnyCancellable?
     private var activations: [ModuleID: Activation] = [:]
+    private var contextGenerations: [ModuleID: UUID] = [:]
+    private var contextObservations: [AnyCancellable] = []
     private var toolGenerations: [ModuleID: UUID] = [:]
     private var runningModules: Set<ModuleID> = []
     private var reconcilingModules: Set<ModuleID> = []
@@ -432,8 +533,8 @@ final class LauncherModuleRegistry {
     }
     var settings: [LauncherSettingsPage] { settingsCatalog.pages }
     var aiActions: [AIActionDefinition] { modules.filter { isModuleEnabled($0.id) }.flatMap(\.aiActions) }
-    private let modules: [LauncherModule]
-    private let disableableModules: Set<ModuleID>
+    private var modules: [LauncherModule] { catalog.modules }
+    private var disableableModules: Set<ModuleID> { catalog.disableableModules }
     private let preferences: UserDefaults
     static let disabledModulesPreferenceKey = "disabledLauncherModules"
     private var disabledModules: Set<ModuleID>
@@ -441,14 +542,20 @@ final class LauncherModuleRegistry {
     private var launcherVisible = false
     private var servicesRunning = false
     /// nil means a host-wide change; module updates retain their owner identity.
-    private(set) lazy var searchInvalidations: AnyPublisher<ModuleID?, Never> =
-        Publishers.MergeMany(modules.flatMap { module in
-            module.searchUpdates.map { publisher in
-                publisher.map { Optional(module.id) }.eraseToAnyPublisher()
-            }
-        } + [availabilityChanges.map { nil as ModuleID? }.eraseToAnyPublisher(),
-             registrationUpdates.map { nil as ModuleID? }.eraseToAnyPublisher()])
-            .eraseToAnyPublisher()
+    private(set) lazy var searchInvalidations: AnyPublisher<ModuleID?, Never> = {
+        let moduleChanges = catalogChanges.map { [weak self] _ -> AnyPublisher<ModuleID?, Never> in
+            guard let self else { return Empty().eraseToAnyPublisher() }
+            return Publishers.MergeMany(self.modules.flatMap { module in
+                module.searchUpdates.map { stream in
+                    stream.filter { [weak self] in self?.updatingCatalog == false }
+                        .map { Optional(module.id) }.eraseToAnyPublisher()
+                }
+            }).eraseToAnyPublisher()
+        }.switchToLatest().eraseToAnyPublisher()
+        return Publishers.MergeMany([moduleChanges,
+            availabilityChanges.map { nil as ModuleID? }.eraseToAnyPublisher(),
+            registrationUpdates.map { nil as ModuleID? }.eraseToAnyPublisher()]).eraseToAnyPublisher()
+    }()
     private(set) lazy var searchUpdates: AnyPublisher<Void, Never> =
         searchInvalidations.map { _ in () }.eraseToAnyPublisher()
     private(set) lazy var presentationUpdates: AnyPublisher<Void, Never> =
@@ -456,80 +563,167 @@ final class LauncherModuleRegistry {
 
     init(modules: [LauncherModule], preferences: UserDefaults = .standard,
          commandEnabled: @escaping (CommandID) -> Bool = { _ in true }) throws {
-        _ = try AIToolCatalog(modules.flatMap(\.aiTools).map(\.definition))
+        self.catalog = try CatalogSnapshot(modules: modules)
         self.commandEnabled = commandEnabled
-        self.modules = modules
         self.preferences = preferences
-        disableableModules = Set(modules.filter(\.canDisable).map(\.id))
         disabledModules = Set((preferences.stringArray(forKey: Self.disabledModulesPreferenceKey) ?? []).map(ModuleID.init(rawValue:)))
-        _ = try LauncherModuleCatalog(modules: modules.map {
-            LauncherModuleDeclaration(id: $0.id, commands: $0.commands.map(\.declaration),
-                                      pages: $0.pages.map(\.id), settingsPages: $0.settings.map(\.id),
-                                      providers: $0.providers.map(\.namespace))
-        })
-        for module in modules {
-            guard Set(module.aiActions.map(\.commandID)).count == module.aiActions.count else { throw AIActionError.invalidDefinition }
-            for definition in module.aiActions {
-                try definition.validate()
-                guard module.commands.contains(where: { $0.declaration.id == definition.commandID }) else { throw AIActionError.invalidDefinition }
-            }
-        }
-        moduleRegistrations = Dictionary(uniqueKeysWithValues: modules.compactMap { module in
-            module.registration.map { (module.id, $0) }
-        })
-        registeredShortcutGroups = modules.compactMap { module in
-            guard !module.commands.isEmpty || module.dynamicCommandSettings != nil || module.shortcutSettingsBinding != nil
-            else { return nil }
-            return ShortcutCommandGroup(id: module.id, title: module.displayTitle,
-                                        symbol: module.displaySymbol, commands: module.commands,
-                                        dynamicCommands: module.dynamicCommandSettings, binding: module.shortcutSettingsBinding)
-        }
-        commandSettingsUpdates = modules.flatMap(\.shortcutSettingsUpdates)
-        commands = modules.flatMap { module in module.commands.map { Owned(module: module.id, value: $0) } }
-        byID = Dictionary(uniqueKeysWithValues: commands.map { ($0.value.declaration.id, $0) })
-        providers = modules.flatMap { module in module.providers.map { Owned(module: module.id, value: $0) } }
-        pages = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
-            module.pages.map { ($0.id, Owned(module: module.id, value: $0)) }
-        })
-        let settingsPages = modules.flatMap(\.settings).sorted { $0.order < $1.order }
-        var itemIDs: Set<String> = []
-        for page in settingsPages {
-            for item in page.items {
-                guard item.page == page.id else {
-                    throw SettingsRegistrationError.wrongPage(item: item.id, expected: page.id)
-                }
-                guard itemIDs.insert(item.id).inserted else {
-                    throw SettingsRegistrationError.duplicateItem(item.id)
-                }
-            }
-        }
-        settingsOrigins = Dictionary(uniqueKeysWithValues: modules.flatMap { module in
-            module.settings.map { ($0.id, module.origin) }
-        })
-        registeredSettings = modules.flatMap { module in module.settings.map { Owned(module: module.id, value: $0) } }
-            .sorted { $0.value.order < $1.value.order }
         let registeredModules = modules.filter { $0.registration != nil }
         for module in registeredModules {
             if let generation = enabledGeneration(for: module.id) {
                 activations[module.id] = Activation(generation: generation)
             }
         }
-        registrationObservation = Publishers.MergeMany(registeredModules.compactMap { module in
+        observeRegistrations()
+    }
+
+    private func observeRegistrations() {
+        contextObservations.removeAll()
+        for module in modules {
+            for context in module.aiContexts {
+                if let changes = context.availabilityUpdates {
+                    contextObservations.append(changes.sink { [weak self] available in
+                        precondition(Thread.isMainThread)
+                        if !available { self?.contextGenerations[module.id] = UUID() }
+                    })
+                }
+            }
+        }
+        registrationObservation?.cancel()
+        registrationObservation = Publishers.MergeMany(modules.compactMap { module in
             module.registration?.updates.map { module }.eraseToAnyPublisher()
         }).sink { [weak self] module in
             precondition(Thread.isMainThread)
-            self?.registrationChanged(for: module)
+            guard let self else { return }
+            if self.updatingCatalog {
+                self.pendingRegistrationChanges.insert(module.id)
+                if let active = self.activations[module.id], active.generation != self.enabledGeneration(for: module.id) {
+                    // Preserve transient off/on changes even if final metadata
+                    // returns to the same generation before callbacks finish.
+                    self.pendingRegistrationRevocations.insert(module.id)
+                }
+            } else {
+                self.registrationChanged(for: module)
+            }
         }
     }
 
     private func updates(_ key: KeyPath<LauncherModule, [AnyPublisher<Void, Never>]>) -> AnyPublisher<Void, Never> {
+        catalogChanges.map { [weak self] _ -> AnyPublisher<Void, Never> in
+            guard let self else { return Empty().eraseToAnyPublisher() }
+            return self.moduleUpdates(key)
+        }.switchToLatest().eraseToAnyPublisher()
+    }
+
+    private func moduleUpdates(_ key: KeyPath<LauncherModule, [AnyPublisher<Void, Never>]>) -> AnyPublisher<Void, Never> {
         let streams = modules.flatMap { module in
             let id = module.id
             return module[keyPath: key].map { stream in
-                stream.filter { [weak self] in self?.isModuleEnabled(id) == true }.eraseToAnyPublisher()
+                stream.filter { [weak self] in self?.updatingCatalog == false && self?.isModuleEnabled(id) == true }.eraseToAnyPublisher()
             }
         }
         return Publishers.MergeMany(streams).eraseToAnyPublisher()
+    }
+
+    enum CatalogUpdateError: Error, Equatable {
+        case busy
+        case requiresRegistration(ModuleID)
+        case immutableModule(ModuleID)
+        case missingModule(ModuleID)
+        case missingParent(String, String)
+    }
+
+    /// Native adapters and guest adapters both contribute the same declarations.
+    /// Existing application/built-in modules without registration cannot be replaced.
+    func install(_ module: LauncherModule) throws {
+        precondition(Thread.isMainThread)
+        guard !updatingCatalog, !drainingRegistrationChanges, reconcilingModules.isEmpty else { throw CatalogUpdateError.busy }
+        guard module.registration != nil else { throw CatalogUpdateError.requiresRegistration(module.id) }
+        if let old = modules.first(where: { $0.id == module.id }), old.registration == nil {
+            throw CatalogUpdateError.immutableModule(module.id)
+        }
+        var proposed = modules
+        if let index = proposed.firstIndex(where: { $0.id == module.id }) { proposed[index] = module }
+        else { proposed.append(module) }
+        try commit(proposed, changing: module.id)
+    }
+
+    func uninstall(_ id: ModuleID) throws {
+        precondition(Thread.isMainThread)
+        guard !updatingCatalog, !drainingRegistrationChanges, reconcilingModules.isEmpty else { throw CatalogUpdateError.busy }
+        guard let old = modules.first(where: { $0.id == id }) else { throw CatalogUpdateError.missingModule(id) }
+        guard old.registration != nil else { throw CatalogUpdateError.immutableModule(id) }
+        try commit(modules.filter { $0.id != id }, changing: id)
+    }
+
+    private func commit(_ proposed: [LauncherModule], changing id: ModuleID) throws {
+        // Preparation runs no service, permission request, page factory or handler.
+        let next = try CatalogSnapshot(modules: proposed)
+        updatingCatalog = true
+        defer { updatingCatalog = false }
+        let old = modules.first { $0.id == id }
+        if let activation = activations.removeValue(forKey: id) {
+            revokedActivations.send((module: id, activation: activation))
+        }
+        toolGenerations[id] = UUID()
+        contextGenerations[id] = UUID()
+        if let old { stop(old) }
+        catalog = next
+        if let generation = enabledGeneration(for: id) {
+            activations[id] = Activation(generation: generation)
+        }
+        observeRegistrations()
+        if let installed = modules.first(where: { $0.id == id }) {
+            start(installed, notifyVisible: true)
+        }
+        // Recheck final registration metadata across the subscription handover,
+        // as well as events queued by stop/start/show callbacks.
+        pendingRegistrationChanges.formUnion(moduleRegistrations.keys)
+        drainRegistrationChanges()
+        catalogChanges.send(catalogRevision &+ 1)
+        drainRegistrationChanges()
+        // Publish only stable state, retaining the catalog mutation boundary.
+        // Subscribers may update metadata themselves. Coalesce no-op events so
+        // such a subscriber cannot turn publication into an endless echo loop.
+        var published: [ModuleID: RegistrationState]
+        repeat {
+            published = registrationStates
+            registrationChanges.send()
+            drainRegistrationChanges()
+        } while registrationStates != published
+    }
+
+    private struct RegistrationState: Equatable {
+        let present: Bool
+        let enabled: Bool
+        let generation: UInt64
+        let activation: UUID?
+    }
+
+    private var registrationStates: [ModuleID: RegistrationState] {
+        Dictionary(uniqueKeysWithValues: moduleRegistrations.map { id, registration in
+            (id, RegistrationState(present: registration.isPresent(), enabled: registration.isEnabled(),
+                                   generation: registration.generation(), activation: activations[id]?.id))
+        })
+    }
+
+    private func drainRegistrationChanges() {
+        guard !drainingRegistrationChanges else { return }
+        drainingRegistrationChanges = true
+        defer { drainingRegistrationChanges = false }
+        while !pendingRegistrationChanges.isEmpty {
+            let pending = pendingRegistrationChanges
+            pendingRegistrationChanges.removeAll()
+            for id in pending.sorted(by: { $0.rawValue < $1.rawValue }) {
+                // Resolve against the current snapshot, never a retired module.
+                let revoke = pendingRegistrationRevocations.remove(id) != nil
+                guard let module = modules.first(where: { $0.id == id && $0.registration != nil }) else { continue }
+                if revoke, let activation = activations.removeValue(forKey: id) {
+                    revokedActivations.send((module: id, activation: activation))
+                    stop(module)
+                }
+                registrationChanged(for: module, notify: false)
+            }
+        }
     }
 
     func module(forSettingsPage id: String) -> ModuleID? {
@@ -544,7 +738,7 @@ final class LauncherModuleRegistry {
 
     @discardableResult
     func setModuleEnabled(_ id: ModuleID, _ enabled: Bool) -> Bool {
-        guard let module = modules.first(where: { $0.id == id && $0.canDisable }),
+        guard !updatingCatalog, let module = modules.first(where: { $0.id == id && $0.canDisable }),
               enabled == disabledModules.contains(id) else { return false }
         toolGenerations[id] = UUID()
         if enabled { disabledModules.remove(id) } else { disabledModules.insert(id) }
@@ -560,7 +754,7 @@ final class LauncherModuleRegistry {
         return true
     }
 
-    private func registrationChanged(for module: LauncherModule, resuming: Bool = false) {
+    private func registrationChanged(for module: LauncherModule, resuming: Bool = false, notify: Bool = true) {
         let id = module.id
         guard reconcilingModules.insert(id).inserted else { return }
         while activations[id]?.generation != enabledGeneration(for: id) {
@@ -575,7 +769,7 @@ final class LauncherModuleRegistry {
             }
         }
         reconcilingModules.remove(id)
-        registrationChanges.send()
+        if notify { registrationChanges.send() }
     }
 
     func canBindFromShortcutKeyboard(_ id: CommandID) -> Bool {
@@ -588,8 +782,13 @@ final class LauncherModuleRegistry {
     }
 
     func shortcutSettingsUpdates() -> [AnyPublisher<Void, Never>] {
-        commandSettingsUpdates + [registrationUpdates] +
-            registeredShortcutGroups.flatMap { $0.dynamicCommands?.updates() ?? [] }
+        let current = catalogChanges.map { [weak self] _ -> AnyPublisher<Void, Never> in
+            guard let self else { return Empty().eraseToAnyPublisher() }
+            return Publishers.MergeMany(self.commandSettingsUpdates +
+                self.registeredShortcutGroups.flatMap { $0.dynamicCommands?.updates() ?? [] })
+                .filter { [weak self] in self?.updatingCatalog == false }.eraseToAnyPublisher()
+        }.switchToLatest().eraseToAnyPublisher()
+        return [current, registrationUpdates]
     }
 
     func launcherShown() {
@@ -662,16 +861,107 @@ final class LauncherModuleRegistry {
         moduleRegistrations[id]?.isPresent() ?? true
     }
 
+    func aiResultDestination(for id: CommandID) -> AIActionDefinition.ResultDestination? {
+        guard currentAction(for: id, origin: .menu, arguments: []) != nil,
+              let owner = byID[id]?.module else { return nil }
+        guard let destination = modules.first(where: { $0.id == owner })?.aiActions.first(where: { $0.commandID == id })?.resultDestination,
+              currentAction(for: destination.commandID, origin: .menu, arguments: [""]) != nil else { return nil }
+        return destination
+    }
+
+    func aiCommands(in moduleID: ModuleID) -> [LauncherModule.Command] {
+        guard let module = modules.first(where: { $0.id == moduleID }) else { return [] }
+        let ids = Set(module.aiActions.map(\.commandID))
+        return module.commands.filter { $0.isAICommand || ids.contains($0.declaration.id) }
+    }
+
+    /// Uses the ordinary command catalog and current admission; no second executor.
+    func aiCommandEntries() -> [Entry] {
+        let input = LauncherCommandSearch.Input(query: "", page: .root, aliases: [:], favorites: [], usage: [:])
+        let fixed = commands.filter { owned in
+            owned.value.isAICommand || modules.first(where: { $0.id == owned.module })?.aiActions.contains(where: { $0.commandID == owned.value.declaration.id }) == true
+        }.compactMap { owned -> Entry? in
+            let declaration = owned.value.declaration
+            guard currentAction(for: declaration.id, origin: .menu, arguments: []) != nil else { return nil }
+            return Entry(id: declaration.id.rawValue, commandID: declaration.id, name: declaration.title,
+                         detail: "AI 命令", symbol: declaration.symbol)
+        }
+        let dynamic = providers.filter { $0.value.isAICommand && isModuleEnabled($0.module) }.flatMap { owned in
+            owned.value.entries(input).filter { currentAction(for: $0.commandID, origin: .menu, arguments: []) != nil }
+        }
+        return fixed + dynamic
+    }
+
+    /// A captured source cannot survive disable/re-enable, replacement or uninstallation.
+    func guardedAIContextSource(_ source: AIActionSource) -> AIActionSource {
+        let module = source.moduleID
+        let generation = toolGenerations[module]
+        let contextGeneration = contextGenerations[module]
+        let activation = activation(for: module)
+        let current = { [weak self] in
+            guard let self else { return false }
+            return self.isModuleEnabled(module) && self.toolGenerations[module] == generation && self.contextGenerations[module] == contextGeneration && self.activation(for: module) == activation
+        }
+        return AIActionSource(moduleID: module, load: {
+            guard current() else { throw AIActionError.unavailable }
+            let value = try await source.load()
+            try Task.checkCancellation()
+            guard current(), try await source.isCurrent(value), current() else { throw AIActionError.staleSource }
+            try Task.checkCancellation()
+            try value.validate(maximumBytes: 32_000)
+            return value
+        }, isCurrent: { value in
+            guard current(), try await source.isCurrent(value) else { return false }
+            return current()
+        })
+    }
+
+    var availableAIContexts: [AIContextRegistration] {
+        modules.filter { isModuleEnabled($0.id) }.flatMap { module in
+            module.aiContexts.filter { $0.available() }.map { contribution in
+                let generation = toolGenerations[module.id]
+                let contextGeneration = contextGenerations[module.id]
+                let activation = activation(for: module.id)
+                let current = { [weak self] in
+                    guard let self else { return false }
+                    return self.isModuleEnabled(module.id) && self.toolGenerations[module.id] == generation &&
+                        self.contextGenerations[module.id] == contextGeneration && self.activation(for: module.id) == activation && contribution.available()
+                }
+                return AIContextRegistration(id: contribution.id, title: contribution.title, symbol: contribution.symbol,
+                    available: current, search: { [weak self] query in
+                        guard current(), let self else { throw AIActionError.unavailable }
+                        let rows = try await contribution.search(query)
+                        try Task.checkCancellation()
+                        guard current() else { throw AIActionError.unavailable }
+                        return rows.filter { $0.source.moduleID == module.id }.prefix(100).map { row in
+                            let source = self.guardedAIContextSource(row.source)
+                            return AIContextCandidate(id: row.id, title: row.title, detail: row.detail,
+                                source: AIActionSource(moduleID: module.id, load: {
+                                    guard current() else { throw AIActionError.unavailable }
+                                    let value = try await source.load()
+                                    guard current() else { throw AIActionError.unavailable }
+                                    return value
+                                }, isCurrent: { value in
+                                    guard current(), try await source.isCurrent(value) else { return false }
+                                    return current()
+                                }))
+                        }
+                    })
+            }
+        }
+    }
+
     @MainActor var availableAITools: [AIToolRegistration] {
         modules.flatMap { module in
             module.aiTools.map { contribution in
-                var tool = contribution
+                let frozen = contribution.forRun()
+                var tool = frozen
                 let generation = toolGenerations[module.id]
                 let activation = activation(for: module.id)
                 tool.available = { [weak self] in
                     guard let self, self.isModuleEnabled(module.id), self.toolGenerations[module.id] == generation,
                           self.activation(for: module.id) == activation else { return false }
-                    return contribution.available()
+                    return frozen.available()
                 }
                 return tool
             }
@@ -679,6 +969,7 @@ final class LauncherModuleRegistry {
     }
 
     func isModuleEnabled(_ id: ModuleID) -> Bool {
+        guard catalog.moduleIDs.contains(id) else { return false }
         guard moduleRegistrations[id] != nil else { return !disabledModules.contains(id) || !disableableModules.contains(id) }
         return activation(for: id) != nil
     }
@@ -690,7 +981,8 @@ final class LauncherModuleRegistry {
     }
 
     func activation(for id: ModuleID) -> Activation? {
-        guard let activation = activations[id], activation.generation == enabledGeneration(for: id) else { return nil }
+        guard !pendingRegistrationRevocations.contains(id),
+              let activation = activations[id], activation.generation == enabledGeneration(for: id) else { return nil }
         return activation
     }
 
@@ -767,7 +1059,7 @@ final class LauncherModuleRegistry {
         commands.compactMap { owned in
             let command = owned.value
             let item = command.declaration
-            guard input.namespace?.contains(item.id) != false,
+            guard !command.isInternal, input.namespace?.contains(item.id) != false,
                   isCommandEnabled(owned),
                   command.permission?.available != false else { return nil }
             return Entry(id: item.id.rawValue, commandID: item.id, name: item.title,
@@ -854,6 +1146,7 @@ final class LauncherModuleRegistry {
         -> (perform: () -> Void, destination: LauncherCommandDeclaration.Destination?)? {
         if let owned = byID[id] {
             let command = owned.value
+            guard !owned.value.isInternal || origin == .menu else { return nil }
             guard isCommandEnabled(owned),
                   command.arguments?.count.contains(arguments.count) ?? arguments.isEmpty,
                   permissionAllowsExecution(command.permission) else { return nil }

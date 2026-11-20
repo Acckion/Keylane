@@ -104,6 +104,55 @@ struct EmojiCheck {
         precondition(restored.sections.first?.items.first?.glyph == "👩🏽‍💻")
         let usage = defaults.dictionary(forKey: "emojiRecentUsage") as? [String: Int]
         precondition(usage?["👩🏽‍💻"] == 2 && usage?["❤️"] == 1 && usage?[crying.glyph] == nil)
+        restored.setAIModelIdentity("fixture-model")
+        restored.query = "表达一种成功后松口气的感觉"
+        try await wait { !restored.isSearching }
+        try restored.showAIRecommendations("[\"😄\",\"not-local\",\"😄\",\"❤️\"]", description: restored.query)
+        try await wait { !restored.isSearching }
+        precondition(restored.sections.first?.id == "ai-results")
+        precondition(restored.sections.first?.items.map(\.glyph) == ["😄", "❤️"])
+        let recommended = restored.selected!
+        precondition(restored.copy(recommended, to: board) != nil)
+        precondition(board.string(forType: .string) == recommended.glyph)
+        let description = restored.query
+        restored.query = "different local query"
+        try await wait { !restored.isSearching }
+        precondition(!restored.sections.contains { $0.id == "ai-results" })
+        restored.query = description
+        try await wait { !restored.isSearching }
+        precondition(restored.sections.first?.id == "ai-results", "Exact query should reuse memory cache")
+        restored.category = "math"
+        try await wait { !restored.isSearching }
+        precondition(!restored.sections.contains { $0.id == "ai-results" })
+        restored.category = "all"
+        try await wait { !restored.isSearching }
+        restored.setAIModelIdentity("different-model")
+        try await wait { !restored.isSearching }
+        precondition(!restored.sections.contains { $0.id == "ai-results" })
+        try restored.showAIRecommendations("[\"😄\"]", description: description, now: Date().addingTimeInterval(-901))
+        try await wait { !restored.isSearching }
+        precondition(!restored.sections.contains { $0.id == "ai-results" }, "Expired cache must not be displayed")
+        let importedSuite = "org.keylane.emoji.imported-fixture." + UUID().uuidString
+        let importedDefaults = UserDefaults(suiteName: importedSuite)!
+        defer { importedDefaults.removePersistentDomain(forName: importedSuite) }
+        importedDefaults.set(["λ": ["keylaneimportedlambda"]], forKey: "emojiCustomKeywords")
+        for aiFirst in [false, true] {
+            let imported = EmojiSearchController(defaults: importedDefaults)
+            if aiFirst { try await imported.loadForAI() }
+            imported.query = "keylaneimportedlambda"
+            imported.start()
+            try await wait { !imported.isLoading && !imported.isSearching }
+            precondition(imported.selected?.glyph == "λ", "Imported keywords lost when AI loaded the catalog first")
+            imported.releaseCatalog()
+            try await imported.loadForAI()
+            imported.query = "keylaneimportedlambda"
+            imported.start()
+            try await wait { !imported.isLoading && !imported.isSearching }
+            precondition(imported.selected?.glyph == "λ", "Reload lost imported keywords")
+            imported.releaseCatalog()
+        }
+        print("PASS imported Emoji keywords: browser-first, AI-first and release/reload share enriched catalog, without changing saved preferences")
+        print("PASS Emoji AI: local-catalog validation, real grid and copy, exact-query cache, category/model isolation and expiry; no model requests")
         print("PASS Emoji: bilingual search, grid movement, retained selection, empty result, exact Unicode pasteboard, offscreen grid, cancellation and recents")
     }
 

@@ -20,7 +20,7 @@ for p in [objects/'Keylane.swiftmodule', *(binary/n for n in ['KeylaneCore.swift
 PY
 swiftc -swift-version 5 -target "$(uname -m)-apple-macos26.0" -parse-as-library -module-name ModuleAIFixture \
     -I "$task_directory/Dependencies" -I "$task_binary_directory/../../../checkouts/Yams/Sources/CYaml/include" \
-    Tests/Integration/module-ai-window.swift @"$task_directory/objects.rsp" -lsqlite3 \
+    "${KEYLANE_AI_FIXTURE_SOURCE:-Tests/Integration/module-ai-window.swift}" @"$task_directory/objects.rsp" -lsqlite3 \
     -Xlinker -e -Xlinker _KeylaneModuleAIFixtureMain -o "$task_directory/fixture"
 task_app="$task_directory/ModuleAIFixture.app"
 mkdir -p "$task_app/Contents/MacOS"

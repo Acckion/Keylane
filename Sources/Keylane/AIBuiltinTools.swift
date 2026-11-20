@@ -44,16 +44,8 @@ enum AIBuiltinTools {
             return try .init(text: "已向系统请求打开该应用。")
         }]
     }
-    static func files(_ model: Model) -> [AIToolRegistration] {
-        [.init(definition: definition("keylane_search_files", "查找文件", "仅在用户授权范围的本地补充索引中查找文件名；不读取内容，不保证覆盖 Spotlight 的全部结果。", [query, count]),
-               available: { [weak model] in model?.fileSearch.isRunning == true && model?.fileSearch.options.enabled == true }) { [weak model] arguments in
-            guard let model else { throw AIToolContractError.unavailable }
-            let files = try await model.fileSearch.aiSearch(text(arguments, "query"), limit: limit(arguments))
-            return try AIToolWire.result(["scope": .string("已授权范围的本地文件名索引"), "files": .array(files.map {
-                .object(["name": .string($0.name), "path": .string($0.url.path), "directory": .bool($0.isDirectory)])
-            })])
-        }]
-    }
+    static func files(_ model: Model) -> [AIToolRegistration] { AIReadTools.files(model.fileSearch) }
+    static func clipboard(_ model: Model) -> [AIToolRegistration] { AIReadTools.clipboard(model.clipboard) }
     static func calendar(_ model: Model) -> [AIToolRegistration] {
         [.init(definition: definition("keylane_calendar", "查询日程", "查询已授权且已选中日历的日程标题及时间。不申请新权限，不读取备注。最多七天。", [
             .init("start", description: "ISO8601开始时间，包含时区", kind: .string(maximumLength: 64)),

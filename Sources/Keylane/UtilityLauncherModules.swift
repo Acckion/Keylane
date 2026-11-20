@@ -27,7 +27,8 @@ enum UtilityLauncherModules {
                 delegate?.showLauncherFeedback(EmojiCatalog.label("已复制字符", "Character copied"), style: .success)
             }
         }
-        let snapshot: () -> LauncherPage.ActionSnapshot = {
+        let snapshot: () -> LauncherPage.ActionSnapshot = { [weak model] in
+            let ai = model.map { [EmojiAIActions.action(model: $0)] } ?? []
             let pasteFirst = controller.primaryAction == .paste
             let paste = LauncherAction(id: "paste-emoji", title: emojiPasteTitle(), icon: "doc.on.clipboard",
                 shortcut: pasteFirst ? .init(.return, modifiers: []) : .init(.return, modifiers: .command),
@@ -40,7 +41,7 @@ enum UtilityLauncherModules {
                     if let item = controller.selected { use(item, false) }
                 })
             return .init(primary: pasteFirst ? paste : copy,
-                items: controller.selected == nil ? [] : (pasteFirst ? [paste, copy] : [copy, paste]))
+                items: (controller.selected == nil ? [] : (pasteFirst ? [paste, copy] : [copy, paste])) + ai)
         }
         var page = LauncherPage(id: pageID,
             placeholder: EmojiCatalog.label("搜索 Emoji 与符号…", "Search Emoji & Symbols…"),
@@ -77,6 +78,7 @@ enum UtilityLauncherModules {
                 searchPlaceholder: EmojiCatalog.label("搜索分类…", "Search categories…")
             ))
         }
+        var modelChanges: AnyCancellable?
         let settings = LauncherSettingsPage(id: settingsID, title: title, symbol: "face.smiling",
                                             subtitle: "搜索和插入表情与符号。", order: 65,
                                             items: SettingsItem.all.filter { $0.page == settingsID },
@@ -89,7 +91,10 @@ enum UtilityLauncherModules {
                     EmojiCatalog.label("搜索并插入表情与符号", "Search and insert emoji and symbols"),
                     "face.smiling", ["Emoji", "Symbols", "表情", "符号"], destination: .page(pageID), settings: settingsID,
                     acceptsFallbackQuery: true)
-        ], pages: [page], settings: [settings], services: [.init(start: {}, stop: controller.releaseCatalog)])
+        ] + EmojiAIActions.commands(model: model), aiActions: [EmojiAIActions.definition], pages: [page], settings: [settings], services: [.init(start: { [weak model] in
+            guard let model else { return }
+            modelChanges = model.aiSettings.$state.map { EmojiAIActions.modelIdentity($0.connection(for: .commands)) }.removeDuplicates().sink { controller.setAIModelIdentity($0) }
+        }, stop: { modelChanges?.cancel(); modelChanges = nil; controller.releaseCatalog() })])
     }
 
     private static func emojiPasteTitle() -> String {

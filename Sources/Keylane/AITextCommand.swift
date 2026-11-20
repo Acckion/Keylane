@@ -46,6 +46,7 @@ final class AITextCommandSession: ObservableObject {
     private var reviewedConnection: AIConnection?
     private var plan: DynamicTemplate.Plan?
     private var configurationChanges: AnyCancellable?
+    private var availabilityObservation: AnyCancellable?
     private var canInvoke: () -> Bool = { true }
 
     init(configuration: AIConfiguration, runtime: AIRuntime,
@@ -88,11 +89,27 @@ final class AITextCommandSession: ObservableObject {
         return current
     }
 
+    func observeAvailability(_ updates: AnyPublisher<Bool, Never>) {
+        availabilityObservation = updates.receive(on: DispatchQueue.main).sink { [weak self] available in
+            guard let self, !available else { return }
+            self.canInvoke = { false }
+            self.reply.reset()
+        }
+    }
+
     var isInvocationAvailable: Bool { canInvoke() }
 
     var canSend: Bool {
         !destinationChanged && isInvocationAvailable && !reply.running &&
             !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Result actions always use the successful turn's immutable submitted source.
+    var completedResult: (context: AIActionContext, answer: String)? {
+        guard isInvocationAvailable, !destinationChanged, !reply.running,
+              let turn = reply.turns.last, turn.complete, turn.progress?.phase == .completed,
+              !turn.answer.isEmpty else { return nil }
+        return (.init(sourceID: turn.id.uuidString, title: title, text: turn.question), turn.answer)
     }
 
     func prepare(_ command: AITextCommand, selection: String?, canInvoke: @escaping () -> Bool = { true }) {
@@ -141,6 +158,7 @@ final class AITextCommandSession: ObservableObject {
     }
 
     func clear() {
+        availabilityObservation?.cancel(); availabilityObservation = nil
         reply.reset()
         reviewedConnection = nil
         customCommand = nil

@@ -24,6 +24,6 @@ import pathlib, plistlib, sys
 pathlib.Path(sys.argv[1]).write_bytes(plistlib.dumps(dict(CFBundleExecutable='ConfigurationDemo', CFBundleIdentifier=sys.argv[2], CFBundleName='Configuration Demo', CFBundlePackageType='APPL', LSUIElement=True, LSMinimumSystemVersion='26.0')))
 PY
 codesign --force --sign - --timestamp=none "$task_app"
-for phase in seed no-pending stage apply hotkeys cancel-next undo preview-ui-light preview-ui-dark startup-failure; do
+for phase in seed no-pending stage apply hotkeys cancel-next undo preview-ui-light preview-ui-dark startup-failure preparation-ui; do
     "$task_binary" "$phase" "$task_suite" "$task_directory"
 done
