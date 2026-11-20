@@ -36,7 +36,7 @@
 | BASE-08 | 主题与自定义主题导入/共享 | 部分实现 | 已有外观设置；Raycast 自定义主题完整范围待核对 | [设置](../Sources/Keylane/Settings.swift)、[Raycast 主题](https://manual.raycast.com/themes) |
 | BASE-09 | 通用动态占位符及修饰符 | 部分实现 | 片段、快捷链接分别支持部分语法，核对共用解析与完整修饰符 | [片段](SNIPPETS.md)、[快捷链接](QUICKLINKS.md)、[参考](https://manual.raycast.com/dynamic-placeholders) |
 | BASE-10 | 首次引导、权限、辅助使用与本地化 | 部分实现 | 持续核对默认状态、拒绝/撤销、VoiceOver、对比度和中文输入 | [协作规范](../AGENTS.md)、[架构](LAUNCHER-ARCHITECTURE.md) |
-| BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
+| BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现；定向评分复用待合并 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
 
 ## 应用、文件与个人资料
 
@@ -100,7 +100,7 @@
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
-| AI-13 | 通用文件读写、目录操作等基础工具 | 待合并 | PR #215 尚未合入基线，后续按实际工具逐项验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
+| AI-13 | 通用文件读写、目录操作等基础工具 | 待合并 | PR #215 待合并；Grep CRLF/混合换行行号与摘录已补回归，安装版及真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
 | AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 待合并 | 本批依赖 #215；实现不等于 dev 已有，#217 的文件入口仍须整合；Office/OCR 未实现 | [实现与合成验证](AI-FILE-READING.md) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 尚未合入基线，确认权限和副作用行为 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
@@ -151,7 +151,7 @@
 | TEAM-01 | 组织共享、角色与私有扩展 | 待确认范围 | 此前暂不纳入当前批次，长期目标中保留，开发前确认 | [历史决定](TODO.md)、[Raycast Teams](https://manual.raycast.com/teams) |
 | TEAM-02 | 企业 SSO、SCIM、MDM 和管理控制 | 待确认范围 | 调查所需服务、身份及设备管理基础设施，再确定批次 | [Raycast 企业功能目录](https://manual.raycast.com/) |
 | SERVICE-01 | 账号、计费与 AI Credits | 待确认范围 | Keylane 当前以用户自己的模型连接为主，商业服务方案另定 | [提供方](AI-PROVIDERS.md)、[Raycast AI Credits](https://manual.raycast.com/ai/ai-credits) |
-| EXTRA-01 | 暂存架、内容投放与桌面管理 | 部分实现 | Keylane 自身功能，继续记录回归；网格管理 PR #211 待合并 | [暂存架](DROP-SHELF.md)、[PR #211](https://github.com/Acckion/Keylane/pull/211) |
+| EXTRA-01 | 暂存架、内容投放与桌面管理 | 部分实现 | 网格管理、显式关闭空架后保留、搜索中横向选卡待合并；真实 Finder 拖放待验收 | [暂存架](DROP-SHELF.md)、[PR #211](https://github.com/Acckion/Keylane/pull/211) |
 | EXTRA-02 | 下载扩展及截图/下载自动入架 | 部分实现 | 真实下载完成识别、首次授权及自动投放安装版验收 | [下载联动](DOWNLOADS-SHELF.md) |
 
 ## 下一步执行
@@ -168,4 +168,9 @@
 | 日期 | 范围 | 基线与证据 |
 | --- | --- | --- |
 | 2026-11-21 | 建立全仓库总表，纳入 macOS 功能、AI、扩展、同步、平台及长期项目 | dev `9e73f01`；Raycast 官方手册目录及专项页面；仓库模块文档；PR #201/#211/#212/#214/#215 当前均未合并 |
-| 2026-11-21 | AI-13-a：新增 PDF 公共提取、请求内结果快照与续读、根内索引查询；保持待合并并记录 #215/#217 依赖 | 本批基线 dev `1eea4a6` + #215 `65f4a8d`；定向与合成验证见 [读取与续读](AI-FILE-READING.md)，无安装版/真实模型验收 |
+| 2026-11-21 | AI-13-a：新增 PDF 公共提取、请求内结果快照与续读、根内索引查询；保持待合并并记录 #215/#217 依赖 | 本批集成 dev `8bacfa8` + #215 `c6f94f7`；定向与合成验证见 [读取与续读](AI-FILE-READING.md)，无安装版/真实模型验收 |
+| 2026-11-21 | EXTRA-01 暂存架网格审查修复待合并 | [PR #211](https://github.com/Acckion/Keylane/pull/211)，覆盖空架后续裁剪及存档恢复、搜索时横向选择；验收结果见 PR |
+
+维护记录：2026-11-21，BASE-01/BASE-11 搜索模块定向失效与逐条评分复用待合并；330 项 Swift 测试、27 项脚本测试、搜索集成及完整构建通过，实机性能待验收。见 [记录](SEARCH-INVALIDATION.md)。
+
+维护记录：2026-11-21，AI-13 / PR #215 修复 Grep 的 CRLF 换行识别；使用文件后部匹配及混合换行合成样本回归；23 项定向 Swift 测试、27 项脚本测试通过，未安装验收。

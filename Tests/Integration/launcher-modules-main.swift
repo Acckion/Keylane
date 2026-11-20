@@ -771,3 +771,58 @@ let toolRegistryDeadline = Date().addingTimeInterval(3)
 while !toolRegistryFinished, Date() < toolRegistryDeadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
 precondition(toolRegistryFinished)
 print("PASS module tools: inert catalog construction, duplicate rejection and live module enablement for captured declarations")
+
+// A module refresh must update its own rows without re-scoring an unchanged catalog.
+let appOwner = ModuleID(rawValue: "fixture.apps")
+let fileOwner = ModuleID(rawValue: "fixture.files")
+let appRefresh = PassthroughSubject<Void, Never>()
+let fileRefresh = PassthroughSubject<Void, Never>()
+var fileTitle = "Demo file"
+var includeFile = true
+var appAvailable = true
+let performanceRegistry = try LauncherModuleRegistry(modules: [
+    .init(id: appOwner, providers: [.init(namespace: .prefix("sample-app:"), entries: { _ in
+        (0..<2000).map { Entry(id: "sample-app:\($0)", commandID: .init(rawValue: "sample-app:\($0)"),
+                              name: "Demo app \($0)", detail: "", symbol: "app") }
+    }, resolve: { _, _ in nil }, available: { _ in appAvailable })], searchUpdates: [appRefresh.eraseToAnyPublisher()]),
+    .init(id: fileOwner, providers: [.init(namespace: .prefix("sample-file:"), entries: { _ in
+        includeFile ? [Entry(id: "sample-file:1", commandID: .init(rawValue: "sample-file:1"),
+                             name: fileTitle, detail: "", symbol: "doc")] : []
+    }, resolve: { _, _ in nil })], searchUpdates: [fileRefresh.eraseToAnyPublisher()])
+], preferences: extensionPreferences)
+let performanceSearch = LauncherCommandSearch()
+let performanceChanges = performanceRegistry.searchInvalidations.sink { performanceSearch.invalidate(module: $0) }
+let performanceInput = LauncherCommandSearch.Input(query: "Demo", page: .root, aliases: [:], favorites: [], usage: [:])
+let baselineRows = performanceSearch.results(for: performanceInput, registry: performanceRegistry)
+let coldDiagnostics = performanceSearch.diagnostics
+precondition(coldDiagnostics.scored == 2001)
+precondition(performanceSearch.results(for: performanceInput, registry: performanceRegistry).map(\.id) == baselineRows.map(\.id))
+precondition(performanceSearch.diagnostics.cacheHit)
+fileTitle = "Demo changed file"
+fileRefresh.send()
+let refreshedRows = performanceSearch.results(for: performanceInput, registry: performanceRegistry)
+let refreshedDiagnostics = performanceSearch.diagnostics
+precondition(refreshedDiagnostics.scored == 1 && refreshedDiagnostics.reused == 2000)
+precondition(refreshedRows.contains { $0.name == fileTitle })
+let oracle = LauncherCommandSearch().results(for: performanceInput, registry: performanceRegistry)
+precondition(refreshedRows.map(\.id) == oracle.map(\.id))
+// Availability is checked on every enumerated candidate, including cached scores.
+appAvailable = false
+includeFile = false
+fileRefresh.send()
+precondition(performanceSearch.results(for: performanceInput, registry: performanceRegistry).isEmpty)
+appAvailable = true
+appRefresh.send()
+precondition(performanceSearch.results(for: performanceInput, registry: performanceRegistry).count == 2000)
+precondition(performanceSearch.diagnostics.scored == 2000)
+print("Scoped search: cold scored=\(coldDiagnostics.scored), refresh scored=\(refreshedDiagnostics.scored), reused=\(refreshedDiagnostics.reused), cold_ms=\(coldDiagnostics.duration * 1000), refresh_ms=\(refreshedDiagnostics.duration * 1000)")
+
+performanceRegistry.availabilityChanges.send()
+_ = performanceSearch.results(for: performanceInput, registry: performanceRegistry)
+precondition(performanceSearch.diagnostics.scored == 2000 && performanceSearch.diagnostics.reused == 0)
+var newRankingInput = performanceInput
+// Input is immutable for query/usage; use a different query to exercise full cache invalidation.
+newRankingInput = .init(query: "Other", page: .root, aliases: [:], favorites: [], usage: [:])
+precondition(performanceSearch.results(for: newRankingInput, registry: performanceRegistry).isEmpty)
+precondition(performanceSearch.diagnostics.scored == 2000)
+print("PASS global invalidation and query changes discard scoped scores")

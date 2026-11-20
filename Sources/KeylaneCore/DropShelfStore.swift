@@ -19,6 +19,8 @@ public final class DropShelfStore {
         public var title: String
         public var pinned: Bool
         public var items: [Item]
+        // Optional so archives written before this option still decode as transient.
+        fileprivate var preservedWhenEmpty: Bool? = nil
     }
     private struct Archive: Codable { var version = 1; var shelves: [Shelf] }
     public enum Failure: LocalizedError {
@@ -63,20 +65,26 @@ public final class DropShelfStore {
     public func pin(_ id: UUID, value: Bool) throws {
         try change { if let index = index(id) { shelves[index].pinned = value } }
     }
-    /// Closing preserves recent contents. At most ten unpinned shelves survive history trimming.
-    public func remember(_ id: UUID, keeping open: Set<UUID> = []) throws {
-        try change {
-            guard let index = index(id) else { return }
-            let shelf = shelves.remove(at: index)
-            shelves.insert(shelf, at: 0)
-            var recent = 0
-            shelves = shelves.filter { shelf in
-                if shelf.pinned || open.contains(shelf.id) { return true }
-                guard !shelf.items.isEmpty else { return false }
-                recent += 1
-                return recent <= 10
-            }
+    public func markUsed(_ id: UUID) throws {
+        guard let index = index(id), index > 0 else { return }
+        try change { moveToFront(index) }
+    }
+
+    public func preserveEmptyShelf(_ id: UUID) throws {
+        guard let index = index(id), shelves[index].items.isEmpty, shelves[index].preservedWhenEmpty != true else { return }
+        try change { shelves[index].preservedWhenEmpty = true }
+    }
+
+    /// Preserve the use order while limiting closed, unpinned history.
+    public func trimHistory(keeping open: Set<UUID> = []) throws {
+        var recent = 0
+        let retained = shelves.filter { shelf in
+            if shelf.pinned || open.contains(shelf.id) { return true }
+            guard !shelf.items.isEmpty else { return shelf.preservedWhenEmpty == true }
+            recent += 1
+            return recent <= 10
         }
+        if retained.count != shelves.count { try change { shelves = retained } }
         // Asset deletion is deliberately deferred: in-flight drags may still use an exported URL.
     }
     public func remove(_ id: UUID, items: Set<UUID>? = nil) throws {
@@ -191,6 +199,11 @@ public final class DropShelfStore {
         return !name.isEmpty && name != "." && name != ".." && !name.contains("/") && !name.contains("\\")
     }
     private func index(_ id: UUID) -> Int? { shelves.firstIndex { $0.id == id } }
+    private func moveToFront(_ index: Int) {
+        guard index > 0 else { return }
+        let shelf = shelves.remove(at: index)
+        shelves.insert(shelf, at: 0)
+    }
     private func append(_ item: Item, to id: UUID) throws -> Bool {
         guard let index = index(id) else { throw Failure.invalidArchive }
         guard shelves[index].items.count < 1000 else { throw Failure.limit }
@@ -199,7 +212,10 @@ public final class DropShelfStore {
             return item.value != nil && $0.kind == item.kind && $0.value == item.value
         }
         guard !duplicate else { return false }
-        try change { shelves[index].items.append(item) }
+        try change {
+            shelves[index].items.append(item)
+            moveToFront(index)
+        }
         return true
     }
     private func change(_ body: () -> Void) throws {

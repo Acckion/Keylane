@@ -544,7 +544,8 @@ public actor AIFileToolService {
                         var cursor = text.startIndex, number = 1
                         while cursor < text.endIndex {
                             try check()
-                            let end = text[cursor...].firstIndex(of: "\n") ?? text.endIndex
+                            // CRLF is one Swift Character; recognize the complete newline boundary.
+                            let end = text[cursor...].firstIndex(where: { $0.isNewline }) ?? text.endIndex
                             let line = text[cursor..<end]
                             if String(line).localizedCaseInsensitiveContains(needle) {
                                 let row = AIToolValue.object(["path": .string(rel), "line": .number(Double(number)), "text": .string(String(line.unicodeScalars.prefix(240))), "revision": .string(revision(info))])
