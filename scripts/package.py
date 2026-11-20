@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 from signing import signing_identity
+from app_intents import extract_metadata
 from versioning import load_version
 root = pathlib.Path(__file__).resolve().parent.parent
 version = load_version()
@@ -23,6 +24,7 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     executable.chmod(0o755)
     resources = app / 'Contents/Resources'
     resources.mkdir(parents=True, exist_ok=True)
+    extract_metadata(binary, resources, root)
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
         shutil.copyfile(root / name, resources / name)
     for name in ('EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):

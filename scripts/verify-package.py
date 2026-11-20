@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from versioning import ROOT, load_version
+from app_intents import METADATA_FILES, validate_metadata
 
 APPLE_EVENTS_ENTITLEMENT = "com.apple.security.automation.apple-events"
 DEVELOPER_ID_REQUIREMENT = '-R=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
@@ -22,6 +23,8 @@ def verify_app(app, image, version, distribution):
         'Contents/Resources/Keylane.icns',
         'Contents/_CodeSignature/CodeResources',
     }
+    validate_metadata(app / 'Contents/Resources/Metadata.appintents')
+    expected.update('Contents/Resources/Metadata.appintents/' + name for name in METADATA_FILES)
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md', 'EmojiCatalog.tsv', 'Unicode-LICENSE.txt'):
         relative = f'Contents/Resources/{name}'
         expected.add(relative)

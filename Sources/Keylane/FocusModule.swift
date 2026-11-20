@@ -93,7 +93,7 @@ enum FocusModule {
         let importer = LauncherPage(id: importPage, placeholder: "", badge: ("导入专注分类", "target"), contentPlacement: .underChrome,
                                    content: { AnyView(FocusImportView(controller: controller)) }, back: back, submit: controller.importCategories,
                                    returnBindings: .init(primary: .plain), primaryTitle: { "选择文件" }, headerInput: .none)
-        let anchor = SettingsItem(id: settingsID, page: settingsID, title: "专注", keywords: "Focus 屏蔽 允许 应用 网站 会话 分类 暂停 恢复 临时放行")
+        let anchor = SettingsItem(id: settingsID, page: settingsID, title: "专注", keywords: "Focus 屏蔽 允许 应用 网站 会话 分类 暂停 恢复 临时放行 系统专注 过滤条件 联动")
         let settings = LauncherSettingsPage(id: settingsID, title: "Keylane Focus", symbol: "target", subtitle: "管理专注会话与分类。", order: 144,
                                             items: [anchor], titlebar: controller.permission.titlebar("启用专注"), centeredHeader: true,
                                             content: { [weak model] in
@@ -115,7 +115,7 @@ private struct FocusSettings: View {
             SettingsGroup {
                 SettingsRow("临时放行时长", detail: "被屏蔽的应用与网站可以临时使用多久。") {
                     Picker("临时放行时长", selection: $controller.preferences.snoozeMinutes) {
-                        Text("不允许临时放行").tag(0)
+                        Text("不允许临时放行 系统专注 过滤条件 联动").tag(0)
                         ForEach([1, 3, 5, 10], id: \.self) { Text("\($0) 分钟").tag($0) }
                     }.labelsHidden().frame(width: 150)
                 }
@@ -128,6 +128,17 @@ private struct FocusSettings: View {
                 SettingsRow("播放声音", detail: "为专注通知播放声音。") {
                     Toggle("播放声音", isOn: $controller.preferences.playSound).labelsHidden()
                 }
+            }
+            SettingsGroup {
+                SettingsRow("系统专注模式联动", detail: "在系统设置 → 专注模式 → 添加过滤条件中选择 Keylane，并配置分类。系统只启动和结束自动会话，保留手动会话；Keylane 需保持运行。") {
+                    Button("打开系统设置") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Focus-Settings.extension")!)
+                    }
+                }
+                if controller.systemManaged {
+                    SettingsRow("正在跟随系统专注模式", detail: controller.session?.configuration.goal ?? "") { EmptyView() }
+                }
+                FocusMessage(text: controller.message)
             }
             ExtensionCommandPreferences(model: model, commands: commands)
         }

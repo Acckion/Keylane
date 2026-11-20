@@ -24,11 +24,12 @@ public struct FocusArchive: Codable, Equatable, Sendable {
     public var lastConfiguration = FocusConfiguration()
     public var preferences = FocusPreferences()
     public var session: FocusSession?
+    public var systemLink = FocusSystemLink()
     public var checkpoint: Date?
     public var terminatedApplications: [URL] = []
     public var history: [FocusRecord] = []
     public init() {}
-    private enum CodingKeys: String, CodingKey { case categories, lastConfiguration, preferences, session, checkpoint, terminatedApplications, history }
+    private enum CodingKeys: String, CodingKey { case categories, lastConfiguration, preferences, session, checkpoint, terminatedApplications, history, systemLink }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         categories = try values.decodeIfPresent([FocusCategory].self, forKey: .categories) ?? []
@@ -37,11 +38,16 @@ public struct FocusArchive: Codable, Equatable, Sendable {
         session = try values.decodeIfPresent(FocusSession.self, forKey: .session)
         checkpoint = try values.decodeIfPresent(Date.self, forKey: .checkpoint)
         terminatedApplications = try values.decodeIfPresent([URL].self, forKey: .terminatedApplications) ?? []
+        systemLink = try values.decodeIfPresent(FocusSystemLink.self, forKey: .systemLink) ?? .init()
         history = try values.decodeIfPresent([FocusRecord].self, forKey: .history) ?? []
     }
 }
 
 public final class FocusStore {
+    public static var defaultURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Keylane/Focus/state.json")
+    }
     private let url: URL
     public init(url: URL) { self.url = url }
     public func load() throws -> FocusArchive {

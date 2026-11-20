@@ -20,6 +20,7 @@ final class FocusController: ObservableObject {
     private let store: FocusStore
     let browser: FocusBrowser
     private let registry: MenuBarRegistry
+    private let observeSystemFocus: Bool
     private var running = false
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
@@ -38,8 +39,9 @@ final class FocusController: ObservableObject {
     static let owner = "keylane.focus"
 
     init(registry: MenuBarRegistry, defaults: UserDefaults = .standard, directory: URL? = nil,
-         authorization: PermissionFeature.Authorization = .accessibility) {
+         authorization: PermissionFeature.Authorization = .accessibility, observeSystemFocus: Bool = true) {
         self.registry = registry
+        self.observeSystemFocus = observeSystemFocus
         let root = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Keylane/Focus", isDirectory: true)
         store = FocusStore(url: root.appendingPathComponent("state.json"))
@@ -48,7 +50,7 @@ final class FocusController: ObservableObject {
         do { archive = try store.load() }
         catch { archive = FocusArchive(); message = "专注数据读取失败，请检查数据文件后重试。"; loaded = false; return }
         loaded = true
-        // Process restarts require explicit resume; downtime never counts as work.
+        // Downtime never counts as work. Only an OS-owned session can reconcile automatically.
         if archive.session != nil {
             let checkpoint = archive.checkpoint ?? Date()
             archive.session?.pause(at: checkpoint)
@@ -77,11 +79,12 @@ final class FocusController: ObservableObject {
     }
     var chosenCategory: FocusCategory? { categories.first { $0.id == selectedCategory } }
     var isCustomCategory: Bool { archive.categories.contains { $0.id == selectedCategory } }
+    var systemManaged: Bool { session != nil && session?.id == archive.systemLink.sessionID }
     var status: String {
         guard let session else { return "没有进行中的专注" }
         let seconds = session.remaining(at: now) ?? session.effectiveElapsed(at: now)
         let minutes = Int(max(0, seconds)) / 60, remainder = Int(max(0, seconds)) % 60
-        return (session.paused ? "已暂停 · " : "") + String(format: "%02d:%02d", minutes, remainder)
+        return (systemManaged ? "系统联动 · " : "") + (session.paused ? "已暂停 · " : "") + String(format: "%02d:%02d", minutes, remainder)
     }
     var canSaveCategory: Bool { !categoryDraft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var canStart: Bool { !draft.goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !starting && loaded }
@@ -95,7 +98,8 @@ final class FocusController: ObservableObject {
         browser.restore()
         permissionObservation = permission.updates.receive(on: DispatchQueue.main).sink { [weak self] in
             guard let self else { return }
-            if !self.permission.available { self.revision += 1; self.starting = false; self.pause() }
+            if !self.permission.available { self.revision += 1; self.starting = false; self.pause(initiatedByUser: false) }
+            else if self.observeSystemFocus { FocusFilterRuntime.refresh() }
         }
         let center = NSWorkspace.shared.notificationCenter
         for notification in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.didLaunchApplicationNotification,
@@ -105,9 +109,12 @@ final class FocusController: ObservableObject {
                 switch note.name {
                 case NSWorkspace.willSleepNotification:
                     self.beforeSleepRunning = self.session?.paused == false
-                    if self.beforeSleepRunning { self.pause() }
+                    if self.beforeSleepRunning { self.pause(initiatedByUser: false) }
                 case NSWorkspace.didWakeNotification:
-                    if self.beforeSleepRunning { self.resume() }
+                    if self.beforeSleepRunning {
+                        if self.systemManaged && self.observeSystemFocus { FocusFilterRuntime.refresh(recovering: true) }
+                        else { self.resume() }
+                    }
                     self.beforeSleepRunning = false
                 case NSWorkspace.didTerminateApplicationNotification:
                     if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
@@ -127,6 +134,7 @@ final class FocusController: ObservableObject {
         }
         startTimerIfNeeded()
         refreshPresentation()
+        if observeSystemFocus { FocusFilterRuntime.attach(self) }
     }
 
     private func startTimerIfNeeded() {
@@ -138,7 +146,8 @@ final class FocusController: ObservableObject {
 
     func stopService() {
         revision += 1; running = false; starting = false
-        pause()
+        if observeSystemFocus { FocusFilterRuntime.detach() }
+        pause(initiatedByUser: false)
         timer?.invalidate(); timer = nil
         observers.forEach(NSWorkspace.shared.notificationCenter.removeObserver); observers = []
         browser.restore()
@@ -187,6 +196,7 @@ final class FocusController: ObservableObject {
                 } else {
                     guard self.session == nil else { self.message = "已有专注会话，请先完成或编辑。"; return }
                     self.archive.session = FocusSession(configuration: candidate, now: Date())
+                    self.archive.systemLink.sessionID = nil; self.archive.systemLink.userPaused = false
                     self.archive.terminatedApplications = []; self.quitRequested = [:]; self.deferredQuit = []; self.restorePending = [:]; self.requestedApplications = [:]
                 }
                 self.archive.lastConfiguration = candidate
@@ -205,20 +215,25 @@ final class FocusController: ObservableObject {
             else { edit?() }
         }
     }
-    func pause(minutes: Int? = nil) {
+    func pause(minutes: Int? = nil, initiatedByUser: Bool = true) {
         guard archive.session != nil else { return }
+        if systemManaged && initiatedByUser { archive.systemLink.userPaused = true }
         archive.session?.pause(at: Date(), breakDuration: minutes.map { Double($0 * 60) })
         blockedTarget = nil; windows.dismissNotice(); browser.restore(); persist(); refreshPresentation()
     }
     func resume() {
         guard running, permission.available, session != nil else { return }
+        if systemManaged { archive.systemLink.userPaused = false }
         archive.session?.resume(at: Date()); persist(); startTimerIfNeeded(); tick()
     }
     func restart() {
         guard let configuration = session?.configuration else { return }
-        archive.session = FocusSession(configuration: configuration, now: Date()); persist(); tick()
+        let owned = systemManaged
+        archive.session = FocusSession(configuration: configuration, now: Date())
+        if owned { archive.systemLink.sessionID = session?.id; archive.systemLink.userPaused = false }
+        persist(); tick()
     }
-    func finish(completed: Bool) {
+    func finish(completed: Bool, showFeedback: Bool = true) {
         guard let previous = session else { return }
         revision += 1; starting = false
         timer?.invalidate(); timer = nil
@@ -226,6 +241,7 @@ final class FocusController: ObservableObject {
         archive.history.append(.init(session: previous, ended: Date(), completed: completed))
         archive.history = Array(archive.history.suffix(200))
         archive.session = nil; blockedTarget = nil
+        if archive.systemLink.sessionID == previous.id { archive.systemLink.sessionID = nil; archive.systemLink.userPaused = false }
         guard persist() else {
             archive = previousArchive; archive.session?.pause(at: Date())
             browser.restore(); startTimerIfNeeded(); refreshPresentation()
@@ -239,10 +255,76 @@ final class FocusController: ObservableObject {
         }
         archive.terminatedApplications = []; quitRequested = [:]; requestedApplications = [:]; deferredQuit = []; persist()
         refreshPresentation()
-        if completed {
+        if completed && showFeedback {
             windows.notify(title: "专注已完成", detail: previous.configuration.goal, success: true)
         }
     }
+    /// OS filters own only the session they created; a manual session always wins.
+    func applySystemFilter(_ incoming: FocusSystemFilter, recovering: Bool = false) throws {
+        guard running, loaded else { throw FocusSystemFilterError.unavailable }
+        let request = incoming.active ? incoming : FocusSystemFilter()
+        let decision = archive.systemLink.decision(for: request, session: session, recovering: recovering)
+        if decision == .preserveManual {
+            let previous = archive
+            archive.systemLink.selection = request
+            archive.systemLink.sessionID = nil; archive.systemLink.userPaused = false
+            guard persist() else { archive = previous; throw FocusError.storage }
+            return
+        }
+        if !request.active {
+            if decision == .finish { finish(completed: true) }
+            guard !systemManaged else { throw FocusError.storage }
+            let previous = archive
+            archive.systemLink.selection = request
+            archive.systemLink.sessionID = nil; archive.systemLink.userPaused = false
+            guard persist() else { archive = previous; throw FocusError.storage }
+            return
+        }
+        // Completing/canceling an automatic session suppresses duplicate OS deliveries.
+        if decision == .unchanged && session == nil { return }
+        let configuration: FocusConfiguration
+        do {
+            configuration = try request.configuration(available: categories)
+            guard permission.available else { throw FocusSystemFilterError.disabled }
+            if requiresWebsiteBlocking(configuration) {
+                guard unsupportedBrowser(configuration) == nil else { throw FocusSystemFilterError.automation }
+                let denied = NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier).contains {
+                    FocusBrowser.supported[$0] != nil && !configuration.blocks(application: $0) && FocusBrowser.permission($0, prompt: false) != noErr
+                }
+                guard !denied else { throw FocusSystemFilterError.automation }
+            }
+        } catch {
+            if systemManaged { pause(initiatedByUser: false) }
+            message = error.localizedDescription
+            throw error
+        }
+        if decision == .unchanged || decision == .resume {
+            if session?.configuration != configuration {
+                let previous = archive
+                archive.session?.configuration = configuration
+                guard persist() else { archive = previous; throw FocusError.storage }
+                browser.restore()
+            }
+            if decision == .resume { resume() }
+            else { refreshPresentation() }
+            return
+        }
+        if decision == .replace {
+            finish(completed: true, showFeedback: false)
+            guard session == nil else { throw FocusError.storage }
+        }
+        let previous = archive
+        revision += 1; starting = false
+        archive.systemLink.selection = request
+        archive.session = FocusSession(configuration: configuration, now: Date())
+        archive.systemLink.sessionID = session?.id; archive.systemLink.userPaused = false
+        archive.terminatedApplications = []
+        guard persist() else { archive = previous; throw FocusError.storage }
+        quitRequested = [:]; deferredQuit = []; requestedApplications = [:]
+        message = ""; browserMessage = ""
+        startTimerIfNeeded(); tick()
+    }
+
     private func restoreApplication(_ url: URL) {
         guard url.isFileURL, url.pathExtension == "app",
               !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleURL == url }) else { return }
@@ -278,7 +360,7 @@ final class FocusController: ObservableObject {
     private func tick() {
         now = Date()
         guard running, session != nil else { return }
-        if !permission.available { if session?.paused == false { pause() }; message = permission.guidance; return }
+        if !permission.available { if session?.paused == false { pause(initiatedByUser: false) }; message = permission.guidance; return }
         if let end = session?.breakEnds, end <= now {
             archive.session?.pause(at: now)
             windows.notify(title: "休息结束", detail: "准备好后恢复专注", success: false)
@@ -324,7 +406,7 @@ final class FocusController: ObservableObject {
            !active.configuration.blocks(application: current.bundleIdentifier ?? "") { blockedTarget = nil }
         if requiresWebsiteBlocking(active.configuration) {
             if let unavailable = unsupportedBrowser(active.configuration) {
-                pause(); browserMessage = "\(unavailable) 暂不支持网站屏蔽，请编辑会话或更换浏览器。"
+                pause(initiatedByUser: false); browserMessage = "\(unavailable) 暂不支持网站屏蔽，请编辑会话或更换浏览器。"
                 windows.notify(title: "专注已暂停", detail: browserMessage, success: false); return
             }
             let snoozes = active.snoozeKeys(at: now)
@@ -332,7 +414,7 @@ final class FocusController: ObservableObject {
                 guard let self, self.session?.id == active.id, self.session?.paused == false else { return }
                 self.browserMessage = error ?? ""
                 if let error {
-                    self.pause(); self.message = error
+                    self.pause(initiatedByUser: false); self.message = error
                     self.windows.notify(title: "网站屏蔽需要处理", detail: error, success: false)
                     return
                 }
@@ -459,7 +541,7 @@ final class FocusController: ObservableObject {
     }
     private func pauseCommands() -> [MenuBarCommand] {
         [MenuBarCommand(title: "直到手动恢复", action: { [weak self] in self?.pause() })] +
-            [1, 3, 5, 10, 15, 30].map { minutes in
+            [1, 3, 5, 10, 15, 30].map { (minutes: Int) in
                 MenuBarCommand(title: "\(minutes) 分钟", action: { [weak self] in self?.pause(minutes: minutes) })
             }
     }

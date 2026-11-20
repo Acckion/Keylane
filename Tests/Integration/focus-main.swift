@@ -1,4 +1,4 @@
-// Runs instead of production bootstrap. No Model/Delegate construction, services, app quits, or live browser automation.
+// Bypasses production bootstrap. Isolated data, a dedicated helper app, and synthetic browser transport only.
 setbuf(stdout, nil)
 let focusApp = NSApplication.shared
 focusApp.setActivationPolicy(.accessory)
@@ -142,7 +142,7 @@ let helperDirectory = fixtureRoot.appendingPathComponent("helper-state")
 try FocusStore(url: helperDirectory.appendingPathComponent("state.json")).save(helperArchive)
 fixtureDefaults.set(true, forKey: "focus.enabled")
 let helperController = FocusController(registry: fixtureRegistry, defaults: fixtureDefaults, directory: helperDirectory,
-                                       authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic authorization"))
+                                       authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic authorization"), observeSystemFocus: false)
 expectFocus(helperController.session?.paused == true, "process restart restores the session paused")
 func captureFocusPanel(_ name: String, width: CGFloat) throws {
     guard let panel = NSApplication.shared.windows.first(where: { $0 is NSPanel && abs($0.frame.width - width) < 1 && $0.isVisible }),
@@ -199,4 +199,68 @@ expectFocus(!NSRunningApplication.runningApplications(withBundleIdentifier: help
 expectFocus(helperController.archive.history.last?.completed == true, "completion records a successful session")
 helperController.stopService()
 expectFocus(helperController.browser.flush(), "shutdown flushes queued browser recovery")
+// Synthetic system deliveries use empty block categories; no user app or browser can match.
+let categoryA = FocusCategory(name: "系统学习"), categoryB = FocusCategory(name: "系统工作")
+let autoDirectory = fixtureRoot.appendingPathComponent("system-state")
+var autoArchive = FocusArchive(); autoArchive.categories = [categoryA, categoryB]
+autoArchive.preferences.playSound = false
+autoArchive.lastConfiguration.goal = "保留的手动配置"
+try FocusStore(url: autoDirectory.appendingPathComponent("state.json")).save(autoArchive)
+let autoController = FocusController(registry: fixtureRegistry, defaults: fixtureDefaults, directory: autoDirectory,
+                                    authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic authorization"), observeSystemFocus: false)
+let filterA = FocusSystemFilter(categories: [categoryA.id]), filterB = FocusSystemFilter(categories: [categoryB.id])
+autoController.startService()
+try autoController.applySystemFilter(filterA)
+let firstAutoID = autoController.session!.id
+expectFocus(autoController.systemManaged && autoController.session?.configuration.goal == categoryA.name, "system activation owns its automatic session")
+expectFocus(autoController.archive.lastConfiguration.goal == "保留的手动配置", "automatic session preserves last manual configuration")
+try autoController.applySystemFilter(filterA)
+expectFocus(autoController.session?.id == firstAutoID, "duplicate system delivery does not restart a session")
+autoController.pause()
+autoController.stopService()
+let recovered = FocusController(registry: fixtureRegistry, defaults: fixtureDefaults, directory: autoDirectory,
+                                authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic authorization"), observeSystemFocus: false)
+recovered.startService()
+try recovered.applySystemFilter(filterA, recovering: true)
+expectFocus(recovered.session?.paused == true, "relaunch preserves a user-paused automatic session")
+recovered.resume(); recovered.stopService()
+let resumed = FocusController(registry: fixtureRegistry, defaults: fixtureDefaults, directory: autoDirectory,
+                              authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic authorization"), observeSystemFocus: false)
+resumed.startService()
+try resumed.applySystemFilter(filterA, recovering: true)
+expectFocus(resumed.session?.paused == false && resumed.session?.id == firstAutoID, "relaunch reconciles only the matching system-owned session")
+try resumed.applySystemFilter(filterB)
+expectFocus(resumed.systemManaged && resumed.session?.id != firstAutoID && resumed.session?.configuration.goal == categoryB.name, "system mode switch replaces only its own session")
+do {
+    try resumed.applySystemFilter(.init(categories: [UUID()], mode: .allow))
+    preconditionFailure("Deleted category must not create an empty allow policy")
+} catch FocusSystemFilterError.missingCategory {
+    expectFocus(resumed.session?.paused == true && resumed.session?.configuration.goal == categoryB.name,
+                "deleted category pauses the owned session without replacing its policy")
+}
+resumed.resume()
+resumed.restart()
+expectFocus(resumed.systemManaged, "restarting an automatic session retains system ownership")
+try resumed.applySystemFilter(.init())
+expectFocus(resumed.session == nil && resumed.archive.history.last?.completed == true, "system reset finishes its automatic session")
+try resumed.applySystemFilter(filterA)
+resumed.finish(completed: false, showFeedback: false)
+try resumed.applySystemFilter(filterA)
+expectFocus(resumed.session == nil, "manual cancellation suppresses duplicate system starts")
+resumed.stopService()
+
+var manualArchive = FocusArchive(); manualArchive.categories = [categoryA, categoryB]
+manualArchive.preferences.playSound = false
+var manualConfig = FocusConfiguration(); manualConfig.goal = "手动任务"
+manualArchive.session = FocusSession(configuration: manualConfig, now: Date())
+let manualDirectory = fixtureRoot.appendingPathComponent("manual-priority")
+try FocusStore(url: manualDirectory.appendingPathComponent("state.json")).save(manualArchive)
+let manualController = FocusController(registry: fixtureRegistry, defaults: fixtureDefaults, directory: manualDirectory,
+                                       authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic authorization"), observeSystemFocus: false)
+manualController.startService(); manualController.resume()
+let manualSession = manualController.session!
+for request in [filterA, filterB, FocusSystemFilter()] { try manualController.applySystemFilter(request) }
+expectFocus(manualController.session == manualSession && !manualController.systemManaged, "system activation, switch and reset preserve the manual session")
+manualController.finish(completed: false, showFeedback: false); manualController.stopService()
+expectFocus(manualController.browser.flush() && resumed.browser.flush(), "system fixture flushes isolated recovery queues")
 print("FOCUS_FIXTURE_PASS previews=" + output.path)
