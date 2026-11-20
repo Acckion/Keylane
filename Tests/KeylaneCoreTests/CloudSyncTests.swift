@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import KeylaneCore
 
 final class CloudSyncTests: XCTestCase {
@@ -8,9 +9,15 @@ final class CloudSyncTests: XCTestCase {
         var deleted = Set<String>()
         var infer = true
         var fail = false
+        var editAtAdmission: Data?
         init(_ category: SyncCategory = .snippets) { self.category = category }
         func snapshot() throws -> SyncLocalSnapshot { .init(values: values, deletions: deleted, inferDeletions: infer) }
         func apply(id: String, data: Data?) throws { if fail { throw SyncError.unavailable }; values[id] = data }
+        func applyIfUnchanged(id: String, data: Data?, fingerprint expected: String?) throws -> String? {
+            if let editAtAdmission { values[id] = editAtAdmission; self.editAtAdmission = nil; throw SyncError.cancelled }
+            guard try fingerprint(id: id) == expected else { throw SyncError.cancelled }
+            try apply(id: id, data: data); return try fingerprint(id: id)
+        }
     }
     private func temp() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-sync-test-" + UUID().uuidString)
@@ -74,6 +81,17 @@ final class CloudSyncTests: XCTestCase {
         try run(b, lb, transport); try run(a, la, transport)
         XCTAssertEqual(a.values["a"], Data("new-local-edit".utf8))
         XCTAssertEqual(a.values, b.values)
+    }
+    func testLocalEditAtTheWriteBoundaryIsNotOverwrittenOrReplayedOnRetry() throws {
+        let base = try temp(), transport = try SyncDriveTransport(directory: base.appendingPathComponent("cloud"))
+        let a = Module(), b = Module(), la = base.appendingPathComponent("A"), lb = base.appendingPathComponent("B")
+        a.values["a"] = Data("cloud".utf8); b.values["a"] = Data("old-local".utf8)
+        try run(a, la, transport)
+        b.editAtAdmission = Data("just-saved-local".utf8)
+        XCTAssertThrowsError(try run(b, lb, transport))
+        XCTAssertEqual(b.values["a"], Data("just-saved-local".utf8))
+        try run(b, lb, transport); try run(a, la, transport)
+        XCTAssertEqual(a.values["a"], Data("just-saved-local".utf8))
     }
     func testCrashAfterApplyAcknowledgesImportInsteadOfReuploadingIt() throws {
         let base = try temp(), transport = try SyncDriveTransport(directory: base.appendingPathComponent("cloud"))
@@ -145,6 +163,14 @@ final class CloudSyncTests: XCTestCase {
         let transport = try SyncDriveTransport(directory: root, discoveredManifests: [outside])
         XCTAssertTrue(try transport.manifests().isEmpty)
     }
+    func testDanglingCloudObjectLinkCannotCreateAnExternalFile() throws {
+        let root = try temp(), external = try temp().appendingPathComponent("must-not-create")
+        let transport = try SyncDriveTransport(directory: root), data = Data("owned synthetic payload".utf8)
+        let hash = SyncHash.digest(data)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("objects/" + hash), withDestinationURL: external)
+        XCTAssertThrowsError(try transport.store(data))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: external.path))
+    }
     func testOfflineConflictsHaveDeterministicWinnerAndRecoveryCopy() throws {
         let base = try temp(), transport = try SyncDriveTransport(directory: base.appendingPathComponent("cloud"))
         let a = Module(), b = Module(), la = base.appendingPathComponent("A"), lb = base.appendingPathComponent("B")
@@ -210,6 +236,32 @@ final class CloudSyncTests: XCTestCase {
         XCTAssertThrowsError(try b.applySync(id: id, data: XCTUnwrap(a.syncValue(id: id))))
         XCTAssertEqual(try b.list(pinnedOnly: true).count, 100)
         XCTAssertNil(try b.detail(id: id))
+    }
+    func testRenamedHistoryAndEditedTextKeepTheirSyncSemantics() throws {
+        let base = try temp(), a = try ClipboardStore(directory: base.appendingPathComponent("A")), b = try ClipboardStore(directory: base.appendingPathComponent("B"))
+        let old = try a.capture(.text("old text"))
+        let updated = try a.replaceText(id: old, with: "new text")
+        XCTAssertTrue(try a.syncDeletions().contains(old))
+        try a.rename(id: updated, to: "Custom title")
+        try b.applySync(id: updated, data: XCTUnwrap(a.syncValue(id: updated)))
+        XCTAssertEqual(try b.detail(id: updated)?.item.preview, "Custom title")
+        XCTAssertEqual(try b.list(query: "Custom").first?.id, updated)
+        XCTAssertEqual(try b.detail(id: updated)?.text, "new text")
+    }
+    func testFailedClipboardDeletionCannotCreateASyncTombstone() throws {
+        let root = try temp(), store = try ClipboardStore(directory: root)
+        let id = try store.capture(.text("must survive failed deletion"))
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(root.appendingPathComponent("clipboard.sqlite").path, &database), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(sqlite3_exec(database, "CREATE TRIGGER deny_sync_test_delete BEFORE DELETE ON clips BEGIN SELECT RAISE(ABORT,'synthetic'); END", nil, nil, nil), SQLITE_OK)
+        XCTAssertThrowsError(try store.remove(id: id))
+        XCTAssertThrowsError(try store.clear(includePinned: true))
+        XCTAssertFalse(try store.syncDeletions().contains(id))
+        XCTAssertNotNil(try store.detail(id: id))
+        XCTAssertEqual(sqlite3_exec(database, "DROP TRIGGER deny_sync_test_delete", nil, nil, nil), SQLITE_OK)
+        try store.prune(now: Date().addingTimeInterval(86400 * 60))
+        XCTAssertFalse(try store.syncDeletions().contains(id))
     }
     func testInvalidClipboardIdentityDoesNotAlterExistingHistory() throws {
         let base = try temp(), store = try ClipboardStore(directory: base)

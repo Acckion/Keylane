@@ -133,12 +133,14 @@ public enum ClipboardPolicy {
 /// A thread-confined SQLite store. The app owns it on a dedicated serial queue.
 /// Clipboard history uses a separate database from the shared record store.
 public final class ClipboardStore {
+    private let syncLock: NSRecursiveLock
     private var db: OpaquePointer?
     public let directory: URL
     public let attachments: URL
     public var limits: ClipboardLimits
     public private(set) var lastMigrationBackupURL: URL?
     public init(directory: URL, limits: ClipboardLimits = .init()) throws {
+        let gate = SyncMutationLock.database(directory.appendingPathComponent("clipboard.sqlite")); syncLock = gate; gate.lock(); defer { gate.unlock() }
         self.directory = directory; self.attachments = directory.appendingPathComponent("images", isDirectory: true); self.limits = limits
         try FileManager.default.createDirectory(at: attachments, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
@@ -401,7 +403,8 @@ public final class ClipboardStore {
     }
 
     private func capture(_ content: ClipContent, snapshot: ClipSnapshot?, source: String, bundle: String, at date: Date,
-                         ownedFiles: String?, fileBytes: Int, pruneAfter: Bool = true) throws -> String {
+                         ownedFiles: String?, fileBytes: Int, pruneAfter: Bool = true, ownsTransaction: Bool = true) throws -> String {
+        syncLock.lock(); defer { syncLock.unlock() }
         let snapshotData = try snapshot?.encoded()
         let payload: Data; let identity: Data; let body: String; var asset = ownedFiles
         switch content {
@@ -424,7 +427,7 @@ public final class ClipboardStore {
             if !FileManager.default.fileExists(atPath: url.path) { try data.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions:0o600], ofItemAtPath:url.path); newAsset = url }
         }
         do {
-            try exec("BEGIN IMMEDIATE")
+            if ownsTransaction { try exec("BEGIN IMMEDIATE") }
             let searchable = Self.normalize([body, snapshot?.plainText ?? "", source, try retainedSearchTerms(id: id, keepOCR: content.kind == .image)]
                 .joined(separator: " "))
             try write("""
@@ -433,8 +436,8 @@ public final class ClipboardStore {
                   ocr=CASE WHEN clips.kind='files' THEN '' ELSE clips.ocr END
                 """, [.text(id),.text(content.kind.rawValue),.text(String(body.prefix(512))),.blob(payload),.text(searchable),asset.map(Value.text) ?? .null,.text(String(source.prefix(256))),.text(String(bundle.prefix(256))),.number(date.timeIntervalSince1970),.number(date.timeIntervalSince1970),.number(Double(max(identity.count,payload.count) + (snapshotData?.count ?? 0) + fileBytes))])
             if let snapshotData { try write("INSERT INTO clip_snapshots(clip_id,payload,search_text) VALUES(?,?,?) ON CONFLICT(clip_id) DO UPDATE SET payload=excluded.payload,search_text=excluded.search_text",[.text(id),.blob(snapshotData),.text(Self.normalize(snapshot?.plainText ?? ""))]) }
-            try exec("COMMIT")
-        } catch { try? exec("ROLLBACK"); if let newAsset { try? FileManager.default.removeItem(at:newAsset) }; throw error }
+            if ownsTransaction { try exec("COMMIT") }
+        } catch { if ownsTransaction { try? exec("ROLLBACK") }; if let newAsset { try? FileManager.default.removeItem(at:newAsset) }; throw error }
         if pruneAfter { try prune(now: date) }
         NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil)
         guard try scalar("SELECT count(*) FROM clips WHERE id=?",[.text(id)]) > 0 else { throw ClipboardError.storageFull }
@@ -510,15 +513,18 @@ public final class ClipboardStore {
         return attachments.appendingPathComponent(name)
     }
     public func recordReplay(id: String, at date: Date = Date()) throws {
+        syncLock.lock(); defer { syncLock.unlock() }
         let timestamp = Value.number(date.timeIntervalSince1970)
         try write("UPDATE clips SET replayed=max(coalesce(replayed,?),?) WHERE id=?",
                   [timestamp, timestamp, .text(id)])
     }
 
     public func setPinned(id: String, pinned: Bool) throws {
+        syncLock.lock(); defer { syncLock.unlock() }
         if pinned, try scalar("SELECT count(*) FROM clips WHERE pinned=1") >= 100 { throw ClipboardError.pinnedLimit }
         let order = pinned ? (try scalar("SELECT coalesce(max(pin_order),0)+1 FROM clips WHERE pinned=1")) : 0
         try write("UPDATE clips SET pinned=?,pin_order=? WHERE id=?",[.number(pinned ? 1:0),.number(Double(order)),.text(id)])
+        NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil)
     }
     public func pendingOCR() throws -> [ClipboardOCRCandidate] {
         let query = try statement("""
@@ -543,6 +549,7 @@ public final class ClipboardStore {
 
     @discardableResult
     public func setOCR(id: String, text: String, fileCopiedAt: Date? = nil) throws -> Bool {
+        syncLock.lock(); defer { syncLock.unlock() }
         let value = String(text.prefix(100_000))
         let record = try statement("SELECT kind, preview, source, payload FROM clips WHERE id=? AND kind IN ('image','files')", [.text(id)])
         defer { sqlite3_finalize(record) }
@@ -570,6 +577,7 @@ public final class ClipboardStore {
         return sqlite3_changes(db) > 0
     }
     public func rename(id: String, to name: String) throws {
+        syncLock.lock(); defer { syncLock.unlock() }
         guard let record = try detail(id: id) else { return }
         let title = String(name.prefix(512))
         let searchable = [title, record.text, Self.fileSearchTerms(record.files),
@@ -577,8 +585,10 @@ public final class ClipboardStore {
             .joined(separator: " ")
         try write("UPDATE clips SET preview=?, searchable=? WHERE id=?",
                   [.text(title), .text(Self.normalize(searchable)), .text(id)])
+        NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil)
     }
     public func replaceText(id: String, with text: String) throws -> String {
+        syncLock.lock(); defer { syncLock.unlock() }
         let payload = Data(text.utf8)
         guard !payload.isEmpty, payload.count <= 1_048_576 else { throw ClipboardError.oversized }
         try exec("BEGIN IMMEDIATE")
@@ -602,9 +612,11 @@ public final class ClipboardStore {
             let searchable = Self.normalize([text, preview, record.item.source].joined(separator: " "))
             // Saved text is plain text. A snapshot of the old value would replay stale data.
             try write("DELETE FROM clip_snapshots WHERE clip_id=?", [.text(id)])
+            try rememberSyncDeletion(id)
             try write("UPDATE clips SET id=?, preview=?, payload=?, searchable=?, bytes=? WHERE id=?",
                       [.text(newID), .text(preview), .blob(payload), .text(searchable), .number(Double(payload.count)), .text(id)])
             try exec("COMMIT")
+            NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil)
             return newID
         } catch {
             try? exec("ROLLBACK")
@@ -617,13 +629,20 @@ public final class ClipboardStore {
         return SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()
     }
     public func remove(id: String, syncDeletion: Bool = true) throws {
+        syncLock.lock(); defer { syncLock.unlock() }
         let query = try statement("SELECT asset FROM clips WHERE id=?",[.text(id)])
         let status = sqlite3_step(query)
         let asset = status == SQLITE_ROW && sqlite3_column_type(query,0) != SQLITE_NULL ? string(query,0) : nil
         sqlite3_finalize(query)
         guard status == SQLITE_ROW || status == SQLITE_DONE else { throw ClipboardError.database }
-        if syncDeletion { try rememberSyncDeletion(id) }
-        try write("DELETE FROM clips WHERE id=?",[.text(id)])
+        if syncDeletion {
+            try exec("BEGIN IMMEDIATE")
+            do {
+                try rememberSyncDeletion(id)
+                try write("DELETE FROM clips WHERE id=?", [.text(id)])
+                try exec("COMMIT")
+            } catch { try? exec("ROLLBACK"); throw error }
+        } else { try write("DELETE FROM clips WHERE id=?", [.text(id)]) }
         if let asset { removeAsset(asset) }
         if syncDeletion { NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil) }
     }
@@ -639,17 +658,22 @@ public final class ClipboardStore {
     }
 
     private func removeEntries(where filter: String, _ values: [Value] = []) throws {
-        try ensureSyncDeletions()
-        try write("INSERT OR REPLACE INTO sync_deletions(id,deleted) SELECT id,? FROM clips" + filter, [.number(Date().timeIntervalSince1970)] + values)
-        let deletion = try statement("DELETE FROM clips" + filter + " RETURNING asset", values)
-        defer { sqlite3_finalize(deletion) }
+        syncLock.lock(); defer { syncLock.unlock() }
         var assets: [String] = []
-        var status = sqlite3_step(deletion)
-        while status == SQLITE_ROW {
-            if sqlite3_column_type(deletion, 0) != SQLITE_NULL { assets.append(string(deletion, 0)) }
-            status = sqlite3_step(deletion)
-        }
-        guard status == SQLITE_DONE else { throw ClipboardError.database }
+        try exec("BEGIN IMMEDIATE")
+        do {
+            try ensureSyncDeletions()
+            try write("INSERT OR REPLACE INTO sync_deletions(id,deleted) SELECT id,? FROM clips" + filter, [.number(Date().timeIntervalSince1970)] + values)
+            let deletion = try statement("DELETE FROM clips" + filter + " RETURNING asset", values)
+            defer { sqlite3_finalize(deletion) }
+            var status = sqlite3_step(deletion)
+            while status == SQLITE_ROW {
+                if sqlite3_column_type(deletion, 0) != SQLITE_NULL { assets.append(string(deletion, 0)) }
+                status = sqlite3_step(deletion)
+            }
+            guard status == SQLITE_DONE else { throw ClipboardError.database }
+            try exec("COMMIT")
+        } catch { try? exec("ROLLBACK"); throw error }
         for asset in assets { removeAsset(asset) }
         NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil)
     }
@@ -660,6 +684,7 @@ public final class ClipboardStore {
     }
 
     public func prune(now: Date = Date()) throws {
+        syncLock.lock(); defer { syncLock.unlock() }
         // A NULL cutoff never matches by age. The count and byte limits still apply.
         let cutoff: Value = limits.retentionDays == ClipboardLimits.unlimitedRetentionDays
             ? .null : .number(now.addingTimeInterval(-Double(limits.retentionDays) * 86400).timeIntervalSince1970)
@@ -698,6 +723,7 @@ public struct SyncedClip: Codable {
     public let id: String
     public let kind: ClipKind
     public let text: String
+    public let preview: String?
     public let files: [String]
     public let image: Data?
     public let imageFormat: String?
@@ -719,6 +745,7 @@ extension ClipboardStore {
         try write("INSERT OR REPLACE INTO sync_deletions(id,deleted) VALUES(?,?)", [.text(id), .number(Date().timeIntervalSince1970)])
     }
     public func syncDeletions() throws -> Set<String> {
+        syncLock.lock(); defer { syncLock.unlock() }
         try ensureSyncDeletions()
         let s = try statement("SELECT d.id FROM sync_deletions d LEFT JOIN clips c ON c.id=d.id WHERE c.id IS NULL OR d.deleted>=c.copied")
         defer { sqlite3_finalize(s) }; var result = Set<String>()
@@ -749,7 +776,7 @@ extension ClipboardStore {
         // No bookmarks or original file bytes leave this device. A mixed files snapshot whose
         // identity includes embedded representations cannot be reduced safely and is skipped.
         if item.kind == .files, let snapshot = detail.snapshot, !snapshot.identitySupplement(kind: .files).isEmpty { return nil }
-        let entry = SyncedClip(id: item.id, kind: item.kind, text: detail.text,
+        let entry = SyncedClip(id: item.id, kind: item.kind, text: detail.text, preview: item.preview,
             files: detail.files.map(\.path), image: image, imageFormat: detail.assetURL?.pathExtension,
             snapshot: item.kind == .files ? nil : detail.snapshot, source: item.source, sourceBundle: item.sourceBundle,
             copied: item.copiedAt, firstCopied: item.firstCopiedAt, pinned: item.pinned, copyCount: item.copyCount, ocr: detail.ocrText)
@@ -772,11 +799,20 @@ extension ClipboardStore {
         return .init(payloads: payloads, deletions: try syncDeletions(), inferDeletions: false)
     }
     public func applySync(id: String, data: Data?) throws {
-        guard let data else { try remove(id: id, syncDeletion: false); return }
+        syncLock.lock(); defer { syncLock.unlock() }
+        guard let data else {
+            let query = try statement("SELECT asset FROM clips WHERE id=?", [.text(id)])
+            let status = sqlite3_step(query)
+            let asset = status == SQLITE_ROW && sqlite3_column_type(query, 0) != SQLITE_NULL ? string(query, 0) : nil
+            sqlite3_finalize(query)
+            try write("DELETE FROM clips WHERE id=?", [.text(id)])
+            if let asset { removeAsset(asset) }
+            return
+        }
         let entry = try JSONDecoder().decode(SyncedClip.self, from: data)
         guard entry.id == id, SyncHash.isValid(id), entry.copied.timeIntervalSince1970.isFinite,
               entry.firstCopied.timeIntervalSince1970.isFinite, entry.copyCount > 0,
-              entry.ocr.utf8.count <= 1_048_576 else { throw SyncError.invalidData }
+              entry.ocr.utf8.count <= 1_048_576, (entry.preview?.count ?? 0) <= 512 else { throw SyncError.invalidData }
         if entry.pinned, try detail(id: id)?.item.pinned != true {
             guard try scalar("SELECT count(*) FROM clips WHERE pinned=1") < 100 else { throw ClipboardError.pinnedLimit }
         }
@@ -796,13 +832,19 @@ extension ClipboardStore {
         case .files(let files): identity = try JSONEncoder().encode(files.map(\.path))
         }
         guard Self.contentID(kind: entry.kind, data: identity, snapshot: entry.snapshot) == id else { throw SyncError.invalidData }
+        try exec("BEGIN IMMEDIATE")
+        do {
         let actual = try capture(content, snapshot: entry.snapshot, source: entry.source,
-                                 bundle: entry.sourceBundle, at: entry.copied, ownedFiles: nil, fileBytes: 0, pruneAfter: false)
-        guard actual == id else { try remove(id: actual, syncDeletion: false); throw SyncError.invalidData }
-        try write("UPDATE clips SET created=?,copies=?,pinned=?,ocr=? WHERE id=?", [
-            .number(entry.firstCopied.timeIntervalSince1970), .number(Double(entry.copyCount)),
+                                 bundle: entry.sourceBundle, at: entry.copied, ownedFiles: nil, fileBytes: 0, pruneAfter: false, ownsTransaction: false)
+        guard actual == id else { throw SyncError.invalidData }
+        let searchable = Self.normalize([entry.preview ?? "", entry.text, Self.fileSearchTerms(entry.files.map { ClipFile(path: $0) }),
+            entry.source, Self.searchableOCR(entry.ocr), entry.snapshot?.plainText ?? ""].joined(separator: " "))
+        try write("UPDATE clips SET preview=coalesce(?,preview),searchable=?,created=?,copies=?,pinned=?,ocr=? WHERE id=?", [
+            entry.preview.map(Value.text) ?? .null, .text(searchable), .number(entry.firstCopied.timeIntervalSince1970), .number(Double(entry.copyCount)),
             .number(entry.pinned ? 1 : 0), .text(entry.ocr), .text(id)])
         if !entry.ocr.isEmpty { _ = try setOCR(id: id, text: entry.ocr, fileCopiedAt: entry.copied) }
+        try exec("COMMIT")
+        } catch { try? exec("ROLLBACK"); throw error }
         try prune()
     }
 }

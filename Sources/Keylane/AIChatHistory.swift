@@ -65,6 +65,16 @@ final class AIChatHistory: @unchecked Sendable {
         }
     }
 
+    func syncSummary(_ id: UUID) throws -> AIChatSummary? {
+        try withStatement("SELECT c.id, COALESCE(m.title,c.title), c.updated, COALESCE(m.pinned,0), COALESCE(m.archived,0) FROM chats c LEFT JOIN chat_metadata m ON c.id=m.id WHERE c.id=?", values: [id.uuidString]) { stmt in
+            let status = sqlite3_step(stmt)
+            if status == SQLITE_DONE { return nil }
+            guard status == SQLITE_ROW, let title = sqlite3_column_text(stmt, 1) else { throw DatabaseError.read }
+            return AIChatSummary(id: id, title: String(cString: title), updated: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 2)),
+                                 pinned: sqlite3_column_int(stmt, 3) != 0, archived: sqlite3_column_int(stmt, 4) != 0)
+        }
+    }
+
     func load(_ id: UUID) throws -> AIChatRecord? {
         try withStatement("SELECT content FROM chats WHERE id = ?", values: [id.uuidString]) { stmt in
             let status = sqlite3_step(stmt)
@@ -117,15 +127,37 @@ final class AIChatHistory: @unchecked Sendable {
         }
     }
 
-    func preserveSyncDate(_ id: UUID, date: Date) throws {
-        guard date.timeIntervalSince1970.isFinite else { throw SyncError.invalidData }
-        try withStatement("UPDATE chats SET updated=? WHERE id=?", values: [String(date.timeIntervalSince1970), id.uuidString]) { stmt in
-            guard sqlite3_step(stmt) == SQLITE_DONE else { throw DatabaseError.write }
+    /// One durable transaction for conversation and metadata; a failed import cannot leave a
+    /// new body paired with old pin/title state and masquerade as a user edit on retry.
+    func applySyncChat(_ id: UUID, value: SyncChat?) throws {
+        try withStatement("SELECT 1", values: []) { sentinel in
+            guard let database = sqlite3_db_handle(sentinel) else { throw DatabaseError.open }
+            func execute(_ sql: String, _ values: [String] = []) throws {
+                var statement: OpaquePointer?
+                guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else { throw DatabaseError.write }
+                defer { sqlite3_finalize(statement) }
+                let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+                for (offset, text) in values.enumerated() { sqlite3_bind_text(statement, Int32(offset + 1), text, -1, transient) }
+                guard sqlite3_step(statement) == SQLITE_DONE else { throw DatabaseError.write }
+            }
+            try execute("BEGIN IMMEDIATE")
+            do {
+                if let value {
+                    let content = String(decoding: try JSONEncoder().encode(value.content), as: UTF8.self)
+                    try execute("INSERT INTO chats(id,title,content,updated) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,content=excluded.content,updated=excluded.updated", [id.uuidString, value.title, content, String(value.updated.timeIntervalSince1970)])
+                    try execute("INSERT INTO chat_metadata(id,title,pinned,archived) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,pinned=excluded.pinned,archived=excluded.archived", [id.uuidString, value.title, value.pinned ? "1" : "0", value.archived ? "1" : "0"])
+                } else { try execute("DELETE FROM chats WHERE id=?", [id.uuidString]) }
+                try execute("COMMIT")
+            } catch { try? execute("ROLLBACK"); throw error }
         }
+        NotificationCenter.default.post(name: .keylaneSyncSourceChanged, object: nil)
     }
+
+    var syncMutationGate: NSRecursiveLock { SyncMutationLock.database(url) }
 
     private func withStatement<Value>(_ sql: String, values: [String],
                                       _ body: (OpaquePointer) throws -> Value) throws -> Value {
+        let mutationLock = SyncMutationLock.database(url); mutationLock.lock(); defer { mutationLock.unlock() }
         let files = FileManager.default
         try files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                   attributes: [.posixPermissions: 0o700])

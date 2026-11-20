@@ -34,13 +34,16 @@ public enum SyncEngine {
             guard allowed(), (try pending.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 65536 else { throw SyncError.cancelled }
             let intent = try JSONDecoder().decode(Intent.self, from: Data(contentsOf: pending))
             guard intent.entry.category == module.category else { throw SyncError.invalidData }
+            let observedFingerprint = try module.fingerprint(id: intent.entry.id)
             let current = try module.current(id: intent.entry.id).map(SyncHash.digest)
-            if current == intent.previous {
-                let data = try intent.entry.digest.map(transport.load)
-                try module.apply(id: intent.entry.id, data: data)
-            }
             if current == intent.previous || current == intent.entry.digest {
-                journal.applied(intent.entry, fingerprint: try module.fingerprint(id: intent.entry.id))
+                let data = try intent.entry.digest.map(transport.load)
+                do {
+                    let applied = try module.applyIfUnchanged(id: intent.entry.id, data: data, fingerprint: observedFingerprint)
+                    journal.applied(intent.entry, fingerprint: applied)
+                } catch SyncError.cancelled {
+                    journal.applied(intent.entry) // Discover the concurrent local edit below.
+                }
             } else {
                 // A user edit made while an intent waited must remain a new local edit.
                 journal.applied(intent.entry)
@@ -79,8 +82,8 @@ public enum SyncEngine {
             guard allowed(), let module = participants.first(where: { $0.category == entry.category }) else { throw SyncError.cancelled }
             let data = try entry.digest.map(transport.load)
             let original = snapshots[entry.category]?.payloads[entry.id]
-            guard try module.fingerprint(id: entry.id) == original?.fingerprint else { throw SyncError.cancelled }
             let old = try original?.read()
+            guard try module.fingerprint(id: entry.id) == original?.fingerprint else { throw SyncError.cancelled }
             if let old, SyncHash.digest(old) != entry.digest {
                 let recovery = local.appendingPathComponent("Recovery", isDirectory: true)
                 try fm.createDirectory(at: recovery, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -90,8 +93,16 @@ public enum SyncEngine {
             guard allowed() else { throw SyncError.cancelled }
             let pending = intents.appendingPathComponent(entry.category.rawValue + "-" + SyncHash.digest(Data(entry.key.utf8)) + ".json")
             try SyncHash.encode(Intent(entry: entry, previous: old.map(SyncHash.digest))).write(to: pending, options: .atomic)
-            try module.apply(id: entry.id, data: data)
-            journal.applied(entry, fingerprint: try module.fingerprint(id: entry.id)); completedIntents.append(pending)
+            do {
+                let applied = try module.applyIfUnchanged(id: entry.id, data: data, fingerprint: original?.fingerprint)
+                journal.applied(entry, fingerprint: applied)
+            } catch SyncError.cancelled {
+                // The cloud event has been observed, but a newer local write won the gate.
+                // Keep its old baseline so the next pass publishes that local edit.
+                journal.applied(entry); try save(); try fm.removeItem(at: pending)
+                throw SyncError.cancelled
+            }
+            completedIntents.append(pending)
             changed.insert(entry.category); didApply(entry.category)
         }
         guard allowed() else { throw SyncError.cancelled }

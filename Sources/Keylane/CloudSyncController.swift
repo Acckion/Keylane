@@ -19,6 +19,8 @@ final class CloudSyncController: ObservableObject {
     private var queued: DispatchWorkItem?
     private var changes: NSObjectProtocol?
     private var contentChanges: NSObjectProtocol?
+    private var changeSignal: DispatchSourceUserDataAdd?
+    private var pendingChanges = false
     private var watcher: NSMetadataQuery?
     private var watcherFolder: URL?
     private var watcherReady = false
@@ -39,14 +41,19 @@ final class CloudSyncController: ObservableObject {
     }
     func start() {
         guard !started else { return }; started = true
-        changes = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: defaults, queue: .main) { [weak self] _ in self?.schedule() }
-        contentChanges = NotificationCenter.default.addObserver(forName: .keylaneSyncSourceChanged, object: nil, queue: .main) { [weak self] _ in self?.schedule() }
+        let signal = DispatchSource.makeUserDataAddSource(queue: .main)
+        signal.setEventHandler { [weak self] in self?.schedule() }; signal.resume(); changeSignal = signal
+        // Notifications originate on database queues. Merge them without synchronously waiting
+        // on the UI or allocating one main-queue callback for each imported history row.
+        changes = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: defaults, queue: nil) { _ in signal.add(data: 1) }
+        contentChanges = NotificationCenter.default.addObserver(forName: .keylaneSyncSourceChanged, object: nil, queue: nil) { _ in signal.add(data: 1) }
         if enabled { defaults.set(deviceID.uuidString, forKey: "sync.deviceID"); startTimer(); schedule() }
     }
     func stop() {
         started = false; generation = UUID(); stopWatcher(); timer?.invalidate(); timer = nil; queued?.cancel()
         if let changes { NotificationCenter.default.removeObserver(changes) }; changes = nil
         if let contentChanges { NotificationCenter.default.removeObserver(contentChanges) }; contentChanges = nil
+        changeSignal?.cancel(); changeSignal = nil; pendingChanges = false
     }
     func setEnabled(_ value: Bool) {
         if value && defaults.data(forKey: "sync.folderBookmark") == nil { chooseFolder(enableAfter: true); return }
@@ -96,8 +103,9 @@ final class CloudSyncController: ObservableObject {
             query.searchScopes = [folder]
             query.predicate = NSPredicate(format: "%K LIKE %@", NSMetadataItemFSNameKey, "*.json")
             for name in [Notification.Name.NSMetadataQueryDidFinishGathering, Notification.Name.NSMetadataQueryDidUpdate] {
-                watcherObservers.append(NotificationCenter.default.addObserver(forName: name, object: query, queue: .main) { [weak self] _ in
-                    self?.watcherReady = true; self?.schedule()
+                watcherObservers.append(NotificationCenter.default.addObserver(forName: name, object: query, queue: .main) { [weak self, weak query] _ in
+                    guard let self, let query, self.watcher === query, self.started, self.enabled else { return }
+                    self.watcherReady = true; self.schedule()
                 })
             }
             watcher = query
@@ -117,13 +125,14 @@ final class CloudSyncController: ObservableObject {
     }
     private func schedule(delay: TimeInterval = 2) {
         guard started, enabled else { return }
+        if running { pendingChanges = true; return }
         queued?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.run() }
         queued = work; DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
     private func run() {
         guard enabled, !running, let bookmark = defaults.data(forKey: "sync.folderBookmark") else { return }
-        running = true; busy = true; status = "正在同步…"
+        running = true; pendingChanges = false; busy = true; status = "正在同步…"
         let token = generation, selected = categories, local = local, device = deviceID, name = Host.current().localizedName ?? "Mac"
         let contributions = model?.launcherModules?.syncContributions ?? []
         worker.async { [weak self] in
@@ -161,6 +170,7 @@ final class CloudSyncController: ObservableObject {
                 case .failure(let error):
                     self.status = (error as? SyncError)?.localizedDescription ?? (error as? ClipboardError)?.localizedDescription ?? (error as? ConfigurationError)?.localizedDescription ?? "同步未完成，本机资料仍保留。请检查 iCloud Drive 后重试。"
                 }
+                if self.pendingChanges { self.pendingChanges = false; self.schedule() }
             }
         }
     }

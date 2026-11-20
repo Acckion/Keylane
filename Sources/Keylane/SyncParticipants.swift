@@ -1,8 +1,23 @@
 import Foundation
 import KeylaneCore
 
+/// UI-owned preferences are checked and committed in one main-loop turn. Database-backed
+/// participants use the same per-database recursive gate as every local module mutation.
+protocol MainThreadSyncParticipant: SyncParticipant { }
+extension MainThreadSyncParticipant {
+    func applyIfUnchanged(id: String, data: Data?, fingerprint expected: String?) throws -> String? {
+        let operation = { () throws -> String? in
+            guard try self.fingerprint(id: id) == expected else { throw SyncError.cancelled }
+            try self.apply(id: id, data: data)
+            return try self.fingerprint(id: id)
+        }
+        if Thread.isMainThread { return try operation() }
+        return try DispatchQueue.main.sync(execute: operation)
+    }
+}
+
 /// Explicit fields only: adding a feature never accidentally publishes its tokens or grants.
-final class DefaultsSyncParticipant: SyncParticipant {
+final class DefaultsSyncParticipant: MainThreadSyncParticipant {
     let category: SyncCategory
     private let defaults: UserDefaults
     private let keys: [String]
@@ -40,7 +55,7 @@ final class DefaultsSyncParticipant: SyncParticipant {
         } else { defaults.set(value, forKey: key) }
     }
 }
-final class QuicklinksSyncParticipant: SyncParticipant {
+final class QuicklinksSyncParticipant: MainThreadSyncParticipant {
     let category = SyncCategory.quicklinks
     func snapshot() throws -> SyncLocalSnapshot {
         .init(values: try Dictionary(uniqueKeysWithValues: QuicklinkLibrary.load(from: .standard).links.map { ($0.id, try SyncHash.encode($0)) }))
@@ -50,7 +65,7 @@ final class QuicklinksSyncParticipant: SyncParticipant {
         var links = library.links.filter { $0.id != id }
         if let data {
             let link = try JSONDecoder().decode(Quicklink.self, from: data)
-            guard link.id == id else { throw SyncError.invalidData }
+            guard link.id == id, id == QuicklinkLibrary.legacyID || id.hasPrefix("quicklink:") else { throw SyncError.invalidData }
             // Same validation as local library persistence; no automatic URL execution.
             links.append(link)
         }
@@ -58,23 +73,45 @@ final class QuicklinksSyncParticipant: SyncParticipant {
     }
 }
 final class SnippetsSyncParticipant: SyncParticipant {
+    func applyIfUnchanged(id: String, data: Data?, fingerprint expected: String?) throws -> String? {
+        let gate = SyncMutationLock.database(url); gate.lock(); defer { gate.unlock() }
+        guard try fingerprint(id: id) == expected else { throw SyncError.cancelled }
+        try apply(id: id, data: data)
+        return try fingerprint(id: id)
+    }
+
     let category = SyncCategory.snippets
     private let url: URL
     init(url: URL) { self.url = url }
     func snapshot() throws -> SyncLocalSnapshot {
         .init(values: try Dictionary(uniqueKeysWithValues: Store(url: url).records(kind: "snippet").map { ($0.id, try SyncHash.encode($0)) }))
     }
+    func current(id: String) throws -> Data? {
+        guard let record = try Store(url: url).record(id: id), record.kind == "snippet" else { return nil }
+        return try SyncHash.encode(record)
+    }
+    func fingerprint(id: String) throws -> String? { try current(id: id).map(SyncHash.digest) }
     func apply(id: String, data: Data?) throws {
+        guard id.hasPrefix("snippet:") else { throw SyncError.invalidData }
         let store = try Store(url: url)
         if let data {
             let record = try JSONDecoder().decode(Record.self, from: data)
             guard record.id == id, record.kind == "snippet" else { throw SyncError.invalidData }
-            _ = try Snippet.fromRecord(record)
+            let snippet = try Snippet.fromRecord(record)
+            guard record.id == "snippet:" + snippet.id, Snippet.validKeyword(snippet.keyword),
+                  snippet.text.count <= Snippet.maximumTextLength else { throw SyncError.invalidData }
             try store.save(record)
         } else { try store.remove(id: id) }
     }
 }
 final class ClipboardSyncParticipant: SyncParticipant {
+    func applyIfUnchanged(id: String, data: Data?, fingerprint expected: String?) throws -> String? {
+        let gate = SyncMutationLock.database(directory.appendingPathComponent("clipboard.sqlite")); gate.lock(); defer { gate.unlock() }
+        guard try fingerprint(id: id) == expected else { throw SyncError.cancelled }
+        try apply(id: id, data: data)
+        return try fingerprint(id: id)
+    }
+
     let category = SyncCategory.clipboard
     private let directory: URL
     private var cachedStore: ClipboardStore?
@@ -101,6 +138,13 @@ final class ClipboardSyncParticipant: SyncParticipant {
 }
 
 extension AIChatHistory: SyncParticipant {
+    func applyIfUnchanged(id: String, data: Data?, fingerprint expected: String?) throws -> String? {
+        let gate = syncMutationGate; gate.lock(); defer { gate.unlock() }
+        guard try fingerprint(id: id) == expected else { throw SyncError.cancelled }
+        try apply(id: id, data: data)
+        return try fingerprint(id: id)
+    }
+
     var category: SyncCategory { .chats }
     struct SyncChat: Codable {
         let id: UUID
@@ -120,19 +164,24 @@ extension AIChatHistory: SyncParticipant {
         }
         return .init(values: values)
     }
+    func current(id: String) throws -> Data? {
+        guard let uuid = UUID(uuidString: id), let record = try load(uuid), let summary = try syncSummary(uuid) else { return nil }
+        return try SyncHash.encode(SyncChat(id: uuid, content: record.content, title: summary.title,
+            updated: summary.updated, pinned: summary.pinned, archived: summary.archived))
+    }
+    func fingerprint(id: String) throws -> String? { try current(id: id).map(SyncHash.digest) }
     func apply(id: String, data: Data?) throws {
         guard let uuid = UUID(uuidString: id) else { throw SyncError.invalidData }
         if let data {
             let chat = try JSONDecoder().decode(SyncChat.self, from: data)
             guard chat.id == uuid, chat.content.turns.count <= 10000 else { throw SyncError.invalidData }
-            try save(.init(id: uuid, content: chat.content))
-            try update(uuid, change: .rename(chat.title)); try update(uuid, change: .pin(chat.pinned)); try update(uuid, change: .archive(chat.archived))
-            try preserveSyncDate(uuid, date: chat.updated)
-        } else { try remove(uuid) }
+            guard chat.title.count <= 120, chat.updated.timeIntervalSince1970.isFinite else { throw SyncError.invalidData }
+            try applySyncChat(uuid, value: chat)
+        } else { try applySyncChat(uuid, value: nil) }
     }
 }
 
-final class LayoutsSyncParticipant: SyncParticipant {
+final class LayoutsSyncParticipant: MainThreadSyncParticipant {
     let category = SyncCategory.layouts
     private let key = "windowManagement.customActions"
     private func archive() throws -> WindowActionsArchive {
@@ -153,7 +202,7 @@ final class LayoutsSyncParticipant: SyncParticipant {
     }
 }
 
-final class CommandsSyncParticipant: SyncParticipant {
+final class CommandsSyncParticipant: MainThreadSyncParticipant {
     let category = SyncCategory.commands
     private let defaults = UserDefaults.standard
     func snapshot() throws -> SyncLocalSnapshot {
@@ -166,9 +215,9 @@ final class CommandsSyncParticipant: SyncParticipant {
                 values["shortcut/" + id] = try SyncHash.encode(shortcut)
             }
         }
-        let order = defaults.stringArray(forKey: "favoriteOrder") ?? []
+        if let order = defaults.stringArray(forKey: "favoriteOrder") { values["favorite-order"] = try SyncHash.encode(order) }
         for id in defaults.stringArray(forKey: "favorites") ?? [] {
-            values["favorite/" + id] = try SyncHash.encode(order.firstIndex(of: id) ?? order.count)
+            values["favorite/" + id] = try SyncHash.encode(true)
         }
         return .init(values: values)
     }
@@ -184,14 +233,19 @@ final class CommandsSyncParticipant: SyncParticipant {
             bindings[command] = shortcut
             guard ShortcutValidation.conflict(in: bindings) == nil else { throw ConfigurationError("同步快捷键与本机快捷键冲突，请先在快捷键设置中调整。") }
             defaults.set(try SyncHash.encode(bindings), forKey: "shortcuts")
+        } else if id == "favorite-order" {
+            if let data {
+                let order = try JSONDecoder().decode([String].self, from: data)
+                guard order.count <= 50000, order.allSatisfy({ $0.utf8.count <= 4096 }), Set(order).count == order.count else { throw SyncError.invalidData }
+                defaults.set(order, forKey: "favoriteOrder")
+            } else { defaults.removeObject(forKey: "favoriteOrder") }
         } else if id.hasPrefix("favorite/") {
             let command = String(id.dropFirst(9)); var favorites = Set(defaults.stringArray(forKey: "favorites") ?? [])
-            var order = (defaults.stringArray(forKey: "favoriteOrder") ?? []).filter { $0 != command }
             if let data {
-                let position = try JSONDecoder().decode(Int.self, from: data)
-                favorites.insert(command); order.insert(command, at: max(0, min(order.count, position)))
+                guard try JSONDecoder().decode(Bool.self, from: data) else { throw SyncError.invalidData }
+                favorites.insert(command)
             } else { favorites.remove(command) }
-            defaults.set(Array(favorites).sorted(), forKey: "favorites"); defaults.set(order, forKey: "favoriteOrder")
+            defaults.set(Array(favorites).sorted(), forKey: "favorites")
         } else { throw SyncError.invalidData }
     }
 }

@@ -168,8 +168,14 @@ public protocol SyncParticipant: AnyObject {
     func apply(id: String, data: Data?) throws
     func current(id: String) throws -> Data?
     func fingerprint(id: String) throws -> String?
+    func applyIfUnchanged(id: String, data: Data?, fingerprint: String?) throws -> String?
 }
 public extension SyncParticipant {
+    func applyIfUnchanged(id: String, data: Data?, fingerprint expected: String?) throws -> String? {
+        guard try fingerprint(id: id) == expected else { throw SyncError.cancelled }
+        try apply(id: id, data: data)
+        return try fingerprint(id: id)
+    }
     func current(id: String) throws -> Data? { try snapshot().payloads[id]?.read() }
     func fingerprint(id: String) throws -> String? { try snapshot().payloads[id]?.fingerprint }
 }

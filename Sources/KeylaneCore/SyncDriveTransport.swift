@@ -23,6 +23,7 @@ public final class SyncDriveTransport {
         guard resource.isSymbolicLink != true, directory ? resource.isDirectory == true : resource.isRegularFile == true else { throw SyncError.invalidData }
     }
     private func read(_ url: URL, maximum: Int) throws -> Data {
+        guard (try? fm.destinationOfSymbolicLink(atPath: url.path)) == nil else { throw SyncError.invalidData }
         var error: NSError?, result: Result<Data, Error>?
         NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &error) { coordinated in
             result = Result {
@@ -40,6 +41,7 @@ public final class SyncDriveTransport {
         if let error { throw error }; return try result?.get() ?? { throw SyncError.unavailable }()
     }
     private func write(_ data: Data, to url: URL) throws {
+        guard (try? fm.destinationOfSymbolicLink(atPath: url.path)) == nil else { throw SyncError.invalidData }
         var error: NSError?, result: Result<Void, Error>?
         NSFileCoordinator().coordinate(writingItemAt: url, options: .forReplacing, error: &error) { coordinated in
             result = Result {
