@@ -29,7 +29,9 @@ func require(_ condition: @autoclosure () -> Bool, _ message: String) {
 
 func encodeSyntheticAudio(in directory: URL) async throws -> URL {
     let url = directory.appendingPathComponent("encoded-fixture.m4a")
-    let encoder = try DictationAudioEncoder(url: url)
+    let encoder: DictationAudioEncoder
+    do { encoder = try DictationAudioEncoder(url: url) }
+    catch { fputs("Synthetic AAC writer initialization failed: \(error)\n", stderr); throw error }
     var format = AudioStreamBasicDescription(mSampleRate: 48000, mFormatID: kAudioFormatLinearPCM,
         mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: 8,
         mFramesPerPacket: 1, mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
@@ -60,9 +62,11 @@ func encodeSyntheticAudio(in directory: URL) async throws -> URL {
         do { try encoder.append(sample!) }
         catch { print("Synthetic encoder chunk \(chunk): \(encoder.diagnostic)"); throw error }
     }
-    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-        encoder.finish { continuation.resume(with: $0) }
-    }
+    do {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            encoder.finish { continuation.resume(with: $0) }
+        }
+    } catch { fputs("Synthetic AAC writer finalize failed: \(encoder.diagnostic)\n", stderr); throw error }
     let file = try AVAudioFile(forReading: url)
     require(file.processingFormat.sampleRate == 16000 && file.processingFormat.channelCount == 1, "AAC resampled to 16 kHz mono")
     require(file.length >= 15000 && file.length <= 20000, "one second of audio survives encoding")
@@ -71,6 +75,17 @@ func encodeSyntheticAudio(in directory: URL) async throws -> URL {
 }
 
 private func verifyDictationReviewRegressions(in directory: URL) async throws {
+    let speechDraft = AIConversationComposer()
+    speechDraft.offer("已有 😀")
+    let speechDraftID = speechDraft.draftID
+    require(speechDraft.appendDictation("语音结果", for: speechDraftID), "speech appends to its initiating draft")
+    require(speechDraft.text == "已有 😀 语音结果" && speechDraft.selection.location == speechDraft.text.utf16.count,
+            "speech preserves draft and advances the UTF-16 selection")
+    speechDraft.clear()
+    speechDraft.offer("新对话")
+    require(!speechDraft.appendDictation("旧结果", for: speechDraftID) && speechDraft.text == "新对话",
+            "a stale speech result cannot mutate a new conversation draft")
+
     var gesture = DictationModifierGesture()
     gesture.arm(holdToTalk: false)
     require(gesture.release() == .toggle, "a standalone modifier release toggles")
@@ -128,7 +143,14 @@ func run() async throws {
     try await verifyDictationReviewRegressions(in: directory)
     print("Dictation review regressions passed: standalone gestures, borrowed history and cross-task model routes.")
     if ProcessInfo.processInfo.environment["KEYLANE_DICTATION_REVIEW_ONLY"] == "1" { return }
-    let audio = try await encodeSyntheticAudio(in: directory)
+    let audio: URL
+    if ProcessInfo.processInfo.environment["KEYLANE_DICTATION_TRANSPORT_ONLY"] == "1" {
+        // The injected URLProtocol exercises requests with a payload, not AAC decoding.
+        audio = directory.appendingPathComponent("transport-fixture.m4a")
+        try Data([0x00, 0x01, 0x02, 0x03]).write(to: audio)
+    } else {
+        audio = try await encodeSyntheticAudio(in: directory)
+    }
     let config = URLSessionConfiguration.ephemeral
     config.protocolClasses = [FixtureProtocol.self]
     let client = AIRuntime(configuration: config)

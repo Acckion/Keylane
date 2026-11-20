@@ -3,19 +3,12 @@ import Foundation
 import KeylaneCore
 
 enum AITextCommand: String, CaseIterable, Identifiable {
-    case translate, polish, summarize
-
-    enum Language: String, CaseIterable, Identifiable {
-        case chinese = "简体中文", english = "英语", japanese = "日语", korean = "韩语"
-        case french = "法语", german = "德语", spanish = "西班牙语"
-        var id: Self { self }
-    }
+    case polish, summarize
 
     var id: String { "ai-" + rawValue }
 
     var title: String {
         switch self {
-        case .translate: "AI 翻译"
         case .polish: "AI 润色"
         case .summarize: "AI 摘要"
         }
@@ -23,16 +16,14 @@ enum AITextCommand: String, CaseIterable, Identifiable {
 
     var icon: String {
         switch self {
-        case .translate: "character.bubble"
         case .polish: "pencil"
         case .summarize: "text.alignleft"
         }
     }
 
-    func instructions(language: Language) -> String {
+    var instructions: String {
         let task: String
         switch self {
-        case .translate: task = "Translate the supplied text into \(language.rawValue). Preserve its meaning and structure."
         case .polish: task = "Improve the supplied text in its original language. Preserve the author's meaning, tone, and factual claims."
         case .summarize: task = "Summarize the supplied text concisely in its original language. Preserve the key facts and qualifications."
         }
@@ -41,7 +32,7 @@ enum AITextCommand: String, CaseIterable, Identifiable {
 }
 
 final class AITextCommandSession: ObservableObject {
-    @Published private(set) var command: AITextCommand = .translate
+    @Published private(set) var command: AITextCommand = .polish
     @Published private(set) var customCommand: CustomAICommand?
     @Published private(set) var templateError = ""
     @Published private(set) var arguments: [DynamicTemplate.Argument] = []
@@ -50,11 +41,7 @@ final class AITextCommandSession: ObservableObject {
     @Published var input = "" {
         didSet { if oldValue != input, !reply.running { reply.reset() } }
     }
-    @Published var language: AITextCommand.Language = .chinese {
-        didSet { if oldValue != language, !reply.running { reply.reset() } }
-    }
-
-    let reply: QuickAIController
+    let reply: AIConversationSession
     let configuration: AIConfiguration
     private var reviewedConnection: AIConnection?
     private var plan: DynamicTemplate.Plan?
@@ -64,7 +51,7 @@ final class AITextCommandSession: ObservableObject {
     init(configuration: AIConfiguration, runtime: AIRuntime,
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
         self.configuration = configuration
-        reply = QuickAIController(configuration: configuration, runtime: runtime,
+        reply = AIConversationSession(configuration: configuration, runtime: runtime,
                                   observesDefaultConnection: false, readKey: readKey)
         configurationChanges = configuration.$state.dropFirst().sink { [weak self] state in
             guard let self, self.reviewedConnection != nil, self.confirmedConnection(in: state) == nil
@@ -149,7 +136,7 @@ final class AITextCommandSession: ObservableObject {
     func send() {
         guard canSend, let connection = confirmedConnection(in: configuration.state) else { return }
         reply.reset()
-        reply.submit(input, instructions: customCommand == nil ? command.instructions(language: language) : nil,
+        reply.submit(input, instructions: customCommand == nil ? command.instructions : nil,
                      connection: connection)
     }
 

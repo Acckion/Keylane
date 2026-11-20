@@ -144,6 +144,7 @@ final class ReleaseNotesLauncher: ObservableObject {
 
 struct ReleaseNotesBody: View {
     let notes: String?
+    var textScale: Double? = nil
 
     var body: some View {
         let body = notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -154,7 +155,7 @@ struct ReleaseNotesBody: View {
                     Spacer().frame(height: 4)
                 } else if line.hasPrefix("#"), let space = line.firstIndex(of: " "),
                           line[..<space].allSatisfy({ $0 == "#" }) {
-                    formatted(String(line[line.index(after: space)...])).font(.headline)
+                    formatted(String(line[line.index(after: space)...])).font(textScale.map { .system(size: 16 * $0, weight: .semibold) } ?? .headline)
                         .accessibilityAddTraits(.isHeader)
                 } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
                     HStack(alignment: .firstTextBaseline, spacing: 9) {

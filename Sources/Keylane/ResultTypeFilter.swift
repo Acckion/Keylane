@@ -204,6 +204,7 @@ struct LauncherMenuRow<Trailing: View>: View {
     var style: Style = .action
     var enabled = true
     var destructive = false
+    var compact = false
     var artwork: NSImage? = nil
     var iconPath: String? = nil
     let activate: () -> Void
@@ -218,16 +219,16 @@ struct LauncherMenuRow<Trailing: View>: View {
                     Group {
                         if let iconPath { WorkspaceItemIcon(path: iconPath).frame(width: 18, height: 18) }
                         else if let artwork { Image(nsImage: artwork).resizable().scaledToFit().frame(width: 18, height: 18) }
-                        else { Image(systemName: symbol).font(VisualStyle.actionSymbol).symbolRenderingMode(.monochrome) }
+                        else { Image(systemName: symbol).font(compact ? .system(size: 12) : VisualStyle.actionSymbol).symbolRenderingMode(.monochrome) }
                     }
                     .frame(width: style == .action ? VisualStyle.actionIconWidth : 20, height: 20)
                 }
-                Text(title).font(VisualStyle.rowText)
+                Text(title).font(compact ? .system(size: 12) : VisualStyle.rowText)
                 Spacer()
                 trailing()
             }
             .padding(.horizontal, style == .action ? 11 : 10)
-            .frame(height: style == .action ? 39 : 40)
+            .frame(height: compact ? 30 : (style == .action ? 39 : 40))
             .background(selected ? Color.primary.opacity(contrast == .increased ? 0.24 : 0.12) : .clear,
                         in: RoundedRectangle(cornerRadius: VisualStyle.selectionRadius))
             .foregroundStyle(destructive ? Color.red : Color.primary)

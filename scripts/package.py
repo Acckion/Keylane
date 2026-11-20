@@ -29,12 +29,15 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
         shutil.copyfile(root / 'Resources' / name, resources / name)
     shutil.copytree(root / 'Resources/ModuleArtwork', resources / 'ModuleArtwork')
     metadata = dict(CFBundleExecutable='Keylane', CFBundleIdentifier='org.keylane.launcher', CFBundleName='Keylane', CFBundlePackageType='APPL', CFBundleShortVersionString=version['version'], CFBundleVersion=str(version['build']), LSMinimumSystemVersion='26.0', LSUIElement=True,
+                    NSMicrophoneUsageDescription="在翻译中按你的操作使用麦克风输入原文。",
+                    NSSpeechRecognitionUsageDescription="在翻译中将语音转换为原文。",
                     NSCameraUsageDescription="在你打开相机时显示实时画面，并按你的操作拍摄照片。",
                     NSMicrophoneUsageDescription="仅在你开始听写时录音，并将录音发送到你选择的云端语音模型生成文字。",
                     NSCameraUseContinuityCameraDeviceType=True,
                     NSDesktopFolderUsageDescription="将你拍摄的照片保存到桌面。",
                     NSContactsUsageDescription='在 Keylane 中搜索和管理系统联系人，并按你的操作新建或删除联系人。',
                     NSCalendarsFullAccessUsageDescription='读取系统日历，并按你的操作保存日程和提醒。', NSAppleEventsUsageDescription='读取 Finder 信息和快捷指令图标，搜索、新建和打开 Apple 备忘录，定位日程及添加受邀人，或执行你选择的废纸篓、系统外观及电源操作。')
+    metadata['CFBundleURLTypes'] = [dict(CFBundleURLName='org.keylane.ai-chat', CFBundleURLSchemes=['keylane'])]
     icon_metadata = pathlib.Path(directory) / 'IconInfo.plist'
     subprocess.run([
         'xcrun', 'actool', '--compile', str(resources), '--platform', 'macosx',

@@ -37,6 +37,12 @@
 - 设置行优先通过 `SettingsRow(title, detail:)` 提供文字，自定义布局使用 `SettingsTitle` 和 `SettingsDescription`，由组件统一标题层级、说明字号和换行。
 - 可搜索的分组复用登记用的 `SettingsItem` 作为定位锚点。修改页面结构时复验搜索跳转、键盘操作和深浅色样式。涉及长列表时，用同一批数据对照切页与滚动。
 
+## AI 会话与界面
+
+- Quick AI 和 AI Chat 共用 `AIConversationSession`、`AIConversationComposer`、`AIConversationRepository`、消息和附件模型；新增发送、停止、重试、历史或模型策略先在公共层实现，不在某个窗口另写分派链。
+- 思考/工具过程、添加附件菜单、原生输入、附件导入和消息展示复用现有 `AIConversation*` 组件，通过紧凑配置适配 Launcher。系统 sheet、剪贴板、导出和确认弹窗留在宿主；生成与存储状态不依赖 AppKit。
+- 变更消息编码须兼容旧 `files` 与 `attachments`；补测活动请求转入完整窗口不重复发送、草稿/附件保留和各异步代次失效。架构与验证边界见 `docs/AI-CONVERSATION-ARCHITECTURE.md`。
+
 ## 版本规范
 
 - `version.json` 是版本和构建号的唯一来源；不得在打包脚本中另写固定版本。

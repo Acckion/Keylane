@@ -46,6 +46,9 @@ def verify_app(app, image, version, distribution):
         raise SystemExit('Unexpected bundle identity or deployment target')
     if info.get('CFBundleIconName') != 'Keylane' or info.get('CFBundleIconFile') != 'Keylane':
         raise SystemExit('Missing or incorrect application icon metadata')
+    if not any(entry.get('CFBundleURLName') == 'org.keylane.ai-chat' and entry.get('CFBundleURLSchemes') == ['keylane']
+               for entry in info.get('CFBundleURLTypes', [])):
+        raise SystemExit('Missing Keylane chat URL registration')
     binary = app / 'Contents/MacOS/Keylane'
     if not os.access(binary, os.X_OK):
         raise SystemExit('Application executable permission missing')

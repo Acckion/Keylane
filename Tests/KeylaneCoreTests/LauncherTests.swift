@@ -1,6 +1,28 @@
 import XCTest
 @testable import KeylaneCore
 final class LauncherTests: XCTestCase {
+    func testPageEntryConsumesExplicitQueryOrPreservesRejectedDraft() {
+        // Ordinary entry defaults (empty or stale) must not replace a fallback search.
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "hello", pageResult: "", restored: nil), "hello")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "hello", pageResult: "old", restored: nil), "hello")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "new", pageResult: "", restored: "saved draft"), "new")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: nil, pageResult: "seed", restored: nil), "seed")
+        XCTAssertNil(LauncherPagePresentation.entryQuery(explicit: nil, pageResult: "", restored: "saved draft"))
+    }
+
+    func testQuickAIEntryQueryCanConsumeOnlyAnAcceptedQuestion() {
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "hello", pageResult: "", restored: nil,
+                                                            pageConsumesEntryQuery: true), "")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "hello", pageResult: "hello", restored: nil,
+                                                            pageConsumesEntryQuery: true), "hello")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "hello", pageResult: nil, restored: nil,
+                                                            pageConsumesEntryQuery: true), "hello")
+        XCTAssertEqual(LauncherPagePresentation.entryQuery(explicit: "new", pageResult: "", restored: "saved draft",
+                                                            pageConsumesEntryQuery: true), "")
+        XCTAssertNil(LauncherPagePresentation.entryQuery(explicit: nil, pageResult: "", restored: "saved draft",
+                                                          pageConsumesEntryQuery: true))
+    }
+
     func testCatalogDiscoversAddedRenamedRemovedAndExcludedBundles() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

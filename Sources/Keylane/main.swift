@@ -70,6 +70,7 @@ final class Model: ObservableObject {
     @Published var pageID = PageID.root
     let aiSettings = AIConfiguration()
     let aiInteraction = AIInteractionPreferences()
+    var openAIChatLink: ((UUID) -> Void)?
     let aiRuntime = AIRuntime()
     lazy var dictation = DictationController(configuration: aiSettings, runtime: aiRuntime)
     lazy var fileAI: FileAIController = {
@@ -893,7 +894,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func pasteIntoPreviousApplication(keepOpen: Bool = false, isFile: Bool = false,
                                       placeCursor: (text: String, offset: Int)? = nil,
-                                      clipboardGeneration: Int? = nil, didDispatch: (() -> Void)? = nil) {
+                                      clipboardGeneration: Int? = nil, targetApplication: NSRunningApplication? = nil,
+                                      validation: (() -> Bool)? = nil, didDispatch: (() -> Void)? = nil) {
         guard !launcherPaste.isPending else { return }
         guard model.crossAppPaste.available else {
             showLauncherFeedback("已复制，跨应用粘贴未启用", style: .failure, actionTitle: "粘贴设置…") { [weak self] in
@@ -901,10 +903,10 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             return
         }
-        guard let target = previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
+        guard let target = targetApplication ?? previousApplication, !target.isTerminated else { showPasteFailure("已复制，但上一个应用已退出或不可用。"); return }
 
         dispatchPaste(to: target, keepOpen: keepOpen, isFile: isFile, placeCursor: placeCursor,
-                      clipboardGeneration: clipboardGeneration, didDispatch: didDispatch)
+                      clipboardGeneration: clipboardGeneration, validation: validation, didDispatch: didDispatch)
     }
 
     private func dispatchPaste(to target: NSRunningApplication, keepOpen: Bool, isFile: Bool,
@@ -936,7 +938,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard validation?() != false, self.pasteTargetIsFrontmost(target),
                   clipboardGeneration.map({ self.model.crossAppPaste.available && NSPasteboard.general.changeCount == $0 }) != false else {
                 self.finishPaste(request, target: target)
-                self.showPasteFailure("剪贴板、目标焦点或粘贴权限已变化，已停止自动粘贴。")
+                self.showPasteFailure("剪贴板、目标选区、焦点或粘贴权限已变化，已停止自动粘贴。")
                 return
             }
             let original = placeCursor == nil ? nil : SnippetTextTarget.position(in: target)
@@ -1222,6 +1224,11 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             NotificationCenter.default.post(name: .launcherShown, object: nil)
         }
     }
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let id = urls.compactMap(AIChatLink.parse).first else { return }
+        model.openAIChatLink?(id)
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if onboarding.isVisible { onboarding.bringToFront() }
         else if !window.isVisible { show() }
