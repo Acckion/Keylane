@@ -163,9 +163,12 @@ enum QuicklinksModule {
                 }
             },
             back: { [weak model] in model?.pageID = controller.editorReturnPage },
-            submit: save, returnBindings: .init(primary: .command), primaryTitle: { "保存快捷链接" },
+            returnBindings: .init(primary: .command),
             badgeTitle: {
                 controller.links.contains { $0.id == controller.draft?.id } ? "编辑快捷链接" : "创建快捷链接"
+            }, actionSnapshot: {
+                .init(primary: .init(id: "quicklink-save", title: "保存快捷链接", icon: "checkmark",
+                    shortcut: .init(.return, modifiers: .command), perform: save))
             }
         )
 
@@ -176,19 +179,25 @@ enum QuicklinksModule {
                 (NSApp.delegate as? Delegate)?.hideLauncher()
             }
         }
+        let argumentAction = {
+            LauncherAction(id: "quicklink-open-arguments", title: "打开链接", icon: "link",
+                shortcut: .init(.return, modifiers: .command), perform: submit)
+        }
+
         let arguments = LauncherPage(
             id: argumentsID, placeholder: "", badge: ("快捷链接", "link"), contentPlacement: .form,
             content: { [weak model] in
                 guard let model else { return AnyView(EmptyView()) }
                 return AnyView(QuicklinkParameterForm(controller: controller, back: model.goBackInLauncher,
-                                                      cancel: model.cancelLauncherPage, submit: submit))
+                                                      cancel: model.cancelLauncherPage, submit: { argumentAction().invoke() }))
             },
             leave: { [weak model] in
                 controller.clearInput()
                 if model?.pageID == argumentsID { model?.pageID = argumentsReturn }
             },
             back: { [weak model] in model?.pageID = argumentsReturn },
-            submit: submit, returnBindings: .init(primary: .command), primaryTitle: { "打开链接" }
+            returnBindings: .init(primary: .command),
+            actionSnapshot: { .init(primary: argumentAction()) }
         )
 
         let commands: [LauncherModule.Command] = Command.allCases.map { command in
