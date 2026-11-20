@@ -333,6 +333,7 @@ struct Launcher: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: VisualStyle.launcherCornerRadius, style: .continuous))
+        .keylaneTheme()
         .preferredColorScheme(model.colorScheme)
     }
 
@@ -975,7 +976,7 @@ struct Launcher: View {
         if let detail = model.launcherModules?.displayDetail(for: row) { return detail }
         return "命令"
     }
-    private func iconColor(_ id: String) -> Color { switch id { case "clipboard": return .orange; case "screenshot": return .purple; case "quicklink": return .blue; default: return .primary.opacity(0.8) } }
+    private func iconColor(_ id: String) -> ThemeColorStyle { switch id { case "clipboard": return .init(role: .orange); case "screenshot": return .init(role: .purple); case "quicklink": return .init(role: .blue); default: return .text } }
     private static let footerMenuWidth: CGFloat = 345
     private static let footerMinimumGap: CGFloat = 24
 

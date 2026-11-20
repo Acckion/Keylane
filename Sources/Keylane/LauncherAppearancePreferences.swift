@@ -1,4 +1,5 @@
 import SwiftUI
+import KeylaneCore
 
 struct LauncherAppearancePreferences: View {
     let model: Model
@@ -42,6 +43,9 @@ struct LauncherAppearancePreferences: View {
                 }
             }.settingsAnchor(.appearance)
 
+            ThemeAppearancePreferences(store: model.themeStore, openStudio: { model.themeStudio.show() })
+                .settingsAnchor(ThemeModule.settingsItem)
+
             SettingsGroup("窗口模式") {
                 HStack(spacing: 16) {
                     Spacer(minLength: 0)
@@ -67,6 +71,31 @@ struct LauncherAppearancePreferences: View {
                 }.padding(9).frame(width: 100)
                     .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
             }.frame(width: 128, height: 86)
+        }
+    }
+}
+
+struct ThemeAppearancePreferences: View {
+    @ObservedObject var store: ThemeStore
+    let openStudio: () -> Void
+    @State private var error: String?
+    var body: some View {
+        SettingsGroup("主题") {
+            picker("浅色主题", appearance: .light)
+            Divider()
+            picker("深色主题", appearance: .dark)
+            Divider()
+            SettingsRow("Theme Studio", detail: "创建主题、实时预览，或导入和分享主题。深浅色主题随显示模式自动切换。") {
+                Button("打开 Theme Studio", systemImage: "paintpalette", action: openStudio)
+            }
+            if let error { Text(error).foregroundStyle(.red).font(.callout) }
+        }
+    }
+    private func picker(_ title: String, appearance: ThemeAppearance) -> some View {
+        SettingsPicker(title, selection: Binding(get: { store.library.theme(for: appearance).id }, set: { value in
+            do { try store.assign(value); error = nil } catch { self.error = error.localizedDescription }
+        })) {
+            ForEach(store.library.all.filter { $0.appearance == appearance }) { theme in Text(theme.name).tag(theme.id) }
         }
     }
 }

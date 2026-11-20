@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import KeylaneCore
 
 /// Shared typography and symbol metrics for navigation and action rows.
 enum VisualStyle {
@@ -28,10 +29,19 @@ enum LauncherGlassMaterial {
 /// Shared backing for floating Keylane panels. Keep glass at the window's root
 /// so AppKit composites it as the window material.
 final class LauncherGlassView: NSGlassEffectView {
+    private var themeObserver: NSObjectProtocol?
+    private func updateTheme() {
+        let theme = ThemeStore.shared.theme(for: effectiveAppearance)
+        tintColor = theme.usesSystemMaterial ? LauncherGlassMaterial.tintColor
+            : (try? KeylaneCore.ThemeRGBA(theme.background.color))?.nsColor.withAlphaComponent(0.16)
+    }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateTheme() }
+    deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
     override init(frame: NSRect) {
         super.init(frame: frame)
         style = .regular
-        tintColor = LauncherGlassMaterial.tintColor
+        updateTheme()
+        themeObserver = NotificationCenter.default.addObserver(forName: .keylaneThemeChanged, object: ThemeStore.shared, queue: .main) { [weak self] _ in self?.updateTheme() }
         cornerRadius = VisualStyle.launcherCornerRadius
         wantsLayer = true
         layer?.cornerRadius = cornerRadius
