@@ -24,10 +24,15 @@ final class FocusController: ObservableObject {
     private var running = false
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
-    private var restorePending: [pid_t: URL] = [:]
-    private var requestedApplications: [pid_t: URL] = [:]
-    private var quitRequested: [pid_t: Date] = [:]
+    struct BrowserAccess {
+        var running: () -> [String] = { NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier) }
+        var permission: (String, Bool) -> OSStatus = { FocusBrowser.permission($0, prompt: $1) }
+    }
+    private let browserAccess: BrowserAccess
+    private let defaults: UserDefaults
     private var deferredQuit = Set<String>()
+    private var restoreAttempted = Set<FocusApplicationExits.Process>()
+    private var restoreURLs = Set<URL>()
     private var permissionObservation: AnyCancellable?
     @Published private(set) var browserMessage = ""
     private var beforeSleepRunning = false
@@ -39,17 +44,26 @@ final class FocusController: ObservableObject {
     static let owner = "keylane.focus"
 
     init(registry: MenuBarRegistry, defaults: UserDefaults = .standard, directory: URL? = nil,
-         authorization: PermissionFeature.Authorization = .accessibility, observeSystemFocus: Bool = true) {
+         authorization: PermissionFeature.Authorization = .accessibility, observeSystemFocus: Bool = true,
+         browserDriver: FocusBrowser.Driver? = nil, browserAccess: BrowserAccess = .init()) {
         self.registry = registry
+        self.defaults = defaults; self.browserAccess = browserAccess
         self.observeSystemFocus = observeSystemFocus
         let root = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Keylane/Focus", isDirectory: true)
         store = FocusStore(url: root.appendingPathComponent("state.json"))
-        browser = FocusBrowser(directory: root)
+        browser = FocusBrowser(directory: root, driver: browserDriver)
         permission = PermissionFeature("focus.enabled", authorization: authorization, defaults: defaults, observeImmediately: false)
         do { archive = try store.load() }
         catch { archive = FocusArchive(); message = "专注数据读取失败，请检查数据文件后重试。"; loaded = false; return }
         loaded = true
+        browser.onRestorationIssue = { [weak self] issue in
+            guard let self else { return }
+            let previous = self.browserMessage
+            self.browserMessage = issue ?? ""
+            if let issue { self.message = issue }
+            else if self.message == previous { self.message = "" }
+        }
         // Downtime never counts as work. Only an OS-owned session can reconcile automatically.
         if archive.session != nil {
             let checkpoint = archive.checkpoint ?? Date()
@@ -61,9 +75,11 @@ final class FocusController: ObservableObject {
     var preferences: FocusPreferences {
         get { archive.preferences }
         set {
+            let wasProtectingWebsites = session.map { requiresWebsiteBlocking($0.configuration) } ?? false
             let previous = archive.preferences; archive.preferences = newValue
             if !persist() { archive.preferences = previous }
             else if newValue.inMenuBar && !previous.inMenuBar { registry.setEnabled(Self.owner, true) }
+            if wasProtectingWebsites, let session, !requiresWebsiteBlocking(session.configuration) { browser.restore() }
             refreshPresentation()
         }
     }
@@ -95,6 +111,7 @@ final class FocusController: ObservableObject {
         registry.register(id: Self.owner, owner: Self.owner, title: "专注", defaultVisible: true,
                           presentation: .init(symbol: "target", toolTip: "Keylane Focus", isVisible: session != nil && preferences.inMenuBar),
                           commands: { [weak self] in self?.menuCommands() ?? [] })
+        settleApplicationExits()
         browser.restore()
         permissionObservation = permission.updates.receive(on: DispatchQueue.main).sink { [weak self] in
             guard let self else { return }
@@ -117,13 +134,7 @@ final class FocusController: ObservableObject {
                     }
                     self.beforeSleepRunning = false
                 case NSWorkspace.didTerminateApplicationNotification:
-                    if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                       let url = self.restorePending.removeValue(forKey: app.processIdentifier) {
-                        self.restoreApplication(url)
-                    }
-                    if let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                       let url = self.requestedApplications.removeValue(forKey: app.processIdentifier),
-                       !self.archive.terminatedApplications.contains(url) { self.archive.terminatedApplications.append(url); self.persist() }
+                    self.settleApplicationExits()
                 default:
                     let launchedBrowser = note.name == NSWorkspace.didLaunchApplicationNotification &&
                         (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier.map { FocusBrowser.supported[$0] != nil } == true
@@ -177,14 +188,32 @@ final class FocusController: ObservableObject {
         let candidate = draft, ticket = revision, editing = editingSession
         let needsWebsites = requiresWebsiteBlocking(candidate)
         if needsWebsites, let unavailable = unsupportedBrowser(candidate) {
-            starting = false; message = "\(unavailable) 暂不支持网站屏蔽。请使用 Safari 或 Chromium 系浏览器，或将该浏览器加入屏蔽列表。"; return
+            starting = false; message = "\(unavailable) 暂不支持网站屏蔽。请使用支持稳定标签身份的浏览器，或将该浏览器加入应用屏蔽列表。"; return
         }
-        let browsers = needsWebsites ? NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
+        let browsers = needsWebsites ? browserAccess.running()
             .filter { FocusBrowser.supported[$0] != nil && !candidate.blocks(application: $0) } : []
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let denied = browsers.filter { FocusBrowser.permission($0, prompt: true) != noErr }
+            guard let self else { return }
+            var denied: [String] = []
+            for id in browsers {
+                let allowedToAsk = DispatchQueue.main.sync { self.revision == ticket && self.running && self.starting }
+                guard allowedToAsk else { break }
+                if self.browserAccess.permission(id, false) == noErr { continue }
+                let suppressed = DispatchQueue.main.sync { () -> Bool in
+                    guard self.revision == ticket && self.running && self.starting else { return true }
+                    var blocked = Set(self.defaults.stringArray(forKey: "focus.browserPermissionDenied") ?? [])
+                    let existing = blocked.contains(id); blocked.insert(id)
+                    self.defaults.set(Array(blocked), forKey: "focus.browserPermissionDenied")
+                    return existing
+                }
+                if suppressed || self.browserAccess.permission(id, true) != noErr { denied.append(id); break }
+                DispatchQueue.main.sync {
+                    var blocked = self.defaults.stringArray(forKey: "focus.browserPermissionDenied") ?? []
+                    blocked.removeAll { $0 == id }; self.defaults.set(blocked, forKey: "focus.browserPermissionDenied")
+                }
+            }
             DispatchQueue.main.async {
-                guard let self, self.revision == ticket, self.running else { return }
+                guard self.revision == ticket, self.running else { return }
                 self.starting = false
                 guard denied.isEmpty, self.permission.available else {
                     self.message = "需要允许 Keylane 控制使用中的浏览器，才能开始网站屏蔽。"
@@ -197,7 +226,7 @@ final class FocusController: ObservableObject {
                     guard self.session == nil else { self.message = "已有专注会话，请先完成或编辑。"; return }
                     self.archive.session = FocusSession(configuration: candidate, now: Date())
                     self.archive.systemLink.sessionID = nil; self.archive.systemLink.userPaused = false
-                    self.archive.terminatedApplications = []; self.quitRequested = [:]; self.deferredQuit = []; self.restorePending = [:]; self.requestedApplications = [:]
+                    self.archive.terminatedApplications = []; self.deferredQuit = []
                 }
                 self.archive.lastConfiguration = candidate
                 guard self.persist() else { self.archive = previousArchive; return }
@@ -228,8 +257,9 @@ final class FocusController: ObservableObject {
     }
     func restart() {
         guard let configuration = session?.configuration else { return }
-        let owned = systemManaged
+        let owned = systemManaged, previousID = session!.id
         archive.session = FocusSession(configuration: configuration, now: Date())
+        archive.applicationExits.transfer(previousID, to: session!.id)
         if owned { archive.systemLink.sessionID = session?.id; archive.systemLink.userPaused = false }
         persist(); tick()
     }
@@ -240,6 +270,7 @@ final class FocusController: ObservableObject {
         let previousArchive = archive
         archive.history.append(.init(session: previous, ended: Date(), completed: completed))
         archive.history = Array(archive.history.suffix(200))
+        archive.applicationExits.finish(previous.id, restore: preferences.restoreApplications)
         archive.session = nil; blockedTarget = nil
         if archive.systemLink.sessionID == previous.id { archive.systemLink.sessionID = nil; archive.systemLink.userPaused = false }
         guard persist() else {
@@ -248,16 +279,21 @@ final class FocusController: ObservableObject {
             windows.notify(title: "无法保存专注结果", detail: message, success: false)
             return
         }
-        browser.restore()
+        browser.restore(report: { [weak self] issue in
+            guard let self, showFeedback, self.session == nil else { return }
+            if let issue {
+                self.windows.notify(title: "会话已结束，网页待恢复", detail: issue, success: false)
+            } else if completed {
+                self.windows.notify(title: "专注已完成", detail: previous.configuration.goal, success: true)
+            }
+        })
         if preferences.restoreApplications {
-            restorePending.merge(requestedApplications.filter { NSRunningApplication(processIdentifier: $0.key)?.isTerminated == false }) { _, new in new }
             for url in archive.terminatedApplications { restoreApplication(url) }
         }
-        archive.terminatedApplications = []; quitRequested = [:]; requestedApplications = [:]; deferredQuit = []; persist()
+        archive.terminatedApplications = []; deferredQuit = []; persist()
+        settleApplicationExits()
         refreshPresentation()
-        if completed && showFeedback {
-            windows.notify(title: "专注已完成", detail: previous.configuration.goal, success: true)
-        }
+
     }
     /// OS filters own only the session they created; a manual session always wins.
     func applySystemFilter(_ incoming: FocusSystemFilter, recovering: Bool = false) throws {
@@ -288,8 +324,8 @@ final class FocusController: ObservableObject {
             guard permission.available else { throw FocusSystemFilterError.disabled }
             if requiresWebsiteBlocking(configuration) {
                 guard unsupportedBrowser(configuration) == nil else { throw FocusSystemFilterError.automation }
-                let denied = NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier).contains {
-                    FocusBrowser.supported[$0] != nil && !configuration.blocks(application: $0) && FocusBrowser.permission($0, prompt: false) != noErr
+                let denied = browserAccess.running().contains {
+                    FocusBrowser.supported[$0] != nil && !configuration.blocks(application: $0) && browserAccess.permission($0, false) != noErr
                 }
                 guard !denied else { throw FocusSystemFilterError.automation }
             }
@@ -320,21 +356,45 @@ final class FocusController: ObservableObject {
         archive.systemLink.sessionID = session?.id; archive.systemLink.userPaused = false
         archive.terminatedApplications = []
         guard persist() else { archive = previous; throw FocusError.storage }
-        quitRequested = [:]; deferredQuit = []; requestedApplications = [:]
+        deferredQuit = []
         message = ""; browserMessage = ""
         startTimerIfNeeded(); tick()
     }
 
-    private func restoreApplication(_ url: URL) {
-        guard url.isFileURL, url.pathExtension == "app",
-              !NSWorkspace.shared.runningApplications.contains(where: { $0.bundleURL == url }) else { return }
+    private func settleApplicationExits() {
+        let previous = archive.applicationExits
+        let pending = Set(previous.receipts.filter { !$0.exited }.map(\.process)).union(previous.attempted)
+        for process in pending {
+            let app = NSRunningApplication(processIdentifier: process.pid)
+            archive.applicationExits.reconcile(process, running: app?.isTerminated == false, launched: app?.launchDate)
+        }
+        let configuration = session?.paused == false ? session?.configuration : nil
+        let ready = archive.applicationExits.restorable { configuration?.blocks(application: $0) == true }
+        if previous != archive.applicationExits, !persist() { archive.applicationExits = previous; return }
+        for receipt in ready where !restoreAttempted.contains(receipt.process) && restoreURLs.insert(receipt.url).inserted {
+            restoreAttempted.insert(receipt.process)
+            restoreApplication(receipt.url) { [weak self] success in
+                guard let self, success else { return }
+                self.restoreURLs.remove(receipt.url)
+                let old = self.archive.applicationExits
+                for completed in ready where completed.url == receipt.url { self.archive.applicationExits.restored(completed.process) }
+                if !self.persist() { self.archive.applicationExits = old }
+            }
+        }
+    }
+
+    private func restoreApplication(_ url: URL, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard url.isFileURL, url.pathExtension == "app" else { completion(false); return }
+        if NSWorkspace.shared.runningApplications.contains(where: { $0.bundleURL == url }) { completion(true); return }
         let configuration = NSWorkspace.OpenConfiguration(); configuration.activates = false
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { app, error in
+            DispatchQueue.main.async { completion(app != nil && error == nil) }
+        }
     }
     func applicationURL(_ id: String) -> URL? {
         let workspace = NSWorkspace.shared
         if let url = workspace.runningApplications.first(where: { $0.bundleIdentifier == id })?.bundleURL { return url }
-        for url in Array(requestedApplications.values) + archive.terminatedApplications {
+        for url in archive.applicationExits.receipts.map(\.url) + archive.terminatedApplications {
             if Bundle(url: url)?.bundleIdentifier == id { return url }
         }
         return workspace.urlForApplication(withBundleIdentifier: id)
@@ -342,7 +402,10 @@ final class FocusController: ObservableObject {
     func snooze(target: FocusApplication? = nil) {
         guard let target = target ?? blockedTarget, session != nil, session?.paused == false, preferences.snoozeMinutes > 0 else { return }
         archive.session?.snooze(target.id, at: Date(), duration: Double(preferences.snoozeMinutes * 60))
-        browser.restore(host: target.id)
+        browser.restore(host: target.id, report: { [weak self] issue in
+            guard let self, let issue else { return }
+            self.windows.notify(title: "网页尚未恢复", detail: issue, success: false)
+        })
         if let url = applicationURL(target.id) {
             let sessionID = session?.id
             NSWorkspace.shared.openApplication(at: url, configuration: .init()) { [weak self] _, error in
@@ -376,10 +439,7 @@ final class FocusController: ObservableObject {
     func enforce() {
         guard running, permission.available, let active = session, !active.paused else { return }
         let workspace = NSWorkspace.shared
-        for (pid, url) in requestedApplications where NSRunningApplication(processIdentifier: pid)?.isTerminated != false {
-            if !archive.terminatedApplications.contains(url) { archive.terminatedApplications.append(url); persist() }
-            requestedApplications.removeValue(forKey: pid)
-        }
+        settleApplicationExits()
         let current = workspace.frontmostApplication
         for app in workspace.runningApplications {
             guard app.activationPolicy == .regular, !app.isTerminated, let id = app.bundleIdentifier,
@@ -397,9 +457,15 @@ final class FocusController: ObservableObject {
             // show its blocking overlay and quit after focus leaves it.
             if deferredQuit.contains(id), current?.bundleIdentifier == id { continue }
             deferredQuit.remove(id)
-            if now.timeIntervalSince(quitRequested[app.processIdentifier] ?? .distantPast) >= 10 {
-                quitRequested[app.processIdentifier] = now
-                if let url = app.bundleURL, app.terminate() { requestedApplications[app.processIdentifier] = url }
+            if let launched = app.launchDate, let url = app.bundleURL {
+                let process = FocusApplicationExits.Process(pid: app.processIdentifier, launched: launched)
+                let previous = archive.applicationExits
+                if archive.applicationExits.request(process, application: .init(id: id, name: app.localizedName ?? id), url: url, session: active.id) {
+                    // Journal before asking; even a canceled request consumes this
+                    // process's attempt. Never re-open its save/permission dialog on a timer.
+                    guard persist() else { archive.applicationExits = previous; continue }
+                    if !app.terminate() { archive.applicationExits.rejected(process); persist() }
+                }
             }
         }
         if let current, current.processIdentifier != ProcessInfo.processInfo.processIdentifier,
@@ -431,11 +497,12 @@ final class FocusController: ObservableObject {
         !configuration.websites.isEmpty || (configuration.mode == .allow && !preferences.allowAllWebsites)
     }
     private func unsupportedBrowser(_ configuration: FocusConfiguration) -> String? {
-        NSWorkspace.shared.runningApplications.compactMap { app -> String? in
-            guard let id = app.bundleIdentifier, !configuration.blocks(application: id) else { return nil }
+        browserAccess.running().compactMap { id -> String? in
+            guard !configuration.blocks(application: id) else { return nil }
             return FocusBrowser.unsupported[id]
         }.first
     }
+
     func prepareCategory(_ category: FocusCategory? = nil, duplicate: Bool = false) {
         categoryDraft = category ?? FocusCategory(name: "")
         editingCategory = duplicate ? nil : category?.id

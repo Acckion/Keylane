@@ -65,7 +65,7 @@ struct KeylaneFocusFilter: SetFocusFilterIntent {
 /// as receiving OS deliveries, including when no launcher window is visible.
 enum FocusFilterRuntime {
     private static weak var controller: FocusController?
-    private static var generation = 0
+    private static var refreshState = FocusFilterRefreshState()
     private static var refreshTask: Task<Void, Never>?
     private static var activation: NSObjectProtocol?
     static func attach(_ value: FocusController) {
@@ -75,19 +75,20 @@ enum FocusFilterRuntime {
         refresh(recovering: true)
     }
     static func detach() {
-        generation += 1; refreshTask?.cancel(); refreshTask = nil; controller = nil
+        refreshState.reset(); refreshTask?.cancel(); refreshTask = nil; controller = nil
         if let activation { NotificationCenter.default.removeObserver(activation) }; activation = nil
     }
     static func deliver(_ request: FocusSystemFilter) throws {
         dispatchPrecondition(condition: .onQueue(.main))
-        generation += 1; refreshTask?.cancel(); refreshTask = nil
+        let ticket = refreshState.begin(recovering: false); refreshTask?.cancel(); refreshTask = nil
         guard let controller else { throw FocusSystemFilterError.unavailable }
-        try controller.applySystemFilter(request)
+        try controller.applySystemFilter(request, recovering: refreshState.recovering)
+        refreshState.complete(ticket)
     }
     static func refresh(recovering: Bool = false) {
         dispatchPrecondition(condition: .onQueue(.main))
-        refreshTask?.cancel(); generation += 1
-        let ticket = generation
+        refreshTask?.cancel()
+        let ticket = refreshState.begin(recovering: recovering)
         refreshTask = Task {
             do {
                 let request: FocusSystemFilter
@@ -95,14 +96,17 @@ enum FocusFilterRuntime {
                 catch SetFocusFilterIntentError.notFound { request = .init() }
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    guard generation == ticket, let controller else { return }
-                    do { try controller.applySystemFilter(request, recovering: recovering) }
+                    guard refreshState.isCurrent(ticket), let controller else { return }
+                    do {
+                        try controller.applySystemFilter(request, recovering: refreshState.recovering)
+                        refreshState.complete(ticket)
+                    }
                     catch { controller.message = error.localizedDescription }
                 }
             } catch {
                 // A transient lookup failure is not a reset notification.
                 await MainActor.run {
-                    guard generation == ticket else { return }
+                    guard refreshState.isCurrent(ticket) else { return }
                     controller?.message = "无法读取系统专注过滤条件：" + error.localizedDescription
                 }
             }

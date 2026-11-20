@@ -38,6 +38,19 @@ final class FocusSystemFilterTests: XCTestCase {
         let manual = FocusSession(configuration: .init(), now: Date())
         XCTAssertEqual(link.decision(for: .init(), session: manual), .preserveManual)
     }
+    func testOverlappingRefreshRetainsRecoveryUntilCurrentLookupCompletes() {
+        var state = FocusFilterRefreshState()
+        let startup = state.begin(recovering: true)
+        let activation = state.begin(recovering: false)
+        XCTAssertTrue(state.recovering)
+        state.complete(startup)
+        XCTAssertTrue(state.recovering); XCTAssertFalse(state.isCurrent(startup))
+        state.complete(activation)
+        XCTAssertFalse(state.recovering)
+        let wake = state.begin(recovering: true)
+        state.reset(); state.complete(wake)
+        XCTAssertFalse(state.recovering); XCTAssertFalse(state.isCurrent(wake))
+    }
     func testArchiveMigrationAndOwnershipRoundTrip() throws {
         let old = try JSONDecoder().decode(FocusArchive.self, from: Data("{}".utf8))
         XCTAssertEqual(old.systemLink, .init())

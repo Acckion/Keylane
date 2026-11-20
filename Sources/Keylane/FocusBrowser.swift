@@ -21,12 +21,25 @@ final class FocusBrowser {
         let window: Int
         let index: Int
         let url: String
+        var identity: String? = nil
     }
     struct Redirect: Codable {
         let browser: String
         let pid: Int32
         let original: String
         let blocked: String
+        var window: Int? = nil
+        var index: Int? = nil
+        var identity: String? = nil
+        var created: Date? = nil
+        var restoreAttempts: Int? = nil
+        var nextRestore: Date? = nil
+        var suspended: Bool? = nil
+    }
+    struct RecoveryPolicy {
+        var attempts = 20
+        var interval: TimeInterval = 2
+        var lifetime: TimeInterval = 7 * 24 * 3600
     }
     struct Driver {
         var browsers: () -> [(String, Int32)]
@@ -34,7 +47,10 @@ final class FocusBrowser {
         var read: (String) throws -> [Tab]
         var write: (String, Tab, String, String) throws -> Bool
     }
+    private(set) var restorationError: String?
+    var onRestorationIssue: ((String?) -> Void)?
     private let driver: Driver?
+    private let recovery: RecoveryPolicy
     private var loadIssue: String?
     private let queue = DispatchQueue(label: "org.keylane.focus.browser", qos: .utility)
     private let journal: URL
@@ -44,8 +60,9 @@ final class FocusBrowser {
     private var checkpoint: Int { lock.lock(); defer { lock.unlock() }; return generation }
     private var busy = false
 
-    init(directory: URL, driver: Driver? = nil) {
+    init(directory: URL, driver: Driver? = nil, recovery: RecoveryPolicy = .init()) {
         self.driver = driver
+        self.recovery = recovery
         journal = directory.appendingPathComponent("browser-recovery.json")
         if FileManager.default.fileExists(atPath: journal.path) {
             do {
@@ -81,6 +98,7 @@ final class FocusBrowser {
             var blockedHost: String?
             for (id, pid) in browsers {
                 guard self.checkpoint == ticket else { break }
+                guard browsers.filter({ $0.0 == id }).count == 1 else { notice = "浏览器进程身份不唯一，已跳过写入。"; continue }
                 guard self.authorized(id) else {
                     notice = "网站屏蔽需要允许 Keylane 自动化控制 \(Self.supported[id] ?? id)。"
                     continue
@@ -92,14 +110,18 @@ final class FocusBrowser {
                         guard let url = URL(string: tab.url), let host = url.host,
                               configuration.blocks(website: url, allowAllWebsites: preferences.allowAllWebsites),
                               !snoozes.contains(where: { FocusWebsite.matches(host, rule: $0) }) else { continue }
+                        guard Self.unique(tab, in: tabs) else {
+                            notice = "无法安全识别 \(Self.supported[id] ?? id) 的标签，已跳过网站写入。"
+                            continue
+                        }
                         let blocked = try self.blockPage(host: host)
-                        let record = Redirect(browser: id, pid: pid, original: tab.url, blocked: blocked.absoluteString)
+                        let record = Redirect(browser: id, pid: pid, original: tab.url, blocked: blocked.absoluteString, window: tab.window, index: tab.index, identity: tab.identity, created: Date())
                         self.redirects.append(record)
                         do {
                             // Persist recovery before redirecting a browser.
                             try self.save()
                             guard self.checkpoint == ticket else { break }
-                            if try self.setURL(id, tab: tab, expected: tab.url, replacement: blocked.absoluteString) {
+                            if try self.setURL(id, tab: tab, expected: tab.url, replacement: blocked.absoluteString, ticket: ticket, pid: pid) {
                                 blockedHost = host
                             } else {
                                 self.redirects.removeAll { $0.blocked == blocked.absoluteString }
@@ -120,41 +142,81 @@ final class FocusBrowser {
         }
     }
 
-    func restore(host: String? = nil, completion: @escaping () -> Void = {}) {
-        lock.lock(); generation += 1; lock.unlock()
-        guard loadIssue == nil else { completion(); return }
+    func restore(host: String? = nil, report: ((String?) -> Void)? = nil, completion: @escaping () -> Void = {}) {
+        lock.lock(); generation += 1; let ticket = generation; lock.unlock()
+        guard loadIssue == nil else {
+            restorationError = loadIssue; onRestorationIssue?(loadIssue); report?(loadIssue); completion(); return
+        }
         queue.async { [weak self] in
             guard let self else { return }
-            var keep: [Redirect] = []
-            var snapshots: [String: [Tab]] = [:]
-            var failedBrowsers = Set<String>()
-            let running = Set(self.driver?.browsers().map { $0.0 } ?? NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
-            for record in self.redirects {
-                if let host, let url = URL(string: record.original), let originalHost = url.host,
-                   !FocusWebsite.matches(originalHost, rule: host) { keep.append(record); continue }
-                guard running.contains(record.browser), !failedBrowsers.contains(record.browser) else { keep.append(record); continue }
-                do {
-                    guard self.authorized(record.browser) else {
-                        keep.append(record); continue
-                    }
-                    if snapshots[record.browser] == nil { snapshots[record.browser] = try self.tabs(record.browser) }
-                    var incomplete = false
-                    for tab in snapshots[record.browser] ?? [] where tab.url == record.blocked {
-                        if try !self.setURL(record.browser, tab: tab, expected: record.blocked, replacement: record.original) { incomplete = true }
-                    }
-                    if incomplete { keep.append(record) }
-                } catch { keep.append(record); failedBrowsers.insert(record.browser) }
+            self.restoreAttempt(host: host, ids: Set(self.redirects.map(\.blocked)), ticket: ticket, report: report, completion: completion)
+        }
+    }
+    private func restoreAttempt(host: String?, ids: Set<String>, ticket: Int, report: ((String?) -> Void)?, completion: @escaping () -> Void) {
+        guard checkpoint == ticket else { DispatchQueue.main.async { report?("网页恢复请求已被更新，记录已保留。"); completion() }; return }
+        var keep: [Redirect] = []
+        var snapshots: [String: [Tab]] = [:]
+        var failedBrowsers = Set<String>()
+        let running = driver?.browsers() ?? NSWorkspace.shared.runningApplications.compactMap { app -> (String, Int32)? in
+            guard let id = app.bundleIdentifier else { return nil }; return (id, app.processIdentifier)
+        }
+        var retry = false
+        var problem: String?
+        let now = Date()
+        for var record in redirects {
+            guard ids.contains(record.blocked) else { keep.append(record); continue }
+            if let host, let originalHost = URL(string: record.original)?.host,
+               !FocusWebsite.matches(originalHost, rule: host) { keep.append(record); continue }
+            record.created = record.created ?? now
+            if (record.restoreAttempts ?? 0) >= recovery.attempts || now.timeIntervalSince(record.created!) >= recovery.lifetime {
+                // Expiry stops automation, never discards the original URL or marker.
+                record.suspended = true
             }
-            let retained = Set(keep.map(\.blocked))
-            for record in self.redirects where !retained.contains(record.blocked) {
-                if let url = URL(string: record.blocked), url.isFileURL,
-                   url.deletingLastPathComponent() == self.journal.deletingLastPathComponent().appendingPathComponent("Blocked") {
-                    try? FileManager.default.removeItem(at: url)
+            guard record.suspended != true else { problem = "部分网页未恢复，已停止自动重试；原始网址及屏蔽页记录已保留。"; keep.append(record); continue }
+            let processes = running.filter { $0.0 == record.browser }
+            guard processes.count == 1 else { problem = "网页等待浏览器恢复；原始网址及屏蔽页记录已保留。"; keep.append(record); continue }
+            if let next = record.nextRestore, next > now { problem = "部分网页尚未恢复；已保留记录并等待重试。"; keep.append(record); retry = true; continue }
+            record.restoreAttempts = (record.restoreAttempts ?? 0) + 1
+            record.nextRestore = now.addingTimeInterval(recovery.interval)
+            var restored = false
+            do {
+                if !failedBrowsers.contains(record.browser), authorized(record.browser) {
+                    if snapshots[record.browser] == nil { snapshots[record.browser] = try tabs(record.browser) }
+                    let observed = snapshots[record.browser] ?? []
+                    let matches = observed.filter { $0.url == record.blocked }
+                    if record.identity != nil, matches.count == 1, let tab = matches.first, Self.unique(tab, in: observed) {
+                        // In the original process, movement or identity changes invalidate
+                        // the locator. After relaunch, only the unique app-owned marker
+                        // can rebind to a fresh stable identity, never the original URL.
+                        let sameProcess = processes[0].1 == record.pid
+                        let originalLocator = record.identity != nil && tab.identity == record.identity && tab.window == record.window && tab.index == record.index
+                        if (!sameProcess || originalLocator), checkpoint == ticket {
+                            restored = try setURL(record.browser, tab: tab, expected: record.blocked, replacement: record.original, ticket: ticket, pid: processes[0].1)
+                        }
+                    }
                 }
+            } catch { failedBrowsers.insert(record.browser) }
+            if !restored { problem = "部分网页未恢复，请检查浏览器权限或标签身份；已保留记录并将有限重试。"; keep.append(record); retry = true }
+        }
+        let retained = Set(keep.map(\.blocked))
+        for record in redirects where !retained.contains(record.blocked) {
+            if let url = URL(string: record.blocked), url.isFileURL,
+               url.deletingLastPathComponent() == journal.deletingLastPathComponent().appendingPathComponent("Blocked") {
+                try? FileManager.default.removeItem(at: url)
             }
-            self.redirects = keep
-            try? self.save()
-            DispatchQueue.main.async(execute: completion)
+        }
+        redirects = keep
+        do { try save() } catch { retry = false; problem = "无法保存网页恢复状态，请检查专注数据。" }
+        let result = problem
+        DispatchQueue.main.async {
+            guard self.checkpoint == ticket else { report?("网页恢复请求已被更新，记录已保留。"); completion(); return }
+            if self.restorationError != result { self.restorationError = result; self.onRestorationIssue?(result) }
+            report?(result); completion()
+        }
+        if retry, checkpoint == ticket {
+            queue.asyncAfter(deadline: .now() + recovery.interval) { [weak self] in
+                self?.restoreAttempt(host: host, ids: ids, ticket: ticket, report: nil, completion: {})
+            }
         }
     }
 
@@ -184,6 +246,12 @@ final class FocusBrowser {
         try html.write(to: page, atomically: true, encoding: .utf8)
         return page
     }
+    /// Stable ID, original position and unique URL must agree. Legacy records
+    /// without identity remain journaled; never infer identity from URL alone.
+    static func unique(_ tab: Tab, in tabs: [Tab]) -> Bool {
+        guard let identity = tab.identity, !identity.isEmpty else { return false }
+        return tabs.filter { $0.identity == identity }.count == 1 && tabs.filter { $0.url == tab.url }.count == 1
+    }
     private func authorized(_ id: String) -> Bool { driver?.authorized(id) ?? (Self.permission(id, prompt: false) == noErr) }
     private func tabs(_ id: String) throws -> [Tab] {
         if let driver { return try driver.read(id) }
@@ -194,24 +262,61 @@ final class FocusBrowser {
           const urls = w.tabs.url();
           for (let i = 0; i < urls.length; i++) {
             const u = urls[i];
-            if (u) result.push({window:w.id(),index:i,url:u});
+            let identity = null, currentURL = u;
+            try {
+              const value = w.tabs()[i].id();
+              if (value !== undefined && value !== null && Number.isFinite(Number(value))) {
+                const target = w.tabs.byId(Number(value));
+                currentURL = target.url();
+                if (String(target.id()) === String(value) && String(w.tabs()[i].id()) === String(value)) identity = String(value);
+              }
+            } catch (_) {}
+            if (currentURL) result.push({window:w.id(),index:i,url:currentURL,identity:identity});
           }
         }
         JSON.stringify(result);
         """
         return try JSONDecoder().decode([Tab].self, from: execute(source))
     }
-    private func setURL(_ id: String, tab: Tab, expected: String, replacement: String) throws -> Bool {
-        if let driver { return try driver.write(id, tab, expected, replacement) }
+    private func setURL(_ id: String, tab: Tab, expected: String, replacement: String, ticket: Int, pid: Int32) throws -> Bool {
+        guard checkpoint == ticket else { return false }
+        let processes = driver?.browsers() ?? NSWorkspace.shared.runningApplications.compactMap { app -> (String, Int32)? in
+            guard let id = app.bundleIdentifier else { return nil }; return (id, app.processIdentifier)
+        }
+        guard processes.filter({ $0.0 == id }).count == 1, processes.contains(where: { $0.0 == id && $0.1 == pid }) else { return false }
+        if let driver {
+            let latest = try driver.read(id)
+            guard checkpoint == ticket, Self.unique(tab, in: latest), latest.contains(where: { $0.identity == tab.identity && $0.window == tab.window && $0.index == tab.index && $0.url == expected }) else { return false }
+            return try driver.write(id, tab, expected, replacement)
+        }
         let data = try execute("""
         const a = Application(\(Self.literal(id)));
         const windows = a.windows();
-        let changed = false;
+        const observed = [];
         for (const w of windows) {
-          if (w.id() !== \(tab.window)) continue;
           const tabs = w.tabs();
-          const t = tabs[\(tab.index)];
-          if (t && t.url() === \(Self.literal(expected))) { t.url = \(Self.literal(replacement)); changed = true; }
+          for (let i = 0; i < tabs.length; i++) {
+            let identity = null;
+            try { const value = tabs[i].id(); if (value !== undefined && value !== null) identity = String(value); } catch (_) {}
+            observed.push({w:w.id(),i:i,t:tabs[i],identity:identity,url:tabs[i].url()});
+          }
+        }
+        const identity = \(tab.identity.map(Self.literal) ?? "null");
+        const matches = observed.filter(x => x.identity === identity);
+        const urls = observed.filter(x => x.url === \(Self.literal(expected)));
+        let changed = false;
+        if (identity !== null && matches.length === 1 && urls.length === 1) {
+          const x = matches[0];
+          if (x.w === \(tab.window) && x.i === \(tab.index) && x.url === \(Self.literal(expected)) && x.t.url() === \(Self.literal(expected))) {
+            let currentID = null; try { currentID = String(x.t.id()); } catch (_) {}
+            if (currentID === identity) {
+              const w = windows.find(w => w.id() === x.w);
+              const target = w.tabs.byId(Number(identity));
+              if (String(target.id()) === identity && target.url() === \(Self.literal(expected))) {
+                target.url = \(Self.literal(replacement)); changed = true;
+              }
+            }
+          }
         }
         JSON.stringify(changed);
         """)

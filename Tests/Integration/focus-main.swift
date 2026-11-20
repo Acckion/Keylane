@@ -27,14 +27,14 @@ fixtureController.prepareCategory(restoredController.archive.categories[0])
 
 // Browser transport uses a synthetic tab array only.
 let transportLock = NSLock()
-var syntheticTabs = [FocusBrowser.Tab(window: 11, index: 0, url: "https://news.example.com/a"),
-                     FocusBrowser.Tab(window: 11, index: 1, url: "https://work.invalid/")]
+var syntheticTabs = [FocusBrowser.Tab(window: 11, index: 0, url: "https://news.example.com/a", identity: "tab-one"),
+                     FocusBrowser.Tab(window: 11, index: 1, url: "https://work.invalid/", identity: "tab-two")]
 let transport = FocusBrowser.Driver(browsers: { [("com.apple.Safari", 123)] }, authorized: { _ in true }, read: { _ in
     transportLock.lock(); defer { transportLock.unlock() }; return syntheticTabs
 }, write: { _, tab, expected, replacement in
     transportLock.lock(); defer { transportLock.unlock() }
     if let index = syntheticTabs.firstIndex(where: { $0.window == tab.window && $0.index == tab.index && $0.url == expected }) {
-        syntheticTabs[index] = .init(window: tab.window, index: tab.index, url: replacement)
+        syntheticTabs[index] = .init(window: tab.window, index: tab.index, url: replacement, identity: tab.identity)
         return true
     }
     return false
@@ -56,7 +56,7 @@ expectFocus(restoredURL == "https://news.example.com/a", "pause restores the exa
 reportReceived = false
 browser.poll(configuration: syntheticConfig, preferences: .init(), snoozes: []) { _, _ in reportReceived = true }
 while !reportReceived { drainFocus() }
-transportLock.lock(); syntheticTabs[0] = .init(window: 11, index: 0, url: "https://changed.invalid/"); transportLock.unlock()
+transportLock.lock(); syntheticTabs[0] = .init(window: 11, index: 0, url: "https://changed.invalid/", identity: "tab-one"); transportLock.unlock()
 restoredTabs = false; browser.restore { restoredTabs = true }
 while !restoredTabs { drainFocus() }
 transportLock.lock(); let userChanged = syntheticTabs[0].url; transportLock.unlock()
@@ -145,6 +145,7 @@ let helperController = FocusController(registry: fixtureRegistry, defaults: fixt
                                        authorization: .init(check: { true }, request: { $0(true) }, guidance: "Synthetic authorization"), observeSystemFocus: false)
 expectFocus(helperController.session?.paused == true, "process restart restores the session paused")
 func captureFocusPanel(_ name: String, width: CGFloat) throws {
+    drainFocus(0.25)
     guard let panel = NSApplication.shared.windows.first(where: { $0 is NSPanel && abs($0.frame.width - width) < 1 && $0.isVisible }),
           let view = panel.contentView else { preconditionFailure("Missing Focus panel " + name) }
     drainFocus(0.2); view.layoutSubtreeIfNeeded()
@@ -167,9 +168,9 @@ expectFocus(edgePanels.count == NSScreen.screens.count && edgePanels.allSatisfy 
             "warning edges cover each display without taking clicks or keyboard focus")
 try captureFocusPanel("blocked-glow", width: NSScreen.main!.frame.width)
 let quitDeadline = Date().addingTimeInterval(8)
-while Date() < quitDeadline && (!helper.isTerminated || helperController.archive.terminatedApplications.isEmpty) { drainFocus() }
+while Date() < quitDeadline && (!helper.isTerminated || !helperController.archive.applicationExits.receipts.contains { $0.process.pid == helper.processIdentifier && $0.exited }) { drainFocus() }
 print("HELPER_STATE running=\(!helper.isTerminated) regular=\(NSRunningApplication(processIdentifier: helper.processIdentifier)?.activationPolicy.rawValue ?? -1) paused=\(helperController.session?.paused ?? true) authorized=\(helperController.permission.available) message=\(helperController.message)")
-expectFocus(helper.isTerminated && !helperController.archive.terminatedApplications.isEmpty, "actual NSWorkspace blocking quits only the generated helper")
+expectFocus(helper.isTerminated && helperController.archive.applicationExits.receipts.contains { $0.process.pid == helper.processIdentifier && $0.exited }, "actual NSWorkspace blocking quits only the generated helper")
 try captureFocusPanel("blocked-notice", width: 440)
 let notice = NSApplication.shared.windows.first { $0 is NSPanel && abs($0.frame.width - 440) < 1 && $0.isVisible }!
 // SwiftUI's rendered button is not an NSButton subview. Exercise its real mouse path.
@@ -197,6 +198,20 @@ let reopenDeadline = Date().addingTimeInterval(8)
 while Date() < reopenDeadline && NSRunningApplication.runningApplications(withBundleIdentifier: helperID).isEmpty { drainFocus() }
 expectFocus(!NSRunningApplication.runningApplications(withBundleIdentifier: helperID).isEmpty, "completion reopens the app Focus actually terminated")
 expectFocus(helperController.archive.history.last?.completed == true, "completion records a successful session")
+// A successful reopen must not suppress recovery in a later session using the same app URL.
+helperController.prepareSession(); helperController.draft = helperConfiguration
+var laterStarted = false
+helperController.saveSession { laterStarted = true }
+let laterStartDeadline = Date().addingTimeInterval(5)
+while !laterStarted && Date() < laterStartDeadline { drainFocus() }
+expectFocus(laterStarted, "subsequent session starts after successful recovery")
+let laterQuitDeadline = Date().addingTimeInterval(8)
+while !NSRunningApplication.runningApplications(withBundleIdentifier: helperID).isEmpty && Date() < laterQuitDeadline { drainFocus() }
+expectFocus(NSRunningApplication.runningApplications(withBundleIdentifier: helperID).isEmpty, "subsequent session quits only the generated helper")
+helperController.finish(completed: true, showFeedback: false)
+let laterRestoreDeadline = Date().addingTimeInterval(8)
+while NSRunningApplication.runningApplications(withBundleIdentifier: helperID).isEmpty && Date() < laterRestoreDeadline { drainFocus() }
+expectFocus(!NSRunningApplication.runningApplications(withBundleIdentifier: helperID).isEmpty, "same app URL restores again in a subsequent session")
 helperController.stopService()
 expectFocus(helperController.browser.flush(), "shutdown flushes queued browser recovery")
 // Synthetic system deliveries use empty block categories; no user app or browser can match.

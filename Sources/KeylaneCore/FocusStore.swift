@@ -25,11 +25,12 @@ public struct FocusArchive: Codable, Equatable, Sendable {
     public var preferences = FocusPreferences()
     public var session: FocusSession?
     public var systemLink = FocusSystemLink()
+    public var applicationExits = FocusApplicationExits()
     public var checkpoint: Date?
     public var terminatedApplications: [URL] = []
     public var history: [FocusRecord] = []
     public init() {}
-    private enum CodingKeys: String, CodingKey { case categories, lastConfiguration, preferences, session, checkpoint, terminatedApplications, history, systemLink }
+    private enum CodingKeys: String, CodingKey { case categories, lastConfiguration, preferences, session, checkpoint, terminatedApplications, history, systemLink, applicationExits }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         categories = try values.decodeIfPresent([FocusCategory].self, forKey: .categories) ?? []
@@ -38,6 +39,7 @@ public struct FocusArchive: Codable, Equatable, Sendable {
         session = try values.decodeIfPresent(FocusSession.self, forKey: .session)
         checkpoint = try values.decodeIfPresent(Date.self, forKey: .checkpoint)
         terminatedApplications = try values.decodeIfPresent([URL].self, forKey: .terminatedApplications) ?? []
+        applicationExits = try values.decodeIfPresent(FocusApplicationExits.self, forKey: .applicationExits) ?? .init()
         systemLink = try values.decodeIfPresent(FocusSystemLink.self, forKey: .systemLink) ?? .init()
         history = try values.decodeIfPresent([FocusRecord].self, forKey: .history) ?? []
     }

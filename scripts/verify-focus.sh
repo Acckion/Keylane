@@ -20,7 +20,9 @@ swift build --jobs 4 --scratch-path "$task_build_directory" --disable-sandbox
 task_binary_directory="$(swift build --scratch-path "$task_build_directory" --show-bin-path --disable-sandbox)"
 python3 - "$task_directory/fixture.swift" <<'PYTHON'
 import pathlib, sys
-fixture = pathlib.Path('Tests/Integration/focus-main.swift').read_text()
+import os
+name = 'focus-safety-main.swift' if os.environ.get('KEYLANE_FOCUS_SAFETY_ONLY') == '1' else 'focus-main.swift'
+fixture = (pathlib.Path('Tests/Integration') / name).read_text()
 header = "import AppKit\nimport SwiftUI\nimport Darwin\nimport KeylaneCore\n@testable import Keylane\n\n"
 entry = '@_cdecl("keylane_focus_fixture_main")\n@MainActor public func focusFixtureMain() -> Int32 {\n    do {\n'
 footer = '\n        return 0\n    } catch {\n        fputs("Focus fixture: \\(error)\\n", stderr)\n        return 1\n    }\n}\n'
