@@ -251,11 +251,21 @@ expect(ShelfNotchTarget.region(frame: notchScreen, topInset: 38, left: notchLeft
 expect(ShelfNotchTarget.region(frame: notchScreen, topInset: 0, left: nil, right: nil) == nil, "a display without a notch has no drop target")
 let settingsSuite = UserDefaults(suiteName: "org.keylane.test.shelf-activation." + UUID().uuidString)!
 let activationSettings = DropShelfController(directory: root, preferences: settingsSuite)
-expect(activationSettings.keyActivation && activationSettings.activationKey == .command && !activationSettings.dropToNotch, "activation preferences use the expected safe defaults")
+expect(!activationSettings.keyActivation && activationSettings.activationKey == .command && !activationSettings.dropToNotch,
+       "modifier activation is opt-in, with Command as the initial key")
+expect(!ShelfActivationKey.command.matches([]) && ShelfActivationKey.command.matches(.command),
+       "Command activation requires holding Command")
+expect(!ShelfActivationKey.command.matches(.option) && !ShelfActivationKey.command.matches([.option, .command]) &&
+       !ShelfActivationKey.command.matches([.function, .command]),
+       "another modifier or a combination does not trigger Command activation")
+expect(ShelfActivationKey.shift.matches([.shift, .capsLock]) && !ShelfActivationKey.shift.matches(.command),
+       "the selected modifier is required and Caps Lock does not affect matching")
+activationSettings.keyActivation = true
 activationSettings.shakeSensitivity = .high
 activationSettings.defaultPosition = .bottomRight
 activationSettings.ignoredApps["fixture.example"] = "Fixture"
 let reread = DropShelfController(directory: root, preferences: settingsSuite)
+expect(reread.keyActivation, "an explicitly enabled modifier activation setting persists")
 expect(reread.shakeSensitivity == .high && reread.defaultPosition == .bottomRight && reread.ignoredApps["fixture.example"] == "Fixture", "saved sensitivity, location and ignored apps persist")
 let emptyDragShelf = shelves.createForDrag()!
 let populatedDragShelf = shelves.createForDrag()!
@@ -615,6 +625,8 @@ expect(droppingWindow.isVisible && shelves.store!.shelf(droppingWindow.shelfID)!
 expect(!droppingWindow.receivingDrag, "completed drop clears pending destination state")
 expect(!droppingWindow.showsDragEntry && !dropSurface.showsEntryHighlight, "successful drop begins the transition to normal shelf chrome")
 drain(0.42)
+expect(droppingWindow.isVisible && droppingWindow.alphaValue == 1 && !droppingWindow.ignoresMouseEvents,
+       "window fade-in and post-drop chrome transition leave the shelf visible and interactive")
 expect(entryViews.compactMap { $0 as? NSTextField }.filter { $0.stringValue == "放置你的内容项" }.allSatisfy(\.isHidden), "transition retires the entry prompt")
 expect(dropSurface.performDragOperation(dropInfo) && shelves.store!.shelf(droppingWindow.shelfID)!.items.count == 1, "repeated perform callback does not duplicate the file")
 droppingWindow.contentView!.layoutSubtreeIfNeeded()

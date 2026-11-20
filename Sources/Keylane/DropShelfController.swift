@@ -156,7 +156,7 @@ final class DropShelfController: ObservableObject {
         keepOpen = preferences.bool(forKey: "dropShelf.keepOpen")
         shakeEnabled = (preferences.object(forKey: "dropShelf.shake") as? Bool) ?? true
         shakeSensitivity = ShelfShakeSensitivity(rawValue: preferences.string(forKey: "dropShelf.shakeSensitivity") ?? "") ?? .standard
-        keyActivation = (preferences.object(forKey: "dropShelf.keyActivation") as? Bool) ?? true
+        keyActivation = (preferences.object(forKey: "dropShelf.keyActivation") as? Bool) ?? false
         activationKey = ShelfActivationKey(rawValue: preferences.string(forKey: "dropShelf.activationKey") ?? "") ?? .command
         dropToNotch = preferences.bool(forKey: "dropShelf.notch")
         notchHighlight = ShelfNotchHighlight(rawValue: preferences.string(forKey: "dropShelf.notchHighlight") ?? "") ?? .hover
@@ -274,7 +274,7 @@ final class DropShelfController: ObservableObject {
         let mouse = NSEvent.mouseLocation
         updateNotchTarget(at: mouse)
         guard !activatedThisDrag else { return }
-        if keyActivation, NSEvent.modifierFlags.contains(activationKey.flag) {
+        if keyActivation, activationKey.matches(NSEvent.modifierFlags) {
             activatedThisDrag = createForDrag() != nil
             return
         }

@@ -17,8 +17,12 @@ enum ShelfActivationKey: String, CaseIterable {
         case .shift: "使用 ⇧ Shift 键"
         }
     }
-    var flag: NSEvent.ModifierFlags {
+    private var flag: NSEvent.ModifierFlags {
         switch self { case .command: .command; case .option: .option; case .control: .control; case .shift: .shift }
+    }
+    func matches(_ flags: NSEvent.ModifierFlags) -> Bool {
+        let heldModifiers = flags.intersection([.command, .option, .control, .shift, .function])
+        return heldModifiers == flag
     }
 }
 
