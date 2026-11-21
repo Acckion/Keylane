@@ -166,4 +166,34 @@ final class FileIndexTests: XCTestCase {
             pathAllowed: { excluded.includesSavedResult(at: $0, directory: $1) }).isEmpty)
     }
 
+
+    func testSavedDirectoryBitSurvivesDirectoryOnlyAllowRulesAndOfflineMetadata() throws {
+        let parent = try XCTUnwrap(FileSearchLocation.canonicalPath(FileManager.default.temporaryDirectory.path))
+        let fixture = URL(fileURLWithPath: parent).appendingPathComponent(UUID().uuidString)
+        let scope = fixture.appendingPathComponent("scope")
+        try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true)
+        try Data("*\n!kept*/\n".utf8).write(to: scope.appendingPathComponent(".gitignore"))
+        let folder = scope.appendingPathComponent("kept-offline")
+        let file = scope.appendingPathComponent("kept-file")
+        let db = try FileSearchIndex(url: fixture.appendingPathComponent("index.sqlite"))
+        for (url, directory) in [(folder, true), (file, false)] {
+            try db.put(.init(path: url.path, name: url.lastPathComponent, volume: "/", modified: 1,
+                             directory: directory, symlink: false), root: scope.path, epoch: "saved")
+        }
+        var options = FileSearchOptions(roots: [scope.path]); options.ignorePatterns = []
+        var locations = FileSearchLocation(options: options, automaticExclusions: [])
+        XCTAssertTrue(locations.includesSavedResult(at: folder.path, directory: true))
+        XCTAssertFalse(locations.includesSavedResult(at: folder.path, directory: false))
+        let rows = try db.searchRanked("kept", options: options,
+            pathAllowed: { locations.includesSavedResult(at: $0, directory: $1) }).map(\.file)
+        XCTAssertEqual(rows.map(\.id), [folder.path])
+        let saved = try XCTUnwrap(rows.first)
+        XCTAssertTrue(saved.isDirectory, "Use the saved directory column before the publication recheck")
+        XCTAssertTrue(locations.includesSavedResult(at: saved.id, directory: saved.isDirectory))
+        XCTAssertTrue(saved.readingResourceMetadata().isDirectory, "Missing files must retain the saved directory bit")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: folder.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(try db.stats().entries, 2)
+    }
+
 }

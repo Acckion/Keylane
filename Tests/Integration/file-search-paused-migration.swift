@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 import KeylaneCore
 
 // Only this temporary tree and UUID preference domain are used.
@@ -113,5 +114,38 @@ for excludedCount in [240, 2400] {
     precondition(retained == excludedCount + 2)
 }
 print("PASS paused candidate caps: 240 and 2400 newer excluded rows do not crowd out ordered visible results; index stays paused and saved rows retained")
+// Directory-only negation must use the stored type at SQL filtering, the
+// publication recheck, and metadata enrichment, including unavailable paths.
+let typedScope = fixture.appendingPathComponent("typed-scope")
+let onlineDirectory = typedScope.appendingPathComponent("kept-online")
+let offlineDirectory = typedScope.appendingPathComponent("kept-offline")
+let rejectedFile = typedScope.appendingPathComponent("kept-file")
+try FileManager.default.createDirectory(at: onlineDirectory, withIntermediateDirectories: true)
+try Data("*\n!kept*/\n".utf8).write(to: typedScope.appendingPathComponent(".gitignore"))
+let typedIndex = fixture.appendingPathComponent("typed-index")
+do {
+    let db = try FileSearchIndex(url: typedIndex.appendingPathComponent("index.sqlite"))
+    for (i, entry) in [(onlineDirectory, true), (offlineDirectory, true), (rejectedFile, false)].enumerated() {
+        try db.put(.init(path: entry.0.path, name: entry.0.lastPathComponent, volume: "/", modified: Double(10 - i),
+                         directory: entry.1, symlink: false), root: typedScope.path, epoch: "saved")
+    }
+}
+var typedOptions = FileSearchOptions(roots: [typedScope.path]); typedOptions.ignorePatterns = []
+preferences.set(try JSONEncoder().encode(typedOptions), forKey: "fileSearchOptions")
+preferences.set([typedScope.path], forKey: "fileSearchSelectedScopes")
+let typedController = FileSearchController(directory: typedIndex, preferences: preferences, watchChanges: false)
+rows = []
+typedController.updated = { rows = $0; _ = $1 }
+typedController.search("kept")
+wait("Saved directory type must survive directory-only allow rules") { !typedController.isSearching }
+precondition(rows.map(\.id) == [onlineDirectory.path, offlineDirectory.path])
+precondition(rows.allSatisfy { $0.isDirectory && $0.contentType?.conforms(to: .folder) == true })
+precondition(typedController.indexPaused && !typedController.indexing)
+typedController.stopRuntime()
+let typedCount = try FileSearchIndex(url: typedIndex.appendingPathComponent("index.sqlite")).stats().entries
+precondition(typedCount == 3)
+precondition(FileManager.default.fileExists(atPath: onlineDirectory.path))
+precondition(!FileManager.default.fileExists(atPath: offlineDirectory.path))
+print("PASS saved directory types: directory-only allow rule keeps online and offline directories, rejects files, preserves pause, order and saved rows")
 for url in [cached, allowed, custom] { precondition(FileManager.default.fileExists(atPath: url.path)) }
 print("PASS paused migration: real preexisting index, restored cache descendants filtered on restart, custom pattern retained, rule removal survives restart, no resume/rebuild or disk-file deletion")

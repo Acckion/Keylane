@@ -194,7 +194,7 @@ public final class FileSearchIndex {
         // queries should intersect their row IDs with the root index.
         let shortNameScan = !options.contentSearch && words.allSatisfy { $0.count < 3 }
         let searchIndex = shortNameScan ? "files_name_search" : "files_root"
-        let sql = "SELECT path,modified FROM files INDEXED BY " + searchIndex + " WHERE " + conditions.joined(separator: " AND ")
+        let sql = "SELECT path,modified,directory FROM files INDEXED BY " + searchIndex + " WHERE " + conditions.joined(separator: " AND ")
             + " ORDER BY " + relevance + ",modified DESC,path LIMIT 2000"
         let s = try statement(sql, values)
         defer { sqlite3_finalize(s) }
@@ -210,6 +210,7 @@ public final class FileSearchIndex {
             let name = url.lastPathComponent
             let score = rank(name)
             let file = SpotlightFile(url: url, name: name, modified: Date(timeIntervalSince1970: sqlite3_column_double(s, 1)),
+                                     isDirectory: sqlite3_column_int(s, 2) != 0,
                                      matchesContent: options.contentSearch && score == 0)
             results.append(RankedFile(file: file, score: score))
         }
