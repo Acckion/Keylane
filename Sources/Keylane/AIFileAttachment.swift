@@ -33,9 +33,11 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
         let text: String
         if url.pathExtension.lowercased() == "pdf" {
             text = try AIFileDocumentText.pdfPages(data, maximumTextBytes: max(1, maximumTextBytes)).joined(separator: "\n\n")
+        } else if AIFileOfficeText.extensions.contains(url.pathExtension.lowercased()) {
+            text = try AIFileOfficeText.sections(data, extension: url.pathExtension.lowercased(), maximumTextBytes: max(1, maximumTextBytes)).joined(separator: "\n\n")
         } else {
             guard let extracted = String(data: data, encoding: .utf8), !extracted.contains("\0") else {
-                throw Failure("目前支持 UTF-8 文本、代码、Markdown、CSV、JSON 和有文字的 PDF。")
+                throw Failure("目前支持 UTF-8 文本、代码、Markdown、CSV、JSON、DOCX/XLSX/PPTX 和有文字的 PDF。")
             }
             text = extracted
         }

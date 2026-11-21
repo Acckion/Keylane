@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import KeylaneCore
+import zlib
 @testable import Keylane
 
 @MainActor private final class ReferenceFixtureClock {
@@ -12,9 +13,17 @@ import KeylaneCore
 @MainActor private func verifyReadTools() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-read-fixture-" + UUID().uuidString).resolvingSymlinksInPath()
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let office = root.appendingPathComponent("office.docx")
+    try officeFixture().write(to: office)
+    let officeRead = try AIFileAttachment.read(office, expectedVersion: AIFileReadVersion(office))
+    precondition(officeRead.text.contains("Office fixture"))
+    do { _ = try AIFileAttachment.read(office, maximumTextBytes: 20); preconditionFailure("Office attachment escaped its text limit") }
+    catch { precondition(error is AIFileDocumentText.Failure) }
+    print("PASS shared Office attachment reader: expected source version and existing text limit retained")
     let suite = "org.keylane.tests.read-tools." + UUID().uuidString
     let preferences = UserDefaults(suiteName: suite)!
-    defer { preferences.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    defer { preferences.removePersistentDomain(forName: suite) }
     let clips = root.appendingPathComponent("clipboard")
     let store = try ClipboardStore(directory: clips)
     let id = try store.capture(.text("fixture private text"))
@@ -293,4 +302,25 @@ import KeylaneCore
     }
     RunLoop.main.run()
     return 1
+}
+
+// Stored ZIP generated only from literal synthetic XML; never opens an Office app.
+private func officeFixture() -> Data {
+    let xml = "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>" + String(repeating: "Office fixture ", count: 10) + "</w:t></w:r></w:p></w:body></w:document>"
+    let parts = [("[Content_Types].xml", "<Types/>"), ("word/document.xml", xml)]
+    var body = Data(), central = Data()
+    func fields(_ values: [(Int, Int)]) -> Data {
+        var result = Data()
+        for (value, width) in values { result.append(contentsOf: (0..<width).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }) }
+        return result
+    }
+    for (name, value) in parts {
+        let name = Data(name.utf8), payload = Data(value.utf8), offset = body.count
+        let crc = payload.withUnsafeBytes { Int(crc32(0, $0.bindMemory(to: Bytef.self).baseAddress, uInt($0.count))) }
+        body += fields([(0x04034b50,4),(20,2),(0,2),(0,2),(0,4),(crc,4),(payload.count,4),(payload.count,4),(name.count,2),(0,2)])
+        body += name; body += payload
+        central += fields([(0x02014b50,4),(20,2),(20,2),(0,2),(0,2),(0,4),(crc,4),(payload.count,4),(payload.count,4),(name.count,2),(0,2),(0,2),(0,2),(0,2),(0,4),(offset,4)])
+        central += name
+    }
+    return body + central + fields([(0x06054b50,4),(0,2),(0,2),(2,2),(2,2),(central.count,4),(body.count,4),(0,2)])
 }
