@@ -107,4 +107,63 @@ final class FileIndexTests: XCTestCase {
         try reopened.removeScope("/offline")
         XCTAssertEqual(try reopened.stats().entries,0)
     }
+
+    func testAncestorExclusionsPrecedeBothCandidateAndResultCaps() throws {
+        let parent = try XCTUnwrap(FileSearchLocation.canonicalPath(FileManager.default.temporaryDirectory.path))
+        let fixture = URL(fileURLWithPath: parent).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        for excludedCount in [240, 2400] {
+            let root = fixture.appendingPathComponent("scope-\(excludedCount)").path
+            let db = try FileSearchIndex(url: fixture.appendingPathComponent("index-\(excludedCount).sqlite"))
+            var options = FileSearchOptions(roots: [root])
+            options.ignorePatterns = ["__pycache__", "custom-excluded"]
+            options.useIgnoreFiles = false
+            try db.transaction {
+                for i in 0..<excludedCount {
+                    let folder = i.isMultiple(of: 2) ? "package/__pycache__/nested" : "custom-excluded/nested"
+                    let name = "needle-obsolete-\(i).txt"
+                    try db.put(.init(path: root + "/" + folder + "/" + name, name: name, volume: "/",
+                                     modified: Double(10_000 + i), directory: false, symlink: false), root: root, epoch: "saved")
+                }
+                for i in 0..<250 {
+                    let name = "needle-visible-\(i).txt"
+                    try db.put(.init(path: root + "/" + name, name: name, volume: "/", modified: Double(i),
+                                     directory: false, symlink: false), root: root, epoch: "saved")
+                }
+            }
+            let expected = (50..<250).reversed().map { "needle-visible-\($0).txt" }
+            XCTAssertEqual(try db.search("needle", options: options).map(\.name), expected)
+            XCTAssertEqual(try db.search("needle", options: options, limit: 5).map(\.name), Array(expected.prefix(5)))
+            // Cover the short-name covering-index query as well as the FTS path.
+            XCTAssertEqual(try db.search("ne", options: options, limit: 5).map(\.name), Array(expected.prefix(5)))
+            var checks = 0
+            XCTAssertTrue(try db.search("needle", options: options, isCancelled: { checks += 1; return checks > 80 }).isEmpty)
+            XCTAssertEqual(try db.search("needle", options: options, limit: 5).map(\.name), Array(expected.prefix(5)))
+            XCTAssertEqual(try db.stats().entries, excludedCount + 250)
+        }
+    }
+
+
+    func testPrelimitPolicyPreservesExplicitlyRestoredDirectories() throws {
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let db = try FileSearchIndex(url: fixture.appendingPathComponent("index.sqlite"))
+        let root = "/offline-fixture"
+        let restored = root + "/DerivedData"
+        let path = restored + "/needle-restored.txt"
+        var options = FileSearchOptions(roots: [root])
+        options.ignorePatterns = []
+        options.useIgnoreFiles = false
+        try db.put(.init(path: path, name: "needle-restored.txt", volume: "/", modified: 1,
+                         directory: false, symlink: false), root: root, epoch: "saved")
+        var excluded = FileSearchLocation(options: options, automaticExclusions: [])
+        var allowed = FileSearchLocation(options: options, automaticExclusions: [], restored: [restored])
+        XCTAssertTrue(try db.search("needle", options: options,
+            pathAllowed: { excluded.includesSavedResult(at: $0, directory: $1) }).isEmpty)
+        XCTAssertEqual(try db.search("needle", options: options,
+            pathAllowed: { allowed.includesSavedResult(at: $0, directory: $1) }).map(\.id), [path])
+        XCTAssertTrue(try db.search("needle", options: options,
+            pathAllowed: { excluded.includesSavedResult(at: $0, directory: $1) }).isEmpty)
+    }
+
 }

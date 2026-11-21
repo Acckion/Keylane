@@ -21,6 +21,35 @@ public enum FileIndexError: LocalizedError {
 /// on its own serial queue. No clipboard or note schema is accessed.
 public final class FileSearchIndex {
     private final class QueryCancellation { let check: () -> Bool; init(_ check: @escaping () -> Bool) { self.check = check } }
+    private final class QueryPathFilter {
+        let options: FileSearchOptions
+        let excluded: [String]
+        let ignoresFile: (String, String) -> Bool
+        let ignoresDirectory: (String, String) -> Bool
+        let pathAllowed: ((String, Bool) -> Bool)?
+        let isCancelled: () -> Bool
+        init(options: FileSearchOptions, excluded: [String], pathAllowed: ((String, Bool) -> Bool)?, isCancelled: @escaping () -> Bool) {
+            self.options = options; self.excluded = excluded; self.pathAllowed = pathAllowed
+            ignoresFile = FileSearchRules.pathFilter(options.ignorePatterns)
+            ignoresDirectory = FileSearchRules.pathFilter(options.ignorePatterns, directory: true)
+            self.isCancelled = isCancelled
+        }
+        func allows(_ path: String, directory: Bool, owner: String) -> Bool {
+            guard !isCancelled(), options.includeHidden || !path.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
+                  !excluded.contains(where: { FileSearchLocation.contains(path, in: $0) }) else { return false }
+            let url = URL(fileURLWithPath: path)
+            guard !(directory ? ignoresDirectory : ignoresFile)(path, url.lastPathComponent) else { return false }
+            // The host supplies its full scoped policy, including ignore files and
+            // restored directories. SQL ownership remains independent of path aliases.
+            if let pathAllowed { return pathAllowed(path, directory) }
+            var parent = url.deletingLastPathComponent()
+            while parent.path != owner && parent.path != "/" {
+                guard !isCancelled(), !ignoresDirectory(parent.path, parent.lastPathComponent) else { return false }
+                parent.deleteLastPathComponent()
+            }
+            return true
+        }
+    }
     private var db: OpaquePointer?
     public let url: URL
     public init(url: URL) throws {
@@ -91,10 +120,10 @@ public final class FileSearchIndex {
         result.bytes = [url.path,url.path+"-wal",url.path+"-shm"].reduce(0) { $0 + ((try? FileManager.default.attributesOfItem(atPath: $1)[.size] as? Int) ?? 0) }
         return result
     }
-    public func search(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [SpotlightFile] {
-        try searchRanked(query, options: options, excluded: excluded, limit: limit, within: within, isCancelled: isCancelled).map(\.file)
+    public func search(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, pathAllowed: ((String, Bool) -> Bool)? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [SpotlightFile] {
+        try searchRanked(query, options: options, excluded: excluded, limit: limit, within: within, pathAllowed: pathAllowed, isCancelled: isCancelled).map(\.file)
     }
-    public func searchRanked(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [RankedFile] {
+    public func searchRanked(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, pathAllowed: ((String, Bool) -> Bool)? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [RankedFile] {
         guard !isCancelled() else { return [] }
         let cancellation = QueryCancellation(isCancelled)
         sqlite3_progress_handler(db, 1000, { raw in
@@ -133,6 +162,25 @@ public final class FileSearchIndex {
             }
             conditions.append("(" + ranges.joined(separator: " OR ") + ")")
         }
+        // Filter saved ancestors in SQLite before either candidate or result cap.
+        // The context checks paths without opening files, retaining offline rows.
+        let pathFilter = QueryPathFilter(options: options, excluded: excluded, pathAllowed: pathAllowed, isCancelled: isCancelled)
+        guard sqlite3_create_function_v2(db, "keylane_search_path_allowed", 3, SQLITE_UTF8,
+            Unmanaged.passUnretained(pathFilter).toOpaque(), { context, count, arguments in
+                guard let context, count == 3, let arguments,
+                      let raw = sqlite3_user_data(context), let path = sqlite3_value_text(arguments[0]),
+                      let owner = sqlite3_value_text(arguments[2]) else {
+                    sqlite3_result_int(context, 0); return
+                }
+                let filter = Unmanaged<QueryPathFilter>.fromOpaque(raw).takeUnretainedValue()
+                let allowed = filter.allows(String(cString: path), directory: sqlite3_value_int(arguments[1]) != 0, owner: String(cString: owner))
+                sqlite3_result_int(context, allowed ? 1 : 0)
+            }, nil, nil, nil) == SQLITE_OK else { throw FileIndexError.database }
+        defer {
+            sqlite3_create_function_v2(db, "keylane_search_path_allowed", 3, SQLITE_UTF8, nil, nil, nil, nil, nil)
+            withExtendedLifetime(pathFilter) {}
+        }
+        conditions.append("keylane_search_path_allowed(path,directory,root)=1")
         if !options.externalVolumes { conditions.append("external=0") }
         // Root ownership is stored separately from the path: no user text becomes SQL.
         conditions.append("root IN (" + options.roots.map { _ in "?" }.joined(separator: ",") + ")"); values += options.roots

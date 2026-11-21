@@ -77,5 +77,41 @@ precondition(removed.options.ignorePatterns == ["custom-excluded"])
 precondition(Set(rows.map(\.id)) == Set([allowed.path, cached.path]))
 precondition(removed.indexPaused && !removed.indexing)
 removed.stopRuntime()
+// Simulate a large preexisting paused index. Excluded rows are newer and would
+// occupy all 200 local results (and, in the larger case, all 2000 SQL candidates).
+let secondAllowed = scope.appendingPathComponent("needle-second.txt")
+try Data("temporary fixture".utf8).write(to: secondAllowed)
+var current = legacy
+current.ignorePatterns = ["custom-excluded", "__pycache__"]
+preferences.set(try JSONEncoder().encode(current), forKey: "fileSearchOptions")
+for excludedCount in [240, 2400] {
+    let directory = fixture.appendingPathComponent("candidate-index-\(excludedCount)")
+    do {
+        let db = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        try db.transaction {
+            for i in 0..<excludedCount {
+                let folder = i.isMultiple(of: 2) ? "package/__pycache__/nested" : "custom-excluded/nested"
+                let name = "needle-obsolete-\(i).pyc"
+                try db.put(.init(path: scope.path + "/" + folder + "/" + name, name: name, volume: "/",
+                                 modified: Double(10_000 + i), directory: false, symlink: false), root: scope.path, epoch: "saved")
+            }
+            for (i, url) in [allowed, secondAllowed].enumerated() {
+                try db.put(.init(path: url.path, name: url.lastPathComponent, volume: "/", modified: Double(100 - i),
+                                 directory: false, symlink: false), root: scope.path, epoch: "saved")
+            }
+        }
+    }
+    let paused = FileSearchController(directory: directory, preferences: preferences, watchChanges: false)
+    rows = []
+    paused.updated = { rows = $0; _ = $1 }
+    paused.search("needle")
+    wait("Excluded candidates must not crowd out visible paused results: \(excludedCount)") { !paused.isSearching }
+    precondition(rows.map(\.id) == [allowed.path, secondAllowed.path])
+    precondition(paused.indexPaused && !paused.indexing)
+    paused.stopRuntime()
+    let retained = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite")).stats().entries
+    precondition(retained == excludedCount + 2)
+}
+print("PASS paused candidate caps: 240 and 2400 newer excluded rows do not crowd out ordered visible results; index stays paused and saved rows retained")
 for url in [cached, allowed, custom] { precondition(FileManager.default.fileExists(atPath: url.path)) }
 print("PASS paused migration: real preexisting index, restored cache descendants filtered on restart, custom pattern retained, rule removal survives restart, no resume/rebuild or disk-file deletion")

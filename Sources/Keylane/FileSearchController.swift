@@ -509,13 +509,16 @@ final class FileSearchController: ObservableObject {
         snapshot.contentSearch = false
         let config = snapshot
         let exclusions = automaticExclusions.map(\.path)
+        let restoredPaths = restored
         let cancellation = FileScanCancellation()
         return try await withTaskCancellationHandler {
             let result: [SpotlightFile] = try await withCheckedThrowingContinuation { continuation in
                 reader.async(execute: DispatchWorkItem { [weak self] in
                     do {
                         guard let self, let db = self.readDB, !runtime.cancelled, !cancellation.cancelled else { throw CancellationError() }
+                        var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restoredPaths)
                         let files = try db.search(query, options: config, excluded: exclusions + config.excludedPaths, limit: limit, within: within,
+                            pathAllowed: { locations.includesSavedResult(at: $0, directory: $1) },
                             isCancelled: { cancellation.cancelled || runtime.cancelled })
                         continuation.resume(returning: files)
                     } catch { continuation.resume(throwing: error) }
@@ -677,12 +680,16 @@ final class FileSearchController: ObservableObject {
         config.contentSearch = config.contentSearch && includesQueryContents
         let queryOptions = config
         let excluded = options.excludedPaths + automaticExclusions.map(\.path)
+        let restoredPaths = restored
         let work = DispatchWorkItem { [weak self] in
             guard let self, !cancellation.cancelled else { return }
             self.reader.async { [weak self] in
                 guard let self, !cancellation.cancelled else { return }
                 do {
-                    let result = try self.readDB?.searchRanked(text, options: queryOptions, excluded: excluded, isCancelled: { cancellation.cancelled }) ?? []
+                    var locations = FileSearchLocation(options: queryOptions, automaticExclusions: excluded, restored: restoredPaths)
+                    let result = try self.readDB?.searchRanked(text, options: queryOptions, excluded: excluded,
+                        pathAllowed: { locations.includesSavedResult(at: $0, directory: $1) },
+                        isCancelled: { cancellation.cancelled }) ?? []
                     DispatchQueue.main.async {
                         guard self.queryVersion == ticket, !cancellation.cancelled else { return }
                         self.localResults = result
