@@ -110,6 +110,18 @@ final class FileSearchController: ObservableObject {
         }
         restored = Set(preferences.stringArray(forKey: "fileSearchRestoredPaths") ?? [])
         automaticExclusions = preferences.data(forKey: "fileSearchAutomaticExclusions").flatMap { try? JSONDecoder().decode([AutomaticFileExclusion].self, from: $0) } ?? []
+        // Move Python bytecode caches to an editable rule once. A later explicit
+        // removal must survive restart, and unrelated custom rules are retained.
+        if !preferences.bool(forKey: "fileSearchPythonCacheIgnoreMigrated") {
+            if !options.ignorePatterns.contains("__pycache__") { options.ignorePatterns.append("__pycache__") }
+            preferences.set(try? JSONEncoder().encode(options), forKey: "fileSearchOptions")
+            preferences.set(true, forKey: "fileSearchPythonCacheIgnoreMigrated")
+        }
+        let previousExclusions = automaticExclusions
+        automaticExclusions.removeAll { URL(fileURLWithPath: $0.path).lastPathComponent == "__pycache__" }
+        if automaticExclusions != previousExclusions {
+            preferences.set(try? JSONEncoder().encode(automaticExclusions), forKey: "fileSearchAutomaticExclusions")
+        }
         if let data = preferences.data(forKey: "fileSearchLastStats"), let value = try? JSONDecoder().decode(FileIndexStats.self, from:data) { stats = value }
         spotlight.updated = { [weak self] results, _ in
             guard let self, self.isRunning else { return }
