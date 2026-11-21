@@ -26,7 +26,7 @@ public final class AIFileAccessLease: @unchecked Sendable {
 }
 
 public enum AIFileToolError: LocalizedError, Equatable {
-    case outsideScope, unavailable, unsupported, stale, exists, invalidPath, invalidText, tooLarge, restricted, creationScope, creationUnsupported, creationUnconfirmed
+    case outsideScope, unavailable, unsupported, stale, exists, invalidPath, invalidText, tooLarge, restricted, creationScope, creationUnsupported, creationUnconfirmed, invalidPattern, regexBudget
     public var errorDescription: String? {
         switch self {
         case .outsideScope: "路径不在本次匹配的 AI 授权目录内。"
@@ -38,6 +38,8 @@ public enum AIFileToolError: LocalizedError, Equatable {
         case .invalidText: "内容不是有效 UTF-8 文本，或 offset 不在字符边界。"
         case .tooLarge: "超过本次文件操作的数据限制，请缩小范围或分段读取。"
         case .restricted: "该路径属于受保护数据，文件工具不披露其内容、名称或元数据。"
+        case .invalidPattern: "正则表达式无效或超过长度限制；使用行级 ICU 正则语法。"
+        case .regexBudget: "正则搜索超过时间或引擎额度，请简化表达式或缩小范围。未返回不完整匹配页。"
         case .creationUnsupported: "当前文件系统不支持此安全创建操作；未启用覆盖、复制或改名回退。"
         case .creationUnconfirmed: "创建结果无法确认：文件或文件夹可能已在原授权目录对象中创建，该目录也可能已移动。请人工核对，勿直接重试；未执行自动回滚。"
         case .creationScope: "创建仅支持授权根目录内的一级名称。请先将目标父目录单独设为授权根。"
@@ -90,9 +92,9 @@ public actor AIFileToolService {
     }
     fileprivate enum ReadPayload {
         case text(offset: Int)
-        case document(AITemporaryReadResult, offset: Int, pages: Int)
+        case document(AITemporaryReadResult, offset: Int, pages: Int, format: String, ocr: Bool)
         case rows(AITemporaryReadResult, key: String, offset: Int, sourceTruncated: Bool)
-        var bytes: Int { switch self { case .text: 0; case .document(let file, _, _), .rows(let file, _, _, _): file.count } }
+        var bytes: Int { switch self { case .text: 0; case .document(let file, _, _, _, _), .rows(let file, _, _, _): file.count } }
     }
     fileprivate final class ReadReference: @unchecked Sendable {
         let plan: Prepared, payload: ReadPayload
@@ -236,7 +238,7 @@ public actor AIFileToolService {
         return plan
     }
 
-    public func execute(_ plan: Prepared, lease: AIFileAccessLease, cancellation: AIFileAccessLease, session: ReadSession? = nil, indexedPaths: [String] = []) throws -> AIToolResult {
+    public func execute(_ plan: Prepared, lease: AIFileAccessLease, cancellation: AIFileAccessLease, session: ReadSession? = nil, indexedPaths: [String] = [], documentWork: ImageTextRecognitionWork = .init()) throws -> AIToolResult {
         try plan.claim()
         guard plan.lease === lease else { throw AIFileToolError.stale }
         func check() throws { try lease.check(); try cancellation.check() }
@@ -252,6 +254,8 @@ public actor AIFileToolService {
         case "keylane_read_file":
             guard let fd = plan.file else { throw AIFileToolError.unavailable }
             let info = try status(fd.raw)
+            let format = (path as NSString).pathExtension.lowercased()
+            guard !boolean(arguments, "ocr") || format == "pdf" && !isDirectory(info) else { throw AIFileToolError.unsupported }
             if isDirectory(info), session != nil {
                 var scan = Scan(), rows: [AIToolValue] = [], bytes = 0
                 for name in try names(fd.raw, scan: &scan, check: check) {
@@ -272,7 +276,7 @@ public actor AIFileToolService {
                 let data = try read(fd.raw, offset: 0, count: Int(info.st_size), check: check)
                 try validate(plan)
                 let pages: [String]
-                do { pages = try AIFileDocumentText.pdfPages(data, check: check) }
+                do { pages = try AIFileDocumentText.pdfPages(data, ocr: boolean(arguments, "ocr"), work: documentWork, check: check) }
                 catch { try validate(plan); throw error }
                 let page = integer(arguments, "page", default: 1)
                 guard (1...pages.count).contains(page) else { throw AIFileToolError.invalidPath }
@@ -283,7 +287,17 @@ public actor AIFileToolService {
                 let blob = try AITemporaryReadResult(Data(text.utf8))
                 let offset = arguments["page"] == nil ? integer(arguments, "offset", default: 0) : offsets[page - 1]
                 (values, continuation) = try documentPage(blob, pages: pages.count, plan: plan, offset: offset,
-                    limit: integer(arguments, "limit", default: 4096), check: check)
+                    limit: integer(arguments, "limit", default: 4096), ocr: boolean(arguments, "ocr"), check: check)
+            } else if AIFileOfficeText.extensions.contains(format) {
+                guard info.st_size <= 8_388_608, arguments["page"] == nil else { throw AIFileToolError.tooLarge }
+                let data = try read(fd.raw, offset: 0, count: Int(info.st_size), check: check)
+                try validate(plan)
+                let sections: [String]
+                do { sections = try AIFileOfficeText.sections(data, extension: format, check: check) }
+                catch { try validate(plan); throw error }
+                let blob = try AITemporaryReadResult(Data(sections.joined(separator: "\n\n").utf8))
+                (values, continuation) = try documentPage(blob, pages: sections.count, plan: plan,
+                    offset: integer(arguments, "offset", default: 0), limit: integer(arguments, "limit", default: 4096), format: format, check: check)
             } else {
                 guard arguments["page"] == nil else { throw AIFileToolError.invalidPath }
                 (values, continuation) = try textPage(plan, offset: integer(arguments, "offset", default: 0),
@@ -296,9 +310,9 @@ public actor AIFileToolService {
             case .text(let offset):
                 (values, continuation) = try textPage(reference.plan, offset: offset,
                     limit: integer(arguments, "limit", default: 4096), check: check)
-            case .document(let blob, let offset, let pages):
+            case .document(let blob, let offset, let pages, let format, let ocr):
                 (values, continuation) = try documentPage(blob, pages: pages, plan: reference.plan, offset: offset,
-                    limit: integer(arguments, "limit", default: 4096), check: check)
+                    limit: integer(arguments, "limit", default: 4096), format: format, ocr: ocr, check: check)
             case .rows(let blob, let key, let offset, let sourceTruncated):
                 let rows = try JSONDecoder().decode([AIToolValue].self, from: blob.read(check: check))
                 (values, continuation) = try rowsPage(rows, plan: reference.plan, key: key, sourceTruncated: sourceTruncated,
@@ -313,8 +327,9 @@ public actor AIFileToolService {
             guard !pattern.isEmpty, pattern.utf8.count <= 256, !pattern.split(separator: "/").contains(".."), !pattern.hasPrefix("/"), (1...100).contains(limit), (1...12).contains(depth) else { throw AIFileToolError.invalidPath }
             let query = string(arguments, "query"), grep = plan.tool == "keylane_grep"
             guard !grep || !query.isEmpty && query.utf8.count <= 512 else { throw AIFileToolError.invalidPath }
+            let matcher = try AIFileTextMatcher(query: query, regex: boolean(arguments, "regex"), caseSensitive: boolean(arguments, "case_sensitive"))
             var scan = Scan(), rows: [AIToolValue] = []
-            try walk(fd, plan: plan, relative: path, patternRelative: "", pattern: pattern, needle: query, grep: grep, depth: depth, limit: session == nil ? limit : 1000, hidden: boolean(arguments, "include_hidden"), captureHandles: session == nil, scan: &scan, rows: &rows, disclosed: &disclosed, check: check)
+            try walk(fd, plan: plan, relative: path, patternRelative: "", pattern: pattern, matcher: matcher, grep: grep, depth: depth, limit: session == nil ? limit : 1000, hidden: boolean(arguments, "include_hidden"), captureHandles: session == nil, scan: &scan, rows: &rows, disclosed: &disclosed, check: check)
             if session != nil {
                 (values, continuation) = try rowsPage(rows, plan: plan, key: "matches", sourceTruncated: scan.truncated,
                     offset: 0, limit: limit, disclosed: &disclosed, check: check)
@@ -563,7 +578,7 @@ public actor AIFileToolService {
         }
         return ["path": .string(plan.relativePath), "type": .string("directory"), "entries": .array(rows), "next_offset": next < all.count ? .number(Double(next)) : .null, "truncated": .bool(scan.truncated || next < all.count)]
     }
-    private func walk(_ fd: FD, plan: Prepared, relative: String, patternRelative: String, pattern: String, needle: String, grep: Bool, depth: Int, limit: Int, hidden: Bool, captureHandles: Bool, scan: inout Scan, rows: inout [AIToolValue], disclosed: inout [Disclosure], check: () throws -> Void) throws {
+    private func walk(_ fd: FD, plan: Prepared, relative: String, patternRelative: String, pattern: String, matcher: AIFileTextMatcher, grep: Bool, depth: Int, limit: Int, hidden: Bool, captureHandles: Bool, scan: inout Scan, rows: inout [AIToolValue], disclosed: inout [Disclosure], check: () throws -> Void) throws {
         if scan.exhausted || rows.count >= limit { scan.truncated = true; return }
         for name in try names(fd.raw, scan: &scan, check: check) {
             try check()
@@ -586,7 +601,7 @@ public actor AIFileToolService {
                             // CRLF is one Swift Character; recognize the complete newline boundary.
                             let end = text[cursor...].firstIndex(where: { $0.isNewline }) ?? text.endIndex
                             let line = text[cursor..<end]
-                            if String(line).localizedCaseInsensitiveContains(needle) {
+                            if try matcher.contains(String(line), check: check) {
                                 let row = AIToolValue.object(["path": .string(rel), "line": .number(Double(number)), "text": .string(String(line.unicodeScalars.prefix(240))), "revision": .string(revision(info))])
                                 if scan.outputBytes + (try JSONEncoder().encode(row).count) > (captureHandles ? 24_000 : 2_000_000) { scan.truncated = true; scan.exhausted = true; return }
                                 scan.outputBytes += try JSONEncoder().encode(row).count
@@ -605,7 +620,7 @@ public actor AIFileToolService {
             if isDirectory(info) {
                 if scan.exhausted { continue }
                 if depth == 1 { scan.truncated = true; continue }
-                try walk(child, plan: plan, relative: rel, patternRelative: patternPath, pattern: pattern, needle: needle, grep: grep, depth: depth - 1, limit: limit, hidden: hidden, captureHandles: captureHandles, scan: &scan, rows: &rows, disclosed: &disclosed, check: check)
+                try walk(child, plan: plan, relative: rel, patternRelative: patternPath, pattern: pattern, matcher: matcher, grep: grep, depth: depth - 1, limit: limit, hidden: hidden, captureHandles: captureHandles, scan: &scan, rows: &rows, disclosed: &disclosed, check: check)
                 if scan.exhausted { return }
             }
         }
@@ -634,12 +649,12 @@ public actor AIFileToolService {
             "offset": .number(Double(offset)), "next_offset": next < info.st_size ? .number(Double(next)) : .null, "truncated": .bool(next < info.st_size)],
             next < info.st_size ? ReadReference(plan: plan, payload: .text(offset: next)) : nil)
     }
-    private func documentPage(_ blob: AITemporaryReadResult, pages: Int, plan: Prepared, offset: Int, limit: Int, check: () throws -> Void) throws -> ([String: AIToolValue], ReadReference?) {
+    private func documentPage(_ blob: AITemporaryReadResult, pages: Int, plan: Prepared, offset: Int, limit: Int, format: String = "pdf", ocr: Bool = false, check: () throws -> Void) throws -> ([String: AIToolValue], ReadReference?) {
         guard (1...4096).contains(limit) else { throw AIFileToolError.invalidPath }
         let (text, next) = try utf8Chunk(blob.read(offset: offset, limit: limit, check: check), offset: offset, end: blob.count)
-        return (["path": .string(plan.relativePath), "type": .string("document"), "format": .string("pdf"), "page_count": .number(Double(pages)),
+        return (["path": .string(plan.relativePath), "type": .string("document"), "format": .string(format), format == "pdf" ? "page_count" : "section_count": .number(Double(pages)), "ocr": .bool(ocr),
             "text": .string(text), "offset": .number(Double(offset)), "next_offset": next < blob.count ? .number(Double(next)) : .null, "truncated": .bool(next < blob.count)],
-            next < blob.count ? ReadReference(plan: plan, payload: .document(blob, offset: next, pages: pages)) : nil)
+            next < blob.count ? ReadReference(plan: plan, payload: .document(blob, offset: next, pages: pages, format: format, ocr: ocr)) : nil)
     }
     private func rowsPage(_ rows: [AIToolValue], plan: Prepared, key: String, sourceTruncated: Bool, offset: Int, limit: Int,
                           blob: AITemporaryReadResult? = nil, disclosed: inout [Disclosure], check: () throws -> Void) throws -> ([String: AIToolValue], ReadReference?) {
