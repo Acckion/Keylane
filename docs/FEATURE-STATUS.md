@@ -118,7 +118,7 @@
 | AI-25 | AI 数据、凭据及隐私控制 | 部分实现 | 已有本机凭据与账户范围控制，逐项核对内容保留、删除和云服务政策展示 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/raycast-ai-privacy-security) |
 | TRANS-01 | 多服务商翻译、自动翻译与语言切换 | 部分实现 | 实际服务、语言检测、超时与订阅连接验收 | [翻译](TRANSLATOR.md)、[参考](https://manual.raycast.com/translate) |
 | TRANS-02 | 自定义语言对命令与替换选中文字 | 部分实现 | 真实目标应用、选区变化及失败反馈 | [翻译](TRANSLATOR.md) |
-| DICT-01 | 云端听写、模型配置、历史与重试 | 部分实现 | 真麦克风、云端服务、跨应用输出和权限验收 | [听写](DICTATION.md)、[参考](https://manual.raycast.com/ai/dictation) |
+| DICT-01 | 云端听写、模型配置、历史与重试 | 部分实现（OpenRouter 修复待合并） | 专用转写目录、能力识别与旧缓存补全已补齐；真麦克风、云端服务、跨应用输出和权限仍待验收 | [听写](DICTATION.md)、[参考](https://manual.raycast.com/ai/dictation) |
 | DICT-02 | 术语、个性化、按应用/网站样式及统计 | 部分实现 | 实际应用识别、样式匹配和转写质量验收 | [听写](DICTATION.md) |
 | DICT-03 | 本地离线听写 | 未实现 | 模块说明明确尚未接入，需确定识别引擎及资源生命周期 | [听写边界](DICTATION.md) |
 
@@ -206,3 +206,7 @@
 维护记录：2026-11-21，EXT-01 / PR #223 整合 dev `7f6a01b`（#217），保留 AI 工具运行域引用和功能代次快照，以及目录替换／卸载／重新启用的激活撤销；新增合成工具租约回归，验证结果见目录事务记录。仍待合并及安装版验收。
 
 维护记录：2026-11-21，AI-05 / AI-05-a / [PR #229](https://github.com/Acckion/Keylane/pull/229) 从 dev `37dac2e` 实现共享视觉附件、AX 窗口文字、单窗口/窗口内区域图像及 OCR 补充。纯合成验证，不读取真实应用/屏幕、不调用模型，未安装/合并/发布；边界见 [视觉上下文](AI-VISUAL-CONTEXT.md)。
+
+维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
+
+维护记录：2026-11-21，AI-05 / AI-05-a / PR #229 同步 dev `036cfd7`，保留 #230 的 OpenRouter 听写目录、上传协议与测试依赖；视觉请求和权限检查继续复用公共运行时，冲突仅合并进度记录与测试源码清单。当前集成验证见 PR。
