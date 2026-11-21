@@ -12,15 +12,16 @@ enum ModuleArtwork {
         "clipboard": "clipboard-history", "calendar": "calendar", "shortcuts": "shortcuts",
         "links": "quicklinks", "script-commands": "script-commands",
         "keylane.calculator": "calculator", "keylane.system": "system-actions",
-        "keylane.app-utilities": "keylane-tools", "keylane.navigation": "navigation",
+        "keylane.app-utilities": "keylane-app", "keylane.navigation": "navigation",
         "keylane.contacts": "contacts", "keylane.dictionary": "dictionary", "keylane.emoji": "emoji",
         "keylane.apple-notes": "notes", "keylane.window-management": "window-management",
         "snippets": "snippets",
         "ai": "ai", "ai-models": "ai-models", "ai-text-commands": "ai-commands",
         "translator": "translator", "dictation": "dictation",
-        "dictation-personalization": "dictation", "dictation-styles": "dictation",
-        "dictation-statistics": "dictation",
+        "dictation-personalization": "dictation-vocabulary", "dictation-styles": "dictation-style",
+        "dictation-statistics": "dictation-statistics",
         "keylane.drop-shelf": "drop-shelf", "keylane.focus": "focus",
+        "keylane.downloads": "downloads", "keylane.themes": "theme-studio",
     ]
 
     private static let modulePages = [
@@ -32,11 +33,74 @@ enum ModuleArtwork {
     ]
 
     private static let commandNames = [
+        "search-downloads": "downloads",
+        "theme-studio": "theme-studio",
+        "switch-theme": "theme-switch",
+        "ai-polish": "ai-polish",
+        "ai-summarize": "ai-summarize",
+        "dictate": "dictation",
+        "dictate-to-note": "dictation-note",
+        "dictate-to-ai": "dictation-ai",
+        "dictation-history": "dictation-history",
+        "dictation-last": "dictation-last",
+        "create-dictation-style": "dictation-style",
+        "add-dictation-word": "dictation-vocabulary",
+        "paste-sequentially": "clipboard-sequence",
+        "reset-paste-sequence": "clipboard-reset",
+        "clipboard-ai-chat": "ai-chat",
+        "clipboard-ai-ask": "ai-chat",
+        "clipboard-ai-summarize": "ai-summarize",
+        "clipboard-ai-translate": "translator",
+        "search-apple-notes": "notes-search",
+        "create-apple-note": "notes-create",
+        "apple-note-ai-chat": "ai-chat",
+        "apple-note-ai-summarize": "ai-summarize",
+        "apple-note-ai-polish": "ai-polish",
+        "apple-note-ai-todos": "notes-todos",
+        "search-quicklinks": "quicklink-search",
+        "manage-quicklinks": "quicklink-search",
+        "create-quicklink": "quicklink-create",
+        "import-quicklinks": "quicklink-import",
+        "export-quicklinks": "quicklink-export",
+        "dismiss-notifications": "notifications-clear",
+        "eject-all-disks": "eject-disks",
+        "empty-trash": "trash-empty",
+        "log-out": "log-out",
+        "next-track": "media-next",
+        "open-trash": "trash-open",
+        "play-pause": "media-play",
+        "previous-track": "media-previous",
+        "quit-all-applications": "quit-apps",
+        "quit-other-applications": "quit-apps",
+        "restart-mac": "restart",
+        "restart-frontmost-application": "restart",
+        "set-output-volume": "volume-set",
+        "show-desktop": "desktop",
+        "show-screen-saver": "screen-saver",
+        "shut-down": "power-off",
+        "toggle-bluetooth": "bluetooth",
+        "toggle-hidden-files": "hidden-files",
+        "toggle-stage-manager": "stage-manager",
+        "toggle-system-appearance": "theme-switch",
+        "volume-down": "volume-down",
+        "volume-up": "volume-up",
+        "capture-keylane-window": "capture-window",
+        "check-extension-updates": "extension-updates",
+        "copy-keylane-logs": "logs-copy",
+        "copy-keylane-version": "version-copy",
+        "import-settings": "import-settings",
+        "open-keylane-website": "website",
+        "open-keylane-github": "source-code",
+        "quit-keylane": "log-out",
+        "reveal-keylane-logs": "logs-folder",
+        "send-keylane-feedback": "feedback",
+        "share-keylane": "share",
+        "keylane-extension-store": "extension-store",
         "settings": "general", "show-onboarding": "launcher",
         "quick-ai": "ai", "ai-chat": "ai-chat", "translate": "translator",
         "ask-files": "ai", "ask-finder": "ai",
         "calculator": "calculator", "calculator-hint": "calculator", "calculator-help": "calculator",
-        "screenshot": "capture-screen", "paste-latest-screenshot": "paste-screenshot", "color": "color-picker", "speak": "read-aloud",
+        "screenshot": "screenshots", "paste-latest-screenshot": "paste-screenshot", "color": "color-picker", "speak": "read-aloud",
         "stop-speaking": "read-aloud", "finder": "file-search",
         "switch-windows": "navigation", "search-menu-items": "navigation",
         "contacts": "contacts", "dictionary": "dictionary", "dictionary-query": "dictionary",
@@ -67,15 +131,34 @@ enum ModuleArtwork {
         if id.rawValue.hasPrefix("quicklink:") { return settings("links") }
         if id.rawValue.hasPrefix("ai-command:") { return image("ai-commands") }
         if id.rawValue.hasPrefix("translate:") { return settings("translator") }
+        if id.rawValue.hasPrefix("set-output-volume-") { return image("volume-set") }
         return settingsPage.flatMap(settings) ?? moduleID.flatMap(module)
+    }
+
+    private static func nativeArtwork(_ icon: NSImage) -> NSImage {
+        // Native app icons include a larger safe area than the module PNGs.
+        NSImage(size: NSSize(width: 128, height: 128), flipped: false) { rect in
+            icon.draw(in: rect.insetBy(dx: -8, dy: -8))
+            return true
+        }
     }
 
     private static func image(_ name: String) -> NSImage? {
         let key = name as NSString
         if let cached = cache.object(forKey: key) { return cached }
+        if name == "keylane-app" {
+            let icon = Bundle.main.url(forResource: "Keylane", withExtension: "icns").flatMap { NSImage(contentsOf: $0) }
+                ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "org.keylane.launcher")
+                    .map { NSWorkspace.shared.icon(forFile: $0.path) }
+            guard let icon else { return nil }
+            let artwork = nativeArtwork(icon)
+            cache.setObject(artwork, forKey: key)
+            return artwork
+        }
         if name == "shortcuts",
            let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.shortcuts") {
-            let artwork = NSWorkspace.shared.icon(forFile: application.path)
+            let icon = NSWorkspace.shared.icon(forFile: application.path)
+            let artwork = nativeArtwork(icon)
             cache.setObject(artwork, forKey: key)
             return artwork
         }
