@@ -102,6 +102,29 @@ import SwiftUI
     precondition(historyMessages.contains { $0.images.first == image })
     print("PASS shared session: Quick AI → Chat preserves active visual turn without resending; follow-up retains image")
 
+    // Delayed MainActor scheduling must not be mistaken for a failed debounced save.
+    let instructionSession = AIConversationSession(configuration: configuration, runtime: AIRuntime(configuration: sessionConfiguration), history: repository, readKey: { _ in preconditionFailure("History edits cannot request credentials") })
+    instructionSession.beginChat()
+    instructionSession.openChat(record.id)
+    let openDeadline = ContinuousClock.now + .seconds(5)
+    while instructionSession.loadingChat && ContinuousClock.now < openDeadline { try await Task.sleep(for: .milliseconds(10)) }
+    precondition(instructionSession.chatID == record.id)
+    let beforeEdit = instructionSession.chats.first { $0.id == record.id }!.updated
+    DispatchQueue.main.async { Thread.sleep(forTimeInterval: 0.6) }
+    instructionSession.chatInstructions = "Synthetic instruction persistence"
+    try await Task.sleep(for: .milliseconds(450))
+    func loadInstructionRecord() async throws -> AIChatRecord? {
+        try await withCheckedThrowingContinuation { reply in repository.perform({ try $0.load(record.id) }) { reply.resume(with: $0) } }
+    }
+    let earlyRecord = try await loadInstructionRecord()
+    let saveDeadline = ContinuousClock.now + .seconds(5)
+    while instructionSession.chats.first(where: { $0.id == record.id })!.updated <= beforeEdit && ContinuousClock.now < saveDeadline {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    let savedInstructionRecord = try await loadInstructionRecord()
+    precondition(savedInstructionRecord?.content.instructions == "Synthetic instruction persistence")
+    print("PASS history save synchronization: early fixed-delay snapshot stale=\(earlyRecord?.content.instructions != "Synthetic instruction persistence"); committed-write barrier preserves exact instructions")
+
     let view = NSHostingView(rootView: VStack(spacing: 16) {
         AIConversationAttachmentLabel(attachment: attachment)
         AIVisualRegionPreview(image: cropped, region: .constant(CGRect(x: 0.2, y: 0.1, width: 0.6, height: 0.7)))
