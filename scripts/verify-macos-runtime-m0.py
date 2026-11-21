@@ -87,15 +87,7 @@ def classify(first, second, coverage):
     return 'passed', []
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--report', type=Path, required=True)
-    parser.add_argument('--archive', type=Path, help='Reuse the official archive; the pinned digest is still mandatory')
-    args = parser.parse_args()
-    if sys.platform != 'darwin' or platform.machine() != 'arm64':
-        raise SystemExit('M0 currently supports only an isolated arm64 macOS test host')
-    if args.report.exists():
-        raise SystemExit('Refusing to overwrite an existing experiment report')
+def resolve_identity():
     # Resolve existing credentials without creating/changing the repository pin.
     sys.path.insert(0, str(ROOT / 'scripts'))
     import signing
@@ -107,7 +99,19 @@ def main():
         if len(matches) != 1:
             raise SystemExit('Set KEYLANE_SIGNING_IDENTITY to an existing Apple Development identity')
         os.environ['KEYLANE_SIGNING_IDENTITY'] = matches[0]
-    identity = signing.signing_identity(require_apple_development=True)
+    return signing.signing_identity(require_apple_development=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--archive', type=Path, help='Reuse the official archive; the pinned digest is still mandatory')
+    args = parser.parse_args()
+    if sys.platform != 'darwin' or platform.machine() != 'arm64':
+        raise SystemExit('M0 currently supports only an isolated arm64 macOS test host')
+    if args.report.exists():
+        raise SystemExit('Refusing to overwrite an existing experiment report')
+    identity = resolve_identity()
     marker = uuid.uuid4().hex
     result = dict(schema=1, runtime=f'node-v{VERSION}-darwin-arm64', archiveSHA256=SHA256,
                   fixtureOnly=True, installed=False, gate='not-evaluated', cases={},

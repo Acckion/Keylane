@@ -1,6 +1,6 @@
 # macOS 扩展运行体系与 VM 移除设计
 
-状态：设计完成；M0 首轮签名探针已实现，候选隔离未通过，M1–M5 未开始。日期：2026-11-21。
+状态：设计完成；M0 两轮签名探针已实现，候选隔离仍未通过，M1–M5 未开始。日期：2026-11-21。
 关联：EXT-01、EXT-02、BASE-11；前序架构 #218 → #221 → #223，商店草稿 #222。
 
 ## 1. 决策与当前基线
@@ -209,3 +209,29 @@ M0到M4新实现保持开发态且对普通用户不可达，#222继续草稿；
 本批本地回归：403 项 Swift 测试、32 项 Python 脚本/安全判定测试通过；M0 探针 Apple Development 签名与 entitlements 执行前后校验通过，但隔离门槛仍为 blocked。生产应用的 Release 包检查与准确提交记录另行报告，不将这些检查计入 M0 安全通过。
 
 交付补验：`4d90cdf` 对应源码完成 Release 构建；ARM64 1.0.2/build 27 临时 DMG 使用本机 Apple Development 签名，布局、元数据、许可证、文件清单、架构和签名校验通过，未安装或发布。探针未进入该产品包，安装包通过不能证明新扩展隔离可用。
+
+## 13. M0 第二批：固定槽位、进程组与 FD（2026-11-21）
+
+用户再次明确选择**保留严格隔离目标，继续 M0**。不切换受信扩展模式、不恢复 VM；在未通过前不接通第三方执行或进入 M1。
+
+新增 `GroupHelper.m` 和 `verify-macos-runtime-slots.py`。两个固定 Bundle ID 的 helper 在执行前签名，Node继承原权限；使用公开 `posix_spawnattr_setpgroup` 将 Node 放进宿主为 helper 创建的进程组，`POSIX_SPAWN_CLOEXEC_DEFAULT` 配合stdio显式继承关闭多余FD。helper若未处于自身进程组则退出78，避免对调用者既有组操作。不修改生产签名/权利/运行入口。
+
+[去标识实测报告](evidence/macos-runtime-m0/fixed-slots-probe.json)：
+
+| 检查 | 正对照与结果 | 判定范围 |
+|---|---|---|
+| B读A的合成容器文件 | A确认文件存在且能读；B返回EPERM | 固定槽位之间的该路径隔离成立；不能推广为所有IPC/Keychain/共享资源已隔离 |
+| 继承文件描述符 | 普通Node可读取显式传入的合成FD；helper后的Node返回EBADF | 本次stdio以外的FD关闭成立 |
+| 普通后代退出 | Node与其普通后代同helper组，组终止后均退出 | 修正上一批Foundation.Process自动分组带来的这条清理缺口 |
+| 非自有进程组启动 | helper返回78，不启动Node | 不加入宿主既有进程组 |
+| 同槽位复用读旧文件 | 仍然成功 | 槽位重分配前必须完整隔离/清理；仅换扩展代次不能阻止raw fs读残留 |
+| 主动脱离组的后代 | 脱离成功，原组终止后仍运行 | `killpg`不是严格不可信进程树终止证明，不能据普通后代通过而放行 |
+| 任意固定系统程序/Node子进程 | 仍然允许，子Node仍被拒绝宿主文件读取 | 有沙箱继承，不等于满足原设计的进程创建准入要求 |
+
+脚本仍返回2/blocked。测试器按已记录身份清理首方逃离组进程，确认退出，并在临时文件清理完成后才生成报告；这不是对未知恶意后代的监督实现。旧基线复测仍为原四项blocked，未删除或改判。当前微型样例也不更新资源预算。
+
+本批没有引入RuntimeSupervisor产品接口，因为其强制撤销不变量尚不能由候选证明。下一项M0需先研究不向扩展暴露任意进程创建原语的受限执行核心，以及槽位重分配的完整无残留证明；不能靠JS拦截、全局killall、PID扫描或扫描删除用户容器伪装达标。如需更换JS引擎/收窄Node兼容范围，先列出公开API/依赖兼容差异，不直接改变现有兼容声明。Keychain、native addon、直接宿主服务、伪造peer与宿主断联仍未覆盖。
+
+实现参考：[Apple posix_spawnattr_setpgroup](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/posix_spawnattr_setpgroup.3.html)。本批仅用公开API，未使用私有沙箱接口、废弃sandbox-exec或新的VM方案。
+
+第二批交付检查：403 项 Swift、40 项 Python 测试通过，版本和文档链接检查通过；生产源码未改，复验同基线 Apple Development 签名包的布局/元数据/许可证/文件清单/架构/签名通过。新helper未进入产品包；两轮探针均明确返回2/blocked，结束后确认无自建Node/helper遗留。未安装、推送或更改其他PR。

@@ -13,8 +13,8 @@ const attempt = (name, action) => {
 };
 const config = CONFIG_PLACEHOLDER;
 (async () => {
-  if (config.mode === 'hang') {
-    const child = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  if (config.mode === 'hang' || config.mode === 'detached') {
+    const child = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: config.mode === 'detached' });
     console.log(JSON.stringify({ ready: true, pid: process.pid, descendant: child.pid }));
     setInterval(() => {}, 1000);
     return;
@@ -54,6 +54,12 @@ const config = CONFIG_PLACEHOLDER;
   if (config.mode === 'read') for (const name of [config.containerName, config.previousName]) {
     try { fs.unlinkSync(path.join(container, name)); } catch {}
   }
+  if (config.slotTarget) attempt('foreignSlotRead', () => fs.readFileSync(config.slotTarget));
+  if (config.mode === 'slotWrite') report.fixturePath = target;
+  if (config.probeFD !== undefined) attempt('inheritedDescriptor', () => {
+    if (fs.readFileSync(config.probeFD, 'utf8') !== config.marker) throw Error('wrong fixture');
+  });
+  if (config.mode === 'slotClean') attempt('markerCleanup', () => fs.unlinkSync(target));
   report.rssBytes = process.memoryUsage().rss;
   console.log(JSON.stringify(report));
 })().catch(() => process.exit(71));

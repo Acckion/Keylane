@@ -60,3 +60,39 @@ connections, descriptor inheritance, forged-peer admission and full native
 crash/host-disconnect behavior. They must not be silently counted as denials.
 M1 and third-party execution remain unavailable; the production VM path was not
 changed by this experiment.
+
+## Second candidate: fixed signed slots
+
+```sh
+python3 scripts/verify-macos-runtime-slots.py --report /private/tmp/keylane-m0-slots-report.json
+```
+
+It shares the original runtime lock/signature policy. `--archive` accepts only
+the same digest-verified official archive. `GroupHelper.m` uses public
+`posix_spawn` flags to join the helper-owned session group and close all FDs
+except explicit stdin/out/err. It refuses launch outside its own group (exit78).
+Two predeclared Bundle IDs are signed before running; production would not need
+to sign a new helper per extension. No app/Node receives extra permissions.
+
+Positive controls intentionally pass a synthetic FD to a direct Node; the same
+FD is passed to the helper but must not reach Node. Slot A writes a random
+marker, Slot B attempts that exact existing path, and A rereads it as a positive
+control. Marker cleanup happens through each owning slot, not by recursively
+removing containers. The lifecycle cases cover both a normal descendant and
+`detached:true`, which attempts to create a separate process group/session.
+The harness cleans only recorded first-party PIDs after rechecking their paths;
+this is not a production solution for hostile descendants. All lifecycle results
+retain the failed group-cancellation observation before harness cleanup.
+
+Observed: cross-slot read denied (EPERM), extra FD closed (EBADF), cooperative
+Node descendants exited with the helper group. However same-slot reuse exposed
+the old marker, arbitrary subprocesses remained allowed, and the detached
+first-party descendant escaped group cancellation. Therefore exit2/blocked.
+See [report](../../../docs/evidence/macos-runtime-m0/fixed-slots-probe.json).
+The original baseline still returns blocked and its gate was not relaxed.
+
+The temporary bundle directory may get a Finder `.DS_Store` during removal.
+Cleanup retries ENOTEMPTY at most three times, only for this run's mkdtemp root;
+permission failures are never swallowed. The experiment report is written only
+after process and temporary-artifact cleanup is confirmed. Normal CI executes
+only the non-signing verdict/cleanup tests, not the signed experiment.
