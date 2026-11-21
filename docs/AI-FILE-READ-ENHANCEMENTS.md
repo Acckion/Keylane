@@ -1,6 +1,6 @@
 # AI-13-b：Office、显式扫描 PDF OCR 与 Grep 正则
 
-基线 dev `37dac2e`，独立分支 `feat/ai-file-read-enhancements`。本批补齐读取能力；不增加写入权限，也不改变 #215 的不覆盖创建、#224 的每页确认或 #217 的请求域搜索引用。未安装、未调用真实提供商，未读取用户资料。
+[PR #228](https://github.com/Acckion/Keylane/pull/228)，实现 `9e0c43e`。基线 dev `37dac2e`，独立分支 `feat/ai-file-read-enhancements`。本批补齐读取能力；不增加写入权限，也不改变 #215 的不覆盖创建、#224 的每页确认或 #217 的请求域搜索引用。未安装、未调用真实提供商，未读取用户资料。
 
 ## 公共读取架构
 
