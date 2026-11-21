@@ -32,7 +32,7 @@ enum FileAIContextSource {
                     return text
                 }.joined(separator: "\n\n")
                 guard try version() == before else { throw AIActionError.staleSource }
-                return AIActionContext(sourceID: "selected-files", title: "\(files.count) 个所选文件", text: "Question:\n" + question + "\n\nFile context:\n" + content, fingerprint: before)
+                return AIActionContext(sourceID: AIActionContext.digest(String(decoding: try JSONEncoder().encode(files.map(\.standardizedFileURL.absoluteString)), as: UTF8.self)), title: "\(files.count) 个所选文件", text: "Question:\n" + question + "\n\nFile context:\n" + content, fingerprint: before)
             }
             return try await withTaskCancellationHandler { try await preparation.value } onCancel: { preparation.cancel() }
         }, isCurrent: { context in

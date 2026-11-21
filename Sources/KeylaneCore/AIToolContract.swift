@@ -172,17 +172,20 @@ public struct AIToolCall: Codable, Equatable, Sendable {
 public struct AIToolResult: Codable, Equatable, Sendable {
     public let text: String
     public let isError: Bool
+    /// Host metadata only; transports send text, never a resource URI as read authority.
+    public let resourceSnapshot: AIResourceSnapshot?
 
-    private enum CodingKeys: String, CodingKey { case text, isError }
+    private enum CodingKeys: String, CodingKey { case text, isError, resourceSnapshot }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        try self.init(text: values.decode(String.self, forKey: .text), isError: values.decode(Bool.self, forKey: .isError))
+        try self.init(text: values.decode(String.self, forKey: .text), isError: values.decode(Bool.self, forKey: .isError), resourceSnapshot: values.decodeIfPresent(AIResourceSnapshot.self, forKey: .resourceSnapshot))
     }
 
-    public init(text: String, isError: Bool = false) throws {
+    public init(text: String, isError: Bool = false, resourceSnapshot: AIResourceSnapshot? = nil) throws {
         guard text.utf8.count <= 32_768 else { throw AIToolContractError.invalidResult }
         self.text = text
-        self.isError = isError
+        guard resourceSnapshot == nil || (!isError && resourceSnapshot?.matches(text) == true && (resourceSnapshot?.revision.utf8.count ?? 0) <= 16_384) else { throw AIToolContractError.invalidResult }
+        self.isError = isError; self.resourceSnapshot = resourceSnapshot
     }
 }
 

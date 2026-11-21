@@ -954,8 +954,13 @@ final class LauncherModuleRegistry {
     @MainActor var availableAITools: [AIToolRegistration] {
         modules.flatMap { module in
             module.aiTools.map { contribution in
-                let frozen = contribution.forRun()
+                // Catalog browsing is metadata-only. The conversation freezes the
+                // selected provider leases immediately before request dispatch.
+                let frozen = contribution
                 var tool = frozen
+                // Module ownership is assigned here, never trusted from a contribution.
+                tool.owner = module.id
+                tool.ownerTitle = module.displayTitle
                 let generation = toolGenerations[module.id]
                 let activation = activation(for: module.id)
                 tool.available = { [weak self] in

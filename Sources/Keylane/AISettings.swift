@@ -22,12 +22,16 @@ enum AIModule {
             .appendingPathComponent("Keylane/AI/history.sqlite")
         let quickAI = AIConversationSession(configuration: configuration, runtime: runtime,
                                         history: AIConversationRepository(url: historyURL), preferredQuickModel: { interaction.preferredModelID })
-        quickAI.configureTools(preferences: interaction) { [weak model, weak quickAI] in
+        quickAI.configureTools(preferences: interaction, discovery: AIFileToolProvider.discovery) { [weak model, weak quickAI] in
             guard let model, let quickAI else { return [] }
             let tools = (model.launcherModules?.availableAITools ?? []) + AIFileToolProvider.registrations(
                 preferences: model.aiFileAccess, project: quickAI.currentProject,
                 currentProject: { [weak quickAI] in quickAI?.currentProject }, index: model.fileSearch.aiToolIndexSource())
-            return tools + [AIFileToolProvider.discovery(tools)]
+            return tools.map { registration in
+                var copy = registration
+                if copy.owner == nil { copy.owner = .init(rawValue: "keylane.ai"); copy.ownerTitle = "AI" }
+                return copy
+            }
         }
         let chat = AIChatWindow(controller: quickAI, configuration: configuration, interaction: interaction,
                                 appearance: model.$appearance.eraseToAnyPublisher())
@@ -51,10 +55,10 @@ enum AIModule {
                 registry.availabilityChanges.map { registry.isCommandModuleEnabled(commandID) },
                 configuration.$state.map(\.enabled)
             ).eraseToAnyPublisher()
-            quickAI.composer.loadAttachments(availability: availability) {
-                let context = try await guarded.load()
-                return [.init(title: context.title, text: context.text, symbol: "doc.text")]
-            }
+            quickAI.composer.loadResourceReaders([.init(source: guarded, available: { [weak model, weak registry] in
+                guard let model, let registry else { return false }
+                return configuration.state.enabled && registry.isCommandModuleEnabled(commandID) && !model.disabledCommands.contains(commandID.rawValue)
+            })], availability: availability)
             if quickAI.isInChat { openChat("") }
             else { model.openPageWithExistingDraft(QuickAILauncher.pageID) }
             return true

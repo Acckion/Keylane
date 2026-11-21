@@ -384,11 +384,11 @@ public actor AIFileToolService {
                 // For creates the absent target is now present; parent/root identity still must match.
                 try validate(plan, checkTarget: !["keylane_write_file", "keylane_create_directory"].contains(plan.tool))
                 for entry in disclosed { try validateDisclosure(entry, root: plan.roots[0]) }
-                guard let session else { return try output(values) }
+                guard let session else { return try output(values, plan: plan) }
                 return try session.publish(consuming: plan.continuation == nil ? nil : string(arguments, "cursor"),
                                            expected: plan.continuation, next: continuation, lease: lease) { token in
                     if let token { values["cursor"] = .string(token) }
-                    return try output(values)
+                    return try output(values, plan: plan)
                 }
             } }
         } catch {
@@ -663,7 +663,18 @@ public actor AIFileToolService {
         return (["path": .string(plan.relativePath), "type": .string(key == "entries" ? "directory" : "search_results"), key: .array(page), "next_offset": more ? .number(Double(next)) : .null,
             "truncated": .bool(sourceTruncated || more), "source_truncated": .bool(sourceTruncated)], reference)
     }
-    private func output(_ values: [String: AIToolValue]) throws -> AIToolResult { try .init(text: String(decoding: JSONEncoder().encode(values), as: UTF8.self)) }
+    private func output(_ values: [String: AIToolValue], plan: Prepared) throws -> AIToolResult {
+        let text = String(decoding: try JSONEncoder().encode(values), as: UTF8.self)
+        // A page is an immutable extraction of the already authorized original version.
+        // Continuation remains a separate run-bound cursor and never resolves this URI.
+        let snapshot: AIResourceSnapshot?
+        if plan.sourceTool == "keylane_read_file", let revision = plan.fileRevision {
+            let reference = try AIResourceReference(moduleID: .init(rawValue: "keylane.files"),
+                sourceID: URL(fileURLWithPath: plan.localTarget).standardizedFileURL.absoluteString)
+            snapshot = .init(reference: reference, revision: revision, text: text)
+        } else { snapshot = nil }
+        return try .init(text: text, resourceSnapshot: snapshot)
+    }
     private func hasBinaryControls(_ text: String) -> Bool { text.unicodeScalars.contains { $0.value < 32 && ![9, 10, 13].contains($0.value) } }
     private func string(_ args: [String: AIToolValue], _ key: String) -> String { if case .string(let text) = args[key] { return text }; return "" }
     private func integer(_ args: [String: AIToolValue], _ key: String, default value: Int) -> Int { if case .number(let n) = args[key], n.isFinite, n.rounded() == n, n >= 0, n <= 1_073_741_824 { return Int(n) }; return value }
