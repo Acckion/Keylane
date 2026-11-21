@@ -93,7 +93,7 @@
 | AI-03 | 项目、指令、会话归组与附件目录 | 部分实现 | 项目跨会话上下文、自动归档和工作目录语义待对照 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[参考](https://manual.raycast.com/ai/projects) |
 | AI-04 | 附件、选中文字、日历及截图文字上下文 | 部分实现 | 统一上下文发现、来源权限与迟到结果处理；关注 PR #212 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[在途 PR](https://github.com/Acckion/Keylane/pull/212) |
 | AI-05 | Screen Awareness 的窗口/区域/整屏视觉上下文 | 待合并 | 图像文件、单窗口/窗口内区域的 AX+OCR+视觉模型已实现并合成验证；真实应用/权限待实机验收，整屏/跨窗口区域及 CLI 图像后续支持 | [PR #229](https://github.com/Acckion/Keylane/pull/229)、[视觉上下文](AI-VISUAL-CONTEXT.md)、[参考](https://manual.raycast.com/ai/screen-awareness) |
-| AI-05-a | 辅助功能窗口文字与视觉传输 | 待合并 | 共享附件/历史和 HTTP 图像编码；独立 AX 文字入口不依赖屏幕录制；407+5 项 Swift、8 条模拟视觉协议与旧会话回归通过 | [架构与验证](AI-VISUAL-CONTEXT.md) |
+| AI-05-a | 辅助功能窗口文字与视觉传输 | 待合并 | 共享附件/历史和 HTTP 图像编码；独立 AX 文字入口不依赖屏幕录制；408+5 项 Swift、8 条模拟视觉协议与旧会话/听写回归通过 | [架构与验证](AI-VISUAL-CONTEXT.md) |
 | AI-06 | AI 润色、摘要及自定义文本命令 | 部分实现 | 选区、输出替换、模型切换和命令导入完整验收 | [实现](../Sources/Keylane/AITextCommandLauncher.swift)、[参考](https://manual.raycast.com/ai/ai-commands) |
 | AI-07 | 模型、API Key、自定义提供方和 YAML | 部分实现 | 特殊云资源和多凭据提供方的一键配置仍有缺口 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/custom-providers) |
 | AI-08 | 自动发现/缓存模型、失效恢复与任务路由 | 已实现 | 真实账户和各服务商差异继续验收 | [模型目录](AI-PROVIDER-CATALOG.md) |
