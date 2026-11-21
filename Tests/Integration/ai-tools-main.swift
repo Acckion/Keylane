@@ -98,12 +98,55 @@ let toolDefinition = try AIToolDefinition(name: "fixture_add", title: "Synthetic
 var toolsFinished = false
 Task { @MainActor in
     do {
+        let capabilitySuite = "org.keylane.capability.fixture.\(UUID())"
+        let capabilityPreferences = UserDefaults(suiteName: capabilitySuite)!
+        defer { capabilityPreferences.removePersistentDomain(forName: capabilitySuite) }
+        let capabilitySession = AIConversationSession(configuration: AIConfiguration(preferences: capabilityPreferences),
+            runtime: AIRuntime(), readKey: { _ in nil })
+        let capabilityInteraction = AIInteractionPreferences(preferences: capabilityPreferences)
+        let firstOwner = ModuleID(rawValue: "fixture.a"), secondOwner = ModuleID(rawValue: "fixture.b")
+        var firstLeaseCount = 0, secondLeaseCount = 0
+        var firstTool = AIToolRegistration(definition: toolDefinition) { _ in try .init(text: "a") }
+        firstTool.owner = firstOwner; firstTool.ownerTitle = "A"
+        firstTool.snapshotAvailability = { firstLeaseCount += 1; return { true } }
+        var secondTool = AIToolRegistration(definition: try .init(name: "fixture_b", title: "B", description: "Fixture")) { _ in try .init(text: "b") }
+        secondTool.owner = secondOwner; secondTool.ownerTitle = "B"
+        secondTool.snapshotAvailability = { secondLeaseCount += 1; return { true } }
+        var discoveryNames: [String] = []
+        capabilitySession.configureTools(preferences: capabilityInteraction, discovery: { tools in
+            discoveryNames = tools.map { $0.definition.name }
+            return .init(definition: try! .init(name: "fixture_discovery", title: "Discover", description: "Fixture")) { _ in try .init(text: "metadata") }
+        }) { [firstTool, secondTool] in [firstTool, secondTool] }
+        precondition(capabilitySession.toolCapabilities.map(\.id) == [firstOwner, secondOwner])
+        precondition(capabilitySession.availableTools.count == 3)
+        capabilitySession.setToolCapability(secondOwner, enabled: false)
+        precondition(capabilitySession.availableTools.map(\.name) == [toolDefinition.name, "fixture_discovery"])
+        precondition(discoveryNames == [toolDefinition.name])
+        precondition(firstLeaseCount == 0 && secondLeaseCount == 0, "Browsing must not snapshot private provider state")
+        capabilityInteraction.toolsEnabled = true
+        let selectedRequest = try capabilitySession.toolRegistrationsForRequest(supportsTools: true)
+        precondition(selectedRequest.map { $0.definition.name } == [toolDefinition.name, "fixture_discovery"])
+        precondition(firstLeaseCount == 1 && secondLeaseCount == 0, "Only selected providers may freeze a lease")
+        capabilitySession.setToolCapability(firstOwner, enabled: false)
+        precondition(capabilitySession.availableTools.isEmpty)
+        capabilityInteraction.toolsEnabled = true
+        let noRequestedTools = try capabilitySession.toolRegistrationsForRequest(supportsTools: false)
+        precondition(noRequestedTools.isEmpty && firstLeaseCount == 1 && secondLeaseCount == 0)
+        capabilitySession.resetToolCapabilities()
+        precondition(capabilitySession.availableTools.count == 3)
+        do { _ = try capabilitySession.toolRegistrationsForRequest(supportsTools: false); preconditionFailure("Unsupported model received tools") }
+        catch AIResponseError.toolsUnavailable { }
+        capabilityInteraction.toolsEnabled = false
+        let globallyDisabledTools = try capabilitySession.toolRegistrationsForRequest(supportsTools: false)
+        precondition(globallyDisabledTools.isEmpty && firstLeaseCount == 1 && secondLeaseCount == 0)
+        print("PASS session module selection, explicit empty catalog and discovery restricted to selected capabilities")
         var performed = 0
         let availability = ToolFixtureAvailability()
         let registration = AIToolRegistration(definition: toolDefinition, available: { availability.allowed }) { arguments in
             performed += 1
             guard case .number(21) = arguments["number"] else { throw AIToolContractError.invalidArguments }
-            return try .init(text: "42")
+            let resource = try AIResourceReference(moduleID: .init(rawValue: "fixture"), sourceID: "synthetic")
+            return try .init(text: "42", resourceSnapshot: .init(reference: resource, revision: "v1", text: "42"))
         }
         func run(_ registrations: [AIToolRegistration]? = nil) throws -> AIToolRun {
             try AIToolRun(registrations: registrations ?? [registration], isCurrent: { true }, approve: { _, _ in true })
@@ -120,6 +163,8 @@ Task { @MainActor in
                 let output = ToolFixtureOutput()
                 let tokens = try await runtime.generate(connection: connection, readKey: { _ in "synthetic-key" }, messages: [.init(role: .user, content: "fixture")], tools: run(), progress: { await output.event($0) }) { await output.append($0) }
                 precondition(output.text == "verified answer" && tokens == 6 && ToolFixtureProtocol.rounds == 2)
+                let wireBodies = String(decoding: try JSONSerialization.data(withJSONObject: ToolFixtureProtocol.bodies), as: UTF8.self)
+                precondition(!wireBodies.contains("keylane-resource"), "Host resource metadata must not be transmitted as authority")
                 precondition(ToolFixtureProtocol.bodies[0]["temperature"] as? Double == 0.2)
                 let thoughts = output.events.compactMap { event -> String? in if case .thinking(_, let delta) = event { return delta }; return nil }.joined()
                 precondition(!thoughts.isEmpty && !thoughts.contains("opaque-fixture"))
@@ -382,7 +427,9 @@ Task { @MainActor in
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [ToolFixtureProtocol.self]
         let session = AIConversationSession(configuration: settings, runtime: AIRuntime(configuration: config), readKey: { _ in "synthetic-key" })
         var count = 0
-        let tool = AIToolRegistration(definition: toolDefinition, requiresConfirmation: true) { _ in count += 1; return try .init(text: "42") }
+        var tool = AIToolRegistration(definition: toolDefinition, requiresConfirmation: true) { _ in count += 1; return try .init(text: "42") }
+        let capabilityOwner = ModuleID(rawValue: "fixture.session-tools")
+        tool.owner = capabilityOwner
         session.configureTools(preferences: interaction, source: { [tool] })
         func pending() async throws -> AIToolApproval {
             let deadline = Date().addingTimeInterval(2)
@@ -407,8 +454,106 @@ Task { @MainActor in
         session.toolApproval.resolve(stale.id, allow: true)
         try await Task.sleep(for: .milliseconds(50))
         precondition(count == 1 && ToolFixtureProtocol.rounds == 1)
+        interaction.toolsEnabled = true
+        session.reset(); ToolFixtureProtocol.rounds = 0
+        precondition(session.submit("Synthetic selection-change fixture"))
+        let selectionApproval = try await pending()
+        session.setToolCapability(capabilityOwner, enabled: false)
+        precondition(!session.running && session.toolApproval.pending == nil && session.availableTools.isEmpty)
+        session.toolApproval.resolve(selectionApproval.id, allow: true)
+        try await Task.sleep(for: .milliseconds(50))
+        precondition(count == 1 && ToolFixtureProtocol.rounds == 1)
+        session.resetToolCapabilities()
+        precondition(!session.running && count == 1 && ToolFixtureProtocol.rounds == 1)
+        print("PASS module selection change cancels pending approval; restore does not resume or resend")
         print("PASS shared tool session: pending Quick AI confirmation transfers to AI Chat without resending; tool disable cancels pending action and rejects stale approval")
     } catch { fatalError("Tool session fixture failed: \(error)") }
     toolSessionFinished = true
 }
 wait("Shared tool session and approval handoff") { toolSessionFinished }
+
+final class InstructionFixtureProtocol: URLProtocol {
+    static var bodies: [[String: Any]] = []
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        do {
+            var data = request.httpBody ?? Data()
+            if data.isEmpty, let stream = request.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var bytes = [UInt8](repeating: 0, count: 4096)
+                while true { let count = stream.read(&bytes, maxLength: bytes.count); if count <= 0 { break }; data.append(contentsOf: bytes.prefix(count)) }
+            }
+            Self.bodies.append(try JSONSerialization.jsonObject(with: data) as! [String: Any])
+            let object: [String: Any] = request.url!.path.hasSuffix("/messages")
+                ? ["type": "message", "content": [["type": "text", "text": "done"]], "stop_reason": "end_turn"]
+                : ["choices": [["message": ["role": "assistant", "content": "done"], "finish_reason": "stop"]]]
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: try JSONSerialization.data(withJSONObject: object))
+            client?.urlProtocolDidFinishLoading(self)
+        } catch { client?.urlProtocol(self, didFailWithError: error) }
+    }
+}
+var moduleInstructionsFinished = false
+Task { @MainActor in
+    do {
+        for wire in [AIWireProtocol.openAI, .anthropic] {
+            let suite = "keylane.instructions." + UUID().uuidString
+            let prefs = UserDefaults(suiteName: suite)!
+            defer { prefs.removePersistentDomain(forName: suite) }
+            let connection = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "synthetic", mode: .complete, wireProtocol: wire)
+            prefs.set(try JSONEncoder().encode(AIConfiguration.State(enabled: true, connections: [connection], selectedID: connection.id)), forKey: "aiConnections.v1")
+            let configuration = AIConfiguration(preferences: prefs)
+            let interaction = AIInteractionPreferences(preferences: prefs); interaction.toolsEnabled = true
+            let transport = URLSessionConfiguration.ephemeral; transport.protocolClasses = [InstructionFixtureProtocol.self]
+            let session = AIConversationSession(configuration: configuration, runtime: AIRuntime(configuration: transport), readKey: { _ in nil })
+            let firstOwner = ModuleID(rawValue: "fixture.first"), otherOwner = ModuleID(rawValue: "fixture.other")
+            var leases = 0
+            var first = AIToolRegistration(definition: try .init(name: "fixture_first", title: "First", description: "Fixture")) { _ in try .init(text: "data") }
+            first.owner = firstOwner; first.moduleInstructions = .init("FIRST_ONLY_GUIDANCE")
+            first.snapshotAvailability = { leases += 1; return { true } }
+            var other = AIToolRegistration(definition: try .init(name: "fixture_other", title: "Other", description: "Fixture")) { _ in try .init(text: "data") }
+            other.owner = otherOwner; other.moduleInstructions = .init("OTHER_ONLY_GUIDANCE")
+            var catalog = [first, other]
+            session.configureTools(preferences: interaction, source: { catalog })
+            session.chatInstructions = "KEEP_USER_INSTRUCTIONS"
+            session.setToolCapability(otherOwner, enabled: false)
+            InstructionFixtureProtocol.bodies = []
+            precondition(leases == 0 && session.submit("Synthetic instruction test"))
+            catalog[0].moduleInstructions = .init("LATER_CATALOG_GUIDANCE")
+            let deadline = Date().addingTimeInterval(3)
+            while session.running, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(!session.running && session.lastAnswer == "done" && leases == 1)
+            let request = InstructionFixtureProtocol.bodies[0]
+            let system = wire == .anthropic ? request["system"] as! String : (request["messages"] as! [[String: Any]])[0]["content"] as! String
+            precondition(system.contains("FIRST_ONLY_GUIDANCE") && system.hasSuffix("KEEP_USER_INSTRUCTIONS"))
+            precondition(!system.contains("OTHER_ONLY_GUIDANCE") && !system.contains("LATER_CATALOG_GUIDANCE"))
+            let tools = request["tools"] as! [[String: Any]]
+            precondition(tools.count == 1 && session.chatInstructions == "KEEP_USER_INSTRUCTIONS")
+            session.reset(); session.chatInstructions = "KEEP_USER_INSTRUCTIONS"
+            session.setToolCapability(firstOwner, enabled: false)
+            InstructionFixtureProtocol.bodies = []
+            precondition(session.submit("Explicit empty selection"))
+            while session.running { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(session.lastAnswer == "done")
+            let emptyBody = InstructionFixtureProtocol.bodies[0]
+            let emptySystem = wire == .anthropic ? emptyBody["system"] as! String : (emptyBody["messages"] as! [[String: Any]])[0]["content"] as! String
+            precondition(emptySystem == "KEEP_USER_INSTRUCTIONS" && emptyBody["tools"] == nil && leases == 1)
+            session.reset(); session.resetToolCapabilities()
+            catalog[0].moduleInstructions = .init(String(repeating: "x", count: 4097))
+            session.composer.text = "Preserve rejected draft"
+            let turns = session.turns
+            precondition(!session.submit(session.composer.text))
+            precondition(session.composer.text == "Preserve rejected draft" && session.turns == turns && leases == 1)
+            interaction.toolsEnabled = false
+            precondition(session.submit("Globally disabled tools"))
+            while session.running { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(session.lastAnswer == "done" && leases == 1, "Global-off fixture wire=\(wire) status=\(session.status) answer=\(String(describing: session.lastAnswer)) leases=\(leases) requests=\(InstructionFixtureProtocol.bodies.count)")
+        }
+        print("PASS module guidance: selected-only OpenAI/Anthropic requests, atomic tool/instruction metadata snapshot, dispatch-only leases, base preservation, empty/global-off omit guidance, invalid guidance preserves draft")
+    } catch { fatalError("Module instruction fixture failed: \(error)") }
+    moduleInstructionsFinished = true
+}
+wait("Module instruction requests") { moduleInstructionsFinished }
