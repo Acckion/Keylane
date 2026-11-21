@@ -18,9 +18,11 @@ for p in [objects/'Keylane.swiftmodule', *(binary/n for n in ['KeylaneCore.swift
     else: shutil.copy2(p,deps/p.name)
 (task/'objects.rsp').write_text('\n'.join(str(deps/Path(p).name) for p in paths))
 PY
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos26.0" -parse-as-library -module-name ModuleAIFixture \
+task_support_sources=()
+if [[ -n "${KEYLANE_AI_FIXTURE_SUPPORT_SOURCE:-}" ]]; then task_support_sources+=("$KEYLANE_AI_FIXTURE_SUPPORT_SOURCE"); fi
+swiftc -D KEYLANE_LINKED_PRODUCTION_TEST -swift-version 5 -target "$(uname -m)-apple-macos26.0" -parse-as-library -module-name ModuleAIFixture \
     -I "$task_directory/Dependencies" -I "$task_binary_directory/../../../checkouts/Yams/Sources/CYaml/include" \
-    "${KEYLANE_AI_FIXTURE_SOURCE:-Tests/Integration/module-ai-window.swift}" @"$task_directory/objects.rsp" -lsqlite3 \
+    "${KEYLANE_AI_FIXTURE_SOURCE:-Tests/Integration/module-ai-window.swift}" "${task_support_sources[@]}" @"$task_directory/objects.rsp" -lsqlite3 \
     -Xlinker -e -Xlinker _KeylaneModuleAIFixtureMain -o "$task_directory/fixture"
 task_app="$task_directory/ModuleAIFixture.app"
 mkdir -p "$task_app/Contents/MacOS"

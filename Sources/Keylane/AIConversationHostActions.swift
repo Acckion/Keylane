@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 /// Window, pasteboard and dialogs belong to the presentation host.
 enum AIConversationHostActions {
+    enum ImageImportMode { case text, vision }
     static func chooseFiles(composer: AIConversationComposer, directory: URL? = nil, in window: NSWindow? = NSApp.keyWindow) {
         guard let window, window.attachedSheet == nil, !composer.loadingFiles else { return }
         let draft = composer.draftID
@@ -19,7 +20,7 @@ enum AIConversationHostActions {
         }
     }
 
-    static func chooseImage(composer: AIConversationComposer, directory: URL? = nil,
+    static func chooseImage(composer: AIConversationComposer, directory: URL? = nil, mode: ImageImportMode = .text,
                             read: @escaping @Sendable (URL) async throws -> AIConversationAttachment) {
         guard let window = NSApp.keyWindow, window.attachedSheet == nil, !composer.loadingFiles else { return }
         let draft = composer.draftID
@@ -27,7 +28,8 @@ enum AIConversationHostActions {
         panel.canChooseDirectories = false
         panel.directoryURL = directory
         panel.allowedContentTypes = [.image]
-        panel.prompt = "提取文字并添加"
+        panel.prompt = mode == .vision ? "添加图像" : "提取文字并添加"
+        panel.message = mode == .vision ? "图像以静态画面加入草稿后可预览，动图只取第一帧；仅在发送时交给支持视觉的模型。" : "在本机提取图片文字，加入草稿。"
         panel.beginSheetModal(for: window) { [weak composer] response in
             guard response == .OK, let url = panel.url, let composer, composer.draftID == draft else { return }
             composer.loadAttachments { [try await read(url)] }

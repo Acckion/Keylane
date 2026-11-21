@@ -52,9 +52,9 @@ final class AIConversationComposer: ObservableObject {
             switch result {
             case .success(let files):
                 let combined = self.attachments + files
-                guard combined.count <= 5,
+                guard AIConversationAttachment.fits(combined),
                       AIConversationAttachment.requestText(question: self.text, attachments: combined).utf8.count <= 32_000 else {
-                    self.fileError = "问题与附件合计不能超过 32,000 字节，且最多 5 项。"; return
+                    self.fileError = "最多 5 项附件；问题与附件文字合计最多 32,000 字节，图像合计最多 3 MB。"; return
                 }
                 self.attachments = combined
             case .failure(let error): self.fileError = error.localizedDescription
@@ -74,7 +74,7 @@ final class AIConversationComposer: ObservableObject {
         guard !loadingFiles, context.text.utf8.count + answer.utf8.count <= 31_000 else { return false }
         let attachment = AIConversationAttachment(title: context.title, text: "来源内容：\n" + context.text + "\n\nAI 处理结果：\n" + answer, symbol: "sparkles")
         let combined = attachments + [attachment]
-        guard combined.count <= 5, AIConversationAttachment.requestText(question: text, attachments: combined).utf8.count <= 32_000 else { return false }
+        guard AIConversationAttachment.fits(combined), AIConversationAttachment.requestText(question: text, attachments: combined).utf8.count <= 32_000 else { return false }
         attachments = combined
         return true
     }
@@ -93,7 +93,7 @@ final class AIConversationComposer: ObservableObject {
     }
     @discardableResult
     func appendAttachment(_ attachment: AIConversationAttachment, for draft: UUID) -> Bool {
-        guard draftID == draft, attachments.count < 5,
+        guard draftID == draft, AIConversationAttachment.fits(attachments + [attachment]),
               AIConversationAttachment.requestText(question: text, attachments: attachments + [attachment]).utf8.count <= 32_000 else { return false }
         attachments.append(attachment)
         return true
@@ -161,6 +161,12 @@ struct AIConversationAttachment: Identifiable, Codable, Equatable, Sendable {
     let title: String
     let text: String
     var symbol = "doc.text"
+    var image: AIImageInput? = nil
+    var visualSource: AIVisualSource? = nil
+
+    static func fits(_ attachments: [Self]) -> Bool {
+        attachments.count <= 5 && attachments.compactMap(\.image).reduce(0, { $0 + $1.data.count }) <= AIImageInput.maximumRequestBytes
+    }
 
     static func requestText(question: String, attachments: [Self]) -> String {
         guard !attachments.isEmpty else { return question }
