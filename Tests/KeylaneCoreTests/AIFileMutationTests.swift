@@ -169,6 +169,88 @@ final class AIFileMutationTests: XCTestCase {
         succeeded(try await call("restore_file", ["recovery_id": .string(id), "destination_path": .string("recovered")], using: restarted))
         XCTAssertEqual(try content(source.appendingPathComponent("recovered")), "old body")
     }
+    func testDisplacedInodeChangedInPlaceNeverBecomesRecoveryPayload() async throws {
+        try write("file", "approved body")
+        let file = source.appendingPathComponent("file"), native = configuration.rename
+        // Hold the original inode across SWAP, as an uncoordinated editor can.
+        let writer = try FileHandle(forWritingTo: file)
+        defer { try? writer.close() }
+        var config = configuration!
+        config.rename = { from, name, to, target, flags in
+            let result = native(from, name, to, target, flags)
+            if result.code == 0, flags == UInt32(RENAME_SWAP) {
+                try! writer.seek(toOffset: 0)
+                try! writer.write(contentsOf: Data("foreign body!".utf8))
+                try! writer.truncate(atOffset: 13)
+                try! writer.synchronize()
+            }
+            return result
+        }
+        let output = try await call("replace_file", arguments("file", ["content": .string("new body")]), using: AIFileToolService(mutations: config))
+        XCTAssertTrue(output.isError)
+        let id = try value(object(output)["recovery_id"])
+        let record = try JSONDecoder().decode(AIFileRecoveryRecord.self, from: Data(contentsOf: vault.appendingPathComponent(id + ".json")))
+        XCTAssertEqual(record.payload, id + ".original")
+        XCTAssertEqual(try content(vault.appendingPathComponent(id + ".displaced")), "foreign body!")
+        succeeded(try await call("restore_file", ["recovery_id": .string(id), "destination_path": .string("recovered")], using: AIFileToolService(mutations: configuration)))
+        XCTAssertEqual(try content(source.appendingPathComponent("recovered")), "approved body")
+        XCTAssertEqual(try content(file), "new body")
+    }
+    func testInterruptionBeforeDisplacedValidationStillRecoversVerifiedOriginal() async throws {
+        try write("file", "approved body")
+        var config = configuration!; config.afterEffect = { throw CancellationError() }
+        let output = try await call("replace_file", arguments("file", ["content": .string("new body")]), using: AIFileToolService(mutations: config))
+        XCTAssertTrue(output.isError)
+        let id = try value(object(output)["recovery_id"])
+        succeeded(try await call("restore_file", ["recovery_id": .string(id), "destination_path": .string("recovered")], using: AIFileToolService(mutations: configuration)))
+        XCTAssertEqual(try content(source.appendingPathComponent("recovered")), "approved body")
+    }
+    func testMovePersistsRecoveryBeforePostCommitRevocationOrCancellation() async throws {
+        for revokeAccess in [true, false] {
+            let name = revokeAccess ? "revoked" : "cancelled"
+            try write(name, "original " + name)
+            let lease = AIFileAccessLease(), cancellation = AIFileAccessLease()
+            var config = configuration!
+            config.afterEffect = { if revokeAccess { lease.revoke() } else { cancellation.revoke() } }
+            let moving = AIFileToolService(mutations: config)
+            let args = try await arguments(name, ["destination_root": .string("root_2"), "destination_path": .string(name)])
+            let plan = try await moving.prepare("keylane_move_file", arguments: args, scopes: scopes, lease: lease)
+            let output = try await moving.execute(plan, lease: lease, cancellation: cancellation)
+            XCTAssertTrue(output.isError)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: source.appendingPathComponent(name).path))
+            let id = try value(object(output)["recovery_id"])
+            let record = try JSONDecoder().decode(AIFileRecoveryRecord.self, from: Data(contentsOf: vault.appendingPathComponent(id + ".json")))
+            XCTAssertEqual(record.savedIdentity, record.originalIdentity)
+            XCTAssertNotNil(record.savedVersion)
+            // A revoked authorization cannot be reused for restore.
+            await rejects { _ = try await self.call("restore_file", ["recovery_id": .string(id)], lease: leaseWithRevocation()) }
+            succeeded(try await call("restore_file", ["recovery_id": .string(id)], using: AIFileToolService(mutations: configuration)))
+            XCTAssertEqual(try content(source.appendingPathComponent(name)), "original " + name)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent(name).path))
+        }
+    }
+    private func leaseWithRevocation() -> AIFileAccessLease { let lease = AIFileAccessLease(); lease.revoke(); return lease }
+    func testMovedObjectRecoverySurvivesPostCommitRootRelocationWithoutAdoptingReplacement() async throws {
+        try write("file", "approved body")
+        let originalRoot = source!, relocated = base.appendingPathComponent("relocated-root")
+        var config = configuration!
+        config.afterEffect = {
+            try FileManager.default.moveItem(at: originalRoot, to: relocated)
+            try FileManager.default.createDirectory(at: originalRoot, withIntermediateDirectories: false)
+            try Data("replacement root".utf8).write(to: originalRoot.appendingPathComponent("file"))
+        }
+        let args = try await arguments("file", ["destination_root": .string("root_2"), "destination_path": .string("moved")])
+        let output = try await call("move_file", args, using: AIFileToolService(mutations: config))
+        XCTAssertTrue(output.isError)
+        let id = try value(object(output)["recovery_id"])
+        await rejects(.stale) { _ = try await self.call("restore_file", ["recovery_id": .string(id), "destination_path": .string("recovered")]) }
+        XCTAssertEqual(try content(originalRoot.appendingPathComponent("file")), "replacement root")
+        // Put our owned test root back, then independently authorize restoration.
+        try FileManager.default.moveItem(at: originalRoot, to: base.appendingPathComponent("replacement-root"))
+        try FileManager.default.moveItem(at: relocated, to: originalRoot)
+        succeeded(try await call("restore_file", ["recovery_id": .string(id)], using: AIFileToolService(mutations: configuration)))
+        XCTAssertEqual(try content(originalRoot.appendingPathComponent("file")), "approved body")
+    }
     func testUnsupportedSwapDoesNotFallbackAndLeavesOriginalUntouched() async throws {
         try write("file", "old")
         var config = configuration!; config.rename = { _, _, _, _, _ in .init(code: -1, error: ENOTSUP) }
@@ -243,6 +325,46 @@ final class AIFileMutationTests: XCTestCase {
         await rejects(.tooLarge) { _ = try await self.call("replace_file", self.arguments("file", ["content": .string("again")])) }
         succeeded(try await call("restore_file", ["recovery_id": .string(id), "destination_path": .string("recovered")]))
         XCTAssertEqual(try content(source.appendingPathComponent("recovered")), "original")
+    }
+    func testFullJournalRestoreKeepsAllRecordsEnumerableAndOtherBackupRestorable() async throws {
+        var ids: [String] = []
+        for name in ["first", "second"] {
+            try write(name, "original " + name)
+            let edited = try await call("replace_file", arguments(name, ["content": .string("new")]))
+            succeeded(edited); ids.append(try value(object(edited)["recovery_id"]))
+        }
+        let real = try JSONDecoder().decode(AIFileRecoveryRecord.self, from: Data(contentsOf: vault.appendingPathComponent(ids[0] + ".json")))
+        var expectedIDs = Set(ids)
+        for _ in 0..<254 {
+            let token = UUID().uuidString
+            expectedIDs.insert(token)
+            let record = AIFileRecoveryRecord(id: token, operation: "keylane_copy_file", created: Date(), originalRoot: real.originalRoot,
+                originalRootIdentity: real.originalRootIdentity, originalName: "synthetic-copy", originalIdentity: "synthetic", phase: "completed")
+            let url = vault.appendingPathComponent(token + ".json")
+            try JSONEncoder().encode(record).write(to: url); XCTAssertEqual(chmod(url.path, 0o600), 0)
+        }
+        succeeded(try await call("restore_file", ["recovery_id": .string(ids[0]), "destination_path": .string("first-recovered")]))
+        let restarted = AIFileToolService(mutations: configuration)
+        var seen = Set<String>(), recoverable = Set<String>(), offset = 0
+        repeat {
+            let page = try await call("file_recovery", ["offset": .number(Double(offset)), "limit": .number(20)], using: restarted)
+            succeeded(page)
+            let fields = try object(page)
+            guard case .array(let rows) = fields["records"] else { return XCTFail("Missing recovery records") }
+            for row in rows {
+                guard case .object(let fields) = row else { return XCTFail("Invalid recovery row") }
+                seen.insert(try value(fields["operation_id"]))
+                if case .string(let id) = fields["recovery_id"] { recoverable.insert(id) }
+            }
+            if case .number(let next) = fields["next_offset"] { offset = Int(next) } else { break }
+        } while offset < 257
+        XCTAssertEqual(seen, expectedIDs)
+        XCTAssertFalse(recoverable.contains(ids[0])); XCTAssertTrue(recoverable.contains(ids[1]))
+        succeeded(try await call("restore_file", ["recovery_id": .string(ids[1]), "destination_path": .string("second-recovered")], using: restarted))
+        XCTAssertEqual(try content(source.appendingPathComponent("first-recovered")), "original first")
+        XCTAssertEqual(try content(source.appendingPathComponent("second-recovered")), "original second")
+        let journals = try FileManager.default.contentsOfDirectory(at: vault, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
+        XCTAssertEqual(Set(journals.map { $0.deletingPathExtension().lastPathComponent }), expectedIDs)
     }
     func testRootRelocationAfterCommitDoesNotTouchReplacementDirectory() async throws {
         try write("file", "original")

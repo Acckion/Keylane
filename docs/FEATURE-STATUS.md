@@ -104,7 +104,7 @@
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
 | AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 已实现 | #224 已合入，逐页确认与 #217 搜索引用分开保留；真实提供商及安装版待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
 | AI-13-b | Office、显式本机 OCR 与 Grep 正则 | 已实现 | DOCX/XLSX/PPTX 共用读取层；授权根 PDF 可显式 OCR；正则可选，旧 Office 格式及安装版待验收 | [PR #228](https://github.com/Acckion/Keylane/pull/228)、[实现与验证边界](AI-FILE-READ-ENHANCEMENTS.md) |
-| AI-13-c | 文件编辑、移动、废纸篓与恢复 | 待合并 | 普通文件、授权根一级、逐次审批与持久恢复；外部竞态不宣称版本原子比较；真实废纸篓、外部卷及安装版待验收 | [PR #236](https://github.com/Acckion/Keylane/pull/236)、[架构与边界](AI-FILE-MUTATIONS.md) |
+| AI-13-c | 文件编辑、移动、废纸篓与恢复 | 待合并 | 普通文件、授权根一级、逐次审批与持久恢复；审查修复原始备份选择、满额恢复记账及移动后撤权恢复身份；外部竞态不宣称版本原子比较；真实废纸篓、外部卷及安装版待验收 | [PR #236](https://github.com/Acckion/Keylane/pull/236)、[架构与边界](AI-FILE-MUTATIONS.md) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 待合并；同步已合入 #212 的 dev，片段模板/成功结果校验、备忘录附加授权与 Emoji 导入关键词已保留；383 项核心与 5 项提供方测试、合成 AI/Emoji/注册表及签名原生窗口回归通过，真实服务未验收 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |

@@ -160,10 +160,14 @@ extension AIFileToolService {
         var receipt = AIFileRecoveryRecord(id: UUID().uuidString, operation: mutation.tool, created: Date(), originalRoot: root.path,
             originalRootIdentity: mutationIdentity(try status(root.fd)), originalName: plan.relativePath,
             originalIdentity: sourceInfo.map(mutationIdentity) ?? "", phase: "prepared")
+        // A restore to an empty destination consumes its existing journal slot.
+        // It creates no undo payload and must remain possible at the journal limit.
+        let reusesReceipt = isRestore && !replace
+        if reusesReceipt { receipt = mutation.receipt! }
         var effectAttempted = false
         var staged: FD?
+        var stageName: String?
         var originalDigest: Data?
-        var originalBackupPin: FD?
         var displacedIdentity: String?
         func commitNative(_ value: CreationSyscalls.Result) throws {
             if value.code != 0, [EEXIST, ENOTSUP, EOPNOTSUPP, EXDEV, ENOSYS, EINVAL].contains(value.error) { effectAttempted = false }
@@ -195,15 +199,19 @@ extension AIFileToolService {
                 let payload = receipt.id + ".payload"
                 try checkNativeMutation(creationSyscalls.cloneFile(original.raw, vault.directory.raw, payload))
                 let stage = try FD(openat(vault.directory.raw, payload, O_RDWR | O_NOFOLLOW | O_CLOEXEC))
-                staged = stage; receipt.payload = payload
+                staged = stage; stageName = payload
                 let originalBackup = receipt.id + ".original"
                 try checkNativeMutation(creationSyscalls.cloneFile(stage.raw, vault.directory.raw, originalBackup))
                 let expectedBackup = try openChild(vault.directory, originalBackup)
-                originalBackupPin = expectedBackup
                 let backupData = try read(expectedBackup.raw, offset: 0, count: Int(sourceInfo.st_size), check: check)
                 guard Data(SHA256.hash(data: backupData)) == originalDigest else { throw AIFileToolError.stale }
                 guard fsync(expectedBackup.raw) == 0 else { throw AIFileToolError.unavailable }
                 receipt.originalBackup = originalBackup
+                // Only this verified pre-edit snapshot is recoverable. The stage
+                // and displaced inode are private evidence, never fallback payloads.
+                receipt.payload = originalBackup
+                receipt.savedIdentity = mutationIdentity(try status(expectedBackup))
+                receipt.savedVersion = mutationContentVersion(try status(expectedBackup))
                 guard isRegular(try status(stage)), try status(stage).st_nlink == 1 else { throw AIFileToolError.unsupported }
                 try data.withUnsafeBytes { bytes in
                     var offset = 0
@@ -219,7 +227,7 @@ extension AIFileToolService {
                 receipt.destinationRoot = destination.localRoot; receipt.destinationName = destination.relativePath
                 receipt.destinationRootIdentity = mutationIdentity(try status(destination.roots[0].fd))
             }
-            try vault.save(receipt, service: self)
+            if !reusesReceipt { try vault.save(receipt, service: self) }
             let sourceURL = URL(fileURLWithPath: plan.localTarget)
             let coordinator = NSFileCoordinator()
             var coordinationError: NSError?, actionError: Error?
@@ -231,16 +239,29 @@ extension AIFileToolService {
                         if let destination = mutation.destination { try self.validate(destination) }
                         if let recovery = mutation.recovery { try self.validateRecovery(recovery) }
                         if let previous = mutation.receipt { guard try vault.load(previous.id, service: self) == previous else { throw AIFileToolError.stale } }
+                        if reusesReceipt {
+                            receipt.phase = "restore_pending"
+                            try vault.save(receipt, service: self)
+                        }
                         effectAttempted = true
                         switch mutation.tool {
                         case "keylane_copy_file":
                             guard let source = plan.file, let destination = mutation.destination, let size = sourceInfo?.st_size, size <= 67_108_864 else { effectAttempted = false; throw AIFileToolError.tooLarge }
                             try commitNative(self.creationSyscalls.cloneFile(source.raw, destination.roots[0].fd.raw, destination.relativePath))
                         case "keylane_edit_file", "keylane_replace_file":
-                            try commitNative(self.mutationConfiguration.rename(vault.directory.raw, receipt.payload!, root.fd.raw, plan.relativePath, UInt32(RENAME_SWAP)))
+                            try commitNative(self.mutationConfiguration.rename(vault.directory.raw, stageName!, root.fd.raw, plan.relativePath, UInt32(RENAME_SWAP)))
                         case "keylane_move_file":
                             let destination = mutation.destination!
                             try commitNative(self.mutationConfiguration.rename(root.fd.raw, plan.relativePath, destination.roots[0].fd.raw, destination.relativePath, UInt32(RENAME_EXCL)))
+                            // Finalize only identity bookkeeping while the commit
+                            // gate is held, before post-effect cancellation/revocation.
+                            let moved = try self.openChild(destination.roots[0].fd, destination.relativePath)
+                            guard try self.same(moved, plan.file!) else { throw AIFileToolError.mutationUnconfirmed }
+                            let info = try self.status(moved)
+                            receipt.savedIdentity = self.mutationIdentity(info)
+                            receipt.savedVersion = self.mutationContentVersion(info)
+                            receipt.phase = "unconfirmed"
+                            try vault.save(receipt, service: self)
                         case "keylane_trash_file":
                             let moved = try self.mutationConfiguration.trash(sourceURL)
                             let parentPath = Self.systemPath(moved.deletingLastPathComponent().path), name = moved.lastPathComponent
@@ -255,7 +276,7 @@ extension AIFileToolService {
                         case "keylane_restore_file":
                             let recovery = mutation.recovery!
                             if replace {
-                                try commitNative(self.mutationConfiguration.rename(vault.directory.raw, receipt.payload!, root.fd.raw, plan.relativePath, UInt32(RENAME_SWAP)))
+                                try commitNative(self.mutationConfiguration.rename(vault.directory.raw, stageName!, root.fd.raw, plan.relativePath, UInt32(RENAME_SWAP)))
                             } else if mutation.receipt?.payload != nil {
                                 try commitNative(self.creationSyscalls.cloneFile(recovery.file.raw, root.fd.raw, plan.relativePath))
                             } else {
@@ -281,21 +302,15 @@ extension AIFileToolService {
             try mutationConfiguration.afterEffect()
             // Record the actual recoverable object before checking the mutation's
             // final state, so an uncertain swap never deletes an unexpected old file.
-            if let payload = receipt.payload {
+            if let payload = stageName {
                 let saved = try openChild(vault.directory, payload), info = try status(saved)
                 displacedIdentity = mutationIdentity(info)
                 guard displacedIdentity == receipt.originalIdentity, info.st_nlink == 1 else {
                     // Preserve the unexpected displaced object but never turn it
                     // into an AI-readable recovery capability. Offer only the
                     // verified pre-edit backup, not the foreign inode.
-                    if let originalBackupPin {
-                        receipt.payload = receipt.originalBackup
-                        receipt.savedIdentity = mutationIdentity(try status(originalBackupPin))
-                        receipt.savedVersion = mutationContentVersion(try status(originalBackupPin))
-                    }
                     throw AIFileToolError.mutationUnconfirmed
                 }
-                receipt.savedIdentity = displacedIdentity; receipt.savedVersion = mutationContentVersion(info)
                 guard info.st_size <= 1_048_576 else { throw AIFileToolError.mutationUnconfirmed }
                 // Freeze the displaced inode too: an uncoordinated writer may still
                 // hold its old descriptor after SWAP. Both prior copies remain.
@@ -303,8 +318,7 @@ extension AIFileToolService {
                 try checkNativeMutation(creationSyscalls.cloneFile(saved.raw, vault.directory.raw, frozenName))
                 let frozen = try openChild(vault.directory, frozenName), frozenInfo = try status(frozen)
                 guard fsync(frozen.raw) == 0 else { throw AIFileToolError.unavailable }
-                receipt.payload = frozenName
-                receipt.savedIdentity = mutationIdentity(frozenInfo); receipt.savedVersion = mutationContentVersion(frozenInfo)
+                guard frozenInfo.st_size <= 1_048_576 else { throw AIFileToolError.mutationUnconfirmed }
                 let displacedData = try read(frozen.raw, offset: 0, count: Int(frozenInfo.st_size), check: {})
                 if Data(SHA256.hash(data: displacedData)) != originalDigest { throw AIFileToolError.mutationUnconfirmed }
             }
@@ -322,7 +336,6 @@ extension AIFileToolService {
                 let destination = mutation.destination!, file = try openChild(destination.roots[0].fd, destination.relativePath)
                 guard try same(file, plan.file!) else { throw AIFileToolError.mutationUnconfirmed }
                 try absent(root.fd, plan.relativePath)
-                receipt.savedIdentity = mutationIdentity(try status(file)); receipt.savedVersion = mutationContentVersion(try status(file))
             } else if mutation.tool == "keylane_trash_file" {
                 guard receipt.savedIdentity == receipt.originalIdentity else { throw AIFileToolError.mutationUnconfirmed }
                 if let sourceInfo, let file = plan.file, mutationContentVersion(try status(file)) != mutationContentVersion(sourceInfo) { throw AIFileToolError.mutationUnconfirmed }
@@ -336,8 +349,8 @@ extension AIFileToolService {
             for directory in plan.roots.map(\.fd) + (mutation.destination?.roots.map(\.fd) ?? []) {
                 guard fsync(directory.raw) == 0 else { throw AIFileToolError.unavailable }
             }
-            receipt.phase = "completed"; try vault.save(receipt, service: self)
-            if isRestore, var previous = mutation.receipt { previous.phase = "restored"; try vault.save(previous, service: self) }
+            receipt.phase = reusesReceipt ? "restored" : "completed"; try vault.save(receipt, service: self)
+            if isRestore, !reusesReceipt, var previous = mutation.receipt { previous.phase = "restored"; try vault.save(previous, service: self) }
             var values: [String: AIToolValue] = ["root": .string(plan.rootID), "path": .string(plan.relativePath), "completed": .bool(true), "operation_id": .string(receipt.id)]
             if receipt.mayRecover { values["recovery_id"] = .string(receipt.id) }
             if let destination = mutation.destination { values["destination_root"] = .string(destination.rootID); values["destination_path"] = .string(destination.relativePath) }
@@ -346,8 +359,10 @@ extension AIFileToolService {
         } catch {
             // Known no-effect errors from EXCL/SWAP may be retried only via a new
             // preparation/approval. Unknown errors and cancellation preserve state.
-            receipt.phase = effectAttempted ? "unconfirmed" : "not_committed"
-            try? vault.save(receipt, service: self)
+            if !reusesReceipt || effectAttempted {
+                receipt.phase = effectAttempted ? "unconfirmed" : "not_committed"
+                try? vault.save(receipt, service: self)
+            }
             if effectAttempted { return try result(["error": .string(AIFileToolError.mutationUnconfirmed.localizedDescription), "operation_id": .string(receipt.id), "recovery_id": receipt.mayRecover ? .string(receipt.id) : .null], error: true) }
             throw error
         }
