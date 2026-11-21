@@ -19,25 +19,25 @@ enum AIBuiltinTools {
     private static let count = AIToolParameter("limit", description: "最多返回条数，默认10", kind: .integer(minimum: 1, maximum: 20), required: false)
 
     static var time: [AIToolRegistration] {
-        [.init(definition: definition("keylane_time", "读取时间", "获取当前时间与时区。")) { _ in
+        [.init(definition: definition("keylane_time", "读取时间", "获取当前时间与时区。"), impact: .publicRead) { _ in
             try .init(text: Date().ISO8601Format() + " | " + TimeZone.current.identifier)
         }]
     }
     static var calculator: [AIToolRegistration] {
         [.init(definition: definition("keylane_calculate", "计算", "用 Keylane 计算器计算数学表达式，不执行代码。", [
-            .init("expression", description: "数学表达式", kind: .string(maximumLength: 512))])) { arguments in
+            .init("expression", description: "数学表达式", kind: .string(maximumLength: 512))]), impact: .computation) { arguments in
             guard let result = CalculatorLanguage.evaluate(try text(arguments, "expression")) else { throw AIToolContractError.invalidArguments }
             return try .init(text: result)
         }]
     }
     static func applications(_ model: Model) -> [AIToolRegistration] {
-        [.init(definition: definition("keylane_search_apps", "查找应用", "查找当前启用且可用的应用，返回准确路径供打开使用。", [query, count])) { [weak model] arguments in
+        [.init(definition: definition("keylane_search_apps", "查找应用", "查找当前启用且可用的应用，返回准确路径供打开使用。", [query, count]), impact: .privateRead) { [weak model] arguments in
             guard let model else { throw AIToolContractError.unavailable }
             let query = try text(arguments, "query")
             let apps = model.apps.lazy.filter { $0.deletingPathExtension().lastPathComponent.localizedCaseInsensitiveContains(query) && model.isApplicationCommandAvailable(at: $0.path) }.prefix(limit(arguments))
             return try AIToolWire.result(["applications": .array(apps.map { .object(["name": .string($0.deletingPathExtension().lastPathComponent), "path": .string($0.path)]) })])
         }, .init(definition: definition("keylane_open_app", "打开应用", "请求打开查找到的应用，每次都必须等待用户确认。", [
-            .init("path", description: "查找应用返回的准确路径", kind: .string(maximumLength: 4096))]), requiresConfirmation: true) { [weak model] arguments in
+            .init("path", description: "查找应用返回的准确路径", kind: .string(maximumLength: 4096))]), requiresConfirmation: true, impact: .openApplication) { [weak model] arguments in
             let path = try text(arguments, "path")
             guard let model, model.isApplicationCommandAvailable(at: path),
                   model.runCommand(CommandID(rawValue: "app:" + path), origin: .menu) else { throw AIToolContractError.unavailable }
@@ -50,7 +50,7 @@ enum AIBuiltinTools {
         [.init(definition: definition("keylane_calendar", "查询日程", "查询已授权且已选中日历的日程标题及时间。不申请新权限，不读取备注。最多七天。", [
             .init("start", description: "ISO8601开始时间，包含时区", kind: .string(maximumLength: 64)),
             .init("end", description: "ISO8601结束时间，包含时区", kind: .string(maximumLength: 64)), count]),
-               available: { [weak model] in model?.calendar.enabled == true }) { [weak model] arguments in
+               impact: .privateRead, available: { [weak model] in model?.calendar.enabled == true }) { [weak model] arguments in
             let formatter = ISO8601DateFormatter()
             guard let model, let start = formatter.date(from: try text(arguments, "start")),
                   let end = formatter.date(from: try text(arguments, "end")) else { throw AIToolContractError.invalidArguments }

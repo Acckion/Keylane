@@ -12,26 +12,116 @@ final class AIConversationComposer: ObservableObject {
     @Published var fileError = ""
     private var fileTask: Task<Void, Never>?
     private var attachmentAvailability: AnyCancellable?
+    private var resourceReaders: [UUID: AIResourceReader] = [:]
 
     struct Snapshot {
         let text: String
         let selection: NSRange
         let attachments: [AIConversationAttachment]
+        let resourceReaders: [UUID: AIResourceReader]
     }
-    var snapshot: Snapshot { .init(text: text, selection: selection, attachments: attachments) }
+    var snapshot: Snapshot { .init(text: text, selection: selection, attachments: attachments, resourceReaders: resourceReaders) }
     func restore(_ snapshot: Snapshot) {
         clear()
         text = snapshot.text
         selection = snapshot.selection
         attachments = snapshot.attachments
+        resourceReaders = snapshot.resourceReaders
     }
 
     func attachFiles(_ urls: [URL]) {
         guard attachments.count + urls.count <= 5 else { fileError = "每条消息最多附加 5 个文件。"; return }
-        loadAttachments {
-            try await Task.detached(priority: .userInitiated) {
-                try urls.map { try AIFileAttachment.read($0).attachment }
-            }.value
+        loadResourceReaders(urls.map { AIFileAttachment.resourceReader($0) })
+    }
+
+    func canReread(_ attachment: AIConversationAttachment) -> Bool {
+        attachment.resourceSnapshot != nil && resourceReaders[attachment.id] != nil
+    }
+
+    func removeAttachment(_ id: UUID) {
+        attachments.removeAll { $0.id == id }
+        resourceReaders.removeValue(forKey: id)
+    }
+
+    func appendResourceAttachment(_ attachment: AIConversationAttachment, reader: AIResourceReader, for draft: UUID) -> Bool {
+        guard attachment.resourceSnapshot?.matches(attachment.text) == true,
+              appendAttachment(attachment, for: draft) else { return false }
+        resourceReaders[attachment.id] = reader
+        return true
+    }
+
+    /// All-or-nothing refresh: a failed, removed or superseded read leaves the old snapshot intact.
+    func rereadAttachment(_ id: UUID) {
+        guard !loadingFiles, let previous = attachments.first(where: { $0.id == id }),
+              let snapshot = previous.resourceSnapshot, let reader = resourceReaders[id] else { return }
+        let draft = draftID
+        loadingFiles = true; fileError = ""
+        fileTask = Task { @MainActor [weak self] in
+            do {
+                var replacement = try await reader.read(replacing: snapshot)
+                try Task.checkCancellation()
+                guard let self, self.draftID == draft,
+                      let index = self.attachments.firstIndex(where: { $0 == previous }) else {
+                    self?.finishResourceRead(draft); return
+                }
+                replacement.id = id
+                var updated = self.attachments; updated[index] = replacement
+                guard AIConversationAttachment.requestText(question: self.text, attachments: updated).utf8.count <= 32_000 else {
+                    throw AIActionError.inputTooLarge
+                }
+                self.attachments = updated
+                self.finishResourceRead(draft)
+            } catch {
+                guard let self, !Task.isCancelled, self.draftID == draft else { return }
+                self.fileError = error.localizedDescription; self.finishResourceRead(draft)
+            }
+        }
+    }
+
+    func cancelAttachmentRead() {
+        guard loadingFiles else { return }
+        fileTask?.cancel(); fileTask = nil; loadingFiles = false
+        attachmentAvailability?.cancel(); attachmentAvailability = nil
+        fileError = "读取已取消，原有快照保持不变。"
+    }
+
+    @MainActor private func finishResourceRead(_ draft: UUID) {
+        guard draftID == draft else { return }
+        loadingFiles = false; fileTask = nil
+        attachmentAvailability?.cancel(); attachmentAvailability = nil
+    }
+
+    func loadResourceReaders(_ readers: [AIResourceReader], availability: AnyPublisher<Bool, Never>? = nil) {
+        guard !loadingFiles, attachments.count + readers.count <= 5 else { return }
+        let draft = draftID
+        loadingFiles = true; fileError = ""
+        fileTask = Task { @MainActor [weak self] in
+            do {
+                var loaded: [AIConversationAttachment] = []
+                for reader in readers { loaded.append(try await reader.read()) }
+                try Task.checkCancellation()
+                guard let self, self.draftID == draft else { return }
+                let combined = self.attachments + loaded
+                guard combined.count <= 5, AIConversationAttachment.requestText(question: self.text, attachments: combined).utf8.count <= 32_000 else {
+                    throw AIActionError.inputTooLarge
+                }
+                self.attachments = combined
+                for (attachment, reader) in zip(loaded, readers) { self.resourceReaders[attachment.id] = reader }
+                self.finishResourceRead(draft)
+            } catch {
+                guard let self, !Task.isCancelled, self.draftID == draft else { return }
+                self.fileError = error.localizedDescription; self.finishResourceRead(draft)
+            }
+        }
+        observeAttachmentAvailability(availability)
+    }
+
+    private func observeAttachmentAvailability(_ availability: AnyPublisher<Bool, Never>?) {
+        attachmentAvailability = availability?.receive(on: DispatchQueue.main).sink { [weak self] available in
+            guard let self, !available, self.loadingFiles else { return }
+            self.fileTask?.cancel(); self.fileTask = nil; self.loadingFiles = false
+            self.attachmentAvailability?.cancel(); self.attachmentAvailability = nil
+            self.fileError = "来源或命令已停用，请重新选择。"
         }
     }
 
@@ -60,12 +150,7 @@ final class AIConversationComposer: ObservableObject {
             case .failure(let error): self.fileError = error.localizedDescription
             }
         }
-        attachmentAvailability = availability?.receive(on: DispatchQueue.main).sink { [weak self] available in
-            guard let self, !available, self.loadingFiles else { return }
-            self.fileTask?.cancel(); self.fileTask = nil; self.loadingFiles = false
-            self.attachmentAvailability?.cancel(); self.attachmentAvailability = nil
-            self.fileError = "来源或命令已停用，请重新选择。"
-        }
+        observeAttachmentAvailability(availability)
     }
 
     /// Completed module results become an explicit attachment, without sending or replacing a draft.
@@ -89,6 +174,7 @@ final class AIConversationComposer: ObservableObject {
         selection = NSRange(location: 0, length: 0)
         completion = nil
         attachments = []
+        resourceReaders = [:]
         draftID = UUID()
     }
     @discardableResult
@@ -161,6 +247,7 @@ struct AIConversationAttachment: Identifiable, Codable, Equatable, Sendable {
     let title: String
     let text: String
     var symbol = "doc.text"
+    var resourceSnapshot: AIResourceSnapshot? = nil
 
     static func requestText(question: String, attachments: [Self]) -> String {
         guard !attachments.isEmpty else { return question }
@@ -176,4 +263,19 @@ struct AIConversationDraftContextRequest<Source>: Identifiable {
     let id = UUID()
     let draftID: UUID
     let source: Source
+}
+
+/// A runtime-only resolver. Persisting a snapshot does not persist a read capability.
+struct AIResourceReader {
+    let source: AIActionSource
+    var symbol = "doc.text"
+    var available: () -> Bool = { true }
+    @MainActor func read(replacing previous: AIResourceSnapshot? = nil) async throws -> AIConversationAttachment {
+        guard available() else { throw AIActionError.unavailable }
+        let context = try await source.captureSnapshot()
+        guard available() else { throw AIActionError.unavailable }
+        guard let snapshot = context.resourceSnapshot,
+              previous == nil || previous?.reference == snapshot.reference else { throw AIActionError.staleSource }
+        return .init(title: String(context.title.prefix(60)), text: context.text, symbol: symbol, resourceSnapshot: snapshot)
+    }
 }

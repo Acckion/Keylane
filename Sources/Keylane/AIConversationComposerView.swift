@@ -45,7 +45,7 @@ struct AIConversationComposerView: View {
             } message: { Text(composer.fileError) }
             .onChange(of: composer.draftID) { _, _ in contextRequest = nil; dismissComposerMenu() }
             .onReceive(configuration.$state.map(\.enabled).removeDuplicates()) { enabled in
-                if !enabled { contextRequest = nil; dismissComposerMenu() }
+                if !enabled { contextRequest = nil; dismissComposerMenu(); composer.cancelAttachmentRead() }
             }
             .onReceive(composer.contextRequested) { request in
                 switch request {
@@ -54,13 +54,13 @@ struct AIConversationComposerView: View {
                 }
             }
             .sheet(isPresented: $toolsPresented) {
-                AIToolSettingsSheet(interaction: interaction, definitions: controller.availableTools)
+                AIToolSettingsSheet(controller: controller, interaction: interaction)
             }
             .sheet(item: $capability) { AIChatCapabilityInfoView(feature: $0) }
             .sheet(item: $contextRequest) { request in
-                AIChatContextSheet(source: request.source) { attachment in
+                AIChatContextSheet(source: request.source) { attachment, reader in
                     guard configuration.state.enabled, contextRequest?.id == request.id else { return }
-                    if composer.appendAttachment(attachment, from: request) {
+                    if composer.appendResourceAttachment(attachment, reader: reader, for: request.draftID) {
                         composer.focusRequested.send()
                     } else if composer.draftID == request.draftID {
                         attachmentError = "问题与上下文合计不能超过 32,000 字节，且最多 5 项。"
@@ -88,8 +88,14 @@ struct AIConversationComposerView: View {
                             HStack(spacing: 5) {
                                 Image(systemName: attachment.symbol)
                                 Text(attachment.title).lineLimit(1)
+                                if composer.canReread(attachment) {
+                                    Button("重新读取", systemImage: "arrow.clockwise") { composer.rereadAttachment(attachment.id) }
+                                        .labelStyle(.iconOnly).buttonStyle(.bordered).controlSize(.mini)
+                                        .disabled(composer.loadingFiles || controller.running || !configuration.state.enabled)
+                                        .help("重新检查来源并替换这份快照；不会发送消息")
+                                }
                                 Button("移除上下文", systemImage: "xmark") {
-                                    composer.attachments.removeAll { $0.id == attachment.id }
+                                    composer.removeAttachment(attachment.id)
                                 }.labelStyle(.iconOnly).buttonStyle(.plain)
                             }.font(.system(size: 11)).padding(.horizontal, 9).padding(.vertical, 6)
                                 .background(.primary.opacity(0.06), in: Capsule())

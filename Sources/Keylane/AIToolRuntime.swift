@@ -13,13 +13,18 @@ struct AIToolPreparedOperation: Sendable {
     let displayArguments: String
     let approvalArguments: String
     var isCurrent: @MainActor @Sendable () -> Bool = { true }
+    var impact: AIActionImpact = .unspecified
     let perform: @MainActor @Sendable () async throws -> AIToolResult
 }
 
 /// A module contributes declarations and handlers; catalog reads never execute handlers.
 struct AIToolRegistration: Sendable {
     let definition: AIToolDefinition
+    var owner: ModuleID?
+    var ownerTitle: String?
+    var moduleInstructions: AIInstructionDefinition?
     var requiresConfirmation = false
+    var impact: AIActionImpact = .unspecified
     var prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil
     var available: @MainActor @Sendable () -> Bool = { true }
     var snapshotAvailability: (@MainActor @Sendable () -> (@MainActor @Sendable () -> Bool))? = nil
@@ -27,20 +32,20 @@ struct AIToolRegistration: Sendable {
     var performInRun: (@MainActor @Sendable ([String: AIToolValue], AIToolRunScope) async throws -> AIToolResult)? = nil
     var perform: @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult = { _ in throw AIToolContractError.unavailable }
 
-    init(definition: AIToolDefinition, requiresConfirmation: Bool = false,
+    init(definition: AIToolDefinition, requiresConfirmation: Bool = false, impact: AIActionImpact = .unspecified,
          prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil,
          available: @escaping @MainActor @Sendable () -> Bool = { true },
          perform: @escaping @MainActor @Sendable ([String: AIToolValue]) async throws -> AIToolResult) {
-        self.definition = definition; self.requiresConfirmation = requiresConfirmation
+        self.definition = definition; self.requiresConfirmation = requiresConfirmation; self.impact = impact
         self.available = available; self.prepare = prepare; self.perform = perform
     }
 
-    init(definition: AIToolDefinition, requiresConfirmation: Bool = false,
+    init(definition: AIToolDefinition, requiresConfirmation: Bool = false, impact: AIActionImpact = .unspecified,
          available: @escaping @MainActor @Sendable () -> Bool = { true },
          snapshotAvailability: @escaping @MainActor @Sendable () -> (@MainActor @Sendable () -> Bool),
          confirmationDetail: (@MainActor @Sendable ([String: AIToolValue], AIToolRunScope) throws -> String)? = nil,
          performInRun: @escaping @MainActor @Sendable ([String: AIToolValue], AIToolRunScope) async throws -> AIToolResult) {
-        self.definition = definition; self.requiresConfirmation = requiresConfirmation
+        self.definition = definition; self.requiresConfirmation = requiresConfirmation; self.impact = impact
         self.available = available; self.snapshotAvailability = snapshotAvailability
         self.confirmationDetail = confirmationDetail; self.performInRun = performInRun
     }
@@ -71,6 +76,7 @@ struct AIToolApproval: Identifiable, Sendable {
     let id = UUID()
     let title: String
     let arguments: String
+    let impact: AIActionImpact
 }
 
 /// The owning conversation cancels this broker on stop/reset; old buttons cannot approve a new request.
@@ -80,8 +86,11 @@ final class AIToolApprovalBroker: ObservableObject {
     private var timeout: Task<Void, Never>?
 
     @MainActor func request(title: String, arguments: String) async -> Bool {
+        await request(.init(title: title, arguments: arguments))
+    }
+    @MainActor func request(_ context: AIToolApprovalContext) async -> Bool {
         guard !Task.isCancelled else { return false }
-        let request = AIToolApproval(title: title, arguments: arguments)
+        let request = AIToolApproval(title: context.title, arguments: context.arguments, impact: context.impact)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { reply in
                 guard !Task.isCancelled else { reply.resume(returning: false); return }
@@ -116,7 +125,7 @@ actor AIToolRun {
     private let registrations: [String: AIToolRegistration]
     private let recipient: AIToolRecipient?
     private let isCurrent: @MainActor @Sendable () -> Bool
-    private let approve: @MainActor @Sendable (String, String) async -> Bool
+    private let approve: @MainActor @Sendable (AIToolApprovalContext) async -> Bool
     private let runScope = AIToolRunScope()
     private var budget = AIToolRunBudget()
     private var sourceGuards: [@MainActor @Sendable () -> Bool] = []
@@ -134,6 +143,12 @@ actor AIToolRun {
 
     init(registrations: [AIToolRegistration], recipient: AIToolRecipient? = nil, isCurrent: @escaping @MainActor @Sendable () -> Bool,
          approve: @escaping @MainActor @Sendable (String, String) async -> Bool) throws {
+        try self.init(registrations: registrations, recipient: recipient, isCurrent: isCurrent,
+                      approveRequest: { context in await approve(context.title, context.arguments) })
+    }
+
+    init(registrations: [AIToolRegistration], recipient: AIToolRecipient? = nil, isCurrent: @escaping @MainActor @Sendable () -> Bool,
+         approveRequest: @escaping @MainActor @Sendable (AIToolApprovalContext) async -> Bool) throws {
         guard registrations.allSatisfy({ $0.snapshotAvailability == nil }) else { throw AIToolContractError.unavailable }
         catalog = try AIToolCatalog(registrations.map(\.definition))
         self.registrations = Dictionary(uniqueKeysWithValues: registrations.map { ($0.definition.name, $0) })
@@ -141,7 +156,7 @@ actor AIToolRun {
         // cross-request or cross-model capability.
         self.recipient = recipient.map { AIToolRecipient(destination: $0.destination, model: $0.model) }
         self.isCurrent = isCurrent
-        self.approve = approve
+        self.approve = approveRequest
     }
 
     func nextRound() async throws {
@@ -187,7 +202,7 @@ actor AIToolRun {
                     }
                     approvalArguments = detail
                 }
-                guard await approve(name, approvalArguments) else {
+                guard await approve(.init(title: name, arguments: approvalArguments, impact: tool.impact.merging(prepared?.impact ?? .unspecified))) else {
                     try await validateCurrent()
                     let denied = try AIToolResult(text: prepared == nil ? "用户未允许本次操作。不要重试该操作，向用户说明未执行。" : AIToolPreparedOperation.unapprovedResult, isError: true)
                     try budget.record(denied, for: call.id)
