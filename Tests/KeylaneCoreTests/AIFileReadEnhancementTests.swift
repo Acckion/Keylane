@@ -24,6 +24,19 @@ final class AIFileReadEnhancementTests: XCTestCase {
             XCTAssertFalse(text.contains("deleted"))
         }
     }
+    func testDOCXTextBoxParagraphsAreEmittedOnceWithinTextBudget() throws {
+        let shape = "<w:pict><w:txbxContent><w:p><w:r><w:t>Text box contents</w:t></w:r></w:p></w:txbxContent></w:pict>"
+        let alternate = "<mc:AlternateContent xmlns:mc=\"http://schemas.openxmlformats.org/markup-compatibility/2006\"><mc:Choice Requires=\"w\">\(shape)</mc:Choice><mc:Fallback>\(shape)</mc:Fallback></mc:AlternateContent>"
+        for content in [shape, alternate] {
+            let body = "<w:document xmlns:w=\"\(word)\"><w:body><w:p><w:r><w:t>Before</w:t></w:r><w:r>\(content)</w:r><w:r><w:t>After</w:t></w:r></w:p></w:body></w:document>"
+            let data = try OfficeFixture.zip([("[Content_Types].xml", "<Types/>"), ("word/document.xml", body)])
+            let expected = "[Document]\nBeforeAfter\nText box contents\n"
+            let text = try AIFileOfficeText.sections(data, extension: "docx", maximumTextBytes: expected.utf8.count).joined()
+            XCTAssertEqual(text, expected)
+            XCTAssertEqual(text.components(separatedBy: "Text box contents").count - 1, 1)
+        }
+    }
+
     func testWorkbookRelationshipsOrderRichStringsAndCachedValues() throws {
         let workbook = "<workbook xmlns=\"\(sheet)\" xmlns:r=\"\(rid)\"><sheets><sheet name=\"第二张\" sheetId=\"2\" r:id=\"r2\"/><sheet name=\"First\" sheetId=\"1\" r:id=\"r1\"/></sheets></workbook>"
         let relations = "<Relationships xmlns=\"\(rel)\"><Relationship Id=\"r1\" Type=\"\(rid)/worksheet\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"r2\" Type=\"\(rid)/worksheet\" Target=\"/xl/worksheets/sheet2.xml\"/></Relationships>"

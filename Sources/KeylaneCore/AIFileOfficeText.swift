@@ -30,7 +30,7 @@ public enum AIFileOfficeText {
             try document.require("document", family: "wordprocessingml")
             guard let body = document.children.first(where: { $0.name == "body" }) else { throw AIFileDocumentText.Failure.unsupported }
             var text = try sink("[Document]")
-            for paragraph in body.descendants("p") { try check(); try text.append(paragraph.textRuns() + "\n") }
+            for paragraph in body.descendants("p") { try check(); try text.append(paragraph.textRuns(skippingNestedParagraphs: true) + "\n") }
             try append(text.value)
         case "xlsx":
             let workbook = try xml("xl/workbook.xml"); try workbook.require("workbook", family: "spreadsheetml")
@@ -76,7 +76,7 @@ public enum AIFileOfficeText {
                 guard let id = slide.relationshipID, let path = relations[id] else { throw AIFileDocumentText.Failure.unsupported }
                 let content = try xml(path); try content.require("sld", family: "presentationml")
                 var text = try sink("[Slide " + String(index + 1) + "]")
-                for paragraph in content.descendants("p") { try text.append(paragraph.textRuns() + "\n") }
+                for paragraph in content.descendants("p") { try text.append(paragraph.textRuns(skippingNestedParagraphs: true) + "\n") }
                 try append(text.value)
             }
         }
@@ -158,15 +158,23 @@ private final class OfficeXMLNode: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didEndElement: String, namespaceURI: String?, qualifiedName: String?) { if !stack.isEmpty { stack.removeLast() } }
     func parser(_ parser: XMLParser, resolveExternalEntityName: String, systemID: String?) -> Data? { failure = AIFileDocumentText.Failure.unsupported; parser.abortParsing(); return nil }
     var plainText: String { chunks.joined() }
-    func descendants(_ name: String) -> [OfficeXMLNode] {
-        children.filter { $0.name != "del" }.flatMap { ($0.name == name ? [$0] : []) + $0.descendants(name) }
+    // Office commonly stores a modern shape and an equivalent legacy fallback.
+    // Text extraction uses one representation, never both copies of a text box.
+    private var contentChildren: [OfficeXMLNode] {
+        if name == "AlternateContent", namespace == "http://schemas.openxmlformats.org/markup-compatibility/2006" {
+            return (children.first { $0.name == "Choice" } ?? children.first { $0.name == "Fallback" }).map { [$0] } ?? []
+        }
+        return children
     }
-    func textRuns() -> String {
+    func descendants(_ name: String) -> [OfficeXMLNode] {
+        contentChildren.filter { $0.name != "del" }.flatMap { ($0.name == name ? [$0] : []) + $0.descendants(name) }
+    }
+    func textRuns(skippingNestedParagraphs: Bool = false) -> String {
         if name == "rPh" || name == "del" { return "" }
         if name == "t" { return plainText }
         if name == "tab" { return "\t" }
         if name == "br" || name == "cr" { return "\n" }
-        return children.map { $0.textRuns() }.joined()
+        return contentChildren.filter { !skippingNestedParagraphs || $0.name != "p" }.map { $0.textRuns(skippingNestedParagraphs: skippingNestedParagraphs) }.joined()
     }
     func require(_ name: String, family: String) throws {
         guard self.name == name, namespace == "http://schemas.openxmlformats.org/\(family)/2006/main" || namespace == "http://purl.oclc.org/ooxml/\(family)/main" else { throw AIFileDocumentText.Failure.unsupported }
