@@ -2,7 +2,7 @@ import Foundation
 
 /// Request configuration is derived from the shared AI model catalog, never stored by a feature.
 public enum AITranscriptionAPI: String, Codable, CaseIterable, Sendable {
-    case openAI, elevenLabs
+    case openAI, elevenLabs, openRouter
 }
 
 public struct AITranscriptionOptions: Sendable {

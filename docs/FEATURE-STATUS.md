@@ -117,7 +117,7 @@
 | AI-25 | AI 数据、凭据及隐私控制 | 部分实现 | 已有本机凭据与账户范围控制，逐项核对内容保留、删除和云服务政策展示 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/raycast-ai-privacy-security) |
 | TRANS-01 | 多服务商翻译、自动翻译与语言切换 | 部分实现 | 实际服务、语言检测、超时与订阅连接验收 | [翻译](TRANSLATOR.md)、[参考](https://manual.raycast.com/translate) |
 | TRANS-02 | 自定义语言对命令与替换选中文字 | 部分实现 | 真实目标应用、选区变化及失败反馈 | [翻译](TRANSLATOR.md) |
-| DICT-01 | 云端听写、模型配置、历史与重试 | 部分实现 | 真麦克风、云端服务、跨应用输出和权限验收 | [听写](DICTATION.md)、[参考](https://manual.raycast.com/ai/dictation) |
+| DICT-01 | 云端听写、模型配置、历史与重试 | 部分实现（OpenRouter 修复待合并） | 专用转写目录、能力识别与旧缓存补全已补齐；真麦克风、云端服务、跨应用输出和权限仍待验收 | [听写](DICTATION.md)、[参考](https://manual.raycast.com/ai/dictation) |
 | DICT-02 | 术语、个性化、按应用/网站样式及统计 | 部分实现 | 实际应用识别、样式匹配和转写质量验收 | [听写](DICTATION.md) |
 | DICT-03 | 本地离线听写 | 未实现 | 模块说明明确尚未接入，需确定识别引擎及资源生命周期 | [听写边界](DICTATION.md) |
 
@@ -210,3 +210,4 @@
 维护记录：2026-11-21，EXT-01-a / BASE-11：M0 首方 Apple Development 签名 helper/Node 探针生成 blocked 报告，保留共享容器与进程树失败；清理探针后代并记录未覆盖项。未接通第三方执行、未删除 VM，M1 暂不进入；验证与复验命令见设计第12节。
 
 维护记录：2026-11-21，EXT-01-a / BASE-11 第二批 M0：固定签名槽位与posix_spawn候选完成合成实测，保留旧失败基线；新增用例确认跨槽位文件拒绝、FD关闭和普通组退出，但槽位复用残留、进程准入和detached逃离仍blocked。用户已确认继续严格隔离目标；不转受信模式、不恢复VM、不进入M1，见设计第13节。
+维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
