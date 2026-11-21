@@ -379,7 +379,7 @@ struct ClipboardPreferences: View {
                 else { model.disabledCommands.insert(command.rawValue) }
             }
         )) {
-            SettingsIcon(symbol: command.symbol)
+            SettingsIcon(symbol: command.symbol, artwork: ModuleArtwork.command(id, settingsPage: "clipboard"))
         }
     }
 
