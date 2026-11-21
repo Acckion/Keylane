@@ -4,6 +4,8 @@
 
 [API 逐项清单与缺口](RAYCAST-API-COVERAGE.md)
 
+运行体系迁移方向：取消 Linux VM 构建/执行依赖，采用受控 macOS helper 与 Node 进程，详见 [设计、生命周期及验收门槛](MACOS-EXTENSION-RUNTIME.md)。当前仅设计，不改变已有兼容清单或验证结论；目录收录、安装、API 支持与实机运行仍分别记录。
+
 | 工作 | 已验证的范围 | 完成条件 |
 | --- | --- | --- |
 | 扩展设置与数据 | Format UUID 读取默认操作。Generate UUIDs 与 View History 已验证扩展独立的 LocalStorage 和 App 重启恢复。Keylane 支持启停、别名和热键 | 根据 manifest 渲染扩展和命令偏好，校验必填项和默认值。覆盖各字段类型、Keychain 密码、扩展独立的 LocalStorage 和 Cache，并验证跨命令、重启、升级与隔离 |
