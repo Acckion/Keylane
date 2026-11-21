@@ -54,7 +54,7 @@ struct AIConversationComposerView: View {
                 }
             }
             .sheet(isPresented: $toolsPresented) {
-                AIToolSettingsSheet(interaction: interaction, definitions: controller.availableTools)
+                AIToolSettingsSheet(controller: controller, interaction: interaction)
             }
             .sheet(item: $capability) { AIChatCapabilityInfoView(feature: $0) }
             .sheet(item: $contextRequest) { request in
