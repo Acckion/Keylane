@@ -15,7 +15,7 @@ import KeylaneCore
         let suite = "KeylaneFileToolsFixture-" + UUID().uuidString
         let store = UserDefaults(suiteName: suite)!
         defer { store.removePersistentDomain(forName: suite) }
-        let preferences = AIFileToolPreferences(store: store)
+        let preferences = AIFileToolPreferences(store: store, service: .init(recoveryDirectory: root.appendingPathComponent(".keylane-ai-recovery")))
         var project: AIChatProject?
         func registrations(index: AIFileToolIndexSource? = nil) -> [AIToolRegistration] {
             AIFileToolProvider.registrations(preferences: preferences, project: project, currentProject: { project }, index: index)
@@ -27,7 +27,7 @@ import KeylaneCore
         let note = root.appendingPathComponent("note.txt")
         try Data("synthetic needle".utf8).write(to: note)
         try Data("protected fixture".utf8).write(to: root.appendingPathComponent(".env"))
-        precondition(!registrations().contains { $0.definition.name == "keylane_edit_file" })
+        precondition(registrations().contains { $0.definition.name == "keylane_edit_file" })
         var approvals: [String] = [], events: [AIResponseEvent] = []
         var allow = false
         var onApproval: (() -> Void)?
@@ -113,7 +113,7 @@ import KeylaneCore
         preferences.enabled = false; preferences.enabled = true
         let oldRead = try await execute(frozen, "read_file", ["path": .string("note.txt")])
         precondition(oldRead.isError)
-        print("PASS file tools: exclusive FD-based creation, disabled overwrite/edit, revoke/re-enable rejects old approvals")
+        print("PASS file tools: exclusive FD-based creation and legacy replace rejection, explicit mutations separate, revoke/re-enable rejects old approvals")
 
         onApproval = {
             try! FileManager.default.moveItem(at: note, to: root.appendingPathComponent("old-note.txt"))
@@ -253,6 +253,60 @@ import KeylaneCore
         } catch { precondition(error is CancellationError) }
         precondition(indexState.searches == 1)
         print("PASS indexed search: pure catalog, no query before consent, matched root filtering and generation-bound cached results")
+
+        // Only this owned directory is mutated; system Trash is covered by Core's
+        // injected synthetic target, never by this host integration fixture.
+        try Data("safe original".utf8).write(to: root.appendingPathComponent("mut-note"))
+        allow = true; onApproval = nil
+        let initialInfo = try await execute(run(), "file_info", ["path": .string("mut-note")])
+        let initial = try JSONDecoder().decode([String: AIToolValue].self, from: Data(initialInfo.text.utf8))
+        let editArguments: [String: AIToolValue] = ["path": .string("mut-note"), "expected_revision": initial["revision"]!, "old_text": .string("safe original"), "new_text": .string("edited fixture")]
+        allow = false
+        let deniedMutation = try await execute(run(), "edit_file", editArguments)
+        let deniedMutationText = try String(contentsOf: root.appendingPathComponent("mut-note"), encoding: .utf8)
+        precondition(deniedMutation.isError && deniedMutationText == "safe original")
+        precondition(!FileManager.default.fileExists(atPath: root.appendingPathComponent(".keylane-ai-recovery").path))
+        allow = true
+        let edited = try await execute(run(), "edit_file", editArguments)
+        let editedText = try String(contentsOf: root.appendingPathComponent("mut-note"), encoding: .utf8)
+        precondition(!edited.isError && editedText == "edited fixture")
+        precondition(approvals.last!.contains("old_text") && approvals.last!.contains("new_text") && approvals.last!.contains(recipient.destination))
+        let editObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(edited.text.utf8))
+        let restoreArguments: [String: AIToolValue] = ["recovery_id": editObject["recovery_id"]!, "destination_path": .string("mut-restored")]
+        allow = false
+        let refusedRestore = try await execute(run(), "restore_file", restoreArguments)
+        precondition(refusedRestore.isError && !FileManager.default.fileExists(atPath: root.appendingPathComponent("mut-restored").path))
+        allow = true
+        let restoredMutation = try await execute(run(), "restore_file", restoreArguments)
+        let restoredMutationText = try String(contentsOf: root.appendingPathComponent("mut-restored"), encoding: .utf8)
+        precondition(!restoredMutation.isError && restoredMutationText == "safe original")
+        let currentInfo = try await execute(run(), "file_info", ["path": .string("mut-note")])
+        let currentObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(currentInfo.text.utf8))
+        let moveArguments: [String: AIToolValue] = ["path": .string("mut-note"), "expected_revision": currentObject["revision"]!, "destination_path": .string("mut-moved")]
+        allow = false
+        let refusedMove = try await execute(run(), "move_file", moveArguments)
+        precondition(refusedMove.isError)
+        precondition(FileManager.default.fileExists(atPath: root.appendingPathComponent("mut-note").path))
+        allow = true
+        let movedMutation = try await execute(run(), "move_file", moveArguments)
+        precondition(!movedMutation.isError && FileManager.default.fileExists(atPath: root.appendingPathComponent("mut-moved").path))
+        allow = false
+        let refusedHistory = try await execute(run(), "file_recovery", [:])
+        precondition(refusedHistory.isError && !refusedHistory.text.contains("mut-note"))
+        allow = true
+        let history = try await execute(run(), "file_recovery", [:])
+        precondition(!history.isError && history.text.contains("mut-note"))
+        for result in [edited, restoredMutation, movedMutation, history] { precondition(!result.text.contains(root.path)) }
+        let movedInfo = try await execute(run(), "file_info", ["path": .string("mut-moved")])
+        let movedObject = try JSONDecoder().decode([String: AIToolValue].self, from: Data(movedInfo.text.utf8))
+        onApproval = { preferences.enabled = false; preferences.enabled = true }
+        do {
+            _ = try await execute(run(), "copy_file", ["path": .string("mut-moved"), "expected_revision": movedObject["revision"]!, "destination_path": .string("mut-revoked")])
+            preconditionFailure("Approval-time revocation did not cancel mutation")
+        } catch is CancellationError { }
+        onApproval = nil
+        precondition(!FileManager.default.fileExists(atPath: root.appendingPathComponent("mut-revoked").path))
+        print("PASS mutations: shared recipient-bound consent, edit before/after arguments, denied operation has no recovery storage, approved edit/move/restore, private history and approval-time revocation")
 
     }
 }
