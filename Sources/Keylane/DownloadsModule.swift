@@ -119,9 +119,7 @@ private struct DownloadsPreferences: View {
     var body: some View {
         SettingsPageSections {
             SettingsCard(anchor: anchor) {
-                SettingsRow("下载文件夹", detail: controller.folder.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? "启用扩展时选择文件夹。") {
-                    Button("选择文件夹…") { controller.chooseFolder() }
-                }
+                DownloadsFolderSettingRow(controller: controller)
                 Divider()
                 SettingsRow("新下载自动加入暂存架", detail: "默认关闭。开启后，新出现且写入稳定的文件会加入暂存架；已有文件和未完成下载不会自动加入。") {
                     Toggle("自动加入", isOn: $controller.autoShelf).labelsHidden()
@@ -130,6 +128,17 @@ private struct DownloadsPreferences: View {
             }
             SettingsSectionTitle(title: "命令")
             ExtensionCommandPreferences(model: model, commands: commands)
+        }
+    }
+}
+
+
+struct DownloadsFolderSettingRow: View {
+    let controller: DownloadsController
+
+    var body: some View {
+        SettingsRow("下载文件夹", detail: controller.folder.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? "尚未选择文件夹。") {
+            Button("选择文件夹…") { controller.chooseFolder() }
         }
     }
 }

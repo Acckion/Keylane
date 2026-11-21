@@ -44,13 +44,25 @@ public struct IncomingFileTracker {
     public var needsRescan: Bool { !pending.isEmpty }
     public mutating func reset() { known = nil; pending = [:] }
     public mutating func update(_ files: [IncomingFile], now: Date = Date(), settle: TimeInterval = 2) -> [IncomingFile] {
+        update(files, now: now, settleFor: { _ in settle })
+    }
+
+    public func nextRescanDelay(now: Date = Date(), settleFor: (IncomingFile) -> TimeInterval) -> TimeInterval? {
+        pending.values.map { entry in
+            let stableSince = max(entry.since, entry.file.modified)
+            return max(0, settleFor(entry.file) - now.timeIntervalSince(stableSince))
+        }.min()
+    }
+
+    public mutating func update(_ files: [IncomingFile], now: Date = Date(),
+                                settleFor: (IncomingFile) -> TimeInterval) -> [IncomingFile] {
         let paths = Set(files.map(\.id))
         guard let old = known else { known = paths; return [] }
         pending = pending.filter { paths.contains($0.key) }
         var ready: [IncomingFile] = []
         for file in files where !old.contains(file.id) && IncomingFiles.isCompleteName(file.url) {
             if let previous = pending[file.id], previous.file == file {
-                if now.timeIntervalSince(previous.since) >= settle && now.timeIntervalSince(file.modified) >= settle {
+                if now.timeIntervalSince(max(previous.since, file.modified)) >= settleFor(file) {
                     ready.append(file); pending.removeValue(forKey: file.id)
                 }
             } else { pending[file.id] = (file, now) }

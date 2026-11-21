@@ -5,6 +5,12 @@ import UniformTypeIdentifiers
 import KeylaneCore
 
 enum DropShelfModule {
+    static let folderObservationID = "keylane.drop-shelf.folders"
+    static let screenshotFolder = SettingsItem(id: "dropShelf.folders.screenshots", page: folderObservationID,
+                                                title: "截图文件夹", keywords: "截屏 录屏 文件夹观察 截图目录 暂存架")
+    static let downloadFolder = SettingsItem(id: "dropShelf.folders.downloads", page: folderObservationID,
+                                              title: "下载文件夹", keywords: "下载目录 文件夹观察 暂存架")
+
     static func make(model: Model) -> LauncherModule {
         let controller = model.dropShelf
         let settingsID = "keylane.drop-shelf"
@@ -79,6 +85,10 @@ enum DropShelfModule {
                                       items: [anchor], content: { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
             return AnyView(DropShelfPreferences(controller: controller, model: model, commands: commands, anchor: anchor))
+        }), .init(id: folderObservationID, title: "文件夹观察", symbol: "folder.badge.plus",
+                  subtitle: "", order: 85, items: [screenshotFolder, downloadFolder], parentID: settingsID, content: { [weak model] in
+            guard let model else { return AnyView(EmptyView()) }
+            return AnyView(DropShelfFolderPreferences(screenshots: model.screenshots, downloads: model.downloads))
         })], services: [.init(start: { [weak model] in if let model {
             controller.openManager = { [weak model] in model?.runCommand(historyID, origin: .menu) }
             controller.start(registry: model.menuBar)
@@ -96,6 +106,15 @@ private struct DropShelfPreferences: View {
     @State private var editingIgnoredApps = false
     var body: some View {
         SettingsPageSections {
+            SettingsCard {
+                Button { model.openSettings(page: DropShelfModule.folderObservationID) } label: {
+                    SettingsRow("文件夹观察", detail: "设置截图和下载的文件夹位置。") {
+                        Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
             SettingsCard(anchor: anchor) {
                 SettingsRowWithSuboptions {
                     activationRow("晃动激活", symbol: "cursorarrow.motionlines", detail: "拖动时晃动光标。") {
@@ -200,6 +219,37 @@ private struct DropShelfPreferences: View {
         for url in panel.urls {
             guard let id = Bundle(url: url)?.bundleIdentifier else { continue }
             controller.ignoredApps[id] = FileManager.default.displayName(atPath: url.path)
+        }
+    }
+}
+
+
+private struct DropShelfFolderPreferences: View {
+    let screenshots: ScreenshotLibrary
+    @ObservedObject var downloads: DownloadsController
+    @StateObject private var screenshotFolders: ViewObservation
+
+    init(screenshots: ScreenshotLibrary, downloads: DownloadsController) {
+        self.screenshots = screenshots
+        self.downloads = downloads
+        _screenshotFolders = StateObject(wrappedValue: ViewObservation([
+            ViewObservation.changes(screenshots.$scopes),
+            ViewObservation.changes(screenshots.$unavailableScopePaths)
+        ]))
+    }
+
+    var body: some View {
+        SettingsPageSections {
+            ScreenshotFolderSettings(library: screenshots, anchor: DropShelfModule.screenshotFolder, title: "截图文件夹",
+                                     detail: "与截图管理共用目录。加入暂存架时只识别截图和录屏。")
+            SettingsCard(anchor: DropShelfModule.downloadFolder) {
+                DownloadsFolderSettingRow(controller: downloads)
+                if !downloads.error.isEmpty { SettingsDescription(downloads.error) }
+            }
+        }
+        .onAppear(perform: screenshots.checkFolders)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            screenshots.checkFolders()
         }
     }
 }
