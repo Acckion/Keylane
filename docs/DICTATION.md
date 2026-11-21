@@ -28,11 +28,12 @@
 
 - 直接复用 `AIConfiguration` 的模型目录与钥匙串、`AIModelPicker` 的搜索与键盘交互，以及 `AIRuntime` 的请求会话和取消处理。听写只保存转写／整理模型 ID 与行为设置，不再维护独立的接口、提供方或密钥存储。
 - 共享提供方的语音模型与文字模型使用同一个凭据所有者和接口范围；修改主机或接口前缀后不会读取旧目标的密钥。录音上传不跟随重定向，避免把录音或凭据转交其他地址。
+- OpenRouter 同步同时读取普通目录和 `models?output_modalities=transcription`，按 `architecture.output_modalities` 识别语音转写模型；旧版仅含聊天模型的缓存会自动补全。转写模型沿用同一提供方的接口和钥匙串密钥，保留现有聊天默认选择。
 - 已知 OpenAI Transcribe、Whisper 与 ElevenLabs Scribe 模型自动识别。其他语音模型在 AI 编辑页指定「模型用途」；只有支持相应转写接口的模型才能用于识别，聊天模型用于文字整理。语音模型不进入文字生成的默认选项，也不会替换已有聊天／Quick AI／文件问答默认模型。
 - AAC 录音位于应用自己的 `Keylane/Dictation/` 目录。默认成功后删除录音，失败时保留供重试；可显式开启成功录音保留。文本历史包含原始转写、整理结果、时间、应用名称及所选样式。删除记录也删除对应录音，清空还会清理中断留下的录音文件。
 - 普通偏好备份不包含听写开关、密钥、历史、词汇或自由文本，导入不会开启录音。
 - 每次会话都带独立代次。取消、关闭功能或开始新会话后，旧的捕获、网络和插入回调不得继续投递。删除历史后，迟到的保存也不得恢复已删除记录。
-- 转写支持 OpenAI 兼容接口（例如 `gpt-transcribe`）与 ElevenLabs Scribe，模型 ID 来自 AI 目录。ElevenLabs 预设也登记在统一提供方列表中；目录同步只接收 Scribe 语音模型，不将语音合成模型加入听写选项。兼容接口的语言、模型和参数支持由其实现决定。
+- 转写支持 OpenAI 兼容接口（例如 `gpt-transcribe`）、OpenRouter 与 ElevenLabs Scribe，模型 ID 来自 AI 目录。OpenRouter 使用 `/audio/transcriptions` 的 JSON 格式，发送 m4a 音频的原始字节 Base64、所选模型、语言及词汇提示；自动识别语言时省略语言字段。ElevenLabs 预设也登记在统一提供方列表中；目录同步只接收 Scribe 语音模型，不将语音合成模型加入听写选项。兼容接口的语言、模型和参数支持由其实现决定。
 - 本应用不承诺第三方零保留或不训练条款；需遵循用户选择的服务商与账户协议。ElevenLabs 的零保留接口选项有企业账户限制，因此不会替用户默认打开并假称拥有 Raycast 的协议。
 - 本轮未实现本地识别、推理进程、麦克风常开预热、团队样式同步、iOS 键盘、AI `@dictation` 工具，也不自动读取其他应用的私有配置。
 
@@ -65,3 +66,9 @@ Debug 构建支持 `.build-current/debug/Keylane --verify-dictation-ui`，在构
 
 - [ElevenLabs 模型目录](https://elevenlabs.io/docs/api-reference/models/list)
 - [ElevenLabs 账户认证接口](https://elevenlabs.io/docs/api-reference/user/get)
+
+### 2026-11-21：OpenRouter 模型发现修复（待合并）
+
+补齐 OpenRouter 专用转写目录、能力识别、旧缓存自动补全及 JSON 上传。普通聊天、支持音频输入的聊天模型和语音合成模型不会作为听写转写模型。目录任一请求失败时保留整个已保存目录；能力绑定到模型 ID，显式用途设置优先。实现提交 `a8ecc59`；404 项 Swift 测试、27 项发布脚本测试、听写集成与共享 AI 集成检查通过：合成 48 kHz 双声道音频经生产编码器转为 16 kHz 单声道 m4a，模拟转写接口核对 JSON 原始字节、鉴权及返回；旧缓存升级、目录失败保留、默认模型与凭据范围也通过。运行 `KEYLANE_OPENROUTER_CATALOG=1 bash scripts/verify-dictation.sh` 额外使用公共网络，确认真实公开目录经共享运行时与选择器列出 30 个听写模型，无需读取用户密钥或上传录音。完整 arm64 Release 构建及 Apple Development 签名 DMG 的包内内容、权限声明与签名校验通过；尚未安装。真实麦克风和付费云端识别仍需实机验收。
+
+参考：[OpenRouter STT](https://openrouter.ai/docs/guides/overview/multimodal/stt)、[转写接口](https://openrouter.ai/docs/api/api-reference/stt/create-transcription)。

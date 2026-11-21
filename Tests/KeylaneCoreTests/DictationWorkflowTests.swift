@@ -53,6 +53,34 @@ final class DictationWorkflowTests: XCTestCase {
         XCTAssertFalse(text.contains("fixture-key"))
     }
 
+    func testOpenRouterUploadUsesJSONAudioAndSharedCredentials() throws {
+        var options = AITranscriptionOptions(provider: .openRouter, endpoint: "https://openrouter.ai/api/v1", model: "google/chirp-3")
+        options.language = "zh"; options.vocabulary = [" Keylane ", "Keylane", "测试"]
+        let audio = Data([0, 1, 2, 255])
+        let request = try AITranscriptionRequest.make(options: options, key: "fixture-key", audio: audio)
+        XCTAssertEqual(request.url?.absoluteString, "https://openrouter.ai/api/v1/audio/transcriptions")
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-key")
+        XCTAssertNil(request.value(forHTTPHeaderField: "xi-api-key"))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+        let input = try XCTUnwrap(payload["input_audio"] as? [String: String])
+        XCTAssertEqual(input["format"], "m4a")
+        XCTAssertEqual(input["data"].flatMap { Data(base64Encoded: $0) }, audio)
+        XCTAssertEqual(payload["model"] as? String, "google/chirp-3")
+        XCTAssertEqual(payload["language"] as? String, "zh")
+        XCTAssertEqual(payload["prompt"] as? String, "Keylane, 测试")
+        XCTAssertFalse(String(decoding: request.httpBody!, as: UTF8.self).contains("fixture-key"))
+        options.language = "auto"; options.vocabulary = []
+        let automatic = try AITranscriptionRequest.make(options: options, key: "fixture-key", audio: audio)
+        let automaticPayload = try JSONSerialization.jsonObject(with: XCTUnwrap(automatic.httpBody)) as! [String: Any]
+        XCTAssertNil(automaticPayload["language"])
+        XCTAssertNil(automaticPayload["prompt"])
+        XCTAssertThrowsError(try AITranscriptionRequest.make(options: options, key: "bad\nkey", audio: audio))
+        XCTAssertThrowsError(try AITranscriptionRequest.make(options: options, key: "key", audio: Data()))
+        XCTAssertThrowsError(try AITranscriptionRequest.make(options: options, key: "key", audio: Data(count: AITranscriptionRequest.maximumAudioBytes + 1)))
+    }
+
     func testElevenLabsUsesItsProtocolAndDoesNotPromiseEnterpriseRetention() throws {
         var options = AITranscriptionOptions()
         options.provider = .elevenLabs; options.endpoint = "https://api.elevenlabs.io/v1"; options.model = "scribe_v2"
