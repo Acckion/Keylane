@@ -36,15 +36,7 @@ struct ScreenshotPreferences: View {
                 Text("列数").font(VisualStyle.rowText)
                 GridColumnChoices(counts: ScreenshotLibrary.columnCounts, selection: binding(\.columns))
             }
-            SettingsSearchScopeCard(paths: library.scopes.map(\.path), detail: "搜索已授权的文件夹及其子目录。",
-                                    anchor: .screenshotScopes, add: library.chooseFolders, remove: library.removeFolder(at:)) {
-                if library.scopes.isEmpty, let suggestedFolder = library.suggestedFolder {
-                    SettingsDescription("建议从 macOS 截图保存位置开始：\((suggestedFolder.path as NSString).abbreviatingWithTildeInPath)")
-                }
-                ForEach(library.unavailableScopePaths, id: \.self) { path in
-                    SettingsDescription("无法访问 \((path as NSString).abbreviatingWithTildeInPath)。如果文件夹已移动，请添加新位置并移除此范围。")
-                }
-            }
+            ScreenshotFolderSettings(library: library, anchor: .screenshotScopes)
             SettingsCard {
                 Toggle(isOn: binding(\.includeAll)) {
                     SettingsCaption(title: "包含所有媒体", detail: "搜索指定文件夹中的全部图片和视频。")
@@ -117,6 +109,25 @@ struct ScreenshotPreferences: View {
     }
 
 
+}
+
+struct ScreenshotFolderSettings: View {
+    let library: ScreenshotLibrary
+    let anchor: SettingsItem
+    var title = "搜索范围"
+    var detail = "搜索已授权的文件夹及其子目录。"
+
+    var body: some View {
+        SettingsSearchScopeCard(title: title, paths: library.scopes.map(\.path), detail: detail, anchor: anchor,
+                                add: { library.chooseFolders(in: NSApp.keyWindow) }, remove: library.removeFolder(at:)) {
+            if library.scopes.isEmpty, let suggestedFolder = library.suggestedFolder {
+                SettingsDescription("建议从 macOS 截图保存位置开始：\((suggestedFolder.path as NSString).abbreviatingWithTildeInPath)")
+            }
+            ForEach(library.unavailableScopePaths, id: \.self) { path in
+                SettingsDescription("无法访问 \((path as NSString).abbreviatingWithTildeInPath)。如果文件夹已移动，请添加新位置并移除此范围。")
+            }
+        }
+    }
 }
 
 struct GridColumnChoices: View {
