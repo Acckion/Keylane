@@ -47,6 +47,22 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
         return .init(name: url.lastPathComponent, text: text, byteCount: data.count)
     }
 
+    static func resourceReader(_ url: URL) -> AIResourceReader {
+        let module = ModuleID(rawValue: "keylane.files")
+        let identity = url.standardizedFileURL.absoluteString
+        let source = AIActionSource(moduleID: module, load: {
+            let work = Task.detached(priority: .userInitiated) {
+                let version = try AIFileReadVersion(url)
+                let file = try read(url, expectedVersion: version)
+                return AIActionContext(sourceID: identity, title: file.name, text: file.text, fingerprint: version.fingerprint)
+            }
+            return try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+        }, isCurrent: { context in
+            try await Task.detached(priority: .userInitiated) { try AIFileReadVersion(url).fingerprint == context.fingerprint }.value
+        })
+        return .init(source: source, symbol: "doc")
+    }
+
     struct Failure: LocalizedError { let message: String; init(_ message: String) { self.message = message }; var errorDescription: String? { message } }
 }
 
@@ -59,10 +75,16 @@ struct AIFileReadVersion: Equatable, Sendable {
     private let nanos: Int
     private let changeSeconds: Int
     private let changeNanos: Int
+    private let mode: UInt16
+    private let flags: UInt32
+    var fingerprint: String {
+        AIActionContext.digest("\(device):\(inode):\(size):\(seconds):\(nanos):\(changeSeconds):\(changeNanos):\(mode):\(flags)")
+    }
     init(_ info: stat) {
         device = info.st_dev; inode = info.st_ino; size = info.st_size
         seconds = info.st_mtimespec.tv_sec; nanos = info.st_mtimespec.tv_nsec
         changeSeconds = info.st_ctimespec.tv_sec; changeNanos = info.st_ctimespec.tv_nsec
+        mode = info.st_mode; flags = info.st_flags
     }
     init(_ url: URL) throws {
         var info = stat()

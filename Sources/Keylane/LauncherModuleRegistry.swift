@@ -338,6 +338,7 @@ struct LauncherModule {
     var services: [Service] = []
     var aiTools: [AIToolRegistration] = []
     var aiContexts: [AIContextRegistration] = []
+    var aiInstructions: AIInstructionDefinition?
     var searchUpdates: [AnyPublisher<Void, Never>] = []
     var launcherShown: (() -> Void)?
     var launcherHidden: (() -> Void)?
@@ -352,6 +353,10 @@ struct LauncherModule {
     func withAIContexts(_ contexts: [AIContextRegistration]) -> Self {
         var copy = self; copy.aiContexts = contexts; return copy
     }
+    func withAIInstructions(_ text: String) -> Self {
+        var copy = self; copy.aiInstructions = .init(text); return copy
+    }
+
     func withAITools(_ tools: [AIToolRegistration]) -> Self {
         var copy = self; copy.aiTools = tools; return copy
     }
@@ -423,6 +428,7 @@ final class LauncherModuleRegistry {
         let modules: [LauncherModule]
         let disableableModules: Set<ModuleID>
         init(modules: [LauncherModule]) throws {
+            for module in modules { try module.aiInstructions?.validate() }
             let contextIDs = modules.flatMap(\.aiContexts).map(\.id)
             guard contextIDs.allSatisfy({ !$0.isEmpty }), Set(contextIDs).count == contextIDs.count else { throw AIActionError.invalidDefinition }
             _ = try AIToolCatalog(modules.flatMap(\.aiTools).map(\.definition))
@@ -954,8 +960,14 @@ final class LauncherModuleRegistry {
     @MainActor var availableAITools: [AIToolRegistration] {
         modules.flatMap { module in
             module.aiTools.map { contribution in
-                let frozen = contribution.forRun()
+                // Catalog browsing is metadata-only. The conversation freezes the
+                // selected provider leases immediately before request dispatch.
+                let frozen = contribution
                 var tool = frozen
+                // Module ownership is assigned here, never trusted from a contribution.
+                tool.owner = module.id
+                tool.ownerTitle = module.displayTitle
+                tool.moduleInstructions = module.aiInstructions
                 let generation = toolGenerations[module.id]
                 let activation = activation(for: module.id)
                 tool.available = { [weak self] in

@@ -99,6 +99,9 @@
 | AI-09 | 本地模型 | 部分实现 | 已有 Ollama 等连接方式，模型能力与工具协议逐项核对 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/local-models) |
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
+| AI-11-a | 共用会话按模块选择工具能力 | 待合并 | 草稿 #226 在已合入 #215/#217/#223/#224 的 dev `37dac2e` 上收敛增量；目录按选择过滤，发送前冻结、选择改变取消审批，真实模型及安装版待验收 | [PR #226](https://github.com/Acckion/Keylane/pull/226)、[契约](AI-CAPABILITY-CONTRACT.md) |
+| AI-11-b | 统一资源身份、快照与显式重新读取 | 待合并 | 依赖 #226；稳定 URI 仅作身份，快照固定，运行期 reader 显式刷新，历史不恢复权限；保持临时引用/路径/分页协议 | [PR #227](https://github.com/Acckion/Keylane/pull/227)、[资源契约](AI-RESOURCE-CONTRACT.md) |
+| AI-11-c | 选中模块的静态 AI 指令注入 | 待合并 | 依赖 #226/#227；工具与说明同批冻结，发送边界复核，空集/总关闭不注入；权限与审批保持执行器判定 | [模块指令](AI-MODULE-INSTRUCTIONS.md) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-12-a | 聊天中的剪贴板与文件搜索引用工具 | 待合并 | PR #217 同步 dev `fc44e8b`；按路径与按引用协议分离，逐次确认，运行内/五分钟引用及来源校验；403+5 项 Swift、合成文件工具/会话、即时排除及发送前撤销回归通过，真实服务未验收 | [PR #217](https://github.com/Acckion/Keylane/pull/217)、[验证](AI-READ-TOOLS-VALIDATION.md) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
@@ -205,3 +208,8 @@
 维护记录：2026-11-21，EXT-01 / PR #223 整合 dev `7f6a01b`（#217），保留 AI 工具运行域引用和功能代次快照，以及目录替换／卸载／重新启用的激活撤销；新增合成工具租约回归，验证结果见目录事务记录。仍待合并及安装版验收。
 
 维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
+维护记录：2026-11-21，AI-11-a / 草稿 #226 以已合入依赖的 dev `37dac2e` 重整，移除依赖等价差异；保留 `keylane_read_searched_file`、路径授权、PDF/分页及目录生命周期边界，仅新增会话模块能力选择与发送前冻结。隔离验证与精确头 CI 见原 PR，不安装/合并/发布。
+
+维护记录：2026-11-21，AI-11-b / 草稿 PR #227（实现 49d08d0）在独立工作树推进统一资源身份/快照/重新读取；前序 #218/#221/#223/#226，快照固定与显式刷新语义经用户确认。精确测试/CI 证据在新 PR；未安装/合并/发布。
+
+维护记录：2026-11-21，AI-11-c 在独立工作树接入模块指令声明及工具/说明请求快照；前序 #226/#227，基线 dev `036cfd7`。测试证据和准确头将在本批 PR 记录，不安装/合并/发布。

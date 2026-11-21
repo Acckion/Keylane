@@ -32,3 +32,23 @@ struct AIActionOutput {
     let commandArgument: String?
     init(_ text: String, commandArgument: String? = nil) { self.text = text; self.commandArgument = commandArgument }
 }
+
+// Resource identity and content versions are shared by actions and chat attachments.
+// Resolving always requires the module-owned source, never a decoded resource URI.
+extension AIActionSource {
+    @MainActor func captureSnapshot(maximumBytes: Int = 32_000) async throws -> AIActionContext {
+        let context = try await load()
+        try Task.checkCancellation()
+        try context.validate(maximumBytes: maximumBytes)
+        guard try await isCurrent(context) else { throw AIActionError.staleSource }
+        try Task.checkCancellation()
+        return try recordSnapshot(context)
+    }
+
+    func recordSnapshot(_ context: AIActionContext) throws -> AIActionContext {
+        let reference = try AIResourceReference(moduleID: moduleID, sourceID: context.sourceID)
+        let snapshot = AIResourceSnapshot(reference: reference, revision: context.fingerprint, text: context.text)
+        return .init(sourceID: context.sourceID, title: context.title, text: context.text,
+                     fingerprint: context.fingerprint, resourceSnapshot: snapshot)
+    }
+}

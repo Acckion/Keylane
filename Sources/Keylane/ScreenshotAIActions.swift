@@ -13,11 +13,15 @@ enum ScreenshotAIActions {
     ]
     static func source(_ item: ScreenshotMedia, library: ScreenshotLibrary) -> AIActionSource {
         .init(moduleID: moduleID, load: {
-            let text = try await library.aiTextContext(item)
-            return AIActionContext(sourceID: item.id, title: item.name + "（识别文字）", text: text)
-        }, isCurrent: { _ in
-            try library.validateAIContext(item)
-            return true
+            guard let latest = library.aiContextItems.first(where: { $0.id == item.id }) else { throw AIActionError.staleSource }
+            let revision = try AIFileReadVersion(latest.url)
+            let text = try await library.aiTextContext(latest)
+            guard try AIFileReadVersion(latest.url) == revision else { throw AIActionError.staleSource }
+            return AIActionContext(sourceID: latest.id, title: latest.name + "（识别文字）", text: text, fingerprint: revision.fingerprint)
+        }, isCurrent: { context in
+            guard let latest = library.aiContextItems.first(where: { $0.id == item.id }) else { return false }
+            try library.validateAIContext(latest)
+            return try AIFileReadVersion(latest.url).fingerprint == context.fingerprint
         })
     }
     static func commands(model: Model) -> [LauncherModule.Command] {

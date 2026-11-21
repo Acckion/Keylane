@@ -19,6 +19,9 @@ struct AIToolPreparedOperation: Sendable {
 /// A module contributes declarations and handlers; catalog reads never execute handlers.
 struct AIToolRegistration: Sendable {
     let definition: AIToolDefinition
+    var owner: ModuleID?
+    var ownerTitle: String?
+    var moduleInstructions: AIInstructionDefinition?
     var requiresConfirmation = false
     var prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil
     var available: @MainActor @Sendable () -> Bool = { true }
