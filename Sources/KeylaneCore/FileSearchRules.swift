@@ -28,7 +28,7 @@ public struct FileSearchOptions: Codable, Equatable {
         enforceDiskSpace = try values.decodeIfPresent(Bool.self, forKey: .enforceDiskSpace) ?? false
         enabled = try values.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
     }
-    public static let defaultIgnores = ["*.tmp", "*.temp", "node_modules", "**/tmp/**", "**/temp/**", "**/[Cc]ache/**", "**/[Cc]aches/**", "**/Library/Application Support/**", "**/Mobile Documents/**/PreferenceSync/**", "**/Mobile Documents/**/Application Support/**", "**/Library/CloudStorage/**", "**/.claude/worktrees/**", "**/.codex/worktrees/**", "**/.cursor/worktrees/**", "**/.gemini/worktrees/**", "**/.windsurf/worktrees/**", "**/.local/share/opencode/worktree/**", "**/conductor/workspaces/**", "**/.raycast/worktrees/**", "**/.git/**"]
+    public static let defaultIgnores = ["*.tmp", "*.temp", "node_modules", "__pycache__", "**/tmp/**", "**/temp/**", "**/[Cc]ache/**", "**/[Cc]aches/**", "**/Library/Application Support/**", "**/Mobile Documents/**/PreferenceSync/**", "**/Mobile Documents/**/Application Support/**", "**/Library/CloudStorage/**", "**/.claude/worktrees/**", "**/.codex/worktrees/**", "**/.cursor/worktrees/**", "**/.gemini/worktrees/**", "**/.windsurf/worktrees/**", "**/.local/share/opencode/worktree/**", "**/conductor/workspaces/**", "**/.raycast/worktrees/**", "**/.git/**"]
 }
 public enum FileSearchRules {
     private static let globCache: NSCache<NSString, NSRegularExpression> = { let value = NSCache<NSString, NSRegularExpression>(); value.countLimit = 512; return value }()

@@ -2,7 +2,7 @@ import Foundation
 
 public enum FileIndexExclusionPolicy {
     private static let generatedDirectories: Set<String> = [
-        ".build", "deriveddata", "node_modules", ".venv", "__pycache__"
+        ".build", "deriveddata", "node_modules", ".venv"
     ]
     private static let changeCandidates: Set<String> = [
         "build", "output", "dist", "cache", "target"
