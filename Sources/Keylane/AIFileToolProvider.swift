@@ -69,18 +69,18 @@ enum AIFileToolProvider {
         let destinationPath = AIToolParameter("destination_path", description: "目标授权根内的一级名称；目标必须不存在。子目录需单独授权。", kind: .string(maximumLength: 255))
         declarations += [
             ("keylane_copy_file", "复制文件", "复制授权根内一级普通文件到授权根内的新名称，最多64MiB，仅同卷支持克隆时执行，不覆盖、不复制目录；每次确认。", [root, path, revision, destinationRoot, destinationPath]),
-            ("keylane_edit_file", "精确编辑文本文件", "直接编辑原件：原文精确匹配指定次数，原子交换新版并保留旧版。源和结果最多1MiB UTF-8；不支持目录或子目录写入。并发变化可能导致结果不确定，勿自动重试。", [root, path, revision,
+            ("keylane_edit_file", "精确编辑文本文件", "直接编辑原件：原文精确匹配指定次数，原子交换新版并保留旧版。源和结果最多1MiB UTF-8纯文本；不写回PDF/Office/RTF容器，不支持目录或子目录写入。并发变化可能导致结果不确定，勿自动重试。", [root, path, revision,
                 .init("old_text", description: "要替换的非空原文，非正则。", kind: .string(maximumLength: 12_000)),
                 .init("new_text", description: "替换为的文本，空字符串表示删除原文。", kind: .string(maximumLength: 12_000)),
                 .init("occurrences", description: "预期匹配次数，默认1，必须完全符合。", kind: .integer(minimum: 1, maximum: 100), required: false)]),
-            ("keylane_replace_file", "替换文本文件内容", "将授权根内一级文本原件整体替换为新文本，最多12000 UTF-8字节；原件最多1MiB，先保留可恢复旧版。不是原子的版本条件覆盖；并发变化可能导致结果不确定，勿自动重试。", [root, path, revision, .init("content", description: "完整的新文本。", kind: .string(maximumLength: 12_000))]),
+            ("keylane_replace_file", "替换文本文件内容", "将授权根内一级文本原件整体替换为新文本，最多12000 UTF-8字节；原件最多1MiB UTF-8纯文本，不写回PDF/Office/RTF容器，先保留可恢复旧版。不是原子的版本条件覆盖；并发变化可能导致结果不确定，勿自动重试。", [root, path, revision, .init("content", description: "完整的新文本。", kind: .string(maximumLength: 12_000))]),
             ("keylane_move_file", "移动或重命名文件", "仅移动普通文件：源和目标均为授权根内一级名称，仅同卷，不覆盖、不递归；每次确认并记录原位置。并发变化可能造成结果不确定，不自动回滚或重试。", [root, path, revision, destinationRoot, destinationPath]),
             ("keylane_trash_file", "移到废纸篓", "将授权根内一级普通文件移到系统废纸篓，不永久删除，不处理目录。需要逐次确认并记录恢复引用；结果不确定时可能已移动，勿自动重试。", [root, path, revision]),
             ("keylane_file_recovery", "查看文件恢复记录", "逐次确认后，列出仍在当前授权范围内、由本文件工具产生的恢复记录；不扫描整个系统废纸篓，不发送备份正文。", [
                 .init("offset", description: "记录分页偏移，默认0。", kind: .integer(minimum: 0, maximum: 256), required: false),
                 .init("limit", description: "每页记录数，默认20。", kind: .integer(minimum: 1, maximum: 20), required: false)]),
             ("keylane_restore_file", "恢复文件", "仅恢复本工具产生的恢复引用到原授权根，默认目标必须不存在。恢复此前编辑原件时需显式 replace_edited_file=true 和当前 revision，并保留当前版作为新恢复记录。", [
-                .init("recovery_id", description: "操作或恢复记录返回的原样 UUID。", kind: .string(maximumLength: 36)),
+                .init("recovery_id", description: "结果明确提供的 recovery_id；不是 operation_id、路径或文件搜索引用。", kind: .string(maximumLength: 36)),
                 .init("destination_path", description: "原授权根内的新一级名称；默认原名，目标存在则拒绝。", kind: .string(maximumLength: 255), required: false),
                 .init("replace_edited_file", description: "显式恢复被本工具编辑的原件，默认false。", kind: .boolean, required: false),
                 .init("expected_revision", description: "替换被编辑原件时必填，当前 file_info 的 revision。", kind: .string(maximumLength: 64), required: false)])

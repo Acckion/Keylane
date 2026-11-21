@@ -25,6 +25,10 @@ extension AIFileToolService {
         // Mutating a movable descendant directory does not grant durable authority
         // over its parent. Users can explicitly authorize that parent as a root.
         if !source.parents.isEmpty { throw AIFileToolError.creationScope }
+        if ["keylane_edit_file", "keylane_replace_file"].contains(tool) {
+            let format = (source.relativePath as NSString).pathExtension.lowercased()
+            guard !["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "pages", "numbers", "rtf", "rtfd", "epub"].contains(format) else { throw AIFileToolError.unsupported }
+        }
         let expected = string(arguments, "expected_revision")
         guard !expected.isEmpty, expected == source.fileRevision else { throw AIFileToolError.stale }
         var destination: Prepared?
@@ -74,7 +78,8 @@ extension AIFileToolService {
             recovery = .init(parent: vault.directory, file: file, parentPath: vault.path, name: payload, version: mutationContentVersion(info))
         } else if receipt.operation == "keylane_trash_file", let parent = receipt.trashParent, let name = receipt.trashName {
             let directory = try openDirectory(parent), file = try openChild(directory, name), info = try status(file)
-            guard mutationIdentity(try status(directory)) == receipt.trashParentIdentity,
+            let parentIdentity = mutationIdentity(try status(directory))
+            guard receipt.trashParentIdentity == nil || parentIdentity == receipt.trashParentIdentity,
                   mutationIdentity(info) == receipt.savedIdentity, receipt.savedIdentity == receipt.originalIdentity else { throw AIFileToolError.stale }
             recovery = .init(parent: directory, file: file, parentPath: parent, name: name, version: mutationContentVersion(info))
         } else if receipt.operation == "keylane_move_file", let root = receipt.destinationRoot, let name = receipt.destinationName,
@@ -239,10 +244,14 @@ extension AIFileToolService {
                         case "keylane_trash_file":
                             let moved = try self.mutationConfiguration.trash(sourceURL)
                             let parentPath = Self.systemPath(moved.deletingLastPathComponent().path), name = moved.lastPathComponent
-                            let parent = try self.openDirectory(parentPath), file = try self.openChild(parent, name)
                             receipt.trashParent = parentPath; receipt.trashName = name
-                            receipt.trashParentIdentity = self.mutationIdentity(try self.status(parent))
-                            receipt.savedIdentity = self.mutationIdentity(try self.status(file)); receipt.savedVersion = self.mutationContentVersion(try self.status(file))
+                            // Trashing a file need not grant enumeration access to
+                            // the whole system Trash. Verify the exact original FD
+                            // moved to the returned URL, without opening that folder.
+                            guard let original = plan.file, try self.pathOf(original) == Self.systemPath(moved.path) else { throw AIFileToolError.mutationUnconfirmed }
+                            let info = try self.status(original)
+                            receipt.savedIdentity = self.mutationIdentity(info); receipt.savedVersion = self.mutationContentVersion(info)
+                            if let parent = try? self.openDirectory(parentPath) { receipt.trashParentIdentity = self.mutationIdentity(try self.status(parent)) }
                         case "keylane_restore_file":
                             let recovery = mutation.recovery!
                             if replace {
@@ -316,6 +325,7 @@ extension AIFileToolService {
                 receipt.savedIdentity = mutationIdentity(try status(file)); receipt.savedVersion = mutationContentVersion(try status(file))
             } else if mutation.tool == "keylane_trash_file" {
                 guard receipt.savedIdentity == receipt.originalIdentity else { throw AIFileToolError.mutationUnconfirmed }
+                if let sourceInfo, let file = plan.file, mutationContentVersion(try status(file)) != mutationContentVersion(sourceInfo) { throw AIFileToolError.mutationUnconfirmed }
                 try absent(root.fd, plan.relativePath)
             } else if isRestore {
                 if mutation.receipt?.payload != nil { try validateRecovery(mutation.recovery!) }

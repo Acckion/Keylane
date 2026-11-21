@@ -259,4 +259,32 @@ final class AIFileMutationTests: XCTestCase {
         XCTAssertEqual(try content(movedPath.appendingPathComponent("file")), "new")
     }
 
+    func testTextMutationRejectsStructuredDocumentsEvenWhenBytesAreUTF8() async throws {
+        for name in ["fake.pdf", "fake.docx", "fake.rtf"] {
+            try write(name, "%PDF-1.7 synthetic ASCII container")
+            await rejects(.unsupported) { _ = try await self.call("replace_file", self.arguments(name, ["content": .string("plain text")])) }
+            await rejects(.unsupported) { _ = try await self.call("edit_file", self.arguments(name, ["old_text": .string("ASCII"), "new_text": .string("changed")])) }
+            XCTAssertEqual(try content(source.appendingPathComponent(name)), "%PDF-1.7 synthetic ASCII container")
+        }
+    }
+
+    func testTrashSuccessDoesNotRequireOpeningWholeTrashFolder() async throws {
+        try write("file", "original")
+        let folder = trash!, native = configuration.trash
+        defer { _ = chmod(folder.path, 0o700) }
+        var config = configuration!
+        config.trash = { source in
+            let moved = try native(source)
+            guard chmod(folder.path, 0o000) == 0 else { throw AIFileToolError.unavailable }
+            return moved
+        }
+        let output = try await call("trash_file", arguments("file"), using: AIFileToolService(mutations: config))
+        succeeded(output)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.appendingPathComponent("file").path))
+        XCTAssertEqual(chmod(folder.path, 0o700), 0)
+        let id = try value(object(output)["recovery_id"])
+        succeeded(try await call("restore_file", ["recovery_id": .string(id)]))
+        XCTAssertEqual(try content(source.appendingPathComponent("file")), "original")
+    }
+
 }
