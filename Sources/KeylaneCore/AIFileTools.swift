@@ -289,7 +289,8 @@ public actor AIFileToolService {
                 (values, continuation) = try documentPage(blob, pages: pages.count, plan: plan, offset: offset,
                     limit: integer(arguments, "limit", default: 4096), ocr: boolean(arguments, "ocr"), check: check)
             } else if AIFileOfficeText.extensions.contains(format) {
-                guard info.st_size <= 8_388_608, arguments["page"] == nil else { throw AIFileToolError.tooLarge }
+                guard info.st_size <= 8_388_608 else { throw AIFileToolError.tooLarge }
+                guard arguments["page"] == nil else { throw AIFileToolError.invalidPath }
                 let data = try read(fd.raw, offset: 0, count: Int(info.st_size), check: check)
                 try validate(plan)
                 let sections: [String]

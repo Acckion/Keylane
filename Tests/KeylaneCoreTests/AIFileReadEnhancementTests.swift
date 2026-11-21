@@ -106,6 +106,8 @@ final class AIFileReadEnhancementTests: XCTestCase {
             page = try await call("read_result", ["cursor": cursor, "limit": .number(40)]); result += text(page["text"])
         }
         XCTAssertEqual(result, try AIFileOfficeText.sections(data, extension: "docx").joined(separator: "\n\n"))
+        do { _ = try await call("read_file", ["path": .string("fixture.docx"), "page": .number(1)]); XCTFail("PDF-only page accepted for Office") }
+        catch { XCTAssertEqual(error as? AIFileToolError, .invalidPath) }
         let stale = try await call("read_file", ["path": .string("fixture.docx"), "limit": .number(40)])
         try docx("replacement").write(to: file)
         do { _ = try await call("read_result", ["cursor": try XCTUnwrap(stale["cursor"])]); XCTFail("Read stale Office data") }
