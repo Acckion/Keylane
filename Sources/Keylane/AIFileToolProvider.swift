@@ -57,10 +57,10 @@ enum AIFileToolProvider {
         let depth = AIToolParameter("depth", description: "最多递归层数，默认6，上限12。", kind: .integer(minimum: 1, maximum: 12), required: false)
         var declarations: [(String, String, String, [AIToolParameter])] = [
             ("keylane_file_roots", "查看文件授权目录", "返回用户为 AI 配置的目录及默认目录，仅返回不含本机路径的根句柄；需要确认向当前接收方披露。", []),
-            ("keylane_read_file", "读取文件或目录", "Read：读取 UTF-8 文本或有文字PDF，或按名称列出目录。正文每页最多4096字节，目录每页最多100条；有cursor时用keylane_read_result继续，引用仅本次请求有效。PDF最大8MiB/100页，不OCR、不跟随符号链接。", [root, path, offset, limit, hidden, .init("page", description: "PDF 起始页（从1开始），不可与offset同时指定；扫描件不自动OCR。", kind: .integer(minimum: 1, maximum: 100), required: false)]),
+            ("keylane_read_file", "读取文件或目录", "Read：读取 UTF-8、DOCX/XLSX/PPTX 或 PDF，或按名称列出目录。正文每页最多4096字节，目录每页最多100条；有cursor时用keylane_read_result继续，引用仅本次请求有效。文档最大8MiB，PDF最多100页。ocr默认false，显式开启后仅对无文字页做本机OCR（最多10页/15秒总预算）；不跟随符号链接、不运行Office宏或公式。", [root, path, offset, limit, hidden, .init("page", description: "PDF 起始页（从1开始），不可与offset同时指定；扫描件不自动OCR。", kind: .integer(minimum: 1, maximum: 100), required: false), .init("ocr", description: "显式启用本机扫描PDF识别，默认false；只识别缺少文字的页，不适用于其他格式。", kind: .boolean, required: false)]),
             ("keylane_file_info", "查看文件信息", "返回文件或目录的元数据与 revision，不读取正文。", [root, path]),
             ("keylane_glob", "匹配文件路径", "Glob：在授权目录内按通配模式寻找文件或目录，不读取正文、不启动索引。", [root, path, pattern, count, depth, hidden]),
-            ("keylane_grep", "搜索文件文字", "Grep：在普通 UTF-8 文件中查找文字（非正则），返回路径、行号与短摘录；跳过凭据、隐藏项及超大文件，扫描有预算。", [root, path, pattern, .init("query", description: "要搜索的文字，忽略大小写。", kind: .string(maximumLength: 512)), count, depth]),
+            ("keylane_grep", "搜索文件文字", "Grep：在普通 UTF-8 文件中进行行级文字或显式 regex 正则搜索，返回路径、行号与短摘录；跳过凭据、隐藏项及超大文件，扫描有预算。", [root, path, pattern, .init("query", description: "要搜索的文字或正则，默认忽略大小写。", kind: .string(maximumLength: 512)), .init("regex", description: "启用行级 ICU 正则，默认false；过于复杂或超时则失败，不返回半页。", kind: .boolean, required: false), .init("case_sensitive", description: "区分大小写，默认false。", kind: .boolean, required: false), count, depth]),
             ("keylane_write_file", "创建文本文件", "仅在匹配授权根中创建一级 UTF-8 文件，每次确认；不支持子目录写入、覆盖、replace 或编辑；安全创建不可用时不回退。目录被外部移动时结果可能无法确认，勿自动重试。", [root, path, .init("content", description: "完整文本内容。", kind: .string(maximumLength: 12_000))]),
             ("keylane_create_directory", "创建文件夹", "仅在匹配授权根中创建一级文件夹，每次确认；不覆盖。子目录创建须先单独授权该父目录。目录被外部移动时结果可能无法确认，勿自动重试。", [root, path])
         ]
@@ -116,6 +116,7 @@ enum AIFileToolProvider {
                       return AIToolPreparedOperation(displayArguments: display, approvalArguments: review + creationNotice, isCurrent: operationAvailable, impact: impact) {
                           guard operationAvailable() else { throw CancellationError() }
                           let cancellation = AIFileAccessLease()
+                          let documentWork = ImageTextRecognitionWork()
                           return try await withTaskCancellationHandler {
                               try Task.checkCancellation()
                               do {
@@ -124,13 +125,13 @@ enum AIFileToolProvider {
                                       paths = try await index.search(query, plan.localTarget)
                                       guard operationAvailable() else { throw CancellationError() }
                                   }
-                                  let result = try await service.execute(plan, lease: lease, cancellation: cancellation, session: readSession, indexedPaths: paths)
+                                  let result = try await service.execute(plan, lease: lease, cancellation: cancellation, session: readSession, indexedPaths: paths, documentWork: documentWork)
                                   guard operationAvailable() else { throw CancellationError() }
                                   return result
                               }
                               catch let error as AIFileDocumentText.Failure { return try .init(text: error.localizedDescription, isError: true) }
                               catch let error as AIFileToolError { return try .init(text: error.localizedDescription, isError: true) }
-                          } onCancel: { cancellation.revoke() }
+                          } onCancel: { cancellation.revoke(); documentWork.cancel() }
                       }
                   }, available: toolAvailable) { _ in
                 // File effects and disclosure must never bypass preparation/approval.
