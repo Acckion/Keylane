@@ -128,7 +128,7 @@
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
 | EXT-01 | 扩展发现、安装、启用、卸载与生命周期 | 部分实现；目录快照事务已随 #223 合入 | 固定真实扩展样本持续回归；#222 商店与 macOS 运行迁移见 EXT-01-a，安装版待验收 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
-| EXT-01-a | 无 VM 的 macOS 扩展构建与运行迁移 | M0 两轮探针已实现，隔离仍未通过 | 新增跨槽位拒绝、FD关闭与普通后代退出实测；槽位复用残留、任意子进程与脱离组后代仍阻塞，M1–M5 未开始；#222 未改，性能预算未验收 | [设计与分批验收](MACOS-EXTENSION-RUNTIME.md) |
+| EXT-01-a | 无 VM 的 macOS 扩展构建与运行迁移 | M0 三批探针；Node blocked，受限JS候选 incomplete | 新增内核父身份约束、纯JS新调用隔离、父死亡死循环终止正/负对照；业务broker和兼容性未实现，Node旧阻塞保留，M1–M5 未开始；#222 未改，性能预算未验收 | [设计与分批验收](MACOS-EXTENSION-RUNTIME.md) |
 | EXT-02 | no-view / view / menu-bar 三类命令 | 部分实现 | 按命令依赖验证，不能由一个样本推断全生态兼容 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
 | EXT-03 | List / Grid / Detail / Form / Actions | 部分实现 | 动态回调、生命周期、资源加载与字段事件逐项推进 | [API 表](RAYCAST-API-COVERAGE.csv)、[说明](RAYCAST-API-COVERAGE.md) |
 | EXT-04 | 存储、网络、文件、系统工具和 Utilities | 部分实现 | 用公开契约和隔离运行证据缩小 partial 项 | [API 表](RAYCAST-API-COVERAGE.csv) |
@@ -211,3 +211,5 @@
 
 维护记录：2026-11-21，EXT-01-a / BASE-11 第二批 M0：固定签名槽位与posix_spawn候选完成合成实测，保留旧失败基线；新增用例确认跨槽位文件拒绝、FD关闭和普通组退出，但槽位复用残留、进程准入和detached逃离仍blocked。用户已确认继续严格隔离目标；不转受信模式、不恢复VM、不进入M1，见设计第13节。
 维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
+
+维护记录：2026-11-21，EXT-01-a / BASE-11 第三批 M0：在dev `036cfd7` 上新增第一方受限JS对照，18项子检查通过，整体incomplete；记录启动约束与EOF监督正/负对照和Node兼容差异，不修改API覆盖计数、产品引擎或#222。保持严格隔离，M1未开始，见 [第三批记录](RESTRICTED-JS-M0.md)。

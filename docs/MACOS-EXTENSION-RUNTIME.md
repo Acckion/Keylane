@@ -1,6 +1,6 @@
 # macOS 扩展运行体系与 VM 移除设计
 
-状态：设计完成；M0 两轮签名探针已实现，候选隔离仍未通过，M1–M5 未开始。日期：2026-11-21。
+状态：设计完成；M0 三批第一方探针已实现；Node候选blocked，受限JS对照incomplete，M1–M5 未开始。日期：2026-11-21。
 关联：EXT-01、EXT-02、BASE-11；前序架构 #218 → #221 → #223，商店草稿 #222。
 
 ## 1. 决策与当前基线
@@ -235,3 +235,9 @@ M0到M4新实现保持开发态且对普通用户不可达，#222继续草稿；
 实现参考：[Apple posix_spawnattr_setpgroup](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/posix_spawnattr_setpgroup.3.html)。本批仅用公开API，未使用私有沙箱接口、废弃sandbox-exec或新的VM方案。
 
 第二批交付检查：403 项 Swift、40 项 Python 测试通过，版本和文档链接检查通过；生产源码未改，复验同基线 Apple Development 签名包的布局/元数据/许可证/文件清单/架构/签名通过。新helper未进入产品包；两轮探针均明确返回2/blocked，结束后确认无自建Node/helper遗留。未安装、推送或更改其他PR。
+
+## 14. M0 第三批：内核启动约束与受限执行对照
+
+继续保持用户确认的严格隔离，不恢复VM、不转受信模式。本批同步dev `036cfd7`（听写修复），#222未改。新增第一方纯JS对照候选，验证内核父进程签名约束、无原生能力的脚本环境、新调用状态隔离与原生EOF父死亡监督。18项子检查通过，整体退出3/incomplete，Node旧失败基线保留，M1未开始。
+
+[实现、实际证据、Node/Raycast兼容差异与剩余条件](RESTRICTED-JS-M0.md)。这不是产品引擎替换，不把API缺失当作兼容完成，也不将JS引擎执行资源误称为Linux虚拟机。后续必须补齐受限broker与真实编译样例差异，才能决定产品路径。

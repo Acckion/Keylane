@@ -96,3 +96,18 @@ Cleanup retries ENOTEMPTY at most three times, only for this run's mkdtemp root;
 permission failures are never swallowed. The experiment report is written only
 after process and temporary-artifact cleanup is confirmed. Normal CI executes
 only the non-signing verdict/cleanup tests, not the signed experiment.
+
+## Third batch: restricted JS contrast, not a Node replacement
+
+See [scope, evidence and compatibility differences](../../../docs/RESTRICTED-JS-M0.md).
+`verify-macos-restricted-js-m0.py` tests a separate system JavaScriptCore context
+with no Node/native capabilities, signed kernel parent constraints and a native
+parent-EOF watcher. A compile-time watcher-disabled twin is a negative control,
+never a runtime fallback. JSContext/JSVirtualMachine is an engine context, not a
+Linux guest VM. The product engine and compatibility CSV remain unchanged.
+
+The 18-case subset returns exit3/incomplete even when all cases pass. It does
+not implement a business broker, Node modules, React or Raycast extension APIs.
+The original blocked Node experiments remain reproducible; no trust boundary is
+relaxed to enable production. All first-party processes are cleaned up, and only
+deidentified results are retained.
