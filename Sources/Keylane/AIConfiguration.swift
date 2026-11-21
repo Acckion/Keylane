@@ -131,12 +131,17 @@ final class AIConfiguration: ObservableObject {
                 copy.supportsTools = nil
                 copy.hiddenFromPicker = nil
                 copy.modelTask = nil
+                copy.catalogTranscriptionModel = nil
                 if copy.taskKind != snapshot.taskKind, let base = snapshot.apiBaseURL {
                     copy.endpoint = base.absoluteString
                 }
                 updated.connections.append(copy)
                 index = updated.connections.count - 1
                 members[model.id] = index
+            }
+            if snapshot.isOpenRouter {
+                updated.connections[index].catalogTranscriptionModel = model.architecture?.outputModalities?.contains("transcription") == true
+                    ? model.id : nil
             }
             catalogIDs.insert(updated.connections[index].id)
             updated.connections[index].catalogUnavailable = nil
@@ -158,7 +163,8 @@ final class AIConfiguration: ObservableObject {
             }
         }
         updated.providerCatalogs = updated.providerCatalogs ?? [:]
-        updated.providerCatalogs?[key] = .init(updatedAt: date, modelIDs: catalogIDs.union(previous?.modelIDs ?? []))
+        updated.providerCatalogs?[key] = .init(updatedAt: date, modelIDs: catalogIDs.union(previous?.modelIDs ?? []),
+                                              includesTranscriptionModels: snapshot.isOpenRouter ? true : nil)
         persist(updated)
         return true
     }
@@ -219,6 +225,7 @@ final class AIConfiguration: ObservableObject {
             copy.supportsImages = nil
             copy.supportsTools = nil
             copy.modelTask = nil
+            copy.catalogTranscriptionModel = nil
             if copy.taskKind != connection.taskKind, let base = connection.apiBaseURL {
                 copy.endpoint = base.absoluteString
             }
@@ -481,6 +488,7 @@ final class AIConfiguration: ObservableObject {
 struct AIProviderCatalogCache: Codable, Equatable {
     let updatedAt: Date
     let modelIDs: Set<UUID>
+    var includesTranscriptionModels: Bool?
 }
 
 extension AIConnection {
@@ -552,7 +560,8 @@ final class AIProviderCatalogSync {
             guard requests[key] == nil else { continue }
             let date = now()
             if !force {
-                if let cached = state.providerCatalogs?[key], date.timeIntervalSince(cached.updatedAt) < Self.cacheLifetime { continue }
+                if let cached = state.providerCatalogs?[key], date.timeIntervalSince(cached.updatedAt) < Self.cacheLifetime,
+                   !source.isOpenRouter || cached.includesTranscriptionModels == true { continue }
                 // Failed/empty endpoints do not cause a retry loop on unrelated settings changes.
                 if let attempted = attempts[key], date.timeIntervalSince(attempted) < 5 * 60 { continue }
             }
