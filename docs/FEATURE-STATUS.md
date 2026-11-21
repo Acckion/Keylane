@@ -92,7 +92,8 @@
 | AI-02 | AI Chat、历史、分支、归档、搜索与导出 | 部分实现 | 按最新界面和运行层逐项核对，持续验证旧会话恢复 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[参考](https://manual.raycast.com/ai/ai-chat) |
 | AI-03 | 项目、指令、会话归组与附件目录 | 部分实现 | 项目跨会话上下文、自动归档和工作目录语义待对照 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[参考](https://manual.raycast.com/ai/projects) |
 | AI-04 | 附件、选中文字、日历及截图文字上下文 | 部分实现 | 统一上下文发现、来源权限与迟到结果处理；关注 PR #212 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[在途 PR](https://github.com/Acckion/Keylane/pull/212) |
-| AI-05 | Screen Awareness 的窗口/区域/整屏视觉上下文 | 未实现 | 当前截图文字为手动图片 OCR，完整屏幕感知仍待接入 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[参考](https://manual.raycast.com/ai/screen-awareness) |
+| AI-05 | Screen Awareness 的窗口/区域/整屏视觉上下文 | 待合并 | 图像文件、单窗口/窗口内区域的 AX+OCR+视觉模型已实现并合成验证；真实应用/权限待实机验收，整屏/跨窗口区域及 CLI 图像后续支持 | [PR #229](https://github.com/Acckion/Keylane/pull/229)、[视觉上下文](AI-VISUAL-CONTEXT.md)、[参考](https://manual.raycast.com/ai/screen-awareness) |
+| AI-05-a | 辅助功能窗口文字与视觉传输 | 待合并 | 共享附件/历史和 HTTP 图像编码；独立 AX 文字入口不依赖屏幕录制；新增 4 项核心视觉测试、8 条模拟视觉协议与旧会话/听写回归通过；当前全集测试见 PR | [架构与验证](AI-VISUAL-CONTEXT.md) |
 | AI-06 | AI 润色、摘要及自定义文本命令 | 部分实现 | 选区、输出替换、模型切换和命令导入完整验收 | [实现](../Sources/Keylane/AITextCommandLauncher.swift)、[参考](https://manual.raycast.com/ai/ai-commands) |
 | AI-07 | 模型、API Key、自定义提供方和 YAML | 部分实现 | 特殊云资源和多凭据提供方的一键配置仍有缺口 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/custom-providers) |
 | AI-08 | 自动发现/缓存模型、失效恢复与任务路由 | 已实现 | 真实账户和各服务商差异继续验收 | [模型目录](AI-PROVIDER-CATALOG.md) |
@@ -205,6 +206,12 @@
 
 维护记录：2026-11-21，EXT-01 / PR #223 整合 dev `7f6a01b`（#217），保留 AI 工具运行域引用和功能代次快照，以及目录替换／卸载／重新启用的激活撤销；新增合成工具租约回归，验证结果见目录事务记录。仍待合并及安装版验收。
 
+维护记录：2026-11-21，AI-05 / AI-05-a / [PR #229](https://github.com/Acckion/Keylane/pull/229) 从 dev `37dac2e` 实现共享视觉附件、AX 窗口文字、单窗口/窗口内区域图像及 OCR 补充。纯合成验证，不读取真实应用/屏幕、不调用模型，未安装/合并/发布；边界见 [视觉上下文](AI-VISUAL-CONTEXT.md)。
+
 维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
 
+维护记录：2026-11-21，AI-05 / AI-05-a / PR #229 同步 dev `036cfd7`，保留 #230 的 OpenRouter 听写目录、上传协议与测试依赖；视觉请求和权限检查继续复用公共运行时，冲突仅合并进度记录与测试源码清单。当前集成验证见 PR。
+
 维护记录：2026-11-21，AI-13-b / [PR #228](https://github.com/Acckion/Keylane/pull/228)，实现 `9e0c43e`：从 dev `37dac2e` 新建读取增强分支，Office/本机显式 OCR/行级正则共用现有授权、接收方确认与私有续读；保留 #215/#217/#224 行为，414+3 项全量、最终 12 项增强及文本框审查修复后的 66 项定向复验、9 组基础文件集成、签名隔离引用测试及 27 项发行保障检查通过；准确提交与 Checks 见 PR，未安装或调用真实模型。
+
+维护记录：2026-11-21，AI-05 / AI-05-a / PR #229 同步 dev `01cee5a`，保留 #228 的 Office/本机 OCR/正则能力。仅进度表维护记录有冲突，公共 OCR API 原样复用；当前构建与集成验证以 PR 记录为准。

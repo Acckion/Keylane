@@ -8,6 +8,7 @@ final class AIConversationComposer: ObservableObject {
     @Published var completion: AIChatCompletionToken?
     @Published var attachments: [AIConversationAttachment] = []
     @Published private(set) var draftID = UUID()
+    @Published private(set) var contextGeneration = UUID()
     @Published private(set) var loadingFiles = false
     @Published var fileError = ""
     private var fileTask: Task<Void, Never>?
@@ -38,23 +39,23 @@ final class AIConversationComposer: ObservableObject {
     /// The draft owns all asynchronous sources, including OCR, across presentation changes.
     func loadAttachments(availability: AnyPublisher<Bool, Never>? = nil, _ operation: @escaping @Sendable () async throws -> [AIConversationAttachment]) {
         guard !loadingFiles else { return }
-        let draft = draftID
+        let draft = draftID, context = contextGeneration
         loadingFiles = true
         fileError = ""
         fileTask = Task { @MainActor [weak self] in
             let result: Result<[AIConversationAttachment], Error>
-            do { result = .success(try await operation()) }
+            do { try Task.checkCancellation(); result = .success(try await operation()) }
             catch { result = .failure(error) }
-            guard let self, !Task.isCancelled, self.draftID == draft else { return }
+            guard let self, !Task.isCancelled, self.draftID == draft, self.contextGeneration == context else { return }
             self.loadingFiles = false
             self.fileTask = nil
             self.attachmentAvailability?.cancel(); self.attachmentAvailability = nil
             switch result {
             case .success(let files):
                 let combined = self.attachments + files
-                guard combined.count <= 5,
+                guard AIConversationAttachment.fits(combined),
                       AIConversationAttachment.requestText(question: self.text, attachments: combined).utf8.count <= 32_000 else {
-                    self.fileError = "问题与附件合计不能超过 32,000 字节，且最多 5 项。"; return
+                    self.fileError = "最多 5 项附件；问题与附件文字合计最多 32,000 字节，图像合计最多 3 MB。"; return
                 }
                 self.attachments = combined
             case .failure(let error): self.fileError = error.localizedDescription
@@ -62,8 +63,7 @@ final class AIConversationComposer: ObservableObject {
         }
         attachmentAvailability = availability?.receive(on: DispatchQueue.main).sink { [weak self] available in
             guard let self, !available, self.loadingFiles else { return }
-            self.fileTask?.cancel(); self.fileTask = nil; self.loadingFiles = false
-            self.attachmentAvailability?.cancel(); self.attachmentAvailability = nil
+            self.cancelAttachmentLoad()
             self.fileError = "来源或命令已停用，请重新选择。"
         }
     }
@@ -74,16 +74,20 @@ final class AIConversationComposer: ObservableObject {
         guard !loadingFiles, context.text.utf8.count + answer.utf8.count <= 31_000 else { return false }
         let attachment = AIConversationAttachment(title: context.title, text: "来源内容：\n" + context.text + "\n\nAI 处理结果：\n" + answer, symbol: "sparkles")
         let combined = attachments + [attachment]
-        guard combined.count <= 5, AIConversationAttachment.requestText(question: text, attachments: combined).utf8.count <= 32_000 else { return false }
+        guard AIConversationAttachment.fits(combined), AIConversationAttachment.requestText(question: text, attachments: combined).utf8.count <= 32_000 else { return false }
         attachments = combined
         return true
     }
 
-    func clear() {
+    /// Invalidate native picker callbacks and in-flight imports without losing the user's draft.
+    func cancelAttachmentLoad() {
+        contextGeneration = UUID()
         attachmentAvailability?.cancel(); attachmentAvailability = nil
-        fileTask?.cancel()
-        fileTask = nil
-        loadingFiles = false
+        fileTask?.cancel(); fileTask = nil; loadingFiles = false
+    }
+
+    func clear() {
+        cancelAttachmentLoad()
         fileError = ""
         text = ""
         selection = NSRange(location: 0, length: 0)
@@ -93,7 +97,7 @@ final class AIConversationComposer: ObservableObject {
     }
     @discardableResult
     func appendAttachment(_ attachment: AIConversationAttachment, for draft: UUID) -> Bool {
-        guard draftID == draft, attachments.count < 5,
+        guard draftID == draft, AIConversationAttachment.fits(attachments + [attachment]),
               AIConversationAttachment.requestText(question: text, attachments: attachments + [attachment]).utf8.count <= 32_000 else { return false }
         attachments.append(attachment)
         return true
@@ -161,6 +165,12 @@ struct AIConversationAttachment: Identifiable, Codable, Equatable, Sendable {
     let title: String
     let text: String
     var symbol = "doc.text"
+    var image: AIImageInput? = nil
+    var visualSource: AIVisualSource? = nil
+
+    static func fits(_ attachments: [Self]) -> Bool {
+        attachments.count <= 5 && attachments.compactMap(\.image).reduce(0, { $0 + $1.data.count }) <= AIImageInput.maximumRequestBytes
+    }
 
     static func requestText(question: String, attachments: [Self]) -> String {
         guard !attachments.isEmpty else { return question }

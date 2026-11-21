@@ -120,7 +120,7 @@ private struct AIConversationMessage: View, Equatable {
                 HStack {
                     Spacer(minLength: 0)
                     ForEach(attachments) { attachment in
-                        Label(attachment.title, systemImage: attachment.symbol)
+                        AIConversationAttachmentLabel(attachment: attachment)
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                             .lineLimit(1).padding(7)
                             .background(.primary.opacity(0.04), in: Capsule())

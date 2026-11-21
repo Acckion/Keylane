@@ -1,10 +1,14 @@
 import Foundation
 
 public enum AIResponseError: Error, LocalizedError, Equatable {
+    case invalidImage, visionUnavailable, visualSourceRevoked
     case invalidResponse, incomplete, requestTooLarge, tooLarge, serviceError, toolsUnavailable, http(Int)
 
     public var errorDescription: String? {
         switch self {
+        case .invalidImage: "图像格式、尺寸或大小无效，请重新添加。"
+        case .visionUnavailable: "所选模型尚未确认支持图像输入，或该连接暂不支持图像传输。请选择支持视觉的 HTTP 模型；图像不会被降级为 OCR 后发送。"
+        case .visualSourceRevoked: "屏幕或辅助功能权限已撤销，未发送窗口上下文。请重新授权并采集，或移除相关附件。"
         case .invalidResponse: "无法解析模型响应。"
         case .incomplete: "模型连接提前中断，回复可能不完整。"
         case .requestTooLarge: "要发送的内容超过大小限制。"

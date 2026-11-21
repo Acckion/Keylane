@@ -107,8 +107,14 @@ final class AIConversationSession: ObservableObject {
     }
 
     var canSendDraft: Bool {
-        !running && !loadingChat && !composer.loadingFiles && matchesCurrentModel && currentConnection != nil &&
+        !running && !loadingChat && !composer.loadingFiles && matchesCurrentModel && currentConnection != nil && visualInputIssue == nil &&
         (!composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachments.isEmpty)
+    }
+
+    var visualInputIssue: String? {
+        let hasImages = composer.attachments.contains { $0.image != nil } || turns.contains { $0.complete && $0.attachments?.contains { $0.image != nil } == true }
+        guard hasImages, let connection = currentConnection, !AIVisualInputPolicy.supports(connection) else { return nil }
+        return AIResponseError.visionUnavailable.localizedDescription
     }
 
     /// The attachment follows this live session, including its explicit model selection.
@@ -160,7 +166,11 @@ final class AIConversationSession: ObservableObject {
 
         let system = instructions ?? effectiveInstructions
         guard validateInstructions(system) else { return false }
-        let requestMessages = messages(for: requestText, instructions: system)
+        guard AIConversationAttachment.fits(attachments) else { status = AIResponseError.requestTooLarge.localizedDescription; return false }
+        let requestMessages = messages(for: requestText, instructions: system,
+                                       images: attachments.compactMap(\.image), sources: attachments.compactMap(\.visualSource))
+        do { try AIVisualInputPolicy.validate(requestMessages, connection: connection) }
+        catch { status = error.localizedDescription; return false }
         let turn = Turn(question: question, attachments: attachments.isEmpty ? nil : attachments, progress: .init())
         composer.clear()
         revealedMessage = nil
@@ -206,19 +216,24 @@ final class AIConversationSession: ObservableObject {
         return true
     }
 
-    func messages(for question: String, instructions: String? = nil) -> [AIMessage] {
+    func messages(for question: String, instructions: String? = nil, images: [AIImageInput] = [], sources: [AIVisualSource] = []) -> [AIMessage] {
         var history = [AIMessage]()
         var remaining = 64_000 - question.utf8.count
+        var imageBytes = AIImageInput.maximumRequestBytes - images.reduce(0, { $0 + $1.data.count })
+        var imageCount = 5 - images.count
         for previous in turns.reversed() where previous.complete {
             let size = previous.requestText.utf8.count + previous.answer.utf8.count
-            guard size <= remaining else { break }
+            let previousImages = (previous.attachments ?? []).compactMap(\.image)
+            let previousBytes = previousImages.reduce(0, { $0 + $1.data.count })
+            guard size <= remaining, previousImages.count <= imageCount, previousBytes <= imageBytes else { break }
+            imageBytes -= previousBytes; imageCount -= previousImages.count
             history.append(AIMessage(role: .assistant, content: previous.answer))
-            history.append(AIMessage(role: .user, content: previous.requestText))
+            history.append(AIMessage(role: .user, content: previous.requestText, images: previousImages, visualSources: (previous.attachments ?? []).compactMap(\.visualSource)))
             remaining -= size
         }
         var messages = instructions.map { [AIMessage(role: .system, content: $0)] } ?? []
         messages.append(contentsOf: history.reversed())
-        messages.append(AIMessage(role: .user, content: question))
+        messages.append(AIMessage(role: .user, content: question, images: images, visualSources: sources))
         return messages
     }
 
