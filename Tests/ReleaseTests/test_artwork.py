@@ -13,6 +13,7 @@ class ArtworkResourcesTests(unittest.TestCase):
         for dictionary in ('settingsNames', 'commandNames'):
             body = source.split(f'private static let {dictionary} = [', 1)[1].split('\n    ]', 1)[0]
             names.update(re.findall(r': "([^"]+)"', body))
+        names.update(re.findall(r'image\("([^"]+)"\)', source))
         # Resolved from the local application bundle at runtime.
         names.discard('keylane-app')
         self.assertTrue(names)

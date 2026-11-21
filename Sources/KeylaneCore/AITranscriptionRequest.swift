@@ -32,6 +32,21 @@ public enum AITranscriptionRequest {
         guard !audio.isEmpty else { throw AITranscriptionError.invalidAudio }
         guard audio.count <= maximumAudioBytes else { throw AITranscriptionError.audioTooLarge }
         guard boundary.rangeOfCharacter(from: .controlCharacters) == nil else { throw AITranscriptionError.configuration }
+        if options.provider == .openRouter {
+            // Keylane records m4a AAC. OpenRouter's STT API accepts raw audio as base64 JSON.
+            var payload: [String: Any] = ["model": options.model,
+                "input_audio": ["data": audio.base64EncodedString(), "format": "m4a"]]
+            if options.language != "auto", !options.language.isEmpty { payload["language"] = options.language }
+            if !options.validVocabulary.isEmpty { payload["prompt"] = options.validVocabulary.joined(separator: ", ") }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 180
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+            return request
+        }
         var body = Data()
         func field(_ name: String, _ value: String) {
             body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".utf8))

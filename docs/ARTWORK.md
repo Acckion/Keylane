@@ -1,6 +1,6 @@
 # 功能与命令图标
 
-本批按 2026-11-21 的设置和命令目录补齐资源。图片保存在 `Resources/ModuleArtwork/`，映射由 `Sources/Keylane/ModuleArtwork.swift` 统一维护。设置侧栏、页面标题、命令搜索和通用命令设置行共用映射。
+本批按 2026-11-21 的设置和命令目录补齐资源，共新增 60 张、重绘 5 张 PNG。图片保存在 `Resources/ModuleArtwork/`，映射由 `Sources/Keylane/ModuleArtwork.swift` 统一维护。设置侧栏、页面标题、命令搜索和通用命令设置行共用映射。
 
 ## 设置侧栏
 
@@ -36,6 +36,10 @@
 | 网页问答 | 网页与问号气泡 |
 
 参考 [Raycast AI Commands](https://manual.raycast.com/ai/ai-commands)。
+
+## 预备菜单动作资源
+
+剪贴板暂停与清空另有预备资源。当前剪贴板命令中的顺序粘贴、重置粘贴和 AI 操作已接入各自图案，已有操作菜单沿用菜单组件的显示方式。
 
 ## 维护与验证
 
