@@ -64,4 +64,25 @@ final class FileIndexExclusionPolicyTests: XCTestCase {
         XCTAssertTrue(restored.includesIndexChange(at: cache.appendingPathComponent("module.pyc").path, directory: false))
     }
 
+
+    func testSavedResultsUseAncestorRulesWithoutRequiringOnlineFilesAndAcceptResolvedScopes() throws {
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let target = fixture.appendingPathComponent("scope")
+        let alias = fixture.appendingPathComponent("alias")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+        defer { try? FileManager.default.removeItem(at: fixture) }
+        let resolved = try XCTUnwrap(FileSearchLocation.canonicalPath(target.path))
+        var options = FileSearchOptions(roots: [alias.path])
+        options.ignorePatterns = ["__pycache__", "custom-excluded"]
+        var locations = FileSearchLocation(options: options, automaticExclusions: [])
+        XCTAssertTrue(locations.includesSavedResult(at: resolved + "/missing-document.txt", directory: false))
+        XCTAssertFalse(locations.includesSavedResult(at: resolved + "/package/__pycache__/nested/missing.pyc", directory: false))
+        XCTAssertFalse(locations.includesSavedResult(at: resolved + "/custom-excluded/missing.txt", directory: false))
+        XCTAssertFalse(locations.includesSavedResult(at: resolved + "-outside/missing.txt", directory: false))
+        options.ignorePatterns.removeAll { $0 == "__pycache__" }
+        var removed = FileSearchLocation(options: options, automaticExclusions: [])
+        XCTAssertTrue(removed.includesSavedResult(at: resolved + "/package/__pycache__/nested/missing.pyc", directory: false))
+    }
+
 }

@@ -728,8 +728,8 @@ final class FileSearchController: ObservableObject {
         let restored = restored
         let task = DispatchWorkItem { [weak self] in
             var allowed: [RankedFile] = []
+            var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
             if !system.isEmpty {
-                var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
                 allowed = system.filter { hit in
                     config.roots.contains { FileSearchLocation.contains(hit.file.id, in: $0) }
                         && (try? locations.item(at: hit.file.url)) != nil
@@ -737,7 +737,11 @@ final class FileSearchController: ObservableObject {
             }
             var seen = Set<String>()
             let ordered = (local + allowed).filter { hit in
-                !removed.contains { FileSearchLocation.contains(hit.file.id, in: $0) } && seen.insert(hit.file.id).inserted
+                // Saved rows can predate changed ignore rules while indexing is paused.
+                // Check ancestors without requiring the file to be online, preserving
+                // retained records for disconnected volumes.
+                locations.includesSavedResult(at: hit.file.id, directory: hit.file.isDirectory)
+                    && !removed.contains { FileSearchLocation.contains(hit.file.id, in: $0) } && seen.insert(hit.file.id).inserted
             }
                 .sorted { $0.precedes($1) }
             let best = ordered.prefix(200).map { $0.file.readingResourceMetadata() }
