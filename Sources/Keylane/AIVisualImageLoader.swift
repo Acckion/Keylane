@@ -8,7 +8,9 @@ import Vision
 /// Decode a bounded thumbnail and re-encode pixels only: no source EXIF/location metadata is forwarded.
 enum AIVisualImageLoader {
     static func read(_ url: URL) async throws -> AIConversationAttachment {
+        try Task.checkCancellation()
         let task = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
             let access = url.startAccessingSecurityScopedResource()
             defer { if access { url.stopAccessingSecurityScopedResource() } }
             let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)

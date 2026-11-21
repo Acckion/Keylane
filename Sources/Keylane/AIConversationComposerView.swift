@@ -46,7 +46,7 @@ struct AIConversationComposerView: View {
             } message: { Text(composer.fileError) }
             .onChange(of: composer.draftID) { _, _ in contextRequest = nil; visualRequest = nil; dismissComposerMenu() }
             .onReceive(configuration.$state.map(\.enabled).removeDuplicates()) { enabled in
-                if !enabled { contextRequest = nil; visualRequest = nil; dismissComposerMenu() }
+                if !enabled { composer.cancelAttachmentLoad(); contextRequest = nil; visualRequest = nil; dismissComposerMenu() }
             }
             .onReceive(composer.contextRequested) { request in
                 switch request {

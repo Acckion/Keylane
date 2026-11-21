@@ -7,7 +7,7 @@ enum AIConversationHostActions {
     enum ImageImportMode { case text, vision }
     static func chooseFiles(composer: AIConversationComposer, directory: URL? = nil, in window: NSWindow? = NSApp.keyWindow) {
         guard let window, window.attachedSheet == nil, !composer.loadingFiles else { return }
-        let draft = composer.draftID
+        let draft = composer.draftID, context = composer.contextGeneration
         let panel = NSOpenPanel()
         panel.title = "附加文件"
         panel.message = "支持 UTF-8 文本、代码和有文字的 PDF。文件仅在发送问题时交给所选模型。"
@@ -15,7 +15,7 @@ enum AIConversationHostActions {
         panel.allowsMultipleSelection = true
         panel.directoryURL = directory
         panel.beginSheetModal(for: window) { [weak composer] response in
-            guard response == .OK, let composer, composer.draftID == draft else { return }
+            guard response == .OK, let composer, composer.draftID == draft, composer.contextGeneration == context else { return }
             composer.attachFiles(panel.urls)
         }
     }
@@ -23,7 +23,7 @@ enum AIConversationHostActions {
     static func chooseImage(composer: AIConversationComposer, directory: URL? = nil, mode: ImageImportMode = .text,
                             read: @escaping @Sendable (URL) async throws -> AIConversationAttachment) {
         guard let window = NSApp.keyWindow, window.attachedSheet == nil, !composer.loadingFiles else { return }
-        let draft = composer.draftID
+        let draft = composer.draftID, context = composer.contextGeneration
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.directoryURL = directory
@@ -31,7 +31,7 @@ enum AIConversationHostActions {
         panel.prompt = mode == .vision ? "添加图像" : "提取文字并添加"
         panel.message = mode == .vision ? "图像以静态画面加入草稿后可预览，动图只取第一帧；仅在发送时交给支持视觉的模型。" : "在本机提取图片文字，加入草稿。"
         panel.beginSheetModal(for: window) { [weak composer] response in
-            guard response == .OK, let url = panel.url, let composer, composer.draftID == draft else { return }
+            guard response == .OK, let url = panel.url, let composer, composer.draftID == draft, composer.contextGeneration == context else { return }
             composer.loadAttachments { [try await read(url)] }
         }
     }

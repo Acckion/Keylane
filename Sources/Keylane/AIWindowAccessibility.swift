@@ -33,10 +33,14 @@ enum AIWindowAccessibility {
         return CGRect(origin: point, size: size)
     }
     static func windows(pid: pid_t) throws -> [Window] {
+        try Task.checkCancellation()
         guard AXIsProcessTrusted() else { throw AIResponseError.visualSourceRevoked }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.08)
-        return (attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []).prefix(40).compactMap { element in
+        let deadline = ContinuousClock.now + .milliseconds(500)
+        return try (attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []).prefix(40).compactMap { element in
+            try Task.checkCancellation()
+            guard ContinuousClock.now < deadline else { return nil }
             AXUIElementSetMessagingTimeout(element, 0.08)
             guard let rect = frame(element) else { return nil }
             return .init(element: element, pid: pid, title: String((attribute(element, kAXTitleAttribute) as? String ?? "未命名窗口").prefix(200)), frame: rect)
@@ -47,6 +51,7 @@ enum AIWindowAccessibility {
         return current.contains { CFEqual($0.element, window.element) && $0.frame == window.frame && $0.title == window.title }
     }
     static func read(_ window: Window) throws -> [Block] {
+        try Task.checkCancellation()
         guard isCurrent(window) else { throw AIResponseError.visualSourceRevoked }
         let deadline = ContinuousClock.now + .milliseconds(700)
         var queue = [window.element], index = 0, output: [Block] = [], bytes = 0

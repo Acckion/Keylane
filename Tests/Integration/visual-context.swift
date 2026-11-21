@@ -6,6 +6,8 @@ import KeylaneCore
 import SwiftUI
 @testable import Keylane
 
+@MainActor private final class VisualReadState { var started = 0 }
+
 @MainActor private func verifyVisual() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-visual-fixture-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -69,6 +71,13 @@ import SwiftUI
     let legacy = Data("{\"id\":\"00000000-0000-0000-0000-000000000001\",\"title\":\"Old\",\"text\":\"Legacy\",\"symbol\":\"doc\"}".utf8)
     let oldAttachment = try JSONDecoder().decode(AIConversationAttachment.self, from: legacy)
     precondition(oldAttachment.image == nil)
+    let contextBeforeDisable = composer.contextGeneration
+    let preparation = VisualReadState()
+    composer.loadAttachments { await MainActor.run { preparation.started += 1 }; return [attachment] }
+    composer.cancelAttachmentLoad()
+    precondition(composer.text == "Keep my question" && composer.attachments.count == 2 && composer.contextGeneration != contextBeforeDisable)
+    try await Task.sleep(for: .milliseconds(80))
+    precondition(composer.attachments.count == 2 && !composer.loadingFiles && preparation.started == 0)
     composer.loadAttachments { try? await Task.sleep(for: .milliseconds(50)); return [attachment] }
     composer.clear()
     try await Task.sleep(for: .milliseconds(80))

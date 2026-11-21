@@ -26,6 +26,7 @@ enum AIWindowVisualCapture {
         }
     }
     static func windows() async throws -> [Window] {
+        try Task.checkCancellation()
         guard CGPreflightScreenCaptureAccess() else { throw AIResponseError.visualSourceRevoked }
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         try Task.checkCancellation()

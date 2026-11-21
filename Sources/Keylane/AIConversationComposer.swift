@@ -8,6 +8,7 @@ final class AIConversationComposer: ObservableObject {
     @Published var completion: AIChatCompletionToken?
     @Published var attachments: [AIConversationAttachment] = []
     @Published private(set) var draftID = UUID()
+    @Published private(set) var contextGeneration = UUID()
     @Published private(set) var loadingFiles = false
     @Published var fileError = ""
     private var fileTask: Task<Void, Never>?
@@ -38,14 +39,14 @@ final class AIConversationComposer: ObservableObject {
     /// The draft owns all asynchronous sources, including OCR, across presentation changes.
     func loadAttachments(availability: AnyPublisher<Bool, Never>? = nil, _ operation: @escaping @Sendable () async throws -> [AIConversationAttachment]) {
         guard !loadingFiles else { return }
-        let draft = draftID
+        let draft = draftID, context = contextGeneration
         loadingFiles = true
         fileError = ""
         fileTask = Task { @MainActor [weak self] in
             let result: Result<[AIConversationAttachment], Error>
-            do { result = .success(try await operation()) }
+            do { try Task.checkCancellation(); result = .success(try await operation()) }
             catch { result = .failure(error) }
-            guard let self, !Task.isCancelled, self.draftID == draft else { return }
+            guard let self, !Task.isCancelled, self.draftID == draft, self.contextGeneration == context else { return }
             self.loadingFiles = false
             self.fileTask = nil
             self.attachmentAvailability?.cancel(); self.attachmentAvailability = nil
@@ -62,8 +63,7 @@ final class AIConversationComposer: ObservableObject {
         }
         attachmentAvailability = availability?.receive(on: DispatchQueue.main).sink { [weak self] available in
             guard let self, !available, self.loadingFiles else { return }
-            self.fileTask?.cancel(); self.fileTask = nil; self.loadingFiles = false
-            self.attachmentAvailability?.cancel(); self.attachmentAvailability = nil
+            self.cancelAttachmentLoad()
             self.fileError = "来源或命令已停用，请重新选择。"
         }
     }
@@ -79,11 +79,15 @@ final class AIConversationComposer: ObservableObject {
         return true
     }
 
-    func clear() {
+    /// Invalidate native picker callbacks and in-flight imports without losing the user's draft.
+    func cancelAttachmentLoad() {
+        contextGeneration = UUID()
         attachmentAvailability?.cancel(); attachmentAvailability = nil
-        fileTask?.cancel()
-        fileTask = nil
-        loadingFiles = false
+        fileTask?.cancel(); fileTask = nil; loadingFiles = false
+    }
+
+    func clear() {
+        cancelAttachmentLoad()
         fileError = ""
         text = ""
         selection = NSRange(location: 0, length: 0)
