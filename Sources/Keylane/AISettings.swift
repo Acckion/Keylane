@@ -125,10 +125,11 @@ enum AIModule {
                               pages: [AIActionLauncher.page(model: model), QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
                                       AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
-                  order: 8, items: [interactions, fileAccess],
+                  order: 0, items: [interactions, fileAccess],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
+                  sidebarGroup: .builtInExtension,
                   content: { [weak model] in
                       guard let model else { return AnyView(EmptyView()) }
                       return AnyView(AISettingsHome(model: model))
