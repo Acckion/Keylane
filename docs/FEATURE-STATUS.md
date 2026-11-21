@@ -93,7 +93,7 @@
 | AI-03 | 项目、指令、会话归组与附件目录 | 部分实现 | 项目跨会话上下文、自动归档和工作目录语义待对照 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[参考](https://manual.raycast.com/ai/projects) |
 | AI-04 | 附件、选中文字、日历及截图文字上下文 | 部分实现 | 统一上下文发现、来源权限与迟到结果处理；关注 PR #212 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[在途 PR](https://github.com/Acckion/Keylane/pull/212) |
 | AI-05 | Screen Awareness 的窗口/区域/整屏视觉上下文 | 待合并 | 图像文件、单窗口/窗口内区域的 AX+OCR+视觉模型已实现并合成验证；真实应用/权限待实机验收，整屏/跨窗口区域及 CLI 图像后续支持 | [PR #229](https://github.com/Acckion/Keylane/pull/229)、[视觉上下文](AI-VISUAL-CONTEXT.md)、[参考](https://manual.raycast.com/ai/screen-awareness) |
-| AI-05-a | 辅助功能窗口文字与视觉传输 | 待合并 | 共享附件/历史和 HTTP 图像编码；独立 AX 文字入口不依赖屏幕录制；408+5 项 Swift、8 条模拟视觉协议与旧会话/听写回归通过 | [架构与验证](AI-VISUAL-CONTEXT.md) |
+| AI-05-a | 辅助功能窗口文字与视觉传输 | 待合并 | 共享附件/历史和 HTTP 图像编码；独立 AX 文字入口不依赖屏幕录制；新增 4 项核心视觉测试、8 条模拟视觉协议与旧会话/听写回归通过；当前全集测试见 PR | [架构与验证](AI-VISUAL-CONTEXT.md) |
 | AI-06 | AI 润色、摘要及自定义文本命令 | 部分实现 | 选区、输出替换、模型切换和命令导入完整验收 | [实现](../Sources/Keylane/AITextCommandLauncher.swift)、[参考](https://manual.raycast.com/ai/ai-commands) |
 | AI-07 | 模型、API Key、自定义提供方和 YAML | 部分实现 | 特殊云资源和多凭据提供方的一键配置仍有缺口 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/custom-providers) |
 | AI-08 | 自动发现/缓存模型、失效恢复与任务路由 | 已实现 | 真实账户和各服务商差异继续验收 | [模型目录](AI-PROVIDER-CATALOG.md) |
@@ -103,7 +103,8 @@
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-12-a | 聊天中的剪贴板与文件搜索引用工具 | 待合并 | PR #217 同步 dev `fc44e8b`；按路径与按引用协议分离，逐次确认，运行内/五分钟引用及来源校验；403+5 项 Swift、合成文件工具/会话、即时排除及发送前撤销回归通过，真实服务未验收 | [PR #217](https://github.com/Acckion/Keylane/pull/217)、[验证](AI-READ-TOOLS-VALIDATION.md) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
-| AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 待合并 | PR #224 在 #215 合入后重整增量；#226 的临时引用链与审批仍须整合复验，Office/OCR 与实机待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
+| AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 已实现 | #224 已合入，逐页确认与 #217 搜索引用分开保留；真实提供商及安装版待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
+| AI-13-b | Office、显式本机 OCR 与 Grep 正则 | 待合并 | DOCX/XLSX/PPTX 共用读取层；授权根 PDF 可显式 OCR；正则可选，旧 Office 格式及安装版待验收 | [PR #228](https://github.com/Acckion/Keylane/pull/228)、[实现与验证边界](AI-FILE-READ-ENHANCEMENTS.md) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 待合并；同步已合入 #212 的 dev，片段模板/成功结果校验、备忘录附加授权与 Emoji 导入关键词已保留；383 项核心与 5 项提供方测试、合成 AI/Emoji/注册表及签名原生窗口回归通过，真实服务未验收 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
@@ -210,3 +211,7 @@
 维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
 
 维护记录：2026-11-21，AI-05 / AI-05-a / PR #229 同步 dev `036cfd7`，保留 #230 的 OpenRouter 听写目录、上传协议与测试依赖；视觉请求和权限检查继续复用公共运行时，冲突仅合并进度记录与测试源码清单。当前集成验证见 PR。
+
+维护记录：2026-11-21，AI-13-b / [PR #228](https://github.com/Acckion/Keylane/pull/228)，实现 `9e0c43e`：从 dev `37dac2e` 新建读取增强分支，Office/本机显式 OCR/行级正则共用现有授权、接收方确认与私有续读；保留 #215/#217/#224 行为，414+3 项全量、最终 12 项增强及文本框审查修复后的 66 项定向复验、9 组基础文件集成、签名隔离引用测试及 27 项发行保障检查通过；准确提交与 Checks 见 PR，未安装或调用真实模型。
+
+维护记录：2026-11-21，AI-05 / AI-05-a / PR #229 同步 dev `01cee5a`，保留 #228 的 Office/本机 OCR/正则能力。仅进度表维护记录有冲突，公共 OCR API 原样复用；当前构建与集成验证以 PR 记录为准。
