@@ -55,10 +55,10 @@ enum AIModule {
                 registry.availabilityChanges.map { registry.isCommandModuleEnabled(commandID) },
                 configuration.$state.map(\.enabled)
             ).eraseToAnyPublisher()
-            quickAI.composer.loadAttachments(availability: availability) {
-                let context = try await guarded.load()
-                return [.init(title: context.title, text: context.text, symbol: "doc.text")]
-            }
+            quickAI.composer.loadResourceReaders([.init(source: guarded, available: { [weak model, weak registry] in
+                guard let model, let registry else { return false }
+                return configuration.state.enabled && registry.isCommandModuleEnabled(commandID) && !model.disabledCommands.contains(commandID.rawValue)
+            })], availability: availability)
             if quickAI.isInChat { openChat("") }
             else { model.openPageWithExistingDraft(QuickAILauncher.pageID) }
             return true
