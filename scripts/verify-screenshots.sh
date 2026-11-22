@@ -7,7 +7,7 @@ task_target="$(uname -m)-apple-macos26.0"
 export CLANG_MODULE_CACHE_PATH="$task_directory/cache"
 swiftc -target "$task_target" -emit-library -emit-module -module-name KeylaneCore \
     -emit-module-path "$task_directory/KeylaneCore.swiftmodule" \
-    Sources/KeylaneCore/{ScreenshotCatalog,SettingsCatalog,IncomingFiles,Theme}.swift -o "$task_directory/libKeylaneCore.dylib"
+    Sources/KeylaneCore/{ScreenshotCatalog,SettingsCatalog,IncomingFiles,Theme,LocalImageTextRecognition}.swift -o "$task_directory/libKeylaneCore.dylib"
 swiftc -Xfrontend -disable-sandbox -target "$task_target" -I "$task_directory" -L "$task_directory" \
     -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" \
     Sources/Keylane/{ScreenshotLibrary,FolderAccessScope,FolderChangeWatcher,ImageTextRecognition,ResultGrid,ResultList,VisualStyle,ThemeStore,ThemeStyle}.swift \
