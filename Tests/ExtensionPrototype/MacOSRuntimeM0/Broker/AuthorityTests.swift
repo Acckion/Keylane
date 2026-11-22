@@ -71,6 +71,21 @@ import Foundation
         let budget = broker.admit("budget", generation: 1, seal: seal)!
         for _ in 0..<32 { precondition(denied(broker.handle(Data("{".utf8), binding: budget))) }
         precondition(broker.prepare(request(1), binding: budget) == nil)
+        broker.install("external", seal: seal, initial: ["item":"external"], generation: 7)
+        var live = false
+        precondition(broker.admit("external", generation: 7, seal: seal, live: { live }) == nil)
+        live = true
+        let external = broker.admit("external", generation: 7, seal: seal, live: { live })!
+        let pending = broker.prepare(request(1, "storage.set", value: "forbidden"), binding: external)!
+        live = false
+        precondition(denied(broker.publish(broker.execute(pending))))
+        precondition(broker.audit("external", key: "item") == "external")
+        live = true // observing false retires the binding permanently
+        precondition(denied(broker.handle(request(2), binding: external)))
+        let latest = broker.admit("external", generation: 7, seal: seal, live: { live })!
+        let late = broker.execute(broker.prepare(request(1), binding: latest)!)
+        live = false
+        precondition(denied(broker.publish(late)))
         print("PASS broker admission, namespace, request/work/reply replay, off-on, prepare/execute/publish revocation, replace, close and uninstall")
     }
 }

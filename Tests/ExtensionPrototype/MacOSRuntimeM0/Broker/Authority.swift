@@ -22,6 +22,7 @@ final class M0Broker {
         let epoch: UUID
         var sequence: UInt64 = 0
         var remaining = 32
+        let live: () -> Bool
     }
     struct Prepared {
         fileprivate let token: UUID
@@ -43,20 +44,23 @@ final class M0Broker {
     private var currentWork: [UUID: UUID] = [:]
     private var replyWork: [UUID: UUID] = [:]
 
-    func install(_ id: String, seal: String, initial: [String: String]) {
+    func install(_ id: String, seal: String, initial: [String: String], generation: UInt64 = 1, read: Bool = true, write: Bool = true) {
         precondition(records[id] == nil && seal.utf8.count == 64)
         records[id] = Record(seal: seal)
+        records[id]?.generation = generation
+        records[id]?.read = read; records[id]?.write = write
         storage[id] = initial
     }
-    func admit(_ id: String, generation: UInt64, seal: String) -> Binding? {
-        guard let record = records[id], record.enabled, record.generation == generation, record.seal == seal else { return nil }
+    func admit(_ id: String, generation: UInt64, seal: String, live: @escaping () -> Bool = { true }) -> Binding? {
+        guard let record = records[id], record.enabled, record.generation == generation, record.seal == seal, live() else { return nil }
         let binding = Binding()
-        leases[binding.token] = Lease(installation: id, generation: generation, epoch: record.epoch)
+        leases[binding.token] = Lease(installation: id, generation: generation, epoch: record.epoch, live: live)
         return binding
     }
     private func current(_ token: UUID) -> Lease? {
         guard let lease = leases[token], let record = records[lease.installation], record.enabled,
               record.generation == lease.generation, record.epoch == lease.epoch else { return nil }
+        guard lease.live() else { retire(token); return nil }
         return lease
     }
     func setEnabled(_ id: String, _ enabled: Bool) {
@@ -76,9 +80,12 @@ final class M0Broker {
         record.generation += 1; record.epoch = UUID(); records[id] = record
     }
     func close(_ binding: Binding) {
-        leases.removeValue(forKey: binding.token)
-        if let work = currentWork.removeValue(forKey: binding.token) { executed.remove(work) }
-        replyWork.removeValue(forKey: binding.token)
+        retire(binding.token)
+    }
+    private func retire(_ token: UUID) {
+        leases.removeValue(forKey: token)
+        if let work = currentWork.removeValue(forKey: token) { executed.remove(work) }
+        replyWork.removeValue(forKey: token)
     }
     func uninstall(_ id: String) {
         records.removeValue(forKey: id)

@@ -60,7 +60,7 @@ def verdict(cases):
     return ('blocked', failures) if failures else ('incomplete', [])
 
 
-def build_fixture(task, identity, *, raw=False, defines=()):
+def build_fixture(task, identity, *, raw=False, defines=(), store_module=None):
     app = task / 'Capsule.app'
     helper = app / 'Contents/MacOS/helper'
     helper.parent.mkdir(parents=True)
@@ -77,10 +77,15 @@ def build_fixture(task, identity, *, raw=False, defines=()):
     parent = task / 'broker-parent'
     memory = task / 'memory.o'
     m0.run(['xcrun', 'clang', '-O2', '-c', str(FIXTURE/'Transport/MemoryGuard.c'), '-o', str(memory)])
-    m0.run(['swiftc', '-swift-version', '5', '-O', *defines,
+    receipt_sources, receipt_flags = [], []
+    if store_module is not None:
+        receipt_sources = [str(FIXTURE/'Receipt/Gate.swift')]
+        receipt_flags = ['-D', 'M0_RECEIPT', '-package-name', 'Keylane', '-I', str(store_module),
+                         str(store_module/'libM0Store.a'), '-lsqlite3', '-lz']
+    m0.run(['swiftc', '-swift-version', '5', '-O', *defines, *receipt_flags,
             '-import-objc-header', str(FIXTURE/'Transport/MemoryGuard.h'),
             str(FIXTURE/'Broker/Authority.swift'), str(FIXTURE/'Broker/FrameChannel.swift'),
-            str(FIXTURE/'Broker/Parent.swift'), str(memory), '-o', str(parent)])
+            str(FIXTURE/'Broker/Parent.swift'), *receipt_sources, str(memory), '-o', str(parent)])
     identifier = 'org.keylane.tests.runtime-m0.broker-parent'
     m0.run(['codesign', '--force', '--sign', identity, '--options', 'runtime', '--timestamp=none',
             '--identifier', identifier, str(parent)], capture_output=True)

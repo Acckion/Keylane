@@ -129,7 +129,7 @@
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
 | EXT-01 | 扩展发现、安装、启用、卸载与生命周期 | 部分实现；目录快照事务已随 #223 合入 | 固定真实扩展样本持续回归；#222 商店与 macOS 运行迁移见 EXT-01-a，安装版待验收 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
-| EXT-01-a | 无 VM 的 macOS 扩展构建与运行迁移 | M0 五批探针（本分支待合并）；Node blocked，受限候选 incomplete | broker绑定／撤权子集通过；补齐传输截断失败退出、阻塞RPC父死亡及采样式内存监督对照；真实安装准入、硬性内存额度及兼容性未接通，Node旧阻塞保留，M1–M5 未开始；#222 未改，性能预算未验收 | [设计与分批验收](MACOS-EXTENSION-RUNTIME.md) |
+| EXT-01-a | 无 VM 的 macOS 扩展构建与运行迁移 | M0 六批探针（本分支待合并）；Node blocked，受限候选 incomplete | 复用#222签名收据／保护头／注册表算法验证首方临时制品及持续撤权；产品可信存储／宿主绑定／硬性内存额度及兼容性未接通，Node旧阻塞保留，M1–M5 未开始；#222 未改，性能预算未验收 | [设计与分批验收](MACOS-EXTENSION-RUNTIME.md) |
 | EXT-02 | no-view / view / menu-bar 三类命令 | 部分实现 | 按命令依赖验证，不能由一个样本推断全生态兼容 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
 | EXT-03 | List / Grid / Detail / Form / Actions | 部分实现 | 动态回调、生命周期、资源加载与字段事件逐项推进 | [API 表](RAYCAST-API-COVERAGE.csv)、[说明](RAYCAST-API-COVERAGE.md) |
 | EXT-04 | 存储、网络、文件、系统工具和 Utilities | 部分实现 | 用公开契约和隔离运行证据缩小 partial 项 | [API 表](RAYCAST-API-COVERAGE.csv) |
@@ -224,3 +224,5 @@
 维护记录：2026-11-22，EXT-01-a / BASE-11 第四批 M0：基于 dev `5c6d6aa4` 新增最小有界broker，17项签名双进程子检查通过；根仍为合成安装记录，不冒充Store收据验证。补测读／写撤权阶段、重放、限额和进程退出，整体incomplete；保留旧Node阻塞和严格隔离目标，未接产品运行器、未进入M1。见 [第四批记录](BROKER-M0.md)。
 
 维护记录：2026-11-22，EXT-01-a / BASE-11 第五批 M0：修复截断头被当成正常EOF、截断回复后继续使用通道的缺口；新增19项首方签名异常传输／有界内存子检查及4项CI测试。17项broker与18项受限JS复测通过子集，整体仍incomplete。只读核对#222真实收据准入边界，未接产品、未进入M1；本分支待合并，见 [第五批记录](TRANSPORT-PRESSURE-M0.md)。
+
+维护记录：2026-11-22，EXT-01-a / BASE-11 第六批M0（前序 `ea1980b6`）：原样编译#222 `c7b4197` 收据／注册表算法，20项签名首方制品及撤权子检查通过；禁用／替换须先确认旧helper退出，CAS失败不能恢复旧lease。修复内存采样退出竞态并保留存活观测失败拒绝，整体incomplete；本分支待合并，产品未接通、M1未开始，见 [第六批记录](RECEIPT-BRIDGE-M0.md)。

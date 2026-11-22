@@ -17,7 +17,7 @@ import Darwin
             return true
         }
     }
-    static func main() {
+    @MainActor static func main() async {
         signal(SIGPIPE, SIG_IGN)
         signal(SIGALRM, { _ in _exit(74) })
         alarm(8) // bounded native deadline; EOF watcher also works while JS is stuck
@@ -32,19 +32,44 @@ import Darwin
 #if M0_REPLY_FAULTS
         scenarios += ["reply-zero", "reply-huge", "reply-short-header", "reply-short-body", "reply-utf8", "reply-stall"]
 #endif
+#if M0_RECEIPT
+        scenarios = ["receipt"]
+#endif
         guard let object = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
-              Set(object.keys) == ["source", "scenario"], let source = object["source"] as? String,
+              Set(object.keys) == ["source", "scenario"], var source = object["source"] as? String,
               let scenario = object["scenario"] as? String,
               scenarios.contains(scenario) else { fail(71) }
-        let broker = M0Broker(), seal = String(repeating: "a", count: 64)
-        broker.install("a", seal: seal, initial: ["item": "synthetic-a"])
-        broker.install("b", seal: seal, initial: ["item": "synthetic-b"])
-        let owner = scenario == "b" ? "b" : "a"
-        guard let binding = broker.admit(owner, generation: 1, seal: scenario == "bad-admission" ? "wrong" : seal) else {
-            print("{\"admissionRejected\":true,\"spawned\":false}"); return
-        }
         let root = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
         let helper = root.appendingPathComponent("Capsule.app/Contents/MacOS/helper").path
+        var seal = String(repeating: "a", count: 64)
+#if M0_RECEIPT
+        let mode = source
+        let gate: M0ReceiptGate
+        do { gate = try await M0ReceiptGate.open(helper: URL(fileURLWithPath: helper), mode: mode) }
+        catch M0ReceiptGate.Failure.rejected {
+            print("{\"admissionRejected\":true,\"spawned\":false}"); return
+        } catch { fail() }
+        source = gate.source; seal = gate.digest
+        let ticket = gate.ticket
+        let live = { ticket.isCurrent() }
+#else
+        let live = { true }
+#endif
+        let broker = M0Broker()
+#if M0_RECEIPT
+        let owner = ticket.installation.id
+        let generation = ticket.installation.generation
+        broker.install(owner, seal: seal, initial: ["item": "synthetic-a"], generation: generation,
+                       read: ticket.capabilities.contains("storage.read"), write: ticket.capabilities.contains("storage.write"))
+#else
+        let generation: UInt64 = 1
+        broker.install("a", seal: seal, initial: ["item": "synthetic-a"])
+        let owner = scenario == "b" ? "b" : "a"
+#endif
+        broker.install("b", seal: seal, initial: ["item": "synthetic-b"])
+        guard let binding = broker.admit(owner, generation: generation, seal: scenario == "bad-admission" ? "wrong" : seal, live: live) else {
+            print("{\"admissionRejected\":true,\"spawned\":false}"); return
+        }
         var life: [Int32] = [0,0], channel: [Int32] = [0,0], sourcePipe: [Int32] = [0,0]
         guard pipe(&life) == 0, socketpair(AF_UNIX, SOCK_STREAM, 0, &channel) == 0, pipe(&sourcePipe) == 0 else { fail() }
         let childLife = fcntl(life[0], F_DUPFD_CLOEXEC, 20)
@@ -66,6 +91,9 @@ import Darwin
         posix_spawnattr_destroy(&attributes); posix_spawn_file_actions_destroy(&actions)
         close(childLife); close(childRPC); close(childInput)
         guard code == 0 else { fail() }
+#if M0_RECEIPT
+        gate.attach(pid)
+#endif
 #if M0_MEMORY_OBSERVE_ONLY
         let enforce: Int32 = 0
 #else
@@ -79,6 +107,7 @@ import Darwin
         close(sourcePipe[1])
         var requests = 0
         var transportRejected = false
+        var receiptReplyWithheld = false
         channelLoop: while true {
             let request: Data
             switch M0FrameChannel.receive(fd: channel[0]) {
@@ -93,17 +122,30 @@ import Darwin
             requests += 1
             let response: Data
             if let work = broker.prepare(request, binding: binding) {
+#if M0_RECEIPT
+                if requests == 1 && ["disable-before", "off-on", "uninstall", "replace", "cas-failure"].contains(mode) {
+                    do { try await gate.advance(mode) } catch { fail() }
+                }
+#endif
                 if requests == 1 {
                     if scenario == "off-on" { broker.setEnabled(owner, false); broker.setEnabled(owner, true) }
                     if scenario == "replace" { broker.replace(owner) }
                     if scenario == "uninstall" { broker.uninstall(owner) }
                 }
                 let reply = broker.execute(work)
+#if M0_RECEIPT
+                if requests == 1 && mode == "disable-after" {
+                    do { try await gate.advance(mode) } catch { fail() }
+                }
+#endif
                 if requests == 1 {
                     if scenario == "read-revoke" { broker.revokeRead(owner) }
                     if scenario == "close" { broker.close(binding) }
                 }
                 response = broker.publish(reply)
+#if M0_RECEIPT
+                receiptReplyWithheld = response == broker.denied && !gate.current
+#endif
             } else { response = broker.denied }
 #if M0_REPLY_FAULTS
             // First-party signed negative-control binary only. Not a JS API.
@@ -135,9 +177,13 @@ import Darwin
         var status: Int32 = 0
         while waitpid(pid, &status, 0) < 0 { if errno != EINTR { fail() } }
         broker.close(binding); close(life[1]); alarm(0)
-        let audit: [String: Any] = ["audit": true, "otherNamespaceIntact": broker.audit(owner == "a" ? "b" : "a", key: "item") == (owner == "a" ? "synthetic-b" : "synthetic-a"), "requests": requests,
+        var audit: [String: Any] = ["audit": true, "otherNamespaceIntact": broker.audit(owner == "b" ? "a" : "b", key: "item") == (owner == "b" ? "synthetic-a" : "synthetic-b"), "requests": requests,
                                    "transportRejected": transportRejected, "peakResidentBytes": peak,
                                    "memoryExceeded": exceeded != 0, "memoryObservationFailed": observationFailed != 0]
+#if M0_RECEIPT
+        audit["receiptCurrent"] = gate.current; audit["receiptReplyWithheld"] = receiptReplyWithheld
+        audit["stopConfirmed"] = gate.stopped; audit["freshAdmission"] = gate.freshAdmission
+#endif
         FileHandle.standardError.write(try! JSONSerialization.data(withJSONObject: audit))
         // Darwin wait status macros are unavailable to Swift; encode the same bits.
         if observationFailed != 0 { fail() }

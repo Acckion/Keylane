@@ -144,3 +144,19 @@ waitpid; an observe-only twin is the negative control. A 64MiB sampling threshol
 is not a hard memory ceiling. The synthetic workload allocates at most128MiB of
 TypedArray payload, plus engine overhead, without exhausting the machine.
 All nineteen subchecks passed; exit3/incomplete, no production approval.
+
+## Sixth batch: pinned receipt algorithms and revocation
+
+```sh
+python3 scripts/verify-macos-receipt-m0.py --report /private/tmp/keylane-receipt-report.json
+```
+
+See [scope and evidence](../../../docs/RECEIPT-BRIDGE-M0.md). The probe exports
+immutable first-party #222 source from Git commit c7b419771a5196a65bd8894daa6c63fd3ce74f43
+and compiles it unchanged in a temporary static module. No mutable-ref or network
+fallback. It uses real P256 verification, the anchored disk registry and single-use
+ticket; only a fixed first-party JS program extracted from its receipt can execute.
+Keys and CAS storage remain disposable fixture roots, not product enrollment.
+Revocation confirms helper exit via non-reaping waitid before registry enablement;
+no arbitrary Node process-tree claim. Twenty subchecks pass; overall incomplete.
+Native CI tests separately cover permanent binding retirement and exit/sampling races.
