@@ -240,10 +240,12 @@ private struct DropShelfFolderPreferences: View {
 
     var body: some View {
         SettingsPageSections {
-            ScreenshotFolderSettings(library: screenshots, anchor: DropShelfModule.screenshotFolder, title: "截图文件夹",
+            ScreenshotFolderSettings(library: screenshots, paths: screenshots.scopes.map(\.path),
+                                     unavailablePaths: screenshots.unavailableScopePaths, suggestedFolder: screenshots.suggestedFolder,
+                                     anchor: DropShelfModule.screenshotFolder, title: "截图文件夹",
                                      detail: "与截图管理共用目录。加入暂存架时只识别截图和录屏。")
             SettingsCard(anchor: DropShelfModule.downloadFolder) {
-                DownloadsFolderSettingRow(controller: downloads)
+                DownloadsFolderSettingRow(controller: downloads, folderPath: downloads.folder?.path)
                 if !downloads.error.isEmpty { SettingsDescription(downloads.error) }
             }
         }
