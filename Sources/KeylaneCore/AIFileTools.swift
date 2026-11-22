@@ -26,35 +26,38 @@ public final class AIFileAccessLease: @unchecked Sendable {
 }
 
 public enum AIFileToolError: LocalizedError, Equatable {
-    case outsideScope, unavailable, unsupported, stale, exists, invalidPath, invalidText, tooLarge, restricted, creationScope, creationUnsupported, creationUnconfirmed, invalidPattern, regexBudget
+    case outsideScope, unavailable, unsupported, stale, exists, invalidPath, invalidText, tooLarge, restricted, creationScope, creationUnsupported, creationUnconfirmed, mutationUnsupported, mutationUnconfirmed, editMismatch, invalidPattern, regexBudget
     public var errorDescription: String? {
         switch self {
         case .outsideScope: "路径不在本次匹配的 AI 授权目录内。"
         case .unavailable: "目录授权或文件不可用，请重新选择目录。"
-        case .unsupported: "本批不支持该操作或文件类型；覆盖与编辑已停用。"
+        case .unsupported: "该操作或文件类型不支持。"
         case .stale: "确认的目标或目录已变化，请重新发起操作。"
-        case .exists: "目标已存在，未覆盖。仅支持创建不存在的文件或目录。"
+        case .exists: "目标已存在；新建、复制、移动和恢复不会覆盖其他文件。"
         case .invalidPath: "文件路径或搜索参数无效。"
         case .invalidText: "内容不是有效 UTF-8 文本，或 offset 不在字符边界。"
         case .tooLarge: "超过本次文件操作的数据限制，请缩小范围或分段读取。"
         case .restricted: "该路径属于受保护数据，文件工具不披露其内容、名称或元数据。"
+        case .mutationUnsupported: "此文件系统不支持本次原子文件操作，未使用复制后删除等回退。"
+        case .mutationUnconfirmed: "文件操作结果无法确认，可能已经发生改动。请核对文件和恢复记录；勿自动重试或回滚。"
+        case .editMismatch: "原文匹配次数不符合要求，或文件版本已变化；未编辑。"
         case .invalidPattern: "正则表达式无效或超过长度限制；使用行级 ICU 正则语法。"
         case .regexBudget: "正则搜索超过时间或引擎额度，请简化表达式或缩小范围。未返回不完整匹配页。"
         case .creationUnsupported: "当前文件系统不支持此安全创建操作；未启用覆盖、复制或改名回退。"
         case .creationUnconfirmed: "创建结果无法确认：文件或文件夹可能已在原授权目录对象中创建，该目录也可能已移动。请人工核对，勿直接重试；未执行自动回滚。"
-        case .creationScope: "创建仅支持授权根目录内的一级名称。请先将目标父目录单独设为授权根。"
+        case .creationScope: "有副作用的文件操作仅支持授权根目录内的一级名称。请先将目标父目录单独设为授权根。"
         }
     }
 }
 
 /// All file IO, including target preparation and the small final commit, runs on this actor.
 public actor AIFileToolService {
-    fileprivate final class FD: @unchecked Sendable {
+    final class FD: @unchecked Sendable {
         let raw: Int32
         init(_ raw: Int32) throws { guard raw >= 0 else { throw AIFileToolError.unavailable }; self.raw = raw }
         deinit { Darwin.close(raw) }
     }
-    fileprivate final class Root: @unchecked Sendable {
+    final class Root: @unchecked Sendable {
         let path: String, id: String
         let fd: FD
         let access: URL?
@@ -62,28 +65,32 @@ public actor AIFileToolService {
         init(path: String, id: String, fd: FD, access: URL?, scope: AIFileToolScope) { self.path = path; self.id = id; self.fd = fd; self.access = access; self.scope = scope }
         deinit { access?.stopAccessingSecurityScopedResource() }
     }
-    fileprivate struct Pin: Sendable { let name: String; let fd: FD }
+    struct Pin: Sendable { let name: String; let fd: FD }
     public final class Prepared: @unchecked Sendable {
         public let relativePath: String
         public let rootID: String
         /// Local confirmation only. Never put these strings into tool results or model history.
         public let localTarget: String
         public let localRoot: String
-        public var localRoots: [String] { roots.map(\.path) }
-        public let displayArguments: [String: AIToolValue]
-        public var sourceTool: String { continuation?.plan.sourceTool ?? tool }
-        fileprivate let tool: String, arguments: [String: AIToolValue]
+        public var localRoots: [String] { Array(Set(roots.map(\.path) + (mutation?.destination?.localRoots ?? []))).sorted() }
+        public var localMutationSummary: String? { mutation?.localSummary }
+        private let normalizedArguments: [String: AIToolValue]
+        public var displayArguments: [String: AIToolValue] { mutation?.displayArguments ?? normalizedArguments }
+        let mutation: MutationPlan?
+        public var sourceTool: String { mutation?.tool ?? continuation?.plan.sourceTool ?? tool }
+        let tool: String, arguments: [String: AIToolValue]
         fileprivate let continuation: ReadReference?
-        fileprivate let lease: AIFileAccessLease
-        fileprivate let roots: [Root], parents: [Pin], file: FD?, fileRevision: String?
+        let lease: AIFileAccessLease
+        let roots: [Root], parents: [Pin], file: FD?, fileRevision: String?
         private let lock = NSLock()
         private var consumed = false
-        fileprivate init(tool: String, arguments: [String: AIToolValue], roots: [Root], lease: AIFileAccessLease, parents: [Pin] = [], file: FD? = nil, fileRevision: String? = nil, relative: String = ".", continuation: ReadReference? = nil) {
+        fileprivate init(tool: String, arguments: [String: AIToolValue], roots: [Root], lease: AIFileAccessLease, parents: [Pin] = [], file: FD? = nil, fileRevision: String? = nil, relative: String = ".", continuation: ReadReference? = nil, mutation: MutationPlan? = nil) {
+            self.mutation = mutation
             self.tool = tool; self.arguments = arguments; self.continuation = continuation; self.roots = roots; self.lease = lease; self.parents = parents; self.file = file; self.fileRevision = fileRevision
             relativePath = relative; rootID = roots.first?.id ?? ""
             localRoot = roots.first?.path ?? ""
             localTarget = relative == "." ? localRoot : (localRoot == "/" ? "" : localRoot) + "/" + relative
-            displayArguments = tool == "keylane_file_roots" ? [:] : arguments.merging(["root": .string(rootID), "path": .string(relative)]) { _, normalized in normalized }
+            normalizedArguments = tool == "keylane_file_roots" ? [:] : arguments.merging(["root": .string(rootID), "path": .string(relative)]) { _, normalized in normalized }
         }
         fileprivate func claim() throws {
             lock.lock(); defer { lock.unlock() }
@@ -152,9 +159,20 @@ public actor AIFileToolService {
             return .init(code: code, error: code == 0 ? 0 : errno)
         })
     }
-    private let beforeCommit: @Sendable () throws -> Void
-    private let creationSyscalls: CreationSyscalls
+    let beforeCommit: @Sendable () throws -> Void
+    let creationSyscalls: CreationSyscalls
+    var mutationConfiguration = MutationConfiguration.live
     public init() { beforeCommit = {}; creationSyscalls = .live }
+    public init(recoveryDirectory: URL) {
+        beforeCommit = {}; creationSyscalls = .live
+        mutationConfiguration.recoveryDirectory = recoveryDirectory
+    }
+    init(mutations: MutationConfiguration, beforeCommit: @escaping @Sendable () throws -> Void = {}, creationSyscalls: CreationSyscalls = .live) {
+        mutationConfiguration = mutations; self.beforeCommit = beforeCommit; self.creationSyscalls = creationSyscalls
+    }
+    func wrapping(_ source: Prepared, mutation: MutationPlan) -> Prepared {
+        Prepared(tool: source.tool, arguments: source.arguments, roots: source.roots, lease: source.lease, parents: source.parents, file: source.file, fileRevision: source.fileRevision, relative: source.relativePath, mutation: mutation)
+    }
     init(beforeCommit: @escaping @Sendable () throws -> Void = {}, creationSyscalls: CreationSyscalls) {
         self.beforeCommit = beforeCommit; self.creationSyscalls = creationSyscalls
     }
@@ -167,19 +185,21 @@ public actor AIFileToolService {
         return .creationUnconfirmed
     }
 
+    public static func isRecoveryStorage(_ path: String) -> Bool { path.lowercased().split(separator: "/").contains(".keylane-ai-recovery") }
     public static func isSensitive(_ path: String) -> Bool {
         path.lowercased().split(separator: "/").contains { component in
             let name = String(component)
-            return [".ssh", ".aws", ".gnupg", ".git", ".config", "keychains", ".codex", ".claude", "safari", "chrome", "firefox", "cookies", "login data", "local state", "auth.json", "credentials.json", "secrets.json"].contains(name) ||
+            return [".ssh", ".aws", ".gnupg", ".git", ".config", "keychains", ".keylane-ai-recovery", ".codex", ".claude", "safari", "chrome", "firefox", "cookies", "login data", "local state", "auth.json", "credentials.json", "secrets.json"].contains(name) ||
                 name == ".env" || name.hasPrefix(".env.") || [".pem", ".key", ".p12", ".pfx"].contains { name.hasSuffix($0) }
         }
     }
-    private func policy(_ path: String) throws { if Self.isSensitive(path) { throw AIFileToolError.restricted } }
+    func policy(_ path: String) throws { if Self.isSensitive(path) { throw AIFileToolError.restricted } }
 
     /// Opens only the selected scope and pins the exact root, parent chain and existing object.
     /// Preparation reads metadata, never file bodies or directory names, and has no write effects.
     public func prepare(_ tool: String, arguments: [String: AIToolValue], scopes: [AIFileToolScope], lease: AIFileAccessLease, session: ReadSession? = nil) throws -> Prepared {
         try lease.check()
+        if Self.mutationTools.contains(tool) { return try prepareMutation(tool, arguments: arguments, scopes: scopes, lease: lease) }
         if tool == "keylane_read_result" {
             guard let session else { throw AIFileToolError.stale }
             let reference = try session.lookup(string(arguments, "cursor"), lease: lease)
@@ -240,6 +260,12 @@ public actor AIFileToolService {
 
     public func execute(_ plan: Prepared, lease: AIFileAccessLease, cancellation: AIFileAccessLease, session: ReadSession? = nil, indexedPaths: [String] = [], documentWork: ImageTextRecognitionWork = .init()) throws -> AIToolResult {
         try plan.claim()
+        if plan.mutation != nil {
+            do { return try executeMutation(plan, lease: lease, cancellation: cancellation) }
+            catch is CancellationError { throw CancellationError() }
+            catch let error as AIFileToolError { throw error }
+            catch { throw AIFileToolError.unavailable } // Native errors must not disclose local paths.
+        }
         guard plan.lease === lease else { throw AIFileToolError.stale }
         func check() throws { try lease.check(); try cancellation.check() }
         try check(); try validate(plan)
@@ -421,7 +447,7 @@ public actor AIFileToolService {
         return Self.systemPath(expanded)
     }
     private func contains(_ root: String, _ path: String) -> Bool { path == root || path.hasPrefix(root == "/" ? "/" : root + "/") }
-    private func openDirectory(_ path: String) throws -> FD {
+    func openDirectory(_ path: String) throws -> FD {
         var fd = try FD(Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC))
         for name in path.split(separator: "/") { fd = try FD(openat(fd.raw, String(name), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)) }
         return fd
@@ -440,34 +466,34 @@ public actor AIFileToolService {
         catch { accessed?.stopAccessingSecurityScopedResource(); throw error }
     }
     static func isLocallyMaterialized(_ info: stat) -> Bool { info.st_flags & UInt32(SF_DATALESS) == 0 }
-    private func openChild(_ parent: FD, _ name: String) throws -> FD {
+    func openChild(_ parent: FD, _ name: String) throws -> FD {
         var before = stat()
         guard fstatat(parent.raw, name, &before, AT_SYMLINK_NOFOLLOW) == 0, Self.isLocallyMaterialized(before) else { throw AIFileToolError.unavailable }
         let fd = try FD(openat(parent.raw, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC))
         guard Self.isLocallyMaterialized(try status(fd.raw)) else { throw AIFileToolError.unavailable }
         return fd
     }
-    private func same(_ first: FD, _ second: FD) throws -> Bool {
+    func same(_ first: FD, _ second: FD) throws -> Bool {
         let a = try status(first.raw), b = try status(second.raw)
         return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode & S_IFMT == b.st_mode & S_IFMT
     }
-    private func pathOf(_ fd: FD) throws -> String {
+    func pathOf(_ fd: FD) throws -> String {
         var bytes = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         guard fcntl(fd.raw, F_GETPATH, &bytes) == 0 else { throw AIFileToolError.stale }
         return Self.systemPath(String(cString: bytes))
     }
-    private func anonymousStage() throws -> FD {
+    func anonymousStage() throws -> FD {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneAIStage-" + UUID().uuidString).path
         let fd = try FD(Darwin.open(path, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600))
         guard unlink(path) == 0 else { throw AIFileToolError.unavailable }
         return fd
     }
-    private func absent(_ parent: FD, _ name: String) throws {
+    func absent(_ parent: FD, _ name: String) throws {
         var info = stat()
         guard fstatat(parent.raw, name, &info, AT_SYMLINK_NOFOLLOW) != 0 else { throw AIFileToolError.exists }
         guard errno == ENOENT else { throw AIFileToolError.unavailable }
     }
-    private func validate(_ plan: Prepared, checkTarget: Bool = true) throws {
+    func validate(_ plan: Prepared, checkTarget: Bool = true) throws {
         for root in plan.roots {
             try policy(root.path)
             guard try pathOf(root.fd) == root.path, try same(openDirectory(root.path), root.fd) else { throw AIFileToolError.stale }
@@ -489,17 +515,18 @@ public actor AIFileToolService {
             if let expected = plan.fileRevision, revision(info) != expected { throw AIFileToolError.stale }
         } else { try absent(parent, name) }
     }
-    private func status(_ fd: Int32) throws -> stat { var info = stat(); guard fstat(fd, &info) == 0 else { throw AIFileToolError.unavailable }; return info }
+    func status(_ file: FD) throws -> stat { try withExtendedLifetime(file) { try status(file.raw) } }
+    func status(_ fd: Int32) throws -> stat { var info = stat(); guard fstat(fd, &info) == 0 else { throw AIFileToolError.unavailable }; return info }
     private func isDirectory(_ info: stat) -> Bool { info.st_mode & S_IFMT == S_IFDIR }
-    private func isRegular(_ info: stat) -> Bool { info.st_mode & S_IFMT == S_IFREG }
-    private func revision(_ info: stat) -> String {
+    func isRegular(_ info: stat) -> Bool { info.st_mode & S_IFMT == S_IFREG }
+    func revision(_ info: stat) -> String {
         let value = "\(info.st_dev):\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec):\(info.st_mode):\(info.st_flags)"
         return SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
     private func metadata(_ info: stat, path: String) -> [String: AIToolValue] {
         ["path": .string(path), "type": .string(isDirectory(info) ? "directory" : "file"), "size": .number(Double(info.st_size)), "modified": .string(Date(timeIntervalSince1970: Double(info.st_mtimespec.tv_sec)).ISO8601Format()), "revision": .string(revision(info))]
     }
-    private func read(_ fd: Int32, offset: Int, count: Int, check: () throws -> Void) throws -> Data {
+    func read(_ fd: Int32, offset: Int, count: Int, check: () throws -> Void) throws -> Data {
         var data = Data(); var buffer = [UInt8](repeating: 0, count: min(max(count, 1), 16_384))
         while data.count < count {
             try check()
@@ -679,9 +706,9 @@ public actor AIFileToolService {
         return (["path": .string(plan.relativePath), "type": .string(key == "entries" ? "directory" : "search_results"), key: .array(page), "next_offset": more ? .number(Double(next)) : .null,
             "truncated": .bool(sourceTruncated || more), "source_truncated": .bool(sourceTruncated)], reference)
     }
-    private func output(_ values: [String: AIToolValue]) throws -> AIToolResult { try .init(text: String(decoding: JSONEncoder().encode(values), as: UTF8.self)) }
+    func output(_ values: [String: AIToolValue]) throws -> AIToolResult { try .init(text: String(decoding: JSONEncoder().encode(values), as: UTF8.self)) }
     private func hasBinaryControls(_ text: String) -> Bool { text.unicodeScalars.contains { $0.value < 32 && ![9, 10, 13].contains($0.value) } }
-    private func string(_ args: [String: AIToolValue], _ key: String) -> String { if case .string(let text) = args[key] { return text }; return "" }
-    private func integer(_ args: [String: AIToolValue], _ key: String, default value: Int) -> Int { if case .number(let n) = args[key], n.isFinite, n.rounded() == n, n >= 0, n <= 1_073_741_824 { return Int(n) }; return value }
+    func string(_ args: [String: AIToolValue], _ key: String) -> String { if case .string(let text) = args[key] { return text }; return "" }
+    func integer(_ args: [String: AIToolValue], _ key: String, default value: Int) -> Int { if case .number(let n) = args[key], n.isFinite, n.rounded() == n, n >= 0, n <= 1_073_741_824 { return Int(n) }; return value }
     private func boolean(_ args: [String: AIToolValue], _ key: String) -> Bool { if case .bool(let value) = args[key] { return value }; return false }
 }
