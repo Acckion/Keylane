@@ -166,6 +166,128 @@ private func verifyDictationReviewRegressions(in directory: URL) async throws {
     require(sibling.transcriptionOptions()?.transcriptionURL?.absoluteString == "https://fixture-provider.test/v1/audio/transcriptions", "imported speech uses correct route")
 }
 
+@MainActor
+private func verifyOpenRouterDictation(audio: URL) async throws {
+    let suite = "KeylaneOpenRouterDictation.\(UUID())"
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    let initial = AIConfiguration(preferences: preferences)
+    let owner = AIConnection(name: "Saved chat", endpoint: "https://openrouter.ai/api/v1/chat/completions",
+                             model: "fixture/chat", providerID: "openrouter")
+    require(initial.save(owner, selectAsDefault: true), "save shared OpenRouter connection")
+    initial.setEnabled(true)
+    require(initial.applyProviderCatalog([.init(id: owner.model)], snapshot: owner, at: Date()), "seed pre-upgrade catalog")
+    var legacy = initial.state
+    legacy.providerCatalogs?[owner.catalogIdentity] = .init(updatedAt: Date(), modelIDs: [owner.id])
+    preferences.set(try JSONEncoder().encode(legacy), forKey: "aiConnections.v1")
+    let settings = AIConfiguration(preferences: preferences)
+    let defaults = settings.state.defaults
+    let config = URLSessionConfiguration.ephemeral
+    config.protocolClasses = [FixtureProtocol.self]
+    let runtime = AIRuntime(configuration: config)
+    let catalogRequests = FixtureProtocol.requests
+    FixtureProtocol.handler = { request in
+        require(request.httpMethod == "GET" && request.url?.path == "/api/v1/models", "shared catalog endpoint")
+        require(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key", "catalog reuses provider key")
+        if request.url?.query == "output_modalities=transcription" {
+            return (200, Data(#"{"data":[{"id":"google/chirp-3","name":"Chirp 3","architecture":{"input_modalities":["audio"],"output_modalities":["transcription"]}},{"id":"openai/whisper-1","architecture":{"input_modalities":["audio"],"output_modalities":["transcription"]}},{"id":"fixture/chat","architecture":{"input_modalities":["text"],"output_modalities":["text"]}},{"id":"fixture/tts","architecture":{"input_modalities":["text"],"output_modalities":["audio"]}}]}"#.utf8))
+        }
+        require(request.url?.query == nil, "ordinary catalog remains unchanged")
+        return (200, Data(#"{"data":[{"id":"fixture/chat"},{"id":"openai/whisper-1"},{"id":"fixture/audio-chat","architecture":{"input_modalities":["audio","text"],"output_modalities":["text"]}}]}"#.utf8))
+    }
+    let sync = AIProviderCatalogSync(configuration: settings, runtime: runtime, readKey: { _ in "fixture-key" })
+    sync.start()
+    for _ in 0..<500 {
+        if settings.state.providerCatalogs?[owner.catalogIdentity]?.includesTranscriptionModels == true { break }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    require(settings.state.providerCatalogs?[owner.catalogIdentity]?.includesTranscriptionModels == true,
+            "fresh pre-upgrade cache refreshes without waiting six hours")
+    require(FixtureProtocol.requests == catalogRequests + 2, "merge both catalogs once")
+    let speech = settings.state.connections.first { $0.model == "google/chirp-3" }!
+    require(speech.taskKind == .openRouterTranscription && speech.transcriptionOptions()?.provider == .openRouter,
+            "unknown speech name classified from output capabilities")
+    require(speech.credentialOwnerID == owner.id, "speech shares credential owner")
+    require(AIConfiguration.credentialQueries(for: speech) as NSArray == AIConfiguration.credentialQueries(for: owner) as NSArray,
+            "speech reuses the same scoped Keychain lookup")
+    require(settings.state.connections.filter { $0.model == "openai/whisper-1" }.count == 1, "duplicate model merged")
+    require(settings.state.connections.first { $0.model == "openai/whisper-1" }?.taskKind == .openRouterTranscription,
+            "duplicate preserves transcription metadata")
+    require(!settings.state.connections.contains { $0.model == "fixture/tts" }, "ignore non-STT entries from ignored filters")
+    let menu = AIModelMenuCatalog(connections: settings.state.connections, selection: .inherit, query: "", purpose: .transcription)
+    require(Set(menu.groups.flatMap(\.models).map(\.model)) == ["google/chirp-3", "openai/whisper-1"],
+            "real dictation picker includes speech and excludes audio-chat")
+    let chats = AIModelMenuCatalog(connections: settings.state.connections, selection: .inherit, query: "", purpose: .text)
+    require(!chats.groups.flatMap(\.models).contains { $0.id == speech.id }, "speech excluded from chat picker")
+    require(settings.state.defaults == defaults && settings.state.connection(for: .chat)?.id == owner.id,
+            "existing text defaults preserved")
+    let restored = AIConfiguration(preferences: preferences)
+    require(restored.state.connections.first { $0.id == speech.id }?.transcriptionOptions()?.provider == .openRouter,
+            "speech capability survives restart")
+    var edited = speech
+    edited.modelTask = .text
+    require(edited.taskKind == .text && edited.transcriptionOptions() == nil, "explicit capability override wins")
+    edited.modelTask = nil; edited.model = "fixture/different-chat"
+    require(edited.taskKind == .text, "editing model ID cannot reuse another model's speech metadata")
+    require(settings.addProviderModels(["fixture/imported-chat"], from: speech, discoveredUsing: speech) == 1, "import from speech")
+    require(settings.state.connections.first { $0.model == "fixture/imported-chat" }?.taskKind == .text,
+            "cloned chat does not inherit speech metadata")
+    sync.refresh()
+    try await Task.sleep(nanoseconds: 100_000_000)
+    require(FixtureProtocol.requests == catalogRequests + 2, "upgraded cache prevents repeated discovery")
+    let stable = settings.state
+    FixtureProtocol.handler = { request in
+        if request.url?.query != nil { return (502, Data("private provider error".utf8)) }
+        return (200, Data(#"{"data":[{"id":"fixture/new-chat"}]}"#.utf8))
+    }
+    sync.refresh(force: true)
+    for _ in 0..<500 {
+        if settings.catalogSyncStatus[owner.catalogIdentity]?.hasPrefix("同步失败") == true { break }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    require(settings.catalogSyncStatus[owner.catalogIdentity]?.hasPrefix("同步失败") == true, "STT catalog failure surfaced")
+    require(settings.state == stable, "failed supplemental catalog cannot remove saved speech or chat models")
+    let audioBytes = try Data(contentsOf: audio)
+    FixtureProtocol.handler = { request in
+        require(request.url?.absoluteString == "https://openrouter.ai/api/v1/audio/transcriptions", "OpenRouter STT route")
+        require(request.value(forHTTPHeaderField: "Content-Type") == "application/json", "OpenRouter JSON transport")
+        require(request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-key", "shared OpenRouter credential")
+        let data: Data
+        if let body = request.httpBody { data = body }
+        else {
+            let stream = request.httpBodyStream!; stream.open(); defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096); var body = Data()
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                require(count >= 0, "read generated upload")
+                if count == 0 { break }
+                body.append(buffer, count: count)
+            }
+            data = body
+        }
+        let payload = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let input = payload["input_audio"] as! [String: String]
+        require(payload["model"] as? String == "google/chirp-3" && payload["language"] as? String == "zh", "selected model and language")
+        require(input["format"] == "m4a" && Data(base64Encoded: input["data"]!) == audioBytes, "encoder bytes survive JSON transport")
+        return (200, Data(#"{"text":"你好，OpenRouter。"}"#.utf8))
+    }
+    let transcript = try await runtime.transcribe(audio: audio, connection: speech, language: "zh", readKey: { _ in "fixture-key" })
+    require(transcript == "你好，OpenRouter。", "OpenRouter transcript reaches shared runtime")
+    if ProcessInfo.processInfo.environment["KEYLANE_OPENROUTER_CATALOG"] == "1" {
+        let live = try await AIRuntime().listModelCatalog(connection: owner, readKey: { _ in nil })
+        let publicSettings = AIConfiguration(preferences: UserDefaults(suiteName: suite + ".public")!)
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite + ".public") }
+        require(publicSettings.save(owner, selectAsDefault: true), "public catalog setup")
+        publicSettings.setEnabled(true)
+        require(publicSettings.applyProviderCatalog(live, snapshot: owner, at: Date()), "public catalog merge")
+        let liveMenu = AIModelMenuCatalog(connections: publicSettings.state.connections, selection: .inherit, query: "", purpose: .transcription)
+        let liveSpeech = liveMenu.groups.flatMap(\.models)
+        require(!liveSpeech.isEmpty && liveSpeech.allSatisfy { $0.transcriptionOptions()?.provider == .openRouter }, "live OpenRouter speech catalog reaches picker")
+        print("Live public OpenRouter discovery passed: \(liveSpeech.count) dictation choices; no key or recording sent.")
+    }
+    print("OpenRouter dictation fixtures passed: cache upgrade, shared picker, credentials, defaults, persistence, catalog failures and JSON audio upload.")
+}
+
 func run() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -181,6 +303,7 @@ func run() async throws {
     } else {
         audio = try await encodeSyntheticAudio(in: directory)
     }
+    try await verifyOpenRouterDictation(audio: audio)
     let config = URLSessionConfiguration.ephemeral
     config.protocolClasses = [FixtureProtocol.self]
     let client = AIRuntime(configuration: config)
@@ -260,7 +383,7 @@ func run() async throws {
     do { _ = try await cancelled.value; require(false, "cancelled request") }
     catch is CancellationError {}
     require(FixtureProtocol.requests == before, "cancelled request cannot send audio")
-    print("Dictation transport fixtures passed; no microphone, real credentials, clipboard, or external network used.")
+    print("Dictation transport fixtures passed; uploads used synthetic audio and simulated responses, with no microphone, real credentials or clipboard.")
 }
 
 Task {

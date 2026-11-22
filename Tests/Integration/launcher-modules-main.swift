@@ -225,6 +225,12 @@ let calendarSettingsCatalog = SettingsWindowCatalog(pages: [calendarParent, cale
 precondition(calendarSettingsCatalog.sidebarGroups.flatMap(\.pages).map(\.id) == ["calendar"])
 precondition(calendarSettingsCatalog.page("calendar-enabled")?.parentID == "calendar")
 precondition(calendarSettingsCatalog.item(SettingsItem.calendarSelection.id)?.page == "calendar-enabled")
+let aiSidebarPage = LauncherSettingsPage(id: "ai", title: "AI", symbol: "sparkles", subtitle: "", order: 0,
+                                         items: [], sidebarGroup: .builtInExtension, content: { AnyView(EmptyView()) })
+let aiSidebarCatalog = SettingsWindowCatalog(pages: [aiSidebarPage, hostPage], origins: ["ai": .application, "general": .application])
+precondition(aiSidebarCatalog.sidebarGroups.map(\.id) == [.application, .builtInExtension])
+precondition(aiSidebarCatalog.sidebarGroups[0].pages.map(\.id) == ["general"])
+precondition(aiSidebarCatalog.sidebarGroups[1].pages.map(\.id) == ["ai"])
 print("PASS settings catalog lookup, ordering and page ownership")
 
 

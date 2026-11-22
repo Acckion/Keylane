@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import zlib
 import KeylaneCore
 
 // Only owned synthetic directories and in-memory consent decisions. No account,
@@ -228,6 +229,30 @@ import KeylaneCore
         onApproval = nil
         print("PASS read continuation: independent per-page approval, refusal retains cursor, approval-time revocation cancels, no pathname disclosure or cross-run registration reuse")
 
+        // New readers still use the same prepared operation and per-page consent.
+        try officeFixture().write(to: root.appendingPathComponent("fixture.docx"))
+        let officeRun = try run()
+        allow = false
+        let deniedOffice = try await execute(officeRun, "read_file", ["path": .string("fixture.docx"), "limit": .number(20)])
+        precondition(deniedOffice.isError && !deniedOffice.text.contains("Office fixture"))
+        allow = true
+        let office = try await execute(officeRun, "read_file", ["path": .string("fixture.docx"), "limit": .number(20)])
+        let object = try JSONDecoder().decode([String: AIToolValue].self, from: Data(office.text.utf8))
+        precondition(!office.isError && object["format"] == .string("docx"))
+        let officeCursor = object["cursor"]!
+        allow = false
+        let deniedOfficePage = try await execute(officeRun, "read_result", ["cursor": officeCursor])
+        precondition(deniedOfficePage.isError)
+        allow = true
+        let officePage = try await execute(officeRun, "read_result", ["cursor": officeCursor])
+        precondition(!officePage.isError && officePage.text.contains("Office fixture"))
+        try Data("synthetic needle".utf8).write(to: root.appendingPathComponent("regex.txt"))
+        let regex = try await execute(run(), "grep", ["path": .string("."), "pattern": .string("**/*"), "query": .string("^synthetic [a-z]+$"), "regex": .bool(true), "case_sensitive": .bool(true)])
+        precondition(!regex.isError && regex.text.contains("synthetic needle"))
+        let invalidRegex = try await execute(run(), "grep", ["path": .string("."), "pattern": .string("**/*"), "query": .string("["), "regex": .bool(true)])
+        precondition(invalidRegex.isError && !invalidRegex.text.contains("synthetic needle"))
+        print("PASS enhanced readers: Office and continuation require consent, regex schema and invalid-pattern failure share the runtime")
+
         let indexState = IndexFixtureState()
         for i in 0..<3 { try Data("indexed fixture".utf8).write(to: root.appendingPathComponent("indexed-\(i).txt")) }
         let index = AIFileToolIndexSource(isCurrent: { indexState.revision == 0 }, search: { query, directory in
@@ -255,4 +280,25 @@ import KeylaneCore
         print("PASS indexed search: pure catalog, no query before consent, matched root filtering and generation-bound cached results")
 
     }
+}
+
+// Stored ZIP generated only from literal synthetic XML; never opens an Office app.
+private func officeFixture() -> Data {
+    let xml = "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>" + String(repeating: "Office fixture ", count: 10) + "</w:t></w:r></w:p></w:body></w:document>"
+    let parts = [("[Content_Types].xml", "<Types/>"), ("word/document.xml", xml)]
+    var body = Data(), central = Data()
+    func fields(_ values: [(Int, Int)]) -> Data {
+        var result = Data()
+        for (value, width) in values { result.append(contentsOf: (0..<width).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }) }
+        return result
+    }
+    for (name, value) in parts {
+        let name = Data(name.utf8), payload = Data(value.utf8), offset = body.count
+        let crc = payload.withUnsafeBytes { Int(crc32(0, $0.bindMemory(to: Bytef.self).baseAddress, uInt($0.count))) }
+        body += fields([(0x04034b50,4),(20,2),(0,2),(0,2),(0,4),(crc,4),(payload.count,4),(payload.count,4),(name.count,2),(0,2)])
+        body += name; body += payload
+        central += fields([(0x02014b50,4),(20,2),(20,2),(0,2),(0,2),(0,4),(crc,4),(payload.count,4),(payload.count,4),(name.count,2),(0,2),(0,2),(0,2),(0,2),(0,4),(offset,4)])
+        central += name
+    }
+    return body + central + fields([(0x06054b50,4),(0,2),(0,2),(2,2),(2,2),(central.count,4),(body.count,4),(0,2)])
 }

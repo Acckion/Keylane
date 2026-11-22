@@ -6,12 +6,13 @@ enum AIResponseMode: String, Codable, CaseIterable {
 }
 
 enum AIModelTask: String, Codable, CaseIterable, Sendable {
-    case text, openAITranscription, elevenLabsTranscription
+    case text, openAITranscription, elevenLabsTranscription, openRouterTranscription
     var title: String {
         switch self {
         case .text: "文字生成"
         case .openAITranscription: "语音转写（OpenAI 兼容）"
         case .elevenLabsTranscription: "语音转写（ElevenLabs）"
+        case .openRouterTranscription: "语音转写（OpenRouter）"
         }
     }
 }
@@ -51,21 +52,29 @@ struct AIConnection: Codable, Identifiable, Equatable, Sendable {
     var modelTask: AIModelTask?
     var catalogUnavailable: Bool?
     var catalogName: String?
+    // Bind discovered capability to its model ID so editing/cloning cannot misclassify another model.
+    var catalogTranscriptionModel: String?
 
     var taskKind: AIModelTask {
         if protocolKind != .openAI { return .text }
         if let modelTask { return modelTask }
+        if isOpenRouter, catalogTranscriptionModel == model { return .openRouterTranscription }
         let name = model.lowercased().split(separator: "/").last.map(String.init) ?? ""
         if providerID == "elevenlabs" || name == "scribe_v1" || name == "scribe_v2" || name == "scribe_v3" { return .elevenLabsTranscription }
         if name == "gpt-transcribe" || name == "gpt-transcribe-mini" || name == "gpt-4o-transcribe" || name == "gpt-4o-mini-transcribe"
-            || name == "whisper-1" || name.hasPrefix("whisper-large-v3") { return .openAITranscription }
+            || name == "whisper-1" || name.hasPrefix("whisper-large-v3") { return isOpenRouter ? .openRouterTranscription : .openAITranscription }
         return .text
+    }
+    var isOpenRouter: Bool {
+        protocolKind == .openAI && (providerID == "openrouter" || apiBaseURL?.host?.lowercased() == "openrouter.ai")
     }
     var isCloudModel: Bool { !["ollama", "lmstudio"].contains(providerID ?? "") }
 
     func transcriptionOptions(language: String = "auto", vocabulary: [String] = []) -> AITranscriptionOptions? {
         guard isConfigured, isCloudModel, protocolKind == .openAI, taskKind != .text, let apiBaseURL else { return nil }
-        let options = AITranscriptionOptions(provider: taskKind == .elevenLabsTranscription ? .elevenLabs : .openAI,
+        let provider: AITranscriptionAPI = isOpenRouter || taskKind == .openRouterTranscription ? .openRouter
+            : taskKind == .elevenLabsTranscription ? .elevenLabs : .openAI
+        let options = AITranscriptionOptions(provider: provider,
                                             endpoint: apiBaseURL.absoluteString, model: model, language: language, vocabulary: vocabulary)
         return options.isConfigured ? options : nil
     }
@@ -185,7 +194,10 @@ struct AIProviderModel: Decodable, Sendable {
 
     struct Architecture: Decodable, Sendable {
         var inputModalities: [String]?
-        enum CodingKeys: String, CodingKey { case inputModalities = "input_modalities" }
+        var outputModalities: [String]?
+        enum CodingKeys: String, CodingKey {
+            case inputModalities = "input_modalities", outputModalities = "output_modalities"
+        }
     }
     enum CodingKeys: String, CodingKey {
         case id, name, architecture
@@ -256,33 +268,46 @@ actor AIRuntime {
             return try await AISubscriptionTransport.models(connection).map { AIProviderModel(id: $0) }
         }
         guard let url = connection.modelsURL else { throw AIResponseError.invalidResponse }
-        try Task.checkCancellation()
-        var request = URLRequest(url: url, timeoutInterval: 30)
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        authorize(&request, connection: connection, key: try readKey(connection))
-        // Catalogs are finite JSON documents. Avoid one async iteration per byte;
-        // OpenRouter's complete catalog can also exceed the old 1 MiB ceiling.
-        let (body, response) = try await session.data(for: request)
-        try Task.checkCancellation()
-        guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
-        guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
-        guard body.count <= 16 * 1_048_576 else { throw AIResponseError.tooLarge }
-        let models: [AIProviderModel]
-        if connection.taskKind == .elevenLabsTranscription {
-            struct ElevenModel: Decodable { let model_id: String }
-            guard let list = try? JSONDecoder().decode([ElevenModel].self, from: body) else { throw AIResponseError.invalidResponse }
-            models = list.filter { $0.model_id.hasPrefix("scribe_") }.map { AIProviderModel(id: $0.model_id) }
-        } else {
-            guard let list = try? JSONDecoder().decode(ModelList.self, from: body) else { throw AIResponseError.invalidResponse }
-            models = list.data
+        var models = try await fetchModelCatalog(url: url, connection: connection, readKey: readKey)
+        if connection.isOpenRouter {
+            // OpenRouter excludes STT from its default catalog. Merge the dedicated
+            // transcription catalog before publishing, so a failed fetch keeps the old snapshot.
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw AIResponseError.invalidResponse }
+            components.queryItems = [URLQueryItem(name: "output_modalities", value: "transcription")]
+            guard let transcriptionURL = components.url else { throw AIResponseError.invalidResponse }
+            let speech = try await fetchModelCatalog(url: transcriptionURL, connection: connection, readKey: readKey)
+            // Trust capabilities, not names or an ignored filter on a compatibility proxy.
+            models += speech.filter { $0.architecture?.outputModalities?.contains("transcription") == true }
         }
         var unique = [String: AIProviderModel]()
         for model in models where !model.id.isEmpty && model.id.utf8.count <= 512
             && model.id == model.id.trimmingCharacters(in: .whitespacesAndNewlines)
             && model.id.rangeOfCharacter(from: .controlCharacters) == nil {
-            if unique[model.id] == nil { unique[model.id] = model }
+            if unique[model.id] == nil || model.architecture?.outputModalities?.contains("transcription") == true {
+                unique[model.id] = model
+            }
         }
         return unique.keys.sorted().compactMap { unique[$0] }
+    }
+
+    private func fetchModelCatalog(url: URL, connection: AIConnection,
+                                   readKey: @Sendable (AIConnection) throws -> String?) async throws -> [AIProviderModel] {
+        try Task.checkCancellation()
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        authorize(&request, connection: connection, key: try readKey(connection))
+        let (body, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
+        guard (200..<300).contains(response.statusCode) else { throw AIResponseError.http(response.statusCode) }
+        guard body.count <= 16 * 1_048_576 else { throw AIResponseError.tooLarge }
+        if connection.taskKind == .elevenLabsTranscription && !connection.isOpenRouter {
+            struct ElevenModel: Decodable { let model_id: String }
+            guard let list = try? JSONDecoder().decode([ElevenModel].self, from: body) else { throw AIResponseError.invalidResponse }
+            return list.filter { $0.model_id.hasPrefix("scribe_") }.map { AIProviderModel(id: $0.model_id) }
+        }
+        guard let list = try? JSONDecoder().decode(ModelList.self, from: body) else { throw AIResponseError.invalidResponse }
+        return list.data
     }
 
     /// Audio and text requests share the same configured models, credentials, session and cancellation policy.
