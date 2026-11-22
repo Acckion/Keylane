@@ -160,12 +160,12 @@ final class AIFileToolsTests: XCTestCase {
         try file("scoped/note", "new")
         await rejects { _ = try await self.service.execute(plan, lease: lease, cancellation: .init()) }
     }
-    func testOnlyExclusiveCreationIsSupported() async throws {
+    func testCreationInterfaceRemainsExclusiveAndLegacyEditArgumentsAreRejected() async throws {
         let result = try await call("write_file", ["path": .string("new"), "content": .string("first")])
         XCTAssertEqual(result["written"], .bool(true)); XCTAssertEqual(result["path"], .string("new"))
         await rejects(.exists) { _ = try await self.call("write_file", ["path": .string("new"), "content": .string("overwrite")]) }
         await rejects(.unsupported) { _ = try await self.call("write_file", ["path": .string("new"), "mode": .string("replace"), "content": .string("overwrite")]) }
-        await rejects(.unsupported) { _ = try await self.call("edit_file", ["path": .string("new")]) }
+        await rejects(.stale) { _ = try await self.call("edit_file", ["path": .string("new")]) }
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("new"), encoding: .utf8), "first")
         _ = try await call("create_directory", ["path": .string("folder")])
         await rejects(.exists) { _ = try await self.call("create_directory", ["path": .string("folder")]) }
