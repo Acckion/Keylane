@@ -99,11 +99,13 @@
 | AI-09 | 本地模型 | 部分实现 | 已有 Ollama 等连接方式，模型能力与工具协议逐项核对 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/local-models) |
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
+| AI-11-a | 共用会话按模块选择工具能力 | 待合并 | 草稿 #226 在已合入 #215/#217/#223/#224 的 dev `37dac2e` 上收敛增量；目录按选择过滤，发送前冻结、选择改变取消审批，真实模型及安装版待验收 | [PR #226](https://github.com/Acckion/Keylane/pull/226)、[契约](AI-CAPABILITY-CONTRACT.md) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-12-a | 聊天中的剪贴板与文件搜索引用工具 | 待合并 | PR #217 同步 dev `fc44e8b`；按路径与按引用协议分离，逐次确认，运行内/五分钟引用及来源校验；403+5 项 Swift、合成文件工具/会话、即时排除及发送前撤销回归通过，真实服务未验收 | [PR #217](https://github.com/Acckion/Keylane/pull/217)、[验证](AI-READ-TOOLS-VALIDATION.md) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
 | AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 已实现 | #224 已合入，逐页确认与 #217 搜索引用分开保留；真实提供商及安装版待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
-| AI-13-b | Office、显式本机 OCR 与 Grep 正则 | 待合并 | DOCX/XLSX/PPTX 共用读取层；授权根 PDF 可显式 OCR；正则可选，旧 Office 格式及安装版待验收 | [PR #228](https://github.com/Acckion/Keylane/pull/228)、[实现与验证边界](AI-FILE-READ-ENHANCEMENTS.md) |
+| AI-13-b | Office、显式本机 OCR 与 Grep 正则 | 已实现 | DOCX/XLSX/PPTX 共用读取层；授权根 PDF 可显式 OCR；正则可选，旧 Office 格式及安装版待验收 | [PR #228](https://github.com/Acckion/Keylane/pull/228)、[实现与验证边界](AI-FILE-READ-ENHANCEMENTS.md) |
+| AI-13-c | 文件编辑、移动、废纸篓与恢复 | 待合并 | 普通文件、授权根一级、逐次审批与持久恢复；审查修复原始备份选择、满额恢复记账及移动后撤权恢复身份；外部竞态不宣称版本原子比较；真实废纸篓、外部卷及安装版待验收 | [PR #236](https://github.com/Acckion/Keylane/pull/236)、[架构与边界](AI-FILE-MUTATIONS.md) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 待合并；同步已合入 #212 的 dev，片段模板/成功结果校验、备忘录附加授权与 Emoji 导入关键词已保留；383 项核心与 5 项提供方测试、合成 AI/Emoji/注册表及签名原生窗口回归通过，真实服务未验收 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
@@ -226,3 +228,12 @@
 维护记录：2026-11-22，EXT-01-a / BASE-11 第五批 M0：修复截断头被当成正常EOF、截断回复后继续使用通道的缺口；新增19项首方签名异常传输／有界内存子检查及4项CI测试。17项broker与18项受限JS复测通过子集，整体仍incomplete。只读核对#222真实收据准入边界，未接产品、未进入M1；本分支待合并，见 [第五批记录](TRANSPORT-PRESSURE-M0.md)。
 
 维护记录：2026-11-22，EXT-01-a / BASE-11 第六批M0（前序 `ea1980b6`）：原样编译#222 `c7b4197` 收据／注册表算法，20项签名首方制品及撤权子检查通过；禁用／替换须先确认旧helper退出，CAS失败不能恢复旧lease。修复内存采样退出竞态并保留存活观测失败拒绝，整体incomplete；本分支待合并，产品未接通、M1未开始，见 [第六批记录](RECEIPT-BRIDGE-M0.md)。
+
+维护记录：2026-11-21，AI-11-a / 草稿 #226 以已合入依赖的 dev `37dac2e` 重整，移除依赖等价差异；保留 `keylane_read_searched_file`、路径授权、PDF/分页及目录生命周期边界，仅新增会话模块能力选择与发送前冻结。隔离验证与精确头 CI 见原 PR，不安装/合并/发布。
+
+
+维护记录：2026-11-21，AI-13-c：用户明确本批包含直接编辑原件、移动与废纸篓；从 dev `37dac2e` 独立实现，保留旧不覆盖创建接口和逐次确认，新修改使用原生协调、版本检查、持久快照及不确定状态。实现 `3a04fde`，验证及 [PR #236](https://github.com/Acckion/Keylane/pull/236) 见下方与模块文档，未安装或访问用户资料。
+
+维护记录：2026-11-21，AI-13-c 在工作期间同步 dev `01cee5a`（#228/#230 已合入），保留 Office/OCR/正则、OpenRouter 听写和现有审批结构；新增文件操作仍为独立增量，整合后的验证另行记录。
+
+维护记录：2026-11-21，AI-13-c / PR #236 在 dev `e23edf81` 上完成整合；保留 #233 已验收图标。全量436+3、最终78项定向及完整应用构建、10组文件工具集成、签名隔离引用/附件及28项发行保障检查通过；真实废纸篓、用户资料、外部卷和提供方未验收，未安装/合并/发布。

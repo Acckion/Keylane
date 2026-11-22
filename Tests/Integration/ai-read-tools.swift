@@ -140,14 +140,31 @@ import zlib
         let blockedFile = blockedFolder.appendingPathComponent("private-indexed.md")
         try Data("Excluded synthetic body".utf8).write(to: blockedFile)
         try index.put(.init(path: blockedFile.path, name: blockedFile.lastPathComponent, volume: "/", modified: 1, directory: false, symlink: false), root: scope.path, epoch: "n:fixture")
+        let recoveryFolder = scope.appendingPathComponent(".keylane-ai-recovery")
+        try FileManager.default.createDirectory(at: recoveryFolder, withIntermediateDirectories: false)
+        let recoveryFile = recoveryFolder.appendingPathComponent("recovery-marker.txt")
+        try Data("private recovery fixture body".utf8).write(to: recoveryFile)
+        let alias = scope.appendingPathComponent("vault-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: recoveryFolder)
+        for file in [recoveryFile, alias.appendingPathComponent("recovery-marker.txt")] {
+            try index.put(.init(path: file.path, name: file.lastPathComponent, volume: "/", modified: 1, directory: false, symlink: false), root: scope.path, epoch: "n:fixture")
+        }
+        var fileOptions = FileSearchOptions(roots: [scope.path]); fileOptions.includeHidden = true
         preferences.set([scope.path], forKey: "fileSearchSelectedScopes")
-        let files = FileSearchController(directory: indexDirectory, preferences: preferences, defaultOptions: .init(roots: [scope.path]), watchChanges: false)
+        let files = FileSearchController(directory: indexDirectory, preferences: preferences, defaultOptions: fileOptions, watchChanges: false)
         defer { files.stopRuntime() }
         files.setIndexPaused(true) // Keep the manually seeded index deterministic across off/on tests.
         let deadline = ContinuousClock.now + .seconds(5)
         while (try? await files.aiSearch("fixture", limit: 1).isEmpty) != false && ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
+        let rawRecoveryRows = try await files.aiSearch("recovery-marker", limit: 20)
+        precondition(rawRecoveryRows.count == 2) // the stale index really contains both paths
+        let hiddenRecovery = try await execute(run(AIReadTools.files(files)), "keylane_search_files", ["query": .string("recovery-marker")])
+        precondition(!hiddenRecovery.isError && !hiddenRecovery.text.contains("recovery-marker") && !hiddenRecovery.text.contains(".keylane-ai-recovery") && !hiddenRecovery.text.contains("vault-alias"))
+        let hiddenRows = try rows(hiddenRecovery, "files")
+        precondition(hiddenRows.isEmpty)
+        print("PASS private recovery store: stale indexed direct/alias paths expose no name, path, reference or body even with hidden files enabled")
         try await verifyReferenceBatch(AIReadTools.files(files), resultKey: "files", query: "batchref")
         let mixedScope = AIToolRunScope()
         let clipTools = AIReadTools.clipboard(clipboard), fileTools = AIReadTools.files(files)
