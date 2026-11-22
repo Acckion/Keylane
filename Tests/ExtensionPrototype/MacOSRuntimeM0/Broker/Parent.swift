@@ -17,20 +17,6 @@ import Darwin
             return true
         }
     }
-    static func receive(_ count: Int, fd: Int32) -> Data? {
-        var data = Data(count: count)
-        let complete = data.withUnsafeMutableBytes { (buffer: UnsafeMutableRawBufferPointer) -> Bool in
-            var position = 0
-            while position < count {
-                let size = read(fd, buffer.baseAddress! + position, count - position)
-                if size < 0 && errno == EINTR { continue }
-                if size <= 0 { return false }
-                position += size
-            }
-            return true
-        }
-        return complete ? data : nil
-    }
     static func main() {
         signal(SIGPIPE, SIG_IGN)
         signal(SIGALRM, { _ in _exit(74) })
@@ -42,10 +28,14 @@ import Darwin
             guard input.count + chunk.count <= 65536 else { fail(71) }
             input.append(chunk)
         }
+        var scenarios = ["a", "b", "off-on", "replace", "read-revoke", "uninstall", "close", "bad-admission"]
+#if M0_REPLY_FAULTS
+        scenarios += ["reply-zero", "reply-huge", "reply-short-header", "reply-short-body", "reply-utf8", "reply-stall"]
+#endif
         guard let object = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
               Set(object.keys) == ["source", "scenario"], let source = object["source"] as? String,
               let scenario = object["scenario"] as? String,
-              ["a", "b", "off-on", "replace", "read-revoke", "uninstall", "close", "bad-admission"].contains(scenario) else { fail(71) }
+              scenarios.contains(scenario) else { fail(71) }
         let broker = M0Broker(), seal = String(repeating: "a", count: 64)
         broker.install("a", seal: seal, initial: ["item": "synthetic-a"])
         broker.install("b", seal: seal, initial: ["item": "synthetic-b"])
@@ -76,15 +66,28 @@ import Darwin
         posix_spawnattr_destroy(&attributes); posix_spawn_file_actions_destroy(&actions)
         close(childLife); close(childRPC); close(childInput)
         guard code == 0 else { fail() }
+#if M0_MEMORY_OBSERVE_ONLY
+        let enforce: Int32 = 0
+#else
+        let enforce: Int32 = 1
+#endif
+        guard let memory = M0MemoryGuardStart(pid, 64 * 1024 * 1024, enforce) else { kill(pid, SIGKILL); fail() }
         // Parent/installation IDs never go through JS. The dedicated native channel
         // is bound once to this opaque binding, regardless of guest request fields.
         let payload = try! JSONSerialization.data(withJSONObject: ["source": source])
         guard send(payload, fd: sourcePipe[1]) else { kill(pid, SIGKILL); fail() }
         close(sourcePipe[1])
         var requests = 0
-        while let header = receive(4, fd: channel[0]) {
-            let size = header.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
-            guard size > 0, size <= 4096, requests < 32, let request = receive(Int(size), fd: channel[0]) else {
+        var transportRejected = false
+        channelLoop: while true {
+            let request: Data
+            switch M0FrameChannel.receive(fd: channel[0]) {
+            case .end: break channelLoop
+            case .invalid:
+                transportRejected = true; kill(pid, SIGKILL); break channelLoop
+            case .data(let data): request = data
+            }
+            guard requests < 32 else {
                 kill(pid, SIGKILL); break
             }
             requests += 1
@@ -102,16 +105,43 @@ import Darwin
                 }
                 response = broker.publish(reply)
             } else { response = broker.denied }
+#if M0_REPLY_FAULTS
+            // First-party signed negative-control binary only. Not a JS API.
+            if requests == 1 && scenario.hasPrefix("reply-") {
+                if scenario == "reply-stall" {
+                    FileHandle.standardError.write(Data("{\"replyHeld\":true}\n".utf8))
+                    continue // native receive blocks; deadline/EOF must still work
+                }
+                let bad: Data
+                switch scenario {
+                case "reply-zero": bad = Data([0,0,0,0])
+                case "reply-huge": bad = Data([255,255,255,255])
+                case "reply-short-header": bad = Data([0,0])
+                case "reply-short-body": bad = Data([0,0,0,10,123])
+                default: bad = Data([0,0,0,1,255])
+                }
+                _ = send(bad, fd: channel[0]); shutdown(channel[0], SHUT_WR)
+                continue
+            }
+#endif
             var length = UInt32(response.count).bigEndian
             guard send(Data(bytes: &length, count: 4), fd: channel[0]), send(response, fd: channel[0]) else { break }
         }
         close(channel[0])
+        // Join before reaping: watcher only signals our unreaped child's PID.
+        var peak: UInt64 = 0
+        var exceeded: Int32 = 0, observationFailed: Int32 = 0
+        M0MemoryGuardStop(memory, &peak, &exceeded, &observationFailed)
         var status: Int32 = 0
         while waitpid(pid, &status, 0) < 0 { if errno != EINTR { fail() } }
         broker.close(binding); close(life[1]); alarm(0)
-        let audit: [String: Any] = ["audit": true, "otherNamespaceIntact": broker.audit(owner == "a" ? "b" : "a", key: "item") == (owner == "a" ? "synthetic-b" : "synthetic-a"), "requests": requests]
+        let audit: [String: Any] = ["audit": true, "otherNamespaceIntact": broker.audit(owner == "a" ? "b" : "a", key: "item") == (owner == "a" ? "synthetic-b" : "synthetic-a"), "requests": requests,
+                                   "transportRejected": transportRejected, "peakResidentBytes": peak,
+                                   "memoryExceeded": exceeded != 0, "memoryObservationFailed": observationFailed != 0]
         FileHandle.standardError.write(try! JSONSerialization.data(withJSONObject: audit))
         // Darwin wait status macros are unavailable to Swift; encode the same bits.
+        if observationFailed != 0 { fail() }
+        if transportRejected { fail(71) }
         exit((status & 0x7f) == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f))
     }
 }

@@ -129,7 +129,7 @@
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
 | EXT-01 | 扩展发现、安装、启用、卸载与生命周期 | 部分实现；目录快照事务已随 #223 合入 | 固定真实扩展样本持续回归；#222 商店与 macOS 运行迁移见 EXT-01-a，安装版待验收 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
-| EXT-01-a | 无 VM 的 macOS 扩展构建与运行迁移 | M0 四批探针；Node blocked，受限JS/broker候选 incomplete | 受限最小broker的绑定、代次撤销、内存命名空间与限额子检查通过；真实安装准入、磁盘存储及兼容性未接通，Node旧阻塞保留，M1–M5 未开始；#222 未改，性能预算未验收 | [设计与分批验收](MACOS-EXTENSION-RUNTIME.md) |
+| EXT-01-a | 无 VM 的 macOS 扩展构建与运行迁移 | M0 五批探针（本分支待合并）；Node blocked，受限候选 incomplete | broker绑定／撤权子集通过；补齐传输截断失败退出、阻塞RPC父死亡及采样式内存监督对照；真实安装准入、硬性内存额度及兼容性未接通，Node旧阻塞保留，M1–M5 未开始；#222 未改，性能预算未验收 | [设计与分批验收](MACOS-EXTENSION-RUNTIME.md) |
 | EXT-02 | no-view / view / menu-bar 三类命令 | 部分实现 | 按命令依赖验证，不能由一个样本推断全生态兼容 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
 | EXT-03 | List / Grid / Detail / Form / Actions | 部分实现 | 动态回调、生命周期、资源加载与字段事件逐项推进 | [API 表](RAYCAST-API-COVERAGE.csv)、[说明](RAYCAST-API-COVERAGE.md) |
 | EXT-04 | 存储、网络、文件、系统工具和 Utilities | 部分实现 | 用公开契约和隔离运行证据缩小 partial 项 | [API 表](RAYCAST-API-COVERAGE.csv) |
@@ -222,3 +222,5 @@
 维护记录：2026-11-21，AI-13-b / [PR #228](https://github.com/Acckion/Keylane/pull/228)，实现 `9e0c43e`：从 dev `37dac2e` 新建读取增强分支，Office/本机显式 OCR/行级正则共用现有授权、接收方确认与私有续读；保留 #215/#217/#224 行为，414+3 项全量、最终 12 项增强及文本框审查修复后的 66 项定向复验、9 组基础文件集成、签名隔离引用测试及 27 项发行保障检查通过；准确提交与 Checks 见 PR，未安装或调用真实模型。
 
 维护记录：2026-11-22，EXT-01-a / BASE-11 第四批 M0：基于 dev `5c6d6aa4` 新增最小有界broker，17项签名双进程子检查通过；根仍为合成安装记录，不冒充Store收据验证。补测读／写撤权阶段、重放、限额和进程退出，整体incomplete；保留旧Node阻塞和严格隔离目标，未接产品运行器、未进入M1。见 [第四批记录](BROKER-M0.md)。
+
+维护记录：2026-11-22，EXT-01-a / BASE-11 第五批 M0：修复截断头被当成正常EOF、截断回复后继续使用通道的缺口；新增19项首方签名异常传输／有界内存子检查及4项CI测试。17项broker与18项受限JS复测通过子集，整体仍incomplete。只读核对#222真实收据准入边界，未接产品、未进入M1；本分支待合并，见 [第五批记录](TRANSPORT-PRESSURE-M0.md)。

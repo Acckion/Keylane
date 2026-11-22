@@ -128,3 +128,19 @@ compatibility. Exit3/incomplete remains mandatory even when all observations pas
 Normal CI runs only verdict checks and the unsigned synthetic Swift authority test;
 the signed helper experiment remains a separate local check. No product packaging
 or runtime path includes this fixture.
+
+## Fifth batch: transport faults and bounded memory pressure
+
+```sh
+python3 scripts/verify-macos-transport-m0.py --report /private/tmp/keylane-transport-report.json
+```
+
+See [scope and evidence](../../../docs/TRANSPORT-PRESSURE-M0.md). Partial headers
+are protocol errors, distinct from clean EOF; malformed/truncated replies terminate
+the helper. First-party native peers inject raw faults without adding a JS escape
+API. A signed parent twin holds replies to test EOF supervision while native RPC
+blocks. The native memory sampler checks only its unreaped child and joins before
+waitpid; an observe-only twin is the negative control. A 64MiB sampling threshold
+is not a hard memory ceiling. The synthetic workload allocates at most128MiB of
+TypedArray payload, plus engine overhead, without exhausting the machine.
+All nineteen subchecks passed; exit3/incomplete, no production approval.

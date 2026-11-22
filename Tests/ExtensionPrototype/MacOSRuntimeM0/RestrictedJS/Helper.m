@@ -41,13 +41,15 @@ static NSString *brokerRequest(JSValue *argument) {
     NSData *data = [argument.toString dataUsingEncoding:NSUTF8StringEncoding];
     if (!data || data.length > 4096) return denied;
     uint32_t size = htonl((uint32_t)data.length);
-    if (!transfer(4, &size, sizeof size, YES) || !transfer(4, (void *)data.bytes, data.length, YES)) return denied;
-    if (!transfer(4, &size, sizeof size, NO)) return denied;
+    if (!transfer(4, &size, sizeof size, YES) || !transfer(4, (void *)data.bytes, data.length, YES)) _exit(71);
+    if (!transfer(4, &size, sizeof size, NO)) _exit(71);
     size = ntohl(size);
     if (size == 0 || size > 4096) _exit(71);
     NSMutableData *reply = [NSMutableData dataWithLength:size];
-    if (!transfer(4, reply.mutableBytes, size, NO)) return denied;
-    return [[NSString alloc] initWithData:reply encoding:NSUTF8StringEncoding] ?: denied;
+    if (!transfer(4, reply.mutableBytes, size, NO)) _exit(71);
+    NSString *text = [[NSString alloc] initWithData:reply encoding:NSUTF8StringEncoding];
+    if (!text) _exit(71);
+    return text;
 }
 #endif
 int main(void) {
@@ -81,6 +83,12 @@ int main(void) {
             fileControl = @{ @"tested": @YES, @"allowed": @((BOOL)(fd >= 0)), @"errno": @(error) };
         }
         emit(@{ @"ready": @YES, @"pid": @(getpid()), @"fileControl": fileControl });
+#ifdef M0_RAW_PEER
+        extern NSString *M0RunRawPeer(NSString *mode);
+        emit(@{ @"rawPeer": @YES });
+        emit(@{ @"result": M0RunRawPeer(request[@"source"]) });
+        return 0;
+#endif
         JSContext *context = [[JSContext alloc] init];
         if (!context) return 70;
         context.inspectable = NO;

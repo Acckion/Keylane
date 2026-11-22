@@ -60,6 +60,43 @@ def verdict(cases):
     return ('blocked', failures) if failures else ('incomplete', [])
 
 
+def build_fixture(task, identity, *, raw=False, defines=()):
+    app = task / 'Capsule.app'
+    helper = app / 'Contents/MacOS/helper'
+    helper.parent.mkdir(parents=True)
+    (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
+        CFBundleIdentifier='org.keylane.tests.runtime-m0.broker-helper', CFBundleExecutable='helper',
+        CFBundleName='Keylane M0 Broker', CFBundlePackageType='APPL', LSUIElement=True)))
+    flags = ['-DM0_BROKER']
+    sources = [str(FIXTURE/'RestrictedJS/Helper.m')]
+    if raw:
+        flags.append('-DM0_RAW_PEER')
+        sources.append(str(FIXTURE/'Transport/RawPeer.m'))
+    m0.run(['xcrun', 'clang', '-O2', '-fobjc-arc', *flags, '-framework', 'Foundation',
+            '-framework', 'JavaScriptCore', *sources, '-o', str(helper)])
+    parent = task / 'broker-parent'
+    memory = task / 'memory.o'
+    m0.run(['xcrun', 'clang', '-O2', '-c', str(FIXTURE/'Transport/MemoryGuard.c'), '-o', str(memory)])
+    m0.run(['swiftc', '-swift-version', '5', '-O', *defines,
+            '-import-objc-header', str(FIXTURE/'Transport/MemoryGuard.h'),
+            str(FIXTURE/'Broker/Authority.swift'), str(FIXTURE/'Broker/FrameChannel.swift'),
+            str(FIXTURE/'Broker/Parent.swift'), str(memory), '-o', str(parent)])
+    identifier = 'org.keylane.tests.runtime-m0.broker-parent'
+    m0.run(['codesign', '--force', '--sign', identity, '--options', 'runtime', '--timestamp=none',
+            '--identifier', identifier, str(parent)], capture_output=True)
+    m0.run(['codesign', '--verify', '--strict', '-R=anchor apple generic and certificate leaf = H"'+identity+'"', str(parent)], capture_output=True)
+    detail = m0.run(['codesign', '-dv', '--verbose=4', str(parent)], capture_output=True).stderr.decode()
+    team = next(line.split('=',1)[1] for line in detail.splitlines() if line.startswith('TeamIdentifier='))
+    constraint = task / 'parent.plist'
+    constraint.write_bytes(plistlib.dumps({'signing-identifier': identifier, 'team-identifier': team}))
+    m0.run(['codesign', '--validate-constraint', str(constraint)], capture_output=True)
+    m0.run(['codesign', '--force', '--sign', identity, '--options', 'runtime', '--timestamp=none',
+            '--entitlements', str(FIXTURE/'helper.entitlements'), '--launch-constraint-parent', str(constraint), str(app)], capture_output=True)
+    entitlements = plistlib.loads((FIXTURE/'helper.entitlements').read_bytes())
+    m0.verify_signature(app, identity, entitlements)
+    return app, helper, parent, entitlements
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--report', type=Path, required=True)
@@ -75,30 +112,7 @@ def main():
                             'RaycastNodeCompatibility': 'not-implemented', 'keychain': 'not-tested',
                             'rawTransportCorruption': 'not-tested', 'memoryExhaustion': 'not-tested'})
     with slots.owned_directory() as task:
-        app = task / 'Capsule.app'
-        helper = app / 'Contents/MacOS/helper'
-        helper.parent.mkdir(parents=True)
-        (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
-            CFBundleIdentifier='org.keylane.tests.runtime-m0.broker-helper', CFBundleExecutable='helper',
-            CFBundleName='Keylane M0 Broker', CFBundlePackageType='APPL', LSUIElement=True)))
-        m0.run(['xcrun', 'clang', '-O2', '-fobjc-arc', '-DM0_BROKER', '-framework', 'Foundation',
-                '-framework', 'JavaScriptCore', str(FIXTURE/'RestrictedJS/Helper.m'), '-o', str(helper)])
-        parent = task / 'broker-parent'
-        m0.run(['swiftc', '-swift-version', '5', '-O', str(FIXTURE/'Broker/Authority.swift'),
-                str(FIXTURE/'Broker/Parent.swift'), '-o', str(parent)])
-        identifier = 'org.keylane.tests.runtime-m0.broker-parent'
-        m0.run(['codesign', '--force', '--sign', identity, '--options', 'runtime', '--timestamp=none',
-                '--identifier', identifier, str(parent)], capture_output=True)
-        m0.run(['codesign', '--verify', '--strict', '-R=anchor apple generic and certificate leaf = H"'+identity+'"', str(parent)], capture_output=True)
-        detail = m0.run(['codesign', '-dv', '--verbose=4', str(parent)], capture_output=True).stderr.decode()
-        team = next(line.split('=',1)[1] for line in detail.splitlines() if line.startswith('TeamIdentifier='))
-        constraint = task / 'parent.plist'
-        constraint.write_bytes(plistlib.dumps({'signing-identifier': identifier, 'team-identifier': team}))
-        m0.run(['codesign', '--validate-constraint', str(constraint)], capture_output=True)
-        m0.run(['codesign', '--force', '--sign', identity, '--options', 'runtime', '--timestamp=none',
-                '--entitlements', str(FIXTURE/'helper.entitlements'), '--launch-constraint-parent', str(constraint), str(app)], capture_output=True)
-        entitlements = plistlib.loads((FIXTURE/'helper.entitlements').read_bytes())
-        m0.verify_signature(app, identity, entitlements)
+        app, helper, parent, entitlements = build_fixture(task, identity)
         prefix = 'const req=(id,op="storage.get",key="item",value)=>{const q={v:1,id,op,key}; if(value!==undefined)q.value=value;return JSON.parse(__m0Request(JSON.stringify(q)));};'
         def invoke(source, scenario, executable=parent):
             p = subprocess.Popen([str(executable)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
