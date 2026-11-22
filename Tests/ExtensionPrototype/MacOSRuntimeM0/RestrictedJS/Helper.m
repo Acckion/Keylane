@@ -4,6 +4,7 @@
 #include <sys/resource.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 
 // M0 research only: no JSExport/native objects, Node globals, require, filesystem,
 // network, subprocess, inspector or Objective-C bridge is exposed to the script.
@@ -23,6 +24,32 @@ static void emit(NSDictionary *value) {
     [[NSFileHandle fileHandleWithStandardOutput] writeData:data];
     [[NSFileHandle fileHandleWithStandardOutput] writeData:[@"\n" dataUsingEncoding:NSUTF8StringEncoding]];
 }
+#ifdef M0_BROKER
+static BOOL transfer(int fd, void *bytes, size_t count, BOOL writing) {
+    size_t position = 0;
+    while (position < count) {
+        ssize_t size = writing ? write(fd, (char *)bytes + position, count - position) : read(fd, (char *)bytes + position, count - position);
+        if (size < 0 && errno == EINTR) continue;
+        if (size <= 0) return NO;
+        position += size;
+    }
+    return YES;
+}
+static NSString *brokerRequest(JSValue *argument) {
+    NSString *denied = @"{\"ok\":false,\"error\":\"denied\"}";
+    if (!argument.isString) return denied;
+    NSData *data = [argument.toString dataUsingEncoding:NSUTF8StringEncoding];
+    if (!data || data.length > 4096) return denied;
+    uint32_t size = htonl((uint32_t)data.length);
+    if (!transfer(4, &size, sizeof size, YES) || !transfer(4, (void *)data.bytes, data.length, YES)) return denied;
+    if (!transfer(4, &size, sizeof size, NO)) return denied;
+    size = ntohl(size);
+    if (size == 0 || size > 4096) _exit(71);
+    NSMutableData *reply = [NSMutableData dataWithLength:size];
+    if (!transfer(4, reply.mutableBytes, size, NO)) return denied;
+    return [[NSString alloc] initWithData:reply encoding:NSUTF8StringEncoding] ?: denied;
+}
+#endif
 int main(void) {
     @autoreleasepool {
         struct rlimit core = {0, 0};
@@ -63,6 +90,10 @@ int main(void) {
         context[@"__m0Entered"] = ^{
             if (!entered) { entered = YES; emit(@{ @"entered": @YES }); }
         };
+#ifdef M0_BROKER
+        if (fcntl(4, F_GETFD) < 0) return 70;
+        context[@"__m0Request"] = ^NSString *(JSValue *argument) { return brokerRequest(argument); };
+#endif
         JSValue *value = [context evaluateScript:request[@"source"]];
         if (context.exception) { emit(@{ @"scriptError": @YES }); return 72; }
         if (!value || !value.isString) return 71;

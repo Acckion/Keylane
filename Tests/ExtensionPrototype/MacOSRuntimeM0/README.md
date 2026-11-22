@@ -111,3 +111,20 @@ not implement a business broker, Node modules, React or Raycast extension APIs.
 The original blocked Node experiments remain reproducible; no trust boundary is
 relaxed to enable production. All first-party processes are cleaned up, and only
 deidentified results are retained.
+
+## Fourth batch: bounded first-party broker
+
+```sh
+python3 scripts/verify-macos-broker-m0.py --report /private/tmp/keylane-broker-report.json
+```
+
+See [scope and remaining gates](../../../docs/BROKER-M0.md). The signed parent
+binds synthetic records to a dedicated native channel; JS cannot supply owner
+metadata. Preparation, execution and publication recheck epochs, with bounded
+frames, replay rejection and in-memory namespace controls. Seventeen signed
+subchecks pass, but the synthetic seal is not actual installation admission.
+The fixture is serial and does not implement product storage, Node or Raycast
+compatibility. Exit3/incomplete remains mandatory even when all observations pass.
+Normal CI runs only verdict checks and the unsigned synthetic Swift authority test;
+the signed helper experiment remains a separate local check. No product packaging
+or runtime path includes this fixture.
