@@ -106,6 +106,16 @@ public struct FileSearchLocation {
         return (try? check(URL(fileURLWithPath: path), directory: directory, root: scope.configured)) != nil
     }
 
+    /// Recheck saved search rows against the current ancestor rules without
+    /// opening the file. Retained rows may belong to an offline volume, and an
+    /// index can contain resolved paths under a configured symlink scope.
+    public mutating func includesSavedResult(at path: String, directory: Bool) -> Bool {
+        let path = Self.normalizedPath(path)
+        guard let scope = roots.first(where: { Self.contains(path, in: $0.configured) || Self.contains(path, in: $0.resolved) }) else { return false }
+        let root = Self.contains(path, in: scope.configured) ? scope.configured : scope.resolved
+        return (try? check(URL(fileURLWithPath: path), directory: directory, root: root)) != nil
+    }
+
     private mutating func rules(in directory: URL, root: String) -> [FileSearchRules.IgnoreRule] {
         let key = root + "\0" + directory.path
         if let cached = rulesByParent[key] { return cached }
