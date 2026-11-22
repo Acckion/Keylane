@@ -99,6 +99,7 @@
 | AI-09 | 本地模型 | 部分实现 | 已有 Ollama 等连接方式，模型能力与工具协议逐项核对 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/local-models) |
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
+| AI-11-a | 共用会话按模块选择工具能力 | 待合并 | 草稿 #226 在已合入 #215/#217/#223/#224 的 dev `37dac2e` 上收敛增量；目录按选择过滤，发送前冻结、选择改变取消审批，真实模型及安装版待验收 | [PR #226](https://github.com/Acckion/Keylane/pull/226)、[契约](AI-CAPABILITY-CONTRACT.md) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-12-a | 聊天中的剪贴板与文件搜索引用工具 | 待合并 | PR #217 同步 dev `fc44e8b`；按路径与按引用协议分离，逐次确认，运行内/五分钟引用及来源校验；403+5 项 Swift、合成文件工具/会话、即时排除及发送前撤销回归通过，真实服务未验收 | [PR #217](https://github.com/Acckion/Keylane/pull/217)、[验证](AI-READ-TOOLS-VALIDATION.md) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
@@ -210,6 +211,8 @@
 ### 2026-11-21 图标与设置分组补齐（本分支）
 
 涉及 BASE-03、BASE-06、BASE-08、APP-02、CLIP-01、SHOT-01、CAL-01、CONTACT-01、NOTE-01、LINK-01、TOOL-01、TOOL-02、TOOL-07、TOOL-08、AI-06、DICT-01、DICT-02、EXTRA-02。AI 设置移入内置扩展首位，补充下载与主题入口，并按命令用途区分图片。图标资源、映射、验证和后续预备资源登记于 [美术资源](ARTWORK.md)。安装版验收随该功能 PR 跟进。
+
+维护记录：2026-11-21，AI-11-a / 草稿 #226 以已合入依赖的 dev `37dac2e` 重整，移除依赖等价差异；保留 `keylane_read_searched_file`、路径授权、PDF/分页及目录生命周期边界，仅新增会话模块能力选择与发送前冻结。隔离验证与精确头 CI 见原 PR，不安装/合并/发布。
 维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
 
 维护记录：2026-11-21，AI-13-b / [PR #228](https://github.com/Acckion/Keylane/pull/228)，实现 `9e0c43e`：从 dev `37dac2e` 新建读取增强分支，Office/本机显式 OCR/行级正则共用现有授权、接收方确认与私有续读；保留 #215/#217/#224 行为，414+3 项全量、最终 12 项增强及文本框审查修复后的 66 项定向复验、9 组基础文件集成、签名隔离引用测试及 27 项发行保障检查通过；准确提交与 Checks 见 PR，未安装或调用真实模型。
