@@ -83,6 +83,10 @@ jobs:
         run: swift test --scratch-path .build-current --disable-sandbox
       - name: AI native file tools and approval integration
         run: bash scripts/verify-ai-file-tools.sh
+      - name: File search controller integration
+        run: bash scripts/verify-files.sh
+      - name: File index restart recovery integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-restart-main.swift bash scripts/verify-files.sh
 
   sign-preview-auto:
     name: Sign integrated preview ${{ github.sha }}
