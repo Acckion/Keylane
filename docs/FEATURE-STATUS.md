@@ -47,7 +47,7 @@
 | APP-01 | 应用发现、拼音搜索、收藏及刷新 | 部分实现 | 外置/网络卷、扫描深度和失效路径继续验收 | [应用生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/applications) |
 | APP-02 | 应用正常退出、卸载与残留预览 | 部分实现 | 应用差异、拒绝权限及残留范围逐项验收 | [卸载](UNINSTALL-PREVIEW.md) |
 | APP-03 | 按应用闲置自动退出 | 部分实现 | 各应用保存对话框、退出拒绝和重启恢复实测 | [生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/auto-quit) |
-| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
+| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数优化待合并，安装版能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
 | FILE-02 | 文件打开方式、分享、复制、定位等动作 | 部分实现 | 真实分享服务、取消、权限与焦点验收 | [细项](TODO.md) |
 | CLIP-01 | 剪贴板历史、持久化、搜索及 OCR | 部分实现 | 真实跨应用粘贴、采集边界和隐私设置回归 | [实现](../Sources/Keylane/ClipboardActions.swift)、[细项](TODO.md)、[Raycast](https://manual.raycast.com/clipboard-history) |
 | SHOT-01 | 截图/录屏管理、OCR、搜索与文件动作 | 部分实现 | 跨应用分享、粘贴、云盘和权限验收 | [截图](SCREENSHOTS.md)、[Raycast](https://manual.raycast.com/screenshots) |
@@ -228,3 +228,5 @@
 维护记录：2026-11-21，AI-13-c / PR #236 在 dev `e23edf81` 上完成整合；保留 #233 已验收图标。全量436+3、最终78项定向及完整应用构建、10组文件工具集成、签名隔离引用/附件及28项发行保障检查通过；真实废纸篓、用户资料、外部卷和提供方未验收，未安装/合并/发布。
 
 维护记录：2026-11-21，EXTRA-02 文件夹观察设置与普通截图自动入架提速，见 [下载与暂存架联动](DOWNLOADS-SHELF.md)。
+
+维护记录：2026-11-23，FILE-01：实机发现增量扫描结束后反复全表统计。改用事务内增删／类型变化触发计数，旧索引首次打开初始化一次，后续读取单行汇总。451 项 Swift 测试及真实文件事件集成通过，覆盖旧索引、多连接、回滚和动态更新；Apple Development 签名安装已完成，后台 CPU 与长期能耗正在复验。

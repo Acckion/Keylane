@@ -1,7 +1,86 @@
 import XCTest
+import SQLite3
 @testable import KeylaneCore
 
 final class FileIndexTests: XCTestCase {
+    func testStatisticsStayConsistentAcrossConnectionsAndRollback() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("index.sqlite")
+        let writer = try FileSearchIndex(url: url)
+        let reader = try FileSearchIndex(url: url)
+        func put(_ name: String, directory: Bool = false, symlink: Bool = false) throws {
+            try writer.put(.init(path: "/fixture/" + name, name: name, volume: "/", modified: 1,
+                                 directory: directory, symlink: symlink), root: "/fixture", epoch: "first")
+        }
+        try put("text")
+        try put("folder", directory: true)
+        try put("link", symlink: true)
+        let initial = try reader.stats()
+        XCTAssertEqual([initial.entries, initial.files, initial.directories, initial.symlinks], [3, 1, 1, 1])
+        try put("text", directory: true)
+        let changed = try reader.stats()
+        XCTAssertEqual([changed.entries, changed.files, changed.directories, changed.symlinks], [3, 0, 2, 1])
+        enum Failure: Error { case rollback }
+        XCTAssertThrowsError(try writer.transaction {
+            try put("rolled-back")
+            try writer.removeScope("/fixture")
+            throw Failure.rollback
+        })
+        XCTAssertEqual(try reader.stats().entries, 3)
+        try writer.removeUnseen(root: "/fixture", subtree: "/fixture/folder", epoch: "next")
+        XCTAssertEqual(try reader.stats().directories, 1)
+        try writer.clear()
+        XCTAssertEqual(try reader.stats().entries, 0)
+    }
+
+    func testStatisticsInitializeExistingDatabaseOnceAndTrackOlderWriter() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("index.sqlite")
+        var index: FileSearchIndex? = try FileSearchIndex(url: url)
+        try index!.put(.init(path: "/fixture/retained", name: "retained", volume: "/", modified: 1,
+                             directory: false, symlink: false), root: "/fixture", epoch: "old")
+        index = nil
+        var legacy: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &legacy), SQLITE_OK)
+        defer { sqlite3_close(legacy) }
+        // Recreate the pre-counter state without changing the file records.
+        XCTAssertEqual(sqlite3_exec(legacy, "DROP TRIGGER file_counts_insert; DROP TRIGGER file_counts_delete; DROP TRIGGER file_counts_update; DROP TABLE file_counts", nil, nil, nil), SQLITE_OK)
+        let migrated = try FileSearchIndex(url: url)
+        XCTAssertEqual(try migrated.stats().entries, 1)
+        XCTAssertEqual(sqlite3_exec(legacy, "DELETE FROM files", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(try migrated.stats().entries, 0)
+        XCTAssertEqual(try FileSearchIndex(url: url).stats().entries, 0)
+    }
+
+    func testSubtreeCleanupPreservesEpochOwnerAndSiblingBoundaries() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let db = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        let root = "/fixture"
+        let rows = [
+            ("/fixture/target", root, "old"),
+            ("/fixture/target/removed.txt", root, "old"),
+            ("/fixture/target/current.txt", root, "current"),
+            ("/fixture/target/other-owner.txt", "/other", "old"),
+            ("/fixture/target-extra.txt", root, "old"),
+            ("/fixture/target0/sibling.txt", root, "old")
+        ]
+        for (path, owner, epoch) in rows {
+            try db.put(.init(path: path, name: URL(fileURLWithPath: path).lastPathComponent,
+                             volume: "/", modified: 1, directory: false, symlink: false),
+                       body: String(repeating: "body ", count: 1024), root: owner, epoch: epoch)
+        }
+        try db.removeUnseen(root: root, subtree: "/fixture/target", epoch: "current")
+        XCTAssertEqual(try db.stats().entries, 4)
+        let options = FileSearchOptions(roots: [root, "/other"])
+        XCTAssertTrue(try db.search("removed", options: options).isEmpty)
+        for query in ["current", "other-owner", "target-extra", "sibling"] {
+            XCTAssertEqual(try db.search(query, options: options).count, 1)
+        }
+    }
+
     func testChineseMultiwordNamesAndLiteralPunctuation() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:directory) }

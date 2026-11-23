@@ -71,6 +71,7 @@ public final class FileSearchIndex {
                 CREATE TRIGGER IF NOT EXISTS file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 PRAGMA user_version=1;
                 """)
+            try prepareStatistics()
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch { sqlite3_close(db); db = nil; throw error }
     }
@@ -99,8 +100,10 @@ public final class FileSearchIndex {
     public func removeUnseen(root: String, subtree: String, epoch: String) throws {
         let lower = subtree + "/"
         let upper = subtree + "0" // The next byte after the slash, under SQLite's binary collation.
-        try write("DELETE FROM files WHERE root=? AND epoch<>? AND path IN (SELECT path FROM files WHERE path=? UNION ALL SELECT path FROM files WHERE path>=? AND path<?)",
-                  [root, epoch, subtree, lower, upper])
+        // Bind row IDs first so SQLite cannot scan every record in the root
+        // (including large body overflow pages) for each changed subtree.
+        try write("DELETE FROM files WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND epoch<>?",
+                  [subtree, lower, upper, root, epoch])
     }
     public func removeScope(_ root: String) throws { try write("DELETE FROM files WHERE root=?",[root]) }
     public func removeUnavailableVolumes() throws {
@@ -113,8 +116,43 @@ public final class FileSearchIndex {
         try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>''")
     }
     public func clear() throws { try exec("DELETE FROM files; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
+    private func prepareStatistics() throws {
+        // Initialize older indexes once. The immediate transaction serializes
+        // concurrent reader/writer opens and keeps the snapshot and triggers atomic.
+        try transaction {
+            try exec("CREATE TABLE IF NOT EXISTS file_counts(id INTEGER PRIMARY KEY CHECK(id=1),entries INTEGER NOT NULL,files INTEGER NOT NULL,directories INTEGER NOT NULL,symlinks INTEGER NOT NULL)")
+            let existing = try statement("SELECT 1 FROM file_counts WHERE id=1")
+            let status = sqlite3_step(existing)
+            sqlite3_finalize(existing)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
+            if status == SQLITE_DONE {
+                try exec("INSERT INTO file_counts SELECT 1,count(*),coalesce(sum(directory=0 AND symlink=0),0),coalesce(sum(directory),0),coalesce(sum(symlink),0) FROM files")
+            }
+            // Every mutation participates in the caller's transaction, including
+            // changes made by older app builds or another index connection.
+            try exec("""
+                CREATE TRIGGER IF NOT EXISTS file_counts_insert AFTER INSERT ON files BEGIN
+                    UPDATE file_counts SET entries=entries+1,
+                        files=files+(new.directory=0 AND new.symlink=0),
+                        directories=directories+new.directory,symlinks=symlinks+new.symlink WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS file_counts_delete AFTER DELETE ON files BEGIN
+                    UPDATE file_counts SET entries=entries-1,
+                        files=files-(old.directory=0 AND old.symlink=0),
+                        directories=directories-old.directory,symlinks=symlinks-old.symlink WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS file_counts_update AFTER UPDATE OF directory,symlink ON files
+                    WHEN old.directory<>new.directory OR old.symlink<>new.symlink BEGIN
+                    UPDATE file_counts SET files=files+(new.directory=0 AND new.symlink=0)-(old.directory=0 AND old.symlink=0),
+                        directories=directories+new.directory-old.directory,
+                        symlinks=symlinks+new.symlink-old.symlink WHERE id=1;
+                END;
+                """)
+        }
+    }
+
     public func stats() throws -> FileIndexStats {
-        let s = try statement("SELECT count(*),coalesce(sum(directory=0 AND symlink=0),0),coalesce(sum(directory),0),coalesce(sum(symlink),0) FROM files"); defer { sqlite3_finalize(s) }
+        let s = try statement("SELECT entries,files,directories,symlinks FROM file_counts WHERE id=1"); defer { sqlite3_finalize(s) }
         guard sqlite3_step(s) == SQLITE_ROW else { throw FileIndexError.database }
         var result = FileIndexStats(); result.entries = Int(sqlite3_column_int(s,0)); result.files = Int(sqlite3_column_int(s,1)); result.directories = Int(sqlite3_column_int(s,2)); result.symlinks = Int(sqlite3_column_int(s,3))
         result.bytes = [url.path,url.path+"-wal",url.path+"-shm"].reduce(0) { $0 + ((try? FileManager.default.attributesOfItem(atPath: $1)[.size] as? Int) ?? 0) }
