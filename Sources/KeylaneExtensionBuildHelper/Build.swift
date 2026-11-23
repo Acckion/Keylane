@@ -1,5 +1,8 @@
 import Foundation
 import Darwin
+#if SWIFT_PACKAGE
+import KeylaneCore
+#endif
 
 // First-party signed integration fixture. Not shipped or selectable by manifest.
 // It uses the real Core data contract; product profile/XPC enrollment is pending.
@@ -41,7 +44,7 @@ private final class Supervisor: @unchecked Sendable {
 }
 
 @available(macOS 26.0, *)
-@main private enum BuildFixture {
+@main private enum BuildHelper {
     typealias Build = MacOSExtensionBuild
     static func main() {
         signal(SIGPIPE, SIG_IGN)
@@ -72,24 +75,32 @@ private final class Supervisor: @unchecked Sendable {
         try verify()
         let scratch = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("keylane-m1-build-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+#if M1_FIXTURE
         // First-party negative control only: an existing, harmless neighboring
         // source demonstrates the metadata fence, rather than a missing path.
         let neighbor = scratch.deletingLastPathComponent().appendingPathComponent("keylane-m1-neighbor-" + request.id.uuidString + ".js")
         var neighborCreated = false, outsideInputRead = false
+#endif
         defer {
             supervisor.cleanup()
             let removed: Bool
             do {
+#if M1_FIXTURE
                 if neighborCreated { try FileManager.default.removeItem(at: neighbor) }
+#endif
                 try FileManager.default.removeItem(at: scratch); removed = true
             } catch { removed = false }
+#if M1_FIXTURE
             var record: [String: Bool] = ["scratchRemoved": removed, "cancelled": supervisor.isStopped]
             if outsideInputRead { record["outsideInputRead"] = true }
             if let data = try? Build.encode(record) { try? FileHandle.standardError.write(contentsOf: data) }
+#endif
             if !removed { exit(74) }
         }
+#if M1_FIXTURE
         try Data("export default 42;".utf8).write(to: neighbor, options: .withoutOverwriting)
         neighborCreated = true
+#endif
         let deadline = DispatchSource.makeTimerSource(queue: .global())
         deadline.schedule(deadline: .now() + .seconds(20)); deadline.setEventHandler { supervisor.stop() }; deadline.resume()
         defer { deadline.cancel() }
@@ -101,7 +112,11 @@ private final class Supervisor: @unchecked Sendable {
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             try file.body.write(to: destination, options: .withoutOverwriting)
         }
+        var fileLimit = rlimit(rlim_cur: 8 * 1024 * 1024, rlim_max: 8 * 1024 * 1024)
+        var cpuLimit = rlimit(rlim_cur: 20, rlim_max: 20)
+        guard setrlimit(RLIMIT_FSIZE, &fileLimit) == 0, setrlimit(RLIMIT_CPU, &cpuLimit) == 0 else { throw Build.Failure.limit }
         var commands: [Build.File] = []
+        var outputBytes = 0
         for (index, entry) in request.plan.entries.enumerated() {
             let out = "__m1-output-\(index).js", meta = "__m1-output-\(index).json"
             // Output names are outside src/assets/node_modules and reserved in
@@ -139,11 +154,18 @@ private final class Supervisor: @unchecked Sendable {
                   let outputs = metadata["outputs"] as? [String: [String: Any]], outputs.count == 1,
                   let output = outputs[out], let imports = output["imports"] as? [Any], imports.isEmpty else { throw Build.Failure.response }
             guard Set(inputs.keys).isSubset(of: Set(request.plan.files.map(\.path))) else {
-                outsideInputRead = true; throw Build.Failure.response
+#if M1_FIXTURE
+                outsideInputRead = true
+#endif
+                throw Build.Failure.response
             }
             let outputURL = scratch.appendingPathComponent(out)
             guard (try outputURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 4 * 1024 * 1024 else { throw Build.Failure.limit }
-            commands.append(.init(path: entry, body: try Data(contentsOf: outputURL)))
+            let body = try Data(contentsOf: outputURL)
+            guard body.count <= 12 * 1024 * 1024 - outputBytes else { throw Build.Failure.limit }
+            outputBytes += body.count; commands.append(.init(path: entry, body: body))
+            try FileManager.default.removeItem(at: outputURL)
+            try FileManager.default.removeItem(at: metadataURL)
         }
         try verify()
         if supervisor.isStopped { throw CancellationError() }

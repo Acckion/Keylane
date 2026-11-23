@@ -1,10 +1,12 @@
-# macOS runtime M1 first batch
+# macOS runtime M1 acceptance
 
-First-party signed compiler integration only. Uses the actual Core
-`MacOSExtensionBuild` contract and the pinned official esbuild archive from M0.
-No public extension, default product service, enrollment or installer is enabled.
+The production helper is in Sources/KeylaneExtensionBuildHelper. This directory
+contains only the signed first-party product-composition host and documentation;
+it is never included in Keylane.app. The native host exercises the actual Core
+profile, OS signature checks, Keychain, compiler, seal, registry and installer.
 
-See [implementation, evidence and remaining M1 work](../../../docs/MACOS-BUILD-M1.md).
-The probe returns 3/incomplete when this slice succeeds, 2 on observed failures.
-All executable candidates use an existing Apple Development identity; no ad-hoc
-fallback. Do not run third-party scripts through this fixture or package it.
+See [implementation and acceptance](../../../docs/MACOS-BUILD-M1.md).
+The compile subset probe remains 3/incomplete. The product composition and the
+aggregate check pass only when all required observations and cleanup succeed.
+All executable candidates use an existing Apple Development identity. No ad-hoc
+fallback, public extension execution or product runtime activation is permitted.

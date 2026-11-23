@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Signed real M1 composition; exact synthetic Keychain slots and temporary files.
+
+No installation, user clipboard, public extension or runtime admission occurs.
+Retains the original signed recovery application if owned cleanup fails.
+"""
+import argparse
+import contextlib
+import importlib.util
+import json
+from pathlib import Path
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0,str(ROOT/'scripts'))
+from extension_builder import package_builder, verify_builder
+spec=importlib.util.spec_from_file_location('m0',ROOT/'scripts/verify-macos-runtime-m0.py')
+m0=importlib.util.module_from_spec(spec);spec.loader.exec_module(m0)
+spec=importlib.util.spec_from_file_location('broker',ROOT/'scripts/verify-macos-broker-m0.py')
+broker=importlib.util.module_from_spec(spec);spec.loader.exec_module(broker)
+CASES={'enrolled','approvalReplayRejected','realBuildAndInstall','oldActiveDuringStaging','atomicReplacement',
+       'preferencesPreserved','executionStillClosed','restartPersistent','foreignReadDenied','copiedHostRejected',
+       'uncommittedPublicationDiscarded','committedPublicationRecovered','registryRollbackRejected',
+       'missingHeadNoReset','missingProfileNoReset','cachedSignerRevoked','wrongParentRejected',
+       'realCompilerCancelled','oldPreservedAfterCancellation','oldPreservedAfterCompilerFailure',
+       'crossProcessCASOneWinner','crossProcessCASRecoverable','tamperedToolchainRejected','fixturesExited','crossProcessBuildLock','productHostRightsVerified'}
+
+
+def verdict(cases):
+    if any(type(cases.get(key)) is not bool for key in CASES):raise ValueError('Missing M1 composition observation')
+    failures=sorted(key for key in CASES if not cases[key])
+    return ('blocked',failures) if failures else ('passed',[])
+
+
+@contextlib.contextmanager
+def task_directory():
+    task=Path(tempfile.mkdtemp(prefix='keylane-m1-product-',dir='/private/tmp'))
+    try:yield task
+    finally:
+        if (task/'cleanup.json').exists():raise RuntimeError('Cleanup pending; signed recovery application retained at '+str(task))
+        shutil.rmtree(task)
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--helper',type=Path,required=True);p.add_argument('--compiler-archive',type=Path,required=True)
+    p.add_argument('--core-products',type=Path,help='fresh SwiftPM Debug products for this checkout')
+    p.add_argument('--package-name',default=re.sub(r'\W','_',ROOT.name.lower()))
+    p.add_argument('--report',type=Path,required=True);args=p.parse_args()
+    if args.report.exists():raise SystemExit('Refusing report overwrite')
+    identity=m0.resolve_identity()
+    report=dict(schema=1,fixtureOnly=True,installed=False,phase='M1',cases={},productionRuntimeReady=False,publicExtensionsVerified=False)
+    with task_directory() as task:
+        app=task/'Host.app';host=app/'Contents/MacOS/host';host.parent.mkdir(parents=True)
+        identifier='org.keylane.tests.runtime-m1.product-host'
+        (app/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(CFBundleIdentifier=identifier,CFBundleExecutable='host',CFBundlePackageType='APPL')))
+        sources=sorted((ROOT/'Sources/KeylaneCore').glob('*.swift'))
+        package_name='Keylane';extra=['-whole-module-optimization']
+        if args.core_products:
+            sources=[];package_name=args.package_name
+            extra=['-DM1_LINKED_CORE','-I',str(args.core_products),str(args.core_products/'KeylaneCore.o')]
+        compiled=subprocess.run(['swiftc','-swift-version','5','-package-name',package_name,'-parse-as-library','-target','arm64-apple-macos26.0',
+                '-O',*extra,*map(str,sources),str(ROOT/'Tests/ExtensionPrototype/MacOSRuntimeM1/ProductHost.swift'),'-o',str(host)],capture_output=True,text=True,timeout=180)
+        if compiled.returncode:raise RuntimeError('First-party host compile failed: '+compiled.stderr[-5000:])
+        package_builder(app,args.helper,identity,host_identifier=identifier,archive=args.compiler_archive)
+        product_rights=plistlib.loads((ROOT/'Resources/Keylane.entitlements').read_bytes())
+        def sign(target,role,entitlements=None):
+            entitlements=entitlements or {}
+            rights=task/(role+'.plist');rights.write_bytes(plistlib.dumps(entitlements))
+            m0.run(['codesign','--force','--sign',identity,'--identifier',role,'--options','runtime','--timestamp=none','--entitlements',str(rights),str(target)],capture_output=True)
+            m0.verify_signature(target,identity,entitlements)
+        sign(app,identifier,product_rights)
+        verify_builder(app)
+        def call(mode,binary=host):
+            result=subprocess.run([str(binary),mode,str(task)],capture_output=True,text=True,timeout=120)
+            if result.returncode!=0:raise RuntimeError('First-party native M1 mode failed: '+mode+'; exit='+str(result.returncode)+'; '+result.stdout[:160]+'; '+result.stderr[:600])
+            values=json.loads(result.stdout);report['cases'].update(values)
+        try:
+            call('setup');call('build');call('restart')
+            held=subprocess.Popen([str(host),'hold-build-lock',str(task)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            try:
+                if json.loads(held.stdout.readline()).get('lockHeld') is not True:raise RuntimeError('Native build lock control failed')
+                call('lock-busy')
+            finally:
+                (task/'release-lock').write_text('first-party release')
+                _,err=held.communicate(timeout=20)
+                if held.returncode!=0:raise RuntimeError('Native build lock cleanup failed: '+err[:500])
+            helper=app/'Contents/Helpers/KeylaneExtensionBuild.app/Contents/MacOS/keylane-extension-build'
+            tool=helper.parent/'esbuild'
+            cancel=subprocess.Popen([str(host),'cancel',str(task)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            observed=False
+            try:
+                end=time.monotonic()+15
+                while time.monotonic()<end:
+                    if broker.helper_pids(tool):observed=True;break
+                    if cancel.poll()is not None:break
+                    time.sleep(0.005)
+                (task/'cancel-now').write_text('first-party cancellation')
+                out,err=cancel.communicate(timeout=40)
+                if cancel.returncode!=0:raise RuntimeError('Real compiler cancellation failed: '+err[:600])
+                report['cases'].update(json.loads(out))
+                report['cases']['realCompilerCancelled']=observed and report['cases']['realCompilerCancelled']
+            finally:
+                if cancel.poll()is None:cancel.kill()
+                cancel.wait(timeout=5);broker.confirm_helper_exit(tool);broker.confirm_helper_exit(helper)
+            call('build-failure')
+            original=task/'original-helper';helper.rename(original)
+            try:
+                body=bytearray(original.read_bytes());body[-16]^=1;helper.write_bytes(body);helper.chmod(0o755)
+                call('tamper')
+            finally:
+                helper.unlink();original.rename(helper)
+            call('restart')
+            copy=task/'Copy.app';shutil.copytree(app,copy);call('copy',copy/'Contents/MacOS/host')
+            foreign=task/'Foreign.app';shutil.copytree(app,foreign);sign(foreign,'org.keylane.tests.runtime-m1.foreign')
+            call('foreign',foreign/'Contents/MacOS/host')
+            direct=subprocess.run([str(helper)],input=b'{}',capture_output=True,timeout=8)
+            report['cases']['wrongParentRejected']=direct.returncode<0 and not direct.stdout
+            call('recovery')
+            racers=[subprocess.Popen([str(host),'cas',str(task)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)for _ in range(2)]
+            winners=[]
+            for racer in racers:
+                out,err=racer.communicate(timeout=30)
+                if racer.returncode!=0:raise RuntimeError('Native CAS process failed: '+err[:500])
+                winners.append(json.loads(out)['casAdvanced'])
+            report['cases']['crossProcessCASOneWinner']=sorted(winners)==[False,True]
+            call('cas-recover');call('missing')
+            report['cases']['fixturesExited']=not broker.helper_pids(tool)and not broker.helper_pids(helper)
+            m0.verify_signature(app,identity,product_rights)
+            report['cases']['productHostRightsVerified']=True
+            verify_builder(app)
+            report['signaturesVerifiedBeforeAndAfter']=True
+            report['gate'],report['failures']=verdict(report['cases'])
+        finally:
+            if (task/'cleanup.json').exists():call('cleanup')
+    report['temporaryArtifactsRemoved']=True
+    args.report.parent.mkdir(parents=True,exist_ok=True)
+    with args.report.open('x')as f:json.dump(report,f,indent=2)
+    print(json.dumps({'gate':report['gate'],'failures':report['failures'],'report':str(args.report)}))
+    return 0 if report['gate']=='passed' else 2
+
+
+if __name__=='__main__':raise SystemExit(main())

@@ -18,8 +18,9 @@ trademarks, private source code, or proprietary distribution artifacts.
   the official npm registry with pinned integrity values. Both use the MIT license;
   see [React's original license](https://github.com/facebook/react/blob/v19.0.0/LICENSE)
   and [esbuild's original license](https://github.com/evanw/esbuild/blob/v0.25.5/LICENSE.md).
-  React's packaged LICENSE remains alongside its temporary test copy. These tools,
-  libraries, generated bundles and test helpers are not included in Keylane.app.
+  React's packaged LICENSE remains alongside its temporary test copy. React,
+  generated test bundles and test helpers are not included in Keylane.app.
+  The product esbuild distribution is listed separately below.
 
 These original notices must be retained when redistributing the corresponding
 materials. Test fixtures are not included by the app packaging script.
@@ -116,3 +117,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ```
+
+## macOS extension build toolchain
+
+ARM64 packages include the fixed esbuild 0.25.5 compiler (MIT) and its Go 1.23.8 runtime (BSD-3-Clause). Original licenses ship inside KeylaneExtensionBuild.app/Contents/Resources. Sources: https://github.com/evanw/esbuild/tree/v0.25.5 and https://github.com/golang/go/tree/go1.23.8. React remains test-only; no React or third-party extension source is bundled by this change.

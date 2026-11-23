@@ -158,7 +158,33 @@ public enum MacOSExtensionBuild {
             func item(_ file: File) -> Inventory.Item { .init(path: file.path, sha256: hash(file.body), bytes: file.body.count) }
             inventory = .init(schema: 1, recipeDigest: reply.recipeDigest, projectDigest: reply.projectDigest,
                               commands: commands.map(item), resources: resources.map(item))
+            try MacOSExtensionBuild.verifyInventory(inventory, commands: commands, resources: resources)
         }
+    }
+
+    public static func verifyInventory(_ inventory: Inventory, commands: [File], resources: [File]) throws {
+        guard inventory.schema == 1, isDigest(inventory.recipeDigest), isDigest(inventory.projectDigest),
+              (1...256).contains(commands.count), resources.count <= 4096 else { throw Failure.limit }
+        let all = commands + resources
+        guard all.allSatisfy({ safePath($0.path) }), Set(all.map { $0.path.lowercased() }).count == all.count else { throw Failure.path }
+        var total = 0
+        for file in all {
+            guard file.body.count <= 32 * 1024 * 1024 - total else { throw Failure.limit }; total += file.body.count
+        }
+        guard commands.reduce(0, { $0 + $1.body.count }) <= 12 * 1024 * 1024,
+              resources.allSatisfy({ $0.body.count <= 8 * 1024 * 1024 }) else { throw Failure.limit }
+        let paths = Set(all.map { $0.path.lowercased() })
+        for path in paths {
+            var parts = path.split(separator: "/"); parts.removeLast()
+            while !parts.isEmpty {
+                guard !paths.contains(parts.joined(separator: "/")) else { throw Failure.collision }; parts.removeLast()
+            }
+        }
+        guard commands.allSatisfy({ !$0.body.isEmpty && $0.body.count <= 4 * 1024 * 1024 && String(data: $0.body, encoding: .utf8) != nil && !$0.body.contains(0) }) else { throw Failure.integrity }
+        func items(_ files: [File]) -> [Inventory.Item] {
+            files.sorted { $0.path < $1.path }.map { .init(path: $0.path, sha256: hash($0.body), bytes: $0.body.count) }
+        }
+        guard inventory.commands == items(commands), inventory.resources == items(resources) else { throw Failure.integrity }
     }
 
     public protocol Service: Sendable {

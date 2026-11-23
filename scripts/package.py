@@ -8,6 +8,7 @@ import tempfile
 from signing import signing_identity
 from app_intents import extract_metadata
 from versioning import load_version
+from extension_builder import package_builder
 root = pathlib.Path(__file__).resolve().parent.parent
 version = load_version()
 distribution = os.environ.get('KEYLANE_DISTRIBUTION') == '1'
@@ -50,13 +51,11 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
         metadata.update(plistlib.load(file))
     with (app/'Contents/Info.plist').open('wb') as file:
         plistlib.dump(metadata, file)
-    signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--timestamp=none']
+    architectures = subprocess.check_output(['lipo','-archs',str(binary)],text=True).strip()
+    if architectures == 'arm64':
+        package_builder(app,binary.parent/'keylane-extension-build',identity,archive=os.environ.get('KEYLANE_EXTENSION_COMPILER_ARCHIVE'))
+    signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--options','runtime','--timestamp=none']
     entitlements = root / 'Resources/Keylane.entitlements'
-    if not distribution:
-        test_entitlements = plistlib.loads(entitlements.read_bytes())
-        del test_entitlements['com.apple.security.automation.apple-events']
-        entitlements = pathlib.Path(directory) / 'Keylane.entitlements'
-        entitlements.write_bytes(plistlib.dumps(test_entitlements))
     subprocess.run(['codesign', '--force', '--sign', identity, *signing_options,
                     '--entitlements', str(entitlements), str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)

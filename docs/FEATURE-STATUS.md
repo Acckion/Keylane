@@ -131,7 +131,7 @@
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
 | EXT-01 | 扩展发现、安装、启用、卸载与生命周期 | 部分实现；目录快照事务已随 #223 合入 | 固定真实扩展样本持续回归；#222 商店与 macOS 运行迁移见 EXT-01-a，安装版待验收 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
-| EXT-01-a | 无 VM 的 macOS 扩展构建与运行迁移 | M0首方可行性通过；M1第一批构建契约／隔离编译完成（本分支待合并） | 受限JSC与明确兼容子集，原Node仍blocked。M1产品profile／#222收据与依赖适配／安装事务未完成，M2–M5未开始；未启用第三方执行，性能预算未验收 | [设计](MACOS-EXTENSION-RUNTIME.md)、[M1记录](MACOS-BUILD-M1.md) |
+| EXT-01-a | 无 VM 的 macOS 扩展构建与运行迁移 | M0／M1首方签名验收通过；完整M1代码待合并 | 签名构建、Darwin依赖、schema2资源收据、受保护安装／更新／恢复完成；受限JSC，原Node仍blocked。M2–M5未开始，运行与第三方执行仍关闭，性能预算未验收 | [设计](MACOS-EXTENSION-RUNTIME.md)、[M1终审](MACOS-BUILD-M1.md) |
 | EXT-02 | no-view / view / menu-bar 三类命令 | 部分实现 | 按命令依赖验证，不能由一个样本推断全生态兼容 | [兼容范围](RAYCAST-COMPATIBILITY.md) |
 | EXT-03 | List / Grid / Detail / Form / Actions | 部分实现 | 动态回调、生命周期、资源加载与字段事件逐项推进 | [API 表](RAYCAST-API-COVERAGE.csv)、[说明](RAYCAST-API-COVERAGE.md) |
 | EXT-04 | 存储、网络、文件、系统工具和 Utilities | 部分实现 | 用公开契约和隔离运行证据缩小 partial 项 | [API 表](RAYCAST-API-COVERAGE.csv) |
@@ -242,3 +242,5 @@
 维护记录：2026-11-21，EXTRA-02 文件夹观察设置与普通截图自动入架提速，见 [下载与暂存架联动](DOWNLOADS-SHELF.md)。
 
 维护记录：2026-11-23，EXT-01-a / BASE-11，前序 `4fd73ff1`：M1第一批在新分支整合当前dev `b09c5dd`（#231），新增有界构建数据契约／固定配方／结果资源摘要和取消协调；17项真实签名首方构建检查通过，整体M1仍incomplete，正式profile、#222适配与安装事务未交付，见 [M1记录](MACOS-BUILD-M1.md)。未安装／推送／修改#222，M2–M5未开始。
+
+维护记录：2026-11-23，EXT-01-a / BASE-11，前序 `00a23eba`：完整M1复用#222 `c7b4197` 的纯Core底座，接通真实签名构建／新profile保护／Darwin依赖／schema2资源收据和统一安装器；修复候选更新、禁用快照、卸载候选清理及head提交发布恢复。553项Swift、72项Python、两组43项首方签名观察及Apple Development签名ARM64 DMG通过，详见 [M1终审](MACOS-BUILD-M1.md)。待合并，未安装/推送/发布，M2–M5未开始；没有恢复VM、启用运行或改API统计。
