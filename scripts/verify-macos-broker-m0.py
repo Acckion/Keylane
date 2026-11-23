@@ -60,14 +60,14 @@ def verdict(cases):
     return ('blocked', failures) if failures else ('incomplete', [])
 
 
-def build_fixture(task, identity, *, raw=False, defines=(), store_module=None):
+def build_fixture(task, identity, *, raw=False, defines=(), store_module=None, helper_flags=(), helper_identifier='org.keylane.tests.runtime-m0.broker-helper'):
     app = task / 'Capsule.app'
     helper = app / 'Contents/MacOS/helper'
     helper.parent.mkdir(parents=True)
     (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(dict(
-        CFBundleIdentifier='org.keylane.tests.runtime-m0.broker-helper', CFBundleExecutable='helper',
+        CFBundleIdentifier=helper_identifier, CFBundleExecutable='helper',
         CFBundleName='Keylane M0 Broker', CFBundlePackageType='APPL', LSUIElement=True)))
-    flags = ['-DM0_BROKER']
+    flags = ['-DM0_BROKER', *helper_flags]
     sources = [str(FIXTURE/'RestrictedJS/Helper.m')]
     if raw:
         flags.append('-DM0_RAW_PEER')

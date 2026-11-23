@@ -160,3 +160,24 @@ Keys and CAS storage remain disposable fixture roots, not product enrollment.
 Revocation confirms helper exit via non-reaping waitid before registry enablement;
 no arbitrary Node process-tree claim. Twenty subchecks pass; overall incomplete.
 Native CI tests separately cover permanent binding retirement and exit/sampling races.
+
+## M0 acceptance: restricted JavaScriptCore only
+
+The user approved the restricted engine and explicit compatibility subset on
+2026-11-22. [Final scope and evidence](../../../docs/M0-ACCEPTANCE.md) distinguish
+M0 first-party feasibility from product enrollment, deployment and public-extension
+verification. Eight signed evidence groups pass the aggregate check; the original
+Node alternatives remain blocked. No production flag or API coverage count changes.
+
+```sh
+python3 scripts/check-macos-runtime-m0.py --report /private/tmp/keylane-m0-acceptance.json
+```
+
+Run compatibility, trust, native-boundary and privacy probes with their respective
+`verify-macos-*-m0.py` commands for fresh observations. All candidate executables
+and compiler tools use Apple Development signatures. The tiny untrusted library
+negative control retains only its linker's page signature so the unrestricted
+control can map it; it is never an executable candidate or install fallback.
+The Keychain/XPC probe uses an explicit synthetic slot, no password enumeration,
+and removes its temporary user service registrations and item. Privacy scanning
+is bounded to this test container and its OS-selected cache; it is not a wipe proof.

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "scope": "first-party-restricted-JSC-feasibility",
+  "gate": "feasibility-passed",
+  "failures": [],
+  "checks": 125,
+  "productionRuntimeReady": false,
+  "publicExtensionsVerified": false,
+  "M1Started": false,
+  "candidate": "restricted-JavaScriptCore",
+  "limitations": [
+    "No Node-equivalence claim",
+    "No native-code or engine-vulnerability containment proof",
+    "Sampling is not a hard memory ceiling",
+    "No whole-container wipe claim",
+    "Product enrollment and deployment remain M1-M5 work"
+  ],
+  "evidenceSHA256": {
+    "restricted-final.json": "77a3fcf499ee70558b8926386b5aacaa55b343acb21237d9091b9c72bcfd44ff",
+    "broker-final.json": "cbf6738de1888daf408f57d17d6eccdf583aaed8ef4cceded40edf82db005015",
+    "receipt-final.json": "43d9097c5ccbbf989597efa4ee64eb81d73c33a5e6b4cd4f222dc3259d83795d",
+    "transport-final.json": "b03b2ca1a3c99367edf36b6baa261b059dbb8c134e11ccae258ec1e1e7e04c53",
+    "trust-final.json": "efa39af8a54f6b6708e65a1f50c5ce9814dd513f0835b444293fab3e44b09346",
+    "boundary-final.json": "64caa379a1965fd7e754ae5024d220fc401b5cbb6f6a460a19ea3b41d9c3c44d",
+    "privacy-final.json": "9d318033509781162f9f52f2ea10ad8f34b5c682acbfd6f0891c48a623f9a61c",
+    "compatibility-final.json": "2a196646dde8226bdc63ca516fe69c491fc5fa1725db4c3ffa93f14d2dd67678"
+  },
+  "rejectedAlternative": "full-Node-App-Sandbox: blocked"
+}

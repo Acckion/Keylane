@@ -14,6 +14,13 @@ trademarks, private source code, or proprietary distribution artifacts.
 - date-fns test fixtures: [MIT notice](Tests/ExtensionPrototype/LinuxGuest/DATE-FNS-LICENSE).
 - UUID suite test fixtures and dependencies: [original notices](Tests/ExtensionPrototype/LinuxGuest/UUID-SUITE-THIRD-PARTY-NOTICES), including MIT and Apache-2.0 terms.
 
+- Restricted-runtime M0 tests download React 19.0.0 and esbuild 0.25.5 from
+  the official npm registry with pinned integrity values. Both use the MIT license;
+  see [React's original license](https://github.com/facebook/react/blob/v19.0.0/LICENSE)
+  and [esbuild's original license](https://github.com/evanw/esbuild/blob/v0.25.5/LICENSE.md).
+  React's packaged LICENSE remains alongside its temporary test copy. These tools,
+  libraries, generated bundles and test helpers are not included in Keylane.app.
+
 These original notices must be retained when redistributing the corresponding
 materials. Test fixtures are not included by the app packaging script.
 

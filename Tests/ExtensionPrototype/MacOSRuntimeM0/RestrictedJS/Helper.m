@@ -5,6 +5,10 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <signal.h>
+#ifdef M0_PRIVACY_AUDIT
+#import "../Privacy/Audit.h"
+#endif
 
 // M0 research only: no JSExport/native objects, Node globals, require, filesystem,
 // network, subprocess, inspector or Objective-C bridge is exposed to the script.
@@ -83,6 +87,13 @@ int main(void) {
             fileControl = @{ @"tested": @YES, @"allowed": @((BOOL)(fd >= 0)), @"errno": @(error) };
         }
         emit(@{ @"ready": @YES, @"pid": @(getpid()), @"fileControl": fileControl });
+#ifdef M0_PRIVACY_AUDIT
+        NSDictionary *audit = M0PrivacyControl(request[@"source"]);
+        if (audit) { emit(audit); return 0; }
+#endif
+#ifdef M0_NATIVE_CRASH
+        raise(SIGSEGV); return 70; // first-party compile-time crash twin only
+#endif
 #ifdef M0_RAW_PEER
         extern NSString *M0RunRawPeer(NSString *mode);
         emit(@{ @"rawPeer": @YES });
