@@ -69,6 +69,7 @@ public final class FileSearchIndex {
                 CREATE TRIGGER IF NOT EXISTS file_ai AFTER INSERT ON files BEGIN INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_ad AFTER DELETE ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
+                CREATE TABLE IF NOT EXISTS file_recovery(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
                 PRAGMA user_version=1;
                 """)
             try prepareStatistics()
@@ -105,6 +106,50 @@ public final class FileSearchIndex {
         try write("DELETE FROM files WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND epoch<>?",
                   [subtree, lower, upper, root, epoch])
     }
+    /// Reconcile completed areas while retaining the last known rows below
+    /// unreadable paths. Fetch bounded metadata batches, never file bodies.
+    public func removeUnseen(root: String, subtree: String? = nil, epoch: String, preserving: Set<String>) throws {
+        if preserving.isEmpty {
+            if let subtree { try removeUnseen(root: root, subtree: subtree, epoch: epoch) }
+            else { try removeUnseen(root: root, epoch: epoch) }
+            return
+        }
+        var cursor: Int64 = 0
+        while true {
+            let candidates: String
+            let values: [String]
+            if let subtree {
+                candidates = "rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND "
+                values = [subtree, subtree + "/", subtree + "0", String(cursor), root, epoch]
+            } else {
+                candidates = ""
+                values = [String(cursor), root, epoch]
+            }
+            let s = try statement("SELECT rowid,path FROM files WHERE " + candidates + "rowid>? AND root=? AND epoch<>? ORDER BY rowid LIMIT 512", values)
+            var rows: [(Int64, String)] = []
+            var status = sqlite3_step(s)
+            while status == SQLITE_ROW {
+                rows.append((sqlite3_column_int64(s, 0), text(s, 1)))
+                status = sqlite3_step(s)
+            }
+            sqlite3_finalize(s)
+            guard status == SQLITE_DONE else { throw FileIndexError.database }
+            guard let last = rows.last else { return }
+            cursor = last.0
+            let ids = rows.compactMap { id, path -> String? in
+                var ancestor = path
+                while true {
+                    if preserving.contains(ancestor) { return nil }
+                    if ancestor == "/" { break }
+                    ancestor = URL(fileURLWithPath: ancestor).deletingLastPathComponent().path
+                }
+                return String(id)
+            }
+            if !ids.isEmpty {
+                try write("DELETE FROM files WHERE rowid IN (" + Array(repeating: "?", count: ids.count).joined(separator: ",") + ")", ids)
+            }
+        }
+    }
     public func removeScope(_ root: String) throws { try write("DELETE FROM files WHERE root=?",[root]) }
     public func removeUnavailableVolumes() throws {
         let s = try statement("SELECT DISTINCT volume FROM files"); var volumes: [String] = []
@@ -115,7 +160,7 @@ public final class FileSearchIndex {
         // Clearing a body invalidates its extraction state even if the file has not changed.
         try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>''")
     }
-    public func clear() throws { try exec("DELETE FROM files; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
+    public func clear() throws { try exec("DELETE FROM files; DELETE FROM file_recovery; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
     private func prepareStatistics() throws {
         // Initialize older indexes once. The immediate transaction serializes
         // concurrent reader/writer opens and keeps the snapshot and triggers atomic.
@@ -149,6 +194,42 @@ public final class FileSearchIndex {
                 END;
                 """)
         }
+    }
+
+    public struct RecoveryPoint: Codable, Equatable, Sendable {
+        public let eventID: UInt64
+        public let configuration: String
+        public let retryPaths: Set<String>
+        public init(eventID: UInt64, configuration: String, retryPaths: Set<String> = []) {
+            self.eventID = eventID
+            self.configuration = configuration
+            self.retryPaths = retryPaths
+        }
+        private enum CodingKeys: String, CodingKey { case eventID, configuration, retryPaths }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            eventID = try c.decode(UInt64.self, forKey: .eventID)
+            configuration = try c.decode(String.self, forKey: .configuration)
+            retryPaths = try c.decodeIfPresent(Set<String>.self, forKey: .retryPaths) ?? []
+        }
+    }
+
+    public func recoveryPoint() throws -> RecoveryPoint? {
+        let s = try statement("SELECT state FROM file_recovery WHERE id=1")
+        defer { sqlite3_finalize(s) }
+        let status = sqlite3_step(s)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw FileIndexError.database }
+        return try? JSONDecoder().decode(RecoveryPoint.self, from: Data(text(s, 0).utf8))
+    }
+
+    public func saveRecoveryPoint(_ point: RecoveryPoint) throws {
+        let state = String(decoding: try JSONEncoder().encode(point), as: UTF8.self)
+        try write("INSERT INTO file_recovery(id,state) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state", [state])
+    }
+
+    public func invalidateRecoveryPoint() throws {
+        try exec("DELETE FROM file_recovery")
     }
 
     public func stats() throws -> FileIndexStats {
