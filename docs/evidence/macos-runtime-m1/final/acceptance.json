@@ -2,7 +2,7 @@
   "schema": 1,
   "gate": "M1-passed",
   "failures": [],
-  "checks": 43,
+  "checks": 48,
   "M1Complete": true,
   "M2Started": false,
   "productionRuntimeReady": false,
@@ -18,6 +18,6 @@
   ],
   "evidenceSHA256": {
     "build-final.json": "b1f957f648f77799cd762b5f27eb1265c63efbe9efc4b5facafc977f217ef57b",
-    "product-final.json": "d3f6427da12b1fca6aa330bd459963716135a6e0c6eaec2c5c4ff2ed42284e25"
+    "product-final.json": "20335bd86b30386845c007db6caf9ba83890418f7ddd4827566dba2bb694ce7f"
   }
 }

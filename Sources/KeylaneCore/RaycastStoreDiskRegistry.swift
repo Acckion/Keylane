@@ -501,6 +501,9 @@ public actor RaycastStoreDiskRegistry {
         record.generation += 1; record.enabled = false; record.phase = .pending
         try trust.quarantine(installationID: record.id, before: record.generation)
         state.records[index] = record
+        // Lifecycle changes invalidate the user's earlier update confirmation.
+        // Persist candidate removal with quarantine, including failed stop paths.
+        state.candidates?.removeAll { $0.id == record.id }
         do { try write(state) }
         catch {
             // The independent anchor may have advanced even if local replacement
@@ -514,7 +517,7 @@ public actor RaycastStoreDiskRegistry {
         // pending disabled state visible on restart; explicit retry requires new gen.
         try await trust.revoke(installationID: record.id, before: record.generation)
         if remove {
-            state.records.remove(at: index); state.candidates?.removeAll { $0.id == record.id }
+            state.records.remove(at: index)
             try write(state); return nil
         }
         record.phase = .active; record.enabled = enabled; state.records[index] = record

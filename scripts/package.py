@@ -8,7 +8,7 @@ import tempfile
 from signing import signing_identity
 from app_intents import extract_metadata
 from versioning import load_version
-from extension_builder import package_builder
+from extension_builder import package_builder, builder_enabled
 root = pathlib.Path(__file__).resolve().parent.parent
 version = load_version()
 distribution = os.environ.get('KEYLANE_DISTRIBUTION') == '1'
@@ -52,8 +52,8 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
     with (app/'Contents/Info.plist').open('wb') as file:
         plistlib.dump(metadata, file)
     architectures = subprocess.check_output(['lipo','-archs',str(binary)],text=True).strip()
-    if architectures == 'arm64':
-        package_builder(app,binary.parent/'keylane-extension-build',identity,archive=os.environ.get('KEYLANE_EXTENSION_COMPILER_ARCHIVE'))
+    if builder_enabled(architectures,identity,distribution):
+        package_builder(app,binary.parent/'keylane-extension-build',identity,archive=os.environ.get('KEYLANE_EXTENSION_COMPILER_ARCHIVE'),distribution=distribution)
     signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--options','runtime','--timestamp=none']
     entitlements = root / 'Resources/Keylane.entitlements'
     subprocess.run(['codesign', '--force', '--sign', identity, *signing_options,

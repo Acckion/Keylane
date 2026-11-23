@@ -10,7 +10,7 @@ from pathlib import Path
 
 from versioning import ROOT, load_version
 from app_intents import METADATA_FILES, validate_metadata
-from extension_builder import verify_builder
+from extension_builder import verify_build_composition
 
 APPLE_EVENTS_ENTITLEMENT = "com.apple.security.automation.apple-events"
 DEVELOPER_ID_REQUIREMENT = '-R=anchor apple generic and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
@@ -41,7 +41,7 @@ def verify_app(app, image, version, distribution):
         if (app / relative).read_bytes() != source.read_bytes():
             raise SystemExit(f'Incorrect resource: {relative}')
     binary_arch = subprocess.check_output(['lipo','-archs',str(app/'Contents/MacOS/Keylane')],text=True).strip()
-    if binary_arch == 'arm64': expected.update(verify_builder(app))
+    expected.update(verify_build_composition(app,binary_arch,distribution=distribution))
     contents = {str(path.relative_to(app)) for path in app.rglob('*') if path.is_file() or path.is_symlink()}
     if contents != expected:
         raise SystemExit(f'Unexpected or missing app contents: {contents ^ expected}')

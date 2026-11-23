@@ -41,7 +41,12 @@ def hardened(binary):
     if not flags or int(flags.group(1),16)&0x10000==0:raise ValueError('Build composition requires Hardened Runtime')
 
 
-def package_builder(app, helper_binary, identity, host_identifier='org.keylane.launcher', archive=None, team=None):
+def builder_enabled(architecture, identity, distribution):
+    if distribution and identity == '-':raise ValueError('Distribution requires a real signing identity')
+    return architecture == 'arm64' and identity != '-'
+
+
+def package_builder(app, helper_binary, identity, host_identifier='org.keylane.launcher', archive=None, team=None, distribution=False):
     if identity == '-':raise ValueError('Extension builder requires a real signing identity')
     if not helper_binary.is_file():raise ValueError('Missing fixed native build helper product')
     target = app/HELPER
@@ -62,25 +67,42 @@ def package_builder(app, helper_binary, identity, host_identifier='org.keylane.l
         scratch = Path(temporary)
         inherit = scratch/'inherit.plist';inherit.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox':True,'com.apple.security.inherit':True}))
         sandbox = scratch/'sandbox.plist';sandbox.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox':True}))
-        subprocess.run(['codesign','--force','--sign',identity,'--options','runtime','--timestamp=none',
+        timestamp = '--timestamp' if distribution else '--timestamp=none'
+        subprocess.run(['codesign','--force','--sign',identity,'--options','runtime',timestamp,
                         '--identifier','org.keylane.extension-compiler','--entitlements',str(inherit),str(tool)],check=True,capture_output=True)
         if team is None:team = team_for(tool)
         parent = scratch/'parent.plist';parent.write_bytes(plistlib.dumps({'signing-identifier':host_identifier,'team-identifier':team}))
         subprocess.run(['codesign','--validate-constraint',str(parent)],check=True,capture_output=True)
-        subprocess.run(['codesign','--force','--sign',identity,'--options','runtime','--timestamp=none',
+        subprocess.run(['codesign','--force','--sign',identity,'--options','runtime',timestamp,
                         '--entitlements',str(sandbox),'--launch-constraint-parent',str(parent),str(target)],check=True,capture_output=True)
     recipe = dict(schema=1,policy='restricted-jsc-build-v1',target='darwin-arm64',compilerVersion='0.25.5',
                   compilerSHA256=hashlib.sha256(tool.read_bytes()).hexdigest(),helperSHA256=hashlib.sha256(helper.read_bytes()).hexdigest())
     config = app/'Contents/Resources/ExtensionBuild.json';config.parent.mkdir(exist_ok=True)
-    config.write_text(json.dumps(dict(schema=1,mode='build-only',recipe=recipe),sort_keys=True)+'\n')
+    config.write_text(json.dumps(dict(schema=2,mode='build-only',storage='data-protection-keychain-v2',recipe=recipe),sort_keys=True)+'\n')
 
 
-def verify_builder(app):
+def verify_build_composition(app, architecture, distribution=False):
+    if architecture != 'arm64':return set()
+    detail = subprocess.check_output(['codesign','-dv','--verbose=4',str(app)],stderr=subprocess.STDOUT,text=True)
+    if 'Signature=adhoc' in detail.splitlines():
+        if distribution:raise ValueError('Ad-hoc signature is not a distribution composition')
+        if (app/HELPER).exists() or (app/'Contents/Resources/ExtensionBuild.json').exists():
+            raise ValueError('Certificate-free isolated package must omit the entire build composition')
+        return set()
+    return verify_builder(app, distribution=distribution)
+
+
+def require_timestamp(binary):
+    detail = subprocess.check_output(['codesign','-dv','--verbose=4',str(binary)],stderr=subprocess.STDOUT,text=True)
+    if not re.search(r'^Timestamp=.+$',detail,re.M):raise ValueError('Distribution build tool lacks secure timestamp')
+
+
+def verify_builder(app, distribution=False):
     config = app/'Contents/Resources/ExtensionBuild.json'
     if not config.exists():raise ValueError('Missing fixed build profile')
     profile = json.loads(config.read_text())
     recipe = profile['recipe']
-    if profile['schema'] != 1 or profile['mode'] != 'build-only' or recipe['schema'] != 1 or recipe['policy'] != 'restricted-jsc-build-v1' or recipe['target'] != 'darwin-arm64' or recipe['compilerVersion'] != '0.25.5':
+    if profile['schema'] != 2 or profile['mode'] != 'build-only' or profile.get('storage') != 'data-protection-keychain-v2' or recipe['schema'] != 1 or recipe['policy'] != 'restricted-jsc-build-v1' or recipe['target'] != 'darwin-arm64' or recipe['compilerVersion'] != '0.25.5':
         raise ValueError('Unexpected build-only profile')
     team = team_for(app)
     hardened(app)
@@ -89,6 +111,7 @@ def verify_builder(app):
         (HELPER+'/Contents/MacOS/esbuild','org.keylane.extension-compiler',{'com.apple.security.app-sandbox':True,'com.apple.security.inherit':True},'compilerSHA256')]:
         path = app/relative
         hardened(path)
+        if distribution:require_timestamp(path)
         requirement = 'anchor apple generic and identifier "'+identifier+'" and certificate leaf[subject.OU] = "'+team+'"'
         subprocess.run(['codesign','--verify','--strict','-R='+requirement,str(path)],check=True,capture_output=True)
         raw = subprocess.check_output(['codesign','-d','--entitlements','-','--xml',str(path)],stderr=subprocess.DEVNULL)

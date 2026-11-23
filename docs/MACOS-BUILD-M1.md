@@ -60,13 +60,13 @@ archive只允许M0固定官方包，不能指向任意编译器或忽略摘要�
 
 前序 `00a23eba`。本批复用#222 `c7b4197` 的来源、依赖、受保护收据、注册表、安装器及对应回归，加入macOS实现；没有修改#222分支或导入其VM驱动。保留当前dev所有变更、旧设置键及数据库。`StoreRuntimeBridge`/ticket历史名称只作为共享数据与协议；新的构建服务不调用旧engine、VM或Node。
 
-[统一验收报告](evidence/macos-runtime-m1/final/acceptance.json)输出 `M1-passed`，检查两组43个有交叉的首方断言，固定 `productionRuntimeReady=false`、`publicExtensionsVerified=false`、`M2Started=false`。它不被产品启动器读取，也不授权执行。
+[统一验收报告](evidence/macos-runtime-m1/final/acceptance.json)输出 `M1-passed`，检查两组48个有交叉的首方断言（含本页末尾的来源修复复验），固定 `productionRuntimeReady=false`、`publicExtensionsVerified=false`、`M2Started=false`。它不被产品启动器读取，也不授权执行。
 
 | M1交付条件 | 最终实现和实际证据 |
 |---|---|
 | 固定工具链和离线构建 | ARM64包包含原生build helper与固定官方esbuild 0.25.5；archive先验SHA-512，签名后字节再进入外层签名profile。只接固定配方、快照、入口；不使用PATH编译器或npm脚本。运行构建阶段不下载。 |
 | 真实签名与进程准入 | helper/编译器/宿主Hardened Runtime，准确entitlements、同证书角色、内核父签名约束与每次摘要校验；直接错误父进程、复制宿主和篡改材料拒绝。使用与主应用相同权限的签名首方宿主实际完成流程。 |
-| 受保护配置与重启 | 显式新profile、先保护pending保留，再独占创建目录/锁，通过原收据enrollment seam提交；Keychain默认owner ACL，固定服务和UUID账户，不同步、不枚举、不向子进程传私钥。foreign角色读取拒绝；丢失不重置，缓存signer也失效。 |
+| 受保护配置与重启 | 显式新profile、先保护pending保留，再独占创建目录/锁，通过原收据enrollment seam提交；Data Protection Keychain v2与签名应用专属访问组，固定服务和UUID账户，不同步、不枚举、不向子进程传私钥。外来读取／创建／修改拒绝；旧ACL记录即使可读也不采用；丢失不重置，缓存signer也失效。 |
 | 准确Darwin依赖 | 由同一个锁图选择Darwin/arm64。只有匹配的平台元数据可被显式Darwin投影接受，gyp、安装钩子、不明来源和原生文件继续拒绝。archive仍检查SRI、格式、路径、入口与限制；有实际gzip/SRI正负回归。 |
 | schema2完整收据 | 沿用原P256 seal，签名覆盖来源/安装ID、完整命令、资源/许可证、清单、配方与策略。新profile不接受旧schema1/VM收据降级。带有效测试签名的资源篡改/路径逃逸/错误配方仍被结构校验拒绝。 |
 | 原子安装和明确更新 | 一个注册表、一个安装器；更新必须传入用户确认时的安装快照。独立候选保留旧有效版本，复核中途代次变化，更新保留安装ID、普通偏好与启用选择。卸载同时移除候选。 |
@@ -77,7 +77,7 @@ archive只允许M0固定官方包，不能指向任意编译器或忽略摘要�
 
 `MacOSBuildProfile`、`MacOSSignedBuildService` 与 `MacOSStoreBuildInstallationService` 都是实际Core实现；生产helper位于 `Sources/KeylaneExtensionBuildHelper`，不是测试fallback。`ProductHost.swift`只把这些真实组件接到固定首方数据，未打包进入应用。普通应用尚未提供新profile设置/安装按钮或运行入口；这是原计划M5的产品切换，不能凭bundle中出现helper就启用安装或执行。
 
-profile来自外层应用签名资源，私有配置/签名key/head位于macOS本机默认owner ACL Keychain槽位，目录与锁inode绑定在独立保护记录中。此次**没有配置Data Protection Keychain access group**；保留#222原有对应存储适配器，但不是本次产品路径的隐式fallback。签名/对端/路径校验与owner ACL组合已在本机真实验证；仍沿用M0信任模型，不承诺任意native RCE、引擎漏洞或VM等强隔离。
+profile来自外层应用签名资源。私有配置／签名key／head仅使用Data Protection Keychain v2，访问组由实际签名中的Team与准确应用ID推导，不接受配置文件自选组；目录与锁inode绑定在独立保护记录中。签名权利必须由有效描述文件授权，不能读取旧ACL记录作fallback。首方测试宿主使用现有、准确匹配的本机描述文件，已真实验证；**没有为普通Keylane配置或注册开发者账户材料**，普通包缺少该配置时拒绝打开／创建profile。M5发布组合仍需为准确产品ID准备授权配置。仍沿用M0信任模型，不承诺任意native RCE、引擎漏洞或VM等强隔离。
 
 macOS构建入口每次验证准确的应用/辅助程序身份；来源/锁/tarball不被当作签名key或授权配置。新的 `prepareAndUpdate(...replacing:)` 与普通安装共用安装器状态机，更新快照失效就停止。`pendingOperation`区分隔离中的事务和普通禁用；显式reconcile可完成已受保护提交，其他不确定状态拒绝。
 
@@ -109,3 +109,19 @@ python3 scripts/verify-macos-product-m1.py \
 完整M1提交 `71e4e3e8` 后整合dev `5b4378ce`（#238/#237/#240），保留增量索引范围／事务计数能耗修复及Swift Build真实产物路径。唯一冲突为功能总表追加记录，双方均保留；整合提交 `f79d081d`。该基线556项Swift、72项Python及43项真实签名首方观察再次通过；签名包使用Swift Build报告的准确产物目录，构建辅助程序按同目录取得。
 
 整合版Apple Development签名ARM64 DMG复验通过，未安装。M1以功能PR进入dev审查，不自动合并；前序架构#218/#221/#223已合入，#222仍为并行草稿，本PR没有改变其分支或启用VM。远端Checks由PR触发并单独核对，后续M2–M5不计作本阶段已交付能力。
+
+### 配置来源补测与PR #241修复
+
+前序 `732c64f4` 的默认owner ACL方案在新增来源补测中失败：[修复前报告](evidence/macos-runtime-m1/origin/legacy-before.json)显示外来进程能够构造记录并允许真实宿主读取，宿主随后采用了它。因此原43项验收不足，旧结论已由本次验收取代，不能继续用作当前通过证据。
+
+现实现固定使用schema2／`data-protection-keychain-v2`与专属访问组；所有profile及head操作显式指定新后端与组，验证实际签名应用ID／Team，拒绝额外共享组。缺少签名权限、旧记录或信任材料丢失均拒绝，没有自动迁移旧ACL信任材料、自动重建或权限降级。旧命令别名、偏好及数据库格式没有改变。Apple对两种Mac钥匙串实现及描述文件授权的区别见 [TN3137](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains) 与 [TN3125](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)。
+
+[来源修复后对照](evidence/macos-runtime-m1/origin/protected-after.json)确认旧ACL正对照可读，真实新实现仍拒绝采用；外来创建与修改返回`errSecMissingEntitlement`。完整组合还验证了有正确授权的宿主真实enroll／重启／构建／安装事务成功，以及没有专属签名权限的宿主明确拒绝，避免将进程启动失败或无权限读取误当来源隔离证明。所有合成项精确清理；未查询其他钥匙串项目。描述文件、证书、Team标识和设备清单均未提交。
+
+同批处理三条PR审查意见：
+
+- 发行打包将安全时间戳策略传入两层嵌套工具，完成签名后才固定配方摘要；发行校验也要求实际Timestamp。命令级测试覆盖这条分支，未运行Developer ID发行、公证或发布。
+- 保留仓库明确允许的无证书隔离打包：只省略整套扩展构建组合，校验器拒绝半套或带可用profile的临时签名包。真实签名ARM64包仍要求完整组合，发行不接受临时签名。此路径只作数据／命令级测试，本轮实际包均为Apple Development签名，未临时签名安装。
+- 停用／重启用／卸载在同一次持久隔离事务中撤销旧更新候选，重启后可以重新确认同一版本或另一版本；旧候选仍不能覆盖新的启用状态。回归覆盖无需手动discard或卸载即可重试。
+
+最终558项Swift、78项Python检查及48项真实签名组合观察通过，统一报告重新计算为`M1-passed`；准确产物构建的Apple Development ARM64 1.0.2/build27 DMG再次验证通过。产品运行、公开扩展验收与M2–M5保持未开始；未安装、合并或发布。远端PR头与Checks在交付时单独核对。

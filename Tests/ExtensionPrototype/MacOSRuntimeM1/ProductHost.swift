@@ -24,6 +24,54 @@ import KeylaneCore
         let mode = CommandLine.arguments[1], task = URL(fileURLWithPath: CommandLine.arguments[2]).resolvingSymlinksInPath()
         guard task.path.hasPrefix("/private/tmp/keylane-m1-product-") || task.path.hasPrefix("/tmp/keylane-m1-product-") else { exit(71) }
         let intent = task.appendingPathComponent("cleanup.json")
+        if mode == "forge-legacy-profile" {
+            // A foreign native process chooses every trust field and explicitly
+            // grants the real host access. An ACL read proves access, not origin.
+            let id = UUID(), root = task.appendingPathComponent(id.uuidString)
+            var ids = (try? JSONDecoder().decode([UUID].self,from:Data(contentsOf:intent))) ?? []
+            ids.append(id); try JSONEncoder().encode(ids).write(to:intent,options:.atomic)
+            guard mkdir(root.path,0o700) == 0 else { exit(70) }
+            func identity(_ url: URL) throws -> [String:Any] {
+                var info = stat(); guard lstat(url.path,&info) == 0 else { throw CocoaError(.fileReadUnknown) }
+                return ["device":Int64(info.st_dev),"inode":info.st_ino]
+            }
+            for name in ["store-authority.lock","receipt-authority.lock","build.lock"] {
+                let fd = open(root.appendingPathComponent(name).path,O_CREAT|O_EXCL|O_WRONLY,0o600)
+                guard fd >= 0 else { exit(70) }; close(fd)
+            }
+            let host = task.appendingPathComponent("Host.app/Contents/MacOS/host")
+            let config = try JSONSerialization.jsonObject(with:Data(contentsOf:task.appendingPathComponent("Host.app/Contents/Resources/ExtensionBuild.json"))) as! [String:Any]
+            let record: [String:Any] = ["phase":"enrolled","id":id.uuidString,"host":host.path,"recipe":config["recipe"]!,
+                "root":root.path,"directory":try identity(root),"owner":try identity(root.appendingPathComponent("store-authority.lock")),
+                "receiptLock":try identity(root.appendingPathComponent("receipt-authority.lock")),
+                "buildLock":try identity(root.appendingPathComponent("build.lock")),"key":P256.Signing.PrivateKey().rawRepresentation.base64EncodedString()]
+            var trusted: SecTrustedApplication?, access: SecAccess?
+            guard SecTrustedApplicationCreateFromPath(host.path,&trusted) == errSecSuccess, let trusted,
+                  SecAccessCreate("Keylane synthetic foreign-origin control" as CFString,[trusted] as CFArray,&access) == errSecSuccess, let access else { exit(70) }
+            var q = legacyQuery(id,suffix:"profile"); q[kSecAttrAccess as String] = access
+            q[kSecValueData as String] = try JSONSerialization.data(withJSONObject:record)
+            guard SecItemAdd(q as CFDictionary,nil) == errSecSuccess else { exit(70) }
+            var protected = query(id,suffix:"profile"); protected[kSecValueData as String] = Data("foreign-origin control".utf8)
+            let createStatus = SecItemAdd(protected as CFDictionary,nil)
+            let updateStatus = SecItemUpdate(query(ids[0],suffix:"profile") as CFDictionary,
+                                            [kSecValueData as String:Data("foreign replacement control".utf8)] as CFDictionary)
+            emit(["foreignProfileCreated":true,
+                  "foreignProtectedCreateDenied":createStatus == errSecMissingEntitlement,
+                  "foreignProtectedUpdateDenied":updateStatus == errSecMissingEntitlement]); return
+        }
+        if mode == "adopt-forged-profile" {
+            let ids = try JSONDecoder().decode([UUID].self,from:Data(contentsOf:intent))
+            guard let id = ids.last else { exit(70) }
+            var legacy = legacyQuery(id,suffix:"profile"); legacy[kSecReturnData as String] = true
+            var legacyData: CFTypeRef?
+            let legacyReadable = SecItemCopyMatching(legacy as CFDictionary,&legacyData) == errSecSuccess
+            var denied = false
+            do {
+                let forged = try MacOSBuildProfile.open(id:id,application:.main,hostIdentifier:hostID)
+                _ = try forged.sign(Data("synthetic foreign origin".utf8))
+            } catch { denied = true }
+            emit(["foreignLegacyReadableByHost":legacyReadable,"foreignProfileRejected":denied]); return
+        }
         if mode == "setup" {
             let approval = try MacOSBuildProfile.Approval(userConfirmed:true)
             // Intent precedes ANY native Keychain write. Keep this signed app if
@@ -36,20 +84,26 @@ import KeylaneCore
             emit(["enrolled": profile.id == approval.profileID, "approvalReplayRejected": replay]); return
         }
         let ids = try JSONDecoder().decode([UUID].self,from:Data(contentsOf:intent))
-        guard ids.count == 1 else { exit(71) }; let id = ids[0]
         if mode == "cleanup" {
-            for suffix in ["head","profile"] {
-                let result = SecItemDelete(query(id,suffix:suffix) as CFDictionary)
+            for id in ids { for suffix in ["head","profile"] { for q in [query(id,suffix:suffix),legacyQuery(id,suffix:suffix)] {
+                let result = SecItemDelete(q as CFDictionary)
                 guard result == errSecSuccess || result == errSecItemNotFound else { emit(["cleanupFailed":true]); exit(74) }
-            }
+            } } }
             try FileManager.default.removeItem(at:intent); emit(["cleaned":true]); return
+        }
+        guard !ids.isEmpty else { exit(71) }; let id = ids[0]
+        if mode == "no-provision" {
+            var denied = false
+            do { _ = try MacOSBuildProfile.open(id:id,application:.main,hostIdentifier:hostID) }
+            catch MacOSBuildProfile.Failure.identity { denied = true }
+            emit(["unprovisionedHostRejected":denied]); return
         }
         if mode == "foreign" {
             SecKeychainSetUserInteractionAllowed(false) // this test process only
             var q = query(id,suffix:"profile"); q[kSecReturnData as String] = true
             var result: CFTypeRef?
             let status = SecItemCopyMatching(q as CFDictionary,&result)
-            emit(["foreignReadDenied": status != errSecSuccess && status != errSecItemNotFound]); return
+            emit(["foreignReadDenied": status == errSecMissingEntitlement]); return
         }
         if mode == "copy" {
             var denied = false
@@ -182,6 +236,16 @@ import KeylaneCore
         exit(71)
     }
     static func query(_ id: UUID, suffix: String) -> [String:Any] {
+        var code: SecCode?, staticCode: SecStaticCode?, information: CFDictionary?
+        guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
+              SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
+              SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue:kSecCSSigningInformation), &information) == errSecSuccess,
+              let info = information as? [String:Any], let team = info[kSecCodeInfoTeamIdentifier as String] as? String else { exit(71) }
+        return [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"org.keylane.extension-build.protected.v2",
+                kSecAttrAccount as String:id.uuidString+":"+suffix,kSecUseAuthenticationUI as String:kSecUseAuthenticationUIFail,
+                kSecAttrSynchronizable as String:false,kSecUseDataProtectionKeychain as String:true,kSecAttrAccessGroup as String:team+"."+hostID]
+    }
+    static func legacyQuery(_ id: UUID, suffix: String) -> [String:Any] {
         [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"org.keylane.extension-build.protected.v1",
          kSecAttrAccount as String:id.uuidString+":"+suffix,kSecUseAuthenticationUI as String:kSecUseAuthenticationUIFail]
     }

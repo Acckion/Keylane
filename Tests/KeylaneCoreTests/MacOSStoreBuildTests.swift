@@ -99,10 +99,31 @@ private final class M1Trust: RaycastStoreArtifactTrust, @unchecked Sendable {
         let during = try await reopened.installations(); XCTAssertEqual(during[0].source,a)
         _ = try await registry.setEnabled(installationID:id,expectedGeneration:1,enabled:false)
         do { _ = try await reopened.activate(candidate); XCTFail("stale update undid disable") } catch { XCTAssertEqual(error as? RaycastStoreDiskRegistry.Failure,.stale) }
-        try await registry.discard(candidate)
+        let invalidated = try await reopened.stagedArtifact(for:b)
+        XCTAssertNil(invalidated)
         let fresh = try await registry.prepare(bytes:two.bytes,expectedDigest:two.digest,source:b,grantedCapabilities:[],installationID:id)
         let result = try await registry.activate(fresh)
         XCTAssertEqual(result.generation,3); XCTAssertFalse(result.enabled); XCTAssertEqual(result.id,id)
+    }
+    func testLifecycleChangeAllowsAnotherRevisionWithoutUninstallOrDiscard() async throws {
+        let id = UUID(), (a,seal,one) = try await fixture("a",id:id), (b,_,two) = try await fixture("b",id:id), (c,_,three) = try await fixture("c",id:id)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let anchor = M1Anchor(), trust = M1Trust(seal)
+        let registry = try RaycastStoreDiskRegistry(root:root,trust:trust,anchor:anchor)
+        let initial = try await registry.prepare(bytes:one.bytes,expectedDigest:one.digest,source:a,grantedCapabilities:[],installationID:id)
+        _ = try await registry.activate(initial)
+        _ = try await registry.prepare(bytes:two.bytes,expectedDigest:two.digest,source:b,grantedCapabilities:[],installationID:id)
+        _ = try await registry.setEnabled(installationID:id,expectedGeneration:1,enabled:false)
+        let reopened = try RaycastStoreDiskRegistry(root:root,trust:trust,anchor:anchor)
+        let stale = try await reopened.stagedArtifact(for:b); XCTAssertNil(stale)
+        let replacement = try await reopened.prepare(bytes:three.bytes,expectedDigest:three.digest,source:c,grantedCapabilities:[],installationID:id)
+        _ = try await reopened.setEnabled(installationID:id,expectedGeneration:2,enabled:true)
+        let invalidated = try await reopened.stagedArtifact(for:c); XCTAssertNil(invalidated)
+        let fresh = try await reopened.prepare(bytes:two.bytes,expectedDigest:two.digest,source:b,grantedCapabilities:[],installationID:id)
+        do { _ = try await reopened.activate(replacement); XCTFail("outdated confirmation applied") } catch {}
+        let result = try await reopened.activate(fresh)
+        XCTAssertEqual(result.generation,4); XCTAssertTrue(result.enabled); XCTAssertEqual(result.source,b)
     }
     func testFailedRevocationLeavesDurableQuarantineAndExactRetryFinishes() async throws {
         let id = UUID(), (a,seal,one) = try await fixture("a",id:id), (b,_,two) = try await fixture("b",id:id)
@@ -136,6 +157,25 @@ private final class M1Trust: RaycastStoreArtifactTrust, @unchecked Sendable {
         XCTAssertFalse(FileManager.default.fileExists(atPath:root.appendingPathComponent("registry.pending").path))
     }
     func testNoImplicitSetupApproval() { XCTAssertThrowsError(try MacOSBuildProfile.Approval(userConfirmed:false)) }
+    func testProtectedStorageRequiresExactSignedApplicationIdentity() throws {
+        let team = "TESTTEAM01", identifier = "org.keylane.synthetic"
+        let group = team + "." + identifier
+        let rights: [String:Any] = ["com.apple.application-identifier":group,
+                                   "com.apple.developer.team-identifier":team,"keychain-access-groups":[group]]
+        XCTAssertEqual(try MacOSBuildProfile.protectedAccessGroup(entitlements:rights,identifier:identifier,team:team),group)
+        var implicit = rights; implicit.removeValue(forKey:"keychain-access-groups")
+        XCTAssertEqual(try MacOSBuildProfile.protectedAccessGroup(entitlements:implicit,identifier:identifier,team:team),group)
+        XCTAssertThrowsError(try MacOSBuildProfile.protectedAccessGroup(entitlements:[:],identifier:identifier,team:team))
+        for (key,value) in [("com.apple.application-identifier","TESTTEAM01.org.keylane.foreign" as Any),
+                            ("com.apple.developer.team-identifier","OTHERTEAM1" as Any),
+                            ("keychain-access-groups",[group,"TESTTEAM01.shared"] as Any),
+                            ("keychain-access-groups",["TESTTEAM01.foreign"] as Any),
+                            ("keychain-access-groups",group as Any)] {
+            var changed = rights; changed[key] = value
+            XCTAssertThrowsError(try MacOSBuildProfile.protectedAccessGroup(entitlements:changed,identifier:identifier,team:team))
+        }
+        XCTAssertThrowsError(try MacOSBuildProfile.protectedAccessGroup(entitlements:rights,identifier:identifier,team:"*"))
+    }
     func testUninstallRemovesStagedReplacementWithoutCorruptingRegistry() async throws {
         let id = UUID(), (a,seal,one) = try await fixture("a",id:id), (b,_,two) = try await fixture("b",id:id)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

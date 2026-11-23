@@ -30,6 +30,8 @@ def assess(reports):
             checks+=1
             if not actual:failures.append(group+'.'+key)
     if reports['product'].get('cases',{}).get('cleaned')is not True:raise ValueError('Native protected slots not cleaned')
+    if reports['product'].get('protectedStorage')!='data-protection-keychain-v2' or reports['product'].get('provisionedFixtureOnly')is not True:
+        raise ValueError('Missing OS-enforced application storage evidence')
     for field in ['productionRuntimeReady','publicExtensionsVerified']:
         if reports['product'].get(field)is not False:raise ValueError('M1 cannot approve extension execution')
     return dict(schema=1,gate='blocked'if failures else'M1-passed',failures=sorted(failures),checks=checks,
