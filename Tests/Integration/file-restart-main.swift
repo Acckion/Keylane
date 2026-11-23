@@ -111,6 +111,29 @@ prefs.set(options.roots, forKey: "fileSearchSelectedScopes")
 controller = FileSearchController(directory: store, preferences: prefs)
 try wait("Authorization reenable baseline") { try !controller.indexing && db.recoveryPoint() != nil && !contains(sentinel.lastPathComponent) }
 print("PASS authorization changes cannot reuse a stale baseline")
+// A temporarily unreadable subtree must not force every other root to crawl.
+let locked = scope.appendingPathComponent("locked")
+try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: false)
+let lockedFile = locked.appendingPathComponent("locked-fixture.txt")
+try Data().write(to: lockedFile)
+try wait("Initial readable subtree") { try contains(lockedFile.lastPathComponent) && !controller.indexing }
+controller.stopRuntime(); pump(0.3)
+try insertSentinel()
+try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
+controller = FileSearchController(directory: store, preferences: prefs)
+try wait("Unreadable subtree queued for repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.contains(locked.path) == true }
+require(try contains(lockedFile.lastPathComponent), "Unreadable subtree lost its saved rows")
+require(try contains(sentinel.lastPathComponent), "Unreadable subtree caused an unrelated root scan")
+controller.stopRuntime(); pump(0.3)
+controller = FileSearchController(directory: store, preferences: prefs)
+pump(6)
+require(try contains(sentinel.lastPathComponent), "Pending repair forced a global startup crawl")
+try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+try FileManager.default.removeItem(at: lockedFile)
+try Data().write(to: locked.appendingPathComponent("unlocked-fixture.txt"))
+try wait("Permission restored subtree repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.isEmpty == true && !contains(lockedFile.lastPathComponent) && contains("unlocked-fixture.txt") }
+print("PASS unreadable subtree retains rows, retries locally, and recovers after permissions return")
 // Inject native recovery flags without fabricating a successful native event replay.
 for flag in [kFSEventStreamEventFlagUserDropped, kFSEventStreamEventFlagKernelDropped,
              kFSEventStreamEventFlagEventIdsWrapped, kFSEventStreamEventFlagRootChanged] {

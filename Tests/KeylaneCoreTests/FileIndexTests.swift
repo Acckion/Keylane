@@ -25,6 +25,26 @@ final class FileIndexTests: XCTestCase {
         XCTAssertNil(try FileSearchIndex(url: url).recoveryPoint())
     }
 
+    func testPartialRecoveryKeepsUnreadableSubtreesAndPrunesOtherStaleRows() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let db = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        for i in 0..<1100 {
+            let path = i % 2 == 0 ? "/fixture/locked/item-\(i)" : "/fixture/removed-\(i)"
+            try db.put(.init(path: path, name: "item", volume: "/", modified: 1, directory: false, symlink: false), root: "/fixture", epoch: "old")
+        }
+        try db.put(.init(path: "/fixture/locked-sibling", name: "sibling", volume: "/", modified: 1, directory: false, symlink: false), root: "/fixture", epoch: "old")
+        try db.removeUnseen(root: "/fixture", epoch: "new", preserving: ["/fixture/locked"])
+        XCTAssertEqual(try db.stats().entries, 550)
+        let point = FileSearchIndex.RecoveryPoint(eventID: 42, configuration: "fixture", retryPaths: ["/fixture/locked"])
+        try db.saveRecoveryPoint(point)
+        XCTAssertEqual(try db.recoveryPoint(), point)
+        try db.removeUnseen(root: "/fixture", subtree: "/fixture/locked", epoch: "new", preserving: [])
+        XCTAssertEqual(try db.stats().entries, 0)
+        let legacy = Data(#"{"eventID":42,"configuration":"fixture"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(FileSearchIndex.RecoveryPoint.self, from: legacy).retryPaths, [])
+    }
+
     func testStatisticsStayConsistentAcrossConnectionsAndRollback() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

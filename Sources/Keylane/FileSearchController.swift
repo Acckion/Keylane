@@ -73,6 +73,7 @@ final class FileSearchController: ObservableObject {
     private var watchLifetime: FileScanCancellation?
     private var acceptedEventID: FSEventStreamEventId = 0
     private var checkpointReady = false
+    private var pendingRepairPaths = Set<String>()
     private var replayingEvents = false
     private var pendingEvents: [IndexEventBatch] = []
     private var pendingEventCount = 0
@@ -177,8 +178,8 @@ final class FileSearchController: ObservableObject {
     }
 
     private static func recoveryConfiguration(options: FileSearchOptions, restored: Set<String>, exclusions: [String]) throws -> String {
-        let identities = try options.roots.map { path -> String in
-            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+        let identities = options.roots.map { path -> String in
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return path + "\0unavailable" }
             return "\(path)\0\(attributes[.systemNumber] ?? "")\0\(attributes[.systemFileNumber] ?? "")"
         }
         let value = RecoveryConfiguration(version: 1, options: options, restored: restored.sorted(),
@@ -208,6 +209,9 @@ final class FileSearchController: ObservableObject {
                         self.checkpointReady = true
                         self.checkpointConfiguration = fingerprint
                         self.didStart = true
+                        self.pendingRepairPaths = recovery.retryPaths
+                        self.dirtyPaths.formUnion(recovery.retryPaths)
+                        self.scheduleRefresh()
                         self.indexStatus = "正在恢复文件变化…"
                     } else { self.startIndex() }
                 } else {
@@ -231,6 +235,7 @@ final class FileSearchController: ObservableObject {
         checkpointConfiguration = nil
         checkpointReady = false
         acceptedEventID = 0
+        pendingRepairPaths.removeAll()
         indexFailure = nil
         indexing = false
         inaccessible = []
@@ -878,6 +883,7 @@ final class FileSearchController: ObservableObject {
         acceptedEventID = max(acceptedEventID, eventID)
         startWatch(since: eventID)
         let canCheckpoint = watchLifetime != nil && (paths == nil || checkpointReady)
+        let previousRepairs = pendingRepairPaths
         checkpointReady = false
         restoringIndex = false
         indexFailure = nil
@@ -885,6 +891,9 @@ final class FileSearchController: ObservableObject {
         writer.async { [weak self] in
             guard let self, let db = self.writeDB, !token.cancelled else { return }
             let paths = paths.map(Self.coalescedIndexPaths)
+            var repairPaths: Set<String> = paths.map { targets in Set(previousRepairs.filter { path in
+                !targets.contains { FileSearchLocation.contains(path, in: $0) }
+            }) } ?? []
             // A crash or cancelled crawl must not advertise a complete index.
             // Save the new event position only after all database writes finish.
             do { try db.invalidateRecoveryPoint() }
@@ -923,7 +932,11 @@ final class FileSearchController: ObservableObject {
                 for (root, subtree) in targets {
                     if token.cancelled { return }
                     let rootURL = URL(fileURLWithPath: root)
-                    guard FileManager.default.fileExists(atPath: root) else { if !config.keepRemovedVolumes { try db.removeScope(root) }; continue }
+                    guard FileManager.default.fileExists(atPath: root) else {
+                        if !config.keepRemovedVolumes { try db.removeScope(root) }
+                        repairPaths.insert(root)
+                        continue
+                    }
                     let entry = subtree.map { URL(fileURLWithPath: $0) }
                     let firstDirectory = entry?.deletingLastPathComponent() ?? rootURL
                     var inheritedRules: [FileSearchRules.IgnoreRule] = []
@@ -958,6 +971,7 @@ final class FileSearchController: ObservableObject {
                             }
                         }
                         if inaccessibleAncestor {
+                            repairPaths.insert(firstDirectory.path)
                             invalid += 1
                             if denied.count < 24 { denied.append(firstDirectory.path) }
                             continue
@@ -996,6 +1010,7 @@ final class FileSearchController: ObservableObject {
                                 }
                             } catch {
                                 invalid += 1; complete = false
+                                repairPaths.insert(directory.path)
                                 if denied.count < 24 { denied.append(directory.path) }
                                 return
                             }
@@ -1015,7 +1030,11 @@ final class FileSearchController: ObservableObject {
                                             let value: URLResourceValues
                                             do { value = try url.resourceValues(forKeys: keys) }
                                             catch {
-                                                if entry == url, Self.isMissing(error) { continue }
+                                                // A dangling symlink can report a missing target even
+                                                // though the directory entry still exists. Retain it
+                                                // for repair rather than deleting its saved record.
+                                                if Self.isMissing(error), (try? FileManager.default.attributesOfItem(atPath: url.path)) == nil { continue }
+                                                repairPaths.insert(url.path)
                                                 invalid += 1; complete = false; continue
                                             }
                                             let isDir = value.isDirectory == true; let symlink = value.isSymbolicLink == true; let path = url.path
@@ -1048,22 +1067,23 @@ final class FileSearchController: ObservableObject {
                         }
                     }
                     if token.cancelled { return }
-                    if complete {
-                        if let subtree { try db.removeUnseen(root: root, subtree: subtree, epoch: epoch) }
-                        else { try db.removeUnseen(root: root, epoch: epoch) }
-                    }
+                    try db.removeUnseen(root: root, subtree: subtree, epoch: epoch,
+                                        preserving: complete ? [] : repairPaths)
                 }
+                repairPaths = Set(Self.coalescedIndexPaths(repairPaths))
                 // Known caches discovered by this scan are already excluded from
                 // its results. Persist the resulting rules, not the pre-scan list.
                 let fingerprint = auto.isEmpty ? initialFingerprint : try? Self.recoveryConfiguration(
                     options: config, restored: restored, exclusions: Array(Set(automatic + auto.map(\.path))))
-                if canCheckpoint, invalid == 0, denied.isEmpty, !token.cancelled, let fingerprint {
-                    try db.saveRecoveryPoint(.init(eventID: eventID, configuration: fingerprint))
+                if canCheckpoint, !token.cancelled, let fingerprint {
+                    try db.saveRecoveryPoint(.init(eventID: eventID, configuration: fingerprint, retryPaths: repairPaths))
                 }
+                let completedRepairs = repairPaths
                 var stats = try db.stats(); stats.invalid = invalid; stats.seconds = Date().timeIntervalSince(start)
                 DispatchQueue.main.async {
                     guard self.cancellation === token else { return }
-                    self.checkpointReady = canCheckpoint && invalid == 0 && denied.isEmpty && fingerprint != nil
+                    self.checkpointReady = canCheckpoint && fingerprint != nil
+                    self.pendingRepairPaths = completedRepairs
                     self.checkpointConfiguration = self.checkpointReady ? fingerprint : nil
                     self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
                     for value in auto where !self.automaticExclusions.contains(where: { $0.path == value.path }) { self.automaticExclusions.append(value) }; self.saveAutomatic()
@@ -1269,12 +1289,13 @@ final class FileSearchController: ObservableObject {
         let config = eventConfiguration
         let eventID = acceptedEventID
         let token = cancellation
+        let repairs = pendingRepairPaths
         writer.async { [weak self] in
             guard let self, !lifetime.cancelled, !token.cancelled, let db = self.writeDB else { return }
             do {
                 guard try Self.recoveryConfiguration(options: config.options, restored: config.restored,
                                                     exclusions: config.exclusions.map(\.path)) == configuration else { return }
-                let value = FileSearchIndex.RecoveryPoint(eventID: eventID, configuration: configuration)
+                let value = FileSearchIndex.RecoveryPoint(eventID: eventID, configuration: configuration, retryPaths: repairs)
                 if try db.recoveryPoint() != value { try db.saveRecoveryPoint(value) }
             } catch {
                 DispatchQueue.main.async {

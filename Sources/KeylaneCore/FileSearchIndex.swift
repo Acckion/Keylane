@@ -106,6 +106,50 @@ public final class FileSearchIndex {
         try write("DELETE FROM files WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND epoch<>?",
                   [subtree, lower, upper, root, epoch])
     }
+    /// Reconcile completed areas while retaining the last known rows below
+    /// unreadable paths. Fetch bounded metadata batches, never file bodies.
+    public func removeUnseen(root: String, subtree: String? = nil, epoch: String, preserving: Set<String>) throws {
+        if preserving.isEmpty {
+            if let subtree { try removeUnseen(root: root, subtree: subtree, epoch: epoch) }
+            else { try removeUnseen(root: root, epoch: epoch) }
+            return
+        }
+        var cursor: Int64 = 0
+        while true {
+            let candidates: String
+            let values: [String]
+            if let subtree {
+                candidates = "rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND "
+                values = [subtree, subtree + "/", subtree + "0", String(cursor), root, epoch]
+            } else {
+                candidates = ""
+                values = [String(cursor), root, epoch]
+            }
+            let s = try statement("SELECT rowid,path FROM files WHERE " + candidates + "rowid>? AND root=? AND epoch<>? ORDER BY rowid LIMIT 512", values)
+            var rows: [(Int64, String)] = []
+            var status = sqlite3_step(s)
+            while status == SQLITE_ROW {
+                rows.append((sqlite3_column_int64(s, 0), text(s, 1)))
+                status = sqlite3_step(s)
+            }
+            sqlite3_finalize(s)
+            guard status == SQLITE_DONE else { throw FileIndexError.database }
+            guard let last = rows.last else { return }
+            cursor = last.0
+            let ids = rows.compactMap { id, path -> String? in
+                var ancestor = path
+                while true {
+                    if preserving.contains(ancestor) { return nil }
+                    if ancestor == "/" { break }
+                    ancestor = URL(fileURLWithPath: ancestor).deletingLastPathComponent().path
+                }
+                return String(id)
+            }
+            if !ids.isEmpty {
+                try write("DELETE FROM files WHERE rowid IN (" + Array(repeating: "?", count: ids.count).joined(separator: ",") + ")", ids)
+            }
+        }
+    }
     public func removeScope(_ root: String) throws { try write("DELETE FROM files WHERE root=?",[root]) }
     public func removeUnavailableVolumes() throws {
         let s = try statement("SELECT DISTINCT volume FROM files"); var volumes: [String] = []
@@ -155,9 +199,18 @@ public final class FileSearchIndex {
     public struct RecoveryPoint: Codable, Equatable, Sendable {
         public let eventID: UInt64
         public let configuration: String
-        public init(eventID: UInt64, configuration: String) {
+        public let retryPaths: Set<String>
+        public init(eventID: UInt64, configuration: String, retryPaths: Set<String> = []) {
             self.eventID = eventID
             self.configuration = configuration
+            self.retryPaths = retryPaths
+        }
+        private enum CodingKeys: String, CodingKey { case eventID, configuration, retryPaths }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            eventID = try c.decode(UInt64.self, forKey: .eventID)
+            configuration = try c.decode(String.self, forKey: .configuration)
+            retryPaths = try c.decodeIfPresent(Set<String>.self, forKey: .retryPaths) ?? []
         }
     }
 
