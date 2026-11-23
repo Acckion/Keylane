@@ -127,3 +127,5 @@ python3 scripts/verify-macos-product-m1.py \
 最终558项Swift、80项Python检查及48项真实签名组合观察通过，统一报告重新计算为`M1-passed`；准确产物构建的Apple Development ARM64 1.0.2/build27 DMG再次验证通过。产品运行、公开扩展验收与M2–M5保持未开始；未安装、合并或发布。远端PR头与Checks在交付时单独核对。
 
 来源修复提交 `82dff3d1` 后，以 `80e98416` 整合dev `99c7a373`（#239）。本次整合只变更CI、App Intents元数据提取脚本及其测试，没有Swift或签名组合实现差异，保留前述558项Swift和48项签名验收证据；新增后完整80项Python检查及准确产物Apple Development包再次通过。
+
+远端旧头的失败来自手动swiftc集成脚本遗漏`-package-name`。保留Core的package边界，为18个全量Core编译脚本及其消费者统一指定`Keylane`包名，未扩大类型可见性。CI同款文件工具集成脚本本机实际重跑，10组临时数据／模拟审批场景全部通过；没有调用模型或用户资料。此增量只修改测试编译入口，不改变前述签名包的产品字节。
