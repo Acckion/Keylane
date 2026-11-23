@@ -42,6 +42,15 @@ jobs:
           python3 -m compileall -q scripts
           for script in scripts/*.sh; do bash -n "$script"; done
           python3 -m unittest discover -s Tests/ReleaseTests -p 'test_*.py'
+      - name: Verify Swift Build output path on packaging-script PRs
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed_package_script="$(git diff --name-only "$BASE_SHA" HEAD -- scripts/package.sh)"
+          if [[ -n "$changed_package_script" ]]; then
+            bash scripts/package.sh --verify-binary-path
+          fi
       - name: Determine whether to validate the installer
         if: github.event_name == 'push'
         id: installer
