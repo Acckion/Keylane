@@ -4,11 +4,14 @@ import Foundation
 
 /// Delivers recursive changes on the main queue, including replacement of a configured root.
 final class FolderChangeWatcher {
+    private let latency: TimeInterval
     private var stream: FSEventStreamRef?
     private var roots: [String] = []
     var ignoresDirectory: (String) -> Bool = { _ in false }
     var changed: ((_ rebuildWatch: Bool) -> Void)?
     var isWatching: Bool { stream != nil }
+
+    init(latency: TimeInterval = 0.7) { self.latency = latency }
 
     deinit { stop() }
 
@@ -49,7 +52,7 @@ final class FolderChangeWatcher {
             let paths = Unmanaged<CFArray>.fromOpaque(paths).takeUnretainedValue() as! [String]
             watcher.handle(paths: paths, flags: UnsafeBufferPointer(start: flags, count: count))
         }, &context, Array(watchPaths) as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-           0.7, FSEventStreamCreateFlags(flags)) else { return }
+           latency, FSEventStreamCreateFlags(flags)) else { return }
         FSEventStreamSetDispatchQueue(stream, .main)
         guard FSEventStreamStart(stream) else {
             FSEventStreamInvalidate(stream)
