@@ -24,8 +24,9 @@ public struct SpotlightFile: Identifiable, Equatable, Sendable {
     /// Resolve presentation metadata on the search worker after ranking limits the result set.
     public func readingResourceMetadata() -> Self {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentTypeKey])
-        return Self(url: url, name: name, modified: modified, isDirectory: values?.isDirectory == true,
-                    contentType: values?.contentType ?? UTType(filenameExtension: url.pathExtension),
+        let directory = values?.isDirectory ?? isDirectory
+        return Self(url: url, name: name, modified: modified, isDirectory: directory,
+                    contentType: values?.contentType ?? (directory ? .folder : UTType(filenameExtension: url.pathExtension)),
                     matchesContent: matchesContent)
     }
 }
