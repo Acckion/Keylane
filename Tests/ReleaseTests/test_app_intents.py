@@ -52,7 +52,7 @@ class AppIntentsTests(unittest.TestCase):
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.touch()
                 with patch('app_intents.platform.machine', return_value='arm64'):
-                    self.assertEqual(constant_value_files(binary), [wanted])
+                    self.assertEqual(constant_value_files(binary), [wanted.resolve()])
                     wanted.unlink()
                     with self.assertRaisesRegex(ValueError, 'missing Focus'):
                         constant_value_files(binary)
