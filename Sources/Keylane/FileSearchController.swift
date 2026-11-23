@@ -58,6 +58,7 @@ final class FileSearchController: ObservableObject {
     private var didStart = false
     private var restoringIndex = false
     private var checkpointConfiguration: String?
+    private var checkpointLegacyConfiguration: String?
     private var indexFailure: String?
     private var grants: [String: Data]
     private var selectedScopePaths: Set<String>
@@ -240,6 +241,7 @@ final class FileSearchController: ObservableObject {
                     if self.watchLifetime != nil {
                         self.checkpointReady = true
                         self.checkpointConfiguration = fingerprint
+                        self.checkpointLegacyConfiguration = recovery.configuration == fingerprint ? nil : recovery.configuration
                         self.didStart = true
                         self.pendingRepairPaths = recovery.retryPaths
                         self.dirtyPaths.formUnion(recovery.retryPaths)
@@ -265,6 +267,7 @@ final class FileSearchController: ObservableObject {
         didStart = false
         restoringIndex = false
         checkpointConfiguration = nil
+        checkpointLegacyConfiguration = nil
         checkpointReady = false
         acceptedEventID = 0
         pendingRepairPaths.removeAll()
@@ -909,6 +912,9 @@ final class FileSearchController: ObservableObject {
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
             return
         }
+        #if KEYLANE_FILE_EVENT_TESTING
+        if paths == nil { testFullIndexScans += 1 }
+        #endif
         didStart = true; cancellation.cancel(); let token = FileScanCancellation(); cancellation = token
         let config = authorizedOptions; let automatic = automaticExclusions.map(\.path)
         let exclusions = config.excludedPaths + automatic; let restored = restored
@@ -916,6 +922,8 @@ final class FileSearchController: ObservableObject {
         acceptedEventID = max(acceptedEventID, eventID)
         startWatch(since: eventID)
         let canCheckpoint = watchLifetime != nil && (paths == nil || checkpointReady)
+        let requiredConfigurations: Set<String>? = paths == nil ? nil : Set(
+            [checkpointConfiguration, checkpointLegacyConfiguration].compactMap { $0 })
         let previousRepairs = pendingRepairPaths
         checkpointReady = false
         restoringIndex = false
@@ -927,10 +935,19 @@ final class FileSearchController: ObservableObject {
             var repairPaths: Set<String> = paths.map { targets in Set(previousRepairs.filter { path in
                 !targets.contains { FileSearchLocation.contains(path, in: $0) }
             }) } ?? []
-            // A crash or cancelled crawl must not advertise a complete index.
-            // Save the new event position only after all database writes finish.
-            do { try db.invalidateRecoveryPoint() }
-            catch {
+            // Remove the checkpoint and capture the writer's connection version
+            // together. Do not run a partial scan on an invalidated baseline.
+            let recoveryScan: FileSearchIndex.RecoveryScan
+            do {
+                guard let started = try db.beginRecoveryScan(requiring: requiredConfigurations) else {
+                    DispatchQueue.main.async {
+                        guard self.cancellation === token, !token.cancelled else { return }
+                        self.startIndex()
+                    }
+                    return
+                }
+                recoveryScan = started
+            } catch {
                 DispatchQueue.main.async { if !token.cancelled { self.reportIndexFailure(error) } }
                 return
             }
@@ -1108,14 +1125,17 @@ final class FileSearchController: ObservableObject {
                 // its results. Persist the resulting rules, not the pre-scan list.
                 let fingerprint = auto.isEmpty ? initialFingerprint : try? Self.recoveryConfiguration(
                     options: config, restored: restored, exclusions: Array(Set(automatic + auto.map(\.path))))
+                let publishedCheckpoint: Bool
                 if canCheckpoint, !token.cancelled, let fingerprint {
-                    try db.saveRecoveryPoint(.init(eventID: eventID, configuration: fingerprint, retryPaths: repairPaths))
-                }
+                    publishedCheckpoint = try db.completeRecoveryScan(recoveryScan,
+                        point: .init(eventID: eventID, configuration: fingerprint, retryPaths: repairPaths))
+                } else { publishedCheckpoint = false }
                 let completedRepairs = repairPaths
                 var stats = try db.stats(); stats.invalid = invalid; stats.seconds = Date().timeIntervalSince(start)
                 DispatchQueue.main.async {
                     guard self.cancellation === token else { return }
-                    self.checkpointReady = canCheckpoint && fingerprint != nil
+                    self.checkpointReady = publishedCheckpoint
+                    self.checkpointLegacyConfiguration = nil
                     self.pendingRepairPaths = completedRepairs
                     self.checkpointConfiguration = self.checkpointReady ? fingerprint : nil
                     self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
@@ -1262,6 +1282,7 @@ final class FileSearchController: ObservableObject {
     #if KEYLANE_FILE_EVENT_TESTING
     var testDidBeginIndexRestoration: (() -> Void)?
     var testQuietIndexEventID: FSEventStreamEventId?
+    private(set) var testFullIndexScans = 0
 
     // Feed loss/wrap flags deterministically through the production event pipeline.
     func testIndexEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
@@ -1339,6 +1360,7 @@ final class FileSearchController: ObservableObject {
               !recoverEvents, !needsFullScan, dirtyPaths.isEmpty,
               let lifetime = watchLifetime, let configuration = checkpointConfiguration else { return }
         let config = eventConfiguration
+        let legacy = checkpointLegacyConfiguration
         let eventID = acceptedEventID
         let token = cancellation
         let repairs = pendingRepairPaths
@@ -1348,7 +1370,12 @@ final class FileSearchController: ObservableObject {
                 guard try Self.recoveryConfiguration(options: config.options, restored: config.restored,
                                                     exclusions: config.exclusions.map(\.path)) == configuration else { return }
                 let value = FileSearchIndex.RecoveryPoint(eventID: eventID, configuration: configuration, retryPaths: repairs)
-                if try db.recoveryPoint() != value { try db.saveRecoveryPoint(value) }
+                guard try db.advanceExistingRecoveryPoint(value, compatibleConfiguration: legacy) else {
+                    DispatchQueue.main.async {
+                        if self.cancellation === token, !token.cancelled { self.checkpointReady = false }
+                    }
+                    return
+                }
             } catch {
                 DispatchQueue.main.async {
                     if !token.cancelled { self.checkpointReady = false; self.reportIndexFailure(error) }

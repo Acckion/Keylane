@@ -9,7 +9,7 @@ let state = base.appendingPathComponent("index")
 let priorOnly = scope.appendingPathComponent("prior-only.txt")
 let alsoIndexed = scope.appendingPathComponent("exclude-during-start.txt")
 try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true)
-try Data("fixture".utf8).write(to: alsoIndexed)
+for url in [priorOnly, alsoIndexed] { try Data("fixture".utf8).write(to: url) }
 
 let suite = "org.keylane.startup-state-fixture." + UUID().uuidString
 let prefs = UserDefaults(suiteName: suite)!
@@ -39,8 +39,6 @@ func contains(_ item: URL) throws -> Bool {
 controller.startRuntime()
 try wait("Fixture baseline") { try db.recoveryPoint() != nil && !controller.indexing }
 controller.stopRuntime()
-try db.put(.init(path: priorOnly.path, name: priorOnly.lastPathComponent, volume: "/", modified: 1,
-                 directory: false, symlink: false), root: scope.path, epoch: "fixture-old")
 let original = try db.recoveryPoint()!
 let originalConfig = original.configuration.replacingOccurrences(of: "\"searchFromLauncher\":false", with: "\"searchFromLauncher\":true")
 precondition(originalConfig != original.configuration)
@@ -58,7 +56,7 @@ controller.startRuntime()
 try wait("Root search displays prior row after re-enable") {
     controller.indexStatus == "正在恢复文件变化…" && !controller.isSearching && offered.contains { $0.id == priorOnly.path }
 }
-precondition(controller.options.searchFromLauncher)
+precondition(controller.options.searchFromLauncher && controller.testFullIndexScans == 0)
 controller.stopRuntime()
 print("PASS quiet startup: launcher re-enable retrieves prior indexed row with legacy checkpoint and no full scan")
 
@@ -72,7 +70,7 @@ controller.testDidBeginIndexRestoration = {
 controller.startRuntime()
 try wait("Material exclusion supersedes in-flight restore") {
     try attempts == 2 && db.recoveryPoint()?.configuration != originalConfig && !controller.indexing
-        && !contains(priorOnly) && !contains(alsoIndexed)
+        && controller.testFullIndexScans == 1 && contains(priorOnly) && !contains(alsoIndexed)
 }
 controller.stopRuntime()
 print("PASS quiet startup: material exclusion retries restore and rejects stale checkpoint")
