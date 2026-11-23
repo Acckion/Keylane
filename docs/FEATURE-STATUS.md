@@ -47,7 +47,7 @@
 | APP-01 | 应用发现、拼音搜索、收藏及刷新 | 部分实现 | 外置/网络卷、扫描深度和失效路径继续验收 | [应用生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/applications) |
 | APP-02 | 应用正常退出、卸载与残留预览 | 部分实现 | 应用差异、拒绝权限及残留范围逐项验收 | [卸载](UNINSTALL-PREVIEW.md) |
 | APP-03 | 按应用闲置自动退出 | 部分实现 | 各应用保存对话框、退出拒绝和重启恢复实测 | [生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/auto-quit) |
-| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
+| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数优化待合并，安装版能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
 | FILE-02 | 文件打开方式、分享、复制、定位等动作 | 部分实现 | 真实分享服务、取消、权限与焦点验收 | [细项](TODO.md) |
 | CLIP-01 | 剪贴板历史、持久化、搜索及 OCR | 部分实现 | 真实跨应用粘贴、采集边界和隐私设置回归 | [实现](../Sources/Keylane/ClipboardActions.swift)、[细项](TODO.md)、[Raycast](https://manual.raycast.com/clipboard-history) |
 | SHOT-01 | 截图/录屏管理、OCR、搜索与文件动作 | 部分实现 | 跨应用分享、粘贴、云盘和权限验收 | [截图](SCREENSHOTS.md)、[Raycast](https://manual.raycast.com/screenshots) |
@@ -244,3 +244,4 @@
 维护记录：2026-11-23，EXT-01-a / BASE-11，前序 `4fd73ff1`：M1第一批在新分支整合当前dev `b09c5dd`（#231），新增有界构建数据契约／固定配方／结果资源摘要和取消协调；17项真实签名首方构建检查通过，整体M1仍incomplete，正式profile、#222适配与安装事务未交付，见 [M1记录](MACOS-BUILD-M1.md)。未安装／推送／修改#222，M2–M5未开始。
 
 维护记录：2026-11-23，EXT-01-a / BASE-11，前序 `00a23eba`：完整M1复用#222 `c7b4197` 的纯Core底座，接通真实签名构建／新profile保护／Darwin依赖／schema2资源收据和统一安装器；修复候选更新、禁用快照、卸载候选清理及head提交发布恢复。553项Swift、72项Python、两组43项首方签名观察及Apple Development签名ARM64 DMG通过，详见 [M1终审](MACOS-BUILD-M1.md)。待合并，未安装/推送/发布，M2–M5未开始；没有恢复VM、启用运行或改API统计。
+维护记录：2026-11-23，FILE-01：实机发现增量扫描结束后反复全表统计。改用事务内增删／类型变化触发计数，旧索引首次打开初始化一次，后续读取单行汇总。451 项 Swift 测试及真实文件事件集成通过，覆盖旧索引、多连接、回滚和动态更新；Apple Development 签名安装已完成，后台 CPU 与长期能耗正在复验。
