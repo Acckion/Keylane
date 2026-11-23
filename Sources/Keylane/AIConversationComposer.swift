@@ -46,7 +46,7 @@ final class AIConversationComposer: ObservableObject {
     func appendResourceAttachment(_ attachment: AIConversationAttachment, reader: AIResourceReader, for draft: UUID) -> Bool {
         guard attachment.resourceSnapshot?.matches(attachment.text) == true,
               appendAttachment(attachment, for: draft) else { return false }
-        resourceReaders[attachment.id] = reader
+        if reader.allowsRefresh { resourceReaders[attachment.id] = reader }
         return true
     }
 
@@ -106,7 +106,9 @@ final class AIConversationComposer: ObservableObject {
                     throw AIActionError.inputTooLarge
                 }
                 self.attachments = combined
-                for (attachment, reader) in zip(loaded, readers) { self.resourceReaders[attachment.id] = reader }
+                for (attachment, reader) in zip(loaded, readers) where reader.allowsRefresh {
+                    self.resourceReaders[attachment.id] = reader
+                }
                 self.finishResourceRead(draft)
             } catch {
                 guard let self, !Task.isCancelled, self.draftID == draft else { return }
@@ -269,8 +271,15 @@ struct AIConversationDraftContextRequest<Source>: Identifiable {
 struct AIResourceReader {
     let source: AIActionSource
     var symbol = "doc.text"
-    var available: () -> Bool = { true }
+    let available: () -> Bool
+    let allowsRefresh: Bool
+
+    init(source: AIActionSource, symbol: String = "doc.text", available: @escaping () -> Bool = { true }, allowsRefresh: Bool = true) {
+        self.source = source; self.symbol = symbol; self.available = available; self.allowsRefresh = allowsRefresh
+    }
+
     @MainActor func read(replacing previous: AIResourceSnapshot? = nil) async throws -> AIConversationAttachment {
+        guard previous == nil || allowsRefresh else { throw AIActionError.staleSource }
         guard available() else { throw AIActionError.unavailable }
         let context = try await source.captureSnapshot()
         guard available() else { throw AIActionError.unavailable }
