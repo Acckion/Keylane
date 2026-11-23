@@ -285,15 +285,18 @@ public final class FileSearchIndex {
 
     /// SQLite data_version only compares observations on the same connection,
     /// and only changes for commits by other connections.
-    public func completeRecoveryScan(_ scan: RecoveryScan, point: RecoveryPoint) throws -> Bool {
+    public func completeRecoveryScan(_ scan: RecoveryScan, point: RecoveryPoint,
+                                     whileCurrent isCurrent: () -> Bool = { true }) throws -> Bool {
         guard scan.owner == ObjectIdentifier(self), scan.id == activeRecoveryScan else { return false }
         activeRecoveryScan = nil
         var committed = false
         try transaction {
+            guard isCurrent() else { return }
             guard try dataVersion() == scan.dataVersion else {
                 try invalidateRecoveryPoint()
                 return
             }
+            guard isCurrent() else { return }
             try saveRecoveryPoint(point)
             committed = true
         }
@@ -302,11 +305,13 @@ public final class FileSearchIndex {
 
     /// Idle cursor progress may update a matching point, never create one or
     /// overwrite another scan's outstanding repair work.
-    public func advanceExistingRecoveryPoint(_ point: RecoveryPoint, compatibleConfiguration: String? = nil) throws -> Bool {
+    public func advanceExistingRecoveryPoint(_ point: RecoveryPoint, compatibleConfiguration: String? = nil,
+                                             whileCurrent isCurrent: () -> Bool = { true }) throws -> Bool {
         var matched = false
         try transaction {
-            guard let existing = try recoveryPoint(), existing.retryPaths == point.retryPaths,
-                  existing.configuration == point.configuration || existing.configuration == compatibleConfiguration else { return }
+            guard isCurrent(), let existing = try recoveryPoint(), existing.retryPaths == point.retryPaths,
+                  existing.configuration == point.configuration || existing.configuration == compatibleConfiguration,
+                  isCurrent() else { return }
             if point.eventID >= existing.eventID, point != existing {
                 let state = String(decoding: try JSONEncoder().encode(point), as: UTF8.self)
                 try write("UPDATE file_recovery SET state=? WHERE id=1", [state])

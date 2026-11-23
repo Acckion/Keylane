@@ -104,6 +104,21 @@ final class FileIndexTests: XCTestCase {
         XCTAssertNil(try writer.recoveryPoint())
     }
 
+    func testRetiredWatcherCannotPublishScanOrAdvanceIdleCursor() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writer = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        let point = FileSearchIndex.RecoveryPoint(eventID: 500, configuration: "test-domain")
+        let scan = try XCTUnwrap(writer.beginRecoveryScan())
+        XCTAssertFalse(try writer.completeRecoveryScan(scan, point: point, whileCurrent: { false }))
+        XCTAssertNil(try writer.recoveryPoint())
+        let next = try XCTUnwrap(writer.beginRecoveryScan())
+        let newPoint = FileSearchIndex.RecoveryPoint(eventID: 12, configuration: "test-domain")
+        XCTAssertTrue(try writer.completeRecoveryScan(next, point: newPoint))
+        XCTAssertFalse(try writer.advanceExistingRecoveryPoint(point, whileCurrent: { false }))
+        XCTAssertEqual(try writer.recoveryPoint(), newPoint)
+    }
+
     func testInstallingMissingCheckpointTriggersInvalidatesOnceWithoutClearingRows() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

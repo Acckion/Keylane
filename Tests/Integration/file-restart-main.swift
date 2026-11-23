@@ -169,14 +169,14 @@ try FileManager.default.removeItem(at: lockedFile)
 try Data().write(to: locked.appendingPathComponent("unlocked-fixture.txt"))
 try wait("Permission restored subtree repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.isEmpty == true && !contains(lockedFile.lastPathComponent) && contains("unlocked-fixture.txt") }
 print("PASS unreadable subtree retains rows, retries locally, and recovers after permissions return")
-// Inject native recovery flags without fabricating a successful native event replay.
+// A numeric wrap also needs a genuinely new counter; exercise it in the quiet fixture.
 for flag in [kFSEventStreamEventFlagUserDropped, kFSEventStreamEventFlagKernelDropped,
-             kFSEventStreamEventFlagEventIdsWrapped, kFSEventStreamEventFlagRootChanged] {
+             kFSEventStreamEventFlagRootChanged] {
     let count = controller.testFullIndexScans
     controller.testIndexEvents(paths: [scope.path], flags: [FSEventStreamEventFlags(flag)])
-    try wait("Lost/wrapped/root-changed event fallback") { try !controller.indexing && controller.testFullIndexScans > count && db.recoveryPoint() != nil }
+    try wait("Lost/root-changed event fallback") { try !controller.indexing && controller.testFullIndexScans > count && db.recoveryPoint() != nil }
 }
-print("PASS injected loss/wrap/root-change flags require a fresh baseline")
+print("PASS injected loss/root-change flags require a fresh baseline")
 controller.stopRuntime(); pump(0.3)
 let saved = try db.recoveryPoint()
 controller.startRuntime(); controller.stopRuntime(); pump(3)
