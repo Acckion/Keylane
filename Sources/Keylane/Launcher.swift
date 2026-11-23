@@ -913,7 +913,7 @@ struct Launcher: View {
                         // AppKit application icons include transparent margins.
                         .scaleEffect(row.id.hasSuffix(".app") ? 1.2 : 1)
                 }
-                else { Image(systemName: row.symbol).font(.system(size: 21, weight: .regular)).foregroundStyle(iconColor(row.id)) }
+                else { SettingsIcon(symbol: row.symbol, size: 26) }
             }
             .frame(width: 26, height: 26)
             .overlay(alignment: .bottom) {
@@ -976,7 +976,6 @@ struct Launcher: View {
         if let detail = model.launcherModules?.displayDetail(for: row) { return detail }
         return "命令"
     }
-    private func iconColor(_ id: String) -> ThemeColorStyle { switch id { case "clipboard": return .init(role: .orange); case "screenshot": return .init(role: .purple); case "quicklink": return .init(role: .blue); default: return .text } }
     private static let footerMenuWidth = LauncherActionListPanel.width
     private static let footerMinimumGap: CGFloat = 24
 
