@@ -89,7 +89,7 @@ M1无运行实例，`readiness`固定unavailable、`runCurrent`明确拒绝；�
 
 本批553项Swift、72项Python检查通过。ARM64 1.0.2/build27 Apple Development DMG的主应用/嵌套工具签名、准确权限、摘要、许可证、文件清单、架构与包布局通过。主应用启用Hardened Runtime时保留已有Apple Events entitlement，避免破坏已有AppleScript能力；移除原资源plist重复音频键后签名成功。相同权限的首方宿主真实启动并通过组合验收，但未向Finder等真实应用发送事件或新授予隐私权限。
 
-首方数据全部清理，未安装Keylane、未推送/合并/发布，远端Checks未运行。包中包含esbuild与Go原许可证，不含测试宿主、测试React、第三方扩展源码、钥匙串数据或VM材料。M1完成指构建/收据/安装事务的代码与首方签名验收，M2–M5和最终集成版安装实测仍按原顺序进行。
+首方数据全部清理，未安装Keylane或合并/发布。远端PR与Checks单独在交付时核对，本机证据不替代Checks。包中包含esbuild与Go原许可证，不含测试宿主、测试React、第三方扩展源码、钥匙串数据或VM材料。M1完成指构建/收据/安装事务的代码与首方签名验收，M2–M5和最终集成版安装实测仍按原顺序进行。
 
 ### 最终复验
 
@@ -103,3 +103,9 @@ python3 scripts/verify-macos-product-m1.py \
 ```
 
 组合探针使用当前源码构建的Core对象（或不传core-products重新编译），不是模拟服务。清理意图在任何合成Keychain写入前保存；清理失败保留原始签名恢复应用，不删除其身份。第一批的incomplete报告不单独放行M1，缺签名/清理/任何观察均拒绝。
+
+### 最新dev整合复验
+
+完整M1提交 `71e4e3e8` 后整合dev `5b4378ce`（#238/#237/#240），保留增量索引范围／事务计数能耗修复及Swift Build真实产物路径。唯一冲突为功能总表追加记录，双方均保留；整合提交 `f79d081d`。该基线556项Swift、72项Python及43项真实签名首方观察再次通过；签名包使用Swift Build报告的准确产物目录，构建辅助程序按同目录取得。
+
+整合版Apple Development签名ARM64 DMG复验通过，未安装。M1以功能PR进入dev审查，不自动合并；前序架构#218/#221/#223已合入，#222仍为并行草稿，本PR没有改变其分支或启用VM。远端Checks由PR触发并单独核对，后续M2–M5不计作本阶段已交付能力。
