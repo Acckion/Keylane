@@ -58,7 +58,7 @@ jobs:
           import tempfile
 
           sys.path.insert(0, 'scripts')
-          from app_intents import extract_metadata, object_directory
+          from app_intents import extract_metadata, object_directories
 
           binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
           output = binary.parents[2]
@@ -66,7 +66,8 @@ jobs:
               with tempfile.TemporaryDirectory(prefix='keylane-check-intents-') as resources:
                   extract_metadata(binary, resources, pathlib.Path.cwd())
           except (ValueError, OSError):
-              print(f'Expected constant values directory: {object_directory(binary).relative_to(output)}', flush=True)
+              for directory in object_directories(binary):
+                  print(f'Expected constant values directory: {directory.relative_to(output)}', flush=True)
               matches = sorted(p.relative_to(output) for p in output.rglob('*.swiftconstvalues') if p.is_file())
               print(f'Found {len(matches)} Swift constant-value files under {output.name}:', flush=True)
               for path in matches[:40]:
