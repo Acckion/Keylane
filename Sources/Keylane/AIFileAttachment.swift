@@ -130,6 +130,7 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
         private let name: String
         private let device: Int32
         private let inode: UInt64
+        private let requiresSecurityScope: Bool
 
         init(_ url: URL) throws {
             let access = url.startAccessingSecurityScopedResource()
@@ -145,6 +146,7 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
             var info = stat()
             guard fstat(fd, &info) == 0 else { throw AIActionError.staleSource }
             parentPath = parent; self.name = name; device = info.st_dev; inode = info.st_ino
+            requiresSecurityScope = access
             try validate(fd, url: url)
         }
 
@@ -163,16 +165,27 @@ struct AIFileAttachment: Codable, Identifiable, Equatable, Sendable {
         }
 
         func withValidatedParent<T>(of url: URL, _ body: (Int32) throws -> T) throws -> T {
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            let fd = open(parentPath, O_SEARCH | O_NOFOLLOW | O_CLOEXEC)
-            guard fd >= 0 else { throw AIActionError.staleSource }
-            defer { close(fd) }
-            try validate(fd, url: url)
-            try Task.checkCancellation()
-            let result = try body(fd)
-            try validate(fd, url: url)
-            return result
+            try Self.withPickerScope(required: requiresSecurityScope,
+                                     start: { url.startAccessingSecurityScopedResource() },
+                                     stop: { url.stopAccessingSecurityScopedResource() }) {
+                let fd = open(parentPath, O_SEARCH | O_NOFOLLOW | O_CLOEXEC)
+                guard fd >= 0 else { throw AIActionError.staleSource }
+                defer { close(fd) }
+                try validate(fd, url: url)
+                try Task.checkCancellation()
+                let result = try body(fd)
+                try validate(fd, url: url)
+                return result
+            }
+        }
+
+        static func withPickerScope<T>(required: Bool, start: () -> Bool, stop: () -> Void, _ body: () throws -> T) throws -> T {
+            let access = start()
+            defer { if access { stop() } }
+            // If permission came from a scoped URL, never substitute ambient access.
+            // Plain file URLs do not carry a scope and still use normal file permissions.
+            guard !required || access else { throw AIActionError.staleSource }
+            return try body()
         }
 
         private static func route(_ url: URL) throws -> (parent: String, name: String) {

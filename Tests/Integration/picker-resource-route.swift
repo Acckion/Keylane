@@ -61,6 +61,20 @@ private func verifyApprovedPickerRoute() async throws {
         preconditionFailure("Stale binding unexpectedly fell back to a file read")
     } catch AIActionError.staleSource {}
     print("PASS explicit picker fallback: static snapshot retains no reader and schedules no refresh; stale binding fails closed")
+
+    var opens = 0, stops = 0
+    func startDenied() -> Bool { false }
+    func stop() { stops += 1 }
+    func descriptorCallback() { opens += 1 }
+    do {
+        try AIFileAttachment.ApprovedPickerRoute.withPickerScope(required: true, start: startDenied, stop: stop, descriptorCallback)
+        preconditionFailure("Previously scoped route accepted failed reacquisition")
+    } catch AIActionError.staleSource {}
+    precondition(opens == 0 && stops == 0)
+    try AIFileAttachment.ApprovedPickerRoute.withPickerScope(required: false, start: startDenied, stop: stop, descriptorCallback)
+    try AIFileAttachment.ApprovedPickerRoute.withPickerScope(required: true, start: { true }, stop: stop, descriptorCallback)
+    precondition(opens == 2 && stops == 1)
+    print("PASS retained picker scope: failed reacquisition rejected before descriptor callback; plain URLs and balanced scopes preserved")
 }
 
 try await verifyApprovedPickerRoute()
