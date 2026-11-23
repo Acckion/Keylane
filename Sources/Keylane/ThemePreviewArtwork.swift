@@ -2,7 +2,7 @@ import AppKit
 
 /// Original, deterministic grayscale sample sculptures; no third-party image assets.
 enum ThemePreviewArtwork {
-    private static let cache = NSCache<NSNumber, NSImage>()
+    private static let cache = ResourceCache<NSNumber, NSImage>(.theme)
     static func image(_ variant: Int) -> NSImage {
         if let image = cache.object(forKey: NSNumber(value: variant)) { return image }
         let image = NSImage(size: NSSize(width: 512, height: 512), flipped: false) { rect in
@@ -29,7 +29,7 @@ enum ThemePreviewArtwork {
             }
             return true
         }
-        cache.setObject(image, forKey: NSNumber(value: variant)); return image
+        cache.setObject(image, forKey: NSNumber(value: variant), cost: 512 * 512 * 4); return image
     }
     static let badge: NSImage = NSImage(size: NSSize(width: 64, height: 64), flipped: false) { rect in
         NSColor(white: 0.08, alpha: 1).setFill(); NSBezierPath(roundedRect: rect, xRadius: 14, yRadius: 14).fill()

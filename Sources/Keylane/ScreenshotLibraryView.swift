@@ -58,12 +58,7 @@ struct ScreenshotLibraryPage: View {
 
 struct ScreenshotThumbnail: View {
     static func releaseCache() { cache.removeAllObjects() }
-    private static let cache: NSCache<NSString, NSImage> = {
-        let value = NSCache<NSString, NSImage>()
-        value.countLimit = 100
-        value.totalCostLimit = 48 * 1024 * 1024
-        return value
-    }()
+    private static let cache = ResourceCache<NSString, NSImage>(.screenshots)
     private struct Revision: Equatable {
         let item: ScreenshotMedia
         let scale: CGFloat
@@ -106,5 +101,6 @@ struct ScreenshotThumbnail: View {
             Self.cache.setObject(result.nsImage, forKey: key, cost: result.cgImage.bytesPerRow * result.cgImage.height)
             thumbnail = result.nsImage
         }
+        .onDisappear { thumbnail = nil }
     }
 }

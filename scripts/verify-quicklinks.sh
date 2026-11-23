@@ -10,6 +10,6 @@ swiftc -j 2 -swift-version 5 -target "$(uname -m)-apple-macos26.0" -I "$task_dir
     Sources/Keylane/QuicklinksController.swift Sources/Keylane/Toast.swift \
     Sources/Keylane/LauncherModuleRegistry.swift Sources/Keylane/LauncherCommandSearch.swift \
     Sources/Keylane/AIActionSource.swift Sources/Keylane/AIToolRuntime.swift \
-    Sources/Keylane/PermissionFeature.swift Sources/Keylane/ModuleArtwork.swift Sources/Keylane/ShortcutManager.swift \
+    Sources/Keylane/PermissionFeature.swift Sources/Keylane/ResourceCache.swift Sources/Keylane/ModuleArtwork.swift Sources/Keylane/ShortcutManager.swift \
     "$task_directory/main.swift" -o "$task_directory/verify"
 "$task_directory/verify"

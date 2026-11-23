@@ -1118,6 +1118,13 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var resizeTarget: NSRect?
     private var launcherHiddenAt: TimeInterval?
     private var idleMemoryTrim: DispatchWorkItem?
+    private var resourceWindowObserver: NSObjectProtocol?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    private var memoryConstrained = false
+    private var hasVisibleContentWindow: Bool {
+        NSApp.windows.contains { $0.isVisible && !$0.isMiniaturized && $0.canBecomeKey && $0.occlusionState.contains(.visible) }
+    }
+    private func prepareUIResources() { ResourceCaches.setBackground(memoryConstrained) }
     private var restingLauncherFrame: NSRect?
     private var launcherGlassSubscription: AnyCancellable?
     private var pageScroll = HorizontalScrollSelection()
@@ -1131,6 +1138,20 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        resourceWindowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification,
+                                                                        object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            if self.hasVisibleContentWindow { self.prepareUIResources() }
+            else { self.scheduleIdleMemoryTrim() }
+        }
+        let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue: .main)
+        memoryPressureSource = pressure
+        pressure.setEventHandler { [weak self] in
+            guard let self, let source = self.memoryPressureSource else { return }
+            self.memoryConstrained = source.data.contains(.warning) || source.data.contains(.critical)
+            ResourceCaches.setBackground(self.memoryConstrained || !self.hasVisibleContentWindow)
+        }
+        pressure.resume()
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.model.aiSettings.startModelCatalogSync(runtime: self.model.aiRuntime)
@@ -1271,6 +1292,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             rememberPreviousApplication()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            prepareUIResources()
             NotificationCenter.default.post(name: .launcherShown, object: nil)
         }
     }
@@ -1320,6 +1342,8 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         hideLauncher(reason: "resignKey")
     }
     func applicationWillTerminate(_ notification: Notification) {
+        memoryPressureSource?.cancel()
+        if let resourceWindowObserver { NotificationCenter.default.removeObserver(resourceWindowObserver) }
         model.launcherModules?.stopServices()
         model.focus.browser.flush()
         model.menuBar.shutdown()
@@ -1338,6 +1362,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         keyWindow.performClose(nil)
     }
     func showSettings() {
+        prepareUIResources()
         if settingsWindow == nil {
             let state = SettingsWindowState(model: model)
             let view = NSHostingView(rootView: SettingsView(state: state))
@@ -1412,6 +1437,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let trim = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.idleMemoryTrim = nil
+            ResourceCaches.setBackground(self.memoryConstrained || !self.hasVisibleContentWindow)
             guard !self.window.isVisible, self.settingsWindow?.isVisible != true else { return }
             if self.restingLauncherFrame == nil,
                self.model.pageID == .root || self.model.activeLauncherPage?.contentPlacement == .fileResults {
@@ -1617,6 +1643,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         window.invalidateShadow()
+        prepareUIResources()
         NotificationCenter.default.post(name: .launcherShown, object: nil)
         windowDiagnostics.record("shown", launcher: window, settings: settingsWindow, hotkeyStatus: hotkeyStatus)
         DispatchQueue.main.async { [weak self] in guard let self else { return }; self.windowDiagnostics.record("shownSettled", launcher: self.window, settings: self.settingsWindow, hotkeyStatus: self.hotkeyStatus) }

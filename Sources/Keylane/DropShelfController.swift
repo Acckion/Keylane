@@ -470,11 +470,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         queue.maxConcurrentOperationCount = 2
         return queue
     }()
-    private static let gridThumbnails: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.totalCostLimit = 24 * 1024 * 1024
-        return cache
-    }()
+    private static let gridThumbnails = ResourceCache<NSString, NSImage>(.shelf)
     private let gridPreviews = NSMapTable<NSUUID, DropShelfPreview>.strongToWeakObjects()
     private let contentScroll = NSScrollView()
     private let closeControl = DropShelfHoverButton()

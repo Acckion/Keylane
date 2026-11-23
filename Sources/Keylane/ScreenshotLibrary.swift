@@ -840,12 +840,7 @@ private final class ScreenshotTextCache: @unchecked Sendable {
         override var hash: Int { value.hashValue }
         override func isEqual(_ object: Any?) -> Bool { (object as? CacheKey)?.value == value }
     }
-    private let cache: NSCache<CacheKey, NSString> = {
-        let value = NSCache<CacheKey, NSString>()
-        value.countLimit = 2_000
-        value.totalCostLimit = 16 * 1024 * 1024
-        return value
-    }()
+    private let cache = ResourceCache<CacheKey, NSString>(.screenshotText)
 
     func read(_ item: ScreenshotMedia, accurate: Bool, allowCloud: Bool, work: ImageTextRecognitionWork) -> String? {
         guard !work.cancelled else { return nil }
@@ -862,7 +857,7 @@ private final class ScreenshotTextCache: @unchecked Sendable {
               let text = try? ImageTextRecognition.ocr.recognize(in: VNImageRequestHandler(cgImage: image),
                                                                  accurate: accurate, work: work),
               !work.cancelled, (try? ScreenshotFileVersion.check(item, allowCloud: allowCloud)) != nil else { return nil }
-        cache.setObject(text as NSString, forKey: key, cost: text.utf8.count)
+        cache.setObject(text as NSString, forKey: key, cost: max(text.utf8.count, (text as NSString).length * 2))
         return text
     }
 }

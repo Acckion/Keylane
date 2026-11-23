@@ -33,13 +33,10 @@ struct WorkspaceItemIcon: View {
 /// through many cold rows from flooding the system icon service.
 private final class WorkspaceItemIcons: @unchecked Sendable {
     static let shared = WorkspaceItemIcons()
-    private let icons = NSCache<NSString, NSImage>()
+    private let icons = ResourceCache<NSString, NSImage>(.workspace)
     private let queue = DispatchQueue(label: "org.keylane.workspace-icons", qos: .userInitiated)
 
-    private init() {
-        icons.countLimit = 256
-        icons.totalCostLimit = 256 * Self.thumbnailCost
-    }
+    private init() {}
 
     private static let thumbnailPixels = 64
     private static let thumbnailCost = thumbnailPixels * thumbnailPixels * 4

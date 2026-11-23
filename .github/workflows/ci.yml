@@ -88,6 +88,12 @@ jobs:
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-restart-main.swift bash scripts/verify-files.sh
       - name: Deferred file content integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-content-main.swift bash scripts/verify-files.sh
+      - name: File metadata live-update integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-index-live-main.swift bash scripts/verify-files.sh
+      - name: Resource cache budget integration
+        run: bash scripts/verify-resource-budget.sh
+      - name: Named clipboard and preview integration
+        run: bash scripts/verify-clipboard.sh
       - name: File search scheduling integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-search-scheduling-main.swift bash scripts/verify-files.sh
 

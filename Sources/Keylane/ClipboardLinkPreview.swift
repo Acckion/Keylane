@@ -70,8 +70,8 @@ final class ClipboardLinkPreviews {
     init(makeSession: @escaping () -> URLSession = ClipboardLinkPreviews.ephemeralSession) {
         self.makeSession = makeSession
     }
-    private let pages = RequestCache<ClipboardLinkMetadata>(count: 48, bytes: 24 * 1024 * 1024, lifetime: 900)
-    private let icons = RequestCache<NSImage>(count: 128, bytes: 4 * 1024 * 1024, lifetime: 3600)
+    private let pages = RequestCache<ClipboardLinkMetadata>(role: .linkPreview, lifetime: 900)
+    private let icons = RequestCache<NSImage>(role: .linkIcons, lifetime: 3600)
 
     func setEnabled(_ enabled: Bool) {
         guard active != enabled else { return }
@@ -300,8 +300,12 @@ final class ClipboardLinkPreviews {
     }
 
     private static func imageCost(_ image: NSImage?) -> Int {
-        guard let size = image?.size else { return 0 }
-        return Int(size.width * size.height) * 4
+        guard let image else { return 0 }
+        let decoded = image.representations.reduce(0) { total, rep in
+            total + ((rep as? NSBitmapImageRep).map { $0.bytesPerRow * $0.pixelsHigh }
+                     ?? max(0, rep.pixelsWide) * max(0, rep.pixelsHigh) * 4)
+        }
+        return max(decoded, Int(image.size.width * image.size.height) * 4)
     }
 }
 
@@ -317,14 +321,13 @@ private final class RequestCache<Value> {
         }
     }
 
-    private let cache = NSCache<NSURL, Entry>()
+    private let cache: ResourceCache<NSURL, Entry>
     private var pending: [URL: Task<Value?, Never>] = [:]
     private var generation = 0
     private let lifetime: TimeInterval
 
-    init(count: Int, bytes: Int, lifetime: TimeInterval) {
-        cache.countLimit = count
-        cache.totalCostLimit = bytes
+    init(role: ResourceCaches.Role, lifetime: TimeInterval) {
+        cache = ResourceCache(role)
         self.lifetime = lifetime
     }
 

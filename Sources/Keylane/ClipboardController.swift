@@ -123,11 +123,7 @@ final class ClipboardController: ObservableObject {
     private let storageDirectory: URL
     private var runtime: ImageTextRecognitionWork?
     private var store: ClipboardStore?
-    private let listThumbnailCache: NSCache<NSString, NSImage> = {
-        let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 200; cache.totalCostLimit = 8 * 1024 * 1024
-        return cache
-    }()
+    private let listThumbnailCache = ResourceCache<NSString, NSImage>(.clipboard)
 
     private var monitoringRequested = false
     private var timer: Timer?
