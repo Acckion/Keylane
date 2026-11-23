@@ -69,6 +69,7 @@ public final class FileSearchIndex {
                 CREATE TRIGGER IF NOT EXISTS file_ai AFTER INSERT ON files BEGIN INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_ad AFTER DELETE ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
+                CREATE TABLE IF NOT EXISTS file_recovery(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
                 PRAGMA user_version=1;
                 """)
             try prepareStatistics()
@@ -115,7 +116,7 @@ public final class FileSearchIndex {
         // Clearing a body invalidates its extraction state even if the file has not changed.
         try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>''")
     }
-    public func clear() throws { try exec("DELETE FROM files; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
+    public func clear() throws { try exec("DELETE FROM files; DELETE FROM file_recovery; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
     private func prepareStatistics() throws {
         // Initialize older indexes once. The immediate transaction serializes
         // concurrent reader/writer opens and keeps the snapshot and triggers atomic.
@@ -149,6 +150,33 @@ public final class FileSearchIndex {
                 END;
                 """)
         }
+    }
+
+    public struct RecoveryPoint: Codable, Equatable, Sendable {
+        public let eventID: UInt64
+        public let configuration: String
+        public init(eventID: UInt64, configuration: String) {
+            self.eventID = eventID
+            self.configuration = configuration
+        }
+    }
+
+    public func recoveryPoint() throws -> RecoveryPoint? {
+        let s = try statement("SELECT state FROM file_recovery WHERE id=1")
+        defer { sqlite3_finalize(s) }
+        let status = sqlite3_step(s)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw FileIndexError.database }
+        return try? JSONDecoder().decode(RecoveryPoint.self, from: Data(text(s, 0).utf8))
+    }
+
+    public func saveRecoveryPoint(_ point: RecoveryPoint) throws {
+        let state = String(decoding: try JSONEncoder().encode(point), as: UTF8.self)
+        try write("INSERT INTO file_recovery(id,state) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state", [state])
+    }
+
+    public func invalidateRecoveryPoint() throws {
+        try exec("DELETE FROM file_recovery")
     }
 
     public func stats() throws -> FileIndexStats {

@@ -3,6 +3,28 @@ import SQLite3
 @testable import KeylaneCore
 
 final class FileIndexTests: XCTestCase {
+    func testRecoveryPointPersistenceInvalidationRollbackAndClear() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("index.sqlite")
+        let db = try FileSearchIndex(url: url)
+        XCTAssertNil(try db.recoveryPoint(), "Existing indexes without an event cursor require recovery")
+        let point = FileSearchIndex.RecoveryPoint(eventID: UInt64.max - 1, configuration: "授权目录与规则")
+        try db.saveRecoveryPoint(point)
+        XCTAssertEqual(try FileSearchIndex(url: url).recoveryPoint(), point)
+        enum Interrupted: Error { case fixture }
+        XCTAssertThrowsError(try db.transaction {
+            try db.invalidateRecoveryPoint()
+            throw Interrupted.fixture
+        })
+        XCTAssertEqual(try db.recoveryPoint(), point)
+        try db.invalidateRecoveryPoint()
+        XCTAssertNil(try db.recoveryPoint())
+        try db.saveRecoveryPoint(point)
+        try db.clear()
+        XCTAssertNil(try FileSearchIndex(url: url).recoveryPoint())
+    }
+
     func testStatisticsStayConsistentAcrossConnectionsAndRollback() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
