@@ -223,6 +223,7 @@ struct LauncherSettingsPage: Identifiable {
     var toolbarMenu: SettingsToolbarMenu?
     var centeredHeader = false
     var guideURL: URL? = nil
+    var sidebarGroup: LauncherModuleOrigin? = nil
     var loading: AnyPublisher<Bool, Never>?
     let content: () -> AnyView
 }
@@ -256,7 +257,7 @@ struct SettingsWindowCatalog {
     init(pages: [LauncherSettingsPage], origins: [String: LauncherModuleOrigin] = [:]) {
         self.pages = pages
         sidebarGroups = LauncherModuleOrigin.allCases.compactMap { origin in
-            let matches = pages.filter { $0.parentID == nil && (origins[$0.id] ?? .builtInExtension) == origin }
+            let matches = pages.filter { $0.parentID == nil && ($0.sidebarGroup ?? origins[$0.id] ?? .builtInExtension) == origin }
             return matches.isEmpty ? nil : SettingsSidebarGroup(id: origin, pages: matches)
         }
         items = pages.flatMap(\.items)
@@ -954,8 +955,13 @@ final class LauncherModuleRegistry {
     @MainActor var availableAITools: [AIToolRegistration] {
         modules.flatMap { module in
             module.aiTools.map { contribution in
-                let frozen = contribution.forRun()
+                // Catalog browsing is metadata-only. The conversation freezes the
+                // selected provider leases immediately before request dispatch.
+                let frozen = contribution
                 var tool = frozen
+                // Module ownership is assigned here, never trusted from a contribution.
+                tool.owner = module.id
+                tool.ownerTitle = module.displayTitle
                 let generation = toolGenerations[module.id]
                 let activation = activation(for: module.id)
                 tool.available = { [weak self] in

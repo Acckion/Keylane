@@ -225,6 +225,12 @@ let calendarSettingsCatalog = SettingsWindowCatalog(pages: [calendarParent, cale
 precondition(calendarSettingsCatalog.sidebarGroups.flatMap(\.pages).map(\.id) == ["calendar"])
 precondition(calendarSettingsCatalog.page("calendar-enabled")?.parentID == "calendar")
 precondition(calendarSettingsCatalog.item(SettingsItem.calendarSelection.id)?.page == "calendar-enabled")
+let aiSidebarPage = LauncherSettingsPage(id: "ai", title: "AI", symbol: "sparkles", subtitle: "", order: 0,
+                                         items: [], sidebarGroup: .builtInExtension, content: { AnyView(EmptyView()) })
+let aiSidebarCatalog = SettingsWindowCatalog(pages: [aiSidebarPage, hostPage], origins: ["ai": .application, "general": .application])
+precondition(aiSidebarCatalog.sidebarGroups.map(\.id) == [.application, .builtInExtension])
+precondition(aiSidebarCatalog.sidebarGroups[0].pages.map(\.id) == ["general"])
+precondition(aiSidebarCatalog.sidebarGroups[1].pages.map(\.id) == ["ai"])
 print("PASS settings catalog lookup, ordering and page ownership")
 
 
@@ -751,12 +757,17 @@ var toolRegistryFinished = false
 Task { @MainActor in
     let definition = try! AIToolDefinition(name: "module_fixture", title: "Fixture", description: "Synthetic tool")
     var probes = 0
-    let contribution = AIToolRegistration(definition: definition, available: { probes += 1; return true }) { _ in try .init(text: "fixture") }
+    var contribution = AIToolRegistration(definition: definition, available: { probes += 1; return true }) { _ in try .init(text: "fixture") }
+    var leaseSnapshots = 0
+    contribution.owner = .init(rawValue: "fixture.spoofed")
+    contribution.snapshotAvailability = { leaseSnapshots += 1; return { true } }
     let toolModule = LauncherModule(id: ModuleID(rawValue: "fixture.tools"), aiTools: [contribution])
     let tools = try! LauncherModuleRegistry(modules: [toolModule], preferences: extensionPreferences)
     precondition(probes == 0, "Registration cannot query services or permissions")
     let frozen = tools.availableAITools
-    precondition(frozen.count == 1)
+    precondition(frozen.count == 1 && frozen[0].owner == toolModule.id && leaseSnapshots == 0)
+    _ = frozen[0].forRun()
+    precondition(leaseSnapshots == 1)
     precondition(tools.setModuleEnabled(toolModule.id, false))
     precondition(!frozen[0].available() && tools.availableAITools.isEmpty)
     precondition(tools.setModuleEnabled(toolModule.id, true))
@@ -781,18 +792,20 @@ Task { @MainActor in
     let directory = try! LauncherModuleRegistry(modules: [], preferences: extensionPreferences)
     try! directory.install(registered)
     precondition(snapshotCount == 0, "Catalog preparation must not capture provider leases")
-    let originalTool = directory.availableAITools[0]
+    let catalogTool = directory.availableAITools[0]
+    precondition(snapshotCount == 0, "Browsing the catalog must not acquire provider leases")
+    let originalTool = catalogTool.forRun()
     precondition(snapshotCount == 1 && originalTool.snapshotAvailability == nil && originalTool.available())
     featureGeneration += 1
     precondition(!originalTool.available(), "Provider generation revokes an otherwise active module tool")
-    let beforeReplacement = directory.availableAITools[0]
+    let beforeReplacement = directory.availableAITools[0].forRun()
     try! directory.install(registered)
     precondition(!beforeReplacement.available(), "Same-ID replacement revokes the old tool")
-    let beforeDisable = directory.availableAITools[0]
+    let beforeDisable = directory.availableAITools[0].forRun()
     enabled = false; changes.send()
     enabled = true; changes.send()
     precondition(!beforeDisable.available(), "Registration reenable cannot revive the old tool")
-    let beforeRemoval = directory.availableAITools[0]
+    let beforeRemoval = directory.availableAITools[0].forRun()
     try! directory.uninstall(owner)
     precondition(!beforeRemoval.available() && directory.availableAITools.isEmpty)
     try! directory.install(registered)

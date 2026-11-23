@@ -777,6 +777,12 @@ if CommandLine.arguments.contains("--manager-preview") {
     precondition(URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath() == root.appendingPathComponent("home").resolvingSymlinksInPath(), "manager fixture requires its isolated home")
     let previewDelegate = Delegate()
     let previewModel = previewDelegate.model
+    guard let folderPage = previewModel.launcherModules?.settingsCatalog.page(DropShelfModule.folderObservationID) else {
+        fatalError("folder observation settings missing")
+    }
+    expect(folderPage.parentID == "keylane.drop-shelf", "folder observation uses the shelf settings subpage")
+    expect(Set(folderPage.items.map(\.id)) == Set([DropShelfModule.screenshotFolder.id, DropShelfModule.downloadFolder.id]),
+           "both folder locations are individually searchable from settings")
     NSApp.delegate = previewDelegate
     previewModel.dropShelf.start(registry: previewModel.menuBar)
     guard let managerStore = previewModel.dropShelf.store else { fatalError(previewModel.dropShelf.error) }

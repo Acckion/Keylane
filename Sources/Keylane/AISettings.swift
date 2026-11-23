@@ -22,12 +22,16 @@ enum AIModule {
             .appendingPathComponent("Keylane/AI/history.sqlite")
         let quickAI = AIConversationSession(configuration: configuration, runtime: runtime,
                                         history: AIConversationRepository(url: historyURL), preferredQuickModel: { interaction.preferredModelID })
-        quickAI.configureTools(preferences: interaction) { [weak model, weak quickAI] in
+        quickAI.configureTools(preferences: interaction, discovery: AIFileToolProvider.discovery) { [weak model, weak quickAI] in
             guard let model, let quickAI else { return [] }
             let tools = (model.launcherModules?.availableAITools ?? []) + AIFileToolProvider.registrations(
                 preferences: model.aiFileAccess, project: quickAI.currentProject,
                 currentProject: { [weak quickAI] in quickAI?.currentProject }, index: model.fileSearch.aiToolIndexSource())
-            return tools + [AIFileToolProvider.discovery(tools)]
+            return tools.map { registration in
+                var copy = registration
+                if copy.owner == nil { copy.owner = .init(rawValue: "keylane.ai"); copy.ownerTitle = "AI" }
+                return copy
+            }
         }
         let chat = AIChatWindow(controller: quickAI, configuration: configuration, interaction: interaction,
                                 appearance: model.$appearance.eraseToAnyPublisher())
@@ -125,10 +129,11 @@ enum AIModule {
                               pages: [AIActionLauncher.page(model: model), QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
                                       AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
-                  order: 8, items: [interactions, fileAccess],
+                  order: 0, items: [interactions, fileAccess],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
+                  sidebarGroup: .builtInExtension,
                   content: { [weak model] in
                       guard let model else { return AnyView(EmptyView()) }
                       return AnyView(AISettingsHome(model: model))
