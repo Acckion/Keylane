@@ -69,6 +69,9 @@ public final class FileSearchIndex {
                 CREATE TRIGGER IF NOT EXISTS file_ai AFTER INSERT ON files BEGIN INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_ad AFTER DELETE ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
+                CREATE TABLE IF NOT EXISTS file_content_queue(path TEXT PRIMARY KEY,token TEXT NOT NULL,root TEXT NOT NULL,modified REAL NOT NULL,ready REAL NOT NULL DEFAULT 0);
+                CREATE INDEX IF NOT EXISTS file_content_ready ON file_content_queue(ready);
+                CREATE TRIGGER IF NOT EXISTS file_content_delete AFTER DELETE ON files BEGIN DELETE FROM file_content_queue WHERE path=old.path; END;
                 CREATE TABLE IF NOT EXISTS file_recovery(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
                 PRAGMA user_version=1;
                 """)
@@ -95,6 +98,83 @@ public final class FileSearchIndex {
         try write("UPDATE files SET root=?,epoch=?,volume=?,external=? WHERE path=? AND modified=? AND directory=? AND symlink=? AND epoch LIKE ?",[root,epoch,record.volume,record.external ? "1":"0",record.path,String(record.modified),record.directory ? "1":"0",record.symlink ? "1":"0",contentSearch ? "c:%":"n:%"])
         return sqlite3_changes(db) > 0
     }
+    public struct ContentJob: Sendable {
+        public let path: String, token: String, root: String
+        public let modified: Double
+    }
+
+    /// Metadata and its durable extraction request are committed together by the
+    /// caller's directory transaction. No file body is read here.
+    public func stageMetadata(_ record: FileIndexRecord, root: String, epoch: String,
+                              contentSearch: Bool, force: Bool = false) throws {
+        if !force, try touchUnchanged(record, root: root, epoch: epoch, contentSearch: contentSearch) { return }
+        let needsBody = contentSearch && !record.directory && !record.symlink && FileContentReader.supports(record.path)
+        try put(record, root: root, epoch: epoch)
+        if needsBody {
+            try write("INSERT INTO file_content_queue(path,token,root,modified,ready) VALUES(?,?,?,?,0) ON CONFLICT(path) DO UPDATE SET token=excluded.token,root=excluded.root,modified=excluded.modified,ready=0",
+                      [record.path, UUID().uuidString, root, String(record.modified)])
+        } else { try write("DELETE FROM file_content_queue WHERE path=?", [record.path]) }
+    }
+
+    public func nextContentJob(now: Date = Date()) throws -> ContentJob? {
+        try nextContentJobs(limit: 1, now: now).first
+    }
+
+    public func nextContentJobs(limit: Int = 8, now: Date = Date()) throws -> [ContentJob] {
+        let s = try statement("SELECT path,token,root,modified FROM file_content_queue WHERE ready<=? ORDER BY ready,rowid LIMIT ?", [String(now.timeIntervalSince1970), String(max(1, min(8, limit)))])
+        defer { sqlite3_finalize(s) }
+        var jobs: [ContentJob] = []
+        while true {
+            let status = sqlite3_step(s)
+            if status == SQLITE_DONE { return jobs }
+            guard status == SQLITE_ROW else { throw FileIndexError.database }
+            jobs.append(ContentJob(path: text(s, 0), token: text(s, 1), root: text(s, 2), modified: sqlite3_column_double(s, 3)))
+        }
+    }
+
+    public func nextContentRetry() throws -> Date? {
+        let s = try statement("SELECT ready FROM file_content_queue ORDER BY ready LIMIT 1")
+        defer { sqlite3_finalize(s) }
+        let status = sqlite3_step(s)
+        if status == SQLITE_DONE { return nil }
+        guard status == SQLITE_ROW else { throw FileIndexError.database }
+        return Date(timeIntervalSince1970: sqlite3_column_double(s, 0))
+    }
+
+    public struct ContentUpdate: Sendable {
+        public let job: ContentJob
+        public let body: String?
+        public init(job: ContentJob, body: String?) { self.job = job; self.body = body }
+    }
+
+    @discardableResult public func completeContent(_ job: ContentJob, body: String, isCancelled: () -> Bool = { false }) throws -> Bool {
+        try applyContent([.init(job: job, body: body)], isCancelled: isCancelled)
+    }
+
+    /// One bounded batch shares a WAL commit; extraction has already finished.
+    @discardableResult public func applyContent(_ updates: [ContentUpdate], isCancelled: () -> Bool = { false }) throws -> Bool {
+        precondition(updates.count <= 8)
+        var applied = false
+        try transaction {
+            for update in updates {
+                if isCancelled() { throw CancellationError() }
+                let job = update.job
+                if let body = update.body {
+                    try write("UPDATE files SET body=?,epoch='c:' || substr(epoch,3) WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%' AND EXISTS(SELECT 1 FROM file_content_queue WHERE path=? AND token=?)",
+                              [FileSearchRules.fold(body), job.path, job.root, String(job.modified), job.path, job.token])
+                    applied = sqlite3_changes(db) > 0 || applied
+                    try write("DELETE FROM file_content_queue WHERE path=? AND token=?", [job.path, job.token])
+                } else { try deferContent(job, until: Date().addingTimeInterval(60)) }
+            }
+            if isCancelled() { throw CancellationError() }
+        }
+        return applied
+    }
+
+    public func deferContent(_ job: ContentJob, until date: Date) throws {
+        try write("UPDATE file_content_queue SET ready=? WHERE path=? AND token=?", [String(date.timeIntervalSince1970), job.path, job.token])
+    }
+
     public func transaction(_ body: () throws -> Void) throws { try exec("BEGIN IMMEDIATE"); do { try body(); try exec("COMMIT") } catch { try? exec("ROLLBACK"); throw error } }
     public func removeUnseen(root: String, epoch: String) throws { try write("DELETE FROM files WHERE root=? AND epoch<>?",[root,epoch]) }
     /// Limit reconciliation to the changed entry and its descendants.
@@ -158,9 +238,11 @@ public final class FileSearchIndex {
     }
     public func clearBodies() throws {
         // Clearing a body invalidates its extraction state even if the file has not changed.
-        try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>''")
+        try transaction {
+            try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>'' OR path IN (SELECT path FROM file_content_queue); DELETE FROM file_content_queue")
+        }
     }
-    public func clear() throws { try exec("DELETE FROM files; DELETE FROM file_recovery; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
+    public func clear() throws { try exec("DELETE FROM files; DELETE FROM file_content_queue; DELETE FROM file_recovery; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
     private func prepareStatistics() throws {
         // Initialize older indexes once. The immediate transaction serializes
         // concurrent reader/writer opens and keeps the snapshot and triggers atomic.
