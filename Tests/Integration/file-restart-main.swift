@@ -65,6 +65,32 @@ pump(3)
 require(try contains(sentinel.lastPathComponent), "Warm startup performed a full scan")
 print("PASS warm startup reused baseline, early query did not crawl: \(Date().timeIntervalSince(warmStart))s")
 controller.stopRuntime(); pump(0.3)
+
+// A legacy v1 checkpoint may have encoded launcher visibility as true.
+let original = try db.recoveryPoint()!
+let launcherOff = "\"searchFromLauncher\":false"
+let launcherOn = "\"searchFromLauncher\":true"
+require(original.configuration.components(separatedBy: launcherOff).count == 2, "Expected one launcher bit in the synthetic checkpoint")
+try db.saveRecoveryPoint(.init(eventID: original.eventID,
+                               configuration: original.configuration.replacingOccurrences(of: launcherOff, with: launcherOn),
+                               retryPaths: original.retryPaths))
+controller = FileSearchController(directory: store, preferences: prefs, startImmediately: false)
+var toggledDuringRestore = false
+var offeredDuringRestore: [SpotlightFile] = []
+controller.updated = { rows, _ in offeredDuringRestore = rows }
+controller.testDidBeginIndexRestoration = {
+    controller.testDidBeginIndexRestoration = nil
+    controller.options.searchFromLauncher.toggle()
+    controller.search(sentinel.lastPathComponent, standalone: false)
+    toggledDuringRestore = true
+}
+controller.startRuntime()
+try wait("Launcher visibility toggle during restore") { controller.indexStatus == "索引已恢复" }
+require(toggledDuringRestore && controller.options.searchFromLauncher, "Fixture did not toggle while restoring")
+try wait("Launcher sees retained item") { !controller.isSearching && offeredDuringRestore.contains { $0.id == sentinel.path } }
+require(try contains(sentinel.lastPathComponent), "Visibility-only change invalidated the saved baseline")
+print("PASS in-flight launcher visibility toggle uses the legacy warm checkpoint without crawling")
+controller.stopRuntime(); pump(0.3)
 let removed = nested.appendingPathComponent("fixture-0.txt")
 let renamed = nested.appendingPathComponent("renamed-fixture.txt")
 try FileManager.default.removeItem(at: removed)
@@ -91,6 +117,25 @@ try db.invalidateRecoveryPoint()
 controller = FileSearchController(directory: store, preferences: prefs)
 try wait("Interrupted baseline fallback") { try !controller.indexing && db.recoveryPoint() != nil && !contains(sentinel.lastPathComponent) }
 print("PASS interrupted scan requires a full baseline")
+controller.stopRuntime(); pump(0.3)
+
+try insertSentinel()
+controller = FileSearchController(directory: store, preferences: prefs, startImmediately: false)
+var restorationAttempts = 0
+controller.testDidBeginIndexRestoration = {
+    restorationAttempts += 1
+    if restorationAttempts == 1 {
+        controller.options.excludedPaths.append(added.path)
+    } else {
+        controller.testDidBeginIndexRestoration = nil
+    }
+}
+controller.startRuntime()
+try wait("Changed exclusion supersedes in-flight restore") {
+    try restorationAttempts == 2 && !controller.indexing && db.recoveryPoint() != nil
+        && !contains(sentinel.lastPathComponent) && !contains(added.lastPathComponent)
+}
+print("PASS material replay configuration retries against a new fingerprint and removes stale baseline rows")
 controller.stopRuntime(); pump(0.3)
 try insertSentinel()
 options.ignorePatterns.append("offline-added.txt")

@@ -169,24 +169,37 @@ final class FileSearchController: ObservableObject {
         }
     }
 
-    private struct RecoveryConfiguration: Codable {
+    private struct RecoveryConfiguration: Encodable {
         let version: Int
-        let options: FileSearchOptions
+        var options: FileSearchOptions
         let restored: [String]
         let exclusions: [String]
         let rootIdentities: [String]
+
+        func encoded() throws -> String {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return String(decoding: try encoder.encode(self), as: UTF8.self)
+        }
+    }
+
+    private static func indexOptions(_ options: FileSearchOptions) -> FileSearchOptions {
+        var value = options
+        value.searchFromLauncher = false  // Visibility, not index contents or authorization.
+        return value
     }
 
     private static func recoveryConfiguration(options: FileSearchOptions, restored: Set<String>, exclusions: [String]) throws -> String {
+        try recoveryConfigurationSnapshot(options: options, restored: restored, exclusions: exclusions).encoded()
+    }
+
+    private static func recoveryConfigurationSnapshot(options: FileSearchOptions, restored: Set<String>, exclusions: [String]) -> RecoveryConfiguration {
         let identities = options.roots.map { path -> String in
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return path + "\0unavailable" }
             return "\(path)\0\(attributes[.systemNumber] ?? "")\0\(attributes[.systemFileNumber] ?? "")"
         }
-        let value = RecoveryConfiguration(version: 1, options: options, restored: restored.sorted(),
-                                          exclusions: exclusions.sorted(), rootIdentities: identities)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return String(decoding: try encoder.encode(value), as: UTF8.self)
+        return .init(version: 1, options: indexOptions(options), restored: restored.sorted(),
+                     exclusions: exclusions.sorted(), rootIdentities: identities)
     }
 
     private func restoreIndex(_ recovery: FileSearchIndex.RecoveryPoint?) {
@@ -194,15 +207,34 @@ final class FileSearchController: ObservableObject {
         let config = eventConfiguration
         let token = cancellation
         restoringIndex = true
+        #if KEYLANE_FILE_EVENT_TESTING
+        testDidBeginIndexRestoration?()
+        #endif
         eventQueue.async { [weak self] in
-            let fingerprint = try? Self.recoveryConfiguration(options: config.options, restored: config.restored,
-                                                             exclusions: config.exclusions.map(\.path))
+            var captured = Self.recoveryConfigurationSnapshot(options: config.options, restored: config.restored,
+                                                               exclusions: config.exclusions.map(\.path))
+            let fingerprint = try? captured.encoded()
+            // Older v1 checkpoints stored the launcher bit. Accept that precise
+            // alternate encoding using the same authorized roots and identities.
+            var matches = fingerprint != nil && fingerprint == recovery?.configuration
+            if !matches, fingerprint != nil, let recovery {
+                captured.options.searchFromLauncher = true
+                matches = (try? captured.encoded()) == recovery.configuration
+            }
+            let matchesRecovery = matches
             DispatchQueue.main.async {
-                guard let self, self.cancellation === token, !self.didStart, self.isRunning,
-                      self.options.enabled, !self.indexPaused, config == self.eventConfiguration else { return }
+                guard let self, self.cancellation === token else { return }
                 self.restoringIndex = false
-                if let recovery, recovery.eventID > 0, recovery.eventID <= FSEventsGetCurrentEventId(),
-                   fingerprint == recovery.configuration {
+                guard !token.cancelled, !self.didStart, self.isRunning,
+                      self.options.enabled, !self.indexPaused else { return }
+                guard config == self.eventConfiguration else {
+                    // Only a real index setting change needs a fresh comparison.
+                    // Complete this attempt before retrying so search never wedges.
+                    self.restoreIndex(recovery)
+                    return
+                }
+                if let recovery, let fingerprint, recovery.eventID > 0, recovery.eventID <= self.currentIndexEventID(),
+                   matchesRecovery {
                     self.acceptedEventID = recovery.eventID
                     self.startWatch(since: recovery.eventID)
                     if self.watchLifetime != nil {
@@ -277,7 +309,7 @@ final class FileSearchController: ObservableObject {
             startIndex()
             reloadSearch()
         }
-        else { indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
+        else { restoringIndex = false; indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
     private func resolveGrants() {
         aiIndexRevision = UUID()
@@ -344,6 +376,7 @@ final class FileSearchController: ObservableObject {
         if paused {
             cancellation.cancel()
             cancellation = FileScanCancellation()
+            restoringIndex = false
             stopWatch()
             indexing = false
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
@@ -879,7 +912,7 @@ final class FileSearchController: ObservableObject {
         didStart = true; cancellation.cancel(); let token = FileScanCancellation(); cancellation = token
         let config = authorizedOptions; let automatic = automaticExclusions.map(\.path)
         let exclusions = config.excludedPaths + automatic; let restored = restored
-        let eventID = paths == nil ? FSEventsGetCurrentEventId() : acceptedEventID
+        let eventID = paths == nil ? currentIndexEventID() : acceptedEventID
         acceptedEventID = max(acceptedEventID, eventID)
         startWatch(since: eventID)
         let canCheckpoint = watchLifetime != nil && (paths == nil || checkpointReady)
@@ -1149,7 +1182,7 @@ final class FileSearchController: ObservableObject {
     }
 
     private var eventConfiguration: IndexEventConfiguration {
-        .init(options: authorizedOptions, restored: restored, exclusions: automaticExclusions)
+        .init(options: Self.indexOptions(authorizedOptions), restored: restored, exclusions: automaticExclusions)
     }
 
     private func stopWatch() {
@@ -1171,9 +1204,25 @@ final class FileSearchController: ObservableObject {
         watch = nil
     }
 
+    private func currentIndexEventID() -> FSEventStreamEventId {
+        #if KEYLANE_FILE_EVENT_TESTING
+        if let testQuietIndexEventID { return testQuietIndexEventID }
+        #endif
+        return FSEventsGetCurrentEventId()
+    }
+
     private func startWatch(since eventID: FSEventStreamEventId = FSEventStreamEventId(kFSEventStreamEventIdSinceNow)) {
         let roots = authorizedRoots
         guard watch == nil, watchEnabled, options.enabled, !indexPaused, !roots.isEmpty else { return }
+        #if KEYLANE_FILE_EVENT_TESTING
+        if testQuietIndexEventID != nil {
+            // Establish a quiet watcher for controller state tests; no native
+            // replay, cursor ordering, or system watcher coverage is implied.
+            watchLifetime = FileScanCancellation()
+            replayingEvents = false
+            return
+        }
+        #endif
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
         watch = FSEventStreamCreate(nil, { _, context, count, rawPaths, flags, ids in
             guard let context else { return }
@@ -1211,6 +1260,9 @@ final class FileSearchController: ObservableObject {
     }
 
     #if KEYLANE_FILE_EVENT_TESTING
+    var testDidBeginIndexRestoration: (() -> Void)?
+    var testQuietIndexEventID: FSEventStreamEventId?
+
     // Feed loss/wrap flags deterministically through the production event pipeline.
     func testIndexEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
         precondition(paths.count == flags.count)
