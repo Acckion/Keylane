@@ -54,7 +54,8 @@ public struct FileSearchLocation {
 
     public static func typedURL(_ text: String) -> URL? {
         guard !text.contains("\0"), text.hasPrefix("/") || text == "~" || text.hasPrefix("~/") else { return nil }
-        return URL(fileURLWithPath: (text as NSString).expandingTildeInPath)
+        // Parsing user input must not probe an unavailable filesystem on the UI thread.
+        return URL(fileURLWithPath: (text as NSString).expandingTildeInPath, isDirectory: text.hasSuffix("/") || text == "~")
     }
 
     public static func canonicalPath(_ path: String) -> String? {
