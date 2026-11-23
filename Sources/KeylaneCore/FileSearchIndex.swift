@@ -99,8 +99,10 @@ public final class FileSearchIndex {
     public func removeUnseen(root: String, subtree: String, epoch: String) throws {
         let lower = subtree + "/"
         let upper = subtree + "0" // The next byte after the slash, under SQLite's binary collation.
-        try write("DELETE FROM files WHERE root=? AND epoch<>? AND path IN (SELECT path FROM files WHERE path=? UNION ALL SELECT path FROM files WHERE path>=? AND path<?)",
-                  [root, epoch, subtree, lower, upper])
+        // Bind row IDs first so SQLite cannot scan every record in the root
+        // (including large body overflow pages) for each changed subtree.
+        try write("DELETE FROM files WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND epoch<>?",
+                  [subtree, lower, upper, root, epoch])
     }
     public func removeScope(_ root: String) throws { try write("DELETE FROM files WHERE root=?",[root]) }
     public func removeUnavailableVolumes() throws {

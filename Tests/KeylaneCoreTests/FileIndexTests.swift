@@ -2,6 +2,33 @@ import XCTest
 @testable import KeylaneCore
 
 final class FileIndexTests: XCTestCase {
+    func testSubtreeCleanupPreservesEpochOwnerAndSiblingBoundaries() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let db = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        let root = "/fixture"
+        let rows = [
+            ("/fixture/target", root, "old"),
+            ("/fixture/target/removed.txt", root, "old"),
+            ("/fixture/target/current.txt", root, "current"),
+            ("/fixture/target/other-owner.txt", "/other", "old"),
+            ("/fixture/target-extra.txt", root, "old"),
+            ("/fixture/target0/sibling.txt", root, "old")
+        ]
+        for (path, owner, epoch) in rows {
+            try db.put(.init(path: path, name: URL(fileURLWithPath: path).lastPathComponent,
+                             volume: "/", modified: 1, directory: false, symlink: false),
+                       body: String(repeating: "body ", count: 1024), root: owner, epoch: epoch)
+        }
+        try db.removeUnseen(root: root, subtree: "/fixture/target", epoch: "current")
+        XCTAssertEqual(try db.stats().entries, 4)
+        let options = FileSearchOptions(roots: [root, "/other"])
+        XCTAssertTrue(try db.search("removed", options: options).isEmpty)
+        for query in ["current", "other-owner", "target-extra", "sibling"] {
+            XCTAssertEqual(try db.search(query, options: options).count, 1)
+        }
+    }
+
     func testChineseMultiwordNamesAndLiteralPunctuation() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:directory) }
