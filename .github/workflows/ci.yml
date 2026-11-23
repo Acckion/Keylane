@@ -47,7 +47,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          changed_build_inputs="$(git diff --name-only "$BASE_SHA" HEAD -- Package.swift Package.resolved scripts/build-release-executable.sh scripts/app_intents.py scripts/package.py scripts/package.sh .github/workflows/ci.yml)"
+          changed_build_inputs="$(git diff --name-only "$BASE_SHA" HEAD -- Package.swift Package.resolved scripts/build-release-executable.sh scripts/app_intents.py .github/workflows/ci.yml)"
           if [[ -n "$changed_build_inputs" ]]; then
             xcodebuild -version
             executable="$(bash scripts/build-release-executable.sh)"
