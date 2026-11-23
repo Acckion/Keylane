@@ -87,6 +87,9 @@ final class FileIndexTests: XCTestCase {
         XCTAssertNotNil(try db.nextContentJob(), "Cleared pending bodies must be extracted after reenable")
         try db.removeScope("/fixture")
         XCTAssertNil(try db.nextContentJob(), "Deleted rows cannot retain extraction work")
+        try db.clear()
+        try db.stageMetadata(record(4), root: "/fixture", epoch: "c:after-vacuum", contentSearch: true)
+        XCTAssertNotNil(try db.nextContentJob(), "Cached SQL plans must remain valid after clear/VACUUM")
     }
 
     func testDeferredContentReaderBoundsAndRejectsSymlinkPaths() throws {
@@ -104,6 +107,62 @@ final class FileIndexTests: XCTestCase {
         try FileManager.default.removeItem(at: file)
         try FileManager.default.createSymbolicLink(at: file, withDestinationURL: directory.appendingPathComponent("outside.txt"))
         XCTAssertThrowsError(try FileContentReader.read(job))
+    }
+
+    func testContentBatchIsBoundedAndCancelledCommitRollsBackEveryJob() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let db = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        for i in 0..<10 {
+            try db.stageMetadata(.init(path: "/fixture/doc-\(i).txt", name: "doc-\(i).txt", volume: "/", modified: 1, directory: false, symlink: false), root: "/fixture", epoch: "c:scan", contentSearch: true)
+        }
+        let jobs = try db.nextContentJobs(limit: 999)
+        XCTAssertEqual(jobs.count, 8)
+        let updates = jobs.map { FileSearchIndex.ContentUpdate(job: $0, body: "batchbody") }
+        var checks = 0
+        XCTAssertThrowsError(try db.applyContent(updates, isCancelled: { checks += 1; return checks == 4 }))
+        XCTAssertEqual(try db.nextContentJobs().map(\.token), jobs.map(\.token))
+        var options = FileSearchOptions(roots: ["/fixture"]); options.ignorePatterns = []; options.contentSearch = true
+        XCTAssertTrue(try db.search("batchbody", options: options).isEmpty)
+        XCTAssertTrue(try db.applyContent(updates))
+        XCTAssertEqual(try db.nextContentJobs().count, 2)
+        XCTAssertEqual(try db.search("batchbody", options: options).count, 8)
+    }
+
+    func testContentSessionRejectsRootReplacement() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let scope = directory.appendingPathComponent("scope")
+        try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true)
+        let file = scope.appendingPathComponent("document.txt")
+        try Data("approved".utf8).write(to: file)
+        let modified = try XCTUnwrap(file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).timeIntervalSince1970
+        let job = FileSearchIndex.ContentJob(path: file.path, token: "test", root: scope.path, modified: modified)
+        let session = FileContentReader.Session()
+        XCTAssertEqual(try session.read(job), "approved")
+        try FileManager.default.moveItem(at: scope, to: directory.appendingPathComponent("moved"))
+        try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: false)
+        try Data("replacement".utf8).write(to: file)
+        XCTAssertThrowsError(try session.read(job), "A pinned root must not silently follow a replacement directory")
+    }
+
+    func testContentQueueTracksOverlappingScopeOwnership() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let db = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        let record = FileIndexRecord(path: "/fixture/sub/document.txt", name: "document.txt", volume: "/", modified: 1, directory: false, symlink: false)
+        try db.stageMetadata(record, root: "/fixture", epoch: "c:parent", contentSearch: true)
+        let parent = try XCTUnwrap(db.nextContentJob())
+        try db.stageMetadata(record, root: "/fixture/sub", epoch: "c:child", contentSearch: true)
+        let child = try XCTUnwrap(db.nextContentJob())
+        XCTAssertEqual(child.root, "/fixture/sub")
+        XCTAssertFalse(try db.completeContent(parent, body: "staleparent"))
+        XCTAssertEqual(try db.nextContentJob()?.root, child.root, "Old owner must not delete the retargeted request")
+        try db.deferContent(parent, until: Date().addingTimeInterval(60))
+        XCTAssertNotNil(try db.nextContentJob(), "Old owner must not delay a different scope's request")
+        XCTAssertTrue(try db.completeContent(child, body: "childbody"))
+        var options = FileSearchOptions(roots: ["/fixture", "/fixture/sub"]); options.contentSearch = true; options.ignorePatterns = []
+        XCTAssertEqual(try db.search("childbody", options: options).count, 1)
     }
 
     func testStatisticsStayConsistentAcrossConnectionsAndRollback() throws {

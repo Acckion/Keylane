@@ -19,6 +19,7 @@ for i in 0..<24 {
     pdf.closePDF()
 }
 let files = try FileManager.default.contentsOfDirectory(at: scope, includingPropertiesForKeys: [.contentModificationDateKey]).sorted { $0.path < $1.path }
+let filesByPath = Dictionary(uniqueKeysWithValues: files.map { ($0.path, $0) })
 let records = try files.map { url -> FileIndexRecord in
     let modified = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!.timeIntervalSince1970
     return .init(path: url.path, name: url.lastPathComponent, volume: "/", modified: modified, directory: false, symlink: false)
@@ -31,7 +32,7 @@ func run(_ mode: String, round: Int) throws {
         for record in records {
             try autoreleasepool {
                 if mode == "inline" {
-                    try db.put(record, body: FileSearchIndex.content(at: URL(fileURLWithPath: record.path)), root: scope.path, epoch: "c:scan")
+                    try db.put(record, body: FileSearchIndex.content(at: filesByPath[record.path]!), root: scope.path, epoch: "c:scan")
                 } else { try db.stageMetadata(record, root: scope.path, epoch: "c:scan", contentSearch: true) }
             }
         }
@@ -41,13 +42,14 @@ func run(_ mode: String, round: Int) throws {
         while true {
             let jobs = try db.nextContentJobs()
             if jobs.isEmpty { break }
-            let updates = try jobs.map { job in try autoreleasepool { FileSearchIndex.ContentUpdate(job: job, body: try FileContentReader.read(job)) } }
+            let session = FileContentReader.Session()
+            let updates = try jobs.map { job in try autoreleasepool { FileSearchIndex.ContentUpdate(job: job, body: try session.read(job)) } }
             _ = try db.applyContent(updates)
         }
     }
     print("MEASURE mode=\(mode) round=\(round) files=\(records.count) metadata_wall=\(metadataWall) metadata_cpu=\(metadataCPU) total_wall=\(Date().timeIntervalSince(start)) total_cpu=\(cpu() - cpuStart)")
 }
-for round in 1...3 {
+for round in 1...5 {
     if round % 2 == 0 { try run("deferred", round: round); try run("inline", round: round) }
     else { try run("inline", round: round); try run("deferred", round: round) }
 }

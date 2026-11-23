@@ -51,6 +51,7 @@ public final class FileSearchIndex {
         }
     }
     private var db: OpaquePointer?
+    private var contentStatements: [String: OpaquePointer] = [:]
     public let url: URL
     public init(url: URL) throws {
         self.url = url
@@ -71,6 +72,7 @@ public final class FileSearchIndex {
                 CREATE TRIGGER IF NOT EXISTS file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TABLE IF NOT EXISTS file_content_queue(path TEXT PRIMARY KEY,token TEXT NOT NULL,root TEXT NOT NULL,modified REAL NOT NULL,ready REAL NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS file_content_ready ON file_content_queue(ready);
+                CREATE TRIGGER IF NOT EXISTS file_content_owner AFTER UPDATE OF root ON files WHEN old.root<>new.root BEGIN UPDATE file_content_queue SET root=new.root WHERE path=new.path; END;
                 CREATE TRIGGER IF NOT EXISTS file_content_delete AFTER DELETE ON files BEGIN DELETE FROM file_content_queue WHERE path=old.path; END;
                 CREATE TABLE IF NOT EXISTS file_recovery(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
                 PRAGMA user_version=1;
@@ -79,7 +81,7 @@ public final class FileSearchIndex {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch { sqlite3_close(db); db = nil; throw error }
     }
-    deinit { sqlite3_close(db) }
+    deinit { contentStatements.values.forEach { sqlite3_finalize($0) }; sqlite3_close(db) }
     public func releaseCachedPages() { sqlite3_db_release_memory(db) }
     private func exec(_ sql: String) throws { guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw FileIndexError.database } }
     private func statement(_ sql: String, _ values: [String] = []) throws -> OpaquePointer {
@@ -90,6 +92,22 @@ public final class FileSearchIndex {
         return s
     }
     private func write(_ sql: String, _ values: [String] = []) throws { let s = try statement(sql, values); defer { sqlite3_finalize(s) }; guard sqlite3_step(s) == SQLITE_DONE else { throw FileIndexError.database } }
+    // Only the fixed content-queue writes use this bounded statement cache.
+    // Clear bindings after each use so cached plans never retain body strings.
+    private func writeContent(_ sql: String, _ values: [String]) throws {
+        let s: OpaquePointer
+        if let cached = contentStatements[sql] { s = cached }
+        else {
+            if contentStatements.count == 5, let key = contentStatements.keys.first, let old = contentStatements.removeValue(forKey: key) { sqlite3_finalize(old) }
+            s = try statement(sql); contentStatements[sql] = s
+        }
+        defer { sqlite3_reset(s); sqlite3_clear_bindings(s) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        for (index, value) in values.enumerated() {
+            guard value.withCString({ sqlite3_bind_text(s, Int32(index + 1), $0, Int32(value.utf8.count), transient) }) == SQLITE_OK else { throw FileIndexError.database }
+        }
+        guard sqlite3_step(s) == SQLITE_DONE else { throw FileIndexError.database }
+    }
     private func text(_ s: OpaquePointer, _ i: Int32) -> String { sqlite3_column_text(s,i).map { String(cString: $0) } ?? "" }
     public func put(_ record: FileIndexRecord, body: String = "", root: String, epoch: String) throws {
         try write("INSERT INTO files(path,name,body,root,volume,modified,directory,symlink,external,epoch) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET name=excluded.name,body=excluded.body,root=excluded.root,volume=excluded.volume,modified=excluded.modified,directory=excluded.directory,symlink=excluded.symlink,external=excluded.external,epoch=excluded.epoch",[record.path,FileSearchRules.fold(record.name),FileSearchRules.fold(body),root,record.volume,String(record.modified),record.directory ? "1":"0",record.symlink ? "1":"0",record.external ? "1":"0",epoch])
@@ -111,9 +129,9 @@ public final class FileSearchIndex {
         let needsBody = contentSearch && !record.directory && !record.symlink && FileContentReader.supports(record.path)
         try put(record, root: root, epoch: epoch)
         if needsBody {
-            try write("INSERT INTO file_content_queue(path,token,root,modified,ready) VALUES(?,?,?,?,0) ON CONFLICT(path) DO UPDATE SET token=excluded.token,root=excluded.root,modified=excluded.modified,ready=0",
+            try writeContent("INSERT INTO file_content_queue(path,token,root,modified,ready) VALUES(?,?,?,?,0) ON CONFLICT(path) DO UPDATE SET token=excluded.token,root=excluded.root,modified=excluded.modified,ready=0",
                       [record.path, UUID().uuidString, root, String(record.modified)])
-        } else { try write("DELETE FROM file_content_queue WHERE path=?", [record.path]) }
+        } else { try writeContent("DELETE FROM file_content_queue WHERE path=?", [record.path]) }
     }
 
     public func nextContentJob(now: Date = Date()) throws -> ContentJob? {
@@ -160,10 +178,10 @@ public final class FileSearchIndex {
                 if isCancelled() { throw CancellationError() }
                 let job = update.job
                 if let body = update.body {
-                    try write("UPDATE files SET body=?,epoch='c:' || substr(epoch,3) WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%' AND EXISTS(SELECT 1 FROM file_content_queue WHERE path=? AND token=?)",
+                    try writeContent("UPDATE files SET body=?,epoch='c:' || substr(epoch,3) WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%' AND EXISTS(SELECT 1 FROM file_content_queue WHERE path=? AND token=?)",
                               [FileSearchRules.fold(body), job.path, job.root, String(job.modified), job.path, job.token])
                     applied = sqlite3_changes(db) > 0 || applied
-                    try write("DELETE FROM file_content_queue WHERE path=? AND token=?", [job.path, job.token])
+                    try writeContent("DELETE FROM file_content_queue WHERE path=? AND token=? AND root=?", [job.path, job.token, job.root])
                 } else { try deferContent(job, until: Date().addingTimeInterval(60)) }
             }
             if isCancelled() { throw CancellationError() }
@@ -172,7 +190,7 @@ public final class FileSearchIndex {
     }
 
     public func deferContent(_ job: ContentJob, until date: Date) throws {
-        try write("UPDATE file_content_queue SET ready=? WHERE path=? AND token=?", [String(date.timeIntervalSince1970), job.path, job.token])
+        try writeContent("UPDATE file_content_queue SET ready=? WHERE path=? AND token=? AND root=?", [String(date.timeIntervalSince1970), job.path, job.token, job.root])
     }
 
     public func transaction(_ body: () throws -> Void) throws { try exec("BEGIN IMMEDIATE"); do { try body(); try exec("COMMIT") } catch { try? exec("ROLLBACK"); throw error } }

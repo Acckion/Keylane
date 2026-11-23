@@ -1,5 +1,6 @@
 import AppKit
 import KeylaneCore
+import SQLite3
 
 setbuf(stdout, nil)
 let base = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYLANE_FILE_TEST_ROOT"]!).appendingPathComponent("content")
@@ -70,3 +71,32 @@ restored.options.contentSearch = false
 try wait("Content off removes body and pending work") { try !bodyMatches("freshbody") && db.nextContentJob() == nil }
 restored.stopRuntime(); controller.stopRuntime()
 print("PASS content disable clears work and body results")
+
+// A failed commit must not create a fast retry loop or damage metadata search.
+func databaseSQL(_ sql: String) {
+    var connection: OpaquePointer?
+    precondition(sqlite3_open(store.appendingPathComponent("index.sqlite").path, &connection) == SQLITE_OK)
+    defer { sqlite3_close(connection) }
+    precondition(sqlite3_exec(connection, sql, nil, nil, nil) == SQLITE_OK)
+}
+databaseSQL("CREATE TRIGGER reject_body BEFORE UPDATE OF body ON files WHEN new.body<>'' BEGIN SELECT RAISE(ABORT,'fixture'); END")
+var faultCalls = 0
+let faulted = FileSearchController(directory: store, preferences: prefs, watchChanges: false, contentExtractor: { _, _ in
+    lock.lock(); faultCalls += 1; lock.unlock()
+    return "faultbody"
+})
+faulted.options.contentSearch = true
+try wait("Commit failure reported") { faulted.indexStatus.hasPrefix("正文索引暂不可用") }
+faulted.startIndex(force: true)
+try wait("Metadata refresh during body failure") { !faulted.indexing }
+pump(1)
+lock.lock(); let attempts = faultCalls; lock.unlock()
+precondition(attempts == 1, "Failed body commit retried without backoff")
+let namesRemain = try db.search("document", options: options).count
+precondition(namesRemain == 1, "Body failure broke searchable metadata")
+faulted.stopRuntime(); pump(0.1)
+databaseSQL("DROP TRIGGER reject_body")
+let recovered = FileSearchController(directory: store, preferences: prefs, watchChanges: false)
+try wait("Commit retry succeeds after restart") { try bodyMatches("freshbody") }
+recovered.stopRuntime()
+print("PASS injected SQLite body failure backs off, preserves metadata, and recovers after restart")
