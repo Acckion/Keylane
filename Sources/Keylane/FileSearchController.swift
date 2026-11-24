@@ -999,13 +999,14 @@ final class FileSearchController: ObservableObject {
                 let jobs = try db.nextContentJobs()
                 guard !jobs.isEmpty else {
                     let next = try db.nextContentRetry()
+                    let blocked = try db.hasEventDeferredContent()
                     db.releaseCachedPages()
                     DispatchQueue.main.async {
                         self.contentBusy = false
                         if !token.cancelled {
                             self.contentIndexing = false
                             self.contentFailure = nil
-                            if self.indexStatus == "正在补充文件正文…" { self.indexStatus = next == nil ? "索引已更新" : "部分文件正文暂不可读，将稍后重试。" }
+                            if self.indexStatus == "正在补充文件正文…" { self.indexStatus = blocked ? "部分文件正文等待文件或权限变化后重试。" : (next == nil ? "索引已更新" : "部分文件正文暂不可读，将稍后重试。") }
                             if self.localQueryResolved { self.publish() }
                             if let next { self.drainContent(after: max(0.1, next.timeIntervalSinceNow)) }
                         } else { self.drainContent() }
@@ -1022,17 +1023,23 @@ final class FileSearchController: ObservableObject {
                 }
                 self.contentQueue.async {
                     let session = FileContentReader.Session()
+                    var locations = FileSearchLocation(options: config.options, automaticExclusions: config.exclusions.map(\.path), restored: config.restored)
                     var updates: [FileSearchIndex.ContentUpdate] = []
                     for job in jobs {
                         if token.cancelled { break }
-                        let body = try? autoreleasepool { () throws -> String in
+                        do {
+                        let body = try autoreleasepool { () throws -> String in
                             guard !token.cancelled else { throw CancellationError() }
-                            var locations = FileSearchLocation(options: config.options, automaticExclusions: config.exclusions.map(\.path), restored: config.restored)
                             guard locations.includesSavedResult(at: job.path, directory: false) else { return "" }
                             if let extractor = self.contentExtractor { return try extractor(job, { token.cancelled }) }
                             return try session.read(job, cancelled: { token.cancelled })
                         }
                         updates.append(.init(job: job, body: body))
+                        } catch {
+                            let failure = FileContentReader.classify(error)
+                            if failure == .cancelled && token.cancelled { break }
+                            updates.append(.init(job: job, body: nil, failure: failure == .cancelled ? .transient : failure))
+                        }
                     }
                     let completed = updates
                     self.writer.async {
