@@ -18,7 +18,7 @@ jobs:
   checks:
     name: Checks
     runs-on: macos-26
-    timeout-minutes: 40
+    timeout-minutes: 50
     outputs:
       version: ${{ steps.version.outputs.version }}
       installer_required: ${{ steps.installer.outputs.required }}
@@ -90,6 +90,8 @@ jobs:
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-content-main.swift bash scripts/verify-files.sh
       - name: File metadata live-update integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-index-live-main.swift bash scripts/verify-files.sh
+      - name: File event scope integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-event-scope-main.swift bash scripts/verify-files.sh
       - name: Resource cache budget integration
         run: bash scripts/verify-resource-budget.sh
       - name: Named clipboard and preview integration

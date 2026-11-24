@@ -275,6 +275,10 @@ public final class FileSearchIndex {
         catch { try? exec("ROLLBACK"); writeDiagnostics = previous; throw error }
     }
     public func removeUnseen(root: String, epoch: String) throws { try write("DELETE FROM files WHERE root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?)",[root,epoch]) }
+    /// Metadata-only directory reconciliation must retain all descendants.
+    public func removeUnseenEntry(root: String, path: String, epoch: String) throws {
+        try write("DELETE FROM files WHERE path=? AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?)", [path,root,epoch])
+    }
     /// Limit reconciliation to the changed entry and its descendants.
     public func removeUnseen(root: String, subtree: String, epoch: String) throws {
         let lower = subtree + "/"

@@ -137,6 +137,7 @@ final class FileSearchController: ObservableObject {
     private var pendingRefresh: DispatchWorkItem?
     private var restored: Set<String> = [] { didSet { if oldValue != restored { aiIndexRevision = UUID(); cancelContent() } } }
     private var dirtyPaths = Set<String>()
+    private var dirtyRecursivePaths = Set<String>()
     private var needsFullScan = false
     static var defaults: FileSearchOptions {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -268,6 +269,7 @@ final class FileSearchController: ObservableObject {
                         self.didStart = true
                         self.pendingRepairPaths = recovery.retryPaths
                         self.dirtyPaths.formUnion(recovery.retryPaths)
+                        self.dirtyRecursivePaths.formUnion(recovery.retryPaths)
                         self.scheduleRefresh()
                         self.indexStatus = "正在恢复文件变化…"
                         self.drainContent()
@@ -321,6 +323,7 @@ final class FileSearchController: ObservableObject {
             reloadSearch()
             if !indexPaused {
                 dirtyPaths.formUnion(changedExclusions)
+                dirtyRecursivePaths.formUnion(changedExclusions)
                 scheduleRefresh()
             }
             return
@@ -477,6 +480,7 @@ final class FileSearchController: ObservableObject {
         }
         if !indexPaused {
             dirtyPaths.insert(url.path)
+            dirtyRecursivePaths.insert(url.path)
             scheduleRefresh()
         }
         if !removed && (browsingDirectory != nil || queryIsBlank) { reloadSearch() }
@@ -1063,12 +1067,12 @@ final class FileSearchController: ObservableObject {
     }
 
     func startIndex(force: Bool = false, reason: String = "request") {
-        dirtyPaths.removeAll()
+        dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
         needsFullScan = false
         scanIndex(force: force, reason: reason)
     }
 
-    private func scanIndex(paths: Set<String>? = nil, force: Bool = false, reason: String = "file-events") {
+    private func scanIndex(paths: Set<String>? = nil, recursivePaths: Set<String>? = nil, force: Bool = false, reason: String = "file-events") {
         guard isRunning, options.enabled else { return }
         guard !indexPaused else {
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
@@ -1096,7 +1100,7 @@ final class FileSearchController: ObservableObject {
                     return try body(db)
                 }
             }
-            let paths = paths.map(Self.coalescedIndexPaths)
+            let paths = paths.map { Self.coalescedIndexPaths($0, recursive: recursivePaths) }
             var repairPaths: Set<String> = paths.map { targets in Set(previousRepairs.filter { path in
                 !targets.contains { FileSearchLocation.contains(path, in: $0) }
             }) } ?? []
@@ -1149,6 +1153,8 @@ final class FileSearchController: ObservableObject {
                         || FileSearchRules.ignored(url, directory: directory, patterns: [], rules: rules)
                 }
                 for (root, subtree) in targets {
+                    let recursiveEntry = subtree.map { recursivePaths?.contains($0) ?? true } ?? true
+                    var retainedDirectoryEntry = false
                     if token.cancelled { return }
                     let rootURL = URL(fileURLWithPath: root)
                     guard FileManager.default.fileExists(atPath: root) else {
@@ -1301,7 +1307,8 @@ final class FileSearchController: ObservableObject {
                                         }
                                         let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
                                         records.append(record)
-                                        if isDir && !symlink && url.pathExtension != "app" { queue.append((path, rules)) }
+                                        if path == subtree, isDir, !symlink { retainedDirectoryEntry = true }
+                                        if recursiveEntry && isDir && !symlink && url.pathExtension != "app" { queue.append((path, rules)) }
                                     }
                                     staged.append(contentsOf: records)
                                     if staged.count >= 256 { try commitStaged() }
@@ -1327,8 +1334,13 @@ final class FileSearchController: ObservableObject {
                         }
                     }
                     if token.cancelled { return }
-                    try write { try $0.removeUnseen(root: root, subtree: subtree, epoch: epoch,
-                                                   preserving: complete ? [] : repairPaths) }
+                    if let subtree, !recursiveEntry, retainedDirectoryEntry {
+                        // Metadata-only directory events must not age out descendants.
+                        try write { try $0.removeUnseenEntry(root: root, path: subtree, epoch: epoch) }
+                    } else {
+                        try write { try $0.removeUnseen(root: root, subtree: subtree, epoch: epoch,
+                                                       preserving: complete ? [] : repairPaths) }
+                    }
                 }
                 repairPaths = Set(Self.coalescedIndexPaths(repairPaths))
                 // Known caches discovered by this scan are already excluded from
@@ -1347,6 +1359,9 @@ final class FileSearchController: ObservableObject {
                     self.pendingRepairPaths = completedRepairs
                     self.checkpointConfiguration = self.checkpointReady ? fingerprint : nil
                     self.scanSession = nil
+                    #if KEYLANE_FILE_EVENT_TESTING
+                    self.testScanCompleted?(paths == nil, processed)
+                    #endif
                     self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
                     for value in auto where !self.automaticExclusions.contains(where: { $0.path == value.path }) { self.automaticExclusions.append(value) }; self.saveAutomatic()
                     self.indexStatus = denied.isEmpty ? "索引已更新" : "部分目录无法访问，请重新授权搜索范围。"
@@ -1373,7 +1388,7 @@ final class FileSearchController: ObservableObject {
     // A slow baseline must not hold the writer or prevent ordinary file events
     // from becoming searchable. Reconcile with its epoch before baseline cleanup.
     private func patchLiveMetadata(_ paths: Set<String>, recursive: Set<String>) {
-        guard indexing, let session = scanSession, session.options == authorizedOptions,
+        guard !paths.isEmpty, indexing, let session = scanSession, session.options == authorizedOptions,
               !session.token.cancelled else { return }
         session.enqueue(paths, recursive: recursive)
         let config = authorizedOptions, restored = restored
@@ -1472,14 +1487,14 @@ final class FileSearchController: ObservableObject {
         return error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)
     }
 
-    private static func coalescedIndexPaths(_ paths: Set<String>) -> [String] {
+    private static func coalescedIndexPaths(_ paths: Set<String>, recursive: Set<String>? = nil) -> [String] {
         // Sorting by the directory prefix keeps every subtree next to its parent.
         let sorted = paths.map { ($0, $0 == "/" ? "/" : $0 + "/") }.sorted { $0.1 < $1.1 }
         var targets: [String] = []
         var parent = ""
-        for (path, prefix) in sorted where targets.isEmpty || !prefix.hasPrefix(parent) {
+        for (path, prefix) in sorted where parent.isEmpty || !prefix.hasPrefix(parent) {
             targets.append(path)
-            parent = prefix
+            parent = recursive?.contains(path) == false ? "" : prefix
         }
         return targets
     }
@@ -1519,7 +1534,7 @@ final class FileSearchController: ObservableObject {
         processingEvents = false
         pendingRefresh?.cancel()
         pendingRefresh = nil
-        dirtyPaths.removeAll()
+        dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
         needsFullScan = false
         if let watch {
             FSEventStreamStop(watch)
@@ -1570,6 +1585,7 @@ final class FileSearchController: ObservableObject {
 
     #if KEYLANE_FILE_EVENT_TESTING
     // Feed loss/wrap flags deterministically through the production event pipeline.
+    var testScanCompleted: ((Bool, Int) -> Void)?
     var testBeforeLocalQuery: ((String) -> Void)?
     var testBeforeScanDirectory: ((String) -> Void)?
     var testBeforeCommitMetadata: ((String) -> Void)?
@@ -1592,7 +1608,7 @@ final class FileSearchController: ObservableObject {
         if recoverEvents {
             recoverEvents = false
             needsFullScan = true
-            dirtyPaths.removeAll()
+            dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
             scheduleRefresh()
         }
         guard !pendingEvents.isEmpty else { return }
@@ -1615,16 +1631,35 @@ final class FileSearchController: ObservableObject {
                         self.automaticExclusions = result.exclusions
                         self.saveAutomatic()
                     }
+                    var paths = result.paths
+                    var recursive = result.recursivePaths.intersection(paths)
+                    // Permission/root metadata notifications may unlock saved repair
+                    // subtrees. Retry those subtrees rather than clearing their repair
+                    // state after only touching the directory's own row.
+                    for repair in self.pendingRepairPaths {
+                        var ancestor = repair
+                        while true {
+                            if result.paths.contains(ancestor) {
+                                paths.insert(repair); recursive.insert(repair); break
+                            }
+                            if ancestor == "/" { break }
+                            ancestor = URL(fileURLWithPath: ancestor).deletingLastPathComponent().path
+                        }
+                    }
+                    for root in self.authorizedRoots where !recursive.contains(root) {
+                        paths.remove(root) // Root metadata itself is not a searchable row.
+                    }
                     if result.requiresFullScan {
                         self.needsFullScan = true
                     }
                     if !self.needsFullScan {
-                        self.dirtyPaths.formUnion(result.paths)
+                        self.dirtyPaths.formUnion(paths)
+                        self.dirtyRecursivePaths.formUnion(recursive)
                         self.needsFullScan = self.dirtyPaths.count > Self.maxQueuedEvents
                     }
-                    if self.needsFullScan { self.checkpointReady = false; self.dirtyPaths.removeAll() }
+                    if self.needsFullScan { self.checkpointReady = false; self.dirtyPaths.removeAll(); self.dirtyRecursivePaths.removeAll() }
                     if batches.contains(where: { $0.flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 } }), !self.indexing { self.indexStatus = "索引已恢复" }
-                    self.patchLiveMetadata(result.paths, recursive: result.recursivePaths)
+                    self.patchLiveMetadata(paths, recursive: recursive)
                     self.scheduleRefresh()
                 } else if !self.recoverEvents {
                     // An exclusion, grant, or restore changed while filtering.
@@ -1678,13 +1713,15 @@ final class FileSearchController: ObservableObject {
         let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
         let globalRecovery = FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped
             | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped)
-        let scopedRecovery = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs
-            | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
+        let scopedRecovery = FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
         for batch in batches {
             guard !lifetime.cancelled else { return nil }
             let paths = batch.paths as! [String]
             let requiresFullScan = zip(paths, batch.flags).contains { path, flags in
                 if flags & globalRecovery != 0 { return true }
+                if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0,
+                   !options.roots.contains(where: { FileSearchLocation.contains(path, in: $0) }),
+                   options.roots.contains(where: { FileSearchLocation.contains($0, in: path) }) { return true }
                 return flags & scopedRecovery != 0 && options.roots.contains {
                     FileSearchLocation.contains(path, in: $0) || FileSearchLocation.contains($0, in: path)
                 }
@@ -1704,8 +1741,9 @@ final class FileSearchController: ObservableObject {
                 let target = options.useIgnoreFiles ? indexEventTarget(path) : path
                 targets.insert(target)
                 let directoryChange = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated
-                    | kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged)
-                if target != path || (flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir) != 0 && flags & directoryChange != 0) {
+                    | kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged
+                    | kFSEventStreamEventFlagItemChangeOwner | kFSEventStreamEventFlagItemInodeMetaMod)
+                if target != path || flags & directoryChange != 0 {
                     result.recursivePaths.insert(target)
                 }
                 // Historical changes may span days; they are not a one-minute burst.
@@ -1762,8 +1800,9 @@ final class FileSearchController: ObservableObject {
             guard !self.indexing else { return }
             if self.needsFullScan || !self.checkpointReady { self.startIndex(reason: self.needsFullScan ? "event-recovery" : "incomplete-checkpoint"); return }
             let paths = self.dirtyPaths
-            self.dirtyPaths.removeAll()
-            if !paths.isEmpty { self.scanIndex(paths: paths) }
+            let recursive = self.dirtyRecursivePaths
+            self.dirtyPaths.removeAll(); self.dirtyRecursivePaths.removeAll()
+            if !paths.isEmpty { self.scanIndex(paths: paths, recursivePaths: recursive) }
         }
         pendingRefresh = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
