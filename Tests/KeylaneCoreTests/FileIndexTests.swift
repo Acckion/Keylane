@@ -25,6 +25,120 @@ final class FileIndexTests: XCTestCase {
         XCTAssertNil(try FileSearchIndex(url: url).recoveryPoint())
     }
 
+    func testCheckpointTriggersAndClearAreTransactionalAcrossConnections() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("index.sqlite")
+        let writer = try FileSearchIndex(url: url)
+        let reader = try FileSearchIndex(url: url)
+        var old: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &old), SQLITE_OK)
+        defer { sqlite3_close(old) }
+        func raw(_ sql: String, expected: Int32 = SQLITE_OK) {
+            XCTAssertEqual(sqlite3_exec(old, sql, nil, nil, nil), expected, sql)
+        }
+        let row = "INSERT INTO files(path,name,root,volume,modified,directory,symlink,epoch) VALUES('/fixture/needle','needle','/fixture','/',1,0,0,'scan')"
+        let point = FileSearchIndex.RecoveryPoint(eventID: 10, configuration: "fixture")
+        try writer.saveRecoveryPoint(point)
+        raw("BEGIN IMMEDIATE; " + row)
+        XCTAssertEqual(try reader.recoveryPoint(), point)
+        XCTAssertEqual(try reader.stats().entries, 0)
+        raw("ROLLBACK")
+        XCTAssertEqual(try reader.recoveryPoint(), point)
+        raw(row)
+        XCTAssertNil(try reader.recoveryPoint())
+        XCTAssertEqual(try reader.stats().entries, 1)
+        XCTAssertEqual(try reader.search("needle", options: .init(roots: ["/fixture"])).count, 1)
+        try writer.saveRecoveryPoint(point)
+        raw("UPDATE files SET name='changed' WHERE path='/fixture/needle'")
+        XCTAssertNil(try reader.recoveryPoint())
+        XCTAssertEqual(try reader.search("changed", options: .init(roots: ["/fixture"])).count, 1)
+        try writer.saveRecoveryPoint(point)
+        raw("DELETE FROM files")
+        XCTAssertNil(try reader.recoveryPoint())
+        XCTAssertEqual(try reader.stats().entries, 0)
+        raw(row)
+        try writer.saveRecoveryPoint(point)
+        raw("CREATE TRIGGER test_abort_clear BEFORE DELETE ON files BEGIN SELECT RAISE(ABORT,'fixture'); END;")
+        XCTAssertThrowsError(try writer.clear())
+        XCTAssertEqual(try reader.recoveryPoint(), point)
+        XCTAssertEqual(try reader.stats().entries, 1)
+        raw("DROP TRIGGER test_abort_clear")
+        try writer.clear()
+        XCTAssertNil(try reader.recoveryPoint())
+        XCTAssertEqual(try reader.stats().entries, 0)
+    }
+
+    func testScansRejectOutsideCommitsAndIdleCannotRestoreMissingBaseline() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("index.sqlite")
+        let writer = try FileSearchIndex(url: url)
+        let outside = try FileSearchIndex(url: url)
+        let point = FileSearchIndex.RecoveryPoint(eventID: 10, configuration: "fixture")
+        let newer = FileSearchIndex.RecoveryPoint(eventID: 12, configuration: "fixture")
+        let row = FileIndexRecord(path: "/fixture/needle", name: "needle", volume: "/", modified: 1, directory: false, symlink: false)
+        let scan = try XCTUnwrap(writer.beginRecoveryScan())
+        XCTAssertNil(try outside.recoveryPoint())
+        XCTAssertFalse(try outside.completeRecoveryScan(scan, point: point))
+        enum Abort: Error { case fixture }
+        XCTAssertThrowsError(try outside.transaction {
+            try outside.put(row, root: "/fixture", epoch: "rolled-back")
+            throw Abort.fixture
+        })
+        try writer.put(row, root: "/fixture", epoch: "own")
+        XCTAssertTrue(try writer.completeRecoveryScan(scan, point: point))
+        XCTAssertTrue(try writer.advanceExistingRecoveryPoint(newer))
+        XCTAssertTrue(try writer.advanceExistingRecoveryPoint(point))
+        XCTAssertEqual(try outside.recoveryPoint(), newer, "An idle writer cannot rewind a newer cursor")
+        XCTAssertNil(try writer.beginRecoveryScan(requiring: ["wrong baseline"]))
+        let overlapping = try XCTUnwrap(writer.beginRecoveryScan(requiring: [point.configuration]))
+        try outside.put(row, root: "/fixture", epoch: "outside committed")
+        XCTAssertFalse(try writer.completeRecoveryScan(overlapping, point: newer))
+        XCTAssertNil(try outside.recoveryPoint())
+        XCTAssertFalse(try writer.advanceExistingRecoveryPoint(newer))
+        XCTAssertNil(try writer.beginRecoveryScan(requiring: [point.configuration]))
+        let fresh = try XCTUnwrap(writer.beginRecoveryScan())
+        XCTAssertTrue(try writer.completeRecoveryScan(fresh, point: newer))
+        try outside.put(row, root: "/fixture", epoch: "after publication")
+        XCTAssertNil(try writer.recoveryPoint())
+    }
+
+    func testRetiredWatcherCannotPublishScanOrAdvanceIdleCursor() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writer = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        let point = FileSearchIndex.RecoveryPoint(eventID: 500, configuration: "test-domain")
+        let scan = try XCTUnwrap(writer.beginRecoveryScan())
+        XCTAssertFalse(try writer.completeRecoveryScan(scan, point: point, whileCurrent: { false }))
+        XCTAssertNil(try writer.recoveryPoint())
+        let next = try XCTUnwrap(writer.beginRecoveryScan())
+        let newPoint = FileSearchIndex.RecoveryPoint(eventID: 12, configuration: "test-domain")
+        XCTAssertTrue(try writer.completeRecoveryScan(next, point: newPoint))
+        XCTAssertFalse(try writer.advanceExistingRecoveryPoint(point, whileCurrent: { false }))
+        XCTAssertEqual(try writer.recoveryPoint(), newPoint)
+    }
+
+    func testInstallingMissingCheckpointTriggersInvalidatesOnceWithoutClearingRows() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("index.sqlite")
+        let initial = try FileSearchIndex(url: url)
+        try initial.put(.init(path: "/fixture/item", name: "item", volume: "/", modified: 1, directory: false, symlink: false),
+                        root: "/fixture", epoch: "old")
+        let point = FileSearchIndex.RecoveryPoint(eventID: 10, configuration: "fixture")
+        try initial.saveRecoveryPoint(point)
+        var old: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &old), SQLITE_OK)
+        defer { sqlite3_close(old) }
+        XCTAssertEqual(sqlite3_exec(old, "DROP TRIGGER file_recovery_files_update", nil, nil, nil), SQLITE_OK)
+        let migrated = try FileSearchIndex(url: url)
+        XCTAssertNil(try migrated.recoveryPoint())
+        XCTAssertEqual(try migrated.stats().entries, 1)
+        try migrated.saveRecoveryPoint(point)
+        XCTAssertEqual(try FileSearchIndex(url: url).recoveryPoint(), point)
+    }
+
     func testPartialRecoveryKeepsUnreadableSubtreesAndPrunesOtherStaleRows() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

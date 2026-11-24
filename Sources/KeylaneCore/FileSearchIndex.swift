@@ -51,6 +51,7 @@ public final class FileSearchIndex {
         }
     }
     private var db: OpaquePointer?
+    private var activeRecoveryScan: UUID?
     public let url: URL
     public init(url: URL) throws {
         self.url = url
@@ -160,7 +161,14 @@ public final class FileSearchIndex {
         // Clearing a body invalidates its extraction state even if the file has not changed.
         try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>''")
     }
-    public func clear() throws { try exec("DELETE FROM files; DELETE FROM file_recovery; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
+    public func clear() throws {
+        try transaction {
+            try invalidateRecoveryPoint()
+            try exec("DELETE FROM files")
+        }
+        // Maintenance may fail or be interrupted without unpairing data and checkpoint.
+        try exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+    }
     private func prepareStatistics() throws {
         // Initialize older indexes once. The immediate transaction serializes
         // concurrent reader/writer opens and keeps the snapshot and triggers atomic.
@@ -172,6 +180,27 @@ public final class FileSearchIndex {
             guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
             if status == SQLITE_DONE {
                 try exec("INSERT INTO file_counts SELECT 1,count(*),coalesce(sum(directory=0 AND symlink=0),0),coalesce(sum(directory),0),coalesce(sum(symlink),0) FROM files")
+            }
+            let triggers = try statement("""
+                SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN
+                ('file_recovery_files_insert','file_recovery_files_update','file_recovery_files_delete')
+                """)
+            let triggerStatus = sqlite3_step(triggers)
+            let protected = triggerStatus == SQLITE_ROW && sqlite3_column_int(triggers, 0) == 3
+            sqlite3_finalize(triggers)
+            guard triggerStatus == SQLITE_ROW else { throw FileIndexError.database }
+            if !protected {
+                // An older writer could have changed rows before the triggers existed.
+                // Preserve its rows but require a new recovery baseline once.
+                try invalidateRecoveryPoint()
+                try exec("""
+                    CREATE TRIGGER IF NOT EXISTS file_recovery_files_insert AFTER INSERT ON files
+                        WHEN EXISTS(SELECT 1 FROM file_recovery WHERE id=1) BEGIN DELETE FROM file_recovery WHERE id=1; END;
+                    CREATE TRIGGER IF NOT EXISTS file_recovery_files_update AFTER UPDATE ON files
+                        WHEN EXISTS(SELECT 1 FROM file_recovery WHERE id=1) BEGIN DELETE FROM file_recovery WHERE id=1; END;
+                    CREATE TRIGGER IF NOT EXISTS file_recovery_files_delete AFTER DELETE ON files
+                        WHEN EXISTS(SELECT 1 FROM file_recovery WHERE id=1) BEGIN DELETE FROM file_recovery WHERE id=1; END;
+                    """)
             }
             // Every mutation participates in the caller's transaction, including
             // changes made by older app builds or another index connection.
@@ -229,7 +258,74 @@ public final class FileSearchIndex {
     }
 
     public func invalidateRecoveryPoint() throws {
-        try exec("DELETE FROM file_recovery")
+        activeRecoveryScan = nil
+        try exec("DELETE FROM file_recovery WHERE id=1")
+    }
+
+    public struct RecoveryScan {
+        fileprivate let id: UUID
+        fileprivate let owner: ObjectIdentifier
+        fileprivate let dataVersion: Int64
+    }
+
+    /// The cursor is absent throughout a scan. A partial scan must still have
+    /// the matching complete baseline when it acquires the write lock.
+    public func beginRecoveryScan(requiring configurations: Set<String>? = nil) throws -> RecoveryScan? {
+        var scan: RecoveryScan?
+        try transaction {
+            if let configurations {
+                guard let existing = try recoveryPoint(), configurations.contains(existing.configuration) else { return }
+            }
+            try invalidateRecoveryPoint()
+            scan = .init(id: UUID(), owner: ObjectIdentifier(self), dataVersion: try dataVersion())
+        }
+        activeRecoveryScan = scan?.id
+        return scan
+    }
+
+    /// SQLite data_version only compares observations on the same connection,
+    /// and only changes for commits by other connections.
+    public func completeRecoveryScan(_ scan: RecoveryScan, point: RecoveryPoint,
+                                     whileCurrent isCurrent: () -> Bool = { true }) throws -> Bool {
+        guard scan.owner == ObjectIdentifier(self), scan.id == activeRecoveryScan else { return false }
+        activeRecoveryScan = nil
+        var committed = false
+        try transaction {
+            guard isCurrent() else { return }
+            guard try dataVersion() == scan.dataVersion else {
+                try invalidateRecoveryPoint()
+                return
+            }
+            guard isCurrent() else { return }
+            try saveRecoveryPoint(point)
+            committed = true
+        }
+        return committed
+    }
+
+    /// Idle cursor progress may update a matching point, never create one or
+    /// overwrite another scan's outstanding repair work.
+    public func advanceExistingRecoveryPoint(_ point: RecoveryPoint, compatibleConfiguration: String? = nil,
+                                             whileCurrent isCurrent: () -> Bool = { true }) throws -> Bool {
+        var matched = false
+        try transaction {
+            guard isCurrent(), let existing = try recoveryPoint(), existing.retryPaths == point.retryPaths,
+                  existing.configuration == point.configuration || existing.configuration == compatibleConfiguration,
+                  isCurrent() else { return }
+            if point.eventID >= existing.eventID, point != existing {
+                let state = String(decoding: try JSONEncoder().encode(point), as: UTF8.self)
+                try write("UPDATE file_recovery SET state=? WHERE id=1", [state])
+            }
+            matched = true
+        }
+        return matched
+    }
+
+    private func dataVersion() throws -> Int64 {
+        let s = try statement("PRAGMA data_version")
+        defer { sqlite3_finalize(s) }
+        guard sqlite3_step(s) == SQLITE_ROW else { throw FileIndexError.database }
+        return sqlite3_column_int64(s, 0)
     }
 
     public func stats() throws -> FileIndexStats {

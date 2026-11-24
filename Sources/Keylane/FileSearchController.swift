@@ -58,6 +58,7 @@ final class FileSearchController: ObservableObject {
     private var didStart = false
     private var restoringIndex = false
     private var checkpointConfiguration: String?
+    private var checkpointLegacyConfiguration: String?
     private var indexFailure: String?
     private var grants: [String: Data]
     private var selectedScopePaths: Set<String>
@@ -78,7 +79,7 @@ final class FileSearchController: ObservableObject {
     private var pendingEvents: [IndexEventBatch] = []
     private var pendingEventCount = 0
     private var processingEvents = false
-    private var recoverEvents = false
+    private var wrapUpperBound: FSEventStreamEventId?
     private static let maxQueuedEvents = 8192
     private var pendingRefresh: DispatchWorkItem?
     private var restored: Set<String> = [] { didSet { if oldValue != restored { aiIndexRevision = UUID() } } }
@@ -169,24 +170,37 @@ final class FileSearchController: ObservableObject {
         }
     }
 
-    private struct RecoveryConfiguration: Codable {
+    private struct RecoveryConfiguration: Encodable {
         let version: Int
-        let options: FileSearchOptions
+        var options: FileSearchOptions
         let restored: [String]
         let exclusions: [String]
         let rootIdentities: [String]
+
+        func encoded() throws -> String {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return String(decoding: try encoder.encode(self), as: UTF8.self)
+        }
+    }
+
+    private static func indexOptions(_ options: FileSearchOptions) -> FileSearchOptions {
+        var value = options
+        value.searchFromLauncher = false  // Visibility, not index contents or authorization.
+        return value
     }
 
     private static func recoveryConfiguration(options: FileSearchOptions, restored: Set<String>, exclusions: [String]) throws -> String {
+        try recoveryConfigurationSnapshot(options: options, restored: restored, exclusions: exclusions).encoded()
+    }
+
+    private static func recoveryConfigurationSnapshot(options: FileSearchOptions, restored: Set<String>, exclusions: [String]) -> RecoveryConfiguration {
         let identities = options.roots.map { path -> String in
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return path + "\0unavailable" }
             return "\(path)\0\(attributes[.systemNumber] ?? "")\0\(attributes[.systemFileNumber] ?? "")"
         }
-        let value = RecoveryConfiguration(version: 1, options: options, restored: restored.sorted(),
-                                          exclusions: exclusions.sorted(), rootIdentities: identities)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return String(decoding: try encoder.encode(value), as: UTF8.self)
+        return .init(version: 1, options: indexOptions(options), restored: restored.sorted(),
+                     exclusions: exclusions.sorted(), rootIdentities: identities)
     }
 
     private func restoreIndex(_ recovery: FileSearchIndex.RecoveryPoint?) {
@@ -194,20 +208,40 @@ final class FileSearchController: ObservableObject {
         let config = eventConfiguration
         let token = cancellation
         restoringIndex = true
+        #if KEYLANE_FILE_EVENT_TESTING
+        testDidBeginIndexRestoration?()
+        #endif
         eventQueue.async { [weak self] in
-            let fingerprint = try? Self.recoveryConfiguration(options: config.options, restored: config.restored,
-                                                             exclusions: config.exclusions.map(\.path))
+            var captured = Self.recoveryConfigurationSnapshot(options: config.options, restored: config.restored,
+                                                               exclusions: config.exclusions.map(\.path))
+            let fingerprint = try? captured.encoded()
+            // Older v1 checkpoints stored the launcher bit. Accept that precise
+            // alternate encoding using the same authorized roots and identities.
+            var matches = fingerprint != nil && fingerprint == recovery?.configuration
+            if !matches, fingerprint != nil, let recovery {
+                captured.options.searchFromLauncher = true
+                matches = (try? captured.encoded()) == recovery.configuration
+            }
+            let matchesRecovery = matches
             DispatchQueue.main.async {
-                guard let self, self.cancellation === token, !self.didStart, self.isRunning,
-                      self.options.enabled, !self.indexPaused, config == self.eventConfiguration else { return }
+                guard let self, self.cancellation === token else { return }
                 self.restoringIndex = false
-                if let recovery, recovery.eventID > 0, recovery.eventID <= FSEventsGetCurrentEventId(),
-                   fingerprint == recovery.configuration {
+                guard !token.cancelled, !self.didStart, self.isRunning,
+                      self.options.enabled, !self.indexPaused else { return }
+                guard config == self.eventConfiguration else {
+                    // Only a real index setting change needs a fresh comparison.
+                    // Complete this attempt before retrying so search never wedges.
+                    self.restoreIndex(recovery)
+                    return
+                }
+                if let recovery, let fingerprint, recovery.eventID > 0, recovery.eventID <= self.currentIndexEventID(),
+                   matchesRecovery {
                     self.acceptedEventID = recovery.eventID
                     self.startWatch(since: recovery.eventID)
                     if self.watchLifetime != nil {
                         self.checkpointReady = true
                         self.checkpointConfiguration = fingerprint
+                        self.checkpointLegacyConfiguration = recovery.configuration == fingerprint ? nil : recovery.configuration
                         self.didStart = true
                         self.pendingRepairPaths = recovery.retryPaths
                         self.dirtyPaths.formUnion(recovery.retryPaths)
@@ -233,8 +267,10 @@ final class FileSearchController: ObservableObject {
         didStart = false
         restoringIndex = false
         checkpointConfiguration = nil
+        checkpointLegacyConfiguration = nil
         checkpointReady = false
         acceptedEventID = 0
+        wrapUpperBound = nil
         pendingRepairPaths.removeAll()
         indexFailure = nil
         indexing = false
@@ -277,7 +313,7 @@ final class FileSearchController: ObservableObject {
             startIndex()
             reloadSearch()
         }
-        else { indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
+        else { restoringIndex = false; indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
     private func resolveGrants() {
         aiIndexRevision = UUID()
@@ -344,6 +380,7 @@ final class FileSearchController: ObservableObject {
         if paused {
             cancellation.cancel()
             cancellation = FileScanCancellation()
+            restoringIndex = false
             stopWatch()
             indexing = false
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
@@ -876,13 +913,23 @@ final class FileSearchController: ObservableObject {
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
             return
         }
+        #if KEYLANE_FILE_EVENT_TESTING
+        if paths == nil { testFullIndexScans += 1 }
+        #endif
         didStart = true; cancellation.cancel(); let token = FileScanCancellation(); cancellation = token
         let config = authorizedOptions; let automatic = automaticExclusions.map(\.path)
         let exclusions = config.excludedPaths + automatic; let restored = restored
-        let eventID = paths == nil ? FSEventsGetCurrentEventId() : acceptedEventID
-        acceptedEventID = max(acceptedEventID, eventID)
-        startWatch(since: eventID)
-        let canCheckpoint = watchLifetime != nil && (paths == nil || checkpointReady)
+        let eventID = paths == nil ? freshIndexEventID() : acceptedEventID
+        acceptedEventID = watchLifetime == nil ? eventID : max(acceptedEventID, eventID)
+        if eventID > 0 { startWatch(since: eventID) } else { startWatch() }
+        let lifetime = watchLifetime
+        let canCheckpoint = eventID > 0 && lifetime != nil && (paths == nil || checkpointReady)
+        #if KEYLANE_FILE_EVENT_TESTING
+        let checkpointBarrier = testCheckpointBarrier
+        let checkpointResult = testCheckpointResult
+        #endif
+        let requiredConfigurations: Set<String>? = paths == nil ? nil : Set(
+            [checkpointConfiguration, checkpointLegacyConfiguration].compactMap { $0 })
         let previousRepairs = pendingRepairPaths
         checkpointReady = false
         restoringIndex = false
@@ -894,10 +941,19 @@ final class FileSearchController: ObservableObject {
             var repairPaths: Set<String> = paths.map { targets in Set(previousRepairs.filter { path in
                 !targets.contains { FileSearchLocation.contains(path, in: $0) }
             }) } ?? []
-            // A crash or cancelled crawl must not advertise a complete index.
-            // Save the new event position only after all database writes finish.
-            do { try db.invalidateRecoveryPoint() }
-            catch {
+            // Remove the checkpoint and capture the writer's connection version
+            // together. Do not run a partial scan on an invalidated baseline.
+            let recoveryScan: FileSearchIndex.RecoveryScan
+            do {
+                guard let started = try db.beginRecoveryScan(requiring: requiredConfigurations) else {
+                    DispatchQueue.main.async {
+                        guard self.cancellation === token, !token.cancelled else { return }
+                        self.startIndex()
+                    }
+                    return
+                }
+                recoveryScan = started
+            } catch {
                 DispatchQueue.main.async { if !token.cancelled { self.reportIndexFailure(error) } }
                 return
             }
@@ -1075,14 +1131,24 @@ final class FileSearchController: ObservableObject {
                 // its results. Persist the resulting rules, not the pre-scan list.
                 let fingerprint = auto.isEmpty ? initialFingerprint : try? Self.recoveryConfiguration(
                     options: config, restored: restored, exclusions: Array(Set(automatic + auto.map(\.path))))
-                if canCheckpoint, !token.cancelled, let fingerprint {
-                    try db.saveRecoveryPoint(.init(eventID: eventID, configuration: fingerprint, retryPaths: repairPaths))
-                }
+                let publishedCheckpoint: Bool
+                #if KEYLANE_FILE_EVENT_TESTING
+                checkpointBarrier?(eventID)
+                #endif
+                if canCheckpoint, let lifetime, !token.cancelled, !lifetime.cancelled, let fingerprint {
+                    publishedCheckpoint = try db.completeRecoveryScan(recoveryScan,
+                        point: .init(eventID: eventID, configuration: fingerprint, retryPaths: repairPaths),
+                        whileCurrent: { !token.cancelled && !lifetime.cancelled })
+                } else { publishedCheckpoint = false }
+                #if KEYLANE_FILE_EVENT_TESTING
+                checkpointResult?(eventID, publishedCheckpoint)
+                #endif
                 let completedRepairs = repairPaths
                 var stats = try db.stats(); stats.invalid = invalid; stats.seconds = Date().timeIntervalSince(start)
                 DispatchQueue.main.async {
                     guard self.cancellation === token else { return }
-                    self.checkpointReady = canCheckpoint && fingerprint != nil
+                    self.checkpointReady = publishedCheckpoint
+                    self.checkpointLegacyConfiguration = nil
                     self.pendingRepairPaths = completedRepairs
                     self.checkpointConfiguration = self.checkpointReady ? fingerprint : nil
                     self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
@@ -1145,46 +1211,144 @@ final class FileSearchController: ObservableObject {
         var exclusions: [AutomaticFileExclusion]
         var churn: [String: (Date, Int)]
         var paths = Set<String>()
-        var requiresFullScan = false
     }
+
+    private final class WatchContext {
+        weak var owner: FileSearchController?
+        let lifetime: FileScanCancellation
+        init(owner: FileSearchController, lifetime: FileScanCancellation) {
+            self.owner = owner; self.lifetime = lifetime
+        }
+    }
+
+    private static let discontinuityFlags = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs
+        | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
+        | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
 
     private var eventConfiguration: IndexEventConfiguration {
-        .init(options: authorizedOptions, restored: restored, exclusions: automaticExclusions)
+        .init(options: Self.indexOptions(authorizedOptions), restored: restored, exclusions: automaticExclusions)
     }
 
-    private func stopWatch() {
+    private func stopWatch(insideCallback: Bool = false) {
         watchLifetime?.cancel()
         watchLifetime = nil
+        acceptedEventID = 0
         pendingEvents.removeAll()
         pendingEventCount = 0
-        recoverEvents = false
         processingEvents = false
+        replayingEvents = false
         pendingRefresh?.cancel()
         pendingRefresh = nil
         dirtyPaths.removeAll()
         needsFullScan = false
-        if let watch {
-            FSEventStreamStop(watch)
-            FSEventStreamInvalidate(watch)
-            FSEventStreamRelease(watch)
+        if let old = watch {
+            watch = nil
+            let close = {
+                FSEventStreamStop(old)
+                FSEventStreamInvalidate(old)
+                FSEventStreamRelease(old)
+            }
+            if insideCallback { DispatchQueue.main.async(execute: close) } else { close() }
         }
-        watch = nil
+    }
+
+    private func currentIndexEventID() -> FSEventStreamEventId {
+        #if KEYLANE_FILE_EVENT_TESTING
+        if let testQuietIndexEventID { return testQuietIndexEventID }
+        #endif
+        return FSEventsGetCurrentEventId()
+    }
+
+    private func freshIndexEventID() -> FSEventStreamEventId {
+        let id = currentIndexEventID()
+        guard id > 0, id < FSEventStreamEventId(kFSEventStreamEventIdSinceNow) else { return 0 }
+        if let upper = wrapUpperBound {
+            // Do not mistake a still-cached pre-wrap system sample for a new
+            // position. An unproven fresh watcher is live-only.
+            guard id < upper else { return 0 }
+            wrapUpperBound = nil
+        }
+        return id
+    }
+
+    private func restartAfterDiscontinuity(_ lifetime: FileScanCancellation, wrapped: Bool) {
+        guard watchLifetime === lifetime else { return }
+        if wrapped, acceptedEventID > 0 {
+            wrapUpperBound = min(wrapUpperBound ?? UInt64.max, acceptedEventID)
+        } else if wrapped, wrapUpperBound == nil {
+            wrapUpperBound = 1 // No trusted earlier position from which to prove a lower sample.
+        }
+        stopWatch(insideCallback: true)
+        cancellation.cancel()
+        let restart = FileScanCancellation()
+        cancellation = restart
+        checkpointReady = false
+        checkpointConfiguration = nil
+        checkpointLegacyConfiguration = nil
+        pendingRepairPaths.removeAll()
+        churn.removeAll()
+        indexing = false
+        restoringIndex = true
+        // Serial after any already-running writer and before the replacement
+        // baseline. Old scan/idle work is also fenced at its write boundary.
+        writer.async { [weak self] in
+            do { try self?.writeDB?.invalidateRecoveryPoint() }
+            catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.cancellation === restart else { return }
+                    self.reportIndexFailure(error)
+                }
+            }
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.cancellation === restart, !restart.cancelled else { return }
+            self.restoringIndex = false
+            self.startIndex()
+        }
     }
 
     private func startWatch(since eventID: FSEventStreamEventId = FSEventStreamEventId(kFSEventStreamEventIdSinceNow)) {
         let roots = authorizedRoots
-        guard watch == nil, watchEnabled, options.enabled, !indexPaused, !roots.isEmpty else { return }
-        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil, copyDescription: nil)
-        watch = FSEventStreamCreate(nil, { _, context, count, rawPaths, flags, ids in
-            guard let context else { return }
-            let owner = Unmanaged<FileSearchController>.fromOpaque(context).takeUnretainedValue()
-            owner.receiveIndexEvents(count: count, rawPaths: rawPaths, flags: flags, ids: ids)
-        }, &context, roots as CFArray, eventID, 2, FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
+        guard watchLifetime == nil, watchEnabled, options.enabled, !indexPaused, !roots.isEmpty else { return }
+        let lifetime = FileScanCancellation()
+        #if KEYLANE_FILE_EVENT_TESTING
+        if testQuietIndexEventID != nil {
+            testQuietWatchStart = eventID
+            watchLifetime = lifetime
+            replayingEvents = false
+            return
+        }
+        #endif
+        let owner = WatchContext(owner: self, lifetime: lifetime)
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(owner).toOpaque(),
+            retain: { pointer in
+                guard let pointer else { return nil }
+                _ = Unmanaged<WatchContext>.fromOpaque(pointer).retain()
+                return pointer
+            }, release: { pointer in
+                if let pointer { Unmanaged<WatchContext>.fromOpaque(pointer).release() }
+            }, copyDescription: nil)
+        watch = withExtendedLifetime(owner) {
+            FSEventStreamCreate(nil, { _, context, count, rawPaths, flags, ids in
+                guard let context, count > 0 else { return }
+                let callback = Unmanaged<WatchContext>.fromOpaque(context).takeUnretainedValue()
+                let paths = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue()
+                let flags = UnsafeBufferPointer(start: flags, count: count)
+                let positions = UnsafeBufferPointer(start: ids, count: count)
+                let last = zip(positions, flags).reduce(FSEventStreamEventId(0)) { maximum, event in
+                    let (id, flag) = event
+                    return flag & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) == 0
+                        && id < FSEventStreamEventId(kFSEventStreamEventIdSinceNow) ? max(maximum, id) : maximum
+                }
+                callback.owner?.acceptIndexEvents(paths: paths, flags: flags, eventID: last, from: callback.lifetime)
+            }, &context, roots as CFArray, eventID, 2,
+               FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
+        }
         if let watch {
             FSEventStreamSetDispatchQueue(watch, .main)
             if FSEventStreamStart(watch) {
-                watchLifetime = FileScanCancellation()
-                replayingEvents = true
+                watchLifetime = lifetime
+                replayingEvents = eventID != FSEventStreamEventId(kFSEventStreamEventIdSinceNow)
             } else {
                 FSEventStreamInvalidate(watch)
                 FSEventStreamRelease(watch)
@@ -1193,31 +1357,43 @@ final class FileSearchController: ObservableObject {
         }
     }
 
-    private func receiveIndexEvents(count: Int, rawPaths: UnsafeMutableRawPointer, flags: UnsafePointer<FSEventStreamEventFlags>, ids: UnsafePointer<FSEventStreamEventId>) {
-        guard !recoverEvents, count > 0 else { return }
-        // The stream owns the flag buffer. Copy it and retain the immutable
-        // path array so path bridging and classification can run off-main.
-        if count <= Self.maxQueuedEvents - pendingEventCount {
-            let paths = Unmanaged<CFArray>.fromOpaque(rawPaths).takeUnretainedValue()
-            pendingEvents.append(.init(paths: paths, flags: Array(UnsafeBufferPointer(start: flags, count: count)), date: Date(), eventID: ids[count - 1], historical: replayingEvents))
-            if (0..<count).contains(where: { flags[$0] & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 }) { replayingEvents = false }
-            pendingEventCount += count
-        } else {
-            pendingEvents.removeAll()
-            pendingEventCount = 0
-            recoverEvents = true
+    private func acceptIndexEvents(paths: CFArray, flags: UnsafeBufferPointer<FSEventStreamEventFlags>,
+                                   eventID: FSEventStreamEventId, from lifetime: FileScanCancellation) {
+        guard watchLifetime === lifetime, !lifetime.cancelled, !flags.isEmpty else { return }
+        let wrapped = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped) != 0 }
+        if flags.contains(where: { $0 & Self.discontinuityFlags != 0 }) || flags.count > Self.maxQueuedEvents - pendingEventCount {
+            restartAfterDiscontinuity(lifetime, wrapped: wrapped)
+            return
         }
+        // The numeric position is meaningful only in its own active generation.
+        let floor = wrapUpperBound.map { eventID < $0 ? eventID : 0 } ?? eventID
+        pendingEvents.append(.init(paths: paths, flags: Array(flags), date: Date(), eventID: floor, historical: replayingEvents))
+        if flags.contains(where: { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 }) { replayingEvents = false }
+        pendingEventCount += flags.count
         processPendingEvents()
     }
 
     #if KEYLANE_FILE_EVENT_TESTING
-    // Feed loss/wrap flags deterministically through the production event pipeline.
+    var testDidBeginIndexRestoration: (() -> Void)?
+    var testQuietIndexEventID: FSEventStreamEventId?
+    private(set) var testQuietWatchStart: FSEventStreamEventId?
+    private(set) var testFullIndexScans = 0
+    var testCheckpointBarrier: ((FSEventStreamEventId) -> Void)?
+    var testCheckpointResult: ((FSEventStreamEventId, Bool) -> Void)?
+
+    // A returned emitter retains a generation even after its watcher retires.
+    func testEventEmitter() -> (([String], [FSEventStreamEventFlags], FSEventStreamEventId) -> Void)? {
+        guard let lifetime = watchLifetime else { return nil }
+        return { [weak self] paths, flags, eventID in
+            precondition(paths.count == flags.count)
+            flags.withUnsafeBufferPointer {
+                self?.acceptIndexEvents(paths: paths as CFArray, flags: $0, eventID: eventID, from: lifetime)
+            }
+        }
+    }
+
     func testIndexEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
-        precondition(paths.count == flags.count)
-        pendingEvents.append(.init(paths: paths as CFArray, flags: flags, date: Date(),
-                                   eventID: FSEventsGetCurrentEventId(), historical: false))
-        pendingEventCount += paths.count
-        processPendingEvents()
+        testEventEmitter()?(paths, flags, currentIndexEventID())
     }
     #endif
 
@@ -1225,12 +1401,6 @@ final class FileSearchController: ObservableObject {
 
     private func processPendingEvents() {
         guard let lifetime = watchLifetime, !processingEvents else { return }
-        if recoverEvents {
-            recoverEvents = false
-            needsFullScan = true
-            dirtyPaths.removeAll()
-            scheduleRefresh()
-        }
         guard !pendingEvents.isEmpty else { return }
         let batches = pendingEvents
         let count = pendingEventCount
@@ -1251,9 +1421,6 @@ final class FileSearchController: ObservableObject {
                         self.automaticExclusions = result.exclusions
                         self.saveAutomatic()
                     }
-                    if result.requiresFullScan {
-                        self.needsFullScan = true
-                    }
                     if !self.needsFullScan {
                         self.dirtyPaths.formUnion(result.paths)
                         self.needsFullScan = self.dirtyPaths.count > Self.maxQueuedEvents
@@ -1261,16 +1428,15 @@ final class FileSearchController: ObservableObject {
                     if self.needsFullScan { self.checkpointReady = false; self.dirtyPaths.removeAll() }
                     if batches.contains(where: { $0.flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 } }), !self.indexing { self.indexStatus = "索引已恢复" }
                     self.scheduleRefresh()
-                } else if !self.recoverEvents {
+                } else {
                     // An exclusion, grant, or restore changed while filtering.
                     // Replay the batch in order using the new rules.
                     if count <= Self.maxQueuedEvents - self.pendingEventCount {
                         self.pendingEvents = batches + self.pendingEvents
                         self.pendingEventCount += count
                     } else {
-                        self.pendingEvents.removeAll()
-                        self.pendingEventCount = 0
-                        self.recoverEvents = true
+                        self.restartAfterDiscontinuity(lifetime, wrapped: false)
+                        return
                     }
                 }
                 self.processPendingEvents()
@@ -1284,9 +1450,10 @@ final class FileSearchController: ObservableObject {
     // write before any later scan invalidation.
     private func saveIdleRecoveryPoint() {
         guard checkpointReady, !indexing, !processingEvents, pendingEvents.isEmpty,
-              !recoverEvents, !needsFullScan, dirtyPaths.isEmpty,
+              !needsFullScan, dirtyPaths.isEmpty,
               let lifetime = watchLifetime, let configuration = checkpointConfiguration else { return }
         let config = eventConfiguration
+        let legacy = checkpointLegacyConfiguration
         let eventID = acceptedEventID
         let token = cancellation
         let repairs = pendingRepairPaths
@@ -1296,7 +1463,13 @@ final class FileSearchController: ObservableObject {
                 guard try Self.recoveryConfiguration(options: config.options, restored: config.restored,
                                                     exclusions: config.exclusions.map(\.path)) == configuration else { return }
                 let value = FileSearchIndex.RecoveryPoint(eventID: eventID, configuration: configuration, retryPaths: repairs)
-                if try db.recoveryPoint() != value { try db.saveRecoveryPoint(value) }
+                guard try db.advanceExistingRecoveryPoint(value, compatibleConfiguration: legacy,
+                    whileCurrent: { !lifetime.cancelled && !token.cancelled }) else {
+                    DispatchQueue.main.async {
+                        if self.cancellation === token, !token.cancelled { self.checkpointReady = false }
+                    }
+                    return
+                }
             } catch {
                 DispatchQueue.main.async {
                     if !token.cancelled { self.checkpointReady = false; self.reportIndexFailure(error) }
@@ -1311,14 +1484,9 @@ final class FileSearchController: ObservableObject {
         var result = IndexEventResult(exclusions: configuration.exclusions, churn: churn)
         let ignores = FileSearchRules.pathFilter(options.ignorePatterns)
         let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
-        let recovery = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped
-            | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
-            | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
         for batch in batches {
             guard !lifetime.cancelled else { return nil }
             let paths = batch.paths as! [String]
-            let requiresFullScan = batch.flags.contains { $0 & recovery != 0 }
-            result.requiresFullScan = result.requiresFullScan || requiresFullScan
             result.churn = result.churn.filter { batch.date.timeIntervalSince($0.value.0) < 60 }
             var indexLocations: FileSearchLocation?
             var targets = Set<String>()
@@ -1332,7 +1500,7 @@ final class FileSearchController: ObservableObject {
                 }
                 targets.insert(options.useIgnoreFiles ? indexEventTarget(path) : path)
                 // Historical changes may span days; they are not a one-minute burst.
-                guard !batch.historical, !requiresFullScan, let directory = FileIndexExclusionPolicy.changeCandidate(
+                guard !batch.historical, let directory = FileIndexExclusionPolicy.changeCandidate(
                     for: path, scopes: options.roots, restored: configuration.restored, includeHidden: options.includeHidden
                 ) else { continue }
                 if indexLocations == nil {
@@ -1349,7 +1517,6 @@ final class FileSearchController: ObservableObject {
                     result.churn[directory] = (previous.0, previous.1 + 1)
                 }
             }
-            guard !result.requiresFullScan else { continue }
             for path in targets {
                 guard !lifetime.cancelled else { return nil }
                 guard options.roots.contains(where: { FileSearchLocation.contains(path, in: $0) }) else { continue }

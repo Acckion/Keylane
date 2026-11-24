@@ -41,29 +41,49 @@ try wait("Initial complete baseline") { try db.recoveryPoint() != nil && !contro
 print("MEASURE initial 2000-file baseline CPU seconds=\(cpuSeconds() - coldCPU), scan seconds=\(controller.stats.seconds)")
 pump(7)
 controller.stopRuntime(); pump(0.3)
-let sentinel = quiet.appendingPathComponent("scan-sentinel.txt")
-func insertSentinel() throws {
-    try db.put(.init(path: sentinel.path, name: sentinel.lastPathComponent, volume: "/", modified: 1,
-                     directory: false, symlink: false), root: quiet.path, epoch: "sentinel")
-}
-try insertSentinel()
+let retained = nested.appendingPathComponent("fixture-1999.txt")
 for round in 1...3 {
     let startCPU = cpuSeconds()
     controller = FileSearchController(directory: store, preferences: prefs)
     try wait("Warm idle restoration") { controller.indexStatus == "索引已恢复" }
-    require(try contains(sentinel.lastPathComponent), "Warm idle startup crawled scope")
+    require(controller.testFullIndexScans == 0, "Warm idle startup crawled scope")
     print("MEASURE warm round=\(round) CPU seconds=\(cpuSeconds() - startCPU)")
     controller.stopRuntime(); pump(0.3)
 }
-require(try contains(sentinel.lastPathComponent), "Sentinel insertion failed")
 let warmStart = Date()
 controller = FileSearchController(directory: store, preferences: prefs)
 // A query arriving before the database opens must not force a full crawl.
 controller.search("fixture")
 try wait("Warm restoration") { controller.indexStatus == "索引已恢复" }
 pump(3)
-require(try contains(sentinel.lastPathComponent), "Warm startup performed a full scan")
+require(controller.testFullIndexScans == 0, "Warm startup performed a full scan")
 print("PASS warm startup reused baseline, early query did not crawl: \(Date().timeIntervalSince(warmStart))s")
+controller.stopRuntime(); pump(0.3)
+
+// A legacy v1 checkpoint may have encoded launcher visibility as true.
+let original = try db.recoveryPoint()!
+let launcherOff = "\"searchFromLauncher\":false"
+let launcherOn = "\"searchFromLauncher\":true"
+require(original.configuration.components(separatedBy: launcherOff).count == 2, "Expected one launcher bit in the synthetic checkpoint")
+try db.saveRecoveryPoint(.init(eventID: original.eventID,
+                               configuration: original.configuration.replacingOccurrences(of: launcherOff, with: launcherOn),
+                               retryPaths: original.retryPaths))
+controller = FileSearchController(directory: store, preferences: prefs, startImmediately: false)
+var toggledDuringRestore = false
+var offeredDuringRestore: [SpotlightFile] = []
+controller.updated = { rows, _ in offeredDuringRestore = rows }
+controller.testDidBeginIndexRestoration = {
+    controller.testDidBeginIndexRestoration = nil
+    controller.options.searchFromLauncher.toggle()
+    controller.search(retained.lastPathComponent, standalone: false)
+    toggledDuringRestore = true
+}
+controller.startRuntime()
+try wait("Launcher visibility toggle during restore") { controller.indexStatus == "索引已恢复" }
+require(toggledDuringRestore && controller.options.searchFromLauncher, "Fixture did not toggle while restoring")
+try wait("Launcher sees retained item") { !controller.isSearching && offeredDuringRestore.contains { $0.id == retained.path } }
+require(controller.testFullIndexScans == 0, "Visibility-only change invalidated the saved baseline")
+print("PASS in-flight launcher visibility toggle uses the legacy warm checkpoint without crawling")
 controller.stopRuntime(); pump(0.3)
 let removed = nested.appendingPathComponent("fixture-0.txt")
 let renamed = nested.appendingPathComponent("renamed-fixture.txt")
@@ -80,7 +100,7 @@ try wait("Offline add/delete/rename replay") {
     try !controller.indexing && contains(added.lastPathComponent) && contains(renamed.lastPathComponent)
         && !contains(removed.lastPathComponent) && !contains("fixture-1.txt")
 }
-require(try contains(sentinel.lastPathComponent), "Offline replay crawled unrelated root")
+require(controller.testFullIndexScans == 0, "Offline replay started a full scan")
 try wait("Historical build directory replay") { try db.search("history-fixture", options: options).count == 140 && !controller.indexing }
 require(!controller.automaticExclusions.contains { $0.path == build.path }, "Historical events were treated as a live churn burst")
 print("PASS historical burst remains searchable")
@@ -89,18 +109,34 @@ controller.stopRuntime(); pump(0.3)
 // A missing checkpoint models interruption after invalidation and before commit.
 try db.invalidateRecoveryPoint()
 controller = FileSearchController(directory: store, preferences: prefs)
-try wait("Interrupted baseline fallback") { try !controller.indexing && db.recoveryPoint() != nil && !contains(sentinel.lastPathComponent) }
+try wait("Interrupted baseline fallback") { try !controller.indexing && db.recoveryPoint() != nil && controller.testFullIndexScans > 0 }
 print("PASS interrupted scan requires a full baseline")
 controller.stopRuntime(); pump(0.3)
-try insertSentinel()
+
+controller = FileSearchController(directory: store, preferences: prefs, startImmediately: false)
+var restorationAttempts = 0
+controller.testDidBeginIndexRestoration = {
+    restorationAttempts += 1
+    if restorationAttempts == 1 {
+        controller.options.excludedPaths.append(added.path)
+    } else {
+        controller.testDidBeginIndexRestoration = nil
+    }
+}
+controller.startRuntime()
+try wait("Changed exclusion supersedes in-flight restore") {
+    try restorationAttempts == 2 && !controller.indexing && db.recoveryPoint() != nil
+        && controller.testFullIndexScans > 0 && !contains(added.lastPathComponent)
+}
+print("PASS material replay configuration retries against a new fingerprint and removes stale baseline rows")
+controller.stopRuntime(); pump(0.3)
 options.ignorePatterns.append("offline-added.txt")
 prefs.set(try JSONEncoder().encode(options), forKey: "fileSearchOptions")
 controller = FileSearchController(directory: store, preferences: prefs)
-try wait("Changed rules fallback") { try !controller.indexing && db.recoveryPoint() != nil && !contains(sentinel.lastPathComponent) }
+try wait("Changed rules fallback") { try !controller.indexing && db.recoveryPoint() != nil && controller.testFullIndexScans > 0 }
 require(try !contains(added.lastPathComponent), "Changed exclusions retained stale row")
 print("PASS changed configuration rebuilds baseline and removes excluded rows")
 controller.stopRuntime(); pump(0.3)
-try insertSentinel()
 // Losing authorization changes the fingerprint even when saved options do not.
 let previousAuthorization = try db.recoveryPoint()
 prefs.set([scope.path], forKey: "fileSearchSelectedScopes")
@@ -109,7 +145,7 @@ try wait("Authorization change baseline") { try !controller.indexing && db.recov
 controller.stopRuntime(); pump(0.3)
 prefs.set(options.roots, forKey: "fileSearchSelectedScopes")
 controller = FileSearchController(directory: store, preferences: prefs)
-try wait("Authorization reenable baseline") { try !controller.indexing && db.recoveryPoint() != nil && !contains(sentinel.lastPathComponent) }
+try wait("Authorization reenable baseline") { try !controller.indexing && db.recoveryPoint() != nil && controller.testFullIndexScans > 0 }
 print("PASS authorization changes cannot reuse a stale baseline")
 // A temporarily unreadable subtree must not force every other root to crawl.
 let locked = scope.appendingPathComponent("locked")
@@ -118,30 +154,29 @@ let lockedFile = locked.appendingPathComponent("locked-fixture.txt")
 try Data().write(to: lockedFile)
 try wait("Initial readable subtree") { try contains(lockedFile.lastPathComponent) && !controller.indexing }
 controller.stopRuntime(); pump(0.3)
-try insertSentinel()
 try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
 defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
 controller = FileSearchController(directory: store, preferences: prefs)
 try wait("Unreadable subtree queued for repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.contains(locked.path) == true }
 require(try contains(lockedFile.lastPathComponent), "Unreadable subtree lost its saved rows")
-require(try contains(sentinel.lastPathComponent), "Unreadable subtree caused an unrelated root scan")
+require(controller.testFullIndexScans == 0, "Unreadable subtree caused a full scan")
 controller.stopRuntime(); pump(0.3)
 controller = FileSearchController(directory: store, preferences: prefs)
 pump(6)
-require(try contains(sentinel.lastPathComponent), "Pending repair forced a global startup crawl")
+require(controller.testFullIndexScans == 0, "Pending repair forced a global startup crawl")
 try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
 try FileManager.default.removeItem(at: lockedFile)
 try Data().write(to: locked.appendingPathComponent("unlocked-fixture.txt"))
 try wait("Permission restored subtree repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.isEmpty == true && !contains(lockedFile.lastPathComponent) && contains("unlocked-fixture.txt") }
 print("PASS unreadable subtree retains rows, retries locally, and recovers after permissions return")
-// Inject native recovery flags without fabricating a successful native event replay.
+// A numeric wrap also needs a genuinely new counter; exercise it in the quiet fixture.
 for flag in [kFSEventStreamEventFlagUserDropped, kFSEventStreamEventFlagKernelDropped,
-             kFSEventStreamEventFlagEventIdsWrapped, kFSEventStreamEventFlagRootChanged] {
-    try insertSentinel()
+             kFSEventStreamEventFlagRootChanged] {
+    let count = controller.testFullIndexScans
     controller.testIndexEvents(paths: [scope.path], flags: [FSEventStreamEventFlags(flag)])
-    try wait("Lost/wrapped/root-changed event fallback") { try !controller.indexing && !contains(sentinel.lastPathComponent) && db.recoveryPoint() != nil }
+    try wait("Lost/root-changed event fallback") { try !controller.indexing && controller.testFullIndexScans > count && db.recoveryPoint() != nil }
 }
-print("PASS injected loss/wrap/root-change flags require a fresh baseline")
+print("PASS injected loss/root-change flags require a fresh baseline")
 controller.stopRuntime(); pump(0.3)
 let saved = try db.recoveryPoint()
 controller.startRuntime(); controller.stopRuntime(); pump(3)
