@@ -50,6 +50,17 @@ public final class FileSearchIndex {
             return true
         }
     }
+    /// Writer-confined, aggregate-only counters; never retain paths or contents.
+    public struct WriteDiagnostics: Equatable {
+        public var metadataChecks: UInt64 = 0
+        public var metadataWrites: UInt64 = 0
+        public var metadataSkips: UInt64 = 0
+        public var contentWrites: UInt64 = 0
+        public var contentSkips: UInt64 = 0
+        public var contentDeferrals: UInt64 = 0
+        public var transactions: UInt64 = 0
+    }
+    public private(set) var writeDiagnostics = WriteDiagnostics()
     private var db: OpaquePointer?
     private var contentStatements: [String: OpaquePointer] = [:]
     public let url: URL
@@ -69,7 +80,7 @@ public final class FileSearchIndex {
                 CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(name,body,content='files',content_rowid='rowid',tokenize='trigram');
                 CREATE TRIGGER IF NOT EXISTS file_ai AFTER INSERT ON files BEGIN INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_ad AFTER DELETE ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); END;
-                CREATE TRIGGER IF NOT EXISTS file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
+
                 CREATE TABLE IF NOT EXISTS file_content_queue(path TEXT PRIMARY KEY,token TEXT NOT NULL,root TEXT NOT NULL,modified REAL NOT NULL,ready REAL NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS file_content_ready ON file_content_queue(ready);
                 CREATE TRIGGER IF NOT EXISTS file_content_owner AFTER UPDATE OF root ON files WHEN old.root<>new.root BEGIN UPDATE file_content_queue SET root=new.root WHERE path=new.path; END;
@@ -77,6 +88,15 @@ public final class FileSearchIndex {
                 CREATE TABLE IF NOT EXISTS file_recovery(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
                 PRAGMA user_version=1;
                 """)
+            let triggerQuery = try statement("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='file_au'")
+            let existingTrigger = sqlite3_step(triggerQuery) == SQLITE_ROW ? text(triggerQuery, 0) : ""
+            sqlite3_finalize(triggerQuery)
+            if !existingTrigger.contains("WHEN old.name IS NOT new.name OR old.body IS NOT new.body") {
+                try transaction {
+                    try exec("DROP TRIGGER IF EXISTS file_au")
+                    try exec("CREATE TRIGGER file_au AFTER UPDATE OF name,body ON files WHEN old.name IS NOT new.name OR old.body IS NOT new.body BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;")
+                }
+            }
             try prepareStatistics()
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch { sqlite3_close(db); db = nil; throw error }
@@ -110,12 +130,29 @@ public final class FileSearchIndex {
     }
     private func text(_ s: OpaquePointer, _ i: Int32) -> String { sqlite3_column_text(s,i).map { String(cString: $0) } ?? "" }
     public func put(_ record: FileIndexRecord, body: String = "", root: String, epoch: String) throws {
-        try write("INSERT INTO files(path,name,body,root,volume,modified,directory,symlink,external,epoch) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET name=excluded.name,body=excluded.body,root=excluded.root,volume=excluded.volume,modified=excluded.modified,directory=excluded.directory,symlink=excluded.symlink,external=excluded.external,epoch=excluded.epoch",[record.path,FileSearchRules.fold(record.name),FileSearchRules.fold(body),root,record.volume,String(record.modified),record.directory ? "1":"0",record.symlink ? "1":"0",record.external ? "1":"0",epoch])
+        try write("INSERT INTO files(path,name,body,root,volume,modified,directory,symlink,external,epoch) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET name=excluded.name,body=excluded.body,root=excluded.root,volume=excluded.volume,modified=excluded.modified,directory=excluded.directory,symlink=excluded.symlink,external=excluded.external,epoch=excluded.epoch WHERE files.name IS NOT excluded.name OR files.body IS NOT excluded.body OR files.root IS NOT excluded.root OR files.volume IS NOT excluded.volume OR files.modified IS NOT excluded.modified OR files.directory IS NOT excluded.directory OR files.symlink IS NOT excluded.symlink OR files.external IS NOT excluded.external OR files.epoch IS NOT excluded.epoch",[record.path,FileSearchRules.fold(record.name),FileSearchRules.fold(body),root,record.volume,String(record.modified),record.directory ? "1":"0",record.symlink ? "1":"0",record.external ? "1":"0",epoch])
     }
     public func touchUnchanged(_ record: FileIndexRecord, root: String, epoch: String, contentSearch: Bool) throws -> Bool {
-        try write("UPDATE files SET root=?,epoch=?,volume=?,external=? WHERE path=? AND modified=? AND directory=? AND symlink=? AND epoch LIKE ?",[root,epoch,record.volume,record.external ? "1":"0",record.path,String(record.modified),record.directory ? "1":"0",record.symlink ? "1":"0",contentSearch ? "c:%":"n:%"])
-        return sqlite3_changes(db) > 0
+        writeDiagnostics.metadataChecks &+= 1
+        // A match remains a match when no SQL UPDATE is necessary. Do not use
+        // sqlite3_changes to distinguish absent records from equal records.
+        let values = [record.path, String(record.modified), record.directory ? "1":"0",
+                      record.symlink ? "1":"0", contentSearch ? "c:%":"n:%"]
+        let query = try statement("SELECT root,epoch,volume,external FROM files WHERE path=? AND modified=? AND directory=? AND symlink=? AND epoch LIKE ?", values)
+        defer { sqlite3_finalize(query) }
+        let status = sqlite3_step(query)
+        if status == SQLITE_DONE { return false }
+        guard status == SQLITE_ROW else { throw FileIndexError.database }
+        if text(query, 0) == root && text(query, 1) == epoch && text(query, 2) == record.volume
+            && sqlite3_column_int(query, 3) == (record.external ? 1 : 0) {
+            writeDiagnostics.metadataSkips &+= 1
+            return true
+        }
+        try write("UPDATE files SET root=?,epoch=?,volume=?,external=? WHERE path=?", [root,epoch,record.volume,record.external ? "1":"0",record.path])
+        writeDiagnostics.metadataWrites &+= 1
+        return true
     }
+
     public struct ContentJob: Sendable {
         public let path: String, token: String, root: String
         public let modified: Double
@@ -128,6 +165,8 @@ public final class FileSearchIndex {
         if !force, try touchUnchanged(record, root: root, epoch: epoch, contentSearch: contentSearch) { return }
         let needsBody = contentSearch && !record.directory && !record.symlink && FileContentReader.supports(record.path)
         try put(record, root: root, epoch: epoch)
+        if sqlite3_changes(db) > 0 { writeDiagnostics.metadataWrites &+= 1 }
+        else { writeDiagnostics.metadataSkips &+= 1 }
         if needsBody {
             try writeContent("INSERT INTO file_content_queue(path,token,root,modified,ready) VALUES(?,?,?,?,0) ON CONFLICT(path) DO UPDATE SET token=excluded.token,root=excluded.root,modified=excluded.modified,ready=0",
                       [record.path, UUID().uuidString, root, String(record.modified)])
@@ -178,9 +217,11 @@ public final class FileSearchIndex {
                 if isCancelled() { throw CancellationError() }
                 let job = update.job
                 if let body = update.body {
-                    try writeContent("UPDATE files SET body=?,epoch='c:' || substr(epoch,3) WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%' AND EXISTS(SELECT 1 FROM file_content_queue WHERE path=? AND token=?)",
-                              [FileSearchRules.fold(body), job.path, job.root, String(job.modified), job.path, job.token])
-                    applied = sqlite3_changes(db) > 0 || applied
+                    let foldedBody = FileSearchRules.fold(body)
+                    try writeContent("UPDATE files SET body=?,epoch='c:' || substr(epoch,3) WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%' AND body IS NOT ? AND EXISTS(SELECT 1 FROM file_content_queue WHERE path=? AND token=?)",
+                              [foldedBody, job.path, job.root, String(job.modified), foldedBody, job.path, job.token])
+                    if sqlite3_changes(db) > 0 { writeDiagnostics.contentWrites &+= 1; applied = true }
+                    else { writeDiagnostics.contentSkips &+= 1 }
                     try writeContent("DELETE FROM file_content_queue WHERE path=? AND token=? AND root=?", [job.path, job.token, job.root])
                 } else { try deferContent(job, until: Date().addingTimeInterval(60)) }
             }
@@ -190,10 +231,16 @@ public final class FileSearchIndex {
     }
 
     public func deferContent(_ job: ContentJob, until date: Date) throws {
+        writeDiagnostics.contentDeferrals &+= 1
         try writeContent("UPDATE file_content_queue SET ready=? WHERE path=? AND token=? AND root=?", [String(date.timeIntervalSince1970), job.path, job.token, job.root])
     }
 
-    public func transaction(_ body: () throws -> Void) throws { try exec("BEGIN IMMEDIATE"); do { try body(); try exec("COMMIT") } catch { try? exec("ROLLBACK"); throw error } }
+    public func transaction(_ body: () throws -> Void) throws {
+        let previous = writeDiagnostics
+        try exec("BEGIN IMMEDIATE")
+        do { try body(); try exec("COMMIT"); writeDiagnostics.transactions &+= 1 }
+        catch { try? exec("ROLLBACK"); writeDiagnostics = previous; throw error }
+    }
     public func removeUnseen(root: String, epoch: String) throws { try write("DELETE FROM files WHERE root=? AND epoch<>?",[root,epoch]) }
     /// Limit reconciliation to the changed entry and its descendants.
     public func removeUnseen(root: String, subtree: String, epoch: String) throws {

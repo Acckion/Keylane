@@ -1,3 +1,4 @@
+import OSLog
 import AppKit
 import Combine
 import CoreServices
@@ -1061,13 +1062,13 @@ final class FileSearchController: ObservableObject {
         }
     }
 
-    func startIndex(force: Bool = false) {
+    func startIndex(force: Bool = false, reason: String = "request") {
         dirtyPaths.removeAll()
         needsFullScan = false
-        scanIndex(force: force)
+        scanIndex(force: force, reason: reason)
     }
 
-    private func scanIndex(paths: Set<String>? = nil, force: Bool = false) {
+    private func scanIndex(paths: Set<String>? = nil, force: Bool = false, reason: String = "file-events") {
         guard isRunning, options.enabled else { return }
         guard !indexPaused else {
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
@@ -1108,6 +1109,19 @@ final class FileSearchController: ObservableObject {
             }
             let initialFingerprint = try? Self.recoveryConfiguration(options: config, restored: restored, exclusions: automatic)
             defer { try? write { $0.releaseCachedPages() } }
+            let scanStart = Date()
+            let logger = Logger(subsystem: "org.keylane.launcher", category: "file-index-diagnostics")
+            var scanSucceeded = false
+            let scanKind = paths == nil ? "full" : "incremental"
+            let targetCount = paths?.count ?? config.roots.count
+            logger.info("scan_begin kind=\(scanKind, privacy: .public) reason=\(reason, privacy: .public) forced=\(force) targets=\(targetCount)")
+            defer {
+                let elapsed = Date().timeIntervalSince(scanStart)
+                let d = self.writer.sync { self.writeDB?.writeDiagnostics }
+                if let d {
+                    logger.info("scan_end kind=\(scanKind, privacy: .public) cancelled=\(token.cancelled) succeeded=\(scanSucceeded) seconds=\(elapsed) lifetime_metadata_checks=\(d.metadataChecks) lifetime_metadata_writes=\(d.metadataWrites) lifetime_metadata_skips=\(d.metadataSkips) lifetime_content_writes=\(d.contentWrites) lifetime_content_skips_or_stale=\(d.contentSkips) lifetime_content_deferrals=\(d.contentDeferrals) lifetime_transactions=\(d.transactions)")
+                }
+            }
             let start = Date(); var lastProgress = Date.distantPast; var invalid = 0; var denied: [String] = []; var auto: [AutomaticFileExclusion] = []; var processed = 0
             let homeLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
             let epoch = session.epoch
@@ -1325,6 +1339,7 @@ final class FileSearchController: ObservableObject {
                     try write { try $0.saveRecoveryPoint(.init(eventID: eventID, configuration: fingerprint, retryPaths: repairPaths)) }
                 }
                 let completedRepairs = repairPaths
+                scanSucceeded = true
                 var stats = try write { try $0.stats() }; stats.invalid = invalid; stats.seconds = Date().timeIntervalSince(start)
                 DispatchQueue.main.async {
                     guard self.cancellation === token, !token.cancelled else { return }
@@ -1745,7 +1760,7 @@ final class FileSearchController: ObservableObject {
             guard let self else { return }
             self.pendingRefresh = nil
             guard !self.indexing else { return }
-            if self.needsFullScan || !self.checkpointReady { self.startIndex(); return }
+            if self.needsFullScan || !self.checkpointReady { self.startIndex(reason: self.needsFullScan ? "event-recovery" : "incomplete-checkpoint"); return }
             let paths = self.dirtyPaths
             self.dirtyPaths.removeAll()
             if !paths.isEmpty { self.scanIndex(paths: paths) }

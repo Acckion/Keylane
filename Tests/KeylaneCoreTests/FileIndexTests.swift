@@ -3,6 +3,54 @@ import SQLite3
 @testable import KeylaneCore
 
 final class FileIndexTests: XCTestCase {
+    func testEqualMetadataAndContentAvoidWritesAndCompleteQueue() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("index.sqlite")
+        let db = try FileSearchIndex(url: url)
+        let record = FileIndexRecord(path: "/fixture/same.txt", name: "same.txt", volume: "/", modified: 1, directory: false, symlink: false)
+        try db.stageMetadata(record, root: "/fixture", epoch: "c:same", contentSearch: true)
+        let job = try XCTUnwrap(db.nextContentJob())
+        XCTAssertFalse(try db.completeContent(job, body: ""), "Equal empty body needs no result refresh")
+        XCTAssertNil(try db.nextContentJob(), "Equal results must still complete the owned job")
+        let before = db.writeDiagnostics
+        try db.stageMetadata(record, root: "/fixture", epoch: "c:same", contentSearch: true)
+        XCTAssertEqual(db.writeDiagnostics.metadataWrites, before.metadataWrites)
+        XCTAssertEqual(db.writeDiagnostics.metadataSkips, before.metadataSkips + 1)
+        XCTAssertNil(try db.nextContentJob(), "Skipping a matched row must not enqueue extraction again")
+        try db.stageMetadata(record, root: "/fixture", epoch: "c:new", contentSearch: true)
+        XCTAssertEqual(db.writeDiagnostics.metadataWrites, before.metadataWrites + 1, "New epoch still required for deletion reconciliation")
+        XCTAssertNil(try db.nextContentJob())
+        enum Abort: Error { case rollback }
+        let snapshot = db.writeDiagnostics
+        XCTAssertThrowsError(try db.transaction {
+            try db.stageMetadata(record, root: "/fixture", epoch: "c:rollback", contentSearch: true)
+            throw Abort.rollback
+        })
+        XCTAssertEqual(db.writeDiagnostics, snapshot)
+        try db.removeUnseen(root: "/fixture", epoch: "c:new")
+        XCTAssertEqual(try db.stats().entries, 1)
+    }
+
+    func testLegacyFTSTriggerUpgradeSkipsEqualValuesWithoutLosingSearch() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("index.sqlite")
+        var db: FileSearchIndex? = try FileSearchIndex(url: url)
+        try db!.put(.init(path: "/fixture/a.txt", name: "a.txt", volume: "/", modified: 1, directory: false, symlink: false), body: "retainedbody", root: "/fixture", epoch: "c:first")
+        db = nil
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &raw), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        XCTAssertEqual(sqlite3_exec(raw, "DROP TRIGGER file_au; CREATE TRIGGER file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END", nil, nil, nil), SQLITE_OK)
+        db = try FileSearchIndex(url: url)
+        let before = sqlite3_total_changes(raw)
+        XCTAssertEqual(sqlite3_exec(raw, "UPDATE files SET name=name,body=body", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_total_changes(raw) - before, 1, "Equal values must not touch FTS shadow tables")
+        XCTAssertEqual(sqlite3_exec(raw, "INSERT INTO file_fts(file_fts,rank) VALUES('integrity-check',1)", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(try db!.stats().entries, 1)
+    }
+
     func testRecoveryPointPersistenceInvalidationRollbackAndClear() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
