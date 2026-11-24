@@ -3,6 +3,92 @@ import SQLite3
 @testable import KeylaneCore
 
 final class FileIndexTests: XCTestCase {
+    func testInterruptedSeenMigrationRollsBackWithoutLosingLegacyData() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("index.sqlite")
+        var db: FileSearchIndex? = try FileSearchIndex(url: url)
+        try db!.put(.init(path: "/fixture/a", name: "a", volume: "/", modified: 1, directory: false, symlink: false), body: "safe", root: "/fixture", epoch: "legacy")
+        db = nil
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &raw), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        // A conflicting trigger injects failure after the new table was populated.
+        XCTAssertEqual(sqlite3_exec(raw, "DROP TRIGGER file_seen_delete; DROP TABLE file_seen; CREATE TRIGGER file_seen_delete AFTER UPDATE ON files BEGIN SELECT 1; END; PRAGMA user_version=1", nil, nil, nil), SQLITE_OK)
+        XCTAssertThrowsError(try FileSearchIndex(url: url))
+        var q: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(raw, "SELECT (SELECT count(*) FROM sqlite_master WHERE name='file_seen'),(SELECT body FROM files)", -1, &q, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(q), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(q, 0), 0, "Failed migration must not leave a partial marker table")
+        XCTAssertEqual(String(cString: sqlite3_column_text(q, 1)), "safe")
+        sqlite3_finalize(q)
+        XCTAssertEqual(sqlite3_prepare_v2(raw, "PRAGMA user_version", -1, &q, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(q), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(q, 0), 1)
+        sqlite3_finalize(q)
+        XCTAssertEqual(sqlite3_exec(raw, "DROP TRIGGER file_seen_delete", nil, nil, nil), SQLITE_OK)
+        db = try FileSearchIndex(url: url)
+        try db!.removeUnseen(root: "/fixture", epoch: "legacy")
+        XCTAssertEqual(try db!.stats().entries, 1)
+    }
+
+    func testSeenMigrationRetainsLegacyBodyAndRecoveryAndSurvivesVacuum() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("index.sqlite")
+        var db: FileSearchIndex? = try FileSearchIndex(url: url)
+        let record = FileIndexRecord(path: "/fixture/a.txt", name: "a.txt", volume: "/", modified: 1, directory: false, symlink: false)
+        try db!.put(record, body: "originalbody", root: "/fixture", epoch: "c:legacy")
+        let recovery = FileSearchIndex.RecoveryPoint(eventID: 123, configuration: "fixture")
+        try db!.saveRecoveryPoint(recovery)
+        db = nil
+        var raw: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &raw), SQLITE_OK)
+        defer { sqlite3_close(raw) }
+        XCTAssertEqual(sqlite3_exec(raw, "DROP TRIGGER file_seen_delete; DROP TABLE file_seen; PRAGMA user_version=1", nil, nil, nil), SQLITE_OK)
+        db = try FileSearchIndex(url: url)
+        XCTAssertEqual(try db!.recoveryPoint(), recovery)
+        try db!.removeUnseen(root: "/fixture", epoch: "c:legacy")
+        XCTAssertEqual(try db!.stats().entries, 1)
+        XCTAssertEqual(sqlite3_exec(raw, "CREATE TABLE audit(n); CREATE TRIGGER audit_files AFTER UPDATE ON files BEGIN INSERT INTO audit VALUES(1); END", nil, nil, nil), SQLITE_OK)
+        try db!.stageMetadata(record, root: "/fixture", epoch: "c:next", contentSearch: true)
+        var q: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(raw, "SELECT (SELECT count(*) FROM audit),body,epoch FROM files", -1, &q, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(q), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(q, 0), 0, "New scan must never update the unchanged files row")
+        XCTAssertEqual(String(cString: sqlite3_column_text(q, 1)), "originalbody")
+        XCTAssertEqual(String(cString: sqlite3_column_text(q, 2)), "c:legacy", "Legacy column now stores content mode/version, not scan presence")
+        sqlite3_finalize(q)
+        XCTAssertEqual(sqlite3_exec(raw, "VACUUM", nil, nil, nil), SQLITE_OK)
+        try db!.removeUnseen(root: "/fixture", epoch: "c:next")
+        XCTAssertEqual(try db!.stats().entries, 1)
+        try db!.removeScope("/fixture")
+        XCTAssertEqual(sqlite3_prepare_v2(raw, "SELECT count(*) FROM file_seen", -1, &q, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_step(q), SQLITE_ROW)
+        XCTAssertEqual(sqlite3_column_int(q, 0), 0)
+        sqlite3_finalize(q)
+    }
+
+    func testBodyCompletionDoesNotReplaceNewScanMarkerAndRollbackIsAtomic() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let db = try FileSearchIndex(url: folder.appendingPathComponent("index.sqlite"))
+        let record = FileIndexRecord(path: "/fixture/a.txt", name: "a.txt", volume: "/", modified: 1, directory: false, symlink: false)
+        try db.stageMetadata(record, root: "/fixture", epoch: "c:first", contentSearch: true)
+        let job = try XCTUnwrap(db.nextContentJob())
+        try db.stageMetadata(record, root: "/fixture", epoch: "c:second", contentSearch: true)
+        XCTAssertTrue(try db.completeContent(job, body: "completedbody"))
+        try db.removeUnseen(root: "/fixture", epoch: "c:second")
+        XCTAssertEqual(try db.stats().entries, 1)
+        enum Abort: Error { case stop }
+        XCTAssertThrowsError(try db.transaction {
+            try db.stageMetadata(record, root: "/fixture", epoch: "c:cancelled", contentSearch: true)
+            throw Abort.stop
+        })
+        try db.removeUnseen(root: "/fixture", epoch: "c:second")
+        XCTAssertEqual(try db.stats().entries, 1)
+    }
+
     func testEqualMetadataAndContentAvoidWritesAndCompleteQueue() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -19,7 +105,8 @@ final class FileIndexTests: XCTestCase {
         XCTAssertEqual(db.writeDiagnostics.metadataSkips, before.metadataSkips + 1)
         XCTAssertNil(try db.nextContentJob(), "Skipping a matched row must not enqueue extraction again")
         try db.stageMetadata(record, root: "/fixture", epoch: "c:new", contentSearch: true)
-        XCTAssertEqual(db.writeDiagnostics.metadataWrites, before.metadataWrites + 1, "New epoch still required for deletion reconciliation")
+        XCTAssertEqual(db.writeDiagnostics.metadataWrites, before.metadataWrites, "New scan epoch must not rewrite the body row")
+        XCTAssertGreaterThan(db.writeDiagnostics.seenWrites, before.seenWrites, "Separate marker still required for deletion reconciliation")
         XCTAssertNil(try db.nextContentJob())
         enum Abort: Error { case rollback }
         let snapshot = db.writeDiagnostics

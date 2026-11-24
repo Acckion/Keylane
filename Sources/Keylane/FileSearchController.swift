@@ -1119,7 +1119,7 @@ final class FileSearchController: ObservableObject {
                 let elapsed = Date().timeIntervalSince(scanStart)
                 let d = self.writer.sync { self.writeDB?.writeDiagnostics }
                 if let d {
-                    logger.info("scan_end kind=\(scanKind, privacy: .public) cancelled=\(token.cancelled) succeeded=\(scanSucceeded) seconds=\(elapsed) lifetime_metadata_checks=\(d.metadataChecks) lifetime_metadata_writes=\(d.metadataWrites) lifetime_metadata_skips=\(d.metadataSkips) lifetime_content_writes=\(d.contentWrites) lifetime_content_skips_or_stale=\(d.contentSkips) lifetime_content_deferrals=\(d.contentDeferrals) lifetime_transactions=\(d.transactions)")
+                    logger.info("scan_end kind=\(scanKind, privacy: .public) cancelled=\(token.cancelled) succeeded=\(scanSucceeded) seconds=\(elapsed) lifetime_metadata_checks=\(d.metadataChecks) lifetime_metadata_writes=\(d.metadataWrites) lifetime_metadata_skips=\(d.metadataSkips) lifetime_seen_writes=\(d.seenWrites) lifetime_content_writes=\(d.contentWrites) lifetime_content_skips_or_stale=\(d.contentSkips) lifetime_content_deferrals=\(d.contentDeferrals) lifetime_transactions=\(d.transactions)")
                 }
             }
             let start = Date(); var lastProgress = Date.distantPast; var invalid = 0; var denied: [String] = []; var auto: [AutomaticFileExclusion] = []; var processed = 0
