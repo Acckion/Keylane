@@ -13,6 +13,7 @@ final class AIConversationComposer: ObservableObject {
     private var fileTask: Task<Void, Never>?
     private var attachmentAvailability: AnyCancellable?
     private var resourceReaders: [UUID: AIResourceReader] = [:]
+    private var activeResourceLifetimeIDs: Set<UUID> = []
 
     struct Snapshot {
         let text: String
@@ -26,7 +27,7 @@ final class AIConversationComposer: ObservableObject {
         text = snapshot.text
         selection = snapshot.selection
         attachments = snapshot.attachments
-        resourceReaders = snapshot.resourceReaders
+        resourceReaders = snapshot.resourceReaders.filter { !$0.value.isRevoked }
     }
 
     func attachFiles(_ urls: [URL]) {
@@ -35,7 +36,7 @@ final class AIConversationComposer: ObservableObject {
     }
 
     func canReread(_ attachment: AIConversationAttachment) -> Bool {
-        attachment.resourceSnapshot != nil && resourceReaders[attachment.id] != nil
+        attachment.resourceSnapshot != nil && resourceReaders[attachment.id].map { !$0.isRevoked } == true
     }
 
     func removeAttachment(_ id: UUID) {
@@ -53,8 +54,9 @@ final class AIConversationComposer: ObservableObject {
     /// All-or-nothing refresh: a failed, removed or superseded read leaves the old snapshot intact.
     func rereadAttachment(_ id: UUID) {
         guard !loadingFiles, let previous = attachments.first(where: { $0.id == id }),
-              let snapshot = previous.resourceSnapshot, let reader = resourceReaders[id] else { return }
+              let snapshot = previous.resourceSnapshot, let reader = resourceReaders[id], !reader.isRevoked else { return }
         let draft = draftID
+        activeResourceLifetimeIDs = reader.lifetimeIDs
         loadingFiles = true; fileError = ""
         fileTask = Task { @MainActor [weak self] in
             do {
@@ -81,6 +83,7 @@ final class AIConversationComposer: ObservableObject {
     func cancelAttachmentRead() {
         guard loadingFiles else { return }
         fileTask?.cancel(); fileTask = nil; loadingFiles = false
+        activeResourceLifetimeIDs.removeAll()
         attachmentAvailability?.cancel(); attachmentAvailability = nil
         fileError = "读取已取消，原有快照保持不变。"
     }
@@ -88,12 +91,23 @@ final class AIConversationComposer: ObservableObject {
     @MainActor private func finishResourceRead(_ draft: UUID) {
         guard draftID == draft else { return }
         loadingFiles = false; fileTask = nil
+        activeResourceLifetimeIDs.removeAll()
         attachmentAvailability?.cancel(); attachmentAvailability = nil
     }
 
     func loadResourceReaders(_ readers: [AIResourceReader], availability: AnyPublisher<Bool, Never>? = nil) {
         guard !loadingFiles, attachments.count + readers.count <= 5 else { return }
+        // Observe synchronously for the entire retained-reader lifetime, including
+        // transient off/on changes between UI turns. Completion must not end this lease.
+        let lifetime = availability.map { publisher in
+            AIResourceReadLifetime(availability: publisher) { [weak self] id in
+                let revoke = { [weak self] in self?.revokeResourceReaders(id) }
+                if Thread.isMainThread { revoke() } else { DispatchQueue.main.async { revoke() } }
+            }
+        }
+        let readers = readers.map { reader in lifetime.map { reader.bound(to: $0) } ?? reader }
         let draft = draftID
+        activeResourceLifetimeIDs = Set(readers.flatMap { $0.lifetimeIDs })
         loadingFiles = true; fileError = ""
         fileTask = Task { @MainActor [weak self] in
             do {
@@ -115,7 +129,18 @@ final class AIConversationComposer: ObservableObject {
                 self.fileError = error.localizedDescription; self.finishResourceRead(draft)
             }
         }
-        observeAttachmentAvailability(availability)
+    }
+
+    private func revokeResourceReaders(_ lifetime: UUID) {
+        let retained = resourceReaders.contains { $0.value.lifetimeIDs.contains(lifetime) }
+        if retained {
+            objectWillChange.send()
+            resourceReaders = resourceReaders.filter { !$0.value.lifetimeIDs.contains(lifetime) }
+        }
+        if activeResourceLifetimeIDs.contains(lifetime) {
+            cancelAttachmentRead()
+            fileError = "来源或命令已停用，请重新选择。"
+        }
     }
 
     private func observeAttachmentAvailability(_ availability: AnyPublisher<Bool, Never>?) {
@@ -177,6 +202,7 @@ final class AIConversationComposer: ObservableObject {
         completion = nil
         attachments = []
         resourceReaders = [:]
+        activeResourceLifetimeIDs.removeAll()
         draftID = UUID()
     }
     @discardableResult
@@ -273,6 +299,12 @@ struct AIResourceReader {
     var symbol = "doc.text"
     let available: () -> Bool
     let allowsRefresh: Bool
+    private var lifetimes: [AIResourceReadLifetime] = []
+    var isRevoked: Bool { lifetimes.contains { !$0.isValid } }
+    var lifetimeIDs: Set<UUID> { Set(lifetimes.map(\.id)) }
+    func bound(to lifetime: AIResourceReadLifetime) -> Self {
+        var copy = self; copy.lifetimes.append(lifetime); return copy
+    }
 
     init(source: AIActionSource, symbol: String = "doc.text", available: @escaping () -> Bool = { true }, allowsRefresh: Bool = true) {
         self.source = source; self.symbol = symbol; self.available = available; self.allowsRefresh = allowsRefresh
@@ -280,11 +312,31 @@ struct AIResourceReader {
 
     @MainActor func read(replacing previous: AIResourceSnapshot? = nil) async throws -> AIConversationAttachment {
         guard previous == nil || allowsRefresh else { throw AIActionError.staleSource }
-        guard available() else { throw AIActionError.unavailable }
+        guard !isRevoked, available() else { throw AIActionError.unavailable }
         let context = try await source.captureSnapshot()
-        guard available() else { throw AIActionError.unavailable }
+        guard !isRevoked, available() else { throw AIActionError.unavailable }
         guard let snapshot = context.resourceSnapshot,
               previous == nil || previous?.reference == snapshot.reference else { throw AIActionError.staleSource }
         return .init(title: String(context.title.prefix(60)), text: context.text, symbol: symbol, resourceSnapshot: snapshot)
+    }
+}
+
+/// A monotonic lease: the first unavailable event permanently revokes every copy.
+/// Snapshots contain no lease; in-memory draft copies share this exact lifetime.
+final class AIResourceReadLifetime {
+    let id = UUID()
+    private let lock = NSLock()
+    private var valid = true
+    private var observation: AnyCancellable?
+    var isValid: Bool { lock.lock(); defer { lock.unlock() }; return valid }
+    init(availability: AnyPublisher<Bool, Never>, revoked: @escaping (UUID) -> Void) {
+        observation = availability.sink { [weak self] available in
+            guard !available, let self else { return }
+            self.lock.lock()
+            let first = self.valid
+            self.valid = false
+            self.lock.unlock()
+            if first { revoked(self.id) }
+        }
     }
 }
