@@ -52,6 +52,16 @@ wait("directory metadata") { !scans.isEmpty && controller.testEventsIdle }
 precondition(scans.allSatisfy { !$0.0 && $0.1 == 1 }, "Directory metadata must touch only its own record")
 precondition(controller.stats.entries == before, "Descendants must survive shallow reconciliation")
 print("PASS ordinary directory metadata processes one record and retains all descendants")
+let inodeFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemInodeMetaMod)
+scans.removeAll()
+controller.testIndexEvents(paths: [a.path], flags: [inodeFlag])
+wait("readable root inode notification filtered") { controller.testEventsIdle }
+precondition(scans.isEmpty, "A readable root's inode notification must not crawl the root")
+controller.testIndexEvents(paths: [folder.path], flags: [inodeFlag])
+wait("directory inode notification") { !scans.isEmpty && controller.testEventsIdle }
+precondition(scans.count == 1 && !scans[0].0 && scans[0].1 == 1, "Directory inode notification must only update the directory row")
+precondition(controller.stats.entries == before, "Inode-only reconciliation must preserve descendants")
+print("PASS directory inode notifications read one entry and never expand a readable root")
 scans.removeAll()
 controller.testIndexEvents(paths: [folder.path, child.path, child.path], flags: [dirFlag, fileFlag, fileFlag])
 wait("parent and child") { !scans.isEmpty && controller.testEventsIdle }
@@ -69,6 +79,11 @@ wait("subtree recovery") { !scans.isEmpty && controller.testEventsIdle }
 precondition(scans.allSatisfy { !$0.0 && $0.1 == 103 }, "MustScan must reconcile its subtree, not all roots")
 precondition(controller.stats.entries == before)
 print("PASS scoped MustScan reconciles only the affected subtree")
+scans.removeAll()
+controller.testIndexEvents(paths: [folder.path], flags: [FSEventStreamEventFlags(kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemIsDir)])
+wait("directory rename notification") { !scans.isEmpty && controller.testEventsIdle }
+precondition(scans.count == 1 && !scans[0].0 && scans[0].1 == 103, "Directory rename must still reconcile its descendants")
+print("PASS directory rename keeps recursive reconciliation")
 scans.removeAll()
 controller.testIndexEvents(paths: [folder.path], flags: [FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped)])
 wait("global recovery") { !scans.isEmpty && controller.testEventsIdle }

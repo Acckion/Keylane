@@ -117,12 +117,10 @@ try FileManager.default.createDirectory(at: locked, withIntermediateDirectories:
 let lockedFile = locked.appendingPathComponent("locked-fixture.txt")
 try Data().write(to: lockedFile)
 try wait("Initial readable subtree") { try contains(lockedFile.lastPathComponent) && !controller.indexing }
-controller.stopRuntime(); pump(0.3)
 try insertSentinel()
 try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
 defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
-controller = FileSearchController(directory: store, preferences: prefs)
-try wait("Unreadable subtree queued for repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.contains(locked.path) == true }
+try wait("Live chmod loss queued for repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.contains(locked.path) == true }
 require(try contains(lockedFile.lastPathComponent), "Unreadable subtree lost its saved rows")
 require(try contains(sentinel.lastPathComponent), "Unreadable subtree caused an unrelated root scan")
 controller.stopRuntime(); pump(0.3)
@@ -139,6 +137,7 @@ require(try db.recoveryPoint()?.retryPaths.contains(locked.path) == true, "Filte
 print("PASS ordinary ancestor changes do not wake unresolved repairs")
 
 try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+try wait("Live chmod alone wakes saved repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.isEmpty == true }
 try FileManager.default.removeItem(at: lockedFile)
 try Data().write(to: locked.appendingPathComponent("unlocked-fixture.txt"))
 try wait("Permission restored subtree repair") { try !controller.indexing && db.recoveryPoint()?.retryPaths.isEmpty == true && !contains(lockedFile.lastPathComponent) && contains("unlocked-fixture.txt") }

@@ -2,6 +2,7 @@ import OSLog
 import AppKit
 import Combine
 import CoreServices
+import Darwin
 import KeylaneCore
 
 private final class FileScanCancellation: @unchecked Sendable {
@@ -1343,7 +1344,16 @@ final class FileSearchController: ObservableObject {
                                         }
                                         let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
                                         records.append(record)
-                                        if path == subtree, isDir, !symlink { retainedDirectoryEntry = true }
+                                        if path == subtree, isDir, !symlink {
+                                            retainedDirectoryEntry = true
+                                            // Detect permission loss without opening or walking children.
+                                            // Keep the old subtree and record where to retry on recovery.
+                                            if !recursiveEntry, url.pathExtension.lowercased() != "app",
+                                               Self.directoryAccessDenied(path) {
+                                                repairPaths.insert(path); invalid += 1
+                                                if denied.count < 24 { denied.append(path) }
+                                            }
+                                        }
                                         if recursiveEntry && isDir && !symlink && url.pathExtension != "app" { queue.append((path, rules)) }
                                     }
                                     staged.append(contentsOf: records)
@@ -1527,6 +1537,11 @@ final class FileSearchController: ObservableObject {
         indexFailure = message
         indexStatus = message
         if localQueryResolved { publish() }
+    }
+
+    private static func directoryAccessDenied(_ path: String) -> Bool {
+        guard Darwin.access(path, R_OK | X_OK) != 0 else { return false }
+        return errno == EACCES || errno == EPERM
     }
 
     private static func isMissing(_ error: Error) -> Bool {
@@ -1815,14 +1830,23 @@ final class FileSearchController: ObservableObject {
                 targets.insert(target)
                 let recoveryFlags = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagItemChangeOwner)
                 if target != path || flags & recoveryFlags != 0 { result.urgentPaths.insert(target) }
-                let directoryChange = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated
+                let structuralChange = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated
                     | kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged
-                    | kFSEventStreamEventFlagItemChangeOwner | kFSEventStreamEventFlagItemInodeMetaMod)
-                if flags & directoryChange != 0, flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) == 0 {
+                    | kFSEventStreamEventFlagItemChangeOwner)
+                let inodeChange = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemInodeMetaMod) != 0
+                let possibleDirectory = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) == 0
+                if possibleDirectory, inodeChange || flags & structuralChange != 0 {
+                    // Inode notifications alone are common during cloud sync.
+                    // They can wake saved repairs without expanding a healthy directory.
                     result.repairWakePaths.insert(target)
                 }
-                if target != path || flags & directoryChange != 0 {
+                if target != path || flags & structuralChange != 0 {
                     result.recursivePaths.insert(target)
+                } else if inodeChange, possibleDirectory, options.roots.contains(target), directoryAccessDenied(target) {
+                    // Scope roots have no index row. Only revisit a root on an
+                    // inode-only event if it is unreadable, so repair is recorded.
+                    result.recursivePaths.insert(target)
+                    result.urgentPaths.insert(target)
                 }
                 // Historical changes may span days; they are not a one-minute burst.
                 guard !batch.historical, !requiresFullScan, let directory = FileIndexExclusionPolicy.changeCandidate(
