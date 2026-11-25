@@ -494,6 +494,14 @@ controller.search("runtime-restored")
 wait("File changed while disabled appears after restart") { !controller.indexing && results.first?.id == resumed.path }
 let drag = try controller.prepareFileDrag(resumed)
 precondition(drag.urls == [resumed])
+controller.removeScope(scope.path)
+do {
+    _ = try controller.prepareFileDrag(resumed)
+    preconditionFailure("Removed authorization must reject new drags even for a previously indexed row")
+} catch {}
+precondition(drag.urls == [resumed] && FileManager.default.fileExists(atPath: resumed.path),
+             "Removing a scope must not mutate a prepared source file")
+print("PASS removed scope rejects new file drags; prepared source remains unchanged (not OS authorization revocation)")
 controller.stopRuntime()
 do {
     _ = try controller.prepareFileDrag(resumed)
