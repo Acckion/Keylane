@@ -305,6 +305,36 @@ public actor RaycastStoreDiskRegistry {
         _ = try verified(record); state.records.append(record); try write(state)
         return .init(id: record.id, source: source, contentDigest: expectedDigest)
     }
+    /// Capture the invisible first-install stage without changing it. The
+    /// coordinator keeps this proof through the build and compares it at commit.
+    func initialStage(for slug: String) throws -> RaycastStorePreparedArtifact? {
+        let fd = try lock(); defer { unlock(fd) }
+        guard let record = try read().records.first(where: { $0.phase == .prepared && $0.slug == slug }) else { return nil }
+        return .init(id: record.id, source: try record.source, contentDigest: record.digest)
+    }
+
+    /// Replace only the exact obsolete first-install stage. An interrupted
+    /// build leaves the old stage recoverable. This single anchored publication
+    /// does not touch an installed receipt, approval snapshot or update candidate.
+    func replaceInitialStage(_ previous: RaycastStorePreparedArtifact, bytes: Data, expectedDigest: String,
+                             source: RaycastStoreSource, grantedCapabilities: Set<String>,
+                             installationID: UUID) throws -> RaycastStorePreparedArtifact {
+        let fd = try lock(); defer { unlock(fd) }
+        var state = try read()
+        guard let index = state.records.firstIndex(where: { $0.id == previous.id }),
+              state.records[index].phase == .prepared, try state.records[index].source == previous.source,
+              state.records[index].digest == previous.contentDigest,
+              source.slug == previous.source.slug, source.revision != previous.source.revision,
+              !state.records.contains(where: { $0.id == installationID }) else { throw Failure.stale }
+        let record = Record(id: installationID, slug: source.slug, revision: source.revision, digest: expectedDigest,
+                            bytes: bytes, grants: grantedCapabilities, generation: 0, enabled: false, phase: .prepared)
+        _ = try verified(record)
+        try Task.checkCancellation()
+        state.records[index] = record
+        try write(state)
+        return .init(id: record.id, source: source, contentDigest: expectedDigest)
+    }
+
     /// Recover the exact verified staged receipt on restart without rebuilding the command.
     public func stagedArtifact(for source: RaycastStoreSource) throws -> RaycastStorePreparedArtifact? {
         let fd = try lock(); defer { unlock(fd) }

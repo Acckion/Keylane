@@ -43,17 +43,10 @@ public struct RaycastStoreBuildDependencies: Sendable {
         optionalPeers: Set<String> = [],
         supportedRuntimeAPIVersions: Set<String>, target: Target = .linuxArm64
     ) throws {
-        typealias Kind = RaycastStoreDependencyPlan.Edge.Kind
-        let declarations: [(Kind, [String: String])] = [
-            (.production, dependencies.filter { optionalDependencies[$0.key] == nil }),
-            (.optional, optionalDependencies), (.peer, peerDependencies)
-        ]
-        for (kind, fields) in declarations {
-            let locked = Dictionary(uniqueKeysWithValues: plan.rootEdges.filter { $0.kind == kind }.map { ($0.name, $0.requestedVersion) })
-            guard fields == locked else { throw Failure.rootLockMismatch }
+        guard RaycastStoreDependencyPlan.matchesRuntimeDeclarations(plan.rootEdges, dependencies: dependencies,
+            optional: optionalDependencies, peers: peerDependencies, optionalPeers: optionalPeers) else {
+            throw Failure.rootLockMismatch
         }
-        let lockedOptionalPeers = Set(plan.rootEdges.filter(\.optionalPeer).map(\.name))
-        guard optionalPeers == lockedOptionalPeers else { throw Failure.rootLockMismatch }
         let indexed = Dictionary(uniqueKeysWithValues: plan.nodes.map { ($0.path, $0) })
         var queue = Array(plan.rootEdges.filter { $0.kind != .development }.reversed())
         var selected = Set<String>(), apiVersion: String?

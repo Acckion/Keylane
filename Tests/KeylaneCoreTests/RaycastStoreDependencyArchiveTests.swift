@@ -32,9 +32,19 @@ final class RaycastStoreDependencyArchiveTests: XCTestCase {
         } }
         output.count = written; return output
     }
-    private func node(_ bytes: Data) throws -> RaycastStoreDependencyPlan.Node {
-        let json: [String: Any] = ["lockfileVersion": 3, "packages": ["": [:], "node_modules/fixture": ["version": "1.0.0", "resolved": "https://registry.npmjs.org/fixture/-/fixture-1.0.0.tgz", "integrity": "sha512-" + Data(SHA512.hash(data: bytes)).base64EncodedString()]]]
-        return try XCTUnwrap(RaycastStoreDependencyPlan(lockJSON: JSONSerialization.data(withJSONObject: json)).nodes.first)
+    private func node(_ bytes: Data, declarations: [String: Any] = [:],
+                      productionNodes: [String: String] = [:]) throws -> RaycastStoreDependencyPlan.Node {
+        let entry: [String: Any] = [
+            "version": "1.0.0", "resolved": "https://registry.npmjs.org/fixture/-/fixture-1.0.0.tgz",
+            "integrity": "sha512-" + Data(SHA512.hash(data: bytes)).base64EncodedString()
+        ]
+        var packages: [String: [String: Any]] = [
+            "": [:], "node_modules/fixture": entry.merging(declarations) { _, new in new }
+        ]
+        for (name, version) in productionNodes { packages["node_modules/" + name] = ["version": version] }
+        let json: [String: Any] = ["lockfileVersion": 3, "packages": packages]
+        return try XCTUnwrap(RaycastStoreDependencyPlan(lockJSON: JSONSerialization.data(withJSONObject: json))
+            .nodes.first { $0.path == "node_modules/fixture" })
     }
     private func validate(_ entries: [(String, Data, UInt8)]) throws -> RaycastStoreDependencyArchive {
         let bytes = try gzip(tar(entries)); return try .init(tarball: bytes, node: node(bytes))
@@ -108,6 +118,68 @@ final class RaycastStoreDependencyArchiveTests: XCTestCase {
         XCTAssertThrowsError(try validate([("package/package.json",wildcard,48)]))
     }
 
+
+    func testArchiveMatchesNormalizedProductionOptionalAndPeerDeclarations() throws {
+        let common: [String: Any] = [
+            "dependencies": ["production": "^1.0.0"],
+            "optionalDependencies": ["soft": "^2.0.0"],
+            "peerDependencies": ["peer": "^3.0.0"],
+            "peerDependenciesMeta": ["peer": ["optional": true]]
+        ]
+        // The package repeats an optional dependency in dependencies, unlike
+        // its normalized lock entry. Its development declaration is inert.
+        let matching = common.merging([
+            "name": "fixture", "version": "1.0.0",
+            "dependencies": ["production": "^1.0.0", "soft": "^9.0.0"],
+            "devDependencies": ["unlocked": "1.0.0"]
+        ]) { _, new in new }
+        func archive(_ manifest: [String: Any]) throws -> RaycastStoreDependencyArchive {
+            let bytes = try gzip(tar([
+                ("package/package.json", JSONSerialization.data(withJSONObject: manifest), 48),
+                ("package/index.js", Data("export default 1".utf8), 48)
+            ]))
+            return try .init(tarball: bytes, node: node(bytes, declarations: common, productionNodes: ["production": "1.0.0"]), target: .macOSArm64)
+        }
+        XCTAssertNoThrow(try archive(matching))
+        let mismatches: [[String: Any]] = [
+            ["dependencies": ["production": "^2.0.0"]],
+            ["dependencies": ["production": "^1.0.0", "additional": "1.0.0"]],
+            ["dependencies": [:] as [String: String]],
+            ["optionalDependencies": ["soft": "^9.0.0"]],
+            ["peerDependencies": ["peer": "^4.0.0"]],
+            ["peerDependenciesMeta": ["peer": ["optional": false]]],
+            ["peerDependenciesMeta": [:] as [String: Any]]
+        ]
+        for change in mismatches {
+            XCTAssertThrowsError(try archive(matching.merging(change) { _, new in new })) {
+                XCTAssertEqual($0 as? RaycastStoreDependencyArchive.Failure, .dependencyLockMismatch)
+            }
+        }
+    }
+
+    func testBuildProjectRejectsTransitiveManifestDisagreementEvenWithMatchingArchiveDigest() throws {
+        let dependency = try gzip(tar([
+            ("package/package.json", Data(#"{"name":"b","version":"1.0.0"}"#.utf8), 48),
+            ("package/index.js", Data("export default 1".utf8), 48)
+        ]))
+        let package = try gzip(tar([
+            ("package/package.json", Data(#"{"name":"fixture","version":"1.0.0","dependencies":{"b":"^2.0.0"}}"#.utf8), 48),
+            ("package/index.js", Data("export default 42".utf8), 48)
+        ]))
+        func locked(_ name: String, _ bytes: Data) -> [String: Any] {
+            ["version": "1.0.0", "resolved": "https://registry.npmjs.org/\(name)/-/\(name)-1.0.0.tgz",
+             "integrity": "sha512-" + Data(SHA512.hash(data: bytes)).base64EncodedString()]
+        }
+        let a = locked("fixture", package).merging(["dependencies": ["b": "^1.0.0"]]) { _, new in new }
+        let lock: [String: Any] = ["lockfileVersion": 3, "packages": [
+            "": ["dependencies": ["fixture": "1.0.0"]], "node_modules/fixture": a, "node_modules/b": locked("b", dependency)
+        ]]
+        let source = try projectSource(tarball: package, additional: ["package-lock.json": JSONSerialization.data(withJSONObject: lock)])
+        XCTAssertThrowsError(try RaycastStoreBuildProject(source: source, supportedRuntimeAPIVersions: [],
+            tarballs: ["node_modules/fixture": package, "node_modules/b": dependency], target: .macOSArm64)) {
+            XCTAssertEqual($0 as? RaycastStoreDependencyArchive.Failure, .dependencyLockMismatch)
+        }
+    }
 
     private func projectSource(tarball: Data, additional: [String: Data] = [:]) throws -> RaycastStoreSourcePackage {
         let revision = String(repeating: "a", count: 40)

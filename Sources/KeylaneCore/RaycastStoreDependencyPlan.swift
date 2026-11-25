@@ -65,6 +65,21 @@ public struct RaycastStoreDependencyPlan: Sendable {
         }
         return seen
     }
+    /// npm optional declarations override production entries of the same
+    /// name. Compare the normalized runtime edges, not dev-only declarations.
+    static func matchesRuntimeDeclarations(_ edges: [Edge], dependencies: [String: String],
+                                           optional: [String: String], peers: [String: String],
+                                           optionalPeers: Set<String>) -> Bool {
+        let declarations: [(Edge.Kind, [String: String])] = [
+            (.production, dependencies.filter { optional[$0.key] == nil }),
+            (.optional, optional), (.peer, peers)
+        ]
+        return declarations.allSatisfy { kind, fields in
+            let locked = edges.filter { $0.kind == kind }
+            return locked.count == fields.count && locked.allSatisfy { fields[$0.name] == $0.requestedVersion }
+        } && optionalPeers == Set(edges.filter(\.optionalPeer).map(\.name))
+    }
+
     private struct Lock: Decodable { let lockfileVersion: Int; let packages: [String: Entry] }
     private struct Entry: Decodable {
         struct PeerMetadata: Decodable { let optional: Bool? }

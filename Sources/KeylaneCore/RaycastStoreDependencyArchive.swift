@@ -7,7 +7,7 @@ public struct RaycastStoreDependencyArchive: Sendable {
     public enum Failure: Error, Equatable {
         case integrity, blockedDependency, compression, limit, malformedTar
         case unsupportedEntry, unsafePath, duplicatePath, nativeContent, manifest
-        case lifecycleScript(String), runtimeEntry
+        case lifecycleScript(String), runtimeEntry, dependencyLockMismatch
     }
     public let installationPath: String
     public let name: String
@@ -26,6 +26,11 @@ public struct RaycastStoreDependencyArchive: Sendable {
               manifest.name == node.name, manifest.version == node.version,
               manifest.gypfile != true, Self.permits(target.os, manifest.os), Self.permits(target.cpu, manifest.cpu),
               manifest.bundleDependencies == nil, manifest.bundledDependencies == nil else { throw Failure.manifest }
+        guard RaycastStoreDependencyPlan.matchesRuntimeDeclarations(node.edges, dependencies: manifest.dependencies ?? [:],
+            optional: manifest.optionalDependencies ?? [:], peers: manifest.peerDependencies ?? [:],
+            optionalPeers: Set((manifest.peerDependenciesMeta ?? [:]).filter { $0.value.optional == true }.keys)) else {
+            throw Failure.dependencyLockMismatch
+        }
         if let hook = ["preinstall", "install", "postinstall"].first(where: { manifest.scripts?[$0] != nil }) {
             throw Failure.lifecycleScript(hook)
         }
@@ -55,6 +60,11 @@ public struct RaycastStoreDependencyArchive: Sendable {
         installationPath = node.path; name = node.name; version = node.version; self.files = files
     }
     private struct Manifest: Decodable {
+        struct PeerMetadata: Decodable { let optional: Bool? }
+        let dependencies: [String: String]?
+        let optionalDependencies: [String: String]?
+        let peerDependencies: [String: String]?
+        let peerDependenciesMeta: [String: PeerMetadata]?
         let name: String; let version: String; let scripts: [String: String]?
         let gypfile: Bool?; let os: [String]?; let cpu: [String]?
         let bundleDependencies: [String]?; let bundledDependencies: [String]?
