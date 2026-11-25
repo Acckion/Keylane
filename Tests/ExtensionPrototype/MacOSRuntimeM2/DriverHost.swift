@@ -11,7 +11,7 @@ import os
         let scratch = URL(fileURLWithPath: CommandLine.arguments[2])
         if mode == "reviewed-adapter" {
             do {
-                for file in MacOSReviewedRaycastAPI.files {
+                for file in MacOSReviewedRaycastAPI.files + MacOSReviewedRaycastAssets.files {
                     let path = scratch.appendingPathComponent(file.path)
                     try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try file.body.write(to: path, options: .withoutOverwriting)
@@ -33,11 +33,55 @@ import os
         let observed = ObservedEffects()
         let driver = MacOSRestrictedNoViewDriver(application: .main, expectedDigest: mode == "helper-digest" ? "" : FixtureSigning.digest,
                                                  signingRequirement: FixtureSigning.requirement, ownership: ownership,
-                                                 deliver: { observed.record($0) })
+                                                 deliver: { observed.record($0) },
+                                                 storage: mode.hasPrefix("batch-02-") ? .init(root: scratch) : nil)
         if mode == "batch-01-values" || mode == "batch-01-no-grants" {
             do {
                 try await exerciseBatch01(driver, scratch: scratch, allow: mode == "batch-01-values")
                 exit(observed.history.isEmpty ? 0 : 1)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
+        if mode.hasPrefix("batch-02-files-") {
+            do {
+                let phase = String(mode.dropFirst("batch-02-files-".count))
+                let allowed = phase != "denied"
+                let bytes = try Data(contentsOf: scratch.appendingPathComponent("Batch02Assets.js"))
+                let id = UUID(uuidString: "00000000-0000-4000-8000-000000000003")!
+                let lease = OSAllocatedUnfairLock(initialState: true)
+                let receipt = StoreRuntimeBridge.Receipt(
+                    provenance: .init(installation: .init(id: id.uuidString, generation: 0),
+                                      entry: "src/main.js", projectDigest: "", runtimeDigest: ""),
+                    artifactDigest: MacOSExtensionBuild.hash(bytes))
+                var context = StoreGuestLaunchContext(arguments: ["mode": phase])
+                context.packagedAssets = try MacOSReviewedRaycastAssets.contents([
+                    .init(path: "assets/sub/hello.txt", body: Data("你好".utf8)),
+                    .init(path: "assets/bytes.bin", body: Data([0, 128, 255])),
+                    .init(path: "package.json", body: Data("excluded".utf8)),
+                ])
+                let ticket = StoreGuestRunTicket(id: UUID(), profileID: id,
+                    installation: .init(id: id.uuidString, generation: 1), receipt: receipt,
+                    commandID: "extension:raycast:fixture/batch-02-assets/main",
+                    capabilities: allowed ? [MacOSReviewedRaycastAssets.capability, MacOSReviewedRaycastAssets.supportCapability, MacOSReviewedRaycastCache.capability] : [],
+                    launchContext: context, macOSLease: lease, liveLease: { lease.withLock { $0 } })
+                try await driver.run(bytes: bytes, ticket: ticket)
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
+        if mode.hasPrefix("batch-02-") {
+            do {
+                try await exerciseBatch02(driver, scratch: scratch, mode: String(mode.dropFirst("batch-02-".count)))
+                let expected = mode == "batch-02-write" ? ["extension preferences", "extension:raycast:fixture/batch-02/main"] : []
+                let diagnosticsMatch = mode == "batch-02-write"
+                    ? observed.diagnostics.count == 2 && observed.diagnostics[0].exceptionCategory == .object
+                        && observed.diagnostics[1].residentBytes != nil
+                    : observed.diagnostics.isEmpty
+                exit(observed.history == expected && diagnosticsMatch ? 0 : 1)
             } catch {
                 FileHandle.standardError.write(Data(String(describing: error).utf8))
                 exit(1)
@@ -119,10 +163,52 @@ import os
         }
     }
 
+    static func exerciseBatch02(_ driver: MacOSRestrictedNoViewDriver, scratch: URL, mode: String) async throws {
+        let bytes = try Data(contentsOf: scratch.appendingPathComponent("Batch02.js"))
+        // All calls use the same temporary installation and a fresh one-shot ticket.
+        let id = "00000000-0000-4000-8000-000000000002"
+        let receipt = StoreRuntimeBridge.Receipt(
+            provenance: .init(installation: .init(id: id, generation: 0),
+                              entry: "src/main.js", projectDigest: "", runtimeDigest: ""),
+            artifactDigest: MacOSExtensionBuild.hash(bytes))
+        let fields = try JSONDecoder().decode([RaycastExtensionManifest.Field].self,
+            from: Data(#"[{"name":"label","type":"textfield","title":"Label","required":true,"default":"fallback"},{"name":"secret","type":"password"},{"name":"file","type":"file"},{"name":"directory","type":"directory"},{"name":"application","type":"appPicker"}]"#.utf8))
+        guard let app = RaycastApplicationValue(url: URL(fileURLWithPath: "/fixture/Test.app"),
+                                                name: "Fixture", bundleId: "org.keylane.tests.synthetic") else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var context = StoreGuestLaunchContext(arguments: ["mode": mode],
+            ordinaryPreferences: ["label": .text("chosen"), "file": .text("/fixture/document.txt"),
+                                  "directory": .text("/fixture"), "application": .application(app)], preferenceFields: fields)
+        context.passwordValues = ["secret": "synthetic-fixture-value"]
+        var grants: Set<String> = []
+        if mode != "denied" {
+            grants = [MacOSNoViewCapabilities.preferences, MacOSNoViewCapabilities.openPreferences,
+                      MacOSNoViewCapabilities.diagnostics, MacOSReviewedRaycastCache.capability,
+                      MacOSReviewedRaycastLocalStorage.capability]
+            if mode != "ordinary-only" {
+                grants.formUnion([MacOSNoViewCapabilities.secretPreferences, MacOSNoViewCapabilities.selectedPreferences])
+            }
+        }
+        let lease = OSAllocatedUnfairLock(initialState: true)
+        let ticket = StoreGuestRunTicket(id: UUID(), profileID: UUID(), installation: .init(id: id, generation: 1),
+            receipt: receipt, commandID: "extension:raycast:fixture/batch-02/main", capabilities: grants,
+            launchContext: context, macOSLease: lease, liveLease: { lease.withLock { $0 } })
+        do {
+            try await driver.run(bytes: bytes, ticket: ticket)
+            if mode == "failed" { throw CocoaError(.fileReadCorruptFile) }
+        } catch MacOSOwnedHelperProcess.Failure.failed where mode == "failed" {
+            return
+        }
+    }
+
     @MainActor private final class ObservedEffects {
         var history: [String] = []
+        var diagnostics: [MacOSNoViewCapabilities.Diagnostic] = []
         func record(_ effect: MacOSNoViewCapabilities.Presentation) {
             switch effect {
+            case .diagnostics(_, _, let samples): diagnostics.append(contentsOf: samples)
+            case .openPreferences(_, _, let command): history.append(command ?? "extension preferences")
             case .clearSearch(let scroll): history.append("clear:" + String(scroll))
             case .popToRoot(let clear): history.append("root:" + String(clear))
             case .closeWindow(let clear, let behavior):

@@ -6,7 +6,7 @@ public struct StoreGuestLaunchContext: Sendable {
     /// Ordinary preferences only. Password/secret preference fields must not
     /// be selected by the app for this DTO; there is no secret-store access.
     public enum OrdinaryPreference: Encodable, Sendable {
-        case text(String), toggle(Bool), number(Double)
+        case text(String), toggle(Bool), number(Double), application(RaycastApplicationValue)
 
         public func encode(to encoder: any Encoder) throws {
             var single = encoder.singleValueContainer()
@@ -14,17 +14,35 @@ public struct StoreGuestLaunchContext: Sendable {
             case .text(let value): try single.encode(value)
             case .toggle(let value): try single.encode(value)
             case .number(let value): try single.encode(value)
+            case .application(let value): try single.encode(value)
             }
         }
     }
 
     public enum Rejection: Error { case bounds }
     public let arguments: [String: String]
+    var passwordValues: [String: String] = [:]
+    var packagedAssets: [String: Data]?
+    let preferenceFields: [RaycastExtensionManifest.Field]
     public let ordinaryPreferences: [String: OrdinaryPreference]
 
     public init(arguments: [String: String] = [:], ordinaryPreferences: [String: OrdinaryPreference] = [:]) {
+        self.init(arguments: arguments, ordinaryPreferences: ordinaryPreferences, preferenceFields: [])
+    }
+
+    init(arguments: [String: String], ordinaryPreferences: [String: OrdinaryPreference],
+         preferenceFields: [RaycastExtensionManifest.Field]) {
         self.arguments = arguments
         self.ordinaryPreferences = ordinaryPreferences
+        self.preferenceFields = preferenceFields
+    }
+
+    func validatedPreferenceFields() throws -> [RaycastExtensionManifest.Field] {
+        guard preferenceFields.count <= 32,
+              preferenceFields.allSatisfy({ Self.validKey($0.name) && ["checkbox", "dropdown", "textfield", "file", "directory", "appPicker", "password"].contains($0.type) })
+        else { throw Rejection.bounds }
+        _ = try Self.boundedJSON(preferenceFields)
+        return preferenceFields
     }
 
     func launchData(loadPreferences: Bool) throws -> Data {
@@ -34,16 +52,29 @@ public struct StoreGuestLaunchContext: Sendable {
         return try Self.boundedJSON(value)
     }
 
+    func macOSPreferences(includeSecrets: Bool) throws -> [String: OrdinaryPreference] {
+        var values = ordinaryPreferences
+        if includeSecrets {
+            for (name, value) in passwordValues { values[name] = .text(value) }
+        }
+        _ = try Self.encodePreferences(values)
+        return values
+    }
+
     func preferencesReply() throws -> String {
-        guard ordinaryPreferences.count <= 32, ordinaryPreferences.keys.allSatisfy(Self.validKey),
-              ordinaryPreferences.values.allSatisfy({ preference in
+        try Self.encodePreferences(ordinaryPreferences)
+    }
+
+    private static func encodePreferences(_ values: [String: OrdinaryPreference]) throws -> String {
+        guard values.count <= 32, values.keys.allSatisfy(Self.validKey),
+              values.values.allSatisfy({ preference in
                 switch preference {
                 case .text(let value): return value.utf8.count <= 1024
                 case .number(let value): return value.isFinite
-                case .toggle: return true
+                case .toggle, .application: return true
                 }
               }) else { throw Rejection.bounds }
-        let value = PreferenceReply(preferences: ordinaryPreferences)
+        let value = PreferenceReply(preferences: values)
         return String(decoding: try Self.boundedJSON(value), as: UTF8.self)
     }
 

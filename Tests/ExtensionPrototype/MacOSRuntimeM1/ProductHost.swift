@@ -143,6 +143,40 @@ import KeylaneCore
             return
         }
         let profile = try MacOSBuildProfile.open(id:id,application:.main,hostIdentifier:hostID)
+        if mode == "batch-02-protected-vault" {
+            guard let vault = profile.preferenceVault else { exit(70) }
+            let installation = UUID()
+            let field = RaycastStorePreferenceKey(scope: .extensionWide, name: "test")
+            let encrypted = try vault.seal([field: "synthetic"], installationID: installation)
+            let second = try MacOSBuildProfile.open(id: id, application: .main, hostIdentifier: hostID)
+            let reopened = try second.preferenceVault?.open(encrypted, installationID: installation)
+            var wrongInstallationRejected = false
+            do { _ = try vault.open(encrypted, installationID: UUID()) }
+            catch { wrongInstallationRejected = true }
+            emit(["protectedCredentialKeyReopened": reopened == [field: "synthetic"], "credentialCiphertextBoundToInstallation": wrongInstallationRejected])
+            return
+        }
+        if mode == "batch-02-file-build" {
+            let service = try MacOSSignedBuildService(profile: profile)
+            let builder = try MacOSExtensionBuild.Coordinator(expected: profile.configuration.recipe, service: service)
+            let source = """
+            import { readFileSync } from "fs";
+            import { readFile, writeFile } from "node:fs/promises";
+            export default async () => {
+                await writeFile("/support/data.txt", readFileSync("/assets/data.txt"));
+                return await readFile("/support/data.txt", "utf8");
+            }
+            """
+            let entry = "src/main.js"
+            let files = (MacOSReviewedRaycastAssets.files + MacOSReviewedRaycastAPI.files).map { MacOSExtensionBuild.File(path: $0.path, body: $0.body) }
+                + [.init(path: "package.json", body: Data("{}".utf8)), .init(path: entry, body: Data(source.utf8)),
+                   .init(path: "assets/data.txt", body: Data("fixture".utf8))]
+            let plan = try MacOSExtensionBuild.Plan(files: files, entries: [entry])
+            let artifact = try await builder.build(plan) { true }
+            emit(["signedVirtualFileImportsBuilt": artifact.commands.map(\.path) == [entry]
+                  && artifact.resources.map(\.path) == ["assets/data.txt"]])
+            return
+        }
         if mode == "hold-build-lock" {
             let fd = try profile.acquireBuildLock(); defer { flock(fd, LOCK_UN); close(fd) }
             try FileHandle.standardOutput.write(contentsOf:Data("{\"lockHeld\":true}\n".utf8))
@@ -334,7 +368,7 @@ import KeylaneCore
             id: profileID, application: .main, hostIdentifier: hostID,
             deliver: { presentation in
                 switch presentation {
-                case .clearSearch, .popToRoot, .closeWindow: break
+                case .diagnostics, .openPreferences, .clearSearch, .popToRoot, .closeWindow: break
                 case .copy(let text): clipboardEffects.append(text)
                 case .toast(let toast): toastEffects.append(toast.title)
                 }
@@ -389,7 +423,7 @@ import KeylaneCore
             id: profileID, application: .main, hostIdentifier: hostID,
             deliver: { effect in
                 switch effect {
-                case .clearSearch, .popToRoot, .closeWindow: break
+                case .diagnostics, .openPreferences, .clearSearch, .popToRoot, .closeWindow: break
                 case .copy(let text): copies.append(text)
                 case .toast(let toast): titles.append(toast.title)
                 }
@@ -411,7 +445,7 @@ import KeylaneCore
         var effects: [String] = []
         let deliver: MacOSNoViewCapabilities.Presenter = { effect in
                 switch effect {
-                case .clearSearch, .popToRoot: break
+                case .diagnostics, .openPreferences, .clearSearch, .popToRoot: break
                 case .closeWindow(let clear, _): effects.append("close:" + String(clear))
                 case .copy(let text): effects.append(text)
                 case .toast(let toast): effects.append(toast.title)

@@ -6,7 +6,7 @@ package enum MacOSReviewedRaycastAPI {
     package static let files: [RaycastStoreBuildProject.File] = [
         .init(path: "node_modules/@raycast/api/package.json",
               body: Data(#"{"name":"@raycast/api","type":"module","main":"index.js"}"#.utf8)),
-        .init(path: "node_modules/@raycast/api/index.js", body: Data(([MacOSReviewedRaycastValues.source, source].joined(separator: "\n")).utf8)),
+        .init(path: "node_modules/@raycast/api/index.js", body: Data(([MacOSReviewedRaycastValues.source, MacOSReviewedRaycastCache.source, MacOSReviewedRaycastLocalStorage.source, source].joined(separator: "\n")).utf8)),
         .init(path: "node_modules/@raycast/utils/package.json",
               body: Data(#"{"name":"@raycast/utils","type":"module","main":"index.js"}"#.utf8)),
         .init(path: "node_modules/@raycast/utils/index.js", body: Data(utilsSource.utf8))
@@ -204,7 +204,19 @@ package enum MacOSReviewedRaycastAPI {
       isDevelopment: false,
       // This field describes the running host, independently of the SDK version.
       raycastVersion: invocation.raycastVersion ?? "0.0.0",
+      supportPath: typeof globalThis.keylane.readSupport === "function" ? "/support" : undefined,
+      assetsPath: typeof globalThis.keylane.readAsset === "function" ? "/assets" : undefined,
       canAccess(api) {
+        if (api === LocalStorage || Object.values(LocalStorage).includes(api)) {
+          return typeof globalThis.keylane.updateLocalStorage === "function";
+        }
+        if (api === openExtensionPreferences || api === openCommandPreferences) {
+          return typeof globalThis.keylane.openPreferences === "function";
+        }
+        if (api === captureException || api === captureMemorySnapshot) {
+          return typeof globalThis.keylane.captureMemoryUsage === "function";
+        }
+        if (api === Cache) return typeof globalThis.keylane.updateCache === "function";
         if (api === Clipboard.copy || api === copyTextToClipboard) return typeof globalThis.keylane.copy === "function";
         if (api === showHUD || api === showToast || api === Toast) return typeof globalThis.keylane.toast === "function";
         if (api === clearSearchBar) return typeof globalThis.keylane.clearSearch === "function";
@@ -217,8 +229,41 @@ package enum MacOSReviewedRaycastAPI {
     let nextToastID = 1;
     let visibleToast;
 
+    const preferenceValues = globalThis.keylane.preferences;
+    for (const value of Object.values(preferenceValues)) {
+      if (value !== null && typeof value === "object") Object.freeze(value);
+    }
     export function getPreferenceValues() {
-      return globalThis.keylane.preferences;
+      return { ...preferenceValues };
+    }
+
+    const preferenceEntries = Object.create(null);
+    for (const field of globalThis.keylane.preferenceFields ?? []) {
+      const { name, type, required = false, title = name, description = "", ...optional } = field;
+      const entry = { name, type, required, title, description };
+      for (const key of ["default", "placeholder", "label"]) {
+        if (Object.hasOwn(optional, key)) entry[key] = optional[key];
+      }
+      if (optional.data) entry.data = Object.freeze(optional.data.map(option => Object.freeze({ ...option })));
+      if (Object.hasOwn(preferenceValues, name)) entry.value = preferenceValues[name];
+      preferenceEntries[name] = Object.freeze(entry);
+    }
+    export const preferences = Object.freeze(preferenceEntries);
+
+    export async function openExtensionPreferences() {
+      if (!globalThis.keylane.openPreferences?.("extension")) throw new Error("Opening extension preferences is unavailable");
+    }
+
+    export async function openCommandPreferences() {
+      if (!globalThis.keylane.openPreferences?.("command")) throw new Error("Opening command preferences is unavailable");
+    }
+
+    export function captureException(exception) {
+      globalThis.keylane.captureExceptionCategory?.(typeof exception);
+    }
+
+    export function captureMemorySnapshot(label) {
+      if (typeof label === "string") globalThis.keylane.captureMemoryUsage?.();
     }
 
     export const Clipboard = Object.freeze({

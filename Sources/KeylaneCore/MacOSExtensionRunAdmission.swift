@@ -48,11 +48,14 @@ package final class MacOSExtensionRunAdmission: Sendable {
                        profileID: UUID, seal: RaycastStoreArtifactSeal,
                        driver: any MacOSExtensionNoViewDriver) async throws {
         try Task.checkCancellation()
-        let run = try await context.registry.withCurrentRun(context) { installation, trusted, snapshot in
+        let run = try await context.registry.withCurrentRun(context, includeSecrets: true) { installation, trusted, snapshot in
             try Task.checkCancellation()
             guard Self.supports(commandID: context.commandID, trusted: trusted) else { throw Failure.unsupportedCommand }
-            let launchContext = try Self.launchContext(commandID: context.commandID, trusted: trusted, snapshot: snapshot, arguments: context.arguments)
+            var launchContext = try Self.launchContext(commandID: context.commandID, trusted: trusted, snapshot: snapshot, arguments: context.arguments)
             let artifact = try seal.open(context.artifact, installation: installation, commandID: context.commandID)
+            if trusted.requiredCapabilities.contains(MacOSReviewedRaycastAssets.capability) {
+                launchContext.packagedAssets = try MacOSReviewedRaycastAssets.contents(artifact.resources)
+            }
             return try self.admit(profileID: profileID, installationID: installation.id,
                                   generation: installation.generation, commandID: context.commandID,
                                   receipt: artifact.receipt, capabilities: trusted.requiredCapabilities,
@@ -75,7 +78,13 @@ package final class MacOSExtensionRunAdmission: Sendable {
               !command.disabledByDefault, capabilities.isSubset(of: MacOSNoViewCapabilities.supported),
               let schema = try? RaycastStorePreferenceSchema(manifest: manifest, commandID: command.id) else { return false }
         return schema.entries.isEmpty || (capabilities.contains(MacOSNoViewCapabilities.preferences)
-            && schema.entries.allSatisfy { ["checkbox", "dropdown", "textfield"].contains($0.field.type) })
+            && schema.entries.allSatisfy {
+                if $0.field.type == "password" { return capabilities.contains(MacOSNoViewCapabilities.secretPreferences) }
+                if ["file", "directory", "appPicker"].contains($0.field.type) {
+                    return capabilities.contains(MacOSNoViewCapabilities.selectedPreferences)
+                }
+                return ["checkbox", "dropdown", "textfield"].contains($0.field.type)
+            })
     }
 
     static func launchContext(commandID: String, trusted: RaycastStoreTrustedDescription,
@@ -96,8 +105,15 @@ package final class MacOSExtensionRunAdmission: Sendable {
         let schema = try RaycastStorePreferenceSchema(manifest: trusted.manifest, commandID: commandID)
         if schema.entries.isEmpty { return .init(arguments: valuesToSend) }
         var values: [String: StoreGuestLaunchContext.OrdinaryPreference] = [:]
+        var passwords: [String: String] = [:]
         for entry in schema.entries {
             values.removeValue(forKey: entry.id.name)
+            passwords.removeValue(forKey: entry.id.name)
+            if entry.field.type == "password" {
+                if entry.field.required == true && !snapshot.storedSecretKeys.contains(entry.id) { throw Failure.preferencesRequired }
+                if let secret = snapshot.launchSecrets[entry.id] { passwords[entry.id.name] = secret }
+                continue
+            }
             guard let value = schema.value(for: entry, snapshot: snapshot), entry.field.accepts(value) else {
                 if entry.field.required == true { throw Failure.preferencesRequired }
                 continue
@@ -105,11 +121,18 @@ package final class MacOSExtensionRunAdmission: Sendable {
             switch value {
             case .string(let text): values[entry.id.name] = .text(text)
             case .bool(let toggle): values[entry.id.name] = .toggle(toggle)
-            case .application: throw Failure.unsupportedCommand
+            case .application(let application): values[entry.id.name] = .application(application)
             }
         }
-        let context = StoreGuestLaunchContext(arguments: valuesToSend, ordinaryPreferences: values)
-        _ = try context.preferencesReply()
+        // The schema orders extension preferences before command overrides.
+        let byName = schema.entries.reduce(into: [String: RaycastExtensionManifest.Field]()) { fields, entry in
+            fields[entry.field.name] = entry.field
+        }
+        var context = StoreGuestLaunchContext(arguments: valuesToSend, ordinaryPreferences: values,
+                                              preferenceFields: byName.values.sorted { $0.name < $1.name })
+        _ = try context.validatedPreferenceFields()
+        context.passwordValues = passwords
+        _ = try context.macOSPreferences(includeSecrets: true)
         return context
     }
 

@@ -55,8 +55,13 @@ def bundle_reviewed_fixture(host, task, compiler_archive, command):
         with tarfile.open(fileobj=io.BytesIO(archive_bytes(compiler_archive))) as archive:
             compiler.write_bytes(archive.extractfile('package/bin/esbuild').read())
         compiler.chmod(0o700)
+    aliases = []
+    if command == 'Batch02Assets':
+        for name in ['fs', 'node:fs']:
+            aliases += [f'--alias:{name}=./node_modules/@keylane/reviewed-assets/index.js',
+                        f'--alias:{name}/promises=./node_modules/@keylane/reviewed-assets/promises.js']
     subprocess.run([str(compiler), command + '.mjs', '--bundle', '--platform=neutral', '--format=iife',
-                    '--global-name=__keylaneCommandExports', '--outfile=' + command + '.js'],
+                    '--global-name=__keylaneCommandExports', '--outfile=' + command + '.js', *aliases],
                    cwd=task, capture_output=True, check=True, timeout=10)
 
 
@@ -65,6 +70,7 @@ def main():
     parser.add_argument('--products', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--batch-01', nargs=2, type=Path, metavar=('COMPILER_ARCHIVE', 'API_ARCHIVE'))
+    parser.add_argument('--batch-02', type=Path, metavar='COMPILER_ARCHIVE')
     args = parser.parse_args()
     identity = broker.m0.resolve_identity()
     cases = {}
@@ -116,6 +122,15 @@ def main():
         if args.batch_01:
             rows_verified = verify_batch_01(host, task, *args.batch_01)
             for mode in ['batch-01-values', 'batch-01-no-grants']:
+                result = subprocess.run([str(host), mode, str(task)], timeout=10, capture_output=True, text=True)
+                if result.returncode:
+                    print(f'{mode}: {result.stderr}')
+                cases[mode] = result.returncode == 0 and not broker.helper_pids(helper)
+        if args.batch_02:
+            bundle_reviewed_fixture(host, task, args.batch_02, 'Batch02')
+            bundle_reviewed_fixture(host, task, args.batch_02, 'Batch02Assets')
+            for mode in ['batch-02-write', 'batch-02-failed', 'batch-02-reopen', 'batch-02-denied', 'batch-02-ordinary-only',
+                         'batch-02-files-write', 'batch-02-files-reopen', 'batch-02-files-denied']:
                 result = subprocess.run([str(host), mode, str(task)], timeout=10, capture_output=True, text=True)
                 if result.returncode:
                     print(f'{mode}: {result.stderr}')

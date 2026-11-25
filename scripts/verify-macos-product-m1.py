@@ -74,7 +74,13 @@ def main():
     p.add_argument('--official-uuid', action='store_true',
                    help='Fetch and execute the pinned official UUID Generator command in a temporary profile')
     p.add_argument('--legacy-preview', action='store_true', help='Exercise the runtime using isolated login Keychain slots')
+    p.add_argument('--batch-02-file-build', action='store_true')
+    p.add_argument('--batch-02-protected-vault', action='store_true')
     p.add_argument('--report',type=Path,required=True);args=p.parse_args()
+    if args.batch_02_protected_vault and (not args.runtime_helper or args.legacy_preview):
+        p.error('--batch-02-protected-vault requires protected runtime mode')
+    if args.batch_02_file_build and not args.runtime_helper:
+        p.error('--batch-02-file-build requires --runtime-helper')
     if args.legacy_preview and (not args.runtime_helper or args.provisioning_profile):
         p.error('--legacy-preview requires --runtime-helper and no provisioning profile')
     if args.official_batch and not args.official_uuid:
@@ -124,6 +130,10 @@ def main():
         if args.runtime_helper:
             try:
                 call('runtime-setup')
+                if args.batch_02_protected_vault:
+                    call('batch-02-protected-vault')
+                if args.batch_02_file_build:
+                    call('batch-02-file-build')
                 call('runtime-service')
                 call('runtime-restart')
                 call('runtime-after-uninstall')
@@ -149,6 +159,10 @@ def main():
                         'signedProfileDispatch', 'staleLauncherCommandDenied', 'fixturesExited', 'cleaned',
                         'unsupportedCommandDeniedBeforeInstall', 'restartDispatch', 'disabledCommandDenied',
                         'uninstallRecorded', 'uninstallPersistsAfterRestart'}
+            if args.batch_02_protected_vault:
+                required |= {'protectedCredentialKeyReopened', 'credentialCiphertextBoundToInstallation'}
+            if args.batch_02_file_build:
+                required.add('signedVirtualFileImportsBuilt')
             if args.official_uuid:
                 official_cases = {'officialUUIDInstalledAndRan', 'officialUUIDMissingArgumentRejected',
                                   'officialUUIDRestartAndUninstall'}

@@ -134,6 +134,10 @@ package final class MacOSBuildProfile: @unchecked Sendable {
     package func sign(_ bytes: Data) throws -> P256.Signing.ECDSASignature {
         try verify(); return try P256.Signing.PrivateKey(rawRepresentation: record.key).signature(for: bytes)
     }
+    package var preferenceVault: MacOSReviewedPreferenceVault? {
+        guard case .dataProtection = backend else { return nil }
+        return .init(profileKey: record.key, profileID: id)
+    }
     func acquireStoreOwnership() throws -> MacOSStoreOwnership {
         try verify()
         guard let owner = record.owner else { throw Failure.pending }
@@ -147,7 +151,8 @@ package final class MacOSBuildProfile: @unchecked Sendable {
         let runRequirement = requirement.replacingOccurrences(of: "identifier \""+identifier+"\"",
                                                               with: "identifier \"org.keylane.extension-run\"")
         return MacOSRestrictedNoViewDriver(application: application, expectedDigest: digest,
-                                           signingRequirement: runRequirement, ownership: ownership, deliver: deliver)
+                                           signingRequirement: runRequirement, ownership: ownership, deliver: deliver,
+                                           storage: MacOSReviewedRaycastStorage(root: root))
     }
 
     package func acquireBuildLock() throws -> Int32 {

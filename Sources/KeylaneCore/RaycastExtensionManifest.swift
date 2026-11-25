@@ -66,7 +66,7 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
             description = try values.decodeIfPresent(String.self, forKey: .description)
             placeholder = try values.decodeIfPresent(String.self, forKey: .placeholder)
             required = try values.decodeIfPresent(Bool.self, forKey: .required)
-            if ["password", "file", "directory"].contains(type) {
+            if ["password", "file", "directory", "appPicker"].contains(type) {
                 defaultValue = nil
             } else {
                 defaultValue = (try? values.decode(PreferenceValue.self, forKey: .defaultValue)) ??
@@ -79,7 +79,9 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
             switch (type, value) {
             case ("checkbox", .bool): true
             case ("dropdown", .string(let value)): options?.contains { $0.value == value } == true
-            case ("textfield", .string), ("appPicker", .string), ("file", .string), ("directory", .string): true
+            case ("textfield", .string), ("appPicker", .application): true
+            case ("file", .string(let path)), ("directory", .string(let path)):
+                path.hasPrefix("/") && !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
             default: false
             }
         }

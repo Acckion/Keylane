@@ -8,10 +8,11 @@ private struct DiskRegistryFixtureTrust: RaycastStoreArtifactTrust {
     let manifest: RaycastExtensionManifest
     var revocationFails = false
     var expectedInstallationID: UUID?
+    var grants: Set<String> = ["toast"]
 
     func verify(bytes: Data, source: RaycastStoreSource, installationID: UUID) throws -> RaycastStoreTrustedDescription {
         guard bytes == self.bytes, source == self.source, expectedInstallationID == nil || installationID == expectedInstallationID else { throw RaycastStoreDiskRegistry.Failure.integrity }
-        return .init(extensionID: source.slug, manifest: manifest, requiredCapabilities: ["toast"])
+        return .init(extensionID: source.slug, manifest: manifest, requiredCapabilities: grants)
     }
 
     func revoke(installationID: UUID, before generation: UInt64) async throws {
@@ -69,6 +70,55 @@ final class RaycastStoreDiskRegistryTests: XCTestCase {
         try await registry.verifyExistingProtectedRegistry()
         XCTAssertEqual(try storage.read(), enrolled)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: registryRoot.path), [])
+    }
+
+    func testProtectedPasswordAndFilePreferenceSurviveReopenWithoutDisclosingPasswordToSettings() async throws {
+        let (root, original, digest) = try fixture(withPreferences: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registryRoot = root.appendingPathComponent("protected-preferences")
+        var configured = original
+        configured.grants = [MacOSNoViewCapabilities.preferences, MacOSNoViewCapabilities.secretPreferences,
+                             MacOSNoViewCapabilities.selectedPreferences]
+        let trust = configured
+        let profileID = UUID(), key = P256.Signing.PrivateKey()
+        let vault = MacOSReviewedPreferenceVault(profileKey: key.rawRepresentation, profileID: profileID)
+        let anchor = try RaycastStoreProtectedReceiptState(storage: ProtectedReceiptFixtureStore(), registryID: profileID,
+            publicKey: key.publicKey, recipe: .init(identifier: "test", runtimeDigest: String(repeating: "0", count: 64),
+                                                   qualifiedAPIVersions: []))
+        try anchor.initializeNewRegistry(observedRegistryDigest: nil)
+        let registry = try RaycastStoreDiskRegistry(root: registryRoot, trust: trust, anchor: anchor,
+                                                    requiresExistingRoot: false, preferenceVault: vault)
+        let prepared = try await registry.prepare(bytes: trust.bytes, expectedDigest: digest, source: trust.source,
+                                                  grantedCapabilities: trust.grants)
+        let installation = try await registry.activate(prepared)
+        let command = try XCTUnwrap(installation.manifest.commands.first)
+        let password = RaycastStorePreferenceKey(scope: .extensionWide, name: "password")
+        let path = RaycastStorePreferenceKey(scope: .extensionWide, name: "path")
+        let plain = "synthesized-unit-test-password"
+        var changes = RaycastStorePreferenceChanges()
+        changes.secrets[password] = .set(plain)
+        changes.values[path] = .set(.string("/test/selected.txt"))
+        try await registry.save(installationID: installation.id, generation: installation.generation, changes: changes)
+
+        let persisted = try Data(contentsOf: registryRoot.appendingPathComponent("registry.json"))
+        XCTAssertNil(persisted.range(of: Data(plain.utf8)))
+        let reopened = try RaycastStoreDiskRegistry(root: registryRoot, trust: trust, anchor: anchor,
+                                                    requiresExistingRoot: true, preferenceVault: vault)
+        let metadata = try await reopened.load(installationID: installation.id, generation: installation.generation)
+        XCTAssertEqual(metadata.storedSecretKeys, [password])
+        XCTAssertTrue(metadata.launchSecrets.isEmpty)
+        XCTAssertEqual(metadata.values[path], .string("/test/selected.txt"))
+        let artifact = try await reopened.validate(installationID: installation.id, generation: installation.generation,
+                                                   commandID: command.id, capabilities: [])
+        let run = RaycastStoreInstallCoordinator.RunContext(installation: installation, commandID: command.id,
+                                                            artifact: artifact, registry: reopened)
+        let secrets = try await reopened.withCurrentRun(run, includeSecrets: true) { _, _, snapshot in snapshot.launchSecrets }
+        XCTAssertEqual(secrets[password], plain)
+        let ciphertext = try vault.seal(secrets, installationID: installation.id)
+        XCTAssertThrowsError(try vault.open(ciphertext, installationID: UUID()))
+        try await reopened.uninstall(installationID: installation.id, expectedGeneration: installation.generation)
+        let remaining = try await reopened.installations()
+        XCTAssertTrue(remaining.isEmpty)
     }
 
     func testOrdinaryPreferencesPersistAcrossReopenAndLifecycleButNotReinstall() async throws {

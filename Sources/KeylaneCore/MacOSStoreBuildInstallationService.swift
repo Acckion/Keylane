@@ -31,6 +31,9 @@ package final class MacOSStoreBuildInstallationService: RaycastStoreInstallation
         let capabilities = try project.runtimeAPIVersion.flatMap {
             try MacOSReviewedRaycastCommand.buildEntries(for: source, apiVersion: $0).first?.capabilities
         } ?? []
+        if capabilities.contains(MacOSNoViewCapabilities.secretPreferences), profile.preferenceVault == nil {
+            throw RaycastStoreInstaller.Failure.noRunnableCommands
+        }
         if profile.configuration.runHelperSHA256 != nil,
            !manifest.commands.contains(where: { MacOSExtensionRunAdmission.supports(command: $0, manifest: manifest, capabilities: capabilities) }) {
             throw RaycastStoreInstaller.Failure.noRunnableCommands
@@ -98,7 +101,7 @@ package final class MacOSStoreBuildInstallationService: RaycastStoreInstallation
                              requiresRuntime: Bool = false) async throws -> RaycastStoreInstallCoordinator {
         let profile = try MacOSBuildProfile.open(id: id, application: application, hostIdentifier: hostIdentifier)
         if requiresRuntime, profile.configuration.runHelperSHA256 == nil { throw MacOSBuildProfile.Failure.unavailable }
-        let backend = try RaycastStoreInstallCoordinator(root: profile.root, service: Self(profile: profile, deliver: deliver), anchor: profile.anchor, requiresExistingRoot: true)
+        let backend = try RaycastStoreInstallCoordinator(root: profile.root, service: Self(profile: profile, deliver: deliver), anchor: profile.anchor, requiresExistingRoot: true, preferenceVault: profile.preferenceVault)
         _ = try await backend.recoverPendingPublication()
         try await backend.verifyExistingProtectedRegistry()
         return backend

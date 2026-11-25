@@ -125,6 +125,11 @@ extension Delegate {
             guard MacOSNoViewCapabilities.navigationCommitted else { return }
             model.pageID = .root
             if clear { clearExtensionSearch(forceScrollToTop: true) }
+        case .diagnostics(let installationID, let generation, let samples):
+            model.extensionStore.recordDiagnostics(installationID: installationID, generation: generation, samples: samples)
+        case .openPreferences(let installationID, let generation, let commandID):
+            guard MacOSNoViewCapabilities.navigationCommitted else { return }
+            model.extensionStore.showPreferences(installationID: installationID, generation: generation, commandID: commandID, model: model)
         case .copy(let text):
             if !ExtensionClipboardContent(text: text).write(to: .general) {
                 showLauncherFeedback("无法复制到剪贴板。", style: .failure)

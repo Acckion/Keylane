@@ -62,10 +62,10 @@ public actor RaycastStoreInstallCoordinator: RaycastStoreBackend, RaycastStorePr
     }
 
     package init(root: URL, service: any RaycastStoreInstallationService, anchor: any RaycastStoreRegistryAnchor,
-                 requiresExistingRoot: Bool) throws {
+                 requiresExistingRoot: Bool, preferenceVault: MacOSReviewedPreferenceVault? = nil) throws {
         self.service = service
         registry = try RaycastStoreDiskRegistry(root: root, trust: service, anchor: anchor,
-                                              requiresExistingRoot: requiresExistingRoot)
+                                              requiresExistingRoot: requiresExistingRoot, preferenceVault: preferenceVault)
         validateSource = { _ in }
         acquireProject = { source, versions in
             let catalog = RaycastPublicCatalog()

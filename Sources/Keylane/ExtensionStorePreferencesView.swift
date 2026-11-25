@@ -1,4 +1,6 @@
+import AppKit
 import KeylaneCore
+import UniformTypeIdentifiers
 import SwiftUI
 
 /// Preferences UI shared by installed extensions; no concrete storage is selected here.
@@ -93,9 +95,40 @@ struct ExtensionStorePreferencesView: View {
                 get: { if case .string(let value) = schema.value(for: entry, snapshot: snapshot, changes: changes) { return value }; return "" },
                 set: { changes.values[key] = .set(.string($0)) }
             ))
+        case "file", "directory", "appPicker":
+            let label: String = {
+                switch schema.value(for: entry, snapshot: snapshot, changes: changes) {
+                case .application(let app): return app.localizedName ?? app.name
+                case .string(let path): return URL(fileURLWithPath: path).lastPathComponent
+                default: return "未选择"
+                }
+            }()
+            Text(label).lineLimit(1)
+            Button("选择…") { Task { @MainActor in await choose(entry) } }
+            if entry.field.required != true {
+                Button("清除") { changes.values[key] = .reset }
+            }
         default:
             Text("此设置类型暂不支持编辑").foregroundStyle(.secondary)
         }
+    }
+
+    @MainActor
+    private func choose(_ entry: RaycastStorePreferenceSchema.Entry) async {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = entry.field.type == "directory"
+        panel.canChooseFiles = entry.field.type != "directory"
+        if entry.field.type == "appPicker" { panel.allowedContentTypes = [.application] }
+        guard await panel.begin() == .OK, let url = panel.url else { return }
+        let value: RaycastExtensionManifest.PreferenceValue
+        if entry.field.type == "appPicker" {
+            guard let application = RaycastApplicationValue(url: url) else { return }
+            value = .application(application)
+        } else {
+            value = .string(url.standardizedFileURL.path)
+        }
+        if entry.field.accepts(value) { changes.values[entry.id] = .set(value) }
     }
 
     @MainActor

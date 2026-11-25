@@ -69,3 +69,36 @@
 python3 scripts/verify-macos-run-m2.py --products "$PRODUCTS" \
   --batch-01 "$ESBUILD_ARCHIVE" "$RAYCAST_API_2_11_1_ARCHIVE" --report "$NEW_REPORT"
 ```
+
+## 第 02 批验收记录
+
+2026-11-25 · 存储事务及普通偏好已验证，整批仍有未完成条目，待合并。
+
+- Cache 和 LocalStorage 可在同一次调用原子提交。两个存储独立授权、按安装隔离，各保留 32 KiB 快照上限。新格式可读取旧分离文件；后续写入仅替换相应快照，卸载清理两代文件。签名夹具复验新进程读取、失败调用不提交任何一个存储或设置操作、撤权路径拒绝，以及已授予和未授予的偏好行为。
+- `getPreferenceValues` 返回本次普通偏好的独立副本；旧 `preferences` 提供只读元数据、默认配置及当前值。设置入口使用独立的 `preferences.open` 权限，按当前安装、代次和命令路由到原有扩展配置。签名夹具核对路由目标、操作顺序和未授权拒绝；原生界面定位尚未做安装版验收。商店固定审核命令未增加权限。
+- `captureException` 和 `captureMemorySnapshot` 获独立诊断权限后，可记录受限的本机诊断。只保留值类别或辅助进程峰值常驻内存，不读取异常正文、动态属性或标签，不向外部发送。JavaScript 堆指标、错误页面内的诊断及开发者中心行为仍未接入，两接口保留部分兼容。
+- `environment.assetsPath`、`environment.supportPath`、`Cache#storageDirectory`、`Cache.STORAGE_DIRECTORY_NAME` 仍未接通。绝对路径需要随受控文件能力（第 08 批）一起验证，缓存自定义目录同样保留差异。密码仍缺独立授权和安全存储；文件、目录和应用偏好仍缺选择和授权后的往返验证。
+- 27 项 Apple Development 签名运行器检查通过，其中 4 项是本批新增场景。19 项签名商店检查、109 项 Swift 定向测试和 81 项发布脚本测试通过。三款扩展仍通过源码构建、新进程重跑及卸载。未替换本机安装版。 [签名运行器](evidence/macos-runtime-m2/batch-02-signed-runtime.json) · [签名商店](evidence/macos-runtime-m2/batch-02-signed-store.json)
+
+第 02 批签名样本用 `verify-macos-run-m2.py --batch-02 "$ESBUILD_ARCHIVE"` 复跑；可与第 01 批参数同时使用。
+
+### 第 02 批补验：资源与支持目录
+
+2026-11-25 · 接通 `environment.assetsPath` 和 `environment.supportPath` 的受控文件子集。两个目录分别要求显式的 `files.assets.read` 与 `files.support.write` 权限，现有商店命令未增加权限。
+
+- `/assets` 只投影签名制品的资源文件，最多 128 个、合计 512 KiB。`/support` 按安装持久保存，最多 32 个、合计 32 KiB，和 Cache、LocalStorage 共用原子提交。来宾目录由受控文件接口解析，与宿主文件路径无直接映射。
+- 受审核的构建可解析 `fs`、`node:fs`、`fs/promises` 和 `node:fs/promises` 的读写文件子集。支持 UTF-8 文本与字节数据，二进制读取返回 `Uint8Array`。目录枚举、文件删除、Node Buffer 和文件描述符未纳入此次适配。 [Raycast 环境接口](https://developers.raycast.com/api-reference/environment) · [Node 文件接口](https://nodejs.org/api/fs.html)
+- 35 项签名运行器检查通过，覆盖资源读取、支持文件写入、新进程重读、无授权和越界拒绝。新增 Swift 回归核对安装隔离、卸载清理和非法支持文件不会让 LocalStorage 部分提交。110 项 Swift 定向测试和 81 项发布脚本检查通过。 [签名运行器报告](evidence/macos-runtime-m2/batch-02-scoped-files-runtime.json)
+- 签名构建器成功编译引用受控文件模块的首方样本。20 项签名商店检查通过，包含既有三款扩展的 10 条命令构建、安装、重开运行和卸载。 [签名商店报告](evidence/macos-runtime-m2/batch-02-scoped-files-store.json)
+- 第 02 批仍未完结。Cache 目录接口、敏感偏好及文件／目录／应用选择型偏好、完整诊断和设置定位实机验收仍待完成。未替换 Mac 安装版。
+
+### 第 02 批补验：Cache 目录、偏好与诊断
+
+2026-11-25 · 工作树实现已接入，安装版设置交互待验收。
+
+- Cache 提供 `STORAGE_DIRECTORY_NAME`、`storageDirectory` 和安装内的自定义父目录。默认目录为 `/support/cache`，自定义父目录限定在 `/support`。每个目录和命名空间独立，旧默认命名空间快照可读，`entries.json` 由受控文件接口只读投影，不映射宿主路径。每安装的 32 KiB 总预算继续适用。
+- 文件、目录、应用选择复用原生选择面板。授权命令分别收到选中的路径和应用描述对象。选择型授权负责传值，文件操作仍按各自能力验证。
+- 密码只在受保护配置和带有独立 `preferences.secrets.read` 授权的安装中启用。密钥由受保护配置派生，绑定安装身份的 AES-GCM 密文与偏好一起提交。设置界面只能查询是否已填写。仅获授权的命令能从当前运行读取密码，新修订安装需要重新填写。传统钥匙串预览保留普通功能。
+- 诊断已接到扩展详情的「本机运行诊断」，每个安装保留最近 16 条，当前运行和代次有效时才发布。仅展示异常类别、辅助进程常驻内存和峰值。JavaScriptCore 公共接口不提供等价 JS 堆统计，Raycast Developer Hub 上传未接入，诊断仍按部分兼容追踪。 [Apple JavaScriptCore](https://developer.apple.com/documentation/javascriptcore) · [Raycast 诊断接口](https://developers.raycast.com/api-reference/utilities)
+- 115 项 Swift 定向测试、81 项发布脚本测试和 36 项签名运行器检查通过。签名样本验证了缓存目录隔离和只读索引、密码及选择值的授权与拒绝、常驻内存及异常数据交付。未替换本机安装版。 [签名运行器](evidence/macos-runtime-m2/batch-02-preferences-cache-diagnostics-runtime.json)
+- 15 项受保护配置签名检查通过，包括用已签名测试宿主重开凭据密钥、拒绝跨安装解密以及受控文件模块的签名构建。20 项预览商店检查通过，覆盖既有三款扩展 10 条命令。当前商店样本权限保持原样，新增权限的验证来自首方夹具。 [受保护配置](evidence/macos-runtime-m2/batch-02-preferences-cache-diagnostics-vault.json) · [预览商店](evidence/macos-runtime-m2/batch-02-preferences-cache-diagnostics-store.json)

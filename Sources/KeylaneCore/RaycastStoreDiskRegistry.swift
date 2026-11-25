@@ -37,7 +37,7 @@ public protocol RaycastStoreRegistryAnchor: Sendable {
 
 /// Injected persistence seam, not the default backend and not a runtime launcher.
 /// Only app-owned paths are accepted by the composition root. Ordinary preferences
-/// share the anchored transaction; secrets never enter it. Use disposable test roots.
+/// share the anchored transaction; secret values are encrypted separately. Use disposable test roots.
 public actor RaycastStoreDiskRegistry {
     public enum Failure: Error, Equatable, Sendable {
         case busy, corrupt, limit, integrity, identity, capability, stale, inactive, missing, anchor, io, preference
@@ -66,6 +66,7 @@ public actor RaycastStoreDiskRegistry {
         var bytes: Data; var grants: Set<String>; var generation: UInt64
         var enabled: Bool; var phase: Phase
         var preferences: [OrdinaryPreference]? = nil
+        var encryptedPreferences: Data? = nil
         var baseGeneration: UInt64? = nil
         var baseEnabled: Bool? = nil
         var source: RaycastStoreSource { get throws { try .init(slug: slug, catalog: .init(revision: revision, slugs: [slug])) } }
@@ -73,6 +74,7 @@ public actor RaycastStoreDiskRegistry {
     private struct State: Codable { var version = 1; var records: [Record] = []; var candidates: [Record]? = nil }
     private let root: URL
     private let trust: any RaycastStoreArtifactTrust
+    private let preferenceVault: MacOSReviewedPreferenceVault?
     private let anchor: (any RaycastStoreRegistryAnchor)?
     // Accessed only inside the locked filesystem transaction.
     private var verifiedStateDigest: String?
@@ -82,13 +84,14 @@ public actor RaycastStoreDiskRegistry {
     }
 
     package init(root: URL, trust: any RaycastStoreArtifactTrust, anchor: (any RaycastStoreRegistryAnchor)?,
-                 requiresExistingRoot: Bool) throws {
+                 requiresExistingRoot: Bool, preferenceVault: MacOSReviewedPreferenceVault? = nil) throws {
         // Caller selects app-owned location; resolving it does not grant arbitrary
         // writes. No default Application Support or Keychain path is created.
         self.root = root.deletingLastPathComponent().resolvingSymlinksInPath()
             .appendingPathComponent(root.lastPathComponent, isDirectory: true).standardizedFileURL
         self.trust = trust
         self.anchor = anchor
+        self.preferenceVault = anchor != nil ? preferenceVault : nil
         if !requiresExistingRoot {
             try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
@@ -338,7 +341,14 @@ public actor RaycastStoreDiskRegistry {
             let target = base + 1
             guard (old.phase == .active && old.generation == base) || (old.phase == .pending && old.generation == target) else { throw Failure.stale }
             candidate.generation = target; candidate.phase = .active; candidate.enabled = candidate.baseEnabled == true
-            candidate.preferences = old.preferences; candidate.baseGeneration = nil; candidate.baseEnabled = nil
+            candidate.preferences = old.preferences
+            if !candidate.grants.contains(MacOSNoViewCapabilities.selectedPreferences) {
+                let oldManifest = try verified(old).manifest
+                candidate.preferences = try candidate.preferences?.filter {
+                    try !["file", "directory", "appPicker"].contains(preferenceField($0.key, manifest: oldManifest).type)
+                }
+            }
+             candidate.baseGeneration = nil; candidate.baseEnabled = nil
             _ = try verified(candidate) // incompatible preference schema fails before old state is touched
             try Task.checkCancellation()
             try trust.quarantine(installationID: old.id, before: target)
@@ -378,7 +388,7 @@ public actor RaycastStoreDiskRegistry {
     /// Takes an exact anchored launch snapshot and optionally registers a broker
     /// lease before releasing the registry lock. The admission callback must be
     /// synchronous and never call back into the registry.
-    func withCurrentRun<T: Sendable>(_ context: RaycastStoreInstallCoordinator.RunContext,
+    func withCurrentRun<T: Sendable>(_ context: RaycastStoreInstallCoordinator.RunContext, includeSecrets: Bool = false,
         _ body: @Sendable (RaycastStoreInstallation, RaycastStoreTrustedDescription, RaycastStorePreferenceSnapshot) throws -> T
     ) throws -> T {
         guard anchor != nil else { throw Failure.anchor }
@@ -391,7 +401,13 @@ public actor RaycastStoreDiskRegistry {
               record.bytes == context.artifact.bytes else { throw Failure.integrity }
         let trusted = try verified(record)
         guard trusted.manifest.commands.contains(where: { $0.id == context.commandID }) else { throw Failure.identity }
-        return try body(try receipt(record), trusted, .init(values: preferenceValues(record, manifest: trusted.manifest)))
+        let secrets = try secrets(for: record)
+        var snapshot = RaycastStorePreferenceSnapshot(values: try preferenceValues(record, manifest: trusted.manifest),
+                                                       storedSecretKeys: Set(secrets.keys))
+        if includeSecrets, record.grants.contains(MacOSNoViewCapabilities.secretPreferences) {
+            snapshot.launchSecrets = secrets.filter { $0.key.scope == .extensionWide || $0.key.scope == .command(context.commandID) }
+        }
+        return try body(try receipt(record), trusted, snapshot)
     }
 
     /// Reads the latest non-secret values only for the exact enabled generation.
@@ -400,24 +416,27 @@ public actor RaycastStoreDiskRegistry {
         let state = try read()
         let index = try preferenceIndex(state, installationID: installationID, generation: generation)
         let record = state.records[index]
-        return try .init(values: preferenceValues(record, manifest: verified(record).manifest))
+        return try .init(values: preferenceValues(record, manifest: verified(record).manifest),
+                         storedSecretKeys: Set(secrets(for: record).keys))
     }
 
     /// The same lock/anchor covers installation lookup, validation and commit;
     /// disabling or uninstalling cannot interleave between the guard and write.
     /// Missing required input is allowed while editing; launch still validates
-    /// the complete schema. Credentials and host file/application values are out of scope.
+    /// the complete schema. Credential ciphertext is part of the same commit.
     public func save(installationID: UUID, generation: UInt64, changes: RaycastStorePreferenceChanges) throws {
         let fd = try lock(); defer { unlock(fd) }
         var state = try read()
         let index = try preferenceIndex(state, installationID: installationID, generation: generation)
-        guard changes.secrets.isEmpty, changes.values.count <= 128 else { throw Failure.preference }
+        guard changes.secrets.count <= 32, changes.values.count <= 128 else { throw Failure.preference }
 
         let manifest = try verified(state.records[index]).manifest
         var values = try preferenceValues(state.records[index], manifest: manifest)
         let previous = values
         for (key, change) in changes.values {
             let field = try preferenceField(key, manifest: manifest)
+            if ["file", "directory", "appPicker"].contains(field.type),
+               !state.records[index].grants.contains(MacOSNoViewCapabilities.selectedPreferences) { throw Failure.preference }
             switch change {
             case .reset: values.removeValue(forKey: key)
             case .set(let value):
@@ -426,7 +445,22 @@ public actor RaycastStoreDiskRegistry {
             }
         }
         guard values.count <= 128 else { throw Failure.limit }
-        guard values != previous else { return }
+        guard values != previous || !changes.secrets.isEmpty else { return }
+        if !changes.secrets.isEmpty {
+            let record = state.records[index]
+            guard let preferenceVault, record.grants.contains(MacOSNoViewCapabilities.secretPreferences) else { throw Failure.preference }
+            var updated = try secrets(for: record)
+            for (key, change) in changes.secrets {
+                guard try preferenceField(key, manifest: manifest).type == "password" else { throw Failure.preference }
+                switch change {
+                case .remove: updated.removeValue(forKey: key)
+                case .set(let text):
+                    guard !text.isEmpty, text.utf8.count <= 1024 else { throw Failure.preference }
+                    updated[key] = text
+                }
+            }
+            state.records[index].encryptedPreferences = try preferenceVault.seal(updated, installationID: installationID)
+        }
         state.records[index].preferences = values.isEmpty ? nil : values.map { key, value in
             let command: String?
             switch key.scope {
@@ -436,6 +470,12 @@ public actor RaycastStoreDiskRegistry {
             return OrdinaryPreference(command: command, name: key.name, value: value)
         }.sorted { ($0.command ?? "", $0.name) < ($1.command ?? "", $1.name) }
         try write(state)
+    }
+
+    private func secrets(for record: Record) throws -> [RaycastStorePreferenceKey: String] {
+        guard record.encryptedPreferences != nil else { return [:] }
+        guard let preferenceVault, record.grants.contains(MacOSNoViewCapabilities.secretPreferences) else { throw Failure.preference }
+        return try preferenceVault.open(record.encryptedPreferences, installationID: record.id)
     }
 
     private func preferenceIndex(_ state: State, installationID: UUID, generation: UInt64) throws -> Int {
@@ -453,7 +493,9 @@ public actor RaycastStoreDiskRegistry {
         guard preferences.count <= 128 else { throw Failure.limit }
         for item in preferences {
             let field = try preferenceField(item.key, manifest: manifest)
-            guard result[item.key] == nil, Self.acceptsOrdinaryPreference(field, item.value) else { throw Failure.preference }
+            guard (!["file", "directory", "appPicker"].contains(field.type) ||
+                   record.grants.contains(MacOSNoViewCapabilities.selectedPreferences)),
+                  result[item.key] == nil, Self.acceptsOrdinaryPreference(field, item.value) else { throw Failure.preference }
             result[item.key] = item.value
         }
         return result
@@ -472,13 +514,13 @@ public actor RaycastStoreDiskRegistry {
         guard !key.name.isEmpty, key.name.utf8.count <= 256,
               !key.name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
               matches.count == 1, let field = matches.first,
-              ["textfield", "checkbox", "dropdown"].contains(field.type) else { throw Failure.preference }
+              ["textfield", "checkbox", "dropdown", "password", "file", "directory", "appPicker"].contains(field.type) else { throw Failure.preference }
         return field
     }
 
     private static func acceptsOrdinaryPreference(_ field: RaycastExtensionManifest.Field,
                                                   _ value: RaycastExtensionManifest.PreferenceValue) -> Bool {
-        guard field.accepts(value) else { return false }
+        guard field.type != "password", field.accepts(value) else { return false }
         if case .string(let text) = value { return text.utf8.count <= 4_096 }
         return true
     }
@@ -518,7 +560,11 @@ public actor RaycastStoreDiskRegistry {
         try await trust.revoke(installationID: record.id, before: record.generation)
         if remove {
             state.records.remove(at: index)
-            try write(state); return nil
+            try write(state)
+            if anchor != nil {
+                MacOSReviewedRaycastStorage(root: root).remove(installationID: record.id)
+            }
+            return nil
         }
         record.phase = .active; record.enabled = enabled; state.records[index] = record
         try write(state); return try receipt(record)

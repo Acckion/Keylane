@@ -13,6 +13,8 @@ final class ExtensionStoreController: ObservableObject {
     @Published private(set) var metadata: [String: RaycastPublicCatalog.Details] = [:]
     @Published private(set) var selected: String?
     @Published private(set) var detail: String?
+    @Published private(set) var focusedPreferences: String?
+    private var pendingPreferencesEntry = false
     private var detailSource: RaycastStoreSource?
     @Published var uuidArgument = ""
     @Published var typeIDPrefix = ""
@@ -44,6 +46,19 @@ final class ExtensionStoreController: ObservableObject {
     @Published private var presentation = RaycastStorePresentationState()
     var readinessMessages: [String: String] { presentation.readinessMessages }
     @Published private var installed: [String: RaycastStoreInstallation] = [:]
+    @Published private var diagnosticsByInstallation: [UUID: [MacOSNoViewCapabilities.Diagnostic]] = [:]
+
+    @MainActor func recordDiagnostics(installationID: String, generation: UInt64,
+                                     samples: [MacOSNoViewCapabilities.Diagnostic]) {
+        guard let id = UUID(uuidString: installationID), let receipt = installed.values.first(where: { $0.id == id }),
+              receipt.enabled, receipt.generation == generation else { return }
+        diagnosticsByInstallation[id] = Array((diagnosticsByInstallation[id, default: []] + samples).suffix(16))
+    }
+
+    func diagnostics(_ slug: String) -> [MacOSNoViewCapabilities.Diagnostic] {
+        installed[slug].flatMap { diagnosticsByInstallation[$0.id] } ?? []
+    }
+
     var launcherModules: [UUID: (generation: UInt64, installed: Bool)] = [:]
 
     @MainActor func attach(_ backend: RaycastStoreInstallCoordinator) {
@@ -51,6 +66,19 @@ final class ExtensionStoreController: ObservableObject {
         installer = RaycastStoreInstaller(backend: backend)
         configurationError = nil
         canReplaceIncompatibleProfile = false
+    }
+
+    @MainActor func showPreferences(installationID: String, generation: UInt64, commandID: String?, model: Model) {
+        guard let receipt = installed.values.first(where: {
+            $0.id.uuidString == installationID && $0.generation == generation && $0.enabled
+        }) else { return }
+        if let commandID, !receipt.manifest.commands.contains(where: { $0.id == commandID }) { return }
+        showDetails(receipt.source.slug)
+        guard detailSource == receipt.source else { return }
+        query = ""
+        focusedPreferences = commandID ?? ""
+        pendingPreferencesEntry = model.pageID != Self.pageID
+        model.openPage(Self.pageID, origin: .menu)
     }
 
     func preferencesView(_ slug: String) -> AnyView? {
@@ -63,20 +91,24 @@ final class ExtensionStoreController: ObservableObject {
         }
         let callback = { Task { @MainActor in await self.refreshReadiness(slug) }; return () }
         return AnyView(VStack(alignment: .leading, spacing: 12) {
-            if !manifest.preferences.isEmpty {
+            if !manifest.preferences.isEmpty, focusedPreferences == nil || focusedPreferences == "" {
                 if let schema = try? RaycastStorePreferenceSchema(manifest: manifest) {
                     let form = ExtensionStorePreferencesView(installationID: receipt.id, generation: receipt.generation,
                         schema: schema, persistence: persistence, onSaved: callback)
                         .id(receipt.id.uuidString + "/" + String(receipt.generation) + "/global")
-                    DisclosureGroup("扩展通用配置") { form }
+                    if focusedPreferences == "" { form }
+                    else { DisclosureGroup("扩展通用配置") { form } }
                 } else { Text("扩展配置结构无效，无法编辑。") }
             }
-            ForEach(manifest.commands.filter { !$0.preferences.isEmpty }, id: \.id) { command in
+            ForEach(manifest.commands.filter {
+                focusedPreferences == nil ? !$0.preferences.isEmpty : focusedPreferences == $0.id
+            }, id: \.id) { command in
                 if let schema = try? RaycastStorePreferenceSchema(manifest: manifest, commandID: command.id) {
                     let form = ExtensionStorePreferencesView(installationID: receipt.id, generation: receipt.generation,
                         schema: schema, persistence: persistence, onSaved: callback)
                         .id(receipt.id.uuidString + "/" + String(receipt.generation) + "/" + command.id)
-                    DisclosureGroup("配置：" + command.title) { form }
+                    if self.focusedPreferences == command.id { form }
+                    else { DisclosureGroup("配置：" + command.title) { form } }
                 } else { Text("命令配置结构无效，无法编辑。") }
             }
         })
@@ -161,6 +193,7 @@ final class ExtensionStoreController: ObservableObject {
             if case .installed(let receipt) = await installer.state(for: source.slug) { installed[source.slug] = receipt }
             else {
                 installed.removeValue(forKey: source.slug)
+                if let previousID { diagnosticsByInstallation.removeValue(forKey: previousID) }
             }
             await (NSApp.delegate as? Delegate)?.updateMacOSExtensionModule(installed[source.slug], replacing: previousID)
             presentation.needsReconciliation.remove(source.slug)
@@ -201,6 +234,10 @@ final class ExtensionStoreController: ObservableObject {
             actions: { self.actions() },
             updates: objectWillChange.eraseToAnyPublisher(),
             enter: { _ in
+                if self.pendingPreferencesEntry {
+                    self.pendingPreferencesEntry = false
+                    return ""
+                }
                 self.closeDetail()
                 self.selected = nil
                 self.category = "all"
@@ -305,6 +342,7 @@ final class ExtensionStoreController: ObservableObject {
     }
 
     func showDetails(_ slug: String) {
+        focusedPreferences = nil
         guard let pinned = source(slug) else { return }
         selected = slug
         detailSource = pinned
@@ -320,6 +358,7 @@ final class ExtensionStoreController: ObservableObject {
     }
 
     private func closeDetail() {
+        focusedPreferences = nil
         if let pinned = detailSource, pinned.revision != index?.revision { metadata.removeValue(forKey: pinned.slug) }
         detail = nil
         detailSource = nil
@@ -527,6 +566,7 @@ private struct ExtensionStoreView: View {
                 }
                 Text(store.installationStatus(slug) ?? "兼容性尚未验证；目录收录不代表已安装或可运行。")
                     .font(.callout).foregroundStyle(.secondary)
+                if store.focusedPreferences != nil, let preferences = store.preferencesView(slug) { preferences }
                 runtimeSetup
                 if let readiness = store.readinessMessages[slug] {
                     Text(readiness).font(.caption).foregroundStyle(.secondary)
@@ -549,7 +589,26 @@ private struct ExtensionStoreView: View {
                 ForEach(store.installationActions(slug)) { action in
                     Button(action.title, systemImage: action.icon, action: action.perform).disabled(!action.enabled)
                 }
-                if let preferences = store.preferencesView(slug) { preferences }
+                if store.focusedPreferences == nil, let preferences = store.preferencesView(slug) { preferences }
+                let samples = store.diagnostics(slug)
+                if !samples.isEmpty {
+                    DisclosureGroup("本机运行诊断") {
+                        ForEach(samples.indices, id: \.self) { index in
+                            let sample = samples[index]
+                            if let category = sample.exceptionCategory {
+                                Text("异常类别：\(category.rawValue)")
+                            } else if let bytes = sample.peakResidentBytes {
+                                let peak = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .memory)
+                                if let current = sample.residentBytes {
+                                    let resident = ByteCountFormatter.string(fromByteCount: Int64(current), countStyle: .memory)
+                                    Text("进程常驻内存 \(resident) · 峰值 \(peak)")
+                                } else {
+                                    Text("进程峰值内存 \(peak)")
+                                }
+                            }
+                        }
+                    }.font(.caption)
+                }
                 if let info {
                     if let description = info.description { Text(description).textSelection(.enabled) }
                     let properties = (info.categories ?? []) + [info.license].compactMap { $0 }

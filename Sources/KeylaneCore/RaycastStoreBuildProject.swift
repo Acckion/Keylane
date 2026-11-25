@@ -59,12 +59,20 @@ public struct RaycastStoreBuildProject: Sendable {
         for node in selection.packages {
             guard let bytes = tarballs[node.path] else { throw Failure.archiveSetMismatch }
             let archive = try RaycastStoreDependencyArchive(tarball: bytes, node: node, target: target)
+            if target == .macOSArm64,
+               archive.installationPath.lowercased() == "node_modules/@keylane/reviewed-assets" {
+                throw Failure.conflictingPath
+            }
             for (path, body) in archive.files {
                 try append(archive.installationPath + "/" + path, body: body)
             }
         }
         if target == .macOSArm64, let version = selection.runtimeAPIVersion {
-            _ = try MacOSReviewedRaycastCommand.buildEntries(for: source.source, apiVersion: version)
+            let reviewed = try MacOSReviewedRaycastCommand.buildEntries(for: source.source, apiVersion: version)
+            if let capabilities = reviewed.first?.capabilities,
+               !capabilities.isDisjoint(with: [MacOSReviewedRaycastAssets.capability, MacOSReviewedRaycastAssets.supportCapability, MacOSReviewedRaycastCache.capability]) {
+                for file in MacOSReviewedRaycastAssets.files { try append(file.path, body: file.body) }
+            }
             for file in MacOSReviewedRaycastAPI.files {
                 try append(file.path, body: file.body)
             }

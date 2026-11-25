@@ -122,7 +122,7 @@ private final class M1Trust: RaycastStoreArtifactTrust, @unchecked Sendable {
         let hide = #"{"operation":"hide","id":1}"#
 
         func validate(_ events: [String]) throws -> [MacOSNoViewCapabilities.Presentation] {
-            let response = MacOSNoViewCapabilities.Response(effects: events.map { .init(kind: .toast, value: $0) })
+            let response = MacOSNoViewCapabilities.Response(effects: events.map { .init(kind: .toast, value: $0) }, cache: nil)
             return try MacOSNoViewCapabilities.validate(response, ticket: ticket).0
         }
 

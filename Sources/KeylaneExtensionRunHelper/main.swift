@@ -58,12 +58,107 @@ private func evaluate() throws -> Bool {
     } else {
         environment = [:]
     }
-    guard let environmentObject = try frozenRecord(environment),
+    let preferenceFields = request["preferenceFields"] ?? []
+    guard let fields = preferenceFields as? [[String: Any]], fields.count <= 32,
+          let fieldsObject = try frozenRecord(fields),
+          let environmentObject = try frozenRecord(environment),
           let api = JSValue(newObjectIn: context),
           let preferenceObject = try frozenRecord(preferences),
           let argumentObject = try frozenRecord(arguments) else { return false }
     api.setObject(environmentObject, forKeyedSubscript: "environment" as NSString)
     api.setObject(preferenceObject, forKeyedSubscript: "preferences" as NSString)
+    api.setObject(fieldsObject, forKeyedSubscript: "preferenceFields" as NSString)
+
+    func checkedPath(_ path: String, root: String, maximumBytes: Int) -> Bool {
+        let parts = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false)
+        return path.hasPrefix(root + "/") && path.utf8.count <= maximumBytes &&
+            !path.contains("\\") && !path.contains("\0") &&
+            parts.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    func decodeFiles(_ value: Any, root: String, maximumFiles: Int, maximumBytes: Int, maximumPathBytes: Int) -> [String: Data]? {
+        guard let encoded = value as? [String: String], encoded.count <= maximumFiles else { return nil }
+        var files: [String: Data] = [:], byteCount = 0
+        for (path, value) in encoded {
+            guard checkedPath(path, root: root, maximumBytes: maximumPathBytes),
+                  let data = Data(base64Encoded: value), data.count <= maximumBytes - byteCount else { return nil }
+            files[path] = data
+            byteCount += data.count
+        }
+        return files
+    }
+
+    func readFile(_ data: Data?, text: Bool) -> NSObject? {
+        guard let data else { return nil }
+        if text { return String(decoding: data, as: UTF8.self) as NSString }
+        return data.map { NSNumber(value: $0) } as NSArray
+    }
+
+    if let rawAssets = request["packagedAssets"] {
+        guard let assets = decodeFiles(rawAssets, root: "/assets", maximumFiles: 128,
+                                       maximumBytes: 512 * 1024, maximumPathBytes: 1025) else { return false }
+        let read: @convention(block) (JSValue, Bool) -> NSObject? = { path, text in
+            guard path.isString, let key = path.toString(), key.utf8.count <= 1025 else { return nil }
+            return readFile(assets[key], text: text)
+        }
+        api.setObject(read, forKeyedSubscript: "readAsset" as NSString)
+    }
+
+    let cacheEnabled = request["cacheSnapshot"] != nil
+    var supportUpdate: [String: Data]?
+    if let input = request["supportFiles"] {
+        guard var files = decodeFiles(input, root: "/support", maximumFiles: 32,
+                                      maximumBytes: 32 * 1024, maximumPathBytes: 256) else { return false }
+        var bytes = files.values.reduce(0) { $0 + $1.count }
+        let read: @convention(block) (JSValue, Bool) -> NSObject? = { path, text in
+            guard path.isString, let key = path.toString(), key.utf8.count <= 256 else { return nil }
+            return readFile(files[key], text: text)
+        }
+        let write: @convention(block) (JSValue, JSValue) -> Bool = { path, value in
+            guard path.isString, let key = path.toString(), checkedPath(key, root: "/support", maximumBytes: 256),
+                  !cacheEnabled || !key.hasSuffix("/cache/entries.json"),
+                  value.isArray, let length = value.forProperty("length")?.toUInt32(),
+                  files[key] != nil || files.count < 32 else { return false }
+            let otherBytes = bytes - (files[key]?.count ?? 0)
+            guard Int(length) <= 32 * 1024 - otherBytes else { return false }
+            var data = Data(capacity: Int(length))
+            for index in 0..<Int(length) {
+                guard let item = value.atIndex(index), item.isNumber,
+                      let byte = UInt8(exactly: item.toDouble()) else { return false }
+                data.append(byte)
+            }
+            files[key] = data
+            bytes = otherBytes + data.count
+            supportUpdate = files
+            return true
+        }
+        api.setObject(read, forKeyedSubscript: "readSupport" as NSString)
+        api.setObject(write, forKeyedSubscript: "writeSupport" as NSString)
+    }
+
+    var cacheUpdate: Data?
+    if let supplied = request["cacheSnapshot"] {
+        guard let snapshot = supplied as? String, snapshot.utf8.count <= 32 * 1024 else { return false }
+        api.setObject(snapshot, forKeyedSubscript: "cacheSnapshot" as NSString)
+        let update: @convention(block) (JSValue) -> Bool = { value in
+            guard value.isString, let snapshot = value.toString(), snapshot.utf8.count <= 32 * 1024 else { return false }
+            cacheUpdate = Data(snapshot.utf8)
+            return true
+        }
+        api.setObject(update, forKeyedSubscript: "updateCache" as NSString)
+    }
+
+    var localStorageUpdate: Data?
+    if let supplied = request["localStorageSnapshot"] {
+        guard let snapshot = supplied as? String, snapshot.utf8.count <= 32 * 1024 else { return false }
+        api.setObject(snapshot, forKeyedSubscript: "localStorageSnapshot" as NSString)
+        let update: @convention(block) (JSValue) -> Bool = { value in
+            guard value.isString, let snapshot = value.toString(), snapshot.utf8.count <= 32 * 1024 else { return false }
+            localStorageUpdate = Data(snapshot.utf8)
+            return true
+        }
+        api.setObject(update, forKeyedSubscript: "updateLocalStorage" as NSString)
+    }
 
     func enqueue(_ kind: String, _ limit: Int) -> @convention(block) (JSValue) -> Bool {
         { argument in
@@ -80,10 +175,42 @@ private func evaluate() throws -> Bool {
         guard let allowed = closeWindow as? Bool else { return false }
         if allowed { api.setObject(enqueue("close", 15), forKeyedSubscript: "closeWindow" as NSString) }
     }
-    for kind in ["clearSearch", "popToRoot"] {
+    for kind in ["clearSearch", "popToRoot", "openPreferences"] {
         if let provided = request[kind] {
             guard let allowed = provided as? Bool else { return false }
-            if allowed { api.setObject(enqueue(kind, 5), forKeyedSubscript: kind as NSString) }
+            if allowed { api.setObject(enqueue(kind, kind == "openPreferences" ? 9 : 5), forKeyedSubscript: kind as NSString) }
+        }
+    }
+    var diagnosticSamples: [[String: Any]] = []
+    if let supplied = request["diagnostics"] {
+        guard let allowed = supplied as? Bool else { return false }
+        if allowed {
+            let capture: @convention(block) (JSValue) -> Void = { kind in
+                guard diagnosticSamples.count < 16, kind.isString, let category = kind.toString() else { return }
+                if ["undefined", "boolean", "number", "string", "bigint", "symbol", "object", "function"].contains(category) {
+                    diagnosticSamples.append(["exceptionCategory": category])
+                }
+            }
+            let memory: @convention(block) () -> Void = {
+                var usage = rusage()
+                if diagnosticSamples.count < 16, getrusage(RUSAGE_SELF, &usage) == 0, usage.ru_maxrss > 0 {
+                    var sample: [String: Any] = ["peakResidentBytes": usage.ru_maxrss]
+                    var info = mach_task_basic_info()
+                    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<integer_t>.size)
+                    let status = withUnsafeMutablePointer(to: &info) { pointer in
+                        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                            task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+                        }
+                    }
+                    if status == KERN_SUCCESS, info.resident_size > 0 {
+                        sample["residentBytes"] = info.resident_size
+                        sample["peakResidentBytes"] = max(UInt64(usage.ru_maxrss), info.resident_size)
+                    }
+                    diagnosticSamples.append(sample)
+                }
+            }
+            api.setObject(capture, forKeyedSubscript: "captureExceptionCategory" as NSString)
+            api.setObject(memory, forKeyedSubscript: "captureMemoryUsage" as NSString)
         }
     }
     let randomID: @convention(block) (JSValue) -> String? = { length in
@@ -159,8 +286,21 @@ private func evaluate() throws -> Bool {
     guard let callback = JSValue(object: finish, in: context) else { return false }
     invokeCommand.call(withArguments: [namespace, argumentObject, !arguments.isEmpty, callback])
     guard !failed, completed else { return false }
-    let output = try JSONSerialization.data(withJSONObject: ["effects": effects])
-    guard output.count <= 65536 else { return false }
+    var response: [String: Any] = ["effects": effects]
+    if !diagnosticSamples.isEmpty { response["diagnostics"] = diagnosticSamples }
+    if let cacheUpdate {
+        response["cache"] = cacheUpdate.base64EncodedString()
+    }
+    if let localStorageUpdate {
+        response["localStorage"] = localStorageUpdate.base64EncodedString()
+    }
+    if let supportUpdate {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        response["supportFiles"] = try encoder.encode(supportUpdate).base64EncodedString()
+    }
+    let output = try JSONSerialization.data(withJSONObject: response, options: [.withoutEscapingSlashes])
+    guard output.count <= 192 * 1024 else { return false }
     try FileHandle.standardOutput.write(contentsOf: output)
     return true
 }

@@ -17,6 +17,7 @@ public struct RaycastStorePreferenceKey: Hashable, Sendable {
 
 public struct RaycastStorePreferenceSnapshot: Sendable {
     public let values: [RaycastStorePreferenceKey: RaycastExtensionManifest.PreferenceValue]
+    var launchSecrets: [RaycastStorePreferenceKey: String] = [:]
     public let storedSecretKeys: Set<RaycastStorePreferenceKey>
 
     public init(values: [RaycastStorePreferenceKey: RaycastExtensionManifest.PreferenceValue] = [:],
@@ -128,7 +129,7 @@ public struct RaycastStorePreferenceSchema: Sendable {
                 let present: Bool
                 switch changes.secrets[key] {
                 case .set(let secret):
-                    guard !secret.isEmpty, secret.utf8.count <= 16_384 else {
+                    guard !secret.isEmpty, secret.utf8.count <= 1_024 else {
                         issues.append(.invalidValue(key))
                         continue
                     }
