@@ -39,12 +39,17 @@ final class AIConversationSession: ObservableObject {
         guard !tools.isEmpty, let toolDiscovery else { return tools }
         return tools + [toolDiscovery(tools)]
     }
-    @MainActor func toolRegistrationsForRequest(supportsTools: Bool?) throws -> [AIToolRegistration] {
+    @MainActor private func requestToolCatalog(supportsTools: Bool?) throws -> [AIToolRegistration] {
         guard toolEnabled() else { return [] }
         let selected = selectedTools()
         guard selected.isEmpty || supportsTools != false else { throw AIResponseError.toolsUnavailable }
-        return selected.map { $0.forRun() }
+        guard selected.allSatisfy({ $0.available() }) else { throw AIActionError.unavailable }
+        return selected
     }
+    @MainActor func toolRegistrationsForRequest(supportsTools: Bool?) throws -> [AIToolRegistration] {
+        try requestToolCatalog(supportsTools: supportsTools).map { $0.forRun() }
+    }
+
     @MainActor var availableTools: [AIToolDefinition] { selectedTools().map(\.definition) }
 
     func configureTools(preferences: AIInteractionPreferences,
@@ -212,8 +217,22 @@ final class AIConversationSession: ObservableObject {
             return false
         }
 
-        let system = instructions ?? effectiveInstructions
-        guard validateInstructions(system) else { return false }
+        let baseInstructions = instructions ?? effectiveInstructions
+        guard validateInstructions(baseInstructions) else { return false }
+        let toolCatalog: [AIToolRegistration]
+        let system: String?
+        do {
+            // This UI model is called on the main actor. Freeze metadata before
+            // draft mutation; provider leases are still acquired only at dispatch.
+            (toolCatalog, system) = try MainActor.assumeIsolated {
+                let catalog = try requestToolCatalog(supportsTools: connection.supportsTools)
+                let sections = catalog.compactMap { tool -> AIInstructionSection? in
+                    guard let owner = tool.owner, let definition = tool.moduleInstructions else { return nil }
+                    return .init(moduleID: owner, definition: definition)
+                }
+                return (catalog, try AIInstructionSection.compose(base: baseInstructions, sections: sections))
+            }
+        } catch { status = error.localizedDescription; return false }
         guard AIConversationAttachment.fits(attachments) else { status = AIResponseError.requestTooLarge.localizedDescription; return false }
         let requestMessages = messages(for: requestText, instructions: system,
                                        images: attachments.compactMap(\.image), sources: attachments.compactMap(\.visualSource), history: branchPrefix)
@@ -235,12 +254,15 @@ final class AIConversationSession: ObservableObject {
         task = AIRunHandle.start(runtime: runtime, connection: connection, readKey: readKey, messages: requestMessages,
             prepareTools: { [weak self] in
                 guard let self else { return nil }
-                let registrations = try self.toolRegistrationsForRequest(supportsTools: connection.supportsTools)
+                guard self.toolEnabled() || toolCatalog.isEmpty,
+                      toolCatalog.allSatisfy({ $0.available() }) else { throw AIActionError.unavailable }
+                let registrations = toolCatalog.map { $0.forRun() }
+                guard registrations.allSatisfy({ $0.available() }) else { throw AIActionError.unavailable }
                 guard !registrations.isEmpty else { return nil }
                 return try AIToolRun(registrations: registrations, recipient: connection.toolRecipient, isCurrent: { [weak self] in
                     guard let self else { return false }
                     return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
-                        self.currentConnection == connection
+                        self.currentConnection == connection && registrations.allSatisfy({ $0.available() })
                 }, approve: { [weak self] title, arguments in
                     guard let self else { return false }
                     return await self.toolApproval.request(title: title, arguments: arguments)
