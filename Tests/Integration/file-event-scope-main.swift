@@ -44,6 +44,7 @@ scans.removeAll()
 controller.testIndexEvents(paths: [folder.path, child.path, child.path], flags: [dirFlag, fileFlag, fileFlag])
 wait("parent and child") { !scans.isEmpty && controller.testEventsIdle }
 precondition(scans.count == 1 && scans[0].1 == 2 && !scans[0].0, "Shallow parent must not swallow child; duplicate child must coalesce")
+precondition(controller.testLastScanRuleReads == 2, "Sibling targets must reuse ancestor rule snapshots")
 print("PASS shallow parent retains explicit child update and duplicate events coalesce")
 scans.removeAll()
 controller.testIndexEvents(paths: [folder.appendingPathComponent(".rayignore").path], flags: [FSEventStreamEventFlags(kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile)])

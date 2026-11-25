@@ -129,6 +129,15 @@ controller.stopRuntime(); pump(0.3)
 controller = FileSearchController(directory: store, preferences: prefs)
 pump(6)
 require(try contains(sentinel.lastPathComponent), "Pending repair forced a global startup crawl")
+var repairWakeScans = 0
+controller.testScanCompleted = { _, _ in repairWakeScans += 1 }
+controller.testIndexEvents(paths: [scope.path], flags: [FSEventStreamEventFlags(
+    kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemModified)])
+pump(3)
+require(repairWakeScans == 0, "Ordinary root modification retried an unrelated unreadable subtree")
+require(try db.recoveryPoint()?.retryPaths.contains(locked.path) == true, "Filtered notification lost pending repair")
+print("PASS ordinary ancestor changes do not wake unresolved repairs")
+
 try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
 try FileManager.default.removeItem(at: lockedFile)
 try Data().write(to: locked.appendingPathComponent("unlocked-fixture.txt"))

@@ -1108,9 +1108,14 @@ final class FileSearchController: ObservableObject {
                 }
             }
             let paths = paths.map { Self.coalescedIndexPaths($0, recursive: recursivePaths) }
-            var repairPaths: Set<String> = paths.map { targets in Set(previousRepairs.filter { path in
-                !targets.contains { FileSearchLocation.contains(path, in: $0) }
-            }) } ?? []
+            var repairPaths: Set<String> = []
+            if let paths {
+                let targets = Set(paths)
+                let recursiveTargets = recursivePaths.map { targets.intersection($0) } ?? targets
+                repairPaths = previousRepairs.filter { path in
+                    !targets.contains(path) && !Self.hasAncestor(path, in: recursiveTargets)
+                }
+            }
             // A crash or cancelled crawl must not advertise a complete index.
             // Save the new event position only after all database writes finish.
             do { try write { try $0.invalidateRecoveryPoint() } }
@@ -1139,6 +1144,26 @@ final class FileSearchController: ObservableObject {
             let epoch = session.epoch
             let ignoresFile = FileSearchRules.pathFilter(config.ignorePatterns)
             let ignoresDirectory = FileSearchRules.pathFilter(config.ignorePatterns, directory: true)
+            // An incremental batch can contain many siblings. Reuse rule
+            // snapshots only within this batch; a subsequent event sees new rules.
+            var ruleSnapshots: [String: [FileSearchRules.IgnoreRule]] = [:]
+            var ruleBudget = 1_048_576
+            var ruleReads = 0
+            func readRules(_ directory: URL) -> [FileSearchRules.IgnoreRule] {
+                let key = directory.path
+                if let cached = ruleSnapshots[key] { return cached }
+                ruleReads += 1
+                let rules = FileSearchRules.readIgnoreRules(in: directory)
+                if paths != nil, ruleSnapshots.count < 256 {
+                    let cost = rules.reduce(key.utf8.count) { $0 + 128 + $1.pattern.utf8.count }
+                    if cost <= ruleBudget {
+                        ruleBudget -= cost
+                        ruleSnapshots[key] = rules
+                    }
+                }
+                return rules
+            }
+            defer { logger.info("scan_rules reads=\(ruleReads) cached_directories=\(ruleSnapshots.count)") }
             do {
                 if paths == nil {
                     if !config.contentSearch { try write { try $0.clearBodies() } }
@@ -1200,7 +1225,7 @@ final class FileSearchController: ObservableObject {
                                 }
                             }
                             if config.useIgnoreFiles && parent.path != firstDirectory.path {
-                                inheritedRules += FileSearchRules.readIgnoreRules(in: parent)
+                                inheritedRules += readRules(parent)
                             }
                         }
                         if inaccessibleAncestor {
@@ -1235,7 +1260,7 @@ final class FileSearchController: ObservableObject {
                             let wasRemoved = try write { _ in session.isRemoved(path) }
                             guard !wasRemoved else { return }
                             let directory = URL(fileURLWithPath: path, isDirectory: true)
-                            var rules = inherited; if config.useIgnoreFiles { rules += FileSearchRules.readIgnoreRules(in: directory) }
+                            var rules = inherited; if config.useIgnoreFiles { rules += readRules(directory) }
                             var readFailure: URL?
                             var children: AnyIterator<URL>
                             if let pendingEntry {
@@ -1359,6 +1384,9 @@ final class FileSearchController: ObservableObject {
                     try write { try $0.saveRecoveryPoint(.init(eventID: eventID, configuration: fingerprint, retryPaths: repairPaths)) }
                 }
                 let completedRepairs = repairPaths
+                #if KEYLANE_FILE_EVENT_TESTING
+                let completedRuleReads = ruleReads
+                #endif
                 scanSucceeded = true
                 var stats = try write { try $0.stats() }; stats.invalid = invalid; stats.seconds = Date().timeIntervalSince(start)
                 DispatchQueue.main.async {
@@ -1368,6 +1396,7 @@ final class FileSearchController: ObservableObject {
                     self.checkpointConfiguration = self.checkpointReady ? fingerprint : nil
                     self.scanSession = nil
                     #if KEYLANE_FILE_EVENT_TESTING
+                    self.testLastScanRuleReads = completedRuleReads
                     self.testScanCompleted?(paths == nil, processed)
                     #endif
                     self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
@@ -1495,6 +1524,16 @@ final class FileSearchController: ObservableObject {
         return error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)
     }
 
+    private static func hasAncestor(_ path: String, in candidates: Set<String>) -> Bool {
+        guard !candidates.isEmpty else { return false }
+        var ancestor = path[...]
+        while true {
+            if candidates.contains(String(ancestor)) { return true }
+            guard ancestor != "/", let slash = ancestor.lastIndex(of: "/") else { return false }
+            ancestor = slash == ancestor.startIndex ? ancestor[...slash] : ancestor[..<slash]
+        }
+    }
+
     private static func coalescedIndexPaths(_ paths: Set<String>, recursive: Set<String>? = nil) -> [String] {
         // Sorting by the directory prefix keeps every subtree next to its parent.
         let sorted = paths.map { ($0, $0 == "/" ? "/" : $0 + "/") }.sorted { $0.1 < $1.1 }
@@ -1526,6 +1565,7 @@ final class FileSearchController: ObservableObject {
         var churn: [String: (Date, Int)]
         var paths = Set<String>()
         var recursivePaths = Set<String>()
+        var repairWakePaths = Set<String>()
         var requiresFullScan = false
     }
 
@@ -1594,6 +1634,7 @@ final class FileSearchController: ObservableObject {
     #if KEYLANE_FILE_EVENT_TESTING
     // Feed loss/wrap flags deterministically through the production event pipeline.
     var testScanCompleted: ((Bool, Int) -> Void)?
+    private(set) var testLastScanRuleReads = 0
     var testBeforeLocalQuery: ((String) -> Void)?
     var testBeforeScanDirectory: ((String) -> Void)?
     var testBeforeCommitMetadata: ((String) -> Void)?
@@ -1641,17 +1682,15 @@ final class FileSearchController: ObservableObject {
                     }
                     var paths = result.paths
                     var recursive = result.recursivePaths.intersection(paths)
-                    // Permission/root metadata notifications may unlock saved repair
-                    // subtrees. Retry those subtrees rather than clearing their repair
-                    // state after only touching the directory's own row.
-                    for repair in self.pendingRepairPaths {
-                        var ancestor = repair
-                        while true {
-                            if result.paths.contains(ancestor) {
-                                paths.insert(repair); recursive.insert(repair); break
+                    // A normal directory modification (e.g. adding a sibling)
+                    // cannot make a different inaccessible subtree readable.
+                    // Retry exact repair targets and ancestors with recovery flags.
+                    if !result.repairWakePaths.isEmpty || !self.pendingRepairPaths.isDisjoint(with: paths) {
+                        let repairTriggers = result.repairWakePaths.intersection(paths)
+                        for repair in self.pendingRepairPaths {
+                            if paths.contains(repair) || Self.hasAncestor(repair, in: repairTriggers) {
+                                paths.insert(repair); recursive.insert(repair)
                             }
-                            if ancestor == "/" { break }
-                            ancestor = URL(fileURLWithPath: ancestor).deletingLastPathComponent().path
                         }
                     }
                     for root in self.authorizedRoots where !recursive.contains(root) {
@@ -1751,6 +1790,9 @@ final class FileSearchController: ObservableObject {
                 let directoryChange = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated
                     | kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged
                     | kFSEventStreamEventFlagItemChangeOwner | kFSEventStreamEventFlagItemInodeMetaMod)
+                if flags & directoryChange != 0, flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) == 0 {
+                    result.repairWakePaths.insert(target)
+                }
                 if target != path || flags & directoryChange != 0 {
                     result.recursivePaths.insert(target)
                 }

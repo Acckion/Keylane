@@ -376,11 +376,13 @@ public final class FileSearchIndex {
             guard let last = rows.last else { return }
             cursor = last.0
             let ids = rows.compactMap { id, path -> String? in
-                var ancestor = path
+                // Indexed paths are absolute and normalized. Checking their
+                // ancestors is lexical and must never query a slow filesystem.
+                var ancestor = path[...]
                 while true {
-                    if preserving.contains(ancestor) { return nil }
-                    if ancestor == "/" { break }
-                    ancestor = URL(fileURLWithPath: ancestor).deletingLastPathComponent().path
+                    if preserving.contains(String(ancestor)) { return nil }
+                    guard ancestor != "/", let slash = ancestor.lastIndex(of: "/") else { break }
+                    ancestor = slash == ancestor.startIndex ? ancestor[...slash] : ancestor[..<slash]
                 }
                 return String(id)
             }

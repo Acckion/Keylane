@@ -19,14 +19,22 @@ final class SubtreeReconcilePlanTests: XCTestCase {
             try db.removeUnseen(root: "/fixture", subtree: subtree, epoch: "new")
             return db.writeDiagnostics.subtreeReconcileSteps - previous
         }
+        func reconcileTinySubtree(expectedRemaining: Int) throws -> UInt64 {
+            try db.put(.init(path: "/fixture/tiny/a", name: "a", volume: "/", modified: 1, directory: false, symlink: false), root: "/fixture", epoch: "old")
+            let cost = try steps("/fixture/tiny")
+            XCTAssertEqual(try db.stats().entries, expectedRemaining, "Only the stale subtree entry should be deleted")
+            return cost
+        }
         try populate(0,100)
         let small = try steps("/fixture/absent")
+        let smallTiny = try reconcileTinySubtree(expectedRemaining: 100)
         try populate(100,10_000)
         let large = try steps("/fixture/absent")
-        XCTAssertLessThanOrEqual(large,small + 20, "Missing subtree must not traverse the unrelated root")
-        try db.put(.init(path: "/fixture/tiny/a", name: "a", volume: "/", modified: 1, directory: false, symlink: false), root: "/fixture", epoch: "old")
-        XCTAssertLessThan(try steps("/fixture/tiny"), 200)
-        XCTAssertEqual(try db.stats().entries,10_000)
+        let largeTiny = try reconcileTinySubtree(expectedRemaining: 10_000)
+        // Different bundled SQLite versions emit different fixed opcode counts.
+        // Neither shape should gain work in proportion to the number of siblings.
+        XCTAssertLessThanOrEqual(large, small + 20, "Missing subtree must not traverse the unrelated root")
+        XCTAssertLessThanOrEqual(largeTiny, smallTiny + 20, "Tiny subtree must not traverse the unrelated root")
         var raw: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path,&raw),SQLITE_OK)
         defer { sqlite3_close(raw) }
