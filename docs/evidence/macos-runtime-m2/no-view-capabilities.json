@@ -1,0 +1,25 @@
+{
+  "fixtureOnly": true,
+  "scope": "M2 native no-view process",
+  "cases": {
+    "normal": true,
+    "exception": true,
+    "digest": true,
+    "helper-digest": true,
+    "replay": true,
+    "timeout": true,
+    "capabilities": true,
+    "capability-denied": true,
+    "capability-error": true,
+    "capability-revoked": true,
+    "registry-capabilities": true,
+    "wrongParent": true,
+    "cancel": true,
+    "parent-loss": true,
+    "registry-disable": true,
+    "secondHostExcludedDuringRun": true,
+    "noTakeoverBeforeHelperExit": true,
+    "ownerReleasedAfterHelperExit": true
+  },
+  "gate": "incomplete"
+}

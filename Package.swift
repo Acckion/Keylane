@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "Keylane", targets: ["Keylane"]),
         .executable(name: "keylane-extension", targets: ["KeylaneExtensionCLI"]),
+        .executable(name: "keylane-extension-run", targets: ["KeylaneExtensionRunHelper"]),
         .executable(name: "keylane-extension-build", targets: ["KeylaneExtensionBuildHelper"]),
     ],
     dependencies: [
@@ -17,6 +18,7 @@ let package = Package(
         .target(name: "KeylaneProviderConfig", dependencies: [.product(name: "Yams", package: "Yams")]),
         .executableTarget(name: "Keylane", dependencies: ["KeylaneCore", "KeylaneProviderConfig"]),
         .executableTarget(name: "KeylaneExtensionCLI", dependencies: ["KeylaneCore"]),
+        .executableTarget(name: "KeylaneExtensionRunHelper"),
         .executableTarget(name: "KeylaneExtensionBuildHelper", dependencies: ["KeylaneCore"]),
         .testTarget(name: "KeylaneCoreTests", dependencies: ["KeylaneCore"]),
         .testTarget(name: "KeylaneProviderConfigTests", dependencies: ["KeylaneProviderConfig"]),

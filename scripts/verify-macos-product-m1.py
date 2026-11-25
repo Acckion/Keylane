@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """Signed real M1 composition; exact synthetic Keychain slots and temporary files.
 
-No installation, user clipboard, public extension or runtime admission occurs.
+The optional official UUID check installs only in the temporary signed profile.
+Clipboard effects are captured in the test host.
 Retains the original signed recovery application if owned cleanup fails.
 """
 import argparse
 import contextlib
-import datetime
-import fnmatch
-import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -22,7 +20,7 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0,str(ROOT/'scripts'))
-from extension_builder import package_builder, verify_builder
+from extension_builder import LEGACY_PREVIEW_STORAGE, package_builder, verify_builder, provisioned_rights, package_runtime
 spec=importlib.util.spec_from_file_location('m0',ROOT/'scripts/verify-macos-runtime-m0.py')
 m0=importlib.util.module_from_spec(spec);spec.loader.exec_module(m0)
 spec=importlib.util.spec_from_file_location('broker',ROOT/'scripts/verify-macos-broker-m0.py')
@@ -34,24 +32,6 @@ CASES={'enrolled','approvalReplayRejected','realBuildAndInstall','oldActiveDurin
        'realCompilerCancelled','oldPreservedAfterCancellation','oldPreservedAfterCompilerFailure',
        'crossProcessCASOneWinner','crossProcessCASRecoverable','tamperedToolchainRejected','fixturesExited','crossProcessBuildLock','productHostRightsVerified',
        'foreignProfileRejected','foreignLegacyReadableByHost','foreignProtectedCreateDenied','foreignProtectedUpdateDenied','unprovisionedHostRejected'}
-
-
-def provisioned_rights(path, identifier, identity, now=None):
-    """Read public signing authorization only; never print device/cert contents."""
-    result=subprocess.run(['security','cms','-D','-i',str(path)],check=True,capture_output=True)
-    profile=plistlib.loads(result.stdout); rights=profile.get('Entitlements',{})
-    team=rights.get('com.apple.developer.team-identifier','')
-    application=team+'.'+identifier
-    now=now or datetime.datetime.now(datetime.timezone.utc)
-    expiry=profile.get('ExpirationDate',datetime.datetime.min)
-    if expiry.tzinfo is None:expiry=expiry.replace(tzinfo=datetime.timezone.utc)
-    if ('OSX' not in profile.get('Platform',[]) or expiry<=now or not team or
-        not any(hashlib.sha1(c).hexdigest().lower()==identity.lower() for c in profile.get('DeveloperCertificates',[])) or
-        not fnmatch.fnmatchcase(application,rights.get('com.apple.application-identifier','')) or
-        not any(fnmatch.fnmatchcase(application,group) for group in rights.get('keychain-access-groups',[]))):
-        raise ValueError('Provisioning profile does not authorize this synthetic host')
-    return {'com.apple.application-identifier':application,'com.apple.developer.team-identifier':team,
-            'keychain-access-groups':[application]}
 
 
 def choose_provision(path, identifier, identity):
@@ -86,12 +66,26 @@ def main():
     p.add_argument('--core-products',type=Path,help='fresh SwiftPM Debug products for this checkout')
     p.add_argument('--package-name',default=re.sub(r'\W','_',ROOT.name.lower()))
     p.add_argument('--provisioning-profile',type=Path,help='Existing macOS profile authorizing only the signed synthetic host')
-    p.add_argument('--origin-only',action='store_true',help='Only audit legacy foreign-origin adoption; never grants M1 acceptance')
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument('--runtime-helper',type=Path,help='Run the signed M2 composition only')
+    mode.add_argument('--origin-only',action='store_true',help='Only audit legacy foreign-origin adoption; never grants M1 acceptance')
+    p.add_argument('--official-lorem', action='store_true', help='Run reviewed Lorem Ipsum commands only')
+    p.add_argument('--official-batch', action='store_true', help='Also run the reviewed Silent Mention command')
+    p.add_argument('--official-uuid', action='store_true',
+                   help='Fetch and execute the pinned official UUID Generator command in a temporary profile')
+    p.add_argument('--legacy-preview', action='store_true', help='Exercise the runtime using isolated login Keychain slots')
     p.add_argument('--report',type=Path,required=True);args=p.parse_args()
+    if args.legacy_preview and (not args.runtime_helper or args.provisioning_profile):
+        p.error('--legacy-preview requires --runtime-helper and no provisioning profile')
+    if args.official_batch and not args.official_uuid:
+        p.error('--official-batch requires --official-uuid')
+    if (args.official_uuid or args.official_lorem) and not args.runtime_helper:
+        p.error('--official-uuid requires --runtime-helper')
     if args.report.exists():raise SystemExit('Refusing report overwrite')
     identity=m0.resolve_identity()
     report=dict(schema=1,fixtureOnly=True,installed=False,phase='M1',cases={},productionRuntimeReady=False,publicExtensionsVerified=False,
-                protectedStorage='data-protection-keychain-v2',provisionedFixtureOnly=True)
+                protectedStorage=LEGACY_PREVIEW_STORAGE if args.legacy_preview else 'data-protection-keychain-v2',
+                provisionedFixtureOnly=not args.legacy_preview)
     with task_directory() as task:
         app=task/'Host.app';host=app/'Contents/MacOS/host';host.parent.mkdir(parents=True)
         identifier='org.keylane.tests.runtime-m1.product-host'
@@ -107,20 +101,69 @@ def main():
         package_builder(app,args.helper,identity,host_identifier=identifier,archive=args.compiler_archive)
         ordinary_rights=plistlib.loads((ROOT/'Resources/Keylane.entitlements').read_bytes())
         product_rights=dict(ordinary_rights)
-        provision,protected_rights=choose_provision(args.provisioning_profile,identifier,identity)
-        shutil.copyfile(provision,app/'Contents/embedded.provisionprofile')
-        product_rights.update(protected_rights)
+        if not args.legacy_preview:
+            provision,protected_rights=choose_provision(args.provisioning_profile,identifier,identity)
+            shutil.copyfile(provision,app/'Contents/embedded.provisionprofile')
+            product_rights.update(protected_rights)
         def sign(target,role,entitlements=None):
             entitlements=entitlements or {}
             rights=task/(role+'.plist');rights.write_bytes(plistlib.dumps(entitlements))
             m0.run(['codesign','--force','--sign',identity,'--identifier',role,'--options','runtime','--timestamp=none','--entitlements',str(rights),str(target)],capture_output=True)
             m0.verify_signature(target,identity,entitlements)
+        if args.runtime_helper:
+            runtime = package_runtime(app, args.runtime_helper, identity, host_identifier=identifier, legacy_preview=args.legacy_preview)
+            runner = runtime/'Contents/MacOS/keylane-extension-run'
+            runtime_rights = {'com.apple.security.app-sandbox':True}
+            m0.verify_signature(runtime,identity,runtime_rights)
         sign(app,identifier,product_rights)
         verify_builder(app)
         def call(mode,binary=host):
             result=subprocess.run([str(binary),mode,str(task)],capture_output=True,text=True,timeout=120)
             if result.returncode!=0:raise RuntimeError('First-party native M1 mode failed: '+mode+'; exit='+str(result.returncode)+'; '+result.stdout[:160]+'; '+result.stderr[:600])
             values=json.loads(result.stdout);report['cases'].update(values)
+        if args.runtime_helper:
+            try:
+                call('runtime-setup')
+                call('runtime-service')
+                call('runtime-restart')
+                call('runtime-after-uninstall')
+                if args.official_uuid:
+                    call('official-uuid-run')
+                    call('official-uuid-restart')
+                if args.official_batch:
+                    call('official-silent-mention')
+                    call('official-silent-mention-restart')
+                if args.official_batch or args.official_lorem:
+                    call('official-lorem-markdown')
+                    call('official-lorem-markdown-restart')
+                m0.verify_signature(runtime,identity,runtime_rights)
+                m0.verify_signature(app,identity,product_rights)
+                report['signaturesVerifiedBeforeAndAfter'] = True
+                report['cases']['fixturesExited'] = not broker.helper_pids(runner)
+            finally:
+                if (task/'cleanup.json').exists():
+                    call('cleanup')
+            report['temporaryArtifactsRemoved'] = True
+            report['phase'] = 'M2-signed-service-dispatch'
+            required = {'approvalReplayRejected', 'enrolled', 'competingServiceDenied',
+                        'signedProfileDispatch', 'staleLauncherCommandDenied', 'fixturesExited', 'cleaned',
+                        'unsupportedCommandDeniedBeforeInstall', 'restartDispatch', 'disabledCommandDenied',
+                        'uninstallRecorded', 'uninstallPersistsAfterRestart'}
+            if args.official_uuid:
+                official_cases = {'officialUUIDInstalledAndRan', 'officialUUIDMissingArgumentRejected',
+                                  'officialUUIDRestartAndUninstall'}
+                required |= official_cases
+            if args.official_batch:
+                required |= {'officialSilentMentionInstalledAndRan', 'officialSilentMentionRestartAndUninstall'}
+            if args.official_batch or args.official_lorem:
+                required |= {'officialLoremMarkdownInstalledAndRan', 'officialLoremMarkdownRestartAndUninstall'}
+            report['publicExtensionsVerified'] = (args.official_uuid or args.official_lorem) and all(
+                report['cases'].get(key) is True for key in required if key.startswith('official'))
+            report['gate'] = 'incomplete' if all(report['cases'].get(key) is True for key in required) else 'blocked'
+            with args.report.open('x') as output:
+                json.dump(report,output,indent=2)
+            print(json.dumps({'gate':report['gate'],'cases':report['cases']}))
+            return 0 if report['gate']=='incomplete' else 2
         if args.origin_only:
             try:
                 foreign=task/'Foreign.app';shutil.copytree(app,foreign);sign(foreign,'org.keylane.tests.runtime-m1.foreign')

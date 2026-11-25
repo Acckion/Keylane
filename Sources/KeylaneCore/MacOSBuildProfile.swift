@@ -7,11 +7,12 @@ import MachO
 /// App-owned macOS build profile. No default selection, automatic enrollment,
 /// repair, Keychain enumeration or credential forwarding to a child process.
 package final class MacOSBuildProfile: @unchecked Sendable {
-    package enum Failure: Error { case unavailable, signature, identity, missing, pending, store(OSStatus), unsafeRoot }
+    package enum Failure: Error { case unavailable, signature, identity, buildRecipeChanged, missing, pending, store(OSStatus), unsafeRoot }
     package struct Configuration: Codable, Sendable {
         package let schema: Int
         package let mode: String
         package let storage: String
+        package let runHelperSHA256: String?
         package let recipe: MacOSExtensionBuild.Recipe
     }
     package struct Approval: Sendable {
@@ -37,22 +38,25 @@ package final class MacOSBuildProfile: @unchecked Sendable {
         var buildLock: Identity?
         let key: Data
     }
-    private static let service = "org.keylane.extension-build.protected.v2"
+    private enum KeychainBackend {
+        case dataProtection(group: String)
+        case legacy(service: String)
+    }
     private let record: Record
     package let configuration: Configuration
     package let application: Bundle
     package let helper: URL
     package let compiler: URL
     private let requirement: String
-    private let accessGroup: String
+    private let backend: KeychainBackend
     package var root: URL { URL(fileURLWithPath: record.root) }
     package var id: UUID { record.id }
     package var publicKey: P256.Signing.PublicKey { get throws { try P256.Signing.PrivateKey(rawRepresentation: record.key).publicKey } }
     package var sealRecipe: RaycastStoreArtifactSeal.Recipe {
         get throws {
             .init(identifier: "macos-build-v1-" + (try configuration.recipe.digest),
-                  runtimeDigest: MacOSExtensionBuild.hash(Data("restricted-jsc/build-only/M1".utf8)),
-                  qualifiedAPIVersions: [], buildRecipe: configuration.recipe)
+                  runtimeDigest: configuration.runHelperSHA256 ?? MacOSExtensionBuild.hash(Data("restricted-jsc/build-only/M1".utf8)),
+                  qualifiedAPIVersions: configuration.runHelperSHA256 == nil ? [] : Set(MacOSReviewedRaycastCommand.entries.map(\.apiVersion)), buildRecipe: configuration.recipe)
         }
     }
     package var anchor: RaycastStoreProtectedReceiptState {
@@ -60,38 +64,43 @@ package final class MacOSBuildProfile: @unchecked Sendable {
             guard let identity = record.receiptLock, let directory = record.directory, let owner = record.owner else { throw Failure.pending }
             let storage = RaycastStoreSerializedReceiptStorage(directory: root,
                 lockIdentity: .init(device: dev_t(identity.device), inode: identity.inode),
-                slot: Slot(id: id, suffix: "head", group: accessGroup))
+                slot: Slot(id: id, suffix: "head", backend: backend))
             let binding = RaycastStoreProtectedReceiptState.OwnerBinding(profileID: id, rootPath: root.path,
                 rootDevice: directory.device, rootInode: directory.inode, lockDevice: owner.device, lockInode: owner.inode)
             return try .init(storage: storage, registryID: id, publicKey: publicKey, recipe: sealRecipe, owner: binding)
         }
     }
 
-    private init(application: Bundle, record: Record, configuration: Configuration, requirement: String, accessGroup: String) throws {
-        self.application = application; self.record = record; self.configuration = configuration; self.requirement = requirement; self.accessGroup = accessGroup
+    private init(application: Bundle, record: Record, configuration: Configuration, requirement: String, backend: KeychainBackend) throws {
+        self.application = application; self.record = record; self.configuration = configuration; self.requirement = requirement; self.backend = backend
         helper = application.bundleURL.resolvingSymlinksInPath().appendingPathComponent("Contents/Helpers/KeylaneExtensionBuild.app/Contents/MacOS/keylane-extension-build")
         compiler = helper.deletingLastPathComponent().appendingPathComponent("esbuild")
         try verify()
     }
 
-    /// Read only an already enrolled, independently protected record. An editable
-    /// preferences UUID identifies a slot; it cannot supply any trust material.
+    /// Read an enrolled record from the backend bound to the signed bundle.
+    /// The legacy preview backend has no OS-enforced application access group.
     package static func open(id: UUID, application: Bundle, hostIdentifier: String = "org.keylane.launcher") throws -> MacOSBuildProfile {
-        let (configuration, requirement, group) = try configuration(application, identifier: hostIdentifier)
-        guard let data = try Slot(id: id, suffix: "profile", group: group).readExisting(), data.count <= 16384 else { throw Failure.missing }
+        let (configuration, requirement, backend) = try configuration(application, identifier: hostIdentifier)
+        guard let data = try Slot(id: id, suffix: "profile", backend: backend).readExisting(), data.count <= 16384 else { throw Failure.missing }
         let record = try JSONDecoder().decode(Record.self, from: data)
         guard record.id == id, record.phase == "enrolled" else { throw Failure.pending }
-        return try .init(application: application, record: record, configuration: configuration, requirement: requirement, accessGroup: group)
+        return try .init(application: application, record: record, configuration: configuration, requirement: requirement, backend: backend)
+    }
+
+    package static func verifyRuntimeConfiguration(application: Bundle, hostIdentifier: String = "org.keylane.launcher") throws {
+        let (configuration, _, _) = try configuration(application, identifier: hostIdentifier)
+        guard configuration.runHelperSHA256 != nil else { throw Failure.unavailable }
     }
 
     /// Explicit create-only enrollment. The successful protected reservation is
     /// the fresh-scope proof; absence of a registry/lock/Keychain item is not.
     package static func enroll(_ approval: Approval, root: URL, application: Bundle,
                                hostIdentifier: String = "org.keylane.launcher") async throws -> MacOSBuildProfile {
-        let (configuration, requirement, group) = try configuration(application, identifier: hostIdentifier)
+        let (configuration, requirement, backend) = try configuration(application, identifier: hostIdentifier)
         let root = root.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(root.lastPathComponent)
         guard root.isFileURL, root.lastPathComponent == approval.profileID.uuidString else { throw Failure.unsafeRoot }
-        let slot = Slot(id: approval.profileID, suffix: "profile", group: group)
+        let slot = Slot(id: approval.profileID, suffix: "profile", backend: backend)
         var record = Record(phase: "pending", id: approval.profileID, host: try executablePath(), recipe: configuration.recipe,
                             root: root.path, key: P256.Signing.PrivateKey().rawRepresentation)
         try slot.create(MacOSExtensionBuild.encode(record)) // durable reservation; never overwrite/retry on loss
@@ -116,7 +125,7 @@ package final class MacOSBuildProfile: @unchecked Sendable {
         // Profile is still pending. Only this in-memory, freshly reserved native
         // operation can construct the authority for the existing enrollment seam.
         try slot.replaceExisting(with: MacOSExtensionBuild.encode(record))
-        let provisional = try Self(application: application, record: record, configuration: configuration, requirement: requirement, accessGroup: group)
+        let provisional = try Self(application: application, record: record, configuration: configuration, requirement: requirement, backend: backend)
         let authority = Enrollment(record: record, approval: approval, slot: slot, scope: try provisional.anchor.enrollmentScope)
         try provisional.anchor.enrollment(authority: authority).enrollNewProfile(approval: Data(approval.proof.uuidString.utf8))
         return try open(id: approval.profileID, application: application, hostIdentifier: hostIdentifier)
@@ -125,6 +134,22 @@ package final class MacOSBuildProfile: @unchecked Sendable {
     package func sign(_ bytes: Data) throws -> P256.Signing.ECDSASignature {
         try verify(); return try P256.Signing.PrivateKey(rawRepresentation: record.key).signature(for: bytes)
     }
+    func acquireStoreOwnership() throws -> MacOSStoreOwnership {
+        try verify()
+        guard let owner = record.owner else { throw Failure.pending }
+        return try MacOSStoreOwnership(
+            path: root.appendingPathComponent(RaycastStoreProtectedReceiptState.OwnerBinding.lockName),
+            device: owner.device, inode: owner.inode, exclusive: configuration.runHelperSHA256 != nil)
+    }
+
+    func runDriver(ownership: MacOSStoreOwnership, deliver: MacOSNoViewCapabilities.Presenter?) -> MacOSRestrictedNoViewDriver? {
+        guard let digest = configuration.runHelperSHA256, let identifier = application.bundleIdentifier else { return nil }
+        let runRequirement = requirement.replacingOccurrences(of: "identifier \""+identifier+"\"",
+                                                              with: "identifier \"org.keylane.extension-run\"")
+        return MacOSRestrictedNoViewDriver(application: application, expectedDigest: digest,
+                                           signingRequirement: runRequirement, ownership: ownership, deliver: deliver)
+    }
+
     package func acquireBuildLock() throws -> Int32 {
         try verify()
         let fd = Darwin.open(root.appendingPathComponent("build.lock").path, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
@@ -137,7 +162,8 @@ package final class MacOSBuildProfile: @unchecked Sendable {
         return fd
     }
     package func verify() throws {
-        guard try Self.executablePath() == record.host, record.recipe == configuration.recipe else { throw Failure.identity }
+        guard try Self.executablePath() == record.host else { throw Failure.identity }
+        guard record.recipe == configuration.recipe else { throw Failure.buildRecipeChanged }
         try Self.check(application.bundleURL, requirement: requirement, entitlements: nil)
         guard let identifier = application.bundleIdentifier else { throw Failure.identity }
         let helperApp = helper.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -154,7 +180,7 @@ package final class MacOSBuildProfile: @unchecked Sendable {
               lstat(root.appendingPathComponent("build.lock").path, &build) == 0, Self.privateOwned(build, type: S_IFREG), build.st_nlink == 1, record.buildLock == Identity(build) else { throw Failure.unsafeRoot }
         // Re-read the protected reservation so deletion or an interrupted setup
         // cannot be masked by this object's cached signing material.
-        guard let current = try Slot(id: id, suffix: "profile", group: accessGroup).readExisting(),
+        guard let current = try Slot(id: id, suffix: "profile", backend: backend).readExisting(),
               let stored = try? JSONDecoder().decode(Record.self, from: current), stored.id == id,
               stored.phase == record.phase, stored.host == record.host, stored.recipe == record.recipe,
               stored.key == record.key, stored.root == record.root, stored.directory == record.directory, stored.owner == record.owner,
@@ -170,7 +196,7 @@ package final class MacOSBuildProfile: @unchecked Sendable {
         guard _NSGetExecutablePath(&buffer, &size) == 0 else { throw Failure.signature }
         return URL(fileURLWithPath: String(cString: buffer)).resolvingSymlinksInPath().path
     }
-    private static func configuration(_ application: Bundle, identifier: String) throws -> (Configuration, String, String) {
+    private static func configuration(_ application: Bundle, identifier: String) throws -> (Configuration, String, KeychainBackend) {
         guard identifier == application.bundleIdentifier, !identifier.isEmpty,
               identifier.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45,46].contains($0) }),
               application.executableURL?.resolvingSymlinksInPath().path == (try executablePath()) else { throw Failure.identity }
@@ -179,9 +205,7 @@ package final class MacOSBuildProfile: @unchecked Sendable {
               SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
               SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
               let info = information as? [String: Any], let certificates = info[kSecCodeInfoCertificates as String] as? [SecCertificate], let leaf = certificates.first else { throw Failure.signature }
-        guard let team = info[kSecCodeInfoTeamIdentifier as String] as? String,
-              let entitlements = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any] else { throw Failure.signature }
-        let group = try protectedAccessGroup(entitlements: entitlements, identifier: identifier, team: team)
+        guard let team = info[kSecCodeInfoTeamIdentifier as String] as? String, !team.isEmpty else { throw Failure.signature }
         let fingerprint = Insecure.SHA1.hash(data: SecCertificateCopyData(leaf) as Data).map { String(format:"%02x", $0) }.joined()
         let requirement = "anchor apple generic and identifier \"\(identifier)\" and certificate leaf = H\"\(fingerprint)\""
         try check(application.bundleURL, requirement: requirement, entitlements: nil)
@@ -189,9 +213,27 @@ package final class MacOSBuildProfile: @unchecked Sendable {
         let data = try Data(contentsOf: path)
         guard data.count <= 16384 else { throw Failure.unavailable }
         let configuration = try JSONDecoder().decode(Configuration.self, from: data)
-        guard configuration.schema == 2, configuration.mode == "build-only",
-              configuration.storage == "data-protection-keychain-v2" else { throw Failure.unavailable }
-        try configuration.recipe.validate(); return (configuration, requirement, group)
+        guard configuration.schema == 2 else { throw Failure.unavailable }
+        let entitlements = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any] ?? [:]
+        let backend: KeychainBackend
+        switch configuration.storage {
+        case "data-protection-keychain-v2":
+            backend = .dataProtection(group: try protectedAccessGroup(entitlements: entitlements, identifier: identifier, team: team))
+        case "legacy-login-keychain-preview-v1":
+            guard configuration.mode == "restricted-no-view",
+                  entitlements["keychain-access-groups"] == nil,
+                  entitlements["com.apple.application-identifier"] == nil else { throw Failure.identity }
+            backend = .legacy(service: "org.keylane.extension-build.legacy-preview.v1." + team + "." + identifier)
+        default: throw Failure.unavailable
+        }
+        switch (configuration.mode, configuration.runHelperSHA256) {
+        case ("build-only", nil): break
+        case ("restricted-no-view", .some(let digest)):
+            guard digest.utf8.count == 64,
+                  digest.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { throw Failure.unavailable }
+        default: throw Failure.unavailable
+        }
+        try configuration.recipe.validate(); return (configuration, requirement, backend)
     }
     /// OS-enforced application identity, not an item attribute or a caller's
     /// chosen access group. Provisioning must authorize these signed rights;
@@ -207,7 +249,7 @@ package final class MacOSBuildProfile: @unchecked Sendable {
         }
         return expected
     }
-    private static func check(_ url: URL, requirement text: String, entitlements expected: [String: Bool]?) throws {
+    static func check(_ url: URL, requirement text: String, entitlements expected: [String: Bool]?) throws {
         var code: SecStaticCode?, requirement: SecRequirement?, information: CFDictionary?
         guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code,
               SecRequirementCreateWithString(text as CFString, [], &requirement) == errSecSuccess,
@@ -222,11 +264,24 @@ package final class MacOSBuildProfile: @unchecked Sendable {
     private struct Slot: RaycastStoreProtectedReceiptSlot {
         let id: UUID
         let suffix: String
-        let group: String
-        private var query: [String: Any] { [kSecClass as String:kSecClassGenericPassword, kSecAttrService as String:service,
-            kSecAttrAccount as String:id.uuidString + ":" + suffix, kSecAttrSynchronizable as String:false,
-            kSecUseDataProtectionKeychain as String:true, kSecAttrAccessGroup as String:group,
-            kSecUseAuthenticationUI as String:kSecUseAuthenticationUIFail] }
+        let backend: KeychainBackend
+        private var query: [String: Any] {
+            var attributes: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrAccount as String: id.uuidString + ":" + suffix,
+                kSecAttrSynchronizable as String: false,
+                kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail
+            ]
+            switch backend {
+            case .dataProtection(let group):
+                attributes[kSecAttrService as String] = "org.keylane.extension-build.protected.v2"
+                attributes[kSecUseDataProtectionKeychain as String] = true
+                attributes[kSecAttrAccessGroup as String] = group
+            case .legacy(let service):
+                attributes[kSecAttrService as String] = service
+            }
+            return attributes
+        }
         func readExisting() throws -> Data? {
             var q = query; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
             var result: CFTypeRef?; let status = SecItemCopyMatching(q as CFDictionary, &result)
@@ -239,7 +294,9 @@ package final class MacOSBuildProfile: @unchecked Sendable {
         }
         func create(_ bytes: Data) throws {
             var q = query; q[kSecValueData as String] = bytes
-            q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            if case .dataProtection = backend {
+                q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            }
             let status = SecItemAdd(q as CFDictionary, nil); guard status == errSecSuccess else { throw Failure.store(status) }
         }
     }
@@ -255,7 +312,7 @@ package final class MacOSBuildProfile: @unchecked Sendable {
             try lock.withLock {
                 guard !used, scope == self.scope, proof == Data(approval.proof.uuidString.utf8) else { return .approvalRejected }
                 used = true
-                try Slot(id: record.id, suffix: "head", group: slot.group).create(initialRecord)
+                try Slot(id: record.id, suffix: "head", backend: slot.backend).create(initialRecord)
                 record.phase = "enrolled"; try slot.replaceExisting(with: MacOSExtensionBuild.encode(record))
                 return .enrolled
             }

@@ -14,6 +14,7 @@ public final class StoreGuestRunTicket: Sendable {
     public let launchContext: StoreGuestLaunchContext
 
     private let liveLease: @Sendable () -> Bool
+    private let macOSLease: OSAllocatedUnfairLock<Bool>?
     private let claim = OSAllocatedUnfairLock(initialState: false)
     @MainActor private var feedbackEnded = false
     @MainActor private var feedbackCleanup: ((Bool) -> Void)?
@@ -34,10 +35,11 @@ public final class StoreGuestRunTicket: Sendable {
 
     init(id: UUID, profileID: UUID, installation: StoreRuntimeBridge.Installation, receipt: StoreRuntimeBridge.Receipt,
          commandID: String, capabilities: Set<String>, launchContext: StoreGuestLaunchContext,
-         liveLease: @escaping @Sendable () -> Bool) {
+         macOSLease: OSAllocatedUnfairLock<Bool>? = nil, liveLease: @escaping @Sendable () -> Bool) {
         self.id = id; self.profileID = profileID; self.installation = installation; self.receipt = receipt
         self.commandID = commandID; self.capabilities = capabilities; self.launchContext = launchContext
         self.liveLease = liveLease
+        self.macOSLease = macOSLease
     }
 
     /// Both before and just after claiming, check the live lease. Only the
@@ -54,6 +56,15 @@ public final class StoreGuestRunTicket: Sendable {
 
     public func allowsEffect(_ capability: String) -> Bool {
         claim.withLock { $0 } && capabilities.contains(capability) && liveLease()
+    }
+
+    @MainActor func commitMacOSEffects(_ required: Set<String>, _ body: () throws -> Void) throws {
+        guard claim.withLock({ $0 }), required.isSubset(of: capabilities),
+              let macOSLease else { throw MacOSExtensionRunAdmission.Failure.retired }
+        try macOSLease.withLock { current in
+            guard current, !Task.isCancelled else { throw MacOSExtensionRunAdmission.Failure.retired }
+            try body()
+        }
     }
 
     public func isCurrent() -> Bool { liveLease() }

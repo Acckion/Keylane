@@ -8,11 +8,16 @@ import tempfile
 from signing import signing_identity
 from app_intents import extract_metadata
 from versioning import load_version
-from extension_builder import package_builder, builder_enabled
+from extension_builder import package_builder, builder_enabled, package_runtime, provisioned_rights
 root = pathlib.Path(__file__).resolve().parent.parent
 version = load_version()
 distribution = os.environ.get('KEYLANE_DISTRIBUTION') == '1'
-identity = signing_identity(require_developer_id=distribution)
+runtime_profile = os.environ.get('KEYLANE_EXTENSION_RUNTIME_PROVISION')
+legacy_runtime = os.environ.get("KEYLANE_EXTENSION_RUNTIME_LEGACY_PREVIEW") == "1"
+if legacy_runtime and (runtime_profile or distribution):
+    raise ValueError("Legacy runtime preview requires a development signature and no provisioning profile")
+identity = signing_identity(require_developer_id=distribution, require_apple_development=legacy_runtime)
+runtime_rights = provisioned_rights(pathlib.Path(runtime_profile), 'org.keylane.launcher', identity) if runtime_profile else None
 binary = pathlib.Path(sys.argv[1])
 output = pathlib.Path(sys.argv[2]).resolve()
 output.parent.mkdir(parents=True, exist_ok=True)
@@ -56,6 +61,17 @@ with tempfile.TemporaryDirectory(prefix='keylane-', dir='/private/tmp') as direc
         package_builder(app,binary.parent/'keylane-extension-build',identity,archive=os.environ.get('KEYLANE_EXTENSION_COMPILER_ARCHIVE'),distribution=distribution)
     signing_options = ['--options', 'runtime', '--timestamp'] if distribution else ['--options','runtime','--timestamp=none']
     entitlements = root / 'Resources/Keylane.entitlements'
+    if runtime_rights is not None or legacy_runtime:
+        if architectures != 'arm64':
+            raise ValueError('Runtime packaging requires an ARM64 build')
+        package_runtime(app, binary.parent/'keylane-extension-run', identity,
+                        distribution=distribution, legacy_preview=legacy_runtime)
+    if runtime_rights is not None:
+        shutil.copyfile(runtime_profile,app/'Contents/embedded.provisionprofile')
+        rights = plistlib.loads(entitlements.read_bytes())
+        rights.update(runtime_rights)
+        entitlements = pathlib.Path(directory)/'host-entitlements.plist'
+        entitlements.write_bytes(plistlib.dumps(rights))
     subprocess.run(['codesign', '--force', '--sign', identity, *signing_options,
                     '--entitlements', str(entitlements), str(app)], check=True)
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)

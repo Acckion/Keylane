@@ -29,6 +29,9 @@ struct LauncherAction: Identifiable {
 
     struct ArgumentForm {
         let title: String
+        var singleValueLabel: String? = nil
+        var allowsEmptyValue = false
+        var argumentHint: String? = nil
         let submit: ([String]) -> Void
     }
 

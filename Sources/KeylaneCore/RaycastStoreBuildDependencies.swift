@@ -66,7 +66,7 @@ public struct RaycastStoreBuildDependencies: Sendable {
             guard Version.satisfies(node.version, requirement: edge.requestedVersion) else {
                 throw Failure.unsatisfiedVersion(edge.name)
             }
-            if node.name == "@raycast/api" {
+            if node.name == MacOSReviewedRaycastCommand.Entry.runtimeImport {
                 guard supportedRuntimeAPIVersions.contains(node.version),
                       node.registryTarball != nil, !node.blockers.contains(.linkedOrBundled),
                       apiVersion == nil || apiVersion == node.version else {

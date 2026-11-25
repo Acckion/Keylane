@@ -63,6 +63,12 @@ public struct RaycastStoreBuildProject: Sendable {
                 try append(archive.installationPath + "/" + path, body: body)
             }
         }
+        if target == .macOSArm64, let version = selection.runtimeAPIVersion {
+            _ = try MacOSReviewedRaycastCommand.buildEntries(for: source.source, apiVersion: version)
+            for file in MacOSReviewedRaycastAPI.files {
+                try append(file.path, body: file.body)
+            }
+        }
         self.source = source.source
         files = entries.sorted { $0.path.utf8.lexicographicallyPrecedes($1.path.utf8) }
         runtimeAPIVersion = selection.runtimeAPIVersion

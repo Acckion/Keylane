@@ -66,3 +66,22 @@ class ExtensionBuilderPolicyTests(unittest.TestCase):
             with self.assertRaises(ValueError):builder.require_timestamp(Path('not-executed'))
         with patch.object(builder.subprocess,'check_output',return_value='Timestamp=synthetic-secure-time\n'):
             builder.require_timestamp(Path('not-executed'))
+
+    def test_legacy_runtime_requires_explicit_preview_and_rejects_distribution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory)/'App.app'
+            runner = Path(directory)/'runner'
+            runner.write_bytes(b'synthetic')
+            for legacy, expected in [(False, builder.PROTECTED_STORAGE), (True, builder.LEGACY_PREVIEW_STORAGE)]:
+                app_path = app.with_name(f'{legacy}.app')
+                config_path = app_path/'Contents/Resources/ExtensionBuild.json'
+                config_path.parent.mkdir(parents=True)
+                config_path.write_text(json.dumps({'mode': 'build-only', 'storage': builder.PROTECTED_STORAGE}))
+                with patch.object(builder, 'team_for', return_value='TESTTEAM01'), patch.object(builder.subprocess, 'run'):
+                    builder.package_runtime(app_path, runner, 'synthetic-identity', legacy_preview=legacy)
+                config = json.loads(config_path.read_text())
+                self.assertEqual(config['storage'], expected)
+                self.assertEqual(config['mode'], 'restricted-no-view')
+                self.assertEqual(config['runHelperSHA256'], hashlib.sha256(runner.read_bytes()).hexdigest())
+            with self.assertRaisesRegex(ValueError, 'cannot be used for Developer ID'):
+                builder.package_runtime(app, runner, 'synthetic-identity', distribution=True, legacy_preview=True)
