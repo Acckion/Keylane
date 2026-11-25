@@ -5,6 +5,9 @@ setbuf(stdout, nil)
 let base = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYLANE_FILE_TEST_ROOT"]!)
 let scope = base.appendingPathComponent("scope")
 try FileManager.default.createDirectory(at: scope, withIntermediateDirectories: true)
+let privateScope = base.appendingPathComponent("ungranted")
+try FileManager.default.createDirectory(at: privateScope, withIntermediateDirectories: false)
+let ungranted = privateScope.appendingPathComponent("ungranted-fixture.txt")
 let original = scope.appendingPathComponent("stale-snapshot.txt")
 try Data("old snapshot".utf8).write(to: original)
 let suite = "org.keylane.live-index." + UUID().uuidString
@@ -50,7 +53,9 @@ print("PASS metadata enumeration holds no database transaction while blocked")
 let fresh = scope.appendingPathComponent("live-created.txt")
 try Data("freshbodyunique fixture".utf8).write(to: fresh)
 try Data("updatedbodyunique fixture".utf8).write(to: original)
-injectFixtureEvents([(fresh,kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile),
+try Data("ungrantedbodyunique".utf8).write(to: ungranted)
+injectFixtureEvents([(ungranted,kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile),
+                     (fresh,kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile),
                      (original,kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)])
 controller.search("live-created")
 wait("Created filename visible during baseline") { controller.indexing && !controller.isSearching && rows.map(\.id) == [fresh.path] }
@@ -58,7 +63,12 @@ controller.search("freshbodyunique")
 wait("Created body available during baseline") { controller.indexing && !controller.isSearching && rows.map(\.id) == [fresh.path] }
 controller.search("updatedbodyunique")
 wait("Modified file body available during baseline") { controller.indexing && !controller.isSearching && rows.map(\.id) == [original.path] }
-print("PASS \(quiet ? "injected production event pipeline" : "real FSEvents") publishes new/modified filenames and body while baseline metadata is blocked")
+var auditOptions = options
+auditOptions.roots.append(privateScope.path)
+let unauthorizedName = try db.search("ungranted-fixture", options: auditOptions)
+let unauthorizedBody = try db.search("ungrantedbodyunique", options: auditOptions)
+precondition(unauthorizedName.isEmpty && unauthorizedBody.isEmpty, "A batched event must not certify an ungranted path")
+print("PASS \(quiet ? "injected production event pipeline" : "real FSEvents") publishes authorized live changes while baseline metadata is blocked")
 let nested = scope.appendingPathComponent("live-folder/nested")
 try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
 let nestedFile = nested.appendingPathComponent("nested-file.txt")

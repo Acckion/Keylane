@@ -135,6 +135,8 @@ final class FileSearchController: ObservableObject {
     private var replayingEvents = false
     private var pendingEvents: [IndexEventBatch] = []
     private var pendingEventCount = 0
+    private var eventInbox = FileScanCancellation()
+    private var localBacklogPending = false
     private var processingEvents = false
     private var wrapUpperBound: FSEventStreamEventId?
     private static let maxQueuedEvents = 8192
@@ -146,7 +148,6 @@ final class FileSearchController: ObservableObject {
     private var restored: Set<String> = [] { didSet { if oldValue != restored { aiIndexRevision = UUID(); cancelContent() } } }
     private var dirtyPaths = Set<String>()
     private var dirtyRecursivePaths = Set<String>()
-    private var needsFullScan = false
     static var defaults: FileSearchOptions {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return .recommendedScopes(home: home)
@@ -1159,7 +1160,6 @@ final class FileSearchController: ObservableObject {
 
     func startIndex(force: Bool = false, reason: String = "request") {
         dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
-        needsFullScan = false
         scanIndex(force: force, reason: reason)
     }
 
@@ -1575,6 +1575,14 @@ final class FileSearchController: ObservableObject {
             } }
         }
     }
+    private struct LiveMetadataMutation {
+        let path: String
+        let root: String
+        let record: FileIndexRecord?
+        let proof: FileContentReader.Proof?
+        let wakeFromEvent: Bool
+    }
+
     // A slow baseline must not hold the writer or prevent ordinary file events
     // from becoming searchable. Reconcile with its epoch before baseline cleanup.
     private func patchLiveMetadata(_ paths: Set<String>, recursive: Set<String>) {
@@ -1583,6 +1591,11 @@ final class FileSearchController: ObservableObject {
         session.enqueue(paths, recursive: recursive)
         let config = authorizedOptions, restored = restored, contentRoots = contentAuthorizedRoots
         let exclusions = config.excludedPaths + automaticExclusions.map(\.path)
+        #if KEYLANE_FILE_EVENT_TESTING
+        let clock = testLiveBatchClock ?? { ProcessInfo.processInfo.systemUptime }
+        #else
+        let clock = { ProcessInfo.processInfo.systemUptime }
+        #endif
         patchWork.submit(cancelActive: false) { [weak self] _ in
             guard let self, !session.token.cancelled else { return }
             let request = session.takePaths()
@@ -1594,7 +1607,56 @@ final class FileSearchController: ObservableObject {
             let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey,
                                            .volumeURLKey, .volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsInternalKey]
             var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
+            // Keep the first mutation immediately visible to the reader.
+            // Later rows share bounded WAL commits. All filesystem work and
+            // proof preparation remains outside the serial writer transaction.
+            var batch: [LiveMetadataMutation] = []
+            var sentFirst = false
+            var batchStarted = clock()
+            func flush() {
+                guard !batch.isEmpty, !session.token.cancelled else { return }
+                let staged = batch
+                batch.removeAll(keepingCapacity: true)
+                batchStarted = clock()
+                do {
+                    try self.writer.sync {
+                        guard !session.token.cancelled, let db = self.writeDB else { throw CancellationError() }
+                        var remaining = max(0, Self.maxQueuedEvents - session.updated.count - session.removed.count)
+                        let accepted = staged.filter { change in
+                            if session.updated.contains(change.path) || session.removed.contains(change.path) { return true }
+                            guard remaining > 0 else { return false }
+                            remaining -= 1
+                            return true
+                        }
+                        guard !accepted.isEmpty else { return }
+                        let deletionEpoch = UUID().uuidString
+                        try db.transaction {
+                            for change in accepted {
+                                guard !session.token.cancelled else { throw CancellationError() }
+                                if let record = change.record {
+                                    try db.stagePreparedMetadata(record, root: change.root, epoch: session.epoch,
+                                                                 contentSearch: config.contentSearch, wakeFromEvent: change.wakeFromEvent,
+                                                                 proof: change.proof, isCancelled: { session.token.cancelled })
+                                } else {
+                                    for owner in config.roots { try db.removeUnseen(root: owner, subtree: change.path, epoch: deletionEpoch) }
+                                }
+                            }
+                            guard !session.token.cancelled else { throw CancellationError() }
+                        }
+                        // Only committed rows may suppress the baseline's stale
+                        // enumeration. On rollback keep every dirty target.
+                        for change in accepted {
+                            if change.record != nil {
+                                session.updated.insert(change.path); session.removed.remove(change.path)
+                            } else {
+                                session.updated.remove(change.path); session.removed.insert(change.path)
+                            }
+                        }
+                    }
+                } catch { /* Ordinary reconciliation still owns the dirty targets. */ }
+            }
             while position < pending.count {
+                if clock() - batchStarted >= 0.020 { flush() }
                 let path = pending[position]; position += 1
                 guard !session.token.cancelled else { return }
                 guard !config.roots.contains(path),
@@ -1638,25 +1700,13 @@ final class FileSearchController: ObservableObject {
                        }) {
                         proof = certification.certify(path: record.path, owner: root, modified: record.modified, cancelled: { session.token.cancelled })
                     } else { proof = nil }
-                    try self.writer.sync {
-                        guard !session.token.cancelled, let db = self.writeDB else { throw CancellationError() }
-                        // Full reconciliation remains queued if the live journal fills.
-                        guard session.updated.contains(path) || session.removed.contains(path)
-                            || session.updated.count + session.removed.count < 8192 else { return }
-                        try db.transaction {
-                            if let record {
-                                try db.stagePreparedMetadata(record, root: root, epoch: session.epoch,
-                                                             contentSearch: config.contentSearch, wakeFromEvent: request.paths.contains(path),
-                                                             proof: proof, isCancelled: { session.token.cancelled })
-                            } else {
-                                for owner in config.roots { try db.removeUnseen(root: owner, subtree: path, epoch: UUID().uuidString) }
-                            }
-                            guard !session.token.cancelled else { throw CancellationError() }
-                        }
-                        if record != nil { session.updated.insert(path); session.removed.remove(path) }
-                        else { session.updated.remove(path); session.removed.insert(path) }
+                    batch.append(.init(path: path, root: root, record: record, proof: proof,
+                                       wakeFromEvent: request.paths.contains(path)))
+                    if !sentFirst || batch.count == 32 {
+                        flush()
+                        sentFirst = true
                     }
-                } catch { continue } // dirty paths still get the full reconciliation/error path
+                } catch { continue }
                 if recursive.contains(path), let record, record.directory, !record.symlink, url.pathExtension.lowercased() != "app" {
                     var flags: FileManager.DirectoryEnumerationOptions = [.skipsSubdirectoryDescendants]
                     if !config.includeHidden { flags.insert(.skipsHiddenFiles) }
@@ -1667,6 +1717,7 @@ final class FileSearchController: ObservableObject {
                     }
                 }
             }
+            flush()
             DispatchQueue.main.async {
                 guard self.scanSession === session, !session.token.cancelled else { return }
                 if self.hasQuery, !self.queryIsBlank, FileSearchLocation.typedURL(self.currentQuery) == nil { self.refreshQuery() }
@@ -1766,6 +1817,9 @@ final class FileSearchController: ObservableObject {
         pendingEvents.removeAll()
         pendingEventCount = 0
         processingEvents = false
+        eventInbox.cancel()
+        eventInbox = FileScanCancellation()
+        localBacklogPending = false
         replayingEvents = false
         pendingRefresh?.cancel()
         pendingRefresh = nil
@@ -1773,7 +1827,6 @@ final class FileSearchController: ObservableObject {
         urgentRefresh = false
         nextIdleCheckpointUptime = 0
         dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
-        needsFullScan = false
         if let old = watch {
             watch = nil
             let close = {
@@ -1802,6 +1855,59 @@ final class FileSearchController: ObservableObject {
             wrapUpperBound = nil
         }
         return id
+    }
+
+    /// Capacity is an application-side failure, not evidence the OS stream
+    /// lost continuity. The exact affected paths are no longer provable, so
+    /// invalidate the cursor and fully reconcile the existing approved roots
+    /// while keeping the healthy stream subscribed.
+    private func reconcileAfterLocalBacklog(_ lifetime: FileScanCancellation) {
+        guard watchLifetime === lifetime, !lifetime.cancelled else { return }
+        eventInbox.cancel()
+        eventInbox = FileScanCancellation()
+        pendingEvents.removeAll()
+        pendingEventCount = 0
+        processingEvents = false
+        // This baseline has not started yet. It covers any additionally
+        // discarded events that occurred before its filesystem snapshot.
+        guard !localBacklogPending else { return }
+        localBacklogPending = true
+        acceptedEventID = 0
+        liveBaselineReady = false
+        checkpointReady = false
+        checkpointConfiguration = nil
+        checkpointLegacyConfiguration = nil
+        nextIdleCheckpointUptime = 0
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
+        pendingRefreshDeferred = false
+        urgentRefresh = false
+        dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
+        cancellation.cancel()
+        scanWork.cancel(); patchWork.cancel(); scanSession = nil
+        let recovery = FileScanCancellation()
+        cancellation = recovery
+        indexing = false
+        restoringIndex = true
+        writer.async { [weak self] in
+            guard let self, !recovery.cancelled, !lifetime.cancelled else { return }
+            do { try self.writeDB?.invalidateRecoveryPoint() }
+            catch {
+                DispatchQueue.main.async {
+                    guard self.cancellation === recovery, !recovery.cancelled else { return }
+                    self.reportIndexFailure(error)
+                }
+            }
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.watchLifetime === lifetime, !lifetime.cancelled else { return }
+            self.localBacklogPending = false
+            if self.cancellation === recovery, !recovery.cancelled {
+                self.restoringIndex = false
+                self.startIndex(reason: "local-event-backlog")
+            }
+            self.processPendingEvents()
+        }
     }
 
     private func restartAfterDiscontinuity(_ lifetime: FileScanCancellation, wrapped: Bool) {
@@ -1913,8 +2019,13 @@ final class FileSearchController: ObservableObject {
             }
             return false
         }
-        if discontinuity || flags.count > Self.maxQueuedEvents - pendingEventCount {
+        if discontinuity {
             restartAfterDiscontinuity(lifetime, wrapped: wrapped)
+            return
+        }
+        if flags.count > Self.maxQueuedEvents - pendingEventCount {
+            if flags.contains(where: { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 }) { replayingEvents = false }
+            reconcileAfterLocalBacklog(lifetime)
             return
         }
         // The numeric position is meaningful only in its own active generation.
@@ -1951,6 +2062,10 @@ final class FileSearchController: ObservableObject {
         }
     }
 
+    var testWriterTransactions: UInt64 { writer.sync { writeDB?.writeDiagnostics.transactions ?? 0 } }
+    var testWatchIdentity: ObjectIdentifier? { watchLifetime.map(ObjectIdentifier.init) }
+    var testLiveBatchClock: (() -> Double)?
+    var testBeforeClassifyingEvents: (() -> Void)?
     var testPendingRepairPaths: Set<String> { pendingRepairPaths }
     var testBeforeLocalQuery: ((String) -> Void)?
     var testBeforeScanDirectory: ((String) -> Void)?
@@ -1960,7 +2075,7 @@ final class FileSearchController: ObservableObject {
     func testRefreshQuery() { refreshQuery() }
     var testHasNativeFileWatcher: Bool { watch != nil && watchLifetime != nil }
     var testEventPipelineIdle: Bool {
-        !indexing && !processingEvents && pendingEvents.isEmpty && pendingRefresh == nil && dirtyPaths.isEmpty && !needsFullScan
+        !indexing && !processingEvents && !localBacklogPending && pendingEvents.isEmpty && pendingRefresh == nil && dirtyPaths.isEmpty
     }
     var testTraceRawIndexPath: ((String, FSEventStreamEventFlags, Bool) -> Void)?
     var testTraceEligibleIndexPath: ((String) -> Void)?
@@ -1972,8 +2087,9 @@ final class FileSearchController: ObservableObject {
     private var churn: [String: (Date, Int)] = [:]
 
     private func processPendingEvents() {
-        guard let lifetime = watchLifetime, !processingEvents else { return }
+        guard let lifetime = watchLifetime, !processingEvents, !localBacklogPending else { return }
         guard !pendingEvents.isEmpty else { return }
+        let inbox = eventInbox
         let batches = pendingEvents
         let count = pendingEventCount
         let config = eventConfiguration
@@ -1981,10 +2097,17 @@ final class FileSearchController: ObservableObject {
         pendingEvents = []
         pendingEventCount = 0
         processingEvents = true
+        #if KEYLANE_FILE_EVENT_TESTING
+        let beforeClassifying = testBeforeClassifyingEvents
+        #endif
         eventQueue.async { [weak self] in
-            guard let result = Self.classifyEvents(batches, configuration: config, churn: churn, lifetime: lifetime) else { return }
+            #if KEYLANE_FILE_EVENT_TESTING
+            beforeClassifying?()
+            #endif
+            guard let result = Self.classifyEvents(batches, configuration: config, churn: churn, lifetime: inbox) else { return }
             DispatchQueue.main.async {
-                guard let self, self.watchLifetime === lifetime else { return }
+                guard let self, self.watchLifetime === lifetime, self.eventInbox === inbox,
+                      !lifetime.cancelled, !inbox.cancelled else { return }
                 self.processingEvents = false
                 if config == self.eventConfiguration {
                     if self.durableHistoryDomain != nil {
@@ -2019,16 +2142,16 @@ final class FileSearchController: ObservableObject {
                     for root in self.authorizedRoots where !recursive.contains(root) {
                         paths.remove(root) // Root metadata itself is not a searchable row.
                     }
-                    if !self.needsFullScan {
-                        self.dirtyPaths.formUnion(paths)
-                        self.dirtyRecursivePaths.formUnion(recursive)
-                        self.urgentRefresh = self.urgentRefresh || !result.urgentPaths.isDisjoint(with: paths)
-                        #if KEYLANE_FILE_EVENT_TESTING
-                        if let trace = self.testTraceEligibleIndexPath { paths.forEach(trace) }
-                        #endif
-                        self.needsFullScan = self.dirtyPaths.count > Self.maxQueuedEvents
+                    self.dirtyPaths.formUnion(paths)
+                    self.dirtyRecursivePaths.formUnion(recursive)
+                    self.urgentRefresh = self.urgentRefresh || !result.urgentPaths.isDisjoint(with: paths)
+                    #if KEYLANE_FILE_EVENT_TESTING
+                    if let trace = self.testTraceEligibleIndexPath { paths.forEach(trace) }
+                    #endif
+                    if self.dirtyPaths.count > Self.maxQueuedEvents {
+                        self.reconcileAfterLocalBacklog(lifetime)
+                        return
                     }
-                    if self.needsFullScan { self.checkpointReady = false; self.dirtyPaths.removeAll(); self.dirtyRecursivePaths.removeAll() }
                     if batches.contains(where: { $0.flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 } }), !self.indexing { self.indexStatus = "索引已恢复" }
                     self.patchLiveMetadata(paths, recursive: recursive)
                     self.scheduleRefresh()
@@ -2039,7 +2162,7 @@ final class FileSearchController: ObservableObject {
                         self.pendingEvents = batches + self.pendingEvents
                         self.pendingEventCount += count
                     } else {
-                        self.restartAfterDiscontinuity(lifetime, wrapped: false)
+                        self.reconcileAfterLocalBacklog(lifetime)
                         return
                     }
                 }
@@ -2053,8 +2176,8 @@ final class FileSearchController: ObservableObject {
     // complete and no accepted work is outstanding. Queue ordering keeps this
     // write before any later scan invalidation.
     private func saveIdleRecoveryPoint() {
-        guard checkpointReady, !indexing, !processingEvents, pendingEvents.isEmpty,
-              !needsFullScan, dirtyPaths.isEmpty,
+        guard checkpointReady, !indexing, !processingEvents, !localBacklogPending, pendingEvents.isEmpty,
+              dirtyPaths.isEmpty,
               let lifetime = watchLifetime, let configuration = checkpointConfiguration, let historyDomain = durableHistoryDomain else { return }
         #if !KEYLANE_FILE_EVENT_TESTING
         // Filtered traffic also advances the cursor, but an idle cursor
@@ -2193,14 +2316,14 @@ final class FileSearchController: ObservableObject {
     }
 
     private func scheduleRefresh() {
-        guard !indexPaused, !indexing, needsFullScan || !dirtyPaths.isEmpty else { return }
+        guard !indexPaused, !indexing, !dirtyPaths.isEmpty else { return }
         let scopes = authorizedRoots
         #if KEYLANE_FILE_EVENT_TESTING
         let library = testRoutineLibraryPath ?? userLibraryPath
         #else
         let library = userLibraryPath
         #endif
-        let deferBatch = liveBaselineReady && !needsFullScan && !urgentRefresh && dirtyPaths.allSatisfy {
+        let deferBatch = liveBaselineReady && !urgentRefresh && dirtyPaths.allSatisfy {
             FileIndexExclusionPolicy.isRoutineLibraryChange($0, scopes: scopes, library: library)
         }
         if let pendingRefresh {
@@ -2214,7 +2337,7 @@ final class FileSearchController: ObservableObject {
             self.pendingRefresh = nil
             self.pendingRefreshDeferred = false
             guard !self.indexing else { return }
-            if self.needsFullScan || !self.liveBaselineReady { self.startIndex(reason: self.needsFullScan ? "event-recovery" : "incomplete-checkpoint"); return }
+            if !self.liveBaselineReady { self.startIndex(reason: "incomplete-checkpoint"); return }
             let paths = self.dirtyPaths
             let recursive = self.dirtyRecursivePaths
             self.dirtyPaths.removeAll(); self.dirtyRecursivePaths.removeAll()

@@ -101,6 +101,8 @@ jobs:
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-content-retry-main.swift bash scripts/verify-files.sh
       - name: File metadata live-update integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-index-live-main.swift bash scripts/verify-files.sh
+      - name: File live burst and backlog integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-live-burst-main.swift bash scripts/verify-files.sh
       - name: File event scope integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-event-scope-main.swift bash scripts/verify-files.sh
       - name: Resource cache budget integration
