@@ -897,9 +897,9 @@ struct Launcher: View {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 if isFolder {
-                    Text((url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath)
+                    Text(FileDisplayPath.parent(of: row.id))
                         .font(.system(size: 10)).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.head)
+                        .lineLimit(1).truncationMode(.middle)
                 }
             }
         }.help(url.path)
@@ -932,8 +932,9 @@ struct Launcher: View {
                     Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 }
                 if row.detail == "File" {
-                    Text(URL(fileURLWithPath: row.id).deletingLastPathComponent().path).font(.system(size: 11))
+                    Text(FileDisplayPath.parent(of: row.id)).font(.system(size: 11))
                         .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .help(row.id)
                 }
                 if row.detail == "AI" { Text("AI").font(.system(size: 12)).foregroundStyle(.secondary) }
                 if let alias = model.aliases[row.id], !alias.isEmpty {
