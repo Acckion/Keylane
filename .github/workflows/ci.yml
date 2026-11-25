@@ -81,6 +81,8 @@ jobs:
         run: python3 scripts/check-installer-scope.py
       - name: Core tests
         run: swift test --scratch-path .build-current --disable-sandbox
+      - name: AI shared conversation and vision integration
+        run: bash scripts/verify-file-ai.sh
       - name: AI native file tools and approval integration
         run: bash scripts/verify-ai-file-tools.sh
       - name: File search controller integration

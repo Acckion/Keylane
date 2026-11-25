@@ -741,8 +741,13 @@ wait("Chat metadata is persisted independently of generated titles") {
     conversation.chats.first?.pinned == true && conversation.chats.first?.archived == true &&
         conversation.chats.first?.title == "重命名后的对话"
 }
+let instructionsBeforeSave = conversation.chats.first { $0.id == savedID }!.updated
 conversation.chatInstructions = "简洁回答，保留技术术语。"
-RunLoop.current.run(until: Date().addingTimeInterval(0.45))
+// Wait for the actual repository commit callback, not an assumed timer schedule.
+// Under load, the MainActor debounce task can start after the old 450 ms fence.
+wait("Additional instructions write committed") {
+    (conversation.chats.first { $0.id == savedID }?.updated ?? .distantPast) > instructionsBeforeSave
+}
 var instructedRecord: AIChatRecord?
 history.perform({ try $0.load(savedID) }) { instructedRecord = try! $0.get() }
 wait("Additional instructions survive history writes") {
@@ -2502,3 +2507,88 @@ activeNavigationSession.leaveLauncher()
 precondition(!activeNavigationSession.running && activeNavigationSession.turns.isEmpty && activeNavigationSession.composer.text.isEmpty)
 FixtureProtocol.mode = "ok"
 print("PASS PR212 active navigation: delayed lifecycle retains same response and unsent draft, zero resubmission; later normal leave cancels and clears")
+
+// Shared resource contracts: fixed copied content and an explicit, draft-owned refresh.
+var resourceContractFinished = false
+Task { @MainActor in
+    do {
+        var body = "version one", sourceID = "fixture-record", allowed = true, reads = 0
+        var pause = false
+        var pending: CheckedContinuation<Void, Never>?
+        let source = AIActionSource(moduleID: .init(rawValue: "fixture.resources"), load: {
+            reads += 1
+            if pause { await withCheckedContinuation { pending = $0 } }
+            guard allowed else { throw AIActionError.unavailable }
+            return .init(sourceID: sourceID, title: "Synthetic source", text: body)
+        }, isCurrent: { value in allowed && value.fingerprint == AIActionContext.digest(body) })
+        let reader = AIResourceReader(source: source)
+        let composer = AIConversationComposer()
+        composer.text = "existing draft"; composer.selection = NSRange(location: 4, length: 0)
+        let first = try await reader.read()
+        precondition(composer.appendResourceAttachment(first, reader: reader, for: composer.draftID))
+        let firstSnapshot = first.resourceSnapshot!
+        body = "version two"
+        precondition(reads == 1 && composer.attachments[0].text == "version one")
+        precondition(AIConversationAttachment.requestText(question: composer.text, attachments: composer.attachments).contains("version one"))
+        func settled() async throws {
+            let deadline = Date().addingTimeInterval(3)
+            while composer.loadingFiles, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(!composer.loadingFiles)
+        }
+        composer.rereadAttachment(first.id); try await settled()
+        let refreshed = composer.attachments[0]
+        precondition(refreshed.id == first.id && refreshed.text == "version two")
+        precondition(refreshed.resourceSnapshot?.reference == firstSnapshot.reference && refreshed.resourceSnapshot?.id != firstSnapshot.id)
+        precondition(composer.text == "existing draft" && composer.selection == NSRange(location: 4, length: 0))
+        allowed = false
+        composer.rereadAttachment(first.id); try await settled()
+        precondition(composer.attachments == [refreshed] && !composer.fileError.isEmpty)
+        allowed = true; sourceID = "different-record"
+        composer.rereadAttachment(first.id); try await settled()
+        precondition(composer.attachments == [refreshed], "A resolver cannot switch resource identity during refresh")
+        sourceID = "fixture-record"; body = String(repeating: "x", count: 33_000)
+        composer.rereadAttachment(first.id); try await settled()
+        precondition(composer.attachments == [refreshed], "Oversized refresh preserves the accepted snapshot")
+        body = "version three"; pause = true
+        composer.rereadAttachment(first.id)
+        while pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+        composer.removeAttachment(first.id)
+        pending?.resume(); pending = nil
+        try await settled()
+        precondition(composer.attachments.isEmpty, "Removing a resource during refresh must not reinsert it")
+        pause = false
+        let current = try await reader.read()
+        precondition(composer.appendResourceAttachment(current, reader: reader, for: composer.draftID))
+        let saved = composer.snapshot
+        composer.restore(saved)
+        precondition(composer.canReread(current), "An in-memory draft preserves its guarded resolver")
+        let decoded = try JSONDecoder().decode(AIConversationAttachment.self, from: JSONEncoder().encode(current))
+        let restored = AIConversationComposer(); restored.attachments = [decoded]
+        precondition(restored.attachments[0].resourceSnapshot == current.resourceSnapshot && !restored.canReread(decoded), "Persisted metadata cannot recreate read authority")
+        let oldJSON = "{\"id\":\"\(UUID().uuidString)\",\"title\":\"legacy\",\"text\":\"snapshot\",\"symbol\":\"doc\"}"
+        let legacyResource = try JSONDecoder().decode(AIConversationAttachment.self, from: Data(oldJSON.utf8))
+        precondition(legacyResource.resourceSnapshot == nil)
+        pause = true
+        composer.rereadAttachment(current.id)
+        while pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+        composer.clear(); composer.text = "new draft"
+        pending?.resume(); pending = nil
+        try await Task.sleep(for: .milliseconds(50))
+        precondition(composer.attachments.isEmpty && composer.text == "new draft" && !composer.loadingFiles)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("KeylaneResourceFixture-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("synthetic.txt")
+        try Data("file before".utf8).write(to: file)
+        let fileReader = AIFileAttachment.resourceReader(file)
+        let fileBefore = try await fileReader.read()
+        try Data("file after".utf8).write(to: file, options: .atomic)
+        let fileAfter = try await fileReader.read(replacing: fileBefore.resourceSnapshot)
+        precondition(fileBefore.text == "file before" && fileAfter.text == "file after")
+        precondition(fileBefore.resourceSnapshot?.reference == fileAfter.resourceSnapshot?.reference)
+        precondition(fileBefore.resourceSnapshot?.revision != fileAfter.resourceSnapshot?.revision)
+        print("PASS shared resources: fixed snapshots, explicit refresh, stable identity, draft/selection preserved, denied/oversized/wrong-source refresh retains old snapshot; removed/reset drafts reject late reads; history has metadata only; native files refresh explicitly")
+    } catch { fatalError("Resource contract fixture failed: \(error)") }
+    resourceContractFinished = true
+}
+wait("Resource snapshots and explicit refresh") { resourceContractFinished }
