@@ -6,14 +6,187 @@ package enum MacOSReviewedRaycastAPI {
     package static let files: [RaycastStoreBuildProject.File] = [
         .init(path: "node_modules/@raycast/api/package.json",
               body: Data(#"{"name":"@raycast/api","type":"module","main":"index.js"}"#.utf8)),
-        .init(path: "node_modules/@raycast/api/index.js", body: Data(source.utf8))
+        .init(path: "node_modules/@raycast/api/index.js", body: Data(([MacOSReviewedRaycastValues.source, source].joined(separator: "\n")).utf8)),
+        .init(path: "node_modules/@raycast/utils/package.json",
+              body: Data(#"{"name":"@raycast/utils","type":"module","main":"index.js"}"#.utf8)),
+        .init(path: "node_modules/@raycast/utils/index.js", body: Data(utilsSource.utf8))
     ]
+
+    private static let utilsSource = #"""
+    import { Color, environment, showToast, ToastStyle } from "@raycast/api";
+
+    export const FormValidation = Object.freeze({ Required: "required" });
+
+    function base64URL(bytes) {
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      let encoded = "";
+      for (let index = 0; index < bytes.length; index += 3) {
+        const first = bytes[index], second = bytes[index + 1] ?? 0, third = bytes[index + 2] ?? 0;
+        encoded += alphabet[first >> 2] + alphabet[((first & 3) << 4) | (second >> 4)];
+        if (index + 1 < bytes.length) encoded += alphabet[((second & 15) << 2) | (third >> 6)];
+        if (index + 2 < bytes.length) encoded += alphabet[third & 63];
+      }
+      return encoded;
+    }
+
+    const palette = ["#965575", "#9a473d", "#9a682c", "#537a40", "#217c73", "#416da2", "#655cab", "#8353a1"];
+    const standardColors = new Map([
+      ["raycast-blue", "#4387f5"], ["raycast-green", "#43ad65"], ["raycast-magenta", "#d84fc5"],
+      ["raycast-orange", "#f28a32"], ["raycast-purple", "#9661dc"], ["raycast-red", "#ff6363"],
+      ["raycast-yellow", "#f4bc36"], ["black", "#000000"], ["white", "#ffffff"],
+    ]);
+
+    const imagePrefix = "data:image/svg+xml,";
+    const graphemes = typeof Intl.Segmenter === "function"
+      ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : undefined;
+
+    function utilityAsset(descriptor) {
+      const payload = base64URL(new TextEncoder().encode(JSON.stringify(descriptor)));
+      const body = descriptor.kind === "avatar" ? avatarMarkup(descriptor) : progressMarkup(descriptor);
+      return imagePrefix + encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100" data-keylane-icon="${payload}">${body}</svg>`,
+      );
+    }
+
+    function resolveColor(value, fallback) {
+      const dark = environment.appearance !== "light";
+      if (value === Color.Brown) return (dark ? Color.Brown.dark : Color.Brown.light).toLowerCase();
+      if (typeof value !== "string") return fallback;
+      const color = value.trim().toLowerCase();
+      if (color === Color.PrimaryText) return dark ? "#ffffff" : "#000000";
+      if (color === Color.SecondaryText) return dark ? "#a8a8ae" : "#606069";
+      if (standardColors.has(color)) return standardColors.get(color);
+      const digits = color.match(/^#?([a-f0-9]{3,4}|[a-f0-9]{6}|[a-f0-9]{8})$/)?.[1];
+      if (!digits) return fallback;
+      return "#" + (digits.length <= 4 ? [...digits].map((digit) => digit.repeat(2)).join("") : digits);
+    }
+
+    function mixedColor(color, target, amount) {
+      const channels = [1, 3, 5].map((index) => parseInt(color.slice(index, index + 2), 16));
+      const rgb = channels.map((channel) => Math.round(channel + (target - channel) * amount).toString(16).padStart(2, "0")).join("");
+      return "#" + rgb + color.slice(7);
+    }
+
+    function firstCharacter(word) {
+      const first = graphemes?.segment(word)[Symbol.iterator]().next().value?.segment ?? ([...word][0] ?? "");
+      const initial = first.toUpperCase().replace(/\p{Cc}/gu, "");
+      // Keep the complete initial within the native descriptor's two-initial budget.
+      return new TextEncoder().encode(initial).length <= 16 ? initial : ([...initial][0] ?? "");
+    }
+
+    function initialsFor(name) {
+      const words = name.toWellFormed().trim().split(/\s+/).filter(Boolean);
+      if (words.length === 0) return "";
+      const first = firstCharacter(words[0]);
+      const last = words.length === 1 ? "" : firstCharacter(words[words.length - 1]);
+      return first + last;
+    }
+
+    function avatarColor(initials) {
+      let hash = 0;
+      for (const char of initials) hash = (Math.imul(hash, 31) + char.codePointAt(0)) >>> 0;
+      return palette[hash % palette.length];
+    }
+
+    function escapeText(text) {
+      return text.replace(/[&<>]/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[character]);
+    }
+
+    export function getAvatarIcon(name, options = {}) {
+      const initials = initialsFor(name);
+      const background = resolveColor(options?.background, avatarColor(initials));
+      const light = options?.gradient === false ? background : mixedColor(background, 255, 0.2);
+      const dark = options?.gradient === false ? background : mixedColor(background, 0, 0.18);
+      return utilityAsset({ kind: "avatar", initials, startColor: light, endColor: dark });
+    }
+
+    function avatarMarkup({ initials, startColor: light, endColor: dark }) {
+      const fill = light === dark ? light : "url(#avatar)";
+      const gradient = light === dark ? "" : `<defs><linearGradient id="avatar" x2="0%" y2="100%"><stop stop-color="${light}"/><stop offset="100%" stop-color="${dark}"/></linearGradient></defs>`;
+      const text = initials ? `<text x="50" y="50" dominant-baseline="central" text-anchor="middle" font-size="42" font-family="sans-serif" fill="#ffffff">${escapeText(initials)}</text>` : "";
+      return `${gradient}<circle cx="50" cy="50" r="50" fill="${fill}"/>${text}`;
+    }
+
+    function clampedFraction(value, fallback) {
+      return typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : fallback;
+    }
+
+    export function getProgressIcon(progress, color, options = {}) {
+      const fraction = clampedFraction(progress, 0);
+      const foreground = resolveColor(color, "#ff6363");
+      const background = resolveColor(options?.background, environment.appearance === "light" ? "#000000" : "#ffffff");
+      const opacity = clampedFraction(options?.backgroundOpacity, 0.1);
+      return utilityAsset({ kind: "progress", fraction, foreground, background, opacity });
+    }
+
+    function progressMarkup({ fraction, foreground, background, opacity }) {
+      const ring = `<circle cx="50" cy="50" r="40" fill="none" stroke-width="10"`;
+      const track = fraction === 1 ? "" : `${ring} stroke="${background}" opacity="${opacity}"/>`;
+      const completion = fraction === 0 ? "" : fraction === 1 ? `${ring} stroke="${foreground}"/>`
+        : `${ring} stroke="${foreground}" pathLength="1" stroke-dasharray="${fraction} 1" transform="rotate(-90 50 50)"/>`;
+      return track + completion;
+    }
+
+    export function showFailureToast(error, options) {
+      const title = options?.title ?? "Something went wrong";
+      let message = options?.message;
+      if (message === undefined && typeof title === "string") {
+        const encoder = new TextEncoder();
+        let remainingBytes = 2048 - encoder.encode(title).length;
+        message = "";
+        for (const character of error instanceof Error ? error.message : String(error)) {
+          remainingBytes -= encoder.encode(character).length;
+          if (remainingBytes < 0) break;
+          message += character;
+        }
+      }
+      return showToast({ title, message, style: ToastStyle.Failure, primaryAction: options?.primaryAction });
+    }
+
+    export const DeeplinkType = Object.freeze({ ScriptCommand: "script-command", Extension: "extension" });
+
+    function raycastURL(path) {
+      return `raycast://${path}`;
+    }
+
+    export function createScriptCommandDeeplink({ command, arguments: args }) {
+      const url = raycastURL(`script-commands/${command}`);
+      if (!args) return url;
+
+      // Script commands take repeated arguments in the same order as the inputs.
+      return `${url}?${args.map((arg) => `arguments=${encodeURIComponent(arg)}`).join("&")}`;
+    }
+
+    export function createExtensionDeeplink(options) {
+      const external = "ownerOrAuthorName" in options && "extensionName" in options;
+      const identity = external ? options : environment;
+      const { ownerOrAuthorName, extensionName } = identity;
+      if (!ownerOrAuthorName || !extensionName) {
+        throw new Error("The extension owner and name are unavailable for this deeplink.");
+      }
+
+      const { command, launchType, arguments: args, context, fallbackText } = options;
+      const url = raycastURL(`extensions/${ownerOrAuthorName}/${extensionName}/${command}`);
+      const entries = [
+        ["launchType", launchType],
+        ["arguments", args && JSON.stringify(args)],
+        ["context", context && JSON.stringify(context)],
+        ["fallbackText", fallbackText],
+      ];
+      const query = entries.filter(([, value]) => value)
+        .map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("&");
+      return query ? `${url}?${query}` : url;
+    }
+
+    export function createDeeplink(options) {
+      return options.type === "script-command"
+        ? createScriptCommandDeeplink(options)
+        : createExtensionDeeplink(options);
+    }
+    """#
 
     private static let source = #"""
     export const ToastStyle = Object.freeze({ Success: "SUCCESS", Failure: "FAILURE", Animated: "ANIMATED" });
-
-    const LaunchType = Object.freeze({ UserInitiated: "userInitiated" });
-    const PopToRootType = Object.freeze({ Default: "default", Immediate: "immediate", Suspended: "suspended" });
 
     const invocation = globalThis.keylane.environment;
     export const environment = Object.freeze({
@@ -29,6 +202,8 @@ package enum MacOSReviewedRaycastAPI {
       textSize: invocation.textSize,
       launchType: LaunchType.UserInitiated,
       isDevelopment: false,
+      // This field describes the running host, independently of the SDK version.
+      raycastVersion: invocation.raycastVersion ?? "0.0.0",
       canAccess(api) {
         if (api === Clipboard.copy || api === copyTextToClipboard) return typeof globalThis.keylane.copy === "function";
         if (api === showHUD || api === showToast || api === Toast) return typeof globalThis.keylane.toast === "function";

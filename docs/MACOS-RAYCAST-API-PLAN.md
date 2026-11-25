@@ -53,3 +53,19 @@
 - 商店区分兼容性检查拒绝、隔离构建失败、安装回执问题、待配置及运行准入失败。当前隔离编译拒绝统一归到构建阶段，尚不按每个缺失符号生成诊断。正式能力准入将在后续批次逐步替换固定样本审核范围。
 - Apple Development 签名临时宿主从固定修订构建真实源代码，验证 UUID Generator 的 `formatUuid`、`packTypeID`、`parseTypeID`，Silent Mention 的 `copy-zero-width-space`、`index`，以及 Lorem Ipsum 的 `markdown`、`html`、`paragraphs`、`sentences`、`words`。三款均验证新进程重新打开同一安装、运行和卸载。只捕获输出效果，不写真实剪贴板。使用独立传统钥匙串预览配置。19 项商店观察全通过。 [签名商店报告](evidence/macos-runtime-m2/batch-00-signed-store.json)
 - 21 项签名运行器观察、108 项定向 Swift 测试及 81 项发布脚本测试通过。运行器夹具显式声明反馈测试所需能力，避免新存储能力随全量集合被误授予。签名报告中的 `incomplete` 指整个 M2 的产品状态，两个报告内的测试观察均为通过。未替换本机安装版，未声称正式签名配置、正式发行或商店全量兼容。 [签名运行器报告](evidence/macos-runtime-m2/batch-00-signed-runtime.json)
+
+## 第 01 批验收记录
+
+2026-11-25 · 独立工作树的纯值与辅助接口验收通过，待合并。
+
+- Apple Development 签名临时宿主从实际构建所用的两个适配包生成测试命令，并由受限 JavaScriptCore 分别在有权和无权的调用中验证本批全部 579 个导出及成员可访问。固定 `@raycast/api 2.11.1` 公共声明中的 478 个 `Icon` 成员逐个比对名称和值。其他常量、旧别名、只读值、深链编码、头像和进度图结果与旧运行器样本对照。随机 ID 验证默认长度、空值、上限、字符范围和无效长度。
+- 增加 `environment.raycastVersion`，从已签名宿主的 `CFBundleShortVersionString` 传递 Keylane 版本，无版本的开发宿主使用 `0.0.0`。该值不能用来推断 Raycast 产品版本或 SDK 能力。`environment.canAccess` 核对当前调用的能力，支持已接入的 Cache、Toast、LocalStorage 和文本复制等相关入口，未授予的能力返回 false。
+- 23 项签名运行器检查及 19 项签名商店检查全部通过。后者重验三款真实扩展的十条命令从构建、安装到新进程运行与卸载。108 项相关 Swift 测试、81 项发布脚本测试通过。未安装替换 Mac 上的 Keylane，未增加商店已审核命令。 [签名运行器](evidence/macos-runtime-m2/batch-01-signed-runtime.json) · [签名商店](evidence/macos-runtime-m2/batch-01-signed-store.json)
+- 原生图标、头像和进度图渲染留在 05–07 批随界面验收，深链点击后的启动留在第 07 批。这些行为不计入本批的 JavaScript 证据。 [Raycast 环境接口](https://developers.raycast.com/api-reference/environment)
+
+复验命令使用当前 Debug 构建产物和固定官方归档。
+
+```sh
+python3 scripts/verify-macos-run-m2.py --products "$PRODUCTS" \
+  --batch-01 "$ESBUILD_ARCHIVE" "$RAYCAST_API_2_11_1_ARCHIVE" --report "$NEW_REPORT"
+```

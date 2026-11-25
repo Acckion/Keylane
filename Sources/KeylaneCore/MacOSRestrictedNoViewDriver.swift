@@ -5,6 +5,7 @@ import Foundation
 package struct MacOSRestrictedNoViewDriver: MacOSExtensionNoViewDriver {
     package enum Failure: Error { case invalidArtifact, rejected }
     private let runtime: URL
+    private let hostVersion: String
     private let expectedDigest: String
     private let signingRequirement: String
     private let deliver: MacOSNoViewCapabilities.Presenter?
@@ -16,6 +17,8 @@ package struct MacOSRestrictedNoViewDriver: MacOSExtensionNoViewDriver {
          deliver: MacOSNoViewCapabilities.Presenter? = nil) {
         runtime = application.bundleURL.resolvingSymlinksInPath()
             .appendingPathComponent("Contents/Helpers/KeylaneExtensionRun.app")
+        let version = application.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        hostVersion = version.flatMap { $0.isEmpty || $0.utf8.count > 64 ? nil : $0 } ?? "0.0.0"
         self.expectedDigest = expectedDigest
         self.signingRequirement = signingRequirement
         self.ownership = ownership
@@ -53,6 +56,7 @@ package struct MacOSRestrictedNoViewDriver: MacOSExtensionNoViewDriver {
                                "entryPointName": String(parts[2])]
             }
         }
+        environment["raycastVersion"] = hostVersion
         if let display = MacOSNoViewCapabilities.displayPreferences {
             environment["appearance"] = display.appearance.rawValue
             environment["textSize"] = display.textSize.rawValue

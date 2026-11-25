@@ -50,7 +50,8 @@ private func evaluate() throws -> Bool {
     let environment: [String: String]
     if let supplied = request["environment"] {
         guard let fields = supplied as? [String: String],
-              Set(fields.keys).isSubset(of: ["ownerOrAuthorName", "extensionName", "entryPointName", "appearance", "textSize"]),
+              Set(fields.keys).isSubset(of: ["ownerOrAuthorName", "extensionName", "entryPointName", "appearance", "textSize", "raycastVersion"]),
+              fields["raycastVersion"].map({ !$0.isEmpty && $0.utf8.count <= 64 }) ?? true,
               fields["appearance"].map({ ["dark", "light"].contains($0) }) ?? true,
               fields["textSize"].map({ ["medium", "large"].contains($0) }) ?? true else { return false }
         environment = fields
@@ -85,6 +86,20 @@ private func evaluate() throws -> Bool {
             if allowed { api.setObject(enqueue(kind, 5), forKeyedSubscript: kind as NSString) }
         }
     }
+    let randomID: @convention(block) (JSValue) -> String? = { length in
+        guard length.isNumber, let size = Int(exactly: length.toDouble()),
+              (0...65536).contains(size) else { return nil }
+        guard size > 0 else { return "" }
+        var bytes = Data(count: (size * 3 + 3) / 4)
+        let status = bytes.withUnsafeMutableBytes { buffer in
+            SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
+        }
+        guard status == errSecSuccess else { return nil }
+        let encoded = bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+        return String(encoded.prefix(size))
+    }
+    api.setObject(randomID, forKeyedSubscript: "randomID" as NSString)
     context.setObject(api, forKeyedSubscript: "keylane" as NSString)
     context.evaluateScript("Object.freeze(globalThis.keylane)")
     // JavaScriptCore has typed arrays but does not supply the web UTF-8 encoder.

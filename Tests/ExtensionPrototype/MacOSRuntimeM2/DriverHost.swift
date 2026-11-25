@@ -9,6 +9,16 @@ import os
         guard CommandLine.arguments.count == 3 else { exit(64) }
         let mode = CommandLine.arguments[1]
         let scratch = URL(fileURLWithPath: CommandLine.arguments[2])
+        if mode == "reviewed-adapter" {
+            do {
+                for file in MacOSReviewedRaycastAPI.files {
+                    let path = scratch.appendingPathComponent(file.path)
+                    try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try file.body.write(to: path, options: .withoutOverwriting)
+                }
+                exit(0)
+            } catch { exit(1) }
+        }
         let ownership: MacOSStoreOwnership?
         if mode == "owner-loss" {
             let path = scratch.appendingPathComponent("owner.lock")
@@ -24,6 +34,15 @@ import os
         let driver = MacOSRestrictedNoViewDriver(application: .main, expectedDigest: mode == "helper-digest" ? "" : FixtureSigning.digest,
                                                  signingRequirement: FixtureSigning.requirement, ownership: ownership,
                                                  deliver: { observed.record($0) })
+        if mode == "batch-01-values" || mode == "batch-01-no-grants" {
+            do {
+                try await exerciseBatch01(driver, scratch: scratch, allow: mode == "batch-01-values")
+                exit(observed.history.isEmpty ? 0 : 1)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
         if ["capabilities", "capability-denied", "capability-error", "capability-revoked",
             "default-async", "default-rejection", "default-pending"].contains(mode) {
             do { try await exerciseCapabilities(mode, driver: driver, observed: observed); exit(0) }
@@ -81,6 +100,23 @@ import os
         } catch MacOSOwnedHelperProcess.Failure.failed {
             exit(mode == "exception" || mode == "timeout" ? 0 : 1)
         } catch { exit(1) }
+    }
+
+    static func exerciseBatch01(_ driver: MacOSRestrictedNoViewDriver, scratch: URL, allow: Bool) async throws {
+        let bytes = try Data(contentsOf: scratch.appendingPathComponent("Batch01.js"))
+        let id = UUID()
+        let receipt = StoreRuntimeBridge.Receipt(
+            provenance: .init(installation: .init(id: id.uuidString, generation: 0),
+                              entry: "src/main.js", projectDigest: "", runtimeDigest: ""),
+            artifactDigest: MacOSExtensionBuild.hash(bytes))
+        let ticket = StoreGuestRunTicket(id: UUID(), profileID: id, installation: .init(id: id.uuidString, generation: 1),
+            receipt: receipt, commandID: "extension:raycast:fixture/batch-01/main",
+            capabilities: allow ? feedbackFixtureCapabilities : [],
+            launchContext: .init(arguments: ["grants": allow ? "on" : "off"]),
+            liveLease: { true })
+        try await MacOSNoViewCapabilities.$displayPreferences.withValue(.init(appearance: .light, textSize: .large)) {
+            try await driver.run(bytes: bytes, ticket: ticket)
+        }
     }
 
     @MainActor private final class ObservedEffects {

@@ -23,10 +23,48 @@ broker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(broker)
 
 
+def verify_batch_01(host, task, compiler_archive, api_archive):
+    fixture = ROOT / 'Tests/ExtensionPrototype/MacOSRuntimeM2'
+    with (ROOT / 'docs/MACOS-RAYCAST-API-BATCHES.csv').open(newline='') as source:
+        rows = [(row['package'], row['interface']) for row in csv.DictReader(source) if row['batch'] == '01']
+    if len(rows) != 579 or len(set(rows)) != len(rows):
+        raise ValueError('Batch 01 must account for 579 distinct entries')
+    sdk_bytes = api_archive.read_bytes()
+    if hashlib.sha256(sdk_bytes).hexdigest() != 'bf3dba2b5aaada428f22026623c3c787aae036bcc18c5e50baf09f13a39b514f':
+        raise ValueError('Expected official @raycast/api 2.11.1 archive')
+    with tarfile.open(fileobj=io.BytesIO(sdk_bytes)) as archive:
+        text = archive.extractfile('package/types/index.d.ts').read().decode()
+    icon_block = re.search(r'(?m)^export declare enum Icon \{([\s\S]*?)^\}', text).group(1)
+    icons = dict(re.findall(r'^\s+(\w+) = "([^"]+)"', icon_block, flags=re.M))
+    if {'Icon.' + name for name in icons} != {name for _, name in rows if name.startswith('Icon.')}:
+        raise ValueError('Icon declarations and coverage rows differ')
+    expected = json.loads(subprocess.check_output(['node', str(fixture/'Batch01Expected.cjs')], timeout=10))
+    expected.update(rows=rows, sdkIcons=icons)
+    (task/'batch-01-expected.json').write_text(json.dumps(expected, ensure_ascii=False))
+    bundle_reviewed_fixture(host, task, compiler_archive, 'Batch01')
+    return len(rows)
+
+
+def bundle_reviewed_fixture(host, task, compiler_archive, command):
+    fixture = ROOT / 'Tests/ExtensionPrototype/MacOSRuntimeM2'
+    shutil.copyfile(fixture/(command + '.mjs'), task/(command + '.mjs'))
+    if not (task/'node_modules').exists():
+        subprocess.run([str(host), 'reviewed-adapter', str(task)], check=True, timeout=10)
+    compiler = task/'fixture-esbuild'
+    if not compiler.exists():
+        with tarfile.open(fileobj=io.BytesIO(archive_bytes(compiler_archive))) as archive:
+            compiler.write_bytes(archive.extractfile('package/bin/esbuild').read())
+        compiler.chmod(0o700)
+    subprocess.run([str(compiler), command + '.mjs', '--bundle', '--platform=neutral', '--format=iife',
+                    '--global-name=__keylaneCommandExports', '--outfile=' + command + '.js'],
+                   cwd=task, capture_output=True, check=True, timeout=10)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--products', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--batch-01', nargs=2, type=Path, metavar=('COMPILER_ARCHIVE', 'API_ARCHIVE'))
     args = parser.parse_args()
     identity = broker.m0.resolve_identity()
     cases = {}
@@ -74,6 +112,14 @@ def main():
         subprocess.run([*sign, '--entitlements', str(empty), str(app)], check=True, capture_output=True)
         broker.m0.verify_signature(runtime, identity, rights)
         broker.m0.verify_signature(app, identity, {})
+        rows_verified = None
+        if args.batch_01:
+            rows_verified = verify_batch_01(host, task, *args.batch_01)
+            for mode in ['batch-01-values', 'batch-01-no-grants']:
+                result = subprocess.run([str(host), mode, str(task)], timeout=10, capture_output=True, text=True)
+                if result.returncode:
+                    print(f'{mode}: {result.stderr}')
+                cases[mode] = result.returncode == 0 and not broker.helper_pids(helper)
         for mode in ['normal', 'exception', 'digest', 'helper-digest', 'replay', 'timeout',
                      'capabilities', 'capability-denied', 'capability-error', 'capability-revoked', 'registry-capabilities',
                      'default-async', 'default-rejection', 'default-pending']:
@@ -148,6 +194,8 @@ def main():
         broker.m0.verify_signature(app, identity, {})
     report = {'fixtureOnly': True, 'scope': 'M2 native no-view process', 'cases': cases,
               'gate': 'incomplete' if all(cases.values()) else 'blocked'}
+    if rows_verified and cases['batch-01-values'] and cases['batch-01-no-grants']:
+        report['batch01JavaScriptEntries'] = rows_verified
     with args.report.open('x') as output:
         json.dump(report, output, indent=2)
     print(json.dumps(report))
