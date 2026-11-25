@@ -85,6 +85,12 @@ jobs:
         run: bash scripts/verify-file-ai.sh
       - name: AI native file tools and approval integration
         run: bash scripts/verify-ai-file-tools.sh
+      - name: File search controller integration
+        run: bash scripts/verify-files.sh
+      - name: File index restart recovery integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-restart-main.swift bash scripts/verify-files.sh
+      - name: File restart history and cursor state integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-restart-startup-main.swift bash scripts/verify-files.sh
 
   sign-preview-auto:
     name: Sign integrated preview ${{ github.sha }}

@@ -23,10 +23,6 @@ final class AIFileToolPreferences: ObservableObject {
     private func persist() { store.set(try? JSONEncoder().encode(scopes), forKey: "ai.files.scopes") }
 }
 
-struct AIFileToolIndexSource: Sendable {
-    let isCurrent: @MainActor @Sendable () -> Bool
-    let search: @MainActor @Sendable (String, String) async throws -> [String]
-}
 
 enum AIFileToolProvider {
     static func registrations(preferences: AIFileToolPreferences, project: AIChatProject?,

@@ -47,7 +47,7 @@
 | APP-01 | 应用发现、拼音搜索、收藏及刷新 | 部分实现 | 外置/网络卷、扫描深度和失效路径继续验收 | [应用生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/applications) |
 | APP-02 | 应用正常退出、卸载与残留预览 | 部分实现 | 应用差异、拒绝权限及残留范围逐项验收 | [卸载](UNINSTALL-PREVIEW.md) |
 | APP-03 | 按应用闲置自动退出 | 部分实现 | 各应用保存对话框、退出拒绝和重启恢复实测 | [生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/auto-quit) |
-| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数优化待合并，安装版能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
+| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数已合入；重启恢复待合并，安装版长期能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
 | FILE-02 | 文件打开方式、分享、复制、定位等动作 | 部分实现 | 真实分享服务、取消、权限与焦点验收 | [细项](TODO.md) |
 | CLIP-01 | 剪贴板历史、持久化、搜索及 OCR | 部分实现 | 真实跨应用粘贴、采集边界和隐私设置回归 | [实现](../Sources/Keylane/ClipboardActions.swift)、[细项](TODO.md)、[Raycast](https://manual.raycast.com/clipboard-history) |
 | SHOT-01 | 截图/录屏管理、OCR、搜索与文件动作 | 部分实现 | 跨应用分享、粘贴、云盘和权限验收 | [截图](SCREENSHOTS.md)、[Raycast](https://manual.raycast.com/screenshots) |
@@ -256,7 +256,10 @@
 
 维护记录：2026-11-23，FILE-01：实机发现增量扫描结束后反复全表统计。改用事务内增删／类型变化触发计数，旧索引首次打开初始化一次，后续读取单行汇总。451 项 Swift 测试及真实文件事件集成通过，覆盖旧索引、多连接、回滚和动态更新；Apple Development 签名安装已完成，后台 CPU 与长期能耗正在复验。
 
+维护记录：2026-11-23，FILE-01：`fix/file-index-restart-recovery` 基于 dev `5b4378ce` 增加持久事件位置、配置/授权/根身份校验与后台恢复，取消启动无条件全扫。453 项 Swift、30 项脚本、原有文件集成及新增真实重启/权限失败局部恢复/注入丢事件回退验证通过；仍待合并；最终 Apple Development 签名版本已安装，本机约 33 万项索引已验证重启复用并单独保留 774 项待重试路径，45 秒末 CPU 0.3%、物理内存快照约 120 MB，长期能耗与平均低于 100 MB 未验收。见 [重启恢复](FILE-INDEX-RESTART.md)。
 维护记录：2026-11-23，BASE-03 / BASE-06：主搜索的命令默认图标统一复用设置列表的带背景 SettingsIcon，Wi-Fi、蓝牙、网络、VPN 等系统设置入口采用同一显示方式。编译与现有回归结果见本分支 PR，安装版界面验收待完成。
+
+维护记录：2026-11-23，FILE-01 / #243 启动恢复补修：Launcher 显示设置不使索引签名失效，兼容旧显示值；取消或配置变更不会滞留旧恢复状态。补齐 SQLite 游标与索引写入边界，旧进程提交使游标作废，空闲推进不会复活已丢失游标。运行期事件断点退役旧监听，阻止旧回调/写入，回绕仅使用已进入的新编号区间；跨进程历史身份仍未验证，当前候选启动时保留按当前规则可搜索的旧结果，首个普通搜索或显式重新启用触发一次后台全量对账，不保存主机游标；之后实时仍增量。仅使用自建文件和索引验证，不更新安装版。
 
 维护记录：2026-11-25，BASE-03 / BASE-08：修复 #220 在默认主题中显式传播强调色导致返回按钮变蓝。默认系统材质不覆盖 tint，公共 LauncherBackButton 清除继承染色；代码修复待合并，安装版待验收。
 

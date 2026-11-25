@@ -12,5 +12,5 @@ swiftc -package-name Keylane -Xfrontend -disable-sandbox -swift-version 5 -targe
     "$task_directory/main.swift" -o "$task_directory/verify-picker"
 "$task_directory/verify-picker"
 
-swiftc -package-name Keylane -Xfrontend -disable-sandbox -swift-version 5 -parse-as-library -target "$(uname -m)-apple-macos26.0" -I "$task_directory" -L "$task_directory" -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" Sources/Keylane/AIToolRuntime.swift Sources/Keylane/AIChatProject.swift Sources/Keylane/AIFileToolProvider.swift Tests/Integration/ai-file-tools-main.swift -o "$task_directory/verify"
+swiftc -package-name Keylane -Xfrontend -disable-sandbox -swift-version 5 -parse-as-library -target "$(uname -m)-apple-macos26.0" -I "$task_directory" -L "$task_directory" -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" Sources/Keylane/AIToolRuntime.swift Sources/Keylane/AIChatProject.swift Sources/Keylane/AIFileToolIndexSource.swift Sources/Keylane/AIFileToolProvider.swift Tests/Integration/ai-file-tools-main.swift -o "$task_directory/verify"
 "$task_directory/verify"
