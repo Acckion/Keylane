@@ -16,30 +16,33 @@ final class AIConversationComposer: ObservableObject {
     private var activeResourceLifetimeIDs: Set<UUID> = []
 
     private var globalResourceObservation: AnyCancellable?
-    private var globalResourceAvailability: AnyPublisher<Bool, Never>?
+    private var globalResourceAvailability: AIResourceAvailability?
     private var globalResourceLifetime: AIResourceReadLifetime?
 
     /// Session-owned authority survives presentation changes and completed reads.
     func observeResourceAvailability(_ availability: AnyPublisher<Bool, Never>) {
         globalResourceObservation?.cancel()
         globalResourceLifetime?.revoke()
-        globalResourceAvailability = availability
-        globalResourceObservation = availability.sink { [weak self] enabled in
-            guard let self else { return }
-            if enabled {
-                if self.globalResourceLifetime?.isValid != true {
-                    self.globalResourceLifetime = self.makeResourceLifetime()
-                }
-            } else {
-                if self.globalResourceLifetime == nil { self.globalResourceLifetime = self.makeResourceLifetime() }
-                self.globalResourceLifetime?.revoke()
-                self.cancelAttachmentRead()
-            }
+        let stream = AIResourceAvailability(availability)
+        globalResourceAvailability = stream
+        globalResourceObservation = stream.changes.sink { [weak self] enabled in
+            self?.updateResourceAvailability(enabled)
+        }
+        updateResourceAvailability(stream.current ?? false)
+    }
+
+    private func updateResourceAvailability(_ enabled: Bool) {
+        if enabled {
+            if globalResourceLifetime?.isValid != true { globalResourceLifetime = makeResourceLifetime() }
+        } else {
+            if globalResourceLifetime == nil { globalResourceLifetime = makeResourceLifetime() }
+            globalResourceLifetime?.revoke()
+            cancelAttachmentRead()
         }
     }
 
     private func makeResourceLifetime() -> AIResourceReadLifetime {
-        AIResourceReadLifetime(availability: globalResourceAvailability) { [weak self] id in
+        AIResourceReadLifetime(availability: globalResourceAvailability?.changes.eraseToAnyPublisher(), availabilityOwner: globalResourceAvailability) { [weak self] id in
             let revoke = { [weak self] in self?.revokeResourceReaders(id) }
             if Thread.isMainThread { revoke() } else { DispatchQueue.main.async { revoke() } }
         }
@@ -372,8 +375,10 @@ final class AIResourceReadLifetime {
     private var observation: AnyCancellable?
     var isValid: Bool { lock.lock(); defer { lock.unlock() }; return valid }
     private let revoked: (UUID) -> Void
-    init(availability: AnyPublisher<Bool, Never>? = nil, revoked: @escaping (UUID) -> Void) {
+    private let availabilityOwner: AnyObject?
+    init(availability: AnyPublisher<Bool, Never>? = nil, availabilityOwner: AnyObject? = nil, revoked: @escaping (UUID) -> Void) {
         self.revoked = revoked
+        self.availabilityOwner = availabilityOwner
         observation = availability?.sink { [weak self] available in
             if !available { self?.revoke() }
         }
@@ -384,5 +389,19 @@ final class AIResourceReadLifetime {
         valid = false
         lock.unlock()
         if first { revoked(id) }
+    }
+}
+
+/// Keeps the upstream alive with saved readers, without replaying @Published's
+/// pre-willSet value when a new epoch subscribes during an enabled event.
+private final class AIResourceAvailability {
+    private(set) var current: Bool?
+    let changes = PassthroughSubject<Bool, Never>()
+    private var observation: AnyCancellable?
+    init(_ availability: AnyPublisher<Bool, Never>) {
+        observation = availability.sink { [weak self] enabled in
+            self?.current = enabled
+            self?.changes.send(enabled)
+        }
     }
 }

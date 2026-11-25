@@ -155,8 +155,15 @@ try await verifyApprovedPickerRoute()
 
 try await verifyRetainedCommandReaderLifetime()
 
+private final class GlobalAIAvailabilityFixture {
+    @Published var enabled = true
+    func send(_ enabled: Bool) { self.enabled = enabled }
+    func eraseToAnyPublisher() -> AnyPublisher<Bool, Never> { $enabled.eraseToAnyPublisher() }
+}
+
 @MainActor private func verifyGlobalAIReaderLifetime() async throws {
-    let enabled = CurrentValueSubject<Bool, Never>(true)
+    // Match AIConfiguration's @Published willSet delivery, not just a subject.
+    let enabled = GlobalAIAvailabilityFixture()
     let composer = AIConversationComposer()
     composer.observeResourceAvailability(enabled.eraseToAnyPublisher())
     composer.text = "preserved draft"
