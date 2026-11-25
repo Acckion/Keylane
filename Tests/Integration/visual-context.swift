@@ -48,6 +48,7 @@ import SwiftUI
     print("PASS image pipeline: bounded oriented thumbnail, metadata-free raster, exact crop, no source URL on wire")
 
     try await verifyVisualWire(image: image)
+    try await verifyVisualConversationRegressions(image: image)
     let sessionConfiguration = URLSessionConfiguration.ephemeral
     sessionConfiguration.protocolClasses = [VisualProtocol.self]
     var vision = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "synthetic-vision", mode: .complete)

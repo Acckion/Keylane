@@ -10,7 +10,9 @@ Task { @MainActor in
         let encoder = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil)!
         CGImageDestinationAddImage(encoder, context.makeImage()!, nil)
         precondition(CGImageDestinationFinalize(encoder))
-        try await verifyVisualWire(image: AIImageInput(data: data as Data, mediaType: "image/jpeg", width: 24, height: 16))
+        let image = try AIImageInput(data: data as Data, mediaType: "image/jpeg", width: 24, height: 16)
+        try await verifyVisualWire(image: image)
+        try await verifyVisualConversationRegressions(image: image)
     } catch { fatalError("Visual wire fixture: \(error)") }
     visualWireFinished = true
 }
