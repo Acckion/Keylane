@@ -145,7 +145,8 @@ Task { @MainActor in
         let registration = AIToolRegistration(definition: toolDefinition, available: { availability.allowed }) { arguments in
             performed += 1
             guard case .number(21) = arguments["number"] else { throw AIToolContractError.invalidArguments }
-            return try .init(text: "42")
+            let resource = try AIResourceReference(moduleID: .init(rawValue: "fixture"), sourceID: "synthetic")
+            return try .init(text: "42", resourceSnapshot: .init(reference: resource, revision: "v1", text: "42"))
         }
         func run(_ registrations: [AIToolRegistration]? = nil) throws -> AIToolRun {
             try AIToolRun(registrations: registrations ?? [registration], isCurrent: { true }, approve: { _, _ in true })
@@ -162,6 +163,8 @@ Task { @MainActor in
                 let output = ToolFixtureOutput()
                 let tokens = try await runtime.generate(connection: connection, readKey: { _ in "synthetic-key" }, messages: [.init(role: .user, content: "fixture")], tools: run(), progress: { await output.event($0) }) { await output.append($0) }
                 precondition(output.text == "verified answer" && tokens == 6 && ToolFixtureProtocol.rounds == 2)
+                let wireBodies = String(decoding: try JSONSerialization.data(withJSONObject: ToolFixtureProtocol.bodies), as: UTF8.self)
+                precondition(!wireBodies.contains("keylane-resource"), "Host resource metadata must not be transmitted as authority")
                 precondition(ToolFixtureProtocol.bodies[0]["temperature"] as? Double == 0.2)
                 let thoughts = output.events.compactMap { event -> String? in if case .thinking(_, let delta) = event { return delta }; return nil }.joined()
                 precondition(!thoughts.isEmpty && !thoughts.contains("opaque-fixture"))

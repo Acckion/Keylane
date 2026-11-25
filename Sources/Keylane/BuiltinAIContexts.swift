@@ -28,12 +28,17 @@ enum BuiltinAIContexts {
             return (controller.events + controller.upcoming).filter {
                 seen.insert($0.id).inserted && (query.isEmpty || ($0.title + " " + $0.notes).localizedCaseInsensitiveContains(query))
             }.prefix(100).map { event in
-                let text = "标题：\(event.title)\n开始：\(event.start.formatted())\n结束：\(event.end.formatted())\n地点：\(event.location)\n备注：\(event.notes)"
-                let context = AIActionContext(sourceID: event.id, title: event.title, text: text)
+                @MainActor func currentContext() throws -> AIActionContext {
+                    guard let calendar = model?.calendar, calendar.enabled, calendar.access == .allowed,
+                          let latest = (calendar.events + calendar.upcoming).first(where: { $0.id == event.id }) else {
+                        throw AIActionError.unavailable
+                    }
+                    let text = "标题：\(latest.title)\n开始：\(latest.start.formatted())\n结束：\(latest.end.formatted())\n地点：\(latest.location)\n备注：\(latest.notes)"
+                    return .init(sourceID: latest.id, title: latest.title, text: text)
+                }
                 return AIContextCandidate(id: event.id, title: event.title, detail: event.start.formatted(),
-                    source: .init(moduleID: .init(rawValue: "keylane.calendar"), load: { context }, isCurrent: { [weak model] _ in
-                        guard let calendar = model?.calendar, calendar.enabled, calendar.access == .allowed else { return false }
-                        return (calendar.events + calendar.upcoming).contains { $0.id == event.id && $0 == event }
+                    source: .init(moduleID: .init(rawValue: "keylane.calendar"), load: { try currentContext() }, isCurrent: { context in
+                        try currentContext().fingerprint == context.fingerprint
                     }))
             }
         }

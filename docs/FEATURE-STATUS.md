@@ -101,6 +101,7 @@
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-11-a | 共用会话按模块选择工具能力 | 待合并 | 草稿 #226 在已合入 #215/#217/#223/#224 的 dev `37dac2e` 上收敛增量；目录按选择过滤，发送前冻结、选择改变取消审批，真实模型及安装版待验收 | [PR #226](https://github.com/Acckion/Keylane/pull/226)、[契约](AI-CAPABILITY-CONTRACT.md) |
+| AI-11-b | 统一资源身份、快照与显式重新读取 | 待合并 | #226 已合入；稳定 URI 仅作身份，快照固定，运行期 reader 显式刷新，历史不恢复权限；保持临时引用/路径/分页协议 | [PR #227](https://github.com/Acckion/Keylane/pull/227)、[资源契约](AI-RESOURCE-CONTRACT.md) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-12-a | 聊天中的剪贴板与文件搜索引用工具 | 待合并 | PR #217 同步 dev `fc44e8b`；按路径与按引用协议分离，逐次确认，运行内/五分钟引用及来源校验；403+5 项 Swift、合成文件工具/会话、即时排除及发送前撤销回归通过，真实服务未验收 | [PR #217](https://github.com/Acckion/Keylane/pull/217)、[验证](AI-READ-TOOLS-VALIDATION.md) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
@@ -214,6 +215,9 @@
 涉及 BASE-03、BASE-06、BASE-08、APP-02、CLIP-01、SHOT-01、CAL-01、CONTACT-01、NOTE-01、LINK-01、TOOL-01、TOOL-02、TOOL-07、TOOL-08、AI-06、DICT-01、DICT-02、EXTRA-02。AI 设置移入内置扩展首位，补充下载与主题入口，并按命令用途区分图片。图标资源、映射、验证和后续预备资源登记于 [美术资源](ARTWORK.md)。安装版验收随该功能 PR 跟进。
 
 维护记录：2026-11-21，AI-11-a / 草稿 #226 以已合入依赖的 dev `37dac2e` 重整，移除依赖等价差异；保留 `keylane_read_searched_file`、路径授权、PDF/分页及目录生命周期边界，仅新增会话模块能力选择与发送前冻结。隔离验证与精确头 CI 见原 PR，不安装/合并/发布。
+
+维护记录：2026-11-21，AI-11-b / 草稿 PR #227（实现 49d08d0）在独立工作树推进统一资源身份/快照/重新读取；前序 #218/#221/#223/#226，快照固定与显式刷新语义经用户确认。精确测试/CI 证据在新 PR；未安装/合并/发布。
+
 维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
 
 维护记录：2026-11-21，AI-13-b / [PR #228](https://github.com/Acckion/Keylane/pull/228)，实现 `9e0c43e`：从 dev `37dac2e` 新建读取增强分支，Office/本机显式 OCR/行级正则共用现有授权、接收方确认与私有续读；保留 #215/#217/#224 行为，414+3 项全量、最终 12 项增强及文本框审查修复后的 66 项定向复验、9 组基础文件集成、签名隔离引用测试及 27 项发行保障检查通过；准确提交与 Checks 见 PR，未安装或调用真实模型。
@@ -231,3 +235,7 @@
 维护记录：2026-11-23，BASE-03 / BASE-06：主搜索的命令默认图标统一复用设置列表的带背景 SettingsIcon，Wi-Fi、蓝牙、网络、VPN 等系统设置入口采用同一显示方式。编译与现有回归结果见本分支 PR，安装版界面验收待完成。
 
 维护记录：2026-11-25，BASE-03 / BASE-08：修复 #220 在默认主题中显式传播强调色导致返回按钮变蓝。默认系统材质不覆盖 tint，公共 LauncherBackButton 清除继承染色；代码修复待合并，安装版待验收。
+
+维护记录：2026-11-25，AI-11-b / PR #227 修复 P1：附加命令首次不可用即永久撤销保留 reader，旧快照不丢、新选择有效，读取中撤权拒绝晚到结果且不误取消其他来源。同步 dev `862bf06c`；456 项 Swift、30 项脚本与生产路由/真实按钮的签名隔离验证通过，安装版/真实用户资料未验收。
+
+维护记录：2026-11-25，AI-11-b / PR #227 后续 P1：独立聊天会话统一持有全局 AI reader 代次，覆盖文件选择器和上下文选择器；首次关闭永久撤销旧权限，快照/草稿保留，重开后须重新选择。生产对象签名隔离界面与 Checks 同路径回归覆盖读取中撤权和新选择；未安装、未调用真实模型或使用用户资料，精确最终检查见 PR。
