@@ -61,7 +61,7 @@ controller.testDidBeginIndexRestoration = {
 }
 controller.startRuntime()
 try wait("Root search displays prior row after re-enable") {
-    controller.indexStatus == "正在恢复文件变化…" && !controller.isSearching && offered.contains { $0.id == priorOnly.path }
+    controller.testQuietWatchStart == original.eventID && !controller.isSearching && offered.contains { $0.id == priorOnly.path }
 }
 precondition(controller.options.searchFromLauncher && controller.testFullIndexScans == 0)
 controller.stopRuntime()
@@ -133,7 +133,7 @@ controller.stopRuntime()
 controller = makeController()
 controller.testQuietIndexEventID = 13
 controller.startRuntime()
-try wait("Restart uses new cursor") { controller.testQuietWatchStart == 13 && controller.indexStatus == "正在恢复文件变化…" }
+try wait("Restart uses new cursor") { controller.testQuietWatchStart == 13 && controller.testEventEmitter() != nil }
 precondition(controller.testFullIndexScans == 0)
 controller.stopRuntime()
 print("PASS quiet epoch: high-to-low wrap fences delayed callback and old writer; new cursor persists, advances and is reused")
@@ -221,3 +221,39 @@ for n in 1...2 {
 }
 controller.stopRuntime()
 print("PASS quiet live-only: idle launch performs no crawl; first query preserves safe cached names, and two live changes stay incremental")
+
+let bodyWork = scope.appendingPathComponent("deferred-checkpoint.txt")
+try Data("checkpointbodyfixture".utf8).write(to: bodyWork)
+let bodyEntered = DispatchSemaphore(value: 0)
+let releaseBody = DispatchSemaphore(value: 0)
+controller = FileSearchController(directory: state, preferences: prefs, startImmediately: false, contentExtractor: { job, cancelled in
+    if job.path == bodyWork.path {
+        bodyEntered.signal()
+        _ = releaseBody.wait(timeout: .now() + 10)
+    }
+    return try FileContentReader.read(job, cancelled: cancelled)
+})
+controller.testQuietIndexEventID = 120
+controller.testDurableHistoryDomain = fixtureHistory
+controller.startRuntime()
+var bodyHeld = false
+try wait("The recovery point is published before deferred extraction releases") {
+    if !bodyHeld { bodyHeld = bodyEntered.wait(timeout: .now()) == .success }
+    return try bodyHeld && db.recoveryPoint()?.eventID == 120 && !controller.indexing
+}
+let beforeContent = try db.recoveryPoint()
+releaseBody.signal()
+try wait("Committed deferred body remains searchable without invalidating verified checkpoint") {
+    let hasBody = try db.search("checkpointbodyfixture", options: options).contains { $0.id == bodyWork.path && $0.matchesContent }
+    return try hasBody && db.recoveryPoint() == beforeContent
+}
+let afterBody = scope.appendingPathComponent("after-body-event.txt")
+try Data("incremental".utf8).write(to: afterBody)
+controller.testQuietIndexEventID = 121
+controller.testEventEmitter()!([afterBody.path], [FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated)], 121)
+try wait("The watcher can advance incrementally after deferred completion") {
+    try contains(afterBody) && db.recoveryPoint()?.eventID == 121 && !controller.indexing
+}
+precondition(controller.testFullIndexScans == 1)
+controller.stopRuntime()
+print("PASS quiet deferred body: durable cursor survives worker completion, and next live update stays incremental")

@@ -385,7 +385,7 @@ enum BuiltinLauncherModules {
                               session.onEnd { FilePreview.shared.dismiss() }
                           })
         ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"),
-                                   loading: controller.$indexing.eraseToAnyPublisher(), content: LauncherSettingsContent.files)],
+                                   loading: Publishers.CombineLatest(controller.$indexing, controller.$contentIndexing).map { $0 || $1 }.removeDuplicates().eraseToAnyPublisher(), content: LauncherSettingsContent.files)],
            services: [.init(start: { start(reconcile: false) }, stop: { [weak model] in
                permissionChanges?.cancel()
                permissionChanges = nil

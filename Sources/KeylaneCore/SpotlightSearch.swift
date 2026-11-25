@@ -36,15 +36,27 @@ public struct RankedFile: Sendable {
     public let file: SpotlightFile
     public let score: Int
 
+    public init(file: SpotlightFile, score: Int) {
+        self.file = file
+        self.score = score
+    }
+
     public func precedes(_ other: RankedFile) -> Bool {
         if score != other.score { return score > other.score }
         if file.modified != other.file.modified { return file.modified > other.file.modified }
         return file.id < other.file.id
     }
 
-    static func top(_ files: [SpotlightFile], query: String, limit: Int = 200) -> [RankedFile] {
+    static func top(_ files: [SpotlightFile], query: String, limit: Int = 200, isCancelled: () -> Bool = { false }) -> [RankedFile] {
         let rank = FileSearchRules.ranker(for: query)
-        return Array(files.map { RankedFile(file: $0, score: rank($0.name)) }.sorted { $0.precedes($1) }.prefix(limit))
+        var ranked: [RankedFile] = []
+        for file in files {
+            if isCancelled() { return [] }
+            ranked.append(RankedFile(file: file, score: rank(file.name)))
+        }
+        guard !isCancelled() else { return [] }
+        ranked.sort { $0.precedes($1) }
+        return isCancelled() ? [] : Array(ranked.prefix(limit))
     }
 }
 
@@ -68,7 +80,7 @@ public final class SpotlightSearch {
     private var pending: DispatchWorkItem?
     private var generation = 0
     private var snapshotVersion = 0
-    private var pendingRanking: DispatchWorkItem?
+    private lazy var rankingWork = LatestWorkQueue(queue: rankQueue)
     private let rankQueue = DispatchQueue(label: "org.keylane.spotlight-ranking", qos: .userInitiated)
     private var homeOnly = false
     private var root: URL?
@@ -184,7 +196,6 @@ public final class SpotlightSearch {
             files.append(SpotlightFile(url: url, name: name, modified: MDItemCopyAttribute(item, kMDItemFSContentChangeDate) as? Date ?? .distantPast))
         }
         MDQueryEnableUpdates(query)
-        pendingRanking?.cancel()
         snapshotVersion += 1
         let snapshot = snapshotVersion
         let version = generation
@@ -194,18 +205,17 @@ public final class SpotlightSearch {
             compatibilitySearch(text, snapshot: snapshot)
             return
         }
-        let task = DispatchWorkItem { [weak self] in
-            let results = RankedFile.top(candidates, query: text)
+        rankingWork.submit { [weak self] latest in
+            let results = RankedFile.top(candidates, query: text, isCancelled: { latest.isCancelled })
+            guard !latest.isCancelled else { return }
             let status: String
             if results.isEmpty { status = "正在收集Spotlight结果…" }
             else { status = truncated ? "显示\(results.count)项（候选较多）；请增加关键词缩小范围。" : "\(results.count)项 · Spotlight\(finished ? "" : " · 正在收集")" }
             DispatchQueue.main.async {
-                guard let self, self.generation == version, self.snapshotVersion == snapshot else { return }
+                guard let self, !latest.isCancelled, self.generation == version, self.snapshotVersion == snapshot else { return }
                 self.updated?(results, status)
             }
         }
-        pendingRanking = task
-        rankQueue.async(execute: task)
     }
     private func compatibilitySearch(_ text: String, snapshot: Int) {
         compatibilitySnapshot = snapshot
@@ -251,7 +261,7 @@ public final class SpotlightSearch {
     public func cancel() {
         generation += 1
         pending?.cancel(); pending = nil
-        pendingRanking?.cancel(); pendingRanking = nil
+        rankingWork.cancel()
         if let process = compatibilityProcess, process.isRunning { process.terminate() }; compatibilityProcess = nil
         if let query { MDQueryStop(query) }; query = nil
         observers.forEach { NotificationCenter.default.removeObserver($0) }; observers.removeAll()

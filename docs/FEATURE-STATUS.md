@@ -26,7 +26,7 @@
 
 | 编号 | 能力 | 实现状态 | 剩余差异与下一步 | 验收与证据 |
 | --- | --- | --- | --- | --- |
-| BASE-01 | 主搜索、应用/文件/命令统一检索 | 部分实现 | 持续核对排序、收藏、备用命令、中文输入与性能 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md)、[细项](TODO.md) |
+| BASE-01 | 主搜索、应用/文件/命令统一检索 | 部分实现 | 持续核对排序、收藏、备用命令、中文输入与性能；查询合并及名称准备复用待合并 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md)、[查询调度](SEARCH-WORK-COALESCING.md)、[细项](TODO.md) |
 | BASE-02 | 紧凑模式、展开/收起、横向页面切换 | 已实现 | 实际键盘、减少动态效果、多显示器回归 | 安装版观感待持续验收；[交互](LAUNCHER-COMPACT-NAVIGATION.md) |
 | BASE-03 | 标准操作面板、菜单搜索与键盘导航 | 部分实现 | 所有内置及第三方入口逐项接入公共组件；默认主题与返回按钮的中性玻璃修复待合并 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md) |
 | BASE-04 | 命令别名、热键、启用状态 | 部分实现 | 确认左右修饰键、fn、冲突、IME 与实体键盘支持边界 | [实现](../Sources/Keylane/ShortcutSettingsPreferences.swift)、[细项](TODO.md) |
@@ -36,7 +36,7 @@
 | BASE-08 | 主题与自定义主题导入/共享 | 待合并 | Theme Studio 三栏编辑、滚动交互预览、深浅色分配、JSON/链接导入共享已在功能分支实现；使用 Keylane 自有主题格式，完整安装版验收仍待完成 | [实现与验证](features/THEME-STUDIO.md)、[issue #196](https://github.com/Acckion/Keylane/issues/196)、[PR #220](https://github.com/Acckion/Keylane/pull/220)；已通过隔离交互、341 项 Swift 与 27 项脚本测试，本机安装与签名已核对；审查增加紧凑栏主题透明间隙与独立表面回归 |
 | BASE-09 | 通用动态占位符及修饰符 | 部分实现 | 片段、快捷链接分别支持部分语法，核对共用解析与完整修饰符 | [片段](SNIPPETS.md)、[快捷链接](QUICKLINKS.md)、[参考](https://manual.raycast.com/dynamic-placeholders) |
 | BASE-10 | 首次引导、权限、辅助使用与本地化 | 部分实现 | 持续核对默认状态、拒绝/撤销、VoiceOver、对比度和中文输入 | [协作规范](../AGENTS.md)、[架构](LAUNCHER-ARCHITECTURE.md) |
-| BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现 | 使用可重复工作负载，分别记录耗时、内存与功能回归 | [历史验证证据](evidence/)、[细项](TODO.md) |
+| BASE-11 | 启动/查询性能、内存与后台生命周期 | 部分实现 | 使用可重复工作负载，分别记录耗时、内存与功能回归；有界查询调度待合并，长期能耗与平均内存仍待验收 | [历史验证证据](evidence/)、[查询调度](SEARCH-WORK-COALESCING.md)、[细项](TODO.md) |
 
 ## 应用、文件与个人资料
 
@@ -47,7 +47,7 @@
 | APP-01 | 应用发现、拼音搜索、收藏及刷新 | 部分实现 | 外置/网络卷、扫描深度和失效路径继续验收 | [应用生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/applications) |
 | APP-02 | 应用正常退出、卸载与残留预览 | 部分实现 | 应用差异、拒绝权限及残留范围逐项验收 | [卸载](UNINSTALL-PREVIEW.md) |
 | APP-03 | 按应用闲置自动退出 | 部分实现 | 各应用保存对话框、退出拒绝和重启恢复实测 | [生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/auto-quit) |
-| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数已合入；重启恢复待合并，安装版长期能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
+| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数已合入；重启恢复和正文队列拆分已合入，查询调度待合并，安装版长期能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
 | FILE-02 | 文件打开方式、分享、复制、定位等动作 | 部分实现 | 真实分享服务、取消、权限与焦点验收 | [细项](TODO.md) |
 | CLIP-01 | 剪贴板历史、持久化、搜索及 OCR | 部分实现 | 真实跨应用粘贴、采集边界和隐私设置回归 | [实现](../Sources/Keylane/ClipboardActions.swift)、[细项](TODO.md)、[Raycast](https://manual.raycast.com/clipboard-history) |
 | SHOT-01 | 截图/录屏管理、OCR、搜索与文件动作 | 部分实现 | 跨应用分享、粘贴、云盘和权限验收 | [截图](SCREENSHOTS.md)、[Raycast](https://manual.raycast.com/screenshots) |
@@ -293,5 +293,13 @@
 维护记录：2026-11-25，EXT-01-a / PR #241 在 `5aee858d` 上补齐旧更新候选的比较并交换替换：同时冻结已确认安装与被观察候选，构建成功后原子核对／发布；保留精确修订恢复、失败／取消原状态及并发变更拒绝。仅 build-only；离线实际 coordinator／registry 回归与 CI 见原 PR，不涉及签名私钥、第三方运行、真实资料、安装或发布。
 
 维护记录：2026-11-25，EXT-01-a / PR #241 续修匹配 pending 更新的只读恢复：绑定精确候选和已预留目标代次，active-only 候选替换检查保持；补齐原启用／停用状态、第三修订／旧代次拒绝、取消与独立 head 提交前后发布中断的实际 coordinator／registry 合成重启回归。状态矩阵和精确检查见 [M1 记录](MACOS-BUILD-M1.md)，不涉及真实资料、签名私钥、第三方执行、前台、安装或发布。
+
+维护记录：2026-11-23，FILE-01 / 第二批：`fix/file-content-pipeline` 在最新 dev `41dcc4cd` 上承接 PR #243，分离元数据事务与持久化正文待办，单工作线程、小批次回写、过期结果和生命周期保护。458 项 Swift、30 项脚本及阻塞正文/原有文本与 PDF 集成通过；已用本机 Apple Development 签名安装，实机自有文件的名称/正文更新通过；五轮同组文件元数据提交约减少 98%，完整提取 CPU 中位数约增加 4.4%，不宣称长期能耗达标。PR #243 与 #245 已合入；详见 [正文队列](FILE-CONTENT-PIPELINE.md)。
+
+维护记录：2026-11-25，FILE-01 / PR #245：重叠范围迁移正文待办时换发任务代次；正式提取前核对当前授权范围、文件身份和版本，旧任务缺少证明需扫描重新登记。已合入；隔离自动化见 [正文队列](FILE-CONTENT-PIPELINE.md)，本轮未复验安装版。
+
+维护记录：2026-11-23，BASE-01 / BASE-11 / FILE-01 第三批：`fix/search-work-coalescing` 承接 #243 / #245，普通重复查询去重、单运行加单待办调度、可取消评分/合并，以及根搜索名称准备复用。465 项 Core、30 项脚本及根搜索、快捷链接、文件/正文/重启/调度集成通过；待合并，安装和 CPU 对照的最终证据见本批 PR。长期能耗与 60% 后台 / 40% 前台平均内存低于 100 MB 未验收。见 [查询调度](SEARCH-WORK-COALESCING.md)。
+
+维护记录：2026-11-25，PR #246 同步已含 #245 的 dev `d62b31f8`。新增真实 FSEvents 三阶段隔离观测，区分事件收到、索引元数据提交与查询发布。扫描中收到的事件在结束后处理；扫描中即时更新是后续批次，不将本夹具或旧安装记录视为当前版实机验收。
 
 维护记录：2026-11-25，AI-11-d / #235 在原工作树整合最新 dev `4be3fdf2`（#229/#234 已合入），保留图片／快照撤权、冻结模块说明、文件修改原生审批参数；类型化影响只描述现有范围，新文件修改类别保持未声明，不错标为只读。未找到日历／应用列表逐次确认问题的明确用户答复，现行条件原样保留。仅后台合成验证，精确头和 Checks 见原 PR，未合并／发布。
