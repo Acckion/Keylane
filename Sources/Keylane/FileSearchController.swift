@@ -135,6 +135,10 @@ final class FileSearchController: ObservableObject {
     private var recoverEvents = false
     private static let maxQueuedEvents = 8192
     private var pendingRefresh: DispatchWorkItem?
+    private var pendingRefreshDeferred = false
+    private var urgentRefresh = false
+    private var nextIdleCheckpointUptime: TimeInterval = 0
+    private let userLibraryPath = FileManager.default.homeDirectoryForCurrentUser.path + "/Library"
     private var restored: Set<String> = [] { didSet { if oldValue != restored { aiIndexRevision = UUID(); cancelContent() } } }
     private var dirtyPaths = Set<String>()
     private var dirtyRecursivePaths = Set<String>()
@@ -270,6 +274,7 @@ final class FileSearchController: ObservableObject {
                         self.pendingRepairPaths = recovery.retryPaths
                         self.dirtyPaths.formUnion(recovery.retryPaths)
                         self.dirtyRecursivePaths.formUnion(recovery.retryPaths)
+                        self.urgentRefresh = true
                         self.scheduleRefresh()
                         self.indexStatus = "正在恢复文件变化…"
                         self.drainContent()
@@ -324,6 +329,7 @@ final class FileSearchController: ObservableObject {
             if !indexPaused {
                 dirtyPaths.formUnion(changedExclusions)
                 dirtyRecursivePaths.formUnion(changedExclusions)
+                urgentRefresh = true
                 scheduleRefresh()
             }
             return
@@ -1399,8 +1405,15 @@ final class FileSearchController: ObservableObject {
                     self.testLastScanRuleReads = completedRuleReads
                     self.testScanCompleted?(paths == nil, processed)
                     #endif
-                    self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
-                    for value in auto where !self.automaticExclusions.contains(where: { $0.path == value.path }) { self.automaticExclusions.append(value) }; self.saveAutomatic()
+                    // The database is authoritative and refreshes stats on open.
+                    // A per-scan preference write can trigger another watched event.
+                    self.indexing = false; self.stats = stats; self.inaccessible = denied
+                    var known = Set(self.automaticExclusions.map(\.path))
+                    let additions = auto.filter { known.insert($0.path).inserted }
+                    if !additions.isEmpty {
+                        self.automaticExclusions.append(contentsOf: additions)
+                        self.saveAutomatic()
+                    }
                     self.indexStatus = denied.isEmpty ? "索引已更新" : "部分目录无法访问，请重新授权搜索范围。"
                     if self.hasQuery, !self.queryIsBlank {
                         if FileSearchLocation.typedURL(self.currentQuery) == nil { self.refreshQuery() }
@@ -1566,6 +1579,7 @@ final class FileSearchController: ObservableObject {
         var paths = Set<String>()
         var recursivePaths = Set<String>()
         var repairWakePaths = Set<String>()
+        var urgentPaths = Set<String>()
         var requiresFullScan = false
     }
 
@@ -1582,6 +1596,9 @@ final class FileSearchController: ObservableObject {
         processingEvents = false
         pendingRefresh?.cancel()
         pendingRefresh = nil
+        pendingRefreshDeferred = false
+        urgentRefresh = false
+        nextIdleCheckpointUptime = 0
         dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
         needsFullScan = false
         if let watch {
@@ -1634,6 +1651,8 @@ final class FileSearchController: ObservableObject {
     #if KEYLANE_FILE_EVENT_TESTING
     // Feed loss/wrap flags deterministically through the production event pipeline.
     var testScanCompleted: ((Bool, Int) -> Void)?
+    var testRoutineLibraryPath: String?
+    var testRefreshIsDeferred: Bool { pendingRefreshDeferred }
     private(set) var testLastScanRuleReads = 0
     var testBeforeLocalQuery: ((String) -> Void)?
     var testBeforeScanDirectory: ((String) -> Void)?
@@ -1677,8 +1696,11 @@ final class FileSearchController: ObservableObject {
                     self.acceptedEventID = max(self.acceptedEventID, batches.map(\.eventID).max() ?? 0)
                     self.churn = result.churn
                     if self.automaticExclusions != result.exclusions {
+                        let changedPaths = self.automaticExclusions.map(\.path) != result.exclusions.map(\.path)
                         self.automaticExclusions = result.exclusions
-                        self.saveAutomatic()
+                        // Skip counters are session diagnostics. Persist actual
+                        // exclusions, not a preference write for each ignored event.
+                        if changedPaths { self.saveAutomatic() }
                     }
                     var paths = result.paths
                     var recursive = result.recursivePaths.intersection(paths)
@@ -1690,6 +1712,7 @@ final class FileSearchController: ObservableObject {
                         for repair in self.pendingRepairPaths {
                             if paths.contains(repair) || Self.hasAncestor(repair, in: repairTriggers) {
                                 paths.insert(repair); recursive.insert(repair)
+                                self.urgentRefresh = true
                             }
                         }
                     }
@@ -1702,6 +1725,7 @@ final class FileSearchController: ObservableObject {
                     if !self.needsFullScan {
                         self.dirtyPaths.formUnion(paths)
                         self.dirtyRecursivePaths.formUnion(recursive)
+                        self.urgentRefresh = self.urgentRefresh || !result.urgentPaths.isDisjoint(with: paths)
                         self.needsFullScan = self.dirtyPaths.count > Self.maxQueuedEvents
                     }
                     if self.needsFullScan { self.checkpointReady = false; self.dirtyPaths.removeAll(); self.dirtyRecursivePaths.removeAll() }
@@ -1733,6 +1757,11 @@ final class FileSearchController: ObservableObject {
         guard checkpointReady, !indexing, !processingEvents, pendingEvents.isEmpty,
               !recoverEvents, !needsFullScan, dirtyPaths.isEmpty,
               let lifetime = watchLifetime, let configuration = checkpointConfiguration else { return }
+        // Filtered traffic also advances the cursor, but an idle cursor
+        // update must not continuously write in response to filesystem noise.
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now >= nextIdleCheckpointUptime else { return }
+        nextIdleCheckpointUptime = now + 30
         let config = eventConfiguration
         let eventID = acceptedEventID
         let token = cancellation
@@ -1787,6 +1816,8 @@ final class FileSearchController: ObservableObject {
                 }
                 let target = options.useIgnoreFiles ? indexEventTarget(path) : path
                 targets.insert(target)
+                let recoveryFlags = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagItemChangeOwner)
+                if target != path || flags & recoveryFlags != 0 { result.urgentPaths.insert(target) }
                 let directoryChange = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated
                     | kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged
                     | kFSEventStreamEventFlagItemChangeOwner | kFSEventStreamEventFlagItemInodeMetaMod)
@@ -1829,6 +1860,7 @@ final class FileSearchController: ObservableObject {
             }
             // Purge newly excluded subtrees even though their own events were filtered above.
             result.paths.formUnion(newExclusions)
+            result.urgentPaths.formUnion(newExclusions)
         }
         return result
     }
@@ -1843,18 +1875,36 @@ final class FileSearchController: ObservableObject {
     }
 
     private func scheduleRefresh() {
-        guard !indexPaused, !indexing, pendingRefresh == nil, needsFullScan || !dirtyPaths.isEmpty else { return }
+        guard !indexPaused, !indexing, needsFullScan || !dirtyPaths.isEmpty else { return }
+        let scopes = authorizedRoots
+        #if KEYLANE_FILE_EVENT_TESTING
+        let library = testRoutineLibraryPath ?? userLibraryPath
+        #else
+        let library = userLibraryPath
+        #endif
+        let deferBatch = checkpointReady && !needsFullScan && !urgentRefresh && dirtyPaths.allSatisfy {
+            FileIndexExclusionPolicy.isRoutineLibraryChange($0, scopes: scopes, library: library)
+        }
+        if let pendingRefresh {
+            // Ordinary traffic never extends the deadline, while a real file
+            // change or explicit recovery can pull the pending batch forward.
+            guard pendingRefreshDeferred && !deferBatch else { return }
+            pendingRefresh.cancel()
+        }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingRefresh = nil
+            self.pendingRefreshDeferred = false
             guard !self.indexing else { return }
             if self.needsFullScan || !self.checkpointReady { self.startIndex(reason: self.needsFullScan ? "event-recovery" : "incomplete-checkpoint"); return }
             let paths = self.dirtyPaths
             let recursive = self.dirtyRecursivePaths
             self.dirtyPaths.removeAll(); self.dirtyRecursivePaths.removeAll()
+            self.urgentRefresh = false
             if !paths.isEmpty { self.scanIndex(paths: paths, recursivePaths: recursive) }
         }
         pendingRefresh = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+        pendingRefreshDeferred = deferBatch
+        DispatchQueue.main.asyncAfter(deadline: .now() + (deferBatch ? 30 : 2), execute: work)
     }
 }
