@@ -89,6 +89,7 @@ final class AIConversationSession: ObservableObject {
     private let configuration: AIConfiguration
     private let runtime: AIRuntime
     private let preferredQuickModel: (() -> UUID?)?
+    private let validateVisualInput: ([AIMessage], AIConnection) throws -> Void
     private let readKey: @Sendable (AIConnection) throws -> String?
     private var configurationChanges: AnyCancellable?
     private var task: AIRunHandle?
@@ -100,11 +101,13 @@ final class AIConversationSession: ObservableObject {
 
     init(configuration: AIConfiguration, runtime: AIRuntime, history: AIConversationRepository? = nil,
          observesDefaultConnection: Bool = true, preferredQuickModel: (() -> UUID?)? = nil,
+         validateVisualInput: @escaping ([AIMessage], AIConnection) throws -> Void = { try AIVisualInputPolicy.validate($0, connection: $1) },
          readKey: @escaping @Sendable (AIConnection) throws -> String? = { try AIConfiguration.key(for: $0) }) {
         self.configuration = configuration
         self.runtime = runtime
         self.history = history
         self.readKey = readKey
+        self.validateVisualInput = validateVisualInput
         self.preferredQuickModel = preferredQuickModel
         composer.observeResourceAvailability(configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher())
         refreshProjects()
@@ -144,8 +147,17 @@ final class AIConversationSession: ObservableObject {
     }
 
     var canSendDraft: Bool {
-        !running && !loadingChat && !composer.loadingFiles && matchesCurrentModel && currentConnection != nil &&
+        !running && !loadingChat && !composer.loadingFiles && matchesCurrentModel && currentConnection != nil && visualInputIssue == nil &&
         (!composer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachments.isEmpty)
+    }
+
+    var visualInputIssue: String? {
+        guard let connection = currentConnection, !AIVisualInputPolicy.supports(connection) else { return nil }
+        let attachments = composer.attachments
+        let question = submissionQuestion(composer.text, attachments: attachments)
+        let outgoing = messages(for: AIConversationAttachment.requestText(question: question, attachments: attachments),
+                                images: attachments.compactMap(\.image), sources: attachments.compactMap(\.visualSource))
+        return outgoing.contains { !$0.images.isEmpty } ? AIResponseError.visionUnavailable.localizedDescription : nil
     }
 
     /// The attachment follows this live session, including its explicit model selection.
@@ -179,14 +191,19 @@ final class AIConversationSession: ObservableObject {
 
     @discardableResult
     func submit(_ input: String, instructions: String? = nil, connection override: AIConnection? = nil, attachments suppliedAttachments: [AIConversationAttachment]? = nil) -> Bool {
+        submit(input, instructions: instructions, connection: override, attachments: suppliedAttachments, branchPrefix: nil)
+    }
+
+    /// Validate the complete outbound request before committing a retry branch.
+    private func submit(_ input: String, instructions: String?, connection override: AIConnection?,
+                        attachments suppliedAttachments: [AIConversationAttachment]?, branchPrefix: [Turn]?) -> Bool {
         guard !running, !loadingChat, !composer.loadingFiles, configuration.state.enabled,
-              !isInChat || override == nil,
+              !isInChat || override == nil || branchPrefix != nil,
               let connection = override ?? currentConnection, connection.isConfigured, connection.taskKind == .text,
               configuration.state.connections.contains(connection),
-              conversationModel == nil || conversationModel == AIChatRecord.ModelReference(connection) else { return false }
+              branchPrefix != nil || conversationModel == nil || conversationModel == AIChatRecord.ModelReference(connection) else { return false }
         let attachments = suppliedAttachments ?? composer.attachments
-        let raw = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        let question = raw.isEmpty && !attachments.isEmpty ? "请分析所附内容。" : raw
+        let question = submissionQuestion(input, attachments: attachments)
         guard !question.isEmpty else { return false }
         let maximumQuestionBytes = 32_000
         let requestText = AIConversationAttachment.requestText(question: question, attachments: attachments)
@@ -197,7 +214,12 @@ final class AIConversationSession: ObservableObject {
 
         let system = instructions ?? effectiveInstructions
         guard validateInstructions(system) else { return false }
-        let requestMessages = messages(for: requestText, instructions: system)
+        guard AIConversationAttachment.fits(attachments) else { status = AIResponseError.requestTooLarge.localizedDescription; return false }
+        let requestMessages = messages(for: requestText, instructions: system,
+                                       images: attachments.compactMap(\.image), sources: attachments.compactMap(\.visualSource), history: branchPrefix)
+        do { try validateVisualInput(requestMessages, connection) }
+        catch { status = error.localizedDescription; return false }
+        if let branchPrefix { startBranch(with: branchPrefix) }
         let turn = Turn(question: question, attachments: attachments.isEmpty ? nil : attachments, progress: .init())
         composer.clear()
         revealedMessage = nil
@@ -244,19 +266,29 @@ final class AIConversationSession: ObservableObject {
         return true
     }
 
-    func messages(for question: String, instructions: String? = nil) -> [AIMessage] {
+    private func submissionQuestion(_ input: String, attachments: [AIConversationAttachment]) -> String {
+        let raw = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty && !attachments.isEmpty ? "请分析所附内容。" : raw
+    }
+
+    func messages(for question: String, instructions: String? = nil, images: [AIImageInput] = [], sources: [AIVisualSource] = [], history sourceTurns: [Turn]? = nil) -> [AIMessage] {
         var history = [AIMessage]()
         var remaining = 64_000 - question.utf8.count
-        for previous in turns.reversed() where previous.complete {
+        var imageBytes = AIImageInput.maximumRequestBytes - images.reduce(0, { $0 + $1.data.count })
+        var imageCount = 5 - images.count
+        for previous in (sourceTurns ?? turns).reversed() where previous.complete {
             let size = previous.requestText.utf8.count + previous.answer.utf8.count
-            guard size <= remaining else { break }
+            let previousImages = (previous.attachments ?? []).compactMap(\.image)
+            let previousBytes = previousImages.reduce(0, { $0 + $1.data.count })
+            guard size <= remaining, previousImages.count <= imageCount, previousBytes <= imageBytes else { break }
+            imageBytes -= previousBytes; imageCount -= previousImages.count
             history.append(AIMessage(role: .assistant, content: previous.answer))
-            history.append(AIMessage(role: .user, content: previous.requestText))
+            history.append(AIMessage(role: .user, content: previous.requestText, images: previousImages, visualSources: (previous.attachments ?? []).compactMap(\.visualSource)))
             remaining -= size
         }
         var messages = instructions.map { [AIMessage(role: .system, content: $0)] } ?? []
         messages.append(contentsOf: history.reversed())
-        messages.append(AIMessage(role: .user, content: question))
+        messages.append(AIMessage(role: .user, content: question, images: images, visualSources: sources))
         return messages
     }
 
@@ -427,10 +459,9 @@ final class AIConversationSession: ObservableObject {
             nextModel = candidate
         } else { nextModel = nil }
         let draft = composer.snapshot
-        startBranch(with: Array(turns.prefix(index)))
-        if let nextModel { conversationModel = AIChatRecord.ModelReference(nextModel) }
-        let accepted = submit(input, attachments: attachments)
-        composer.restore(draft)
+        let accepted = submit(input, instructions: nil, connection: nextModel, attachments: attachments,
+                              branchPrefix: Array(turns.prefix(index)))
+        if accepted { composer.restore(draft) }
         return accepted
     }
 

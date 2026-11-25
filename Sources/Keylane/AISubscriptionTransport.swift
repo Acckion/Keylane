@@ -134,6 +134,7 @@ enum AISubscriptionTransport {
     static func generate(_ connection: AIConnection, messages: [AIMessage], effort: String? = nil, tools: AIToolRun? = nil,
                          progress: @escaping @Sendable (AIResponseEvent) async -> Void = { _ in },
                          emit: @Sendable (String) async throws -> Void) async throws -> Int? {
+        try AIVisualInputPolicy.validate(messages, connection: connection)
         guard connection.isConfigured else { throw AISubscriptionError.failed }
         guard let expected = connection.subscriptionAccountID, !expected.isEmpty else { throw AISubscriptionError.accountChanged }
         if connection.protocolKind == .codex {

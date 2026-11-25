@@ -8,7 +8,7 @@ swiftc -Xfrontend -disable-sandbox -swift-version 5 -target "$(uname -m)-apple-m
 # Run the picker regression in its own executable and reuse the unsigned Core build.
 cp Tests/Integration/picker-resource-route.swift "$task_directory/main.swift"
 swiftc -Xfrontend -disable-sandbox -swift-version 5 -target "$(uname -m)-apple-macos26.0" -I "$task_directory" -L "$task_directory" -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" \
-    Sources/Keylane/AIActionSource.swift Sources/Keylane/AIConversationComposer.swift Sources/Keylane/AIFileAttachment.swift \
+    Sources/Keylane/AIActionSource.swift Sources/Keylane/AIConversationComposer.swift Sources/Keylane/AIVisualSource.swift Sources/Keylane/AIFileAttachment.swift \
     "$task_directory/main.swift" -o "$task_directory/verify-picker"
 "$task_directory/verify-picker"
 
