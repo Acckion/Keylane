@@ -100,12 +100,15 @@ public actor RaycastStoreInstallCoordinator: RaycastStoreBackend, RaycastStorePr
         } else if before != nil { throw RaycastStoreInstaller.Failure.existingDifferentRevision }
         let versions = try await service.qualifiedAPIVersions()
         let previousStage: RaycastStorePreparedArtifact?
-        if expected == nil {
+        let previousCandidate: RaycastStorePreparedArtifact?
+        if let expected {
+            previousStage = nil
+            previousCandidate = try await registry.updateCandidate(replacing: expected)
+            if let previousCandidate, previousCandidate.source == source { return previousCandidate }
+        } else {
+            previousCandidate = nil
             previousStage = try await registry.initialStage(for: source.slug)
             if let previousStage, previousStage.source == source { return previousStage }
-        } else {
-            previousStage = nil
-            if let recovered = try await registry.stagedArtifact(for: source) { return recovered }
         }
         try Task.checkCancellation()
         let project = try await acquireProject(source, versions)
@@ -119,6 +122,10 @@ public actor RaycastStoreInstallCoordinator: RaycastStoreBackend, RaycastStorePr
         try validateSource(source)
         let current = try await registry.installations().first { $0.source.slug == source.slug }
         guard Self.sameInstallation(before, current) else { throw RaycastStoreDiskRegistry.Failure.stale }
+        if let expected {
+            return try await registry.replaceUpdateCandidate(previousCandidate, replacing: expected,
+                bytes: built.bytes, expectedDigest: built.digest, source: source, grantedCapabilities: built.capabilities)
+        }
         if let previousStage {
             return try await registry.replaceInitialStage(previousStage, bytes: built.bytes, expectedDigest: built.digest,
                 source: source, grantedCapabilities: built.capabilities, installationID: id)

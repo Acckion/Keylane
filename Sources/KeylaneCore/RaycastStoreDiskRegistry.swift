@@ -335,6 +335,56 @@ public actor RaycastStoreDiskRegistry {
         return .init(id: record.id, source: source, contentDigest: expectedDigest)
     }
 
+    /// Observe a candidate together with the user-confirmed installed generation.
+    /// This proof (including absence) must survive the build unchanged.
+    func updateCandidate(replacing expected: RaycastStoreInstallation) throws -> RaycastStorePreparedArtifact? {
+        let fd = try lock(); defer { unlock(fd) }
+        let state = try read()
+        let base = try confirmedUpdateBase(expected, in: state)
+        guard let candidate = state.candidates?.first(where: { $0.id == base.id }) else { return nil }
+        guard candidate.phase == .prepared, candidate.baseGeneration == base.generation,
+              candidate.baseEnabled == base.enabled else { throw Failure.stale }
+        _ = try verified(candidate)
+        return .init(id: candidate.id, source: try candidate.source, contentDigest: candidate.digest)
+    }
+
+    /// Compare both the confirmed installation and the observed candidate under
+    /// the same registry lock. Never discard a candidate before a build succeeds.
+    func replaceUpdateCandidate(_ previous: RaycastStorePreparedArtifact?, replacing expected: RaycastStoreInstallation,
+                                bytes: Data, expectedDigest: String, source: RaycastStoreSource,
+                                grantedCapabilities: Set<String>) throws -> RaycastStorePreparedArtifact {
+        let fd = try lock(); defer { unlock(fd) }
+        var state = try read()
+        let base = try confirmedUpdateBase(expected, in: state)
+        guard source.slug == expected.source.slug else { throw Failure.stale }
+        let index = state.candidates?.firstIndex(where: { $0.id == base.id })
+        if let previous {
+            guard previous.id == base.id, let index else { throw Failure.stale }
+            let candidate = state.candidates![index]
+            guard candidate.phase == .prepared, candidate.baseGeneration == base.generation,
+                  candidate.baseEnabled == base.enabled, try candidate.source == previous.source,
+                  candidate.digest == previous.contentDigest,
+                  source.revision != previous.source.revision else { throw Failure.stale }
+        } else if index != nil { throw Failure.stale }
+        let record = Record(id: base.id, slug: source.slug, revision: source.revision, digest: expectedDigest,
+            bytes: bytes, grants: grantedCapabilities, generation: 0, enabled: false, phase: .prepared,
+            baseGeneration: base.generation, baseEnabled: base.enabled)
+        _ = try verified(record)
+        try Task.checkCancellation()
+        if let index { state.candidates![index] = record }
+        else { state.candidates = (state.candidates ?? []) + [record] }
+        try write(state)
+        return .init(id: record.id, source: source, contentDigest: expectedDigest)
+    }
+
+    private func confirmedUpdateBase(_ expected: RaycastStoreInstallation, in state: State) throws -> Record {
+        guard !expected.pendingOperation, let record = state.records.first(where: { $0.id == expected.id }),
+              record.phase == .active, record.generation == expected.generation, record.generation < UInt64.max,
+              record.enabled == expected.enabled, try record.source == expected.source else { throw Failure.stale }
+        _ = try verified(record)
+        return record
+    }
+
     /// Recover the exact verified staged receipt on restart without rebuilding the command.
     public func stagedArtifact(for source: RaycastStoreSource) throws -> RaycastStorePreparedArtifact? {
         let fd = try lock(); defer { unlock(fd) }
