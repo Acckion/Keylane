@@ -5,9 +5,7 @@ enum AnthropicAIProtocol {
     static func body(connection: AIConnection, messages: [AIMessage]) throws -> Data {
         var payload: [String: Any] = [
             "model": connection.model, "max_tokens": 4096, "stream": connection.mode == .streaming,
-            "messages": messages.filter { $0.role != .system }.map {
-                ["role": $0.role.rawValue, "content": $0.content]
-            }
+            "messages": try messages.filter { $0.role != .system }.map { try $0.wireValue(anthropic: true) }
         ]
         let system = messages.filter { $0.role == .system }.map(\.content).joined(separator: "\n\n")
         if !system.isEmpty { payload["system"] = system }

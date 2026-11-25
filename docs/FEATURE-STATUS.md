@@ -28,7 +28,7 @@
 | --- | --- | --- | --- | --- |
 | BASE-01 | 主搜索、应用/文件/命令统一检索 | 部分实现 | 持续核对排序、收藏、备用命令、中文输入与性能 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md)、[细项](TODO.md) |
 | BASE-02 | 紧凑模式、展开/收起、横向页面切换 | 已实现 | 实际键盘、减少动态效果、多显示器回归 | 安装版观感待持续验收；[交互](LAUNCHER-COMPACT-NAVIGATION.md) |
-| BASE-03 | 标准操作面板、菜单搜索与键盘导航 | 部分实现 | 所有内置及第三方入口逐项接入公共组件 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md) |
+| BASE-03 | 标准操作面板、菜单搜索与键盘导航 | 部分实现 | 所有内置及第三方入口逐项接入公共组件；默认主题与返回按钮的中性玻璃修复待合并 | 已有验证记录；[架构](LAUNCHER-ARCHITECTURE.md) |
 | BASE-04 | 命令别名、热键、启用状态 | 部分实现 | 确认左右修饰键、fn、冲突、IME 与实体键盘支持边界 | [实现](../Sources/Keylane/ShortcutSettingsPreferences.swift)、[细项](TODO.md) |
 | BASE-05 | Hyper Key、双击与导航绑定 | 部分实现 | 对照物理键映射、短按及 Secure Input 行为 | 实机待验收；[历史清单](archive/FEATURES.csv) |
 | BASE-06 | 设置全文搜索、定位到模块与命令 | 已实现 | 新增设置页持续补搜索关键词与定位锚点 | [设置入口](../Sources/Keylane/Settings.swift) |
@@ -47,7 +47,7 @@
 | APP-01 | 应用发现、拼音搜索、收藏及刷新 | 部分实现 | 外置/网络卷、扫描深度和失效路径继续验收 | [应用生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/applications) |
 | APP-02 | 应用正常退出、卸载与残留预览 | 部分实现 | 应用差异、拒绝权限及残留范围逐项验收 | [卸载](UNINSTALL-PREVIEW.md) |
 | APP-03 | 按应用闲置自动退出 | 部分实现 | 各应用保存对话框、退出拒绝和重启恢复实测 | [生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/auto-quit) |
-| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
+| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数优化待合并，安装版能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
 | FILE-02 | 文件打开方式、分享、复制、定位等动作 | 部分实现 | 真实分享服务、取消、权限与焦点验收 | [细项](TODO.md) |
 | CLIP-01 | 剪贴板历史、持久化、搜索及 OCR | 部分实现 | 真实跨应用粘贴、采集边界和隐私设置回归 | [实现](../Sources/Keylane/ClipboardActions.swift)、[细项](TODO.md)、[Raycast](https://manual.raycast.com/clipboard-history) |
 | SHOT-01 | 截图/录屏管理、OCR、搜索与文件动作 | 部分实现 | 跨应用分享、粘贴、云盘和权限验收 | [截图](SCREENSHOTS.md)、[Raycast](https://manual.raycast.com/screenshots) |
@@ -92,7 +92,8 @@
 | AI-02 | AI Chat、历史、分支、归档、搜索与导出 | 部分实现 | 按最新界面和运行层逐项核对，持续验证旧会话恢复 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[参考](https://manual.raycast.com/ai/ai-chat) |
 | AI-03 | 项目、指令、会话归组与附件目录 | 部分实现 | 项目跨会话上下文、自动归档和工作目录语义待对照 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[参考](https://manual.raycast.com/ai/projects) |
 | AI-04 | 附件、选中文字、日历及截图文字上下文 | 部分实现 | 统一上下文发现、来源权限与迟到结果处理；关注 PR #212 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[在途 PR](https://github.com/Acckion/Keylane/pull/212) |
-| AI-05 | Screen Awareness 的窗口/区域/整屏视觉上下文 | 未实现 | 当前截图文字为手动图片 OCR，完整屏幕感知仍待接入 | [聊天清单](AI-CHAT-REFERENCE-CHECKLIST.md)、[参考](https://manual.raycast.com/ai/screen-awareness) |
+| AI-05 | Screen Awareness 的窗口/区域/整屏视觉上下文 | 待合并 | 图像文件、单窗口/窗口内区域的 AX+OCR+视觉模型已实现并合成验证；真实应用/权限待实机验收，整屏/跨窗口区域及 CLI 图像后续支持 | [PR #229](https://github.com/Acckion/Keylane/pull/229)、[视觉上下文](AI-VISUAL-CONTEXT.md)、[参考](https://manual.raycast.com/ai/screen-awareness) |
+| AI-05-a | 辅助功能窗口文字与视觉传输 | 待合并 | 共享附件/历史和 HTTP 图像编码；独立 AX 文字入口不依赖屏幕录制；新增 4 项核心视觉测试、8 条模拟视觉协议与旧会话/听写回归通过；当前全集测试见 PR | [架构与验证](AI-VISUAL-CONTEXT.md) |
 | AI-06 | AI 润色、摘要及自定义文本命令 | 部分实现 | 选区、输出替换、模型切换和命令导入完整验收 | [实现](../Sources/Keylane/AITextCommandLauncher.swift)、[参考](https://manual.raycast.com/ai/ai-commands) |
 | AI-07 | 模型、API Key、自定义提供方和 YAML | 部分实现 | 特殊云资源和多凭据提供方的一键配置仍有缺口 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/custom-providers) |
 | AI-08 | 自动发现/缓存模型、失效恢复与任务路由 | 已实现 | 真实账户和各服务商差异继续验收 | [模型目录](AI-PROVIDER-CATALOG.md) |
@@ -100,14 +101,15 @@
 | AI-10 | ChatGPT / Claude 订阅接入 | 部分实现 | 账户变化、CLI 版本、授权与实际使用量验收 | [提供方](AI-PROVIDERS.md)、[参考](https://manual.raycast.com/ai/bring-your-own-subscription) |
 | AI-11 | 内置工具调用、结果展示与确认 | 部分实现 | 各模型协议及只读/有副作用工具的运行闭环 | [共享架构](AI-CONVERSATION-ARCHITECTURE.md)、[工具实现](../Sources/Keylane/AIBuiltinTools.swift) |
 | AI-11-a | 共用会话按模块选择工具能力 | 待合并 | 草稿 #226 在已合入 #215/#217/#223/#224 的 dev `37dac2e` 上收敛增量；目录按选择过滤，发送前冻结、选择改变取消审批，真实模型及安装版待验收 | [PR #226](https://github.com/Acckion/Keylane/pull/226)、[契约](AI-CAPABILITY-CONTRACT.md) |
-| AI-11-b | 统一资源身份、快照与显式重新读取 | 待合并 | 依赖 #226；稳定 URI 仅作身份，快照固定，运行期 reader 显式刷新，历史不恢复权限；保持临时引用/路径/分页协议 | [PR #227](https://github.com/Acckion/Keylane/pull/227)、[资源契约](AI-RESOURCE-CONTRACT.md) |
-| AI-11-c | 选中模块的静态 AI 指令注入 | 待合并 | 依赖 #226/#227；工具与说明同批冻结，发送边界复核，空集/总关闭不注入；权限与审批保持执行器判定 | [模块指令](AI-MODULE-INSTRUCTIONS.md) |
-| AI-11-d | 结构化工具影响与审批上下文 | 开发中 | 依赖 #234；类型化影响、不可降级合并、公共审批上下文已接通；日历/应用列表是否新增逐次确认待用户明确 | [影响模型](AI-ACTION-IMPACT.md) |
+| AI-11-b | 统一资源身份、快照与显式重新读取 | 已实现 | #227 已以 `8e439420` 合入 dev；稳定 URI 仅作身份，快照固定，运行期 reader 显式刷新，历史不恢复权限；保持临时引用/路径/分页协议 | [PR #227](https://github.com/Acckion/Keylane/pull/227)、[资源契约](AI-RESOURCE-CONTRACT.md) |
+| AI-11-c | 选中模块的静态 AI 指令注入 | 待合并 | 前序 #226/#227 已合入；工具与说明同批冻结，发送边界复核，空集/总关闭不注入；权限与审批保持执行器判定 | [PR #234](https://github.com/Acckion/Keylane/pull/234)、[模块指令](AI-MODULE-INSTRUCTIONS.md) |
+| AI-11-d | 结构化工具影响与审批上下文 | 待合并／策略待定 | #234 已合入；类型化描述、不可降级合并与公共审批上下文接通，保持现行审批行为；日历/应用列表是否新增逐次确认无明确答复，不由 Ready 推断 | [PR #235](https://github.com/Acckion/Keylane/pull/235)、[影响模型](AI-ACTION-IMPACT.md) |
 | AI-12 | 各模块统一 AI 动作、文件与剪贴板入口 | 部分实现 | 当前模块样板继续扩展，其他来源见在途 PR | [模块 AI](AI-MODULE-ACTIONS.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
 | AI-12-a | 聊天中的剪贴板与文件搜索引用工具 | 待合并 | PR #217 同步 dev `fc44e8b`；按路径与按引用协议分离，逐次确认，运行内/五分钟引用及来源校验；403+5 项 Swift、合成文件工具/会话、即时排除及发送前撤销回归通过，真实服务未验收 | [PR #217](https://github.com/Acckion/Keylane/pull/217)、[验证](AI-READ-TOOLS-VALIDATION.md) |
 | AI-13 | 通用文件读写、目录操作等基础工具 | 部分实现 | #215 已合入 dev `9a51fd9`；仅根内一级不覆盖创建，目录移动后的不确定结果有合成回归；实机/真实提供商待验收 | [PR #215](https://github.com/Acckion/Keylane/pull/215) |
 | AI-13-a | 文件工具 PDF、私有结果续读与索引衔接 | 已实现 | #224 已合入，逐页确认与 #217 搜索引用分开保留；真实提供商及安装版待验收 | [PR #224](https://github.com/Acckion/Keylane/pull/224)、[合成验证](AI-FILE-READING.md) |
-| AI-13-b | Office、显式本机 OCR 与 Grep 正则 | 待合并 | DOCX/XLSX/PPTX 共用读取层；授权根 PDF 可显式 OCR；正则可选，旧 Office 格式及安装版待验收 | [PR #228](https://github.com/Acckion/Keylane/pull/228)、[实现与验证边界](AI-FILE-READ-ENHANCEMENTS.md) |
+| AI-13-b | Office、显式本机 OCR 与 Grep 正则 | 已实现 | DOCX/XLSX/PPTX 共用读取层；授权根 PDF 可显式 OCR；正则可选，旧 Office 格式及安装版待验收 | [PR #228](https://github.com/Acckion/Keylane/pull/228)、[实现与验证边界](AI-FILE-READ-ENHANCEMENTS.md) |
+| AI-13-c | 文件编辑、移动、废纸篓与恢复 | 待合并 | 普通文件、授权根一级、逐次审批与持久恢复；审查修复原始备份选择、满额恢复记账及移动后撤权恢复身份；外部竞态不宣称版本原子比较；真实废纸篓、外部卷及安装版待验收 | [PR #236](https://github.com/Acckion/Keylane/pull/236)、[架构与边界](AI-FILE-MUTATIONS.md) |
 | AI-14 | 片段/备忘录 AI、Emoji 语义推荐 | 待合并 | PR #214 待合并；同步已合入 #212 的 dev，片段模板/成功结果校验、备忘录附加授权与 Emoji 导入关键词已保留；383 项核心与 5 项提供方测试、合成 AI/Emoji/注册表及签名原生窗口回归通过，真实服务未验收 | [PR #214](https://github.com/Acckion/Keylane/pull/214) |
 | AI-15 | AI 上下文与命令发现、剪贴板/截图动作 | 待合并 | PR #212 与现有上下文功能合并后逐项更新 | [PR #212](https://github.com/Acckion/Keylane/pull/212) |
 | AI-16 | 第三方 AI Extensions 与自动选择工具 | 待核对 | 内置模块适配不等于第三方扩展协议兼容 | [扩展边界](RAYCAST-COMPATIBILITY.md)、[参考](https://manual.raycast.com/ai/ai-extensions) |
@@ -160,7 +162,7 @@
 | TEAM-02 | 企业 SSO、SCIM、MDM 和管理控制 | 待确认范围 | 调查所需服务、身份及设备管理基础设施，再确定批次 | [Raycast 企业功能目录](https://manual.raycast.com/) |
 | SERVICE-01 | 账号、计费与 AI Credits | 待确认范围 | Keylane 当前以用户自己的模型连接为主，商业服务方案另定 | [提供方](AI-PROVIDERS.md)、[Raycast AI Credits](https://manual.raycast.com/ai/ai-credits) |
 | EXTRA-01 | 暂存架、内容投放与桌面管理 | 部分实现 | 网格管理、显式关闭空架后保留、搜索中横向选卡待合并；真实 Finder 拖放待验收 | [暂存架](DROP-SHELF.md)、[PR #211](https://github.com/Acckion/Keylane/pull/211) |
-| EXTRA-02 | 下载扩展及截图/下载自动入架 | 部分实现 | 真实下载完成识别、首次授权及自动投放安装版验收 | [下载联动](DOWNLOADS-SHELF.md) |
+| EXTRA-02 | 下载扩展及截图/下载自动入架 | 部分实现；目录子页和截图入架提速待合并 | 真实下载完成识别、首次授权及自动投放安装版验收 | [下载联动](DOWNLOADS-SHELF.md) |
 
 ## 下一步执行
 
@@ -209,17 +211,50 @@
 
 维护记录：2026-11-21，EXT-01 / PR #223 整合 dev `7f6a01b`（#217），保留 AI 工具运行域引用和功能代次快照，以及目录替换／卸载／重新启用的激活撤销；新增合成工具租约回归，验证结果见目录事务记录。仍待合并及安装版验收。
 
-维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
+
+### 2026-11-21 图标与设置分组补齐（本分支）
+
+涉及 BASE-03、BASE-06、BASE-08、APP-02、CLIP-01、SHOT-01、CAL-01、CONTACT-01、NOTE-01、LINK-01、TOOL-01、TOOL-02、TOOL-07、TOOL-08、AI-06、DICT-01、DICT-02、EXTRA-02。AI 设置移入内置扩展首位，补充下载与主题入口，并按命令用途区分图片。图标资源、映射、验证和后续预备资源登记于 [美术资源](ARTWORK.md)。安装版验收随该功能 PR 跟进。
+
 维护记录：2026-11-21，AI-11-a / 草稿 #226 以已合入依赖的 dev `37dac2e` 重整，移除依赖等价差异；保留 `keylane_read_searched_file`、路径授权、PDF/分页及目录生命周期边界，仅新增会话模块能力选择与发送前冻结。隔离验证与精确头 CI 见原 PR，不安装/合并/发布。
+
+维护记录：2026-11-21，AI-05 / AI-05-a / [PR #229](https://github.com/Acckion/Keylane/pull/229) 从 dev `37dac2e` 实现共享视觉附件、AX 窗口文字、单窗口/窗口内区域图像及 OCR 补充。纯合成验证，不读取真实应用/屏幕、不调用模型，未安装/合并/发布；边界见 [视觉上下文](AI-VISUAL-CONTEXT.md)。
 
 维护记录：2026-11-21，AI-11-b / 草稿 PR #227（实现 49d08d0）在独立工作树推进统一资源身份/快照/重新读取；前序 #218/#221/#223/#226，快照固定与显式刷新语义经用户确认。精确测试/CI 证据在新 PR；未安装/合并/发布。
 
-维护记录：2026-11-21，AI-11-c 在独立工作树接入模块指令声明及工具/说明请求快照；前序 #226/#227，基线 dev `036cfd7`。测试证据和准确头将在本批 PR 记录，不安装/合并/发布。
-
-维护记录：2026-11-21，AI-11-d 在独立工作树整合前序 #234，先统一影响描述和审批数据结构；审批策略变更待用户答复，不把 Ready/合成测试视作策略批准或安装验收。
-维护记录：2026-11-21，AI-11-a / 草稿 #226 以已合入依赖的 dev `37dac2e` 重整，移除依赖等价差异；保留 `keylane_read_searched_file`、路径授权、PDF/分页及目录生命周期边界，仅新增会话模块能力选择与发送前冻结。隔离验证与精确头 CI 见原 PR，不安装/合并/发布。
-
-维护记录：2026-11-21，AI-11-b / 草稿 PR #227（实现 49d08d0）在独立工作树推进统一资源身份/快照/重新读取；前序 #218/#221/#223/#226，快照固定与显式刷新语义经用户确认。精确测试/CI 证据在新 PR；未安装/合并/发布。
 维护记录：2026-11-21，DICT-01：`fix/openrouter-dictation`（实现 `a8ecc59`）补齐 OpenRouter 专用转写目录、能力元数据、旧缓存自动刷新与 JSON 音频上传，待合并。404 项 Swift、27 项发布脚本、听写及共享 AI 集成、arm64 Release 构建与 Apple Development 签名包校验通过，尚未安装；公开目录经共享运行时和选择器确认 30 个转写模型，未读取用户密钥或发送用户录音；验证边界见 [听写](DICTATION.md)。
+
+维护记录：2026-11-21，AI-05 / AI-05-a / PR #229 同步 dev `036cfd7`，保留 #230 的 OpenRouter 听写目录、上传协议与测试依赖；视觉请求和权限检查继续复用公共运行时，冲突仅合并进度记录与测试源码清单。当前集成验证见 PR。
 
 维护记录：2026-11-21，AI-13-b / [PR #228](https://github.com/Acckion/Keylane/pull/228)，实现 `9e0c43e`：从 dev `37dac2e` 新建读取增强分支，Office/本机显式 OCR/行级正则共用现有授权、接收方确认与私有续读；保留 #215/#217/#224 行为，414+3 项全量、最终 12 项增强及文本框审查修复后的 66 项定向复验、9 组基础文件集成、签名隔离引用测试及 27 项发行保障检查通过；准确提交与 Checks 见 PR，未安装或调用真实模型。
+
+
+维护记录：2026-11-21，AI-13-c：用户明确本批包含直接编辑原件、移动与废纸篓；从 dev `37dac2e` 独立实现，保留旧不覆盖创建接口和逐次确认，新修改使用原生协调、版本检查、持久快照及不确定状态。实现 `3a04fde`，验证及 [PR #236](https://github.com/Acckion/Keylane/pull/236) 见下方与模块文档，未安装或访问用户资料。
+
+维护记录：2026-11-21，AI-13-c 在工作期间同步 dev `01cee5a`（#228/#230 已合入），保留 Office/OCR/正则、OpenRouter 听写和现有审批结构；新增文件操作仍为独立增量，整合后的验证另行记录。
+
+维护记录：2026-11-21，AI-13-c / PR #236 在 dev `e23edf81` 上完成整合；保留 #233 已验收图标。全量436+3、最终78项定向及完整应用构建、10组文件工具集成、签名隔离引用/附件及28项发行保障检查通过；真实废纸篓、用户资料、外部卷和提供方未验收，未安装/合并/发布。
+
+维护记录：2026-11-21，EXTRA-02 文件夹观察设置与普通截图自动入架提速，见 [下载与暂存架联动](DOWNLOADS-SHELF.md)。
+
+维护记录：2026-11-21，AI-05 / AI-05-a / PR #229 同步 dev `01cee5a`，保留 #228 的 Office/本机 OCR/正则能力。仅进度表维护记录有冲突，公共 OCR API 原样复用；当前构建与集成验证以 PR 记录为准。
+
+维护记录：2026-11-23，FILE-01：实机发现增量扫描结束后反复全表统计。改用事务内增删／类型变化触发计数，旧索引首次打开初始化一次，后续读取单行汇总。451 项 Swift 测试及真实文件事件集成通过，覆盖旧索引、多连接、回滚和动态更新；Apple Development 签名安装已完成，后台 CPU 与长期能耗正在复验。
+
+维护记录：2026-11-23，BASE-03 / BASE-06：主搜索的命令默认图标统一复用设置列表的带背景 SettingsIcon，Wi-Fi、蓝牙、网络、VPN 等系统设置入口采用同一显示方式。编译与现有回归结果见本分支 PR，安装版界面验收待完成。
+
+维护记录：2026-11-25，BASE-03 / BASE-08：修复 #220 在默认主题中显式传播强调色导致返回按钮变蓝。默认系统材质不覆盖 tint，公共 LauncherBackButton 清除继承染色；代码修复待合并，安装版待验收。
+
+维护记录：2026-11-25，AI-05 / AI-05-a / PR #229 修复共享会话两条审查：重试请求预检通过后才创建分支；模型提示复用实际有界历史。同步 dev `862bf06c` 保留 #250，#227 未合并代码不带入。合成回归与当前头 Checks 见原 PR；真实权限交互／模型及安装版仍未验收。
+
+维护记录：2026-11-25，AI-11-b / PR #227 修复 P1：附加命令首次不可用即永久撤销保留 reader，旧快照不丢、新选择有效，读取中撤权拒绝晚到结果且不误取消其他来源。同步 dev `862bf06c`；456 项 Swift、30 项脚本与生产路由/真实按钮的签名隔离验证通过，安装版/真实用户资料未验收。
+
+维护记录：2026-11-25，AI-11-b / PR #227 后续 P1：独立聊天会话统一持有全局 AI reader 代次，覆盖文件选择器和上下文选择器；首次关闭永久撤销旧权限，快照/草稿保留，重开后须重新选择。生产对象签名隔离界面与 Checks 同路径回归覆盖读取中撤权和新选择；未安装、未调用真实模型或使用用户资料，精确最终检查见 PR。
+
+维护记录：2026-11-25，AI-11-c / #234 同步最新 dev `8e439420`，逐项保留资源 reader 撤权、文件读取与审批、目录、图标及主题实现，只保留模块说明与冻结目录的增量；未合入 #235 或其他未合并分支。代表性回归及精确新头 Checks 见 PR；未占用前台、使用真实资料/模型、安装或发布。
+
+维护记录：2026-11-25，AI-05 / AI-05-a / PR #229 整合 dev `8e439420`（#227）。保留共享图像预览／资源刷新、关闭重开后的 reader 永久撤权与固定快照、预检拒绝不创建重试分支及有界历史模型判定；修复真实配置 `@Published` 回放旧关闭值误撤销新代次。两组组合回归复用远端 CI 和本机离屏签名生产对象；精确提交与检查结果见原 PR。本机不占前台、不读取用户资料或调用模型；系统面板／安装版仍待验收。
+
+维护记录：2026-11-25，AI-11-c / #234 再次整合最新 dev `cba26fcc`（#229 已合入），仅处理公共会话与进度记录两处新增冲突。保留图片／采集来源、有界历史与重试预检、真实 Published reader 撤权回归，并将选中模块说明／工具目录冻结接入同一发送预检；审批策略不变。全程后台合成验证，精确结果见原 PR。
+
+维护记录：2026-11-25，AI-11-d / #235 在原工作树整合最新 dev `4be3fdf2`（#229/#234 已合入），保留图片／快照撤权、冻结模块说明、文件修改原生审批参数；类型化影响只描述现有范围，新文件修改类别保持未声明，不错标为只读。未找到日历／应用列表逐次确认问题的明确用户答复，现行条件原样保留。仅后台合成验证，精确头和 Checks 见原 PR，未合并／发布。

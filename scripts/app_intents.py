@@ -9,13 +9,29 @@ FOCUS_PROTOCOL = 'com.apple.link.systemProtocol.FocusConfiguration'
 METADATA_FILES = {'extract.actionsdata', 'version.json'}
 
 
-def object_directory(binary):
+def object_directories(binary):
     binary = pathlib.Path(binary).resolve(strict=True)
     # Xcode SwiftPM's release symlink resolves to out/Products/Release/Keylane.
     if binary.name != 'Keylane' or binary.parent.parent.name != 'Products' or binary.parents[2].name != 'out':
         raise ValueError('App Intents require a binary from the Xcode SwiftPM Products directory')
     configuration = binary.parent.name
-    return binary.parents[2] / 'Intermediates.noindex/Keylane.build' / configuration / 'Keylane-p.build/Objects-normal' / platform.machine()
+    intermediates = binary.parents[2] / 'Intermediates.noindex/Keylane.build' / configuration
+    # Swift Build uses Keylane.build on Xcode 26.6 runners. Some local
+    # toolchains use Keylane-p.build for the same executable product instead.
+    return tuple(intermediates / target / 'Objects-normal' / platform.machine()
+                 for target in ('Keylane.build', 'Keylane-p.build'))
+
+
+def constant_value_files(binary):
+    groups = [sorted(p for p in directory.glob('*.swiftconstvalues')
+                     if p.is_file() and not p.is_symlink())
+              for directory in object_directories(binary)]
+    groups = [group for group in groups if group]
+    if not groups:
+        raise ValueError('Build is missing Focus filter constant values; rebuild Keylane first')
+    if len(groups) != 1:
+        raise ValueError('Build has ambiguous Focus filter constant values; clean and rebuild Keylane')
+    return groups[0]
 
 
 def validate_metadata(directory):
@@ -43,10 +59,7 @@ def validate_metadata(directory):
 
 
 def extract_metadata(binary, resources, root):
-    objects = object_directory(binary)
-    values = sorted(objects.glob('*.swiftconstvalues'))
-    if not values:
-        raise ValueError('Build is missing Focus filter constant values; rebuild Keylane first')
+    values = constant_value_files(binary)
     sources = sorted((pathlib.Path(root) / 'Sources/Keylane').glob('*.swift'))
     sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
     swiftc = pathlib.Path(subprocess.check_output(['xcrun', '--find', 'swiftc'], text=True).strip())

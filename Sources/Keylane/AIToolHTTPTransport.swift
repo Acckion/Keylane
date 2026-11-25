@@ -16,12 +16,11 @@ enum AIToolHTTPTransport {
                          emit: @Sendable (String) async throws -> Void) async throws -> Int? {
         guard let url = connection.completionURL else { throw AIResponseError.invalidResponse }
         let anthropic = connection.protocolKind == .anthropic
-        var transcript: [[String: Any]] = messages.filter { !anthropic || $0.role != .system }.map {
-            ["role": $0.role.rawValue, "content": $0.content]
-        }
+        var transcript: [[String: Any]] = try messages.filter { !anthropic || $0.role != .system }.map { try $0.wireValue(anthropic: anthropic) }
         var total = 0
         var hasUsage = false
         while true {
+            try AIVisualInputPolicy.validate(messages, connection: connection)
             try await tools.nextRound()
             var body: [String: Any] = ["model": connection.model, "stream": connection.mode == .streaming, "messages": transcript]
             body["tools"] = try tools.catalog.definitions.map { definition -> [String: Any] in
@@ -50,9 +49,10 @@ enum AIToolHTTPTransport {
                 request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             } else if let key, !key.isEmpty { request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization") }
             let data = try JSONSerialization.data(withJSONObject: body)
-            guard data.count <= 1_048_576 else { throw AIResponseError.requestTooLarge }
+            guard data.count <= AIVisualInputPolicy.maximumWireBytes(for: messages) else { throw AIResponseError.requestTooLarge }
             request.httpBody = data
             try await tools.validateCurrent()
+            try AIVisualInputPolicy.validate(messages, connection: connection)
             let (bytes, response) = try await session.bytes(for: request)
             defer { bytes.task.cancel() }
             guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }

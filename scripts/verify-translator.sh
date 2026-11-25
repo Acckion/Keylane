@@ -8,7 +8,7 @@ swiftc -j 2 -swift-version 5 -target "$(uname -m)-apple-macos26.0" -emit-library
 cp Tests/Integration/translator-main.swift "$task_directory/main.swift"
 swiftc -j 2 -swift-version 5 -target "$(uname -m)-apple-macos26.0" -I "$task_directory" -L "$task_directory" -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" \
     Sources/Keylane/TranslatorController.swift Sources/Keylane/TranslatorSpeech.swift Sources/Keylane/TranslatorTextView.swift Sources/Keylane/TranslationSelection.swift \
-    Sources/Keylane/AIConfiguration.swift Sources/Keylane/AIRuntime.swift Sources/Keylane/AIToolRuntime.swift Sources/Keylane/AIToolHTTPTransport.swift Sources/Keylane/AIClaudeToolTransport.swift Sources/Keylane/AIStreamProgress.swift Sources/Keylane/AIProviderPreset.swift Sources/Keylane/AIModelMenuCatalog.swift \
+    Sources/Keylane/AIConfiguration.swift Sources/Keylane/AIVisualSource.swift Sources/Keylane/AIVisualMessage.swift Sources/Keylane/AIRuntime.swift Sources/Keylane/AIToolRuntime.swift Sources/Keylane/AIToolHTTPTransport.swift Sources/Keylane/AIClaudeToolTransport.swift Sources/Keylane/AIStreamProgress.swift Sources/Keylane/AIProviderPreset.swift Sources/Keylane/AIModelMenuCatalog.swift \
     Sources/Keylane/AnthropicAIProtocol.swift Sources/Keylane/AICLIProcess.swift Sources/Keylane/AISubscriptionTransport.swift \
     "$task_directory/main.swift" -o "$task_directory/verify"
 "$task_directory/verify"

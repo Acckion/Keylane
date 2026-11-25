@@ -44,12 +44,18 @@ let prefs = UserDefaults(suiteName:suite)!
 let excluded = scope.appendingPathComponent("already-excluded", isDirectory: true)
 try FileManager.default.createDirectory(at: excluded, withIntermediateDirectories: false)
 let exclusion = AutomaticFileExclusion(path: excluded.path, reason: "fixture", events: 0)
-prefs.set(try JSONEncoder().encode([exclusion]), forKey: "fileSearchAutomaticExclusions")
+let pythonCache = scope.appendingPathComponent("package/__pycache__", isDirectory: true)
+try FileManager.default.createDirectory(at: pythonCache, withIntermediateDirectories: true)
+let pythonBytecode = pythonCache.appendingPathComponent("python-bytecode-fixture.pyc")
+try Data("compiled fixture".utf8).write(to: pythonBytecode)
+let oldPythonExclusion = AutomaticFileExclusion(path: pythonCache.path, reason: "fixture", events: 7)
+prefs.set(try JSONEncoder().encode([exclusion, oldPythonExclusion]), forKey: "fileSearchAutomaticExclusions")
 let localScope = root.appendingPathComponent("always-available", isDirectory: true)
 try FileManager.default.createDirectory(at: localScope, withIntermediateDirectories: false)
 prefs.set([scope.path, localScope.path], forKey: "fileSearchSelectedScopes")
 defer { prefs.removePersistentDomain(forName:suite) }
 var config = FileSearchOptions(roots:[scope.path]); config.ignorePatterns = ["*.tmp"]
+prefs.set(try JSONEncoder().encode(config), forKey: "fileSearchOptions")
 var systemRecents: [RecentlyUsedFile] = []
 var deferredRecents: (([RecentlyUsedFile]) -> Void)?
 var deferRecents = false
@@ -60,6 +66,18 @@ let controller = FileSearchController(directory: root.appendingPathComponent("in
     if deferRecents { deferredRecents = completion }
     else { completion(systemRecents) }
 })
+precondition(controller.options.ignorePatterns == ["*.tmp", "__pycache__"])
+precondition(controller.automaticExclusions == [exclusion])
+let savedAutomatic = try JSONDecoder().decode([AutomaticFileExclusion].self, from: prefs.data(forKey: "fileSearchAutomaticExclusions")!)
+precondition(savedAutomatic == [exclusion], "Stale Python cache rows must be removed from stored settings too")
+let migrationReload = FileSearchController(directory: root.appendingPathComponent("migration-index"), preferences: prefs, watchChanges: false, startImmediately: false)
+precondition(migrationReload.options.ignorePatterns == ["*.tmp", "__pycache__"])
+migrationReload.options.ignorePatterns.removeAll { $0 == "__pycache__" }
+let removedReload = FileSearchController(directory: root.appendingPathComponent("removed-index"), preferences: prefs, watchChanges: false, startImmediately: false)
+precondition(removedReload.options.ignorePatterns == ["*.tmp"], "An explicitly removed rule must not be restored on restart")
+// Leave the active fixture's options in storage; all test settings use the isolated suite.
+prefs.set(try JSONEncoder().encode(controller.options), forKey: "fileSearchOptions")
+print("PASS Python cache migration: custom rules retained, old rows removed, no duplicate rule, explicit removal survives restart")
 var results: [SpotlightFile] = []
 var resultStatus = ""
 var recordsRefresh = false; var emptyFrames = 0; var repeatedRefreshes = 0
@@ -73,6 +91,26 @@ controller.search("")
 precondition(!controller.indexing, "Opening an empty search should not start a full scan")
 controller.search("batch-fixture")
 wait("Wide directory across index batches") { !controller.indexing && results.count == 130 }
+precondition(!controller.automaticExclusions.contains { $0.path == pythonCache.path }, "Python caches must not become automatic exclusion rows")
+controller.search("python-bytecode-fixture")
+wait("Default Python cache rule skips files") { !controller.isSearching && results.isEmpty }
+controller.search("batch-fixture")
+wait("Restore batch query") { !controller.isSearching && results.count == 130 }
+controller.options.ignorePatterns.removeAll { $0 == "__pycache__" }
+controller.startIndex(force: true)
+controller.search("python-bytecode-fixture")
+wait("Removing Python cache rule allows indexing") { !controller.indexing && results.contains { $0.id == pythonBytecode.path } }
+precondition(!controller.automaticExclusions.contains { $0.path == pythonCache.path })
+print("PASS Python cache scan: skipped by default without automatic rows; editable rule removal allows indexing")
+if ProcessInfo.processInfo.environment["KEYLANE_VERIFY_PYCACHE_ONLY"] == "1" {
+    controller.stopRuntime()
+    exit(0)
+}
+// Restore the fixture before unrelated file-content and disconnected-scope scenarios.
+controller.options.ignorePatterns.append("__pycache__")
+controller.startIndex(force: true)
+controller.search("batch-fixture")
+wait("Restore batch query after editable cache rule") { !controller.indexing && !controller.isSearching && results.count == 130 }
 let toolPageQuery = controller.lastPublishedQuery
 let toolPageRows = results
 var toolSearchFinished = false
