@@ -80,6 +80,10 @@ jobs:
         run: python3 scripts/check-installer-scope.py
       - name: Core tests
         run: swift test --scratch-path .build-current --disable-sandbox
+      - name: Process resource sampler calibration
+        run: |
+          swiftc -O scripts/sample-process-resources.swift -o /private/tmp/keylane-resource-sampler
+          /private/tmp/keylane-resource-sampler --self-check
       - name: AI native file tools and approval integration
         run: bash scripts/verify-ai-file-tools.sh
       - name: File search controller integration

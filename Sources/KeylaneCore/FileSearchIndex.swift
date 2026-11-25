@@ -60,6 +60,7 @@ public final class FileSearchIndex {
         public var contentSkips: UInt64 = 0
         public var contentDeferrals: UInt64 = 0
         public var transactions: UInt64 = 0
+        public var subtreeReconcileSteps: UInt64 = 0
     }
     public private(set) var writeDiagnostics = WriteDiagnostics()
     private var db: OpaquePointer?
@@ -330,14 +331,19 @@ public final class FileSearchIndex {
     public func removeUnseenEntry(root: String, path: String, epoch: String) throws {
         try write("DELETE FROM files WHERE path=? AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?)", [path,root,epoch])
     }
+    static let subtreeReconcileSQL = "DELETE FROM files WHERE rowid IN (SELECT rowid FROM files NOT INDEXED WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?))"
     /// Limit reconciliation to the changed entry and its descendants.
     public func removeUnseen(root: String, subtree: String, epoch: String) throws {
         let lower = subtree + "/"
         let upper = subtree + "0" // The next byte after the slash, under SQLite's binary collation.
-        // Bind row IDs first so SQLite cannot scan every record in the root
-        // (including large body overflow pages) for each changed subtree.
-        try write("DELETE FROM files WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?)",
-                  [subtree, lower, upper, root, epoch])
+        // Keep ownership/epoch filtering inside the row-ID selection. An outer
+        // root predicate makes SQLite prefer a whole-root covering-index walk.
+        // NOT INDEXED still permits INTEGER PRIMARY KEY lookups, and prevents
+        // that same whole-root plan from reappearing inside the selection.
+        let q = try statement(Self.subtreeReconcileSQL, [subtree, lower, upper, root, epoch])
+        defer { sqlite3_finalize(q) }
+        guard sqlite3_step(q) == SQLITE_DONE else { throw FileIndexError.database }
+        writeDiagnostics.subtreeReconcileSteps &+= UInt64(sqlite3_stmt_status(q, SQLITE_STMTSTATUS_VM_STEP, 0))
     }
     /// Reconcile completed areas while retaining the last known rows below
     /// unreadable paths. Fetch bounded metadata batches, never file bodies.
@@ -358,7 +364,7 @@ public final class FileSearchIndex {
                 candidates = ""
                 values = [String(cursor), root, epoch]
             }
-            let s = try statement("SELECT rowid,path FROM files WHERE " + candidates + "rowid>? AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?) ORDER BY rowid LIMIT 512", values)
+            let s = try statement("SELECT rowid,path FROM files NOT INDEXED WHERE " + candidates + "rowid>? AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?) ORDER BY rowid LIMIT 512", values)
             var rows: [(Int64, String)] = []
             var status = sqlite3_step(s)
             while status == SQLITE_ROW {
