@@ -718,6 +718,24 @@ final class ClipboardController: ObservableObject {
         ClipboardFiles(detail.assetURL.map { [ClipFile(path: $0.path)] } ?? detail.files)
     }
 
+    func prepareFileDrag(id: String, completion: @escaping (ResultFileDragPayload?) -> Void) {
+        guard let runtime, !runtime.cancelled, items.contains(where: { $0.id == id }) else { completion(nil); return }
+        worker.async { [weak self] in
+            let result = Result { () throws -> ClipDetail in
+                guard let record = try self?.store?.detail(id: id) else { throw CocoaError(.fileNoSuchFile) }
+                return record
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !runtime.cancelled, self.items.contains(where: { $0.id == id }) else { completion(nil); return }
+                do {
+                    let detail = try result.get()
+                    let access = self.files(for: detail)
+                    completion(try ResultFileDragPayload(urls: access.urls, retaining: access))
+                } catch { self.status = error.localizedDescription; completion(nil) }
+            }
+        }
+    }
+
     static func isImageFile(_ file: ClipFile) -> Bool {
         isImagePath(file.path)
     }

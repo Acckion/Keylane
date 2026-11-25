@@ -3,6 +3,13 @@ import AppKit
 import KeylaneCore
 import UniformTypeIdentifiers
 
+// The file-controller fixture does not exercise AI tool registration. Match only its
+// declaration dependency; production search, scope validation and drag preparation run unchanged.
+struct AIFileToolIndexSource: Sendable {
+    let isCurrent: @MainActor @Sendable () -> Bool
+    let search: @MainActor @Sendable (String, String) async throws -> [String]
+}
+
 let app = NSApplication.shared
 let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYLANE_FILE_TEST_ROOT"]!)
 let scope = root.appendingPathComponent("scope")
@@ -485,6 +492,12 @@ controller.startRuntime()
 controller.startIndex()
 controller.search("runtime-restored")
 wait("File changed while disabled appears after restart") { !controller.indexing && results.first?.id == resumed.path }
+let drag = try controller.prepareFileDrag(resumed)
+precondition(drag.urls == [resumed])
 controller.stopRuntime()
+do {
+    _ = try controller.prepareFileDrag(resumed)
+    preconditionFailure("Stopped file search must reject new drags")
+} catch {}
 blocked.stopRuntime()
 print("PASS file controller: stable refresh/no empty frames, stale-query cancellation, launcher preference, Chinese filename, multiple keywords, ignore/negation, opt-in text/PDF content, low-space pause, hidden files, ignore toggle, FSEvents refresh, real stats, offline retention/removal")

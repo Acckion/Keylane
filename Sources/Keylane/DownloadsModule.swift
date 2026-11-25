@@ -91,7 +91,9 @@ private struct DownloadsView: View {
                 SelectableResultList(selection: controller.selectedID, query: controller.query, firstResult: controller.results.first?.id) {
                     ResultListSection(title: "下载文件", isFirst: true) {
                         ForEach(controller.results) { file in
-                            ResultListButton(id: file.id, action: { controller.selectedID = file.id }) {
+                            ResultListButton(id: file.id, fileDrag: ResultFileDrag(id: AnyHashable(file.id),
+                                select: { controller.selectedID = file.id }, prepare: { controller.prepareFileDrag(id: file.id, completion: $0) }),
+                                action: { controller.selectedID = file.id }) {
                                 ResultListRow(selected: file.id == controller.selectedID) {
                                     Image(nsImage: NSWorkspace.shared.icon(forFile: file.url.path)).resizable().scaledToFit().frame(width: 28, height: 28)
                                 } content: {

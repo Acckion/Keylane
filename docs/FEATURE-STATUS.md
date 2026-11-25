@@ -49,6 +49,7 @@
 | APP-03 | 按应用闲置自动退出 | 部分实现 | 各应用保存对话框、退出拒绝和重启恢复实测 | [生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/auto-quit) |
 | FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数优化待合并，安装版能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
 | FILE-02 | 文件打开方式、分享、复制、定位等动作 | 部分实现 | 真实分享服务、取消、权限与焦点验收 | [细项](TODO.md) |
+| FILE-02-a | 文件列表拖出复制（文件搜索、剪贴板、下载） | 已实现，待合并 | 原生手势和临时文件隔离验证；安装版拖到 Finder 待验收 | [实现与验证](LIST-FILE-DRAG.md) |
 | CLIP-01 | 剪贴板历史、持久化、搜索及 OCR | 部分实现 | 真实跨应用粘贴、采集边界和隐私设置回归 | [实现](../Sources/Keylane/ClipboardActions.swift)、[细项](TODO.md)、[Raycast](https://manual.raycast.com/clipboard-history) |
 | SHOT-01 | 截图/录屏管理、OCR、搜索与文件动作 | 部分实现 | 跨应用分享、粘贴、云盘和权限验收 | [截图](SCREENSHOTS.md)、[Raycast](https://manual.raycast.com/screenshots) |
 | SHOT-02 | 截图捕获入口 | 已实现 | 核对不同捕获方式、快捷键及输出选择 | [截图](SCREENSHOTS.md) |

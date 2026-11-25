@@ -59,7 +59,13 @@ final class Delegate: NSObject, NSApplicationDelegate { func hideLauncher() {} }
         try require(received[1].lastPathComponent == "new.zip", "Completed name must settle and arrive once")
         controller.refresh(); try await Task.sleep(for: .milliseconds(400))
         try require(received.count == 2, "Repeated events must not create duplicate shelves")
+        let dragID = controller.files[0].id
+        var drag: ResultFileDragPayload?
+        controller.prepareFileDrag(id: dragID) { drag = $0 }
+        try require(drag?.urls == [controller.files[0].url], "Drag must resolve the requested download")
         controller.setEnabled(false)
+        controller.prepareFileDrag(id: dragID) { drag = $0 }
+        try require(drag == nil, "Disabled downloads must reject new drags")
         try Data([3]).write(to: root.appendingPathComponent("disabled.txt"))
         try await Task.sleep(for: .seconds(3))
         try require(controller.files.isEmpty && received.count == 2, "Stopping must clear UI and stop delivery")

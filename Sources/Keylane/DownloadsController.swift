@@ -122,6 +122,14 @@ final class DownloadsController: ObservableObject {
             try action(file.url)
         } catch { self.operationError = error.localizedDescription; refresh() }
     }
+    func prepareFileDrag(id: String, completion: @escaping (ResultFileDragPayload?) -> Void) {
+        guard enabled, let file = results.first(where: { $0.id == id }), let root = folder?.accessibleURL else { completion(nil); return }
+        do {
+            guard file.url.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL,
+                  try file.url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { throw CocoaError(.fileReadNoPermission) }
+            completion(try ResultFileDragPayload(urls: [file.url], scopes: [root]))
+        } catch { operationError = error.localizedDescription; completion(nil) }
+    }
     func dismissOperationError() { operationError = "" }
     func sendSelectedToShelf() { withSelected { url in
         guard addToShelf?([url]) == true else { throw NSError(domain: "Keylane.Downloads", code: 1, userInfo: [NSLocalizedDescriptionKey: "请先启用暂存架。下载文件未改动。"]) }

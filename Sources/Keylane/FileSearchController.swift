@@ -247,6 +247,11 @@ final class FileSearchController: ObservableObject {
         return try locations.item(at: url)
     }
 
+    func prepareFileDrag(_ url: URL) throws -> ResultFileDragPayload {
+        _ = try inspect(url)
+        return try ResultFileDragPayload(urls: [url], scopes: activeURLs)
+    }
+
     func rememberOpenedFile(_ file: SpotlightFile) {
         guard !file.isDirectory else { return }
         recentPaths.removeAll { $0 == file.id }
