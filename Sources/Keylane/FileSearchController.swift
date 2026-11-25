@@ -23,7 +23,10 @@ private final class FileScanSession: @unchecked Sendable {
     private var recursive = Set<String>()
     var updated = Set<String>()
     var removed = Set<String>()
-    init(token: FileScanCancellation, options: FileSearchOptions) {
+    let usesTransientSeen: Bool
+    var transientSeenFinished = false // Writer queue only.
+    init(token: FileScanCancellation, options: FileSearchOptions, usesTransientSeen: Bool) {
+        self.usesTransientSeen = usesTransientSeen
         self.token = token; self.options = options
         epoch = (options.contentSearch ? "c:" : "n:") + UUID().uuidString
     }
@@ -1195,10 +1198,20 @@ final class FileSearchController: ObservableObject {
         restoringIndex = false
         indexFailure = nil
         indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []
-        let session = FileScanSession(token: token, options: config)
+        let session = FileScanSession(token: token, options: config, usesTransientSeen: paths == nil)
         scanSession = session
         scanWork.submit { [weak self] _ in
-            guard let self, !token.cancelled else { return }
+            guard let self else { return }
+            defer {
+                if session.usesTransientSeen {
+                    self.writer.sync {
+                        session.transientSeenFinished = true
+                        try? self.writeDB?.discardTransientSeen(epoch: session.epoch)
+                        self.writeDB?.releaseCachedPages()
+                    }
+                }
+            }
+            guard !token.cancelled else { return }
             func write<T>(_ body: (FileSearchIndex) throws -> T) throws -> T {
                 try self.writer.sync {
                     guard !token.cancelled, let db = self.writeDB else { throw CancellationError() }
@@ -1228,6 +1241,9 @@ final class FileSearchController: ObservableObject {
                     return
                 }
                 recoveryScan = opened
+                if session.usesTransientSeen {
+                    try write { try $0.prepareTransientSeen(epoch: session.epoch) }
+                }
             } catch {
                 DispatchQueue.main.async { if !token.cancelled { self.reportIndexFailure(error) } }
                 return
@@ -1629,6 +1645,10 @@ final class FileSearchController: ObservableObject {
                             return true
                         }
                         guard !accepted.isEmpty else { return }
+                        if session.usesTransientSeen {
+                            guard !session.transientSeenFinished else { return }
+                            try db.prepareTransientSeen(epoch: session.epoch)
+                        }
                         let deletionEpoch = UUID().uuidString
                         try db.transaction {
                             for change in accepted {

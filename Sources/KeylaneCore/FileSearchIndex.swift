@@ -65,6 +65,7 @@ public final class FileSearchIndex {
     public private(set) var writeDiagnostics = WriteDiagnostics()
     private var db: OpaquePointer?
     private var contentStatements: [String: OpaquePointer] = [:]
+    private var transientSeenEpoch: String?
     private var activeRecoveryScan: UUID?
     public let url: URL
     public init(url: URL) throws {
@@ -176,7 +177,38 @@ public final class FileSearchIndex {
             throw error
         }
     }
+    /// Full scans only need their membership marks on this writer connection.
+    /// A compact SQLite TEMP table participates in transaction rollback without
+    /// touching the durable WAL. No marker is used to resume a cancelled scan.
+    public func prepareTransientSeen(epoch: String) throws {
+        guard transientSeenEpoch != epoch else { return }
+        try exec("DROP TRIGGER IF EXISTS temp.scan_seen_delete; DROP TABLE IF EXISTS temp.scan_seen")
+        transientSeenEpoch = nil
+        try exec("""
+            CREATE TEMP TABLE scan_seen(id INTEGER PRIMARY KEY);
+            CREATE TEMP TRIGGER scan_seen_delete AFTER DELETE ON main.files
+            BEGIN DELETE FROM scan_seen WHERE id=old.rowid; END;
+            """)
+        transientSeenEpoch = epoch
+    }
+
+    public func discardTransientSeen(epoch: String) throws {
+        guard transientSeenEpoch == epoch else { return }
+        try exec("DROP TRIGGER temp.scan_seen_delete; DROP TABLE temp.scan_seen")
+        transientSeenEpoch = nil
+    }
+
+    private static let durableUnseen = "NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?)"
+    private static let transientUnseen = "NOT EXISTS(SELECT 1 FROM temp.scan_seen WHERE id=files.rowid)"
+    private func unseenPredicate(epoch: String) -> String {
+        transientSeenEpoch == epoch ? Self.transientUnseen : Self.durableUnseen
+    }
+
     private func markSeen(path: String, epoch: String) throws {
+        if transientSeenEpoch == epoch {
+            try write("INSERT OR IGNORE INTO temp.scan_seen(id) SELECT rowid FROM files WHERE path=?", [path])
+            return
+        }
         try write("INSERT INTO file_seen(path,epoch) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET epoch=excluded.epoch WHERE file_seen.epoch IS NOT excluded.epoch", [path,epoch])
         if sqlite3_changes(db) > 0 { writeDiagnostics.seenWrites &+= 1 }
     }
@@ -437,12 +469,17 @@ public final class FileSearchIndex {
         do { try body(); try exec("COMMIT"); writeDiagnostics.transactions &+= 1 }
         catch { try? exec("ROLLBACK"); writeDiagnostics = previous; throw error }
     }
-    public func removeUnseen(root: String, epoch: String) throws { try write("DELETE FROM files WHERE root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?)",[root,epoch]) }
+    public func removeUnseen(root: String, epoch: String) throws {
+        try write("DELETE FROM files WHERE root=? AND " + unseenPredicate(epoch: epoch),
+                  transientSeenEpoch == epoch ? [root] : [root, epoch])
+    }
     /// Metadata-only directory reconciliation must retain all descendants.
     public func removeUnseenEntry(root: String, path: String, epoch: String) throws {
-        try write("DELETE FROM files WHERE path=? AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?)", [path,root,epoch])
+        try write("DELETE FROM files WHERE path=? AND root=? AND " + unseenPredicate(epoch: epoch),
+                  transientSeenEpoch == epoch ? [path, root] : [path, root, epoch])
     }
-    static let subtreeReconcileSQL = "DELETE FROM files WHERE rowid IN (SELECT rowid FROM files NOT INDEXED WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?))"
+    static let subtreeReconcileSQL = subtreeReconcilePrefix + durableUnseen + ")"
+    private static let subtreeReconcilePrefix = "DELETE FROM files WHERE rowid IN (SELECT rowid FROM files NOT INDEXED WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND "
     /// Limit reconciliation to the changed entry and its descendants.
     public func removeUnseen(root: String, subtree: String, epoch: String) throws {
         let lower = subtree + "/"
@@ -451,7 +488,8 @@ public final class FileSearchIndex {
         // root predicate makes SQLite prefer a whole-root covering-index walk.
         // NOT INDEXED still permits INTEGER PRIMARY KEY lookups, and prevents
         // that same whole-root plan from reappearing inside the selection.
-        let q = try statement(Self.subtreeReconcileSQL, [subtree, lower, upper, root, epoch])
+        let q = try statement(Self.subtreeReconcilePrefix + unseenPredicate(epoch: epoch) + ")",
+                              transientSeenEpoch == epoch ? [subtree, lower, upper, root] : [subtree, lower, upper, root, epoch])
         defer { sqlite3_finalize(q) }
         guard sqlite3_step(q) == SQLITE_DONE else { throw FileIndexError.database }
         writeDiagnostics.subtreeReconcileSteps &+= UInt64(sqlite3_stmt_status(q, SQLITE_STMTSTATUS_VM_STEP, 0))
@@ -470,12 +508,12 @@ public final class FileSearchIndex {
             let values: [String]
             if let subtree {
                 candidates = "rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND "
-                values = [subtree, subtree + "/", subtree + "0", String(cursor), root, epoch]
+                values = [subtree, subtree + "/", subtree + "0", String(cursor), root]
             } else {
                 candidates = ""
-                values = [String(cursor), root, epoch]
+                values = [String(cursor), root]
             }
-            let s = try statement("SELECT rowid,path FROM files NOT INDEXED WHERE " + candidates + "rowid>? AND root=? AND NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?) ORDER BY rowid LIMIT 512", values)
+            let s = try statement("SELECT rowid,path FROM files NOT INDEXED WHERE " + candidates + "rowid>? AND root=? AND " + unseenPredicate(epoch: epoch) + " ORDER BY rowid LIMIT 512", transientSeenEpoch == epoch ? values : values + [epoch])
             var rows: [(Int64, String)] = []
             var status = sqlite3_step(s)
             while status == SQLITE_ROW {
