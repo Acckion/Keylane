@@ -3,15 +3,6 @@ import ApplicationServices
 import Foundation
 import KeylaneCore
 
-struct AIVisualSource: Codable, Equatable, Sendable {
-    let application: String
-    let windowTitle: String
-    let windowID: UInt32
-    let capturedAt: Date
-    let usedAccessibility: Bool
-    var requiresScreenCapture = true
-}
-
 /// The same image blocks feed ordinary and tool-enabled HTTP requests.
 extension AIMessage {
     struct ImageBlock: Encodable {

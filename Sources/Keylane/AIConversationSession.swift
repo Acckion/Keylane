@@ -109,6 +109,7 @@ final class AIConversationSession: ObservableObject {
         self.readKey = readKey
         self.validateVisualInput = validateVisualInput
         self.preferredQuickModel = preferredQuickModel
+        composer.observeResourceAvailability(configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher())
         refreshProjects()
         refreshHistory(restoreLatest: false)
         guard observesDefaultConnection else { return }

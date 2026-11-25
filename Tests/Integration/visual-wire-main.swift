@@ -13,6 +13,7 @@ Task { @MainActor in
         let image = try AIImageInput(data: data as Data, mediaType: "image/jpeg", width: 24, height: 16)
         try await verifyVisualWire(image: image)
         try await verifyVisualConversationRegressions(image: image)
+        try await verifyVisualResourceComposition(image: image)
     } catch { fatalError("Visual wire fixture: \(error)") }
     visualWireFinished = true
 }

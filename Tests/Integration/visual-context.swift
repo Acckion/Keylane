@@ -49,6 +49,7 @@ import SwiftUI
 
     try await verifyVisualWire(image: image)
     try await verifyVisualConversationRegressions(image: image)
+    try await verifyVisualResourceComposition(image: image)
     let sessionConfiguration = URLSessionConfiguration.ephemeral
     sessionConfiguration.protocolClasses = [VisualProtocol.self]
     var vision = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "synthetic-vision", mode: .complete)

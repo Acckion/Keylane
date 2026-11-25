@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 import ImageIO
 import KeylaneCore
@@ -278,4 +279,123 @@ private final class VisualConversationProtocol: URLProtocol {
     precondition(session.visualInputIssue != nil && !session.canSendDraft && !session.submit(session.composer.text))
     precondition(VisualConversationProtocol.state.requests.count == 1)
     print("PASS bounded visual model gating: retained old/current images blocked; local-only old image allows exact text-only outbound history")
+}
+
+/// #227 + #229: accepted resource snapshots and images coexist without reviving readers.
+@MainActor func verifyVisualResourceComposition(image: AIImageInput) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-visual-resource-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let suite = "keylane.visual-resource." + UUID().uuidString
+    let preferences = UserDefaults(suiteName: suite)!
+    defer { preferences.removePersistentDomain(forName: suite) }
+    var model = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "composed-vision", mode: .complete)
+    model.supportsImages = true
+    preferences.set(try JSONEncoder().encode(AIConfiguration.State(enabled: true, connections: [model], selectedID: model.id)), forKey: "aiConnections.v1")
+    let configuration = AIConfiguration(preferences: preferences)
+    let transport = URLSessionConfiguration.ephemeral
+    transport.protocolClasses = [VisualConversationProtocol.self]
+    let runtime = AIRuntime(configuration: transport)
+    let session = AIConversationSession(configuration: configuration, runtime: runtime, observesDefaultConnection: false, readKey: { _ in "synthetic-key" })
+    let composer = session.composer
+    func waitFor(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition() && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        precondition(condition(), "Composed resource/vision operation did not settle")
+    }
+    var picture = AIConversationAttachment(title: "Local chart", text: "Image context", image: image)
+    picture.resourceSnapshot = .init(reference: try AIResourceReference(moduleID: .init(rawValue: "fixture.visual"), sourceID: "chart"), revision: "fixed", text: picture.text)
+    composer.text = "Keep composed draft"; composer.selection = NSRange(location: 3, length: 2)
+    composer.attachments = [picture]
+    let file = root.appendingPathComponent("selected.txt")
+    try Data("accepted file snapshot".utf8).write(to: file)
+    composer.attachFiles([file]) // Production native file-panel callback, no panel or foreground window.
+    try await waitFor { !composer.loadingFiles }
+    let accepted = composer.attachments
+    precondition(accepted.count == 2 && accepted[0] == picture && accepted[1].resourceSnapshot?.matches(accepted[1].text) == true)
+    precondition(composer.canReread(accepted[1]))
+    let oldDraft = composer.snapshot, pickerDraft = composer.draftID, pickerGeneration = composer.contextGeneration
+    let oldPickerReader = composer.prepareResourceReader(AIFileAttachment.resourceReader(file))
+    configuration.setEnabled(false); configuration.setEnabled(true)
+    precondition(composer.attachments == accepted && composer.text == oldDraft.text && composer.selection == oldDraft.selection)
+    precondition(composer.draftID == pickerDraft && composer.contextGeneration != pickerGeneration && !composer.canReread(accepted[1]))
+    composer.restore(oldDraft)
+    precondition(composer.attachments == accepted && !composer.canReread(accepted[1]))
+    precondition(oldPickerReader.isRevoked && !composer.appendResourceAttachment(accepted[1], reader: oldPickerReader, for: composer.draftID))
+    try Data("new file version".utf8).write(to: file)
+    composer.rereadAttachment(accepted[1].id)
+    precondition(!composer.loadingFiles && composer.attachments == accepted)
+    // A newly selected file gets fresh authority; accepted old bytes remain unchanged.
+    composer.attachFiles([file]); try await waitFor { !composer.loadingFiles }
+    precondition(composer.attachments.count == 3 && composer.attachments[1] == accepted[1] && composer.attachments[2].text == "new file version", "Fresh file: count=\(composer.attachments.count), error=\(composer.fileError), enabled=\(configuration.state.enabled)")
+    precondition(composer.canReread(composer.attachments[2]))
+    let decoded = try JSONDecoder().decode([AIConversationAttachment].self, from: JSONEncoder().encode(composer.attachments))
+    let restored = AIConversationComposer(); restored.attachments = decoded
+    precondition(decoded == composer.attachments && decoded[0].image == image && !restored.canReread(decoded[2]))
+
+    // Same preparation and append callbacks as AIChatContextSheet, bound before its async extraction.
+    var pending: CheckedContinuation<Void, Never>?
+    var reads = 0
+    let source = AIActionSource(moduleID: .init(rawValue: "fixture.composed-context"), load: {
+        reads += 1
+        await withCheckedContinuation { pending = $0 }
+        return .init(sourceID: "same", title: "Synthetic picker", text: "late context")
+    }, isCurrent: { _ in true })
+    let retained = composer.attachments
+    let reader = composer.prepareResourceReader(.init(source: source))
+    var rejectedLate = false
+    let work = Task { @MainActor in
+        do { _ = try await reader.read(); preconditionFailure("Revoked picker reader returned late content") }
+        catch { rejectedLate = true }
+    }
+    try await waitFor { pending != nil }
+    configuration.setEnabled(false); configuration.setEnabled(true)
+    pending?.resume(); pending = nil
+    await work.value
+    precondition(rejectedLate && reads == 1 && composer.attachments == retained)
+    // Cancel queued image preparation before it starts even with no ComposerView mounted.
+    var imagePreparation = 0
+    composer.loadAttachments { await MainActor.run { imagePreparation += 1 }; return [picture] }
+    configuration.setEnabled(false); configuration.setEnabled(true)
+    try await Task.sleep(for: .milliseconds(60))
+    precondition(!composer.loadingFiles && imagePreparation == 0 && composer.attachments == retained)
+    print("PASS composed file/context/image routes: independent session off/on permanently revokes old readers and picker generation, preserves snapshots/selection/images, rejects late context and queued image; fresh selections work")
+
+    // Retry restores live draft readers only when accepted; a failed visual preflight must do nothing.
+    let store = AIConversationRepository(url: root.appendingPathComponent("history.sqlite"))
+    let visualSource = AIVisualSource(application: "Synthetic", windowTitle: "Synthetic", windowID: 8, capturedAt: Date(), usedAccessibility: false)
+    var visual = picture; visual.visualSource = visualSource
+    var first = AIConversationTurn(question: "Earlier", attachments: [visual]); first.answer = "Earlier answer"; first.complete = true
+    var last = AIConversationTurn(question: "Latest", attachments: [accepted[1]]); last.answer = "Latest answer"; last.complete = true
+    let original = AIChatRecord(id: UUID(), content: .init(model: .init(model), turns: [first, last]))
+    try store.save(original)
+    let retry = AIConversationSession(configuration: configuration, runtime: runtime, history: store, observesDefaultConnection: false,
+        validateVisualInput: { messages, connection in try AIVisualInputPolicy.validate(messages, connection: connection, screenAllowed: { false }, accessibilityAllowed: { false }) },
+        readKey: { _ in "synthetic-key" })
+    retry.beginChat(); retry.openChat(original.id)
+    try await waitFor { !retry.loadingChat && retry.chatID == original.id }
+    retry.composer.text = "Keep retry draft"; retry.composer.attachments = [picture]
+    retry.composer.attachFiles([file]); try await waitFor { !retry.composer.loadingFiles }
+    let savedDraft = retry.composer.snapshot
+    let resource = retry.composer.attachments[1]
+    precondition(retry.composer.canReread(resource))
+    precondition(!retry.regenerate() && retry.chatID == original.id && retry.turns == original.content.turns)
+    precondition(retry.composer.canReread(resource) && retry.composer.attachments == savedDraft.attachments)
+    configuration.setEnabled(false); configuration.setEnabled(true)
+    retry.composer.restore(savedDraft)
+    precondition(retry.composer.attachments == savedDraft.attachments && !retry.composer.canReread(resource))
+    precondition(!retry.regenerate() && retry.chatID == original.id && retry.turns == original.content.turns)
+    // No previous visual source is sent when retrying the first local-image-only turn.
+    let localRecord = AIChatRecord(id: UUID(), content: .init(model: .init(model), turns: [.init(question: "Local", attachments: [picture])]))
+    try store.save(localRecord)
+    retry.openChat(localRecord.id); try await waitFor { !retry.loadingChat && retry.chatID == localRecord.id }
+    retry.composer.restore(savedDraft)
+    VisualConversationProtocol.state.clear()
+    precondition(retry.regenerate())
+    try await waitFor { !retry.running }
+    precondition(retry.turns.last?.complete == true && VisualConversationProtocol.state.requests.count == 1)
+    precondition(retry.composer.attachments == savedDraft.attachments && !retry.composer.canReread(resource))
+    let persisted = try store.load(original.id)
+    precondition(persisted?.content.turns == original.content.turns)
+    print("PASS composed retries: rejected visual retry preserves active resource reader and original conversation; off/on and accepted retry cannot revive revoked draft copies; mixed persisted image/resource turns remain intact")
 }
