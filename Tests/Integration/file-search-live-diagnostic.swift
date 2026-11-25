@@ -267,28 +267,32 @@ controller.testCheckpointBarrier = { _ in
 }
 try prime(during)
 controller.startIndex()
-try wait("full scan finished enumeration but has not returned from writer") { barrierReached() && controller.indexing }
+try wait("full scan finished enumeration and is held outside the writer") { barrierReached() && controller.indexing }
 try write(during)
 try event(during)
-if holdSeconds > 0, let start = written[during.label] {
-    while now() - start < holdSeconds {
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        if try hasMetadata(during) { break }
-    }
+try observe(during)
+gateLock.lock()
+let stillHeld = !releasedBarrier
+gateLock.unlock()
+guard controller.indexing, stillHeld else {
+    throw FixtureFailure(description: "Live metadata and visible results must arrive before the warm baseline resumes")
 }
-let hasDuring = try hasMetadata(during)
-print("during baseline held: classified=true metadata=\(hasDuring) published=\(published[during.label] != nil)")
-guard controller.indexing, !hasDuring, published[during.label] == nil else {
-    throw FixtureFailure(description: "Comparison invariant failed; baseline did not hold metadata or live patch already exists")
+print("during warm baseline: classified=true metadata=true published=true gate=held")
+if holdSeconds > 0, let start = written[during.label] {
+    while now() - start < holdSeconds { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
 }
 releaseBarrier()
 controller.testCheckpointBarrier = nil
 try observe(during)
-try wait("gated baseline and incremental event both finished") { !controller.indexing }
+try wait("gated baseline and incremental event both finished") { controller.testEventPipelineIdle }
+let retainedDuring = try hasMetadata(during)
+guard retainedDuring, published[during.label] != nil else {
+    throw FixtureFailure(description: "Live metadata did not survive baseline cleanup")
+}
 
 try prime(post)
 try write(post)
 try event(post)
 try observe(post)
 try wait("final marker wave finished") { !controller.indexing }
-print("PASS real FSEvents: steady before/after; metadata and publication deferred while #246's baseline is gated, then automatically visible")
+print("PASS real FSEvents: steady before/after; metadata and automatic publication arrive during the held warm baseline and survive cleanup")

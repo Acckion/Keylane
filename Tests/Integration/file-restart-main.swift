@@ -99,12 +99,9 @@ try FileManager.default.createDirectory(at: locked, withIntermediateDirectories:
 let lockedFile = locked.appendingPathComponent("locked-fixture.txt")
 try Data().write(to: lockedFile)
 try wait("Initial readable subtree") { try contains(lockedFile.lastPathComponent) && !controller.indexing }
-controller.stopRuntime(); pump(0.3)
 try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
 defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path) }
-controller = FileSearchController(directory: store, preferences: prefs)
-controller.search("fixture", standalone: false)
-try wait("Unreadable subtree queued for repair") { controller.testFullIndexScans == 1 && !controller.indexing && controller.inaccessible.contains(locked.path) }
+try wait("Live chmod loss queued for repair") { !controller.indexing && controller.testPendingRepairPaths.contains(locked.path) }
 require(try contains(lockedFile.lastPathComponent), "Unreadable subtree lost its saved rows")
 require(controller.testFullIndexScans == 1, "Unreadable subtree caused a second full scan")
 controller.stopRuntime(); pump(0.3)
@@ -113,7 +110,17 @@ controller.search("fixture", standalone: false)
 try wait("Restart reconciles with unreadable subtree") { controller.testFullIndexScans == 1 && !controller.indexing }
 pump(6)
 require(controller.testFullIndexScans == 1, "Unreadable subtree repeatedly triggered full scans")
+var repairWakeScans = 0
+controller.testScanCompleted = { _, _ in repairWakeScans += 1 }
+controller.testIndexEvents(paths: [scope.path], flags: [FSEventStreamEventFlags(
+    kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemModified)])
+pump(3)
+require(repairWakeScans == 0, "Ordinary root modification retried an unrelated unreadable subtree")
+require(controller.testPendingRepairPaths.contains(locked.path), "Filtered notification lost pending repair")
+print("PASS ordinary ancestor changes do not wake unresolved repairs")
+
 try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+try wait("Live chmod alone wakes saved repair") { !controller.indexing && !controller.testPendingRepairPaths.contains(locked.path) }
 try FileManager.default.removeItem(at: lockedFile)
 try Data().write(to: locked.appendingPathComponent("unlocked-fixture.txt"))
 try wait("Permission restored subtree repair") { try !controller.indexing && !contains(lockedFile.lastPathComponent) && contains("unlocked-fixture.txt") }

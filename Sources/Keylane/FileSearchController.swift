@@ -1,6 +1,8 @@
+import OSLog
 import AppKit
 import Combine
 import CoreServices
+import Darwin
 import KeylaneCore
 
 private final class FileScanCancellation: @unchecked Sendable {
@@ -11,6 +13,47 @@ private final class FileScanCancellation: @unchecked Sendable {
 struct AutomaticFileExclusion: Codable, Identifiable, Equatable {
     var id: String { path }; let path: String; let reason: String; var events: Int
 }
+// Pending event paths cross queues; reconciliation state belongs only to writer.
+private final class FileScanSession: @unchecked Sendable {
+    let token: FileScanCancellation
+    let epoch: String
+    let options: FileSearchOptions
+    private let lock = NSLock()
+    private var pending = Set<String>()
+    private var recursive = Set<String>()
+    var updated = Set<String>()
+    var removed = Set<String>()
+    let usesTransientSeen: Bool
+    var transientSeenFinished = false // Writer queue only.
+    init(token: FileScanCancellation, options: FileSearchOptions, usesTransientSeen: Bool) {
+        self.usesTransientSeen = usesTransientSeen
+        self.token = token; self.options = options
+        epoch = (options.contentSearch ? "c:" : "n:") + UUID().uuidString
+    }
+    func enqueue(_ paths: Set<String>, recursive descendants: Set<String>) {
+        lock.lock(); defer { lock.unlock() }
+        guard pending.count + paths.count <= 8192 else { return } // full dirty set still replays after baseline
+        pending.formUnion(paths); recursive.formUnion(descendants.intersection(paths))
+    }
+    func takePaths() -> (paths: Set<String>, recursive: Set<String>) {
+        lock.lock(); defer { lock.unlock() }
+        let result = (pending, recursive)
+        pending.removeAll(keepingCapacity: false); recursive.removeAll(keepingCapacity: false)
+        return result
+    }
+    func isRemoved(_ path: String) -> Bool {
+        guard !removed.isEmpty else { return false }
+        if removed.contains(path) { return true }
+        var end = path.endIndex
+        while let slash = path[..<end].lastIndex(of: "/"), slash != path.startIndex {
+            if removed.contains(String(path[..<slash])) { return true }
+            end = slash
+        }
+        return removed.contains("/")
+    }
+    func supersedes(_ path: String) -> Bool { updated.contains(path) || isRemoved(path) }
+}
+
 final class FileSearchController: ObservableObject {
     private var aiIndexRevision = UUID()
     var aiAccessRevision: UUID { aiIndexRevision }
@@ -30,6 +73,11 @@ final class FileSearchController: ObservableObject {
     private let availableCapacity: (URL) -> Int64
     private let watchEnabled: Bool
     private let writer = DispatchQueue(label: "org.keylane.files.index", qos: .utility)
+    private let scanQueue = DispatchQueue(label: "org.keylane.files.metadata", qos: .utility)
+    private let patchQueue = DispatchQueue(label: "org.keylane.files.live-metadata", qos: .utility)
+    private lazy var scanWork = LatestWorkQueue(queue: scanQueue)
+    private lazy var patchWork = LatestWorkQueue(queue: patchQueue)
+    private var scanSession: FileScanSession?
     private let contentQueue = DispatchQueue(label: "org.keylane.files.content", qos: .utility)
     private var contentLifetime = FileScanCancellation()
     private var contentBusy = false
@@ -90,18 +138,22 @@ final class FileSearchController: ObservableObject {
     private var replayingEvents = false
     private var pendingEvents: [IndexEventBatch] = []
     private var pendingEventCount = 0
+    private var eventInbox = FileScanCancellation()
+    private var localBacklogPending = false
     private var processingEvents = false
     private var wrapUpperBound: FSEventStreamEventId?
     private static let maxQueuedEvents = 8192
     private var pendingRefresh: DispatchWorkItem?
+    private var pendingRefreshDeferred = false
+    private var urgentRefresh = false
+    private var nextIdleCheckpointUptime: TimeInterval = 0
+    private let userLibraryPath = FileManager.default.homeDirectoryForCurrentUser.path + "/Library"
     private var restored: Set<String> = [] { didSet { if oldValue != restored { aiIndexRevision = UUID(); cancelContent() } } }
     private var dirtyPaths = Set<String>()
-    private var needsFullScan = false
+    private var dirtyRecursivePaths = Set<String>()
     static var defaults: FileSearchOptions {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        var options = FileSearchOptions(roots: [home, "/Applications", home + "/Library/Mobile Documents/com~apple~CloudDocs"])
-        options.enabled = false
-        return options
+        return .recommendedScopes(home: home)
     }
     init(directory: URL? = nil, preferences: UserDefaults = .standard, defaultOptions: FileSearchOptions? = nil, watchChanges: Bool = true,
          availableCapacity: ((URL) -> Int64)? = nil, startImmediately: Bool = true,
@@ -282,6 +334,8 @@ final class FileSearchController: ObservableObject {
                         self.didStart = true
                         self.pendingRepairPaths = recovery.retryPaths
                         self.dirtyPaths.formUnion(recovery.retryPaths)
+                        self.dirtyRecursivePaths.formUnion(recovery.retryPaths)
+                        self.urgentRefresh = true
                         self.scheduleRefresh()
                         self.indexStatus = "正在恢复文件变化…"
                         self.drainContent()
@@ -300,6 +354,7 @@ final class FileSearchController: ObservableObject {
         self.runtime = nil
         recentlyRemoved.removeAll()
         cancellation.cancel()
+        scanWork.cancel(); patchWork.cancel(); scanSession = nil
         cancellation = FileScanCancellation()
         cancel()
         stopWatch()
@@ -337,11 +392,14 @@ final class FileSearchController: ObservableObject {
             reloadSearch()
             if !indexPaused {
                 dirtyPaths.formUnion(changedExclusions)
+                dirtyRecursivePaths.formUnion(changedExclusions)
+                urgentRefresh = true
                 scheduleRefresh()
             }
             return
         }
         cancelContent(); stopSearchJobs(); cancellation.cancel(); stopWatch()
+        scanWork.cancel(); patchWork.cancel(); scanSession = nil
         let contentEnabled = options.contentSearch
         let removed = old.roots.filter { !options.roots.contains($0) }
         writer.async { [weak self] in
@@ -431,6 +489,7 @@ final class FileSearchController: ObservableObject {
         if paused {
             cancelContent()
             cancellation.cancel()
+            scanWork.cancel(); patchWork.cancel(); scanSession = nil
             cancellation = FileScanCancellation()
             restoringIndex = false
             stopWatch()
@@ -481,11 +540,15 @@ final class FileSearchController: ObservableObject {
             saveRecentHistory()
             let roots = authorizedRoots
             let token = runtime
+            let activeScan = scanSession
             writer.async { [weak self] in
                 guard let self, token?.cancelled == false else { return }
                 do {
                     let epoch = UUID().uuidString
                     for root in roots { try self.writeDB?.removeUnseen(root: root, subtree: url.path, epoch: epoch) }
+                    if let activeScan, !activeScan.token.cancelled {
+                        activeScan.updated.remove(url.path); activeScan.removed.insert(url.path)
+                    }
                 } catch {
                     DispatchQueue.main.async { if token?.cancelled == false { self.indexStatus = error.localizedDescription } }
                 }
@@ -498,6 +561,7 @@ final class FileSearchController: ObservableObject {
         }
         if !indexPaused {
             dirtyPaths.insert(url.path)
+            dirtyRecursivePaths.insert(url.path)
             scheduleRefresh()
         }
         if !removed && (browsingDirectory != nil || queryIsBlank) { reloadSearch() }
@@ -506,7 +570,6 @@ final class FileSearchController: ObservableObject {
     func applyPermissionEnabled(_ enabled: Bool) {
         var updated = options
         updated.enabled = enabled && hasAuthorizedScope
-        if updated.enabled { updated.roots = authorizedRoots }
         if updated != options { options = updated }
     }
 
@@ -994,7 +1057,7 @@ final class FileSearchController: ObservableObject {
 
     private func drainContent(after delay: Double = 0) {
         guard isRunning, options.enabled, options.contentSearch, !indexPaused,
-              !indexing, !restoringIndex, !contentBusy, pendingContentDrain == nil else { return }
+              !restoringIndex, !contentBusy, pendingContentDrain == nil else { return }
         let token = contentLifetime
         let wait = max(delay, contentRetryAfter.timeIntervalSinceNow)
         if wait > 0 {
@@ -1019,13 +1082,14 @@ final class FileSearchController: ObservableObject {
                 let jobs = try db.nextContentJobs(certifiedOnly: true)
                 guard !jobs.isEmpty else {
                     let next = try db.nextContentRetry(certifiedOnly: true)
+                    let blocked = try db.hasEventDeferredContent()
                     db.releaseCachedPages()
                     DispatchQueue.main.async {
                         self.contentBusy = false
                         if !token.cancelled {
                             self.contentIndexing = false
                             self.contentFailure = nil
-                            if self.indexStatus == "正在补充文件正文…" { self.indexStatus = next == nil ? "索引已更新" : "部分文件正文暂不可读，将稍后重试。" }
+                            if self.indexStatus == "正在补充文件正文…" { self.indexStatus = blocked ? "部分文件正文等待文件或权限变化后重试。" : (next == nil ? "索引已更新" : "部分文件正文暂不可读，将稍后重试。") }
                             if self.localQueryResolved { self.publish() }
                             if let next { self.drainContent(after: max(0.1, next.timeIntervalSinceNow)) }
                         } else { self.drainContent() }
@@ -1042,6 +1106,7 @@ final class FileSearchController: ObservableObject {
                 }
                 self.contentQueue.async {
                     let session = FileContentReader.Session()
+                    var locations = FileSearchLocation(options: config.options, automaticExclusions: config.exclusions.map(\.path), restored: config.restored)
                     var updates: [FileSearchIndex.ContentUpdate] = []
                     for job in jobs {
                         if token.cancelled { break }
@@ -1058,11 +1123,10 @@ final class FileSearchController: ObservableObject {
                                 }, externalVolumes: config.options.externalVolumes, extraction: custom)
                             }
                             updates.append(.init(job: job, body: body))
-                        } catch FileContentReader.Failure.changed, FileContentReader.Failure.unproved {
-                            updates.append(.init(job: job, body: nil, parkUntilScan: true))
                         } catch {
+                            let failure = FileContentReader.classify(error)
                             if token.cancelled { break }
-                            updates.append(.init(job: job, body: nil))
+                            updates.append(.init(job: job, body: nil, failure: failure == .cancelled ? .transient : failure))
                         }
                     }
                     let completed = updates
@@ -1097,13 +1161,12 @@ final class FileSearchController: ObservableObject {
         }
     }
 
-    func startIndex(force: Bool = false) {
-        dirtyPaths.removeAll()
-        needsFullScan = false
-        scanIndex(force: force)
+    func startIndex(force: Bool = false, reason: String = "request") {
+        dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
+        scanIndex(force: force, reason: reason)
     }
 
-    private func scanIndex(paths: Set<String>? = nil, force: Bool = false) {
+    private func scanIndex(paths: Set<String>? = nil, recursivePaths: Set<String>? = nil, force: Bool = false, reason: String = "file-events") {
         guard isRunning, options.enabled else { return }
         guard !indexPaused else {
             indexStatus = "本地索引已暂停，仍可搜索已有条目。"
@@ -1135,43 +1198,101 @@ final class FileSearchController: ObservableObject {
         restoringIndex = false
         indexFailure = nil
         indexing = true; indexStatus = paths == nil ? "正在建立文件索引…" : "正在更新文件索引…"; inaccessible = []
-        writer.async { [weak self] in
-            guard let self, let db = self.writeDB, !token.cancelled else { return }
+        let session = FileScanSession(token: token, options: config, usesTransientSeen: paths == nil)
+        scanSession = session
+        scanWork.submit { [weak self] _ in
+            guard let self else { return }
+            defer {
+                if session.usesTransientSeen {
+                    self.writer.sync {
+                        session.transientSeenFinished = true
+                        try? self.writeDB?.discardTransientSeen(epoch: session.epoch)
+                        self.writeDB?.releaseCachedPages()
+                    }
+                }
+            }
+            guard !token.cancelled else { return }
+            func write<T>(_ body: (FileSearchIndex) throws -> T) throws -> T {
+                try self.writer.sync {
+                    guard !token.cancelled, let db = self.writeDB else { throw CancellationError() }
+                    return try body(db)
+                }
+            }
+            let paths = paths.map { Self.coalescedIndexPaths($0, recursive: recursivePaths) }
+            var repairPaths: Set<String> = []
+            if let paths {
+                let targets = Set(paths)
+                let recursiveTargets = recursivePaths.map { targets.intersection($0) } ?? targets
+                repairPaths = previousRepairs.filter { path in
+                    !targets.contains(path) && !Self.hasAncestor(path, in: recursiveTargets)
+                }
+            }
             #if KEYLANE_FILE_EVENT_TESTING
             scanStartBarrier?()
             guard !token.cancelled else { return }
             #endif
-            let paths = paths.map(Self.coalescedIndexPaths)
-            var repairPaths: Set<String> = paths.map { targets in Set(previousRepairs.filter { path in
-                !targets.contains { FileSearchLocation.contains(path, in: $0) }
-            }) } ?? []
-            // Remove the checkpoint and capture the writer's connection version
-            // together. Do not run a partial scan on an invalidated baseline.
             let recoveryScan: FileSearchIndex.RecoveryScan
             do {
-                guard let started = try db.beginRecoveryScan(requiring: requiredConfigurations, historyDomain: historyDomain) else {
+                guard let opened = try write({ try $0.beginRecoveryScan(requiring: requiredConfigurations, historyDomain: historyDomain) }) else {
                     DispatchQueue.main.async {
                         guard self.cancellation === token, !token.cancelled else { return }
-                        self.startIndex()
+                        self.startIndex(reason: "incomplete-checkpoint")
                     }
                     return
                 }
-                recoveryScan = started
+                recoveryScan = opened
+                if session.usesTransientSeen {
+                    try write { try $0.prepareTransientSeen(epoch: session.epoch) }
+                }
             } catch {
                 DispatchQueue.main.async { if !token.cancelled { self.reportIndexFailure(error) } }
                 return
             }
             let initialFingerprint = canCheckpoint ? try? Self.recoveryConfiguration(options: config, restored: restored, exclusions: automatic) : nil
-            defer { db.releaseCachedPages() }
-            let start = Date(); var lastProgress = Date.distantPast; var invalid = 0; var denied: [String] = []; var auto: [AutomaticFileExclusion] = []; var processed = 0
+            defer { try? write { $0.releaseCachedPages() } }
+            let scanStart = Date()
+            let logger = Logger(subsystem: "org.keylane.launcher", category: "file-index-diagnostics")
+            var scanSucceeded = false
+            var processed = 0
+            let scanKind = paths == nil ? "full" : "incremental"
+            let targetCount = paths?.count ?? config.roots.count
+            logger.info("scan_begin kind=\(scanKind, privacy: .public) reason=\(reason, privacy: .public) forced=\(force) targets=\(targetCount) recursive_targets=\(recursivePaths?.count ?? targetCount)")
+            defer {
+                let elapsed = Date().timeIntervalSince(scanStart)
+                let d = self.writer.sync { self.writeDB?.writeDiagnostics }
+                if let d {
+                    logger.info("scan_end kind=\(scanKind, privacy: .public) cancelled=\(token.cancelled) succeeded=\(scanSucceeded) seconds=\(elapsed) processed=\(processed) lifetime_metadata_checks=\(d.metadataChecks) lifetime_metadata_writes=\(d.metadataWrites) lifetime_metadata_skips=\(d.metadataSkips) lifetime_seen_writes=\(d.seenWrites) lifetime_content_writes=\(d.contentWrites) lifetime_content_skips_or_stale=\(d.contentSkips) lifetime_content_deferrals=\(d.contentDeferrals) lifetime_transactions=\(d.transactions) lifetime_subtree_vm_steps=\(d.subtreeReconcileSteps)")
+                }
+            }
+            let start = Date(); var lastProgress = Date.distantPast; var invalid = 0; var denied: [String] = []; var auto: [AutomaticFileExclusion] = []
             let homeLibrary = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
-            let epoch = (config.contentSearch ? "c:" : "n:") + UUID().uuidString
+            let epoch = session.epoch
             let ignoresFile = FileSearchRules.pathFilter(config.ignorePatterns)
             let ignoresDirectory = FileSearchRules.pathFilter(config.ignorePatterns, directory: true)
+            // An incremental batch can contain many siblings. Reuse rule
+            // snapshots only within this batch; a subsequent event sees new rules.
+            var ruleSnapshots: [String: [FileSearchRules.IgnoreRule]] = [:]
+            var ruleBudget = 1_048_576
+            var ruleReads = 0
+            func readRules(_ directory: URL) -> [FileSearchRules.IgnoreRule] {
+                let key = directory.path
+                if let cached = ruleSnapshots[key] { return cached }
+                ruleReads += 1
+                let rules = FileSearchRules.readIgnoreRules(in: directory)
+                if paths != nil, ruleSnapshots.count < 256 {
+                    let cost = rules.reduce(key.utf8.count) { $0 + 128 + $1.pattern.utf8.count }
+                    if cost <= ruleBudget {
+                        ruleBudget -= cost
+                        ruleSnapshots[key] = rules
+                    }
+                }
+                return rules
+            }
+            defer { logger.info("scan_rules reads=\(ruleReads) cached_directories=\(ruleSnapshots.count)") }
             do {
                 if paths == nil {
-                    if !config.contentSearch { try db.clearBodies() }
-                    if !config.keepRemovedVolumes { try db.removeUnavailableVolumes() }
+                    if !config.contentSearch { try write { try $0.clearBodies() } }
+                    if !config.keepRemovedVolumes { try write { try $0.removeUnavailableVolumes() } }
                 }
                 let targets = config.roots.flatMap { root -> [(String, String?)] in
                     guard let paths else { return [(root, nil)] }
@@ -1190,12 +1311,14 @@ final class FileSearchController: ObservableObject {
                         || FileSearchRules.ignored(url, directory: directory, patterns: [], rules: rules)
                 }
                 for (root, subtree) in targets {
+                    let recursiveEntry = subtree.map { recursivePaths?.contains($0) ?? true } ?? true
+                    var retainedDirectoryEntry = false
                     if token.cancelled { return }
                     let certification = FileContentReader.Session()
                     let canCertify = config.contentSearch && contentRoots.contains(root) && certification.pinScope(root, cancelled: { token.cancelled })
                     let rootURL = URL(fileURLWithPath: root)
                     guard FileManager.default.fileExists(atPath: root) else {
-                        if !config.keepRemovedVolumes { try db.removeScope(root) }
+                        if !config.keepRemovedVolumes { try write { try $0.removeScope(root) } }
                         repairPaths.insert(root)
                         continue
                     }
@@ -1229,7 +1352,7 @@ final class FileSearchController: ObservableObject {
                                 }
                             }
                             if config.useIgnoreFiles && parent.path != firstDirectory.path {
-                                inheritedRules += FileSearchRules.readIgnoreRules(in: parent)
+                                inheritedRules += readRules(parent)
                             }
                         }
                         if inaccessibleAncestor {
@@ -1238,7 +1361,7 @@ final class FileSearchController: ObservableObject {
                             if denied.count < 24 { denied.append(firstDirectory.path) }
                             continue
                         }
-                        if blocked { try db.removeUnseen(root: root, subtree: subtree, epoch: epoch); continue }
+                        if blocked { try write { try $0.removeUnseen(root: root, subtree: subtree, epoch: epoch) }; continue }
                     }
                     // Keep only pending paths and inherited rules. Enumerated URLs can
                     // carry prefetched resource values for each file and directory.
@@ -1257,80 +1380,150 @@ final class FileSearchController: ObservableObject {
                         let pendingEntry = explicitEntry
                         explicitEntry = nil
                         try autoreleasepool {
+                            #if KEYLANE_FILE_EVENT_TESTING
+                            self.testBeforeScanDirectory?(path)
+                            #endif
+                            guard !token.cancelled else { return }
+                            let wasRemoved = try write { _ in session.isRemoved(path) }
+                            guard !wasRemoved else { return }
                             let directory = URL(fileURLWithPath: path, isDirectory: true)
-                            var rules = inherited; if config.useIgnoreFiles { rules += FileSearchRules.readIgnoreRules(in: directory) }
-                            let children: [URL]
-                            do {
-                                if let pendingEntry {
-                                    children = [pendingEntry]
-                                } else {
-                                    let priority = ["Downloads": 0, "Desktop": 1, "Documents": 2]
-                                    children = try FileManager.default.contentsOfDirectory(
-                                        at: directory, includingPropertiesForKeys: Array(keys),
-                                        options: config.includeHidden ? [] : [.skipsHiddenFiles]
-                                    ).sorted { (priority[$0.lastPathComponent] ?? 3) < (priority[$1.lastPathComponent] ?? 3) }
-                                }
-                            } catch {
-                                invalid += 1; complete = false
-                                repairPaths.insert(directory.path)
-                                if denied.count < 24 { denied.append(directory.path) }
-                                return
-                            }
-                            if config.enforceDiskSpace {
-                                let free = self.availableCapacity(db.url.deletingLastPathComponent())
-                                // Reserve room for SQLite/WAL and the next directory batch.
-                                let estimate = Int64(children.count * (config.contentSearch ? 102_400 : 1024)) + 128 * 1024 * 1024
-                                guard free > estimate else { throw FileIndexError.diskSpace }
-                            }
-                            try db.transaction {
-                                // Bound temporary metadata and content allocations even in wide directories.
-                                let batchSize = 64
-                                for offset in stride(from: 0, to: children.count, by: batchSize) {
-                                    try autoreleasepool {
-                                        for url in children[offset..<min(offset + batchSize, children.count)] {
-                                            if token.cancelled { return }
-                                            let value: URLResourceValues
-                                            do { value = try url.resourceValues(forKeys: keys) }
-                                            catch {
-                                                // A dangling symlink can report a missing target even
-                                                // though the directory entry still exists. Retain it
-                                                // for repair rather than deleting its saved record.
-                                                if Self.isMissing(error), (try? FileManager.default.attributesOfItem(atPath: url.path)) == nil { continue }
-                                                repairPaths.insert(url.path)
-                                                invalid += 1; complete = false; continue
-                                            }
-                                            let isDir = value.isDirectory == true; let symlink = value.isSymbolicLink == true; let path = url.path
-                                            guard !excluded(url, directory: isDir, rules: rules) else { continue }
-                                            if !config.externalVolumes && (value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false) { continue }
-                                            if isDir && path == homeLibrary && root != homeLibrary { continue } // iCloud is a separate explicit scope.
-                                            if isDir && FileIndexExclusionPolicy.isKnownCache(url) && !restored.contains(path) {
-                                                auto.append(.init(path: path, reason: "构建输出或依赖缓存", events: 0)); continue
-                                            }
-                                            let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
-                                            try db.stageMetadata(record, root: root, epoch: epoch,
-                                                                 contentSearch: config.contentSearch, force: force,
-                                                                 certification: canCertify ? certification : nil,
-                                                                 allowCertification: canCertify, isCancelled: { token.cancelled })
-                                            processed += 1
-                                            if isDir && !symlink && url.pathExtension != "app" { queue.append((path, rules)) }
+                            var rules = inherited; if config.useIgnoreFiles { rules += readRules(directory) }
+                            var readFailure: URL?
+                            var children: AnyIterator<URL>
+                            if let pendingEntry {
+                                var next: URL? = pendingEntry
+                                children = AnyIterator { defer { next = nil }; return next }
+                            } else {
+                                var flags: FileManager.DirectoryEnumerationOptions = [.skipsSubdirectoryDescendants]
+                                if !config.includeHidden { flags.insert(.skipsHiddenFiles) }
+                                if let iterator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: Array(keys),
+                                    options: flags, errorHandler: { url, _ in readFailure = url; return false }) {
+                                    let names = directory.path == FileManager.default.homeDirectoryForCurrentUser.path
+                                        ? ["Downloads", "Desktop", "Documents"] : []
+                                    var priority = names.makeIterator()
+                                    children = AnyIterator {
+                                        if let name = priority.next() { return directory.appendingPathComponent(name, isDirectory: false) }
+                                        while let child = iterator.nextObject() as? URL {
+                                            if !names.contains(child.lastPathComponent) { return child }
                                         }
+                                        return nil
                                     }
-                                    if token.cancelled { return }
+                                } else { readFailure = directory; children = AnyIterator { nil } }
+                            }
+                            var staged: [FileIndexRecord] = []
+                            func commitStaged() throws {
+                                guard !staged.isEmpty else { return }
+                                #if KEYLANE_FILE_EVENT_TESTING
+                                self.testBeforeCommitMetadata?(path)
+                                #endif
+                                // Snapshot metadata needs on the serial writer, but
+                                // certify directory/file identities on this scan queue.
+                                let needsProof: [Bool] = canCertify ? try write { db in
+                                    try staged.map { record in
+                                        if session.supersedes(record.path) { return false }
+                                        return try db.needsContentProof(record, root: root, contentSearch: config.contentSearch, force: force)
+                                    }
+                                } : Array(repeating: false, count: staged.count)
+                                let prepared = zip(staged, needsProof).map { record, needs in
+                                    (record, needs ? certification.certify(path: record.path, owner: root, modified: record.modified,
+                                                                              cancelled: { token.cancelled }) : nil)
                                 }
+                                try write { db in
+                                    try db.transaction {
+                                        for (record, proof) in prepared where !session.supersedes(record.path) {
+                                            guard !token.cancelled else { throw CancellationError() }
+                                            try db.stagePreparedMetadata(record, root: root, epoch: epoch,
+                                                                 contentSearch: config.contentSearch, force: force,
+                                                                 wakeFromEvent: subtree == record.path, proof: proof,
+                                                                 isCancelled: { token.cancelled })
+                                            processed += 1
+                                        }
+                                        guard !token.cancelled else { throw CancellationError() }
+                                    }
+                                }
+
+                                staged.removeAll(keepingCapacity: true)
+                            }
+                            // Release URL/property snapshots every 64 entries. Filesystem
+                            // reads never hold the database queue or a write transaction.
+                            while !token.cancelled {
+                                let hadBatch = try autoreleasepool { () throws -> Bool in
+                                    var batch: [URL] = []
+                                    for _ in 0..<64 {
+                                        guard let child = children.next() else { break }
+                                        batch.append(child)
+                                    }
+                                    guard !batch.isEmpty else { return false }
+                                    if config.enforceDiskSpace {
+                                        let free = self.availableCapacity(self.databaseURL.deletingLastPathComponent())
+                                        let estimate = Int64(batch.count * (config.contentSearch ? 102_400 : 1024)) + 128 * 1024 * 1024
+                                        guard free > estimate else { throw FileIndexError.diskSpace }
+                                    }
+                                    var records: [FileIndexRecord] = []
+                                    for url in batch {
+                                        guard !token.cancelled else { throw CancellationError() }
+                                        let value: URLResourceValues
+                                        do { value = try url.resourceValues(forKeys: keys) }
+                                        catch {
+                                            // A dangling symlink can report a missing target even
+                                            // though the directory entry still exists. Retain it
+                                            // for repair rather than deleting its saved record.
+                                            if Self.isMissing(error), (try? FileManager.default.attributesOfItem(atPath: url.path)) == nil { continue }
+                                            repairPaths.insert(url.path)
+                                            invalid += 1; complete = false; continue
+                                        }
+                                        let isDir = value.isDirectory == true; let symlink = value.isSymbolicLink == true; let path = url.path
+                                        guard !excluded(url, directory: isDir, rules: rules) else { continue }
+                                        if !config.externalVolumes && (value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false) { continue }
+                                        if isDir && path == homeLibrary && root != homeLibrary { continue } // iCloud is a separate explicit scope.
+                                        if isDir && FileIndexExclusionPolicy.isKnownCache(url) && !restored.contains(path) {
+                                            auto.append(.init(path: path, reason: "构建输出或依赖缓存", events: 0)); continue
+                                        }
+                                        let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
+                                        records.append(record)
+                                        if path == subtree, isDir, !symlink {
+                                            retainedDirectoryEntry = true
+                                            // Detect permission loss without opening or walking children.
+                                            // Keep the old subtree and record where to retry on recovery.
+                                            if !recursiveEntry, url.pathExtension.lowercased() != "app",
+                                               Self.directoryAccessDenied(path) {
+                                                repairPaths.insert(path); invalid += 1
+                                                if denied.count < 24 { denied.append(path) }
+                                            }
+                                        }
+                                        if recursiveEntry && isDir && !symlink && url.pathExtension != "app" { queue.append((path, rules)) }
+                                    }
+                                    staged.append(contentsOf: records)
+                                    if staged.count >= 256 { try commitStaged() }
+                                    return true
+                                }
+                                if !hadBatch { break }
+                            }
+                            try commitStaged()
+                            if let failure = readFailure {
+                                invalid += 1; complete = false; repairPaths.insert(failure.path)
+                                if denied.count < 24 { denied.append(failure.path) }
                             }
                         }
                         if Date().timeIntervalSince(lastProgress) >= 1 {
                             lastProgress = Date(); let count = processed
-                            DispatchQueue.main.async { if self.cancellation === token {
+                            DispatchQueue.main.async { if self.cancellation === token, !token.cancelled {
                                 self.indexStatus = "正在索引：\(count)项"
+                                self.pendingContentDrain?.cancel(); self.pendingContentDrain = nil
+                                self.drainContent()
                                 if self.lastPublished.isEmpty && !self.queryIsBlank && FileSearchLocation.typedURL(self.currentQuery) == nil
                                     && !self.isSearching { self.refreshQuery() }
                             } }
                         }
                     }
                     if token.cancelled { return }
-                    try db.removeUnseen(root: root, subtree: subtree, epoch: epoch,
-                                        preserving: complete ? [] : repairPaths)
+                    if let subtree, !recursiveEntry, retainedDirectoryEntry {
+                        // Metadata-only directory events must not age out descendants.
+                        try write { try $0.removeUnseenEntry(root: root, path: subtree, epoch: epoch) }
+                    } else {
+                        try write { try $0.removeUnseen(root: root, subtree: subtree, epoch: epoch,
+                                                       preserving: complete ? [] : repairPaths) }
+                    }
                 }
                 repairPaths = Set(Self.coalescedIndexPaths(repairPaths))
                 // Known caches discovered by this scan are already excluded from
@@ -1342,25 +1535,41 @@ final class FileSearchController: ObservableObject {
                 checkpointBarrier?(eventID)
                 #endif
                 if canCheckpoint, let historyDomain, let lifetime, !token.cancelled, !lifetime.cancelled, let fingerprint {
-                    publishedCheckpoint = try db.completeRecoveryScan(recoveryScan,
+                    publishedCheckpoint = try write { try $0.completeRecoveryScan(recoveryScan,
                         point: .init(eventID: eventID, configuration: fingerprint, retryPaths: repairPaths, historyDomain: historyDomain),
-                        whileCurrent: { !token.cancelled && !lifetime.cancelled })
+                        whileCurrent: { !token.cancelled && !lifetime.cancelled }) }
                 } else { publishedCheckpoint = false }
                 #if KEYLANE_FILE_EVENT_TESTING
                 checkpointResult?(eventID, publishedCheckpoint)
                 #endif
                 let completedRepairs = repairPaths
-                var stats = try db.stats(); stats.invalid = invalid; stats.seconds = Date().timeIntervalSince(start)
+                #if KEYLANE_FILE_EVENT_TESTING
+                let completedRuleReads = ruleReads
+                #endif
+                scanSucceeded = true
+                var stats = try write { try $0.stats() }; stats.invalid = invalid; stats.seconds = Date().timeIntervalSince(start)
                 DispatchQueue.main.async {
-                    guard self.cancellation === token else { return }
+                    guard self.cancellation === token, !token.cancelled else { return }
                     self.checkpointReady = publishedCheckpoint
                     self.liveBaselineReady = true
                     if paths == nil { self.reconcilingUnprovedStartup = false }
                     self.checkpointLegacyConfiguration = nil
                     self.pendingRepairPaths = completedRepairs
                     self.checkpointConfiguration = self.checkpointReady ? fingerprint : nil
-                    self.indexing = false; self.stats = stats; self.preferences.set(try? JSONEncoder().encode(stats), forKey:"fileSearchLastStats"); self.inaccessible = denied
-                    for value in auto where !self.automaticExclusions.contains(where: { $0.path == value.path }) { self.automaticExclusions.append(value) }; self.saveAutomatic()
+                    self.scanSession = nil
+                    #if KEYLANE_FILE_EVENT_TESTING
+                    self.testLastScanRuleReads = completedRuleReads
+                    self.testScanCompleted?(paths == nil, processed)
+                    #endif
+                    // The database is authoritative and refreshes stats on open.
+                    // A per-scan preference write can trigger another watched event.
+                    self.indexing = false; self.stats = stats; self.inaccessible = denied
+                    var known = Set(self.automaticExclusions.map(\.path))
+                    let additions = auto.filter { known.insert($0.path).inserted }
+                    if !additions.isEmpty {
+                        self.automaticExclusions.append(contentsOf: additions)
+                        self.saveAutomatic()
+                    }
                     self.indexStatus = denied.isEmpty ? "索引已更新" : "部分目录无法访问，请重新授权搜索范围。"
                     if self.hasQuery, !self.queryIsBlank {
                         if FileSearchLocation.typedURL(self.currentQuery) == nil { self.refreshQuery() }
@@ -1376,12 +1585,168 @@ final class FileSearchController: ObservableObject {
                     self.drainContent()
                 }
             } catch { DispatchQueue.main.async {
-                guard self.cancellation === token else { return }
+                guard self.cancellation === token, !token.cancelled else { return }
                 self.reportIndexFailure(error)
                 self.scheduleRefresh()
             } }
         }
     }
+    private struct LiveMetadataMutation {
+        let path: String
+        let root: String
+        let record: FileIndexRecord?
+        let proof: FileContentReader.Proof?
+        let wakeFromEvent: Bool
+    }
+
+    // A slow baseline must not hold the writer or prevent ordinary file events
+    // from becoming searchable. Reconcile with its epoch before baseline cleanup.
+    private func patchLiveMetadata(_ paths: Set<String>, recursive: Set<String>) {
+        guard !paths.isEmpty, indexing, let session = scanSession, Self.indexOptions(session.options) == Self.indexOptions(authorizedOptions),
+              !session.token.cancelled else { return }
+        session.enqueue(paths, recursive: recursive)
+        let config = authorizedOptions, restored = restored, contentRoots = contentAuthorizedRoots
+        let exclusions = config.excludedPaths + automaticExclusions.map(\.path)
+        #if KEYLANE_FILE_EVENT_TESTING
+        let clock = testLiveBatchClock ?? { ProcessInfo.processInfo.systemUptime }
+        #else
+        let clock = { ProcessInfo.processInfo.systemUptime }
+        #endif
+        patchWork.submit(cancelActive: false) { [weak self] _ in
+            guard let self, !session.token.cancelled else { return }
+            let request = session.takePaths()
+            let certification = FileContentReader.Session()
+            var pending = request.paths.sorted()
+            var recursive = request.recursive
+            var enqueued = Set(pending)
+            var position = 0
+            let keys: Set<URLResourceKey> = [.isDirectoryKey, .isSymbolicLinkKey, .contentModificationDateKey,
+                                           .volumeURLKey, .volumeIsLocalKey, .volumeIsRemovableKey, .volumeIsInternalKey]
+            var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
+            // Keep the first mutation immediately visible to the reader.
+            // Later rows share bounded WAL commits. All filesystem work and
+            // proof preparation remains outside the serial writer transaction.
+            var batch: [LiveMetadataMutation] = []
+            var sentFirst = false
+            var batchStarted = clock()
+            func flush() {
+                guard !batch.isEmpty, !session.token.cancelled else { return }
+                let staged = batch
+                batch.removeAll(keepingCapacity: true)
+                batchStarted = clock()
+                do {
+                    try self.writer.sync {
+                        guard !session.token.cancelled, let db = self.writeDB else { throw CancellationError() }
+                        var remaining = max(0, Self.maxQueuedEvents - session.updated.count - session.removed.count)
+                        let accepted = staged.filter { change in
+                            if session.updated.contains(change.path) || session.removed.contains(change.path) { return true }
+                            guard remaining > 0 else { return false }
+                            remaining -= 1
+                            return true
+                        }
+                        guard !accepted.isEmpty else { return }
+                        if session.usesTransientSeen {
+                            guard !session.transientSeenFinished else { return }
+                            try db.prepareTransientSeen(epoch: session.epoch)
+                        }
+                        let deletionEpoch = UUID().uuidString
+                        try db.transaction {
+                            for change in accepted {
+                                guard !session.token.cancelled else { throw CancellationError() }
+                                if let record = change.record {
+                                    try db.stagePreparedMetadata(record, root: change.root, epoch: session.epoch,
+                                                                 contentSearch: config.contentSearch, wakeFromEvent: change.wakeFromEvent,
+                                                                 proof: change.proof, isCancelled: { session.token.cancelled })
+                                } else {
+                                    for owner in config.roots { try db.removeUnseen(root: owner, subtree: change.path, epoch: deletionEpoch) }
+                                }
+                            }
+                            guard !session.token.cancelled else { throw CancellationError() }
+                        }
+                        // Only committed rows may suppress the baseline's stale
+                        // enumeration. On rollback keep every dirty target.
+                        for change in accepted {
+                            if change.record != nil {
+                                session.updated.insert(change.path); session.removed.remove(change.path)
+                            } else {
+                                session.updated.remove(change.path); session.removed.insert(change.path)
+                            }
+                        }
+                    }
+                } catch { /* Ordinary reconciliation still owns the dirty targets. */ }
+            }
+            while position < pending.count {
+                if clock() - batchStarted >= 0.020 { flush() }
+                let path = pending[position]; position += 1
+                guard !session.token.cancelled else { return }
+                guard !config.roots.contains(path),
+                      let root = config.roots.filter({ FileSearchLocation.contains(path, in: $0) }).max(by: { $0.count < $1.count })
+                else { continue }
+                let url = URL(fileURLWithPath: path, isDirectory: false)
+                // Match traversal: do not follow a user symlink directory.
+                var parent = url.deletingLastPathComponent(), safe = true
+                while parent.path != root {
+                    guard FileSearchLocation.contains(parent.path, in: root),
+                          let value = try? parent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                          value.isDirectory == true, value.isSymbolicLink != true else { safe = false; break }
+                    parent.deleteLastPathComponent()
+                }
+                guard safe else { continue }
+                let record: FileIndexRecord?
+                do {
+                    let value = try url.resourceValues(forKeys: keys)
+                    let directory = value.isDirectory == true
+                    let external = value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false
+                    if locations.includesIndexChange(at: path, directory: directory), config.externalVolumes || !external {
+                        record = .init(path: path, name: url.lastPathComponent, volume: value.volume?.path ?? "/",
+                                       modified: value.contentModificationDate?.timeIntervalSince1970 ?? 0,
+                                       directory: directory, symlink: value.isSymbolicLink == true, external: external)
+                    } else { record = nil }
+                } catch {
+                    // Missing targets are removals. Permission/transient failures
+                    // retain saved records and are retried by normal reconciliation.
+                    guard Self.isMissing(error), (try? FileManager.default.attributesOfItem(atPath: path)) == nil else { continue }
+                    record = nil
+                }
+                if config.enforceDiskSpace,
+                   self.availableCapacity(self.databaseURL.deletingLastPathComponent()) <= 128 * 1024 * 1024 + 102_400 { continue }
+                do {
+                    let proof: FileContentReader.Proof?
+                    if let record, config.contentSearch, contentRoots.contains(root),
+                       certification.pinScope(root, cancelled: { session.token.cancelled }),
+                       try self.writer.sync(execute: {
+                           guard !session.token.cancelled, let db = self.writeDB else { throw CancellationError() }
+                           return try db.needsContentProof(record, root: root, contentSearch: config.contentSearch)
+                       }) {
+                        proof = certification.certify(path: record.path, owner: root, modified: record.modified, cancelled: { session.token.cancelled })
+                    } else { proof = nil }
+                    batch.append(.init(path: path, root: root, record: record, proof: proof,
+                                       wakeFromEvent: request.paths.contains(path)))
+                    if !sentFirst || batch.count == 32 {
+                        flush()
+                        sentFirst = true
+                    }
+                } catch { continue }
+                if recursive.contains(path), let record, record.directory, !record.symlink, url.pathExtension.lowercased() != "app" {
+                    var flags: FileManager.DirectoryEnumerationOptions = [.skipsSubdirectoryDescendants]
+                    if !config.includeHidden { flags.insert(.skipsHiddenFiles) }
+                    if let children = FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil, options: flags) {
+                        while enqueued.count < 8192, let child = children.nextObject() as? URL {
+                            if enqueued.insert(child.path).inserted { pending.append(child.path); recursive.insert(child.path) }
+                        }
+                    }
+                }
+            }
+            flush()
+            DispatchQueue.main.async {
+                guard self.scanSession === session, !session.token.cancelled else { return }
+                if self.hasQuery, !self.queryIsBlank, FileSearchLocation.typedURL(self.currentQuery) == nil { self.refreshQuery() }
+                self.pendingContentDrain?.cancel(); self.pendingContentDrain = nil
+                self.drainContent()
+            }
+        }
+    }
+
     private func reportIndexFailure(_ error: Error) {
         indexing = false
         liveBaselineReady = false
@@ -1391,19 +1756,34 @@ final class FileSearchController: ObservableObject {
         if localQueryResolved { publish() }
     }
 
+    private static func directoryAccessDenied(_ path: String) -> Bool {
+        guard Darwin.access(path, R_OK | X_OK) != 0 else { return false }
+        return errno == EACCES || errno == EPERM
+    }
+
     private static func isMissing(_ error: Error) -> Bool {
         let error = error as NSError
         return error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)
     }
 
-    private static func coalescedIndexPaths(_ paths: Set<String>) -> [String] {
+    private static func hasAncestor(_ path: String, in candidates: Set<String>) -> Bool {
+        guard !candidates.isEmpty else { return false }
+        var ancestor = path[...]
+        while true {
+            if candidates.contains(String(ancestor)) { return true }
+            guard ancestor != "/", let slash = ancestor.lastIndex(of: "/") else { return false }
+            ancestor = slash == ancestor.startIndex ? ancestor[...slash] : ancestor[..<slash]
+        }
+    }
+
+    private static func coalescedIndexPaths(_ paths: Set<String>, recursive: Set<String>? = nil) -> [String] {
         // Sorting by the directory prefix keeps every subtree next to its parent.
         let sorted = paths.map { ($0, $0 == "/" ? "/" : $0 + "/") }.sorted { $0.1 < $1.1 }
         var targets: [String] = []
         var parent = ""
-        for (path, prefix) in sorted where targets.isEmpty || !prefix.hasPrefix(parent) {
+        for (path, prefix) in sorted where parent.isEmpty || !prefix.hasPrefix(parent) {
             targets.append(path)
-            parent = prefix
+            parent = recursive?.contains(path) == false ? "" : prefix
         }
         return targets
     }
@@ -1426,6 +1806,10 @@ final class FileSearchController: ObservableObject {
         var exclusions: [AutomaticFileExclusion]
         var churn: [String: (Date, Int)]
         var paths = Set<String>()
+        var recursivePaths = Set<String>()
+        var repairWakePaths = Set<String>()
+        var urgentPaths = Set<String>()
+        var requiresFullScan = false
     }
 
     private final class WatchContext {
@@ -1436,9 +1820,10 @@ final class FileSearchController: ObservableObject {
         }
     }
 
-    private static let discontinuityFlags = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs
-        | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped
-        | kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
+    private static let globalDiscontinuity = FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped
+        | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped)
+    private static let scopeIdentityEvents = FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged
+        | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
 
     private var eventConfiguration: IndexEventConfiguration {
         .init(options: Self.indexOptions(authorizedOptions), restored: restored, exclusions: automaticExclusions)
@@ -1452,11 +1837,16 @@ final class FileSearchController: ObservableObject {
         pendingEvents.removeAll()
         pendingEventCount = 0
         processingEvents = false
+        eventInbox.cancel()
+        eventInbox = FileScanCancellation()
+        localBacklogPending = false
         replayingEvents = false
         pendingRefresh?.cancel()
         pendingRefresh = nil
-        dirtyPaths.removeAll()
-        needsFullScan = false
+        pendingRefreshDeferred = false
+        urgentRefresh = false
+        nextIdleCheckpointUptime = 0
+        dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
         if let old = watch {
             watch = nil
             let close = {
@@ -1487,6 +1877,59 @@ final class FileSearchController: ObservableObject {
         return id
     }
 
+    /// Capacity is an application-side failure, not evidence the OS stream
+    /// lost continuity. The exact affected paths are no longer provable, so
+    /// invalidate the cursor and fully reconcile the existing approved roots
+    /// while keeping the healthy stream subscribed.
+    private func reconcileAfterLocalBacklog(_ lifetime: FileScanCancellation) {
+        guard watchLifetime === lifetime, !lifetime.cancelled else { return }
+        eventInbox.cancel()
+        eventInbox = FileScanCancellation()
+        pendingEvents.removeAll()
+        pendingEventCount = 0
+        processingEvents = false
+        // This baseline has not started yet. It covers any additionally
+        // discarded events that occurred before its filesystem snapshot.
+        guard !localBacklogPending else { return }
+        localBacklogPending = true
+        acceptedEventID = 0
+        liveBaselineReady = false
+        checkpointReady = false
+        checkpointConfiguration = nil
+        checkpointLegacyConfiguration = nil
+        nextIdleCheckpointUptime = 0
+        pendingRefresh?.cancel()
+        pendingRefresh = nil
+        pendingRefreshDeferred = false
+        urgentRefresh = false
+        dirtyPaths.removeAll(); dirtyRecursivePaths.removeAll()
+        cancellation.cancel()
+        scanWork.cancel(); patchWork.cancel(); scanSession = nil
+        let recovery = FileScanCancellation()
+        cancellation = recovery
+        indexing = false
+        restoringIndex = true
+        writer.async { [weak self] in
+            guard let self, !recovery.cancelled, !lifetime.cancelled else { return }
+            do { try self.writeDB?.invalidateRecoveryPoint() }
+            catch {
+                DispatchQueue.main.async {
+                    guard self.cancellation === recovery, !recovery.cancelled else { return }
+                    self.reportIndexFailure(error)
+                }
+            }
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.watchLifetime === lifetime, !lifetime.cancelled else { return }
+            self.localBacklogPending = false
+            if self.cancellation === recovery, !recovery.cancelled {
+                self.restoringIndex = false
+                self.startIndex(reason: "local-event-backlog")
+            }
+            self.processPendingEvents()
+        }
+    }
+
     private func restartAfterDiscontinuity(_ lifetime: FileScanCancellation, wrapped: Bool) {
         guard watchLifetime === lifetime else { return }
         if wrapped, acceptedEventID > 0 {
@@ -1496,6 +1939,7 @@ final class FileSearchController: ObservableObject {
         }
         stopWatch(insideCallback: true)
         cancellation.cancel()
+        scanWork.cancel(); patchWork.cancel(); scanSession = nil
         let restart = FileScanCancellation()
         cancellation = restart
         checkpointReady = false
@@ -1583,8 +2027,25 @@ final class FileSearchController: ObservableObject {
                                    eventID: FSEventStreamEventId, from lifetime: FileScanCancellation) {
         guard watchLifetime === lifetime, !lifetime.cancelled, !flags.isEmpty else { return }
         let wrapped = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped) != 0 }
-        if flags.contains(where: { $0 & Self.discontinuityFlags != 0 }) || flags.count > Self.maxQueuedEvents - pendingEventCount {
+        let scopes = authorizedRoots
+        let discontinuity = zip(paths as! [String], flags).contains { path, flag in
+            if flag & Self.globalDiscontinuity != 0 { return true }
+            if flag & Self.scopeIdentityEvents != 0 {
+                return scopes.contains { FileSearchLocation.contains($0, in: path) || FileSearchLocation.contains(path, in: $0) }
+            }
+            if flag & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0 {
+                return scopes.contains { FileSearchLocation.contains($0, in: path) }
+                    && !scopes.contains { FileSearchLocation.contains(path, in: $0) }
+            }
+            return false
+        }
+        if discontinuity {
             restartAfterDiscontinuity(lifetime, wrapped: wrapped)
+            return
+        }
+        if flags.count > Self.maxQueuedEvents - pendingEventCount {
+            if flags.contains(where: { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 }) { replayingEvents = false }
+            reconcileAfterLocalBacklog(lifetime)
             return
         }
         // The numeric position is meaningful only in its own active generation.
@@ -1596,6 +2057,11 @@ final class FileSearchController: ObservableObject {
     }
 
     #if KEYLANE_FILE_EVENT_TESTING
+    // Feed loss/wrap flags deterministically through the production event pipeline.
+    var testScanCompleted: ((Bool, Int) -> Void)?
+    var testRoutineLibraryPath: String?
+    var testRefreshIsDeferred: Bool { pendingRefreshDeferred }
+    private(set) var testLastScanRuleReads = 0
     var testDidBeginIndexRestoration: (() -> Void)?
     var testQuietIndexEventID: FSEventStreamEventId?
     var testDurableHistoryDomain: UUID?
@@ -1616,12 +2082,20 @@ final class FileSearchController: ObservableObject {
         }
     }
 
+    var testWriterTransactions: UInt64 { writer.sync { writeDB?.writeDiagnostics.transactions ?? 0 } }
+    var testWatchIdentity: ObjectIdentifier? { watchLifetime.map(ObjectIdentifier.init) }
+    var testLiveBatchClock: (() -> Double)?
+    var testBeforeClassifyingEvents: (() -> Void)?
+    var testPendingRepairPaths: Set<String> { pendingRepairPaths }
     var testBeforeLocalQuery: ((String) -> Void)?
+    var testBeforeScanDirectory: ((String) -> Void)?
+    var testBeforeCommitMetadata: ((String) -> Void)?
+    var testEventsIdle: Bool { !processingEvents && pendingEvents.isEmpty && pendingRefresh == nil && !indexing }
     var testQueryDiagnostics: LatestWorkQueue.Diagnostics { queryWork.diagnostics }
     func testRefreshQuery() { refreshQuery() }
     var testHasNativeFileWatcher: Bool { watch != nil && watchLifetime != nil }
     var testEventPipelineIdle: Bool {
-        !indexing && !processingEvents && pendingEvents.isEmpty && pendingRefresh == nil && dirtyPaths.isEmpty && !needsFullScan
+        !indexing && !processingEvents && !localBacklogPending && pendingEvents.isEmpty && pendingRefresh == nil && dirtyPaths.isEmpty
     }
     var testTraceRawIndexPath: ((String, FSEventStreamEventFlags, Bool) -> Void)?
     var testTraceEligibleIndexPath: ((String) -> Void)?
@@ -1633,8 +2107,9 @@ final class FileSearchController: ObservableObject {
     private var churn: [String: (Date, Int)] = [:]
 
     private func processPendingEvents() {
-        guard let lifetime = watchLifetime, !processingEvents else { return }
+        guard let lifetime = watchLifetime, !processingEvents, !localBacklogPending else { return }
         guard !pendingEvents.isEmpty else { return }
+        let inbox = eventInbox
         let batches = pendingEvents
         let count = pendingEventCount
         let config = eventConfiguration
@@ -1642,10 +2117,17 @@ final class FileSearchController: ObservableObject {
         pendingEvents = []
         pendingEventCount = 0
         processingEvents = true
+        #if KEYLANE_FILE_EVENT_TESTING
+        let beforeClassifying = testBeforeClassifyingEvents
+        #endif
         eventQueue.async { [weak self] in
-            guard let result = Self.classifyEvents(batches, configuration: config, churn: churn, lifetime: lifetime) else { return }
+            #if KEYLANE_FILE_EVENT_TESTING
+            beforeClassifying?()
+            #endif
+            guard let result = Self.classifyEvents(batches, configuration: config, churn: churn, lifetime: inbox) else { return }
             DispatchQueue.main.async {
-                guard let self, self.watchLifetime === lifetime else { return }
+                guard let self, self.watchLifetime === lifetime, self.eventInbox === inbox,
+                      !lifetime.cancelled, !inbox.cancelled else { return }
                 self.processingEvents = false
                 if config == self.eventConfiguration {
                     if self.durableHistoryDomain != nil {
@@ -1653,18 +2135,45 @@ final class FileSearchController: ObservableObject {
                     }
                     self.churn = result.churn
                     if self.automaticExclusions != result.exclusions {
+                        let changedPaths = self.automaticExclusions.map(\.path) != result.exclusions.map(\.path)
                         self.automaticExclusions = result.exclusions
-                        self.saveAutomatic()
+                        // Skip counters are session diagnostics. Persist actual
+                        // exclusions, not a preference write for each ignored event.
+                        if changedPaths { self.saveAutomatic() }
                     }
-                    if !self.needsFullScan {
-                        self.dirtyPaths.formUnion(result.paths)
-                        #if KEYLANE_FILE_EVENT_TESTING
-                        if let trace = self.testTraceEligibleIndexPath { result.paths.forEach(trace) }
-                        #endif
-                        self.needsFullScan = self.dirtyPaths.count > Self.maxQueuedEvents
+                    if result.requiresFullScan {
+                        self.restartAfterDiscontinuity(lifetime, wrapped: false)
+                        return
                     }
-                    if self.needsFullScan { self.checkpointReady = false; self.dirtyPaths.removeAll() }
+                    var paths = result.paths
+                    var recursive = result.recursivePaths.intersection(paths)
+                    // A normal directory modification (e.g. adding a sibling)
+                    // cannot make a different inaccessible subtree readable.
+                    // Retry exact repair targets and ancestors with recovery flags.
+                    if !result.repairWakePaths.isEmpty || !self.pendingRepairPaths.isDisjoint(with: paths) {
+                        let repairTriggers = result.repairWakePaths.intersection(paths)
+                        for repair in self.pendingRepairPaths {
+                            if paths.contains(repair) || Self.hasAncestor(repair, in: repairTriggers) {
+                                paths.insert(repair); recursive.insert(repair)
+                                self.urgentRefresh = true
+                            }
+                        }
+                    }
+                    for root in self.authorizedRoots where !recursive.contains(root) {
+                        paths.remove(root) // Root metadata itself is not a searchable row.
+                    }
+                    self.dirtyPaths.formUnion(paths)
+                    self.dirtyRecursivePaths.formUnion(recursive)
+                    self.urgentRefresh = self.urgentRefresh || !result.urgentPaths.isDisjoint(with: paths)
+                    #if KEYLANE_FILE_EVENT_TESTING
+                    if let trace = self.testTraceEligibleIndexPath { paths.forEach(trace) }
+                    #endif
+                    if self.dirtyPaths.count > Self.maxQueuedEvents {
+                        self.reconcileAfterLocalBacklog(lifetime)
+                        return
+                    }
                     if batches.contains(where: { $0.flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 } }), !self.indexing { self.indexStatus = "索引已恢复" }
+                    self.patchLiveMetadata(paths, recursive: recursive)
                     self.scheduleRefresh()
                 } else {
                     // An exclusion, grant, or restore changed while filtering.
@@ -1673,7 +2182,7 @@ final class FileSearchController: ObservableObject {
                         self.pendingEvents = batches + self.pendingEvents
                         self.pendingEventCount += count
                     } else {
-                        self.restartAfterDiscontinuity(lifetime, wrapped: false)
+                        self.reconcileAfterLocalBacklog(lifetime)
                         return
                     }
                 }
@@ -1687,9 +2196,16 @@ final class FileSearchController: ObservableObject {
     // complete and no accepted work is outstanding. Queue ordering keeps this
     // write before any later scan invalidation.
     private func saveIdleRecoveryPoint() {
-        guard checkpointReady, !indexing, !processingEvents, pendingEvents.isEmpty,
-              !needsFullScan, dirtyPaths.isEmpty,
+        guard checkpointReady, !indexing, !processingEvents, !localBacklogPending, pendingEvents.isEmpty,
+              dirtyPaths.isEmpty,
               let lifetime = watchLifetime, let configuration = checkpointConfiguration, let historyDomain = durableHistoryDomain else { return }
+        #if !KEYLANE_FILE_EVENT_TESTING
+        // Filtered traffic also advances the cursor, but an idle cursor
+        // update must not continuously write in response to filesystem noise.
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now >= nextIdleCheckpointUptime else { return }
+        nextIdleCheckpointUptime = now + 30
+        #endif
         let config = eventConfiguration
         let legacy = checkpointLegacyConfiguration
         let eventID = acceptedEventID
@@ -1722,21 +2238,56 @@ final class FileSearchController: ObservableObject {
         var result = IndexEventResult(exclusions: configuration.exclusions, churn: churn)
         let ignores = FileSearchRules.pathFilter(options.ignorePatterns)
         let library = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library").path
+        let globalRecovery = FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped
+            | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped)
+        let scopedRecovery = FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
         for batch in batches {
             guard !lifetime.cancelled else { return nil }
             let paths = batch.paths as! [String]
+            let requiresFullScan = zip(paths, batch.flags).contains { path, flags in
+                if flags & globalRecovery != 0 { return true }
+                if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs) != 0,
+                   !options.roots.contains(where: { FileSearchLocation.contains(path, in: $0) }),
+                   options.roots.contains(where: { FileSearchLocation.contains($0, in: path) }) { return true }
+                return flags & scopedRecovery != 0 && options.roots.contains {
+                    FileSearchLocation.contains(path, in: $0) || FileSearchLocation.contains($0, in: path)
+                }
+            }
+            result.requiresFullScan = result.requiresFullScan || requiresFullScan
             result.churn = result.churn.filter { batch.date.timeIntervalSince($0.value.0) < 60 }
             var indexLocations: FileSearchLocation?
             var targets = Set<String>()
             var newExclusions = Set<String>()
             for (path, flags) in zip(paths, batch.flags) {
                 if flags & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) != 0 { continue }
+                if flags & Self.scopeIdentityEvents != 0 { continue }
                 guard !lifetime.cancelled else { return nil }
                 if let i = result.exclusions.firstIndex(where: { FileSearchLocation.contains(path, in: $0.path) }) {
                     result.exclusions[i].events += 1
                     continue
                 }
-                targets.insert(options.useIgnoreFiles ? indexEventTarget(path) : path)
+                let target = options.useIgnoreFiles ? indexEventTarget(path) : path
+                targets.insert(target)
+                let recoveryFlags = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagItemChangeOwner)
+                if target != path || flags & recoveryFlags != 0 { result.urgentPaths.insert(target) }
+                let structuralChange = FSEventStreamEventFlags(kFSEventStreamEventFlagItemCreated
+                    | kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagRootChanged
+                    | kFSEventStreamEventFlagItemChangeOwner)
+                let inodeChange = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemInodeMetaMod) != 0
+                let possibleDirectory = flags & FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile) == 0
+                if possibleDirectory, inodeChange || flags & structuralChange != 0 {
+                    // Inode notifications alone are common during cloud sync.
+                    // They can wake saved repairs without expanding a healthy directory.
+                    result.repairWakePaths.insert(target)
+                }
+                if target != path || flags & structuralChange != 0 {
+                    result.recursivePaths.insert(target)
+                } else if inodeChange, possibleDirectory, options.roots.contains(target), directoryAccessDenied(target) {
+                    // Scope roots have no index row. Only revisit a root on an
+                    // inode-only event if it is unreadable, so repair is recorded.
+                    result.recursivePaths.insert(target)
+                    result.urgentPaths.insert(target)
+                }
                 // Historical changes may span days; they are not a one-minute burst.
                 guard !batch.historical, let directory = FileIndexExclusionPolicy.changeCandidate(
                     for: path, scopes: options.roots, restored: configuration.restored, includeHidden: options.includeHidden
@@ -1755,6 +2306,8 @@ final class FileSearchController: ObservableObject {
                     result.churn[directory] = (previous.0, previous.1 + 1)
                 }
             }
+            // Keep known targets for prompt live patches even when an additional
+            // conservative baseline is required to recover unknown changes.
             for path in targets {
                 guard !lifetime.cancelled else { return nil }
                 guard options.roots.contains(where: { FileSearchLocation.contains(path, in: $0) }) else { continue }
@@ -1768,6 +2321,7 @@ final class FileSearchController: ObservableObject {
             }
             // Purge newly excluded subtrees even though their own events were filtered above.
             result.paths.formUnion(newExclusions)
+            result.urgentPaths.formUnion(newExclusions)
         }
         return result
     }
@@ -1782,17 +2336,36 @@ final class FileSearchController: ObservableObject {
     }
 
     private func scheduleRefresh() {
-        guard !indexPaused, !indexing, pendingRefresh == nil, needsFullScan || !dirtyPaths.isEmpty else { return }
+        guard !indexPaused, !indexing, !dirtyPaths.isEmpty else { return }
+        let scopes = authorizedRoots
+        #if KEYLANE_FILE_EVENT_TESTING
+        let library = testRoutineLibraryPath ?? userLibraryPath
+        #else
+        let library = userLibraryPath
+        #endif
+        let deferBatch = liveBaselineReady && !urgentRefresh && dirtyPaths.allSatisfy {
+            FileIndexExclusionPolicy.isRoutineLibraryChange($0, scopes: scopes, library: library)
+        }
+        if let pendingRefresh {
+            // Ordinary traffic never extends the deadline, while a real file
+            // change or explicit recovery can pull the pending batch forward.
+            guard pendingRefreshDeferred && !deferBatch else { return }
+            pendingRefresh.cancel()
+        }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingRefresh = nil
+            self.pendingRefreshDeferred = false
             guard !self.indexing else { return }
-            if self.needsFullScan || !self.liveBaselineReady { self.startIndex(); return }
+            if !self.liveBaselineReady { self.startIndex(reason: "incomplete-checkpoint"); return }
             let paths = self.dirtyPaths
-            self.dirtyPaths.removeAll()
-            if !paths.isEmpty { self.scanIndex(paths: paths) }
+            let recursive = self.dirtyRecursivePaths
+            self.dirtyPaths.removeAll(); self.dirtyRecursivePaths.removeAll()
+            self.urgentRefresh = false
+            if !paths.isEmpty { self.scanIndex(paths: paths, recursivePaths: recursive) }
         }
         pendingRefresh = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+        pendingRefreshDeferred = deferBatch
+        DispatchQueue.main.asyncAfter(deadline: .now() + (deferBatch ? 30 : 2), execute: work)
     }
 }

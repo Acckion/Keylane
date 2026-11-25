@@ -50,8 +50,22 @@ public final class FileSearchIndex {
             return true
         }
     }
+    /// Writer-confined, aggregate-only counters; never retain paths or contents.
+    public struct WriteDiagnostics: Equatable {
+        public var metadataChecks: UInt64 = 0
+        public var metadataWrites: UInt64 = 0
+        public var metadataSkips: UInt64 = 0
+        public var seenWrites: UInt64 = 0
+        public var contentWrites: UInt64 = 0
+        public var contentSkips: UInt64 = 0
+        public var contentDeferrals: UInt64 = 0
+        public var transactions: UInt64 = 0
+        public var subtreeReconcileSteps: UInt64 = 0
+    }
+    public private(set) var writeDiagnostics = WriteDiagnostics()
     private var db: OpaquePointer?
     private var contentStatements: [String: OpaquePointer] = [:]
+    private var transientSeenEpoch: String?
     private var activeRecoveryScan: UUID?
     public let url: URL
     public init(url: URL) throws {
@@ -61,7 +75,7 @@ public final class FileSearchIndex {
         do {
             try exec("PRAGMA busy_timeout=3000")
             let s = try statement("PRAGMA user_version"); let version = sqlite3_step(s) == SQLITE_ROW ? sqlite3_column_int(s, 0) : 0; sqlite3_finalize(s)
-            guard version <= 1 else { throw FileIndexError.newerSchema }
+            guard version <= 3 else { throw FileIndexError.newerSchema }
             try exec("""
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,name TEXT NOT NULL,body TEXT NOT NULL DEFAULT '',root TEXT NOT NULL,volume TEXT NOT NULL,modified REAL NOT NULL,directory INTEGER NOT NULL,symlink INTEGER NOT NULL,external INTEGER NOT NULL DEFAULT 0,epoch TEXT NOT NULL);
@@ -70,13 +84,47 @@ public final class FileSearchIndex {
                 CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(name,body,content='files',content_rowid='rowid',tokenize='trigram');
                 CREATE TRIGGER IF NOT EXISTS file_ai AFTER INSERT ON files BEGIN INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 CREATE TRIGGER IF NOT EXISTS file_ad AFTER DELETE ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); END;
-                CREATE TRIGGER IF NOT EXISTS file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
+
                 CREATE TABLE IF NOT EXISTS file_content_queue(path TEXT PRIMARY KEY,token TEXT NOT NULL,root TEXT NOT NULL,modified REAL NOT NULL,ready REAL NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS file_content_ready ON file_content_queue(ready);
                 CREATE TRIGGER IF NOT EXISTS file_content_delete AFTER DELETE ON files BEGIN DELETE FROM file_content_queue WHERE path=old.path; END;
                 CREATE TABLE IF NOT EXISTS file_recovery(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
-                PRAGMA user_version=1;
+
                 """)
+            let triggerQuery = try statement("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='file_au'")
+            let existingTrigger = sqlite3_step(triggerQuery) == SQLITE_ROW ? text(triggerQuery, 0) : ""
+            sqlite3_finalize(triggerQuery)
+            if !existingTrigger.contains("WHEN old.name IS NOT new.name OR old.body IS NOT new.body") {
+                try transaction {
+                    try exec("DROP TRIGGER IF EXISTS file_au")
+                    try exec("CREATE TRIGGER file_au AFTER UPDATE OF name,body ON files WHEN old.name IS NOT new.name OR old.body IS NOT new.body BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;")
+                }
+            }
+            if version < 2 {
+                try transaction {
+                    // Another connection may have migrated while BEGIN waited.
+                    let current = try statement("PRAGMA user_version")
+                    let migrated = sqlite3_step(current) == SQLITE_ROW && sqlite3_column_int(current, 0) >= 2
+                    sqlite3_finalize(current)
+                    if migrated { return }
+                    try exec("CREATE TABLE file_seen(path TEXT PRIMARY KEY,epoch TEXT NOT NULL)")
+                    try exec("INSERT INTO file_seen SELECT path,epoch FROM files")
+                    try exec("CREATE TRIGGER file_seen_delete AFTER DELETE ON files BEGIN DELETE FROM file_seen WHERE path=old.path; END")
+                    try exec("PRAGMA user_version=2")
+                }
+            }
+            if version < 3 {
+                try transaction {
+                    let q = try statement("PRAGMA table_info(file_content_queue)")
+                    var columns = Set<String>()
+                    while sqlite3_step(q) == SQLITE_ROW { columns.insert(text(q, 1)) }
+                    sqlite3_finalize(q)
+                    if !columns.contains("attempts") { try exec("ALTER TABLE file_content_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0") }
+                    if !columns.contains("failure") { try exec("ALTER TABLE file_content_queue ADD COLUMN failure TEXT NOT NULL DEFAULT ''") }
+                    if !columns.contains("revision") { try exec("ALTER TABLE file_content_queue ADD COLUMN revision INTEGER NOT NULL DEFAULT 0") }
+                    try exec("PRAGMA user_version=3")
+                }
+            }
             try prepareContentProof()
             try prepareStatistics()
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
@@ -111,11 +159,81 @@ public final class FileSearchIndex {
     }
     private func text(_ s: OpaquePointer, _ i: Int32) -> String { sqlite3_column_text(s,i).map { String(cString: $0) } ?? "" }
     public func put(_ record: FileIndexRecord, body: String = "", root: String, epoch: String) throws {
-        try write("INSERT INTO files(path,name,body,root,volume,modified,directory,symlink,external,epoch) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET name=excluded.name,body=excluded.body,root=excluded.root,volume=excluded.volume,modified=excluded.modified,directory=excluded.directory,symlink=excluded.symlink,external=excluded.external,epoch=excluded.epoch",[record.path,FileSearchRules.fold(record.name),FileSearchRules.fold(body),root,record.volume,String(record.modified),record.directory ? "1":"0",record.symlink ? "1":"0",record.external ? "1":"0",epoch])
+        try putRecord(record, body: body, root: root, epoch: epoch, preservingBody: false)
+    }
+    private func putRecord(_ record: FileIndexRecord, body: String = "", root: String, epoch: String, preservingBody: Bool) throws {
+        try savepoint {
+            try write("INSERT INTO files(path,name,body,root,volume,modified,directory,symlink,external,epoch) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET name=excluded.name,body=CASE WHEN ? THEN files.body ELSE excluded.body END,root=excluded.root,volume=excluded.volume,modified=excluded.modified,directory=excluded.directory,symlink=excluded.symlink,external=excluded.external,epoch=excluded.epoch WHERE files.name IS NOT excluded.name OR files.body IS NOT CASE WHEN ? THEN files.body ELSE excluded.body END OR files.root IS NOT excluded.root OR files.volume IS NOT excluded.volume OR files.modified IS NOT excluded.modified OR files.directory IS NOT excluded.directory OR files.symlink IS NOT excluded.symlink OR files.external IS NOT excluded.external OR files.epoch IS NOT excluded.epoch",[record.path,FileSearchRules.fold(record.name),FileSearchRules.fold(body),root,record.volume,String(record.modified),record.directory ? "1":"0",record.symlink ? "1":"0",record.external ? "1":"0",epoch,preservingBody ? "1":"0",preservingBody ? "1":"0"])
+            try markSeen(path: record.path, epoch: epoch)
+        }
+    }
+    private func savepoint(_ body: () throws -> Void) throws {
+        let previous = writeDiagnostics
+        try exec("SAVEPOINT metadata_seen")
+        do { try body(); try exec("RELEASE metadata_seen") }
+        catch {
+            try? exec("ROLLBACK TO metadata_seen"); try? exec("RELEASE metadata_seen")
+            writeDiagnostics = previous
+            throw error
+        }
+    }
+    /// Full scans only need their membership marks on this writer connection.
+    /// A compact SQLite TEMP table participates in transaction rollback without
+    /// touching the durable WAL. No marker is used to resume a cancelled scan.
+    public func prepareTransientSeen(epoch: String) throws {
+        guard transientSeenEpoch != epoch else { return }
+        try exec("DROP TRIGGER IF EXISTS temp.scan_seen_delete; DROP TABLE IF EXISTS temp.scan_seen")
+        transientSeenEpoch = nil
+        try exec("""
+            CREATE TEMP TABLE scan_seen(id INTEGER PRIMARY KEY);
+            CREATE TEMP TRIGGER scan_seen_delete AFTER DELETE ON main.files
+            BEGIN DELETE FROM scan_seen WHERE id=old.rowid; END;
+            """)
+        transientSeenEpoch = epoch
+    }
+
+    public func discardTransientSeen(epoch: String) throws {
+        guard transientSeenEpoch == epoch else { return }
+        try exec("DROP TRIGGER temp.scan_seen_delete; DROP TABLE temp.scan_seen")
+        transientSeenEpoch = nil
+    }
+
+    private static let durableUnseen = "NOT EXISTS(SELECT 1 FROM file_seen WHERE file_seen.path=files.path AND file_seen.epoch=?)"
+    private static let transientUnseen = "NOT EXISTS(SELECT 1 FROM temp.scan_seen WHERE id=files.rowid)"
+    private func unseenPredicate(epoch: String) -> String {
+        transientSeenEpoch == epoch ? Self.transientUnseen : Self.durableUnseen
+    }
+
+    private func markSeen(path: String, epoch: String) throws {
+        if transientSeenEpoch == epoch {
+            try write("INSERT OR IGNORE INTO temp.scan_seen(id) SELECT rowid FROM files WHERE path=?", [path])
+            return
+        }
+        try write("INSERT INTO file_seen(path,epoch) VALUES(?,?) ON CONFLICT(path) DO UPDATE SET epoch=excluded.epoch WHERE file_seen.epoch IS NOT excluded.epoch", [path,epoch])
+        if sqlite3_changes(db) > 0 { writeDiagnostics.seenWrites &+= 1 }
     }
     public func touchUnchanged(_ record: FileIndexRecord, root: String, epoch: String, contentSearch: Bool) throws -> Bool {
-        try write("UPDATE files SET root=?,epoch=?,volume=?,external=? WHERE path=? AND modified=? AND directory=? AND symlink=? AND epoch LIKE ?",[root,epoch,record.volume,record.external ? "1":"0",record.path,String(record.modified),record.directory ? "1":"0",record.symlink ? "1":"0",contentSearch ? "c:%":"n:%"])
-        return sqlite3_changes(db) > 0
+        writeDiagnostics.metadataChecks &+= 1
+        let values = [record.path, String(record.modified), record.directory ? "1":"0",
+                      record.symlink ? "1":"0", contentSearch ? "c:%":"n:%"]
+        let query = try statement("SELECT root,volume,external FROM files WHERE path=? AND modified=? AND directory=? AND symlink=? AND epoch LIKE ?", values)
+        let status = sqlite3_step(query)
+        if status == SQLITE_DONE { sqlite3_finalize(query); return false }
+        guard status == SQLITE_ROW else { sqlite3_finalize(query); throw FileIndexError.database }
+        let changed = text(query, 0) != root || text(query, 1) != record.volume
+            || sqlite3_column_int(query, 2) != (record.external ? 1 : 0)
+        sqlite3_finalize(query)
+        if changed {
+            try savepoint {
+                try write("UPDATE files SET root=?,volume=?,external=? WHERE path=?", [root,record.volume,record.external ? "1":"0",record.path])
+                try markSeen(path: record.path, epoch: epoch)
+                writeDiagnostics.metadataWrites &+= 1
+            }
+        } else {
+            try markSeen(path: record.path, epoch: epoch)
+            writeDiagnostics.metadataSkips &+= 1
+        }
+        return true
     }
     private func prepareContentProof() throws {
         // Migrate the old owner trigger and certificate column in a single
@@ -137,9 +255,17 @@ public final class FileSearchIndex {
                     CREATE TRIGGER file_content_owner_generation AFTER UPDATE OF root ON files WHEN old.root<>new.root BEGIN
                         UPDATE file_content_queue SET root=new.root,token=lower(hex(randomblob(16))),ready=0,proof=NULL WHERE path=new.path;
                     END;
-                    CREATE INDEX IF NOT EXISTS file_content_certified_ready ON file_content_queue(ready) WHERE proof IS NOT NULL;
                     """)
             }
+            // Idempotently use a separate trigger for schema 3. Owner UUIDs
+            // still change on v1/v2 migrations and old readers cannot make
+            // a previous owner's revision or proof valid again.
+            try exec("""
+                CREATE TRIGGER IF NOT EXISTS file_content_owner_retry_reset AFTER UPDATE OF root ON files WHEN old.root<>new.root BEGIN
+                    UPDATE file_content_queue SET attempts=0,failure='',revision=revision+1 WHERE path=new.path;
+                END;
+                CREATE INDEX IF NOT EXISTS file_content_certified_ready ON file_content_queue(ready) WHERE proof IS NOT NULL;
+                """)
             // Also remove a legacy trigger recreated by an older build.
             let legacy = try statement("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='file_content_owner'")
             let legacyStatus = sqlite3_step(legacy)
@@ -152,37 +278,73 @@ public final class FileSearchIndex {
     public struct ContentJob: Sendable {
         public let path: String, token: String, root: String
         public let modified: Double
+        public let revision: Int64
         let proof: FileContentReader.Proof?
     }
 
-    /// Metadata and its durable extraction request are committed together by the
-    /// caller's directory transaction. No file body is read here.
+    /// Indexed metadata read before a worker attempts descriptor certification.
+    /// Common unchanged completed rows need no filesystem work.
+    public func needsContentProof(_ record: FileIndexRecord, root: String, contentSearch: Bool, force: Bool = false) throws -> Bool {
+        guard contentSearch, !record.directory, !record.symlink, FileContentReader.supports(record.path) else { return false }
+        if force { return true }
+        let s = try statement("""
+            SELECT EXISTS(SELECT 1 FROM file_content_queue WHERE path=?) OR NOT EXISTS(
+                SELECT 1 FROM files WHERE path=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%')
+            """, [record.path, record.path, String(record.modified)])
+        defer { sqlite3_finalize(s) }
+        guard sqlite3_step(s) == SQLITE_ROW else { throw FileIndexError.database }
+        return sqlite3_column_int(s, 0) != 0
+    }
+
+    /// Compatibility path for Core callers and fixtures. Product scan workers
+    /// obtain their certificate off the writer queue and submit it as data.
     public func stageMetadata(_ record: FileIndexRecord, root: String, epoch: String,
-                              contentSearch: Bool, force: Bool = false,
+                              contentSearch: Bool, force: Bool = false, wakeFromEvent: Bool = false,
                               certification: FileContentReader.Session? = nil, allowCertification: Bool = true,
                               isCancelled: () -> Bool = { false }) throws {
+        let needsProof = try allowCertification && needsContentProof(record, root: root, contentSearch: contentSearch, force: force)
+        let proof = needsProof ? (certification ?? FileContentReader.Session()).certify(path: record.path, owner: root, modified: record.modified, cancelled: isCancelled) : nil
+        try stagePreparedMetadata(record, root: root, epoch: epoch, contentSearch: contentSearch, force: force,
+                                  wakeFromEvent: wakeFromEvent, proof: proof, isCancelled: isCancelled)
+    }
+
+    public func stagePreparedMetadata(_ record: FileIndexRecord, root: String, epoch: String,
+                                      contentSearch: Bool, force: Bool = false, wakeFromEvent: Bool = false,
+                                      proof: FileContentReader.Proof?, isCancelled: () -> Bool = { false }) throws {
+        if isCancelled() { throw CancellationError() }
         let needsBody = contentSearch && !record.directory && !record.symlink && FileContentReader.supports(record.path)
-        let touched = !force ? try touchUnchanged(record, root: root, epoch: epoch, contentSearch: contentSearch) : false
-        if !touched { try put(record, root: root, epoch: epoch) }
-        if needsBody {
-            let old: (exists: Bool, proof: FileContentReader.Proof?)?
-            if touched {
-                let s = try statement("SELECT proof FROM file_content_queue WHERE path=?", [record.path])
-                let status = sqlite3_step(s)
-                old = status == SQLITE_ROW ? (true, Self.decodeProof(text(s, 0))) : nil
-                sqlite3_finalize(s)
-                guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
-                guard old != nil else { return }
-            } else { old = nil }
-            let proof = allowCertification ? (certification ?? FileContentReader.Session()).certify(path: record.path, owner: root, modified: record.modified, cancelled: isCancelled) : nil
-            if touched && old?.proof == proof { return }
-            if isCancelled() { throw CancellationError() }
-            let encoded = try proof.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) } ?? ""
-            try writeContent("""
-                INSERT INTO file_content_queue(path,token,root,modified,ready,proof) VALUES(?,?,?,?,0,NULLIF(?,''))
-                ON CONFLICT(path) DO UPDATE SET token=excluded.token,root=excluded.root,modified=excluded.modified,ready=0,proof=excluded.proof
-                """, [record.path, UUID().uuidString, root, String(record.modified), encoded])
-        } else if !touched { try writeContent("DELETE FROM file_content_queue WHERE path=?", [record.path]) }
+        try savepoint {
+            let touched = !force ? try touchUnchanged(record, root: root, epoch: epoch, contentSearch: contentSearch) : false
+            if !touched {
+                try putRecord(record, root: root, epoch: epoch, preservingBody: needsBody)
+                writeDiagnostics.metadataWrites &+= 1
+            }
+            if needsBody {
+                if touched {
+                    let q = try statement("SELECT proof,ready FROM file_content_queue WHERE path=?", [record.path])
+                    let status = sqlite3_step(q)
+                    let old = status == SQLITE_ROW ? Self.decodeProof(text(q, 0)) : nil
+                    let waiting = status == SQLITE_ROW && sqlite3_column_double(q, 1) < 0
+                    sqlite3_finalize(q)
+                    guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
+                    guard status == SQLITE_ROW else { return }
+                    if old == proof {
+                        if wakeFromEvent, waiting {
+                            try writeContent("UPDATE file_content_queue SET ready=0,attempts=0,failure='',revision=revision+1 WHERE path=? AND root=?",
+                                             [record.path,root])
+                        }
+                        return
+                    }
+                }
+                let encoded = try proof.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) } ?? ""
+                try writeContent("""
+                    INSERT INTO file_content_queue(path,token,root,modified,ready,proof,attempts,failure,revision)
+                    VALUES(?,?,?,?,0,NULLIF(?,''),0,'',0)
+                    ON CONFLICT(path) DO UPDATE SET token=excluded.token,root=excluded.root,modified=excluded.modified,
+                        ready=0,proof=excluded.proof,attempts=0,failure='',revision=0
+                    """, [record.path, UUID().uuidString, root, String(record.modified), encoded])
+            } else if !touched { try writeContent("DELETE FROM file_content_queue WHERE path=?", [record.path]) }
+        }
     }
 
     private static func decodeProof(_ text: String) -> FileContentReader.Proof? {
@@ -196,20 +358,19 @@ public final class FileSearchIndex {
 
     public func nextContentJobs(limit: Int = 8, now: Date = Date(), certifiedOnly: Bool = false) throws -> [ContentJob] {
         let certified = certifiedOnly ? " AND proof IS NOT NULL" : ""
-        let s = try statement("SELECT path,token,root,modified,proof FROM file_content_queue WHERE ready<=?" + certified + " ORDER BY ready,rowid LIMIT ?", [String(now.timeIntervalSince1970), String(max(1, min(8, limit)))])
+        let s = try statement("SELECT path,token,root,modified,revision,proof FROM file_content_queue WHERE ready>=0 AND ready<=?" + certified + " ORDER BY ready,rowid LIMIT ?", [String(now.timeIntervalSince1970), String(max(1, min(8, limit)))])
         defer { sqlite3_finalize(s) }
         var jobs: [ContentJob] = []
         while true {
             let status = sqlite3_step(s)
             if status == SQLITE_DONE { return jobs }
             guard status == SQLITE_ROW else { throw FileIndexError.database }
-            let proof = Self.decodeProof(text(s, 4))
-            jobs.append(ContentJob(path: text(s, 0), token: text(s, 1), root: text(s, 2), modified: sqlite3_column_double(s, 3), proof: proof))
+            jobs.append(ContentJob(path: text(s, 0), token: text(s, 1), root: text(s, 2), modified: sqlite3_column_double(s, 3), revision: sqlite3_column_int64(s, 4), proof: Self.decodeProof(text(s, 5))))
         }
     }
 
     public func nextContentRetry(certifiedOnly: Bool = false) throws -> Date? {
-        let s = try statement("SELECT ready FROM file_content_queue" + (certifiedOnly ? " WHERE proof IS NOT NULL" : "") + " ORDER BY ready LIMIT 1")
+        let s = try statement("SELECT ready FROM file_content_queue WHERE ready>=0" + (certifiedOnly ? " AND proof IS NOT NULL" : "") + " ORDER BY ready LIMIT 1")
         defer { sqlite3_finalize(s) }
         let status = sqlite3_step(s)
         if status == SQLITE_DONE { return nil }
@@ -217,12 +378,20 @@ public final class FileSearchIndex {
         return Date(timeIntervalSince1970: sqlite3_column_double(s, 0))
     }
 
+    public enum ContentFailure: String, Sendable { case transient, permission, missing, changed, unsafePath, exhausted, cancelled }
+    public func hasEventDeferredContent() throws -> Bool {
+        let q = try statement("SELECT 1 FROM file_content_queue WHERE ready<0 LIMIT 1")
+        defer { sqlite3_finalize(q) }
+        let status = sqlite3_step(q)
+        guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
+        return status == SQLITE_ROW
+    }
     public struct ContentUpdate: Sendable {
         public let job: ContentJob
         public let body: String?
-        let parkUntilScan: Bool
-        public init(job: ContentJob, body: String?, parkUntilScan: Bool = false) {
-            self.job = job; self.body = body; self.parkUntilScan = parkUntilScan
+        public let failure: ContentFailure
+        public init(job: ContentJob, body: String?, failure: ContentFailure = .transient, parkUntilScan: Bool = false) {
+            self.job = job; self.body = body; self.failure = parkUntilScan ? .unsafePath : failure
         }
     }
 
@@ -239,54 +408,91 @@ public final class FileSearchIndex {
                 if isCancelled() { throw CancellationError() }
                 let job = update.job
                 if let body = update.body {
-                    try writeContent("UPDATE files SET body=? WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%' AND EXISTS(SELECT 1 FROM file_content_queue WHERE path=? AND token=? AND root=? AND modified=?)",
-                              [FileSearchRules.fold(body), job.path, job.root, String(job.modified)] + Self.contentKey(job))
+                    let foldedBody = FileSearchRules.fold(body)
+                    let pathKey = [job.path, job.root, String(job.modified)]
+                    try writeContent("""
+                        UPDATE files SET body=? WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0
+                          AND epoch LIKE 'c:%' AND body IS NOT ? AND EXISTS(
+                            SELECT 1 FROM file_content_queue WHERE path=? AND token=? AND root=? AND modified=? AND revision=? AND ready>=0)
+                        """, [foldedBody] + pathKey + [foldedBody] + Self.contentKey(job))
+                    let wroteBody = sqlite3_changes(db) > 0
+                    if wroteBody { writeDiagnostics.contentWrites &+= 1 }
+                    else { writeDiagnostics.contentSkips &+= 1 }
+                    try writeContent("""
+                        DELETE FROM file_content_queue WHERE path=? AND token=? AND root=? AND modified=? AND revision=? AND ready>=0 AND EXISTS(
+                            SELECT 1 FROM files WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%')
+                        """, Self.contentKey(job) + pathKey)
                     if sqlite3_changes(db) > 0 {
-                        applied = true
-                        try writeContent("DELETE FROM file_content_queue WHERE path=? AND token=? AND root=? AND modified=?", Self.contentKey(job))
+                        // Equal verified results become visible without FTS churn.
+                        applied = applied || wroteBody || !foldedBody.isEmpty
                     } else {
-                        try recordContentFailure(job, parkUntilScan: true)
+                        try failContent(job, reason: .changed)
                     }
-                } else {
-                    try recordContentFailure(job, parkUntilScan: update.parkUntilScan)
-                }
+                } else if update.failure != .cancelled { try failContent(job, reason: update.failure) }
             }
             if isCancelled() { throw CancellationError() }
         }
         return applied
     }
 
-    private func recordContentFailure(_ job: ContentJob, parkUntilScan: Bool) throws {
-        // A known invalid route waits for a new scan. Other I/O
-        // failures get one durable timed retry, not an idle loop.
+    /// Persist one timed retry. Permission waits for a qualifying event;
+    /// exhausted/changed/unproved jobs also lose their certificate.
+    public func failContent(_ job: ContentJob, reason: ContentFailure, now: Date = Date(), jitter: Double = Double.random(in: 0.9...1.1)) throws {
+        guard reason != .cancelled else { return }
+        let attempts = "CASE WHEN attempts<2 THEN attempts+1 ELSE attempts END"
+        let delay = String(now.addingTimeInterval(60 * min(1.1,max(0.9,jitter))).timeIntervalSince1970)
+        let transient = reason == .transient ? "1" : "0"
+        let dropProof = reason == .transient || reason == .permission ? "0" : "1"
         try writeContent("""
-            UPDATE file_content_queue SET
-                token=CASE WHEN ? OR ready>0 THEN lower(hex(randomblob(16))) ELSE token END,
-                proof=CASE WHEN ? OR ready>0 THEN NULL ELSE proof END,
-                ready=CASE WHEN ? OR ready>0 THEN 0 ELSE ? END
-            WHERE path=? AND token=? AND root=? AND modified=?
-            """, Array(repeating: parkUntilScan ? "1" : "0", count: 3)
-                 + [String(Date().addingTimeInterval(60).timeIntervalSince1970)] + Self.contentKey(job))
+            UPDATE file_content_queue SET ready=CASE WHEN ? AND attempts=0 THEN ? ELSE -1 END,
+                failure=CASE WHEN ? AND attempts>0 THEN 'exhausted' ELSE ? END,
+                token=CASE WHEN ? OR (? AND attempts>0) THEN lower(hex(randomblob(16))) ELSE token END,
+                proof=CASE WHEN ? OR (? AND attempts>0) THEN NULL ELSE proof END,
+                attempts=\(attempts), revision=revision+1
+            WHERE path=? AND token=? AND root=? AND modified=? AND revision=? AND ready>=0
+            """, [transient, delay, transient, reason.rawValue, dropProof, transient, dropProof, transient] + Self.contentKey(job))
+        if sqlite3_changes(db) > 0 { writeDiagnostics.contentDeferrals &+= 1 }
     }
 
     private static func contentKey(_ job: ContentJob) -> [String] {
-        [job.path, job.token, job.root, String(job.modified)]
+        [job.path,job.token,job.root,String(job.modified),String(job.revision)]
     }
-
     public func deferContent(_ job: ContentJob, until date: Date) throws {
-        try writeContent("UPDATE file_content_queue SET ready=? WHERE path=? AND token=? AND root=? AND modified=?", [String(date.timeIntervalSince1970)] + Self.contentKey(job))
+        try writeContent("UPDATE file_content_queue SET ready=? WHERE path=? AND token=? AND root=? AND modified=? AND revision=? AND ready>=0",
+                         [String(date.timeIntervalSince1970)] + Self.contentKey(job))
+        if sqlite3_changes(db) > 0 { writeDiagnostics.contentDeferrals &+= 1 }
     }
 
-    public func transaction(_ body: () throws -> Void) throws { try exec("BEGIN IMMEDIATE"); do { try body(); try exec("COMMIT") } catch { try? exec("ROLLBACK"); throw error } }
-    public func removeUnseen(root: String, epoch: String) throws { try write("DELETE FROM files WHERE root=? AND epoch<>?",[root,epoch]) }
+    public func transaction(_ body: () throws -> Void) throws {
+        let previous = writeDiagnostics
+        try exec("BEGIN IMMEDIATE")
+        do { try body(); try exec("COMMIT"); writeDiagnostics.transactions &+= 1 }
+        catch { try? exec("ROLLBACK"); writeDiagnostics = previous; throw error }
+    }
+    public func removeUnseen(root: String, epoch: String) throws {
+        try write("DELETE FROM files WHERE root=? AND " + unseenPredicate(epoch: epoch),
+                  transientSeenEpoch == epoch ? [root] : [root, epoch])
+    }
+    /// Metadata-only directory reconciliation must retain all descendants.
+    public func removeUnseenEntry(root: String, path: String, epoch: String) throws {
+        try write("DELETE FROM files WHERE path=? AND root=? AND " + unseenPredicate(epoch: epoch),
+                  transientSeenEpoch == epoch ? [path, root] : [path, root, epoch])
+    }
+    static let subtreeReconcileSQL = subtreeReconcilePrefix + durableUnseen + ")"
+    private static let subtreeReconcilePrefix = "DELETE FROM files WHERE rowid IN (SELECT rowid FROM files NOT INDEXED WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND "
     /// Limit reconciliation to the changed entry and its descendants.
     public func removeUnseen(root: String, subtree: String, epoch: String) throws {
         let lower = subtree + "/"
         let upper = subtree + "0" // The next byte after the slash, under SQLite's binary collation.
-        // Bind row IDs first so SQLite cannot scan every record in the root
-        // (including large body overflow pages) for each changed subtree.
-        try write("DELETE FROM files WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND epoch<>?",
-                  [subtree, lower, upper, root, epoch])
+        // Keep ownership/epoch filtering inside the row-ID selection. An outer
+        // root predicate makes SQLite prefer a whole-root covering-index walk.
+        // NOT INDEXED still permits INTEGER PRIMARY KEY lookups, and prevents
+        // that same whole-root plan from reappearing inside the selection.
+        let q = try statement(Self.subtreeReconcilePrefix + unseenPredicate(epoch: epoch) + ")",
+                              transientSeenEpoch == epoch ? [subtree, lower, upper, root] : [subtree, lower, upper, root, epoch])
+        defer { sqlite3_finalize(q) }
+        guard sqlite3_step(q) == SQLITE_DONE else { throw FileIndexError.database }
+        writeDiagnostics.subtreeReconcileSteps &+= UInt64(sqlite3_stmt_status(q, SQLITE_STMTSTATUS_VM_STEP, 0))
     }
     /// Reconcile completed areas while retaining the last known rows below
     /// unreadable paths. Fetch bounded metadata batches, never file bodies.
@@ -302,12 +508,12 @@ public final class FileSearchIndex {
             let values: [String]
             if let subtree {
                 candidates = "rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND "
-                values = [subtree, subtree + "/", subtree + "0", String(cursor), root, epoch]
+                values = [subtree, subtree + "/", subtree + "0", String(cursor), root]
             } else {
                 candidates = ""
-                values = [String(cursor), root, epoch]
+                values = [String(cursor), root]
             }
-            let s = try statement("SELECT rowid,path FROM files WHERE " + candidates + "rowid>? AND root=? AND epoch<>? ORDER BY rowid LIMIT 512", values)
+            let s = try statement("SELECT rowid,path FROM files NOT INDEXED WHERE " + candidates + "rowid>? AND root=? AND " + unseenPredicate(epoch: epoch) + " ORDER BY rowid LIMIT 512", transientSeenEpoch == epoch ? values : values + [epoch])
             var rows: [(Int64, String)] = []
             var status = sqlite3_step(s)
             while status == SQLITE_ROW {
@@ -319,11 +525,13 @@ public final class FileSearchIndex {
             guard let last = rows.last else { return }
             cursor = last.0
             let ids = rows.compactMap { id, path -> String? in
-                var ancestor = path
+                // Indexed paths are absolute and normalized. Checking their
+                // ancestors is lexical and must never query a slow filesystem.
+                var ancestor = path[...]
                 while true {
-                    if preserving.contains(ancestor) { return nil }
-                    if ancestor == "/" { break }
-                    ancestor = URL(fileURLWithPath: ancestor).deletingLastPathComponent().path
+                    if preserving.contains(String(ancestor)) { return nil }
+                    guard ancestor != "/", let slash = ancestor.lastIndex(of: "/") else { break }
+                    ancestor = slash == ancestor.startIndex ? ancestor[...slash] : ancestor[..<slash]
                 }
                 return String(id)
             }
@@ -347,9 +555,8 @@ public final class FileSearchIndex {
     public func clear() throws {
         try transaction {
             try invalidateRecoveryPoint()
-            try exec("DELETE FROM files; DELETE FROM file_content_queue")
+            try exec("DELETE FROM files; DELETE FROM file_seen; DELETE FROM file_content_queue")
         }
-        // Maintenance may fail or be interrupted without unpairing data and checkpoint.
         try exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
     }
     private func prepareStatistics() throws {
@@ -553,15 +760,20 @@ public final class FileSearchIndex {
         for word in words {
             if word.count >= 3 {
                 let phrase = "\"" + word.replacingOccurrences(of: "\"", with: "\"\"") + "\""
-                conditions.append("rowid IN (SELECT rowid FROM file_fts WHERE file_fts MATCH ?)")
-                values.append(options.contentSearch ? phrase : "name : " + phrase)
+                if options.contentSearch {
+                    conditions.append("(rowid IN (SELECT rowid FROM file_fts WHERE file_fts MATCH ?) AND (NOT EXISTS(SELECT 1 FROM file_content_queue WHERE path=files.path) OR instr(name,?)>0))")
+                    values += [phrase, word]
+                } else {
+                    conditions.append("rowid IN (SELECT rowid FROM file_fts WHERE file_fts MATCH ?)")
+                    values.append("name : " + phrase)
+                }
             } else {
                 // Names are already folded. Match the literal substring directly.
                 if options.contentSearch {
                     let literal = "%" + word.replacingOccurrences(of: "\\", with: "\\\\")
                         .replacingOccurrences(of: "%", with: "\\%")
                         .replacingOccurrences(of: "_", with: "\\_") + "%"
-                    conditions.append("(instr(name, ?) > 0 OR body LIKE ? ESCAPE '\\')")
+                    conditions.append("(instr(name, ?) > 0 OR (NOT EXISTS(SELECT 1 FROM file_content_queue WHERE path=files.path) AND body LIKE ? ESCAPE '\\'))")
                     values += [word, literal]
                 } else {
                     conditions.append("instr(name, ?) > 0")

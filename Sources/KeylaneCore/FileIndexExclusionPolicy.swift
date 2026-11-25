@@ -8,6 +8,22 @@ public enum FileIndexExclusionPolicy {
         "build", "output", "dist", "cache", "target"
     ]
 
+    /// Changes in these macOS service directories arrive continuously when
+    /// the entire user Library is watched. Keep the results indexed, but batch
+    /// ordinary events unless the user explicitly watches a narrower scope.
+    public static func isRoutineLibraryChange(_ path: String, scopes: [String],
+                                              library: String) -> Bool {
+        for name in ["Biome", "Preferences", "IntelligencePlatform", "DuetExpertCenter"] {
+            let service = library + "/" + name
+            if FileSearchLocation.contains(path, in: service) {
+                return !scopes.contains {
+                    FileSearchLocation.contains($0, in: service) && FileSearchLocation.contains(path, in: $0)
+                }
+            }
+        }
+        return false
+    }
+
     public static func isKnownCache(_ directory: URL) -> Bool {
         let name = directory.lastPathComponent.lowercased()
         let parent = directory.deletingLastPathComponent().lastPathComponent.lowercased()

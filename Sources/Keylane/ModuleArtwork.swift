@@ -116,7 +116,7 @@ enum ModuleArtwork {
         "cancel-running-script": "script-commands", "quicklink": "quicklinks",
     ]
 
-    private static let cache = NSCache<NSString, NSImage>()
+    private static let cache = ResourceCache<NSString, NSImage>(.artwork)
 
     static func settings(_ pageID: String) -> NSImage? {
         settingsNames[pageID].flatMap(image)
@@ -135,12 +135,20 @@ enum ModuleArtwork {
         return settingsPage.flatMap(settings) ?? moduleID.flatMap(module)
     }
 
-    private static func nativeArtwork(_ icon: NSImage) -> NSImage {
-        // Native app icons include a larger safe area than the module PNGs.
-        NSImage(size: NSSize(width: 128, height: 128), flipped: false) { rect in
-            icon.draw(in: rect.insetBy(dx: -8, dy: -8))
-            return true
-        }
+    private static func nativeArtwork(_ icon: NSImage) -> NSImage? {
+        // Keep the existing safe-area crop without retaining the full application
+        // icon in a deferred drawing closure. Raster resolution remains 2x.
+        guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 256, pixelsHigh: 256,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+            let context = NSGraphicsContext(bitmapImageRep: bitmap) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = context
+        context.cgContext.scaleBy(x: 2, y: 2)
+        icon.draw(in: NSRect(x: -8, y: -8, width: 144, height: 144))
+        guard let image = bitmap.cgImage else { return nil }
+        return NSImage(cgImage: image, size: NSSize(width: 128, height: 128))
     }
 
     private static func image(_ name: String) -> NSImage? {
@@ -151,15 +159,15 @@ enum ModuleArtwork {
                 ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: "org.keylane.launcher")
                     .map { NSWorkspace.shared.icon(forFile: $0.path) }
             guard let icon else { return nil }
-            let artwork = nativeArtwork(icon)
-            cache.setObject(artwork, forKey: key)
+            guard let artwork = nativeArtwork(icon) else { return nil }
+            cache.setObject(artwork, forKey: key, cost: 256 * 256 * 4)
             return artwork
         }
         if name == "shortcuts",
            let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.shortcuts") {
             let icon = NSWorkspace.shared.icon(forFile: application.path)
-            let artwork = nativeArtwork(icon)
-            cache.setObject(artwork, forKey: key)
+            guard let artwork = nativeArtwork(icon) else { return nil }
+            cache.setObject(artwork, forKey: key, cost: 256 * 256 * 4)
             return artwork
         }
         var url = Bundle.main.url(forResource: name, withExtension: "png", subdirectory: "ModuleArtwork")
@@ -179,7 +187,7 @@ enum ModuleArtwork {
                 kCGImageSourceShouldCacheImmediately: true
               ] as CFDictionary) else { return nil }
         let artwork = NSImage(cgImage: image, size: .zero)
-        cache.setObject(artwork, forKey: key)
+        cache.setObject(artwork, forKey: key, cost: image.bytesPerRow * image.height)
         return artwork
     }
 }

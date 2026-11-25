@@ -5,7 +5,39 @@ import PDFKit
 /// Bounded, serial-worker extraction. Opens each path component without following
 /// user symlinks and reads from one descriptor; skips dataless file bodies.
 public enum FileContentReader {
-    public enum Failure: Error { case unavailable, changed, unproved, cancelled }
+    public enum Failure: Error { case unavailable, changed, unproved, cancelled, permission, missing, unsafePath }
+    private static func posixFailure() -> Failure {
+        switch errno {
+        case EACCES, EPERM: return .permission
+        case ENOENT, ENOTDIR: return .missing
+        case ELOOP: return .unsafePath
+        default: return .unavailable
+        }
+    }
+    public static func classify(_ error: Error) -> FileSearchIndex.ContentFailure {
+        if error is CancellationError { return .cancelled }
+        if let error = error as? Failure {
+            switch error {
+            case .permission: return .permission
+            case .missing: return .missing
+            case .unsafePath, .unproved: return .unsafePath
+            case .changed: return .changed
+            case .cancelled: return .cancelled
+            case .unavailable: return .transient
+            }
+        }
+        let error = error as NSError
+        if error.domain == NSCocoaErrorDomain {
+            if error.code == NSFileReadNoPermissionError { return .permission }
+            if [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) { return .missing }
+        }
+        if error.domain == NSPOSIXErrorDomain {
+            if [Int(EACCES), Int(EPERM)].contains(error.code) { return .permission }
+            if [Int(ENOENT), Int(ENOTDIR)].contains(error.code) { return .missing }
+            if error.code == Int(ELOOP) { return .unsafePath }
+        }
+        return .transient
+    }
     private static let extensions: Set<String> = ["pdf", "txt", "md", "csv", "tsv", "json", "swift", "js", "ts", "py", "html", "css", "xml", "yaml", "yml", "log"]
     public static func supports(_ path: String) -> Bool {
         extensions.contains((path as NSString).pathExtension.lowercased())
@@ -14,7 +46,7 @@ public enum FileContentReader {
         try Session().read(job, cancelled: cancelled)
     }
 
-    struct Proof: Codable, Equatable, Sendable {
+    public struct Proof: Codable, Equatable, Sendable {
         let root: Identity
         let file: Identity
         let bytes, modifiedSeconds, modifiedNanos, changedSeconds, changedNanos: Int64
@@ -63,12 +95,12 @@ public enum FileContentReader {
             }
             let path = LocalFilePath.systemCanonical(configured)
             var fd = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            guard fd >= 0 else { throw Failure.unavailable }
+            guard fd >= 0 else { throw posixFailure() }
             do {
                 for name in path.split(separator: "/") {
                     if cancelled() { throw Failure.cancelled }
                     let next = openat(fd, String(name), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-                    guard next >= 0 else { throw Failure.unavailable }
+                    guard next >= 0 else { throw posixFailure() }
                     close(fd); fd = next
                 }
                 var info = stat()
@@ -104,29 +136,32 @@ public enum FileContentReader {
             let suffix = path.dropFirst(root.path == "/" ? 0 : root.path.count).split(separator: "/")
             guard let leaf = suffix.last.map(String.init) else { throw Failure.unavailable }
             var fd = fcntl(root.fd, F_DUPFD_CLOEXEC, 0)
-            guard fd >= 0 else { throw Failure.unavailable }
+            guard fd >= 0 else { throw posixFailure() }
             defer { close(fd) }
             for name in suffix.dropLast() {
                 if cancelled() { throw Failure.cancelled }
                 var info = stat()
-                guard fstatat(fd, String(name), &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_mode & S_IFMT == S_IFDIR,
+                guard fstatat(fd, String(name), &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw posixFailure() }
+                guard info.st_mode & S_IFMT == S_IFDIR,
                       Int64(info.st_dev) == root.identity.device, info.st_flags & UInt32(SF_DATALESS) == 0
-                      else { throw Failure.unavailable }
+                      else { throw Failure.unsafePath }
                 let next = openat(fd, String(name), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-                guard next >= 0 else { throw Failure.unavailable }
+                guard next >= 0 else { throw posixFailure() }
                 var current = stat()
                 guard fstat(next, &current) == 0, Identity(current) == Identity(info) else { close(next); throw Failure.changed }
                 close(fd); fd = next
             }
             var info = stat()
-            guard !cancelled(), fstatat(fd, leaf, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_mode & S_IFMT == S_IFREG,
+            if cancelled() { throw Failure.cancelled }
+            guard fstatat(fd, leaf, &info, AT_SYMLINK_NOFOLLOW) == 0 else { throw posixFailure() }
+            guard info.st_mode & S_IFMT == S_IFREG,
                   Int64(info.st_dev) == root.identity.device, Self.matchesPath(root.fd, root.path),
                   Self.matchesPath(fd, (path as NSString).deletingLastPathComponent)
                   else { throw Failure.changed }
             return try visit(root, fd, leaf, path, info)
         }
 
-        func certify(path: String, owner: String, modified: Double, cancelled: () -> Bool) -> Proof? {
+        public func certify(path: String, owner: String, modified: Double, cancelled: () -> Bool) -> Proof? {
             try? withEntry(path: path, owner: owner, cancelled: cancelled) { root, _, _, _, info in
                 let proof = Proof(root: root.identity, file: info)
                 guard proof.file.isKnown, abs(Double(proof.modifiedSeconds) + Double(proof.modifiedNanos) / 1e9 - modified) < 0.001
@@ -172,7 +207,7 @@ public enum FileContentReader {
                       Self.matchesPath(root.fd, root.path) else { throw Failure.changed }
                 try check()
                 let fd = openat(parent, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-                guard fd >= 0 else { throw Failure.unavailable }
+                guard fd >= 0 else { throw posixFailure() }
                 defer { close(fd) }
                 var before = stat()
                 guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
@@ -199,7 +234,7 @@ public enum FileContentReader {
             while true {
                 try check()
                 let count = Darwin.read(fd, &buffer, buffer.count)
-                if count < 0 { if errno == EINTR { continue }; throw Failure.unavailable }
+                if count < 0 { if errno == EINTR { continue }; throw posixFailure() }
                 if count == 0 { break }
                 guard data.count + count <= 2_097_152 else { return "" }
                 data.append(contentsOf: buffer.prefix(count))

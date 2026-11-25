@@ -26,7 +26,7 @@ struct FileSearchPreferences: View {
         SettingsPageSections {
             SettingsSearchScopeCard(
                 paths: controller.options.roots,
-                detail: "选择要纳入索引的文件夹。",
+                detail: "仅索引已授权的文件夹。iCloud Drive 和其他云盘可单独选择。",
                 anchor: .fileSearchScope,
                 add: { controller.addScope() },
                 remove: controller.removeScope

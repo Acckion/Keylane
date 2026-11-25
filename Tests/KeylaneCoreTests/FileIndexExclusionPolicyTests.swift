@@ -3,6 +3,32 @@ import XCTest
 import KeylaneCore
 
 final class FileIndexExclusionPolicyTests: XCTestCase {
+    func testRecommendedScopesAreNarrowAndDoNotIgnoreAuthorizedCloudProviders() {
+        let home = "/fixture/home"
+        let options = FileSearchOptions.recommendedScopes(home: home)
+        XCTAssertFalse(options.enabled)
+        XCTAssertFalse(options.roots.contains(home))
+        XCTAssertFalse(options.roots.contains(home + "/Library"))
+        XCTAssertTrue(options.roots.contains(home + "/Library/Mobile Documents/com~apple~CloudDocs"))
+        XCTAssertTrue(options.roots.contains(home + "/Library/CloudStorage"))
+        let path = home + "/Library/CloudStorage/ExampleProvider/report.txt"
+        XCTAssertFalse(FileSearchRules.pathFilter(options.ignorePatterns)(path, "report.txt"))
+    }
+
+    func testRoutineLibraryEventsDoNotDelayExplicitScopesOrOrdinaryFiles() {
+        let library = "/fixture/Library"
+        let file = library + "/Biome/streams/telemetry.db-shm"
+        func routine(_ path: String, scopes: [String] = ["/fixture", "/fixture/Library"]) -> Bool {
+            FileIndexExclusionPolicy.isRoutineLibraryChange(path, scopes: scopes, library: library)
+        }
+        XCTAssertTrue(routine(file))
+        XCTAssertTrue(routine(library + "/Preferences/fixture.plist"))
+        XCTAssertFalse(routine(file, scopes: [library, library + "/Biome/streams"]))
+        XCTAssertTrue(routine(file, scopes: [library, library + "/Biome/unrelated"]))
+        XCTAssertFalse(routine(library + "/Biome Backup/notes.txt"))
+        XCTAssertFalse(routine(library + "/Group Containers/document.txt"))
+    }
+
     func testNestedWritesResolveToNearestBuildDirectoryWithinScope() {
         let scope = "/project"
         let file = "/project/output/report/raw/data.json"

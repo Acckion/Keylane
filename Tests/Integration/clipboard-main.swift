@@ -5,6 +5,8 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import KeylaneCore
 
+ResourceCaches.setBackground(false)
+
 final class PreviewFixtureProtocol: URLProtocol {
     static let lock = NSLock()
     static var requests = 0

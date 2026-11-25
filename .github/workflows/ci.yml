@@ -19,7 +19,7 @@ jobs:
   checks:
     name: Checks
     runs-on: macos-26
-    timeout-minutes: 40
+    timeout-minutes: 50
     outputs:
       version: ${{ steps.version.outputs.version }}
       installer_required: ${{ steps.installer.outputs.required }}
@@ -81,6 +81,10 @@ jobs:
         run: python3 scripts/check-installer-scope.py
       - name: Core tests
         run: swift test --scratch-path .build-current --disable-sandbox
+      - name: Process resource sampler calibration
+        run: |
+          swiftc -O scripts/sample-process-resources.swift -o /private/tmp/keylane-resource-sampler
+          /private/tmp/keylane-resource-sampler --self-check
       - name: AI shared conversation and vision integration
         run: bash scripts/verify-file-ai.sh
       - name: AI native file tools and approval integration
@@ -93,6 +97,18 @@ jobs:
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-restart-startup-main.swift bash scripts/verify-files.sh
       - name: Deferred file content integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-content-main.swift bash scripts/verify-files.sh
+      - name: File content retry and reuse integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-content-retry-main.swift bash scripts/verify-files.sh
+      - name: File metadata live-update integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-index-live-main.swift bash scripts/verify-files.sh
+      - name: File live burst and backlog integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-live-burst-main.swift bash scripts/verify-files.sh
+      - name: File event scope integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-event-scope-main.swift bash scripts/verify-files.sh
+      - name: Resource cache budget integration
+        run: bash scripts/verify-resource-budget.sh
+      - name: Named clipboard and preview integration
+        run: bash scripts/verify-clipboard.sh
       - name: File search scheduling integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-search-scheduling-main.swift bash scripts/verify-files.sh
       - name: Live FSEvents and file search stage diagnostic

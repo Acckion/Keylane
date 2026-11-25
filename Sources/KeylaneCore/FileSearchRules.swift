@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 public struct FileSearchOptions: Codable, Equatable {
     public var roots: [String]
@@ -13,6 +14,21 @@ public struct FileSearchOptions: Codable, Equatable {
     public var enforceDiskSpace = false
     public var enabled = true
     public init(roots: [String]) { self.roots = roots; ignorePatterns = Self.defaultIgnores }
+    /// Suggested roots only; the controller watches/indexes each one after it
+    /// has been picked or granted. Separate cloud roots avoid watching Library.
+    public static func recommendedScopes(home: String) -> Self {
+        var options = Self(roots: [
+            home + "/Desktop", home + "/Documents", home + "/Downloads", "/Applications",
+            home + "/Library/Mobile Documents/com~apple~CloudDocs",
+            home + "/Library/CloudStorage",
+        ])
+        options.enabled = false
+        // These defaults suggest CloudStorage explicitly. A blanket ignore
+        // would otherwise silently discard its children even after authorization.
+        options.ignorePatterns.removeAll { $0 == "**/Library/CloudStorage/**" }
+        return options
+    }
+
     private enum CodingKeys: String, CodingKey { case roots, ignorePatterns, excludedPaths, searchFromLauncher, contentSearch, includeHidden, useIgnoreFiles, externalVolumes, keepRemovedVolumes, enforceDiskSpace, enabled }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -137,15 +153,60 @@ public enum FileSearchRules {
         }
         return ignored
     }
+    private static func ignoreData(root: Int32, name: String) -> Data? {
+        // Borrow the root until a child descriptor is opened; the caller keeps
+        // it alive for the whole synchronous read. Missing files need no dup.
+        var fd = root
+        var ownsDescriptor = false
+        defer { if ownsDescriptor { close(fd) } }
+        let components = name.split(separator: "/")
+        for (offset, component) in components.enumerated() {
+            let last = offset == components.count - 1
+            if last {
+                var info = stat()
+                guard fstatat(fd, String(component), &info, AT_SYMLINK_NOFOLLOW) == 0,
+                      info.st_mode & S_IFMT == S_IFREG, info.st_size >= 0, info.st_size <= 262_144 else { return nil }
+            }
+            let flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK | (last ? 0 : O_DIRECTORY)
+            let next = openat(fd, String(component), flags)
+            guard next >= 0 else { return nil }
+            if ownsDescriptor { close(fd) }
+            fd = next; ownsDescriptor = true
+        }
+        var before = stat()
+        guard fstat(fd, &before) == 0, before.st_mode & S_IFMT == S_IFREG,
+              before.st_size >= 0, before.st_size <= 262_144 else { return nil }
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count < 0 { if errno == EINTR { continue }; return nil }
+            if count == 0 { break }
+            guard data.count + count <= 262_144 else { return nil }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        var after = stat()
+        guard fstat(fd, &after) == 0, before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_size == after.st_size, before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else { return nil }
+        return data
+    }
     public static func readIgnoreRules(in directory: URL) -> [IgnoreRule] {
-        [".gitignore", ".ignore", ".rayignore", ".git/info/exclude"].flatMap { name -> [IgnoreRule] in
-            let url = directory.appendingPathComponent(name)
-            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey,.isSymbolicLinkKey]), values.isSymbolicLink != true, (values.fileSize ?? 0) <= 262144,
-                  let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) else { return [] }
+        let base = directory.path
+        guard directory.isFileURL, base.hasPrefix("/"), !base.contains("\0") else { return [] }
+        // Avoid Foundation's per-child resourceValues and implicit URL directory
+        // probes. Pin the caller-authorized directory (including explicit root aliases);
+        // reject special files and links within the rule-file paths.
+        let root = Darwin.open(base, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NONBLOCK)
+        guard root >= 0 else { return [] }
+        defer { close(root) }
+        return [".gitignore", ".ignore", ".rayignore", ".git/info/exclude"].flatMap { name -> [IgnoreRule] in
+            guard let data = ignoreData(root: root, name: name), let text = String(data: data, encoding: .utf8) else { return [] }
             return text.split(whereSeparator: \.isNewline).compactMap { line in
                 let value = line.trimmingCharacters(in: .whitespaces)
                 guard !value.isEmpty, !value.hasPrefix("#"), value.count <= 1024 else { return nil }
-                return IgnoreRule(base: directory.path, line: value)
+                return IgnoreRule(base: base, line: value)
             }
         }
     }
