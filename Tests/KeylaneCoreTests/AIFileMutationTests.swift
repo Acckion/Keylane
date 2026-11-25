@@ -65,6 +65,25 @@ final class AIFileMutationTests: XCTestCase {
         succeeded(try await call("replace_file", replace))
         XCTAssertEqual(try content(source.appendingPathComponent("note.txt")), "completely new")
     }
+    func testOnlyApprovedFileReadCarriesResourceSnapshotNotMutationOrRecoveryMetadata() async throws {
+        try write("file", "private original")
+        let edit = try await call("replace_file", arguments("file", ["content": .string("approved edited")]))
+        succeeded(edit)
+        let id = try value(object(edit)["recovery_id"])
+        let read = try await call("read_file", ["root": .string("root_1"), "path": .string("file")])
+        XCTAssertTrue(try XCTUnwrap(read.resourceSnapshot).matches(read.text))
+        let recovery = try await call("file_recovery", [:])
+        succeeded(recovery)
+        XCTAssertTrue(recovery.text.contains(id))
+        let restore = try await call("restore_file", ["recovery_id": .string(id), "destination_path": .string("restored")])
+        succeeded(restore)
+        XCTAssertEqual(try content(source.appendingPathComponent("restored")), "private original")
+        for result in [edit, recovery, restore] {
+            XCTAssertNil(result.resourceSnapshot)
+            XCTAssertFalse(result.text.contains(vault.path))
+            XCTAssertFalse(result.text.contains("private original"))
+        }
+    }
     func testRestoreCanExplicitlyReplaceEditedOriginalAndKeepCurrentVersion() async throws {
         try write("note", "original")
         let edited = try await call("replace_file", arguments("note", ["content": .string("new")]))

@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "cases": {
+    "multifileExecutes": true,
+    "successfulBuildCleansScratch": true,
+    "repeatDeterministic": true,
+    "snapshotDependencyExecutes": true,
+    "configIgnored": true,
+    "sourceNotExecuted": true,
+    "unsupportedImportRejected": true,
+    "failedBuildCleansScratch": true,
+    "lifecycleRejected": true,
+    "unsafePathRejected": true,
+    "caseAliasRejected": true,
+    "nativeRejected": true,
+    "wrongProfileRejected": true,
+    "escapedImportRejected": true,
+    "cancelStopsCompiler": true,
+    "cancelCleansScratch": true,
+    "fixturesExited": true
+  },
+  "coverage": {
+    "phase": "M1-first-batch",
+    "productEnrollment": "pending",
+    "StoreAdapter": "pending",
+    "installationTransactions": "pending",
+    "publicExtensions": "not-run"
+  },
+  "compilerArchiveSHA256": "61a312bcb8249d058639c405cf6378dd3107de5535a9974973c48a6dd0d2d062",
+  "observations": [
+    {
+      "exit": 0,
+      "hasReply": true,
+      "audit": {
+        "cancelled": false,
+        "scratchRemoved": true
+      }
+    },
+    {
+      "exit": 0,
+      "hasReply": true,
+      "audit": {
+        "cancelled": false,
+        "scratchRemoved": true
+      }
+    },
+    {
+      "exit": 0,
+      "hasReply": true,
+      "audit": {
+        "cancelled": false,
+        "scratchRemoved": true
+      }
+    },
+    {
+      "exit": 0,
+      "hasReply": true,
+      "audit": {
+        "cancelled": false,
+        "scratchRemoved": true
+      }
+    },
+    {
+      "exit": 0,
+      "hasReply": true,
+      "audit": {
+        "cancelled": false,
+        "scratchRemoved": true
+      }
+    },
+    {
+      "exit": 70,
+      "hasReply": false,
+      "audit": {
+        "cancelled": false,
+        "scratchRemoved": true
+      }
+    },
+    {
+      "exit": 70,
+      "hasReply": false,
+      "audit": null
+    },
+    {
+      "exit": 70,
+      "hasReply": false,
+      "audit": null
+    },
+    {
+      "exit": 70,
+      "hasReply": false,
+      "audit": null
+    },
+    {
+      "exit": 70,
+      "hasReply": false,
+      "audit": null
+    },
+    {
+      "exit": 70,
+      "hasReply": false,
+      "audit": null
+    },
+    {
+      "exit": 70,
+      "hasReply": false,
+      "audit": {
+        "cancelled": false,
+        "outsideInputRead": true,
+        "scratchRemoved": true
+      }
+    },
+    {
+      "exit": 75,
+      "hasReply": false,
+      "audit": {
+        "cancelled": true,
+        "scratchRemoved": true
+      }
+    }
+  ],
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}

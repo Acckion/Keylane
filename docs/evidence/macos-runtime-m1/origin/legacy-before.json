@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "phase": "M1",
+  "cases": {
+    "foreignProfileCreated": true,
+    "foreignProfileRejected": false,
+    "cleaned": true
+  },
+  "productionRuntimeReady": false,
+  "publicExtensionsVerified": false,
+  "gate": "blocked",
+  "failures": [
+    "foreignProfileRejected"
+  ],
+  "signaturesVerifiedBeforeAndAfter": true,
+  "temporaryArtifactsRemoved": true
+}

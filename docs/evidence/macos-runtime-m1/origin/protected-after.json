@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "phase": "M1",
+  "cases": {
+    "foreignProfileCreated": true,
+    "foreignProtectedCreateDenied": true,
+    "foreignProtectedUpdateDenied": true,
+    "foreignLegacyReadableByHost": true,
+    "foreignProfileRejected": true,
+    "cleaned": true
+  },
+  "productionRuntimeReady": false,
+  "publicExtensionsVerified": false,
+  "protectedStorage": "data-protection-keychain-v2",
+  "provisionedFixtureOnly": true,
+  "failures": [],
+  "gate": "incomplete",
+  "signaturesVerifiedBeforeAndAfter": true,
+  "temporaryArtifactsRemoved": true
+}

@@ -62,7 +62,7 @@ private struct KeylaneThemeModifier: ViewModifier {
         let theme = store.library.theme(for: scheme == .dark ? .dark : .light)
         content.environment(\.keylaneTheme, theme)
             .foregroundStyle(theme.usesSystemMaterial ? Color.primary : theme.color(.text).swiftUI)
-            .tint(theme.usesSystemMaterial ? Color.accentColor : theme.color(.selection).swiftUI)
+            .tint(theme.usesSystemMaterial ? nil : theme.color(.selection).swiftUI)
             .background {
                 if !theme.usesSystemMaterial {
                     ThemeBackgroundView(theme: theme).opacity(backgroundOpacity)
