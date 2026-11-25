@@ -45,7 +45,7 @@ struct AIConversationComposerView: View {
             } message: { Text(composer.fileError) }
             .onChange(of: composer.draftID) { _, _ in contextRequest = nil; dismissComposerMenu() }
             .onReceive(configuration.$state.map(\.enabled).removeDuplicates()) { enabled in
-                if !enabled { contextRequest = nil; dismissComposerMenu(); composer.cancelAttachmentRead() }
+                if !enabled { contextRequest = nil; dismissComposerMenu() }
             }
             .onReceive(composer.contextRequested) { request in
                 switch request {
@@ -58,7 +58,7 @@ struct AIConversationComposerView: View {
             }
             .sheet(item: $capability) { AIChatCapabilityInfoView(feature: $0) }
             .sheet(item: $contextRequest) { request in
-                AIChatContextSheet(source: request.source) { attachment, reader in
+                AIChatContextSheet(source: request.source, prepareReader: composer.prepareResourceReader) { attachment, reader in
                     guard configuration.state.enabled, contextRequest?.id == request.id else { return }
                     if composer.appendResourceAttachment(attachment, reader: reader, for: request.draftID) {
                         composer.focusRequested.send()

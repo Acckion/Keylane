@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import KeylaneCore
 
 @MainActor
@@ -78,3 +79,144 @@ private func verifyApprovedPickerRoute() async throws {
 }
 
 try await verifyApprovedPickerRoute()
+
+// P1 #227: a command's first disable revokes the retained reader, not accepted data.
+@MainActor private func verifyRetainedCommandReaderLifetime() async throws {
+    let availability = CurrentValueSubject<Bool, Never>(true)
+    var text = "accepted snapshot", reads = 0
+    var pause = false
+    var pending: CheckedContinuation<Void, Never>?
+    let source = AIActionSource(moduleID: .init(rawValue: "fixture.retained-command"), load: {
+        reads += 1
+        if pause { await withCheckedContinuation { pending = $0 } }
+        return .init(sourceID: "record", title: "Synthetic record", text: text)
+    }, isCurrent: { $0.fingerprint == AIActionContext.digest(text) })
+    let composer = AIConversationComposer(); composer.text = "keep draft"
+    func settled() async throws {
+        let deadline = Date().addingTimeInterval(3)
+        while composer.loadingFiles, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        precondition(!composer.loadingFiles)
+    }
+    func attach() { composer.loadResourceReaders([.init(source: source)], availability: availability.eraseToAnyPublisher()) }
+    attach(); try await settled()
+    let accepted = composer.attachments[0], saved = composer.snapshot
+    let retained = saved.resourceReaders[accepted.id]!
+    let count = reads
+    availability.send(false); availability.send(true)
+    precondition(!composer.canReread(accepted), "P1: disable/re-enable revived a retained attachment reader")
+    composer.rereadAttachment(accepted.id)
+    precondition(!composer.loadingFiles && composer.attachments == [accepted] && reads == count && composer.text == "keep draft")
+    do { _ = try await retained.read(replacing: accepted.resourceSnapshot); preconditionFailure("A copied old reader revived") }
+    catch AIActionError.unavailable { }
+    composer.restore(saved)
+    precondition(!composer.canReread(accepted) && composer.attachments == [accepted])
+    text = "explicit new selection"
+    attach(); try await settled()
+    let fresh = composer.attachments[1]
+    precondition(composer.canReread(fresh) && !composer.canReread(accepted))
+    precondition(fresh.text == text && accepted.text == "accepted snapshot")
+    pause = true; text = "must not replace the accepted snapshot"
+    composer.rereadAttachment(fresh.id)
+    let deadline = Date().addingTimeInterval(3)
+    while pending == nil, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    precondition(pending != nil)
+    availability.send(false); availability.send(true)
+    try await settled()
+    precondition(!composer.loadingFiles && !composer.canReread(fresh))
+    pending?.resume(); pending = nil
+    try await Task.sleep(for: .milliseconds(40))
+    precondition(composer.attachments == [accepted, fresh] && composer.text == "keep draft")
+    // Retiring A must not cancel a pending read owned by B.
+    pause = false
+    let other = CurrentValueSubject<Bool, Never>(true)
+    composer.loadResourceReaders([.init(source: source)], availability: other.eraseToAnyPublisher())
+    try await settled()
+    let otherAccepted = composer.attachments[2]
+    availability.send(true); attach(); try await settled()
+    let unrelatedAccepted = composer.attachments[3]
+    precondition(composer.canReread(unrelatedAccepted))
+    pause = true; composer.rereadAttachment(otherAccepted.id)
+    while pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+    availability.send(false)
+    precondition(composer.loadingFiles && composer.canReread(otherAccepted) && !composer.canReread(unrelatedAccepted))
+    pending?.resume(); pending = nil
+    try await settled()
+    precondition(composer.canReread(composer.attachments[2]))
+    // Initial attachment reads also reject a late result after transient revocation.
+    composer.clear(); composer.text = "new draft"
+    pause = true; availability.send(true); attach()
+    while pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+    availability.send(false); availability.send(true)
+    pending?.resume(); pending = nil
+    try await Task.sleep(for: .milliseconds(40))
+    precondition(composer.attachments.isEmpty && composer.text == "new draft" && !composer.loadingFiles)
+    print("PASS P1 retained reader: first disable revokes forever across off/on and draft copies; snapshots/draft survive; explicit fresh selection works; initial/refresh in-flight revocation rejects late data; unrelated source is preserved")
+}
+
+try await verifyRetainedCommandReaderLifetime()
+
+@MainActor private func verifyGlobalAIReaderLifetime() async throws {
+    let enabled = CurrentValueSubject<Bool, Never>(true)
+    let composer = AIConversationComposer()
+    composer.observeResourceAvailability(enabled.eraseToAnyPublisher())
+    composer.text = "preserved draft"
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("keylane-global-ai-" + UUID().uuidString + ".txt")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try Data("accepted picker snapshot".utf8).write(to: file)
+    func settled() async throws {
+        for _ in 0..<200 where composer.loadingFiles { try await Task.sleep(for: .milliseconds(10)) }
+        precondition(!composer.loadingFiles)
+    }
+    composer.attachFiles([file]); try await settled()
+    let old = composer.attachments[0], saved = composer.snapshot
+    precondition(composer.canReread(old))
+    enabled.send(false); enabled.send(true)
+    precondition(!composer.canReread(old) && composer.attachments == [old])
+    composer.restore(saved)
+    precondition(!composer.canReread(old) && composer.text == "preserved draft")
+    do {
+        _ = try await saved.resourceReaders[old.id]!.read()
+        preconditionFailure("Global off/on revived copied picker reader")
+    } catch AIActionError.unavailable {}
+    try Data("fresh picker selection".utf8).write(to: file)
+    composer.attachFiles([file]); try await settled()
+    precondition(composer.attachments[1].text == "fresh picker selection" && composer.canReread(composer.attachments[1]))
+    enabled.send(true)
+    precondition(composer.canReread(composer.attachments[1]))
+
+    var pause = false
+    var pending: CheckedContinuation<Void, Never>?
+    let source = AIActionSource(moduleID: .init(rawValue: "fixture.context"), load: {
+        if pause { await withCheckedContinuation { pending = $0 } }
+        return .init(sourceID: "context", title: "Context", text: "accepted context snapshot")
+    }, isCurrent: { _ in true })
+    let reader = composer.prepareResourceReader(.init(source: source))
+    let context = try await reader.read()
+    precondition(composer.appendResourceAttachment(context, reader: reader, for: composer.draftID))
+    let accepted = composer.attachments
+    pause = true
+    composer.rereadAttachment(context.id)
+    for _ in 0..<200 where pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+    precondition(pending != nil)
+    enabled.send(false); enabled.send(true)
+    pending?.resume(); pending = nil
+    try await settled()
+    precondition(composer.attachments == accepted && !composer.canReread(context))
+    let selecting = composer.prepareResourceReader(.init(source: source))
+    let operation = Task { @MainActor in try await selecting.read() }
+    for _ in 0..<200 where pending == nil { try await Task.sleep(for: .milliseconds(10)) }
+    precondition(pending != nil)
+    enabled.send(false); enabled.send(true)
+    pending?.resume(); pending = nil
+    do { _ = try await operation.value; preconditionFailure("Pending context read survived global revoke") }
+    catch AIActionError.unavailable {}
+    precondition(!composer.appendResourceAttachment(context, reader: reader, for: composer.draftID))
+    precondition(!composer.appendResourceAttachment(context, reader: .init(source: source), for: composer.draftID))
+    pause = false
+    let fresh = composer.prepareResourceReader(.init(source: source))
+    let newContext = try await fresh.read()
+    precondition(composer.appendResourceAttachment(newContext, reader: fresh, for: composer.draftID))
+    precondition(composer.canReread(newContext) && composer.attachments.dropLast() == accepted[...])
+    print("PASS global AI lifetime: actual attachFiles, context selection binding, copied drafts, same-turn off/on, pending refresh and selection, fresh explicit selection; accepted snapshots preserved")
+}
+try await verifyGlobalAIReaderLifetime()

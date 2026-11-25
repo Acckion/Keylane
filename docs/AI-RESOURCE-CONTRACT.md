@@ -47,3 +47,13 @@
 修复前 Composer 在新增回归中确定性触发“disable/re-enable revived a retained attachment reader”；修复后回归通过。覆盖同一 UI 回合的关闭/重新启用、内存副本、初次/刷新读取中撤权、晚到结果、快照/草稿保留、新选择，以及其他来源读取不被误取消。完整构建和 456 项 Swift 测试、30 项脚本测试通过。
 
 `resource-command-lifetime-window.swift` 链接生产对象，使用本机 Apple Development 签名并执行前后核验，通过实际附加命令路由和聊天刷新按钮，截图已视觉检查。仅内存合成文字片段、随机偏好域，无真实资料/模型调用。没有运行原应用 main 或替换安装版；完整 Launcher、真实设置窗口和用户实际资料上的验收未做。精确最终 SHA、远端 CI 与审查处理见原 PR。
+
+## PR #227 P1：独立聊天的全局 AI 撤权（2026-11-25）
+
+`e3868852` 后续审查发现文件选择器 `attachFiles` 和 `AIChatContextSheet` 不经过命令的可用性流；视图只取消正在读取的任务，不能撤销已经保留的 reader。会话现在在初始化时（包括 `observesDefaultConnection: false` 的独立聊天）让公共 Composer 持续观察全局 AI 开关，第一次关闭永久撤销当前代次。重新开启只为新选择创建新代次；已接受正文、快照、未发送草稿及内存副本不丢。
+
+文件附件在启动提取前绑定代次，上下文选择器必须由宿主提供同一 reader 预处理入口，并在 await 前绑定。追加时拒绝旧代次、已撤销或未经当前会话绑定的 reader，避免读取后才赋予新权限。恢复内存草稿保留原撤销标记并叠加目标会话代次。关闭 AI 还取消当前提取；忽略取消的晚到上下文也因 reader 的读后检查而失败。完成读取、窗口隐藏及草稿清空都不会终止全局撤权观察。
+
+两项 P1 的确定性回归统一放入 `picker-resource-route.swift`，随已有 Checks 的 `verify-ai-file-tools.sh` 执行。覆盖实际 `attachFiles` 回调、关闭/再开启、重复开启、旧副本、读取中撤权、新选择、来源间取消隔离和快照不丢。
+
+`resource-global-ai-lifetime-window.swift` 链接生产对象，以隔离偏好创建真实独立 `AIConversationSession`，通过实际上下文行、Composer 重新读取按钮和绑定 `AIConfiguration.setEnabled` 的开关验证。上下文组件留在隔离窗口中，专门证明即使未依赖视图消失，读取中撤权仍拒绝晚到数据。Apple Development 签名前后核验通过，截图已视觉核对。文件入口测试直接执行选择面板的生产 `attachFiles` 回调，未自动完成系统文件面板选取；未运行完整安装版、真实设置窗口或真实提供商，没有使用用户资料。完整构建、文件工具整套集成与独立界面回归通过；受限运行的文件工具编辑断言失败，正常系统权限下同一合成测试通过。最终完整测试、精确提交和 Checks 见 PR。

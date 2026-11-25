@@ -15,6 +15,39 @@ final class AIConversationComposer: ObservableObject {
     private var resourceReaders: [UUID: AIResourceReader] = [:]
     private var activeResourceLifetimeIDs: Set<UUID> = []
 
+    private var globalResourceObservation: AnyCancellable?
+    private var globalResourceLifetime: AIResourceReadLifetime?
+
+    /// Session-owned authority survives presentation changes and completed reads.
+    func observeResourceAvailability(_ availability: AnyPublisher<Bool, Never>) {
+        globalResourceObservation?.cancel()
+        globalResourceLifetime?.revoke()
+        globalResourceObservation = availability.sink { [weak self] enabled in
+            guard let self else { return }
+            if enabled {
+                if self.globalResourceLifetime?.isValid != true {
+                    self.globalResourceLifetime = self.makeResourceLifetime()
+                }
+            } else {
+                if self.globalResourceLifetime == nil { self.globalResourceLifetime = self.makeResourceLifetime() }
+                self.globalResourceLifetime?.revoke()
+                self.cancelAttachmentRead()
+            }
+        }
+    }
+
+    private func makeResourceLifetime() -> AIResourceReadLifetime {
+        AIResourceReadLifetime { [weak self] id in
+            let revoke = { [weak self] in self?.revokeResourceReaders(id) }
+            if Thread.isMainThread { revoke() } else { DispatchQueue.main.async { revoke() } }
+        }
+    }
+
+    /// Bind before extraction: binding after an await could grant old work new authority.
+    func prepareResourceReader(_ reader: AIResourceReader) -> AIResourceReader {
+        globalResourceLifetime.map { reader.bound(to: $0) } ?? reader
+    }
+
     struct Snapshot {
         let text: String
         let selection: NSRange
@@ -27,7 +60,7 @@ final class AIConversationComposer: ObservableObject {
         text = snapshot.text
         selection = snapshot.selection
         attachments = snapshot.attachments
-        resourceReaders = snapshot.resourceReaders.filter { !$0.value.isRevoked }
+        resourceReaders = snapshot.resourceReaders.filter { !$0.value.isRevoked }.mapValues(prepareResourceReader)
     }
 
     func attachFiles(_ urls: [URL]) {
@@ -45,7 +78,9 @@ final class AIConversationComposer: ObservableObject {
     }
 
     func appendResourceAttachment(_ attachment: AIConversationAttachment, reader: AIResourceReader, for draft: UUID) -> Bool {
-        guard attachment.resourceSnapshot?.matches(attachment.text) == true,
+        guard !reader.isRevoked,
+              globalResourceLifetime.map({ reader.lifetimeIDs.contains($0.id) }) ?? true,
+              attachment.resourceSnapshot?.matches(attachment.text) == true,
               appendAttachment(attachment, for: draft) else { return false }
         if reader.allowsRefresh { resourceReaders[attachment.id] = reader }
         return true
@@ -105,7 +140,10 @@ final class AIConversationComposer: ObservableObject {
                 if Thread.isMainThread { revoke() } else { DispatchQueue.main.async { revoke() } }
             }
         }
-        let readers = readers.map { reader in lifetime.map { reader.bound(to: $0) } ?? reader }
+        let readers = readers.map { reader in
+            let prepared = prepareResourceReader(reader)
+            return lifetime.map { prepared.bound(to: $0) } ?? prepared
+        }
         let draft = draftID
         activeResourceLifetimeIDs = Set(readers.flatMap { $0.lifetimeIDs })
         loadingFiles = true; fileError = ""
@@ -303,7 +341,9 @@ struct AIResourceReader {
     var isRevoked: Bool { lifetimes.contains { !$0.isValid } }
     var lifetimeIDs: Set<UUID> { Set(lifetimes.map(\.id)) }
     func bound(to lifetime: AIResourceReadLifetime) -> Self {
-        var copy = self; copy.lifetimes.append(lifetime); return copy
+        var copy = self
+        if !copy.lifetimeIDs.contains(lifetime.id) { copy.lifetimes.append(lifetime) }
+        return copy
     }
 
     init(source: AIActionSource, symbol: String = "doc.text", available: @escaping () -> Bool = { true }, allowsRefresh: Bool = true) {
@@ -329,14 +369,18 @@ final class AIResourceReadLifetime {
     private var valid = true
     private var observation: AnyCancellable?
     var isValid: Bool { lock.lock(); defer { lock.unlock() }; return valid }
-    init(availability: AnyPublisher<Bool, Never>, revoked: @escaping (UUID) -> Void) {
-        observation = availability.sink { [weak self] available in
-            guard !available, let self else { return }
-            self.lock.lock()
-            let first = self.valid
-            self.valid = false
-            self.lock.unlock()
-            if first { revoked(self.id) }
+    private let revoked: (UUID) -> Void
+    init(availability: AnyPublisher<Bool, Never>? = nil, revoked: @escaping (UUID) -> Void) {
+        self.revoked = revoked
+        observation = availability?.sink { [weak self] available in
+            if !available { self?.revoke() }
         }
+    }
+    func revoke() {
+        lock.lock()
+        let first = valid
+        valid = false
+        lock.unlock()
+        if first { revoked(id) }
     }
 }
