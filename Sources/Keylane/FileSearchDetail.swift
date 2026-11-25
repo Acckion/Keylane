@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import KeylaneCore
 
 struct FileSearchDetail: View {
     let url: URL?
@@ -27,7 +28,7 @@ struct FileSearchDetail: View {
     private func information(_ url: URL) -> [DetailInformationValue] {
         var rows: [DetailInformationValue] = [
             .init(title: "名称", value: url.lastPathComponent),
-            .init(title: "位置", value: (url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath),
+            .init(title: "位置", value: FileDisplayPath.parent(of: url.path)),
             .init(title: "类型", value: values?.type ?? url.pathExtension.uppercased())
         ]
         if let size = values?.size { rows.append(.init(title: "大小", value: ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))) }
