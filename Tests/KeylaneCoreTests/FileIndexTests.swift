@@ -119,6 +119,23 @@ final class FileIndexTests: XCTestCase {
         XCTAssertEqual(try writer.recoveryPoint(), newPoint)
     }
 
+    func testRecoverySQLiteUpdatesRequireSameHistoryDomain() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let db = try FileSearchIndex(url: directory.appendingPathComponent("index.sqlite"))
+        let domain = UUID()
+        let old = FileSearchIndex.RecoveryPoint(eventID: 21, configuration: "fixture", historyDomain: domain)
+        try db.saveRecoveryPoint(old)
+        XCTAssertEqual(try db.recoveryPoint(), old)
+        XCTAssertNil(try db.beginRecoveryScan(requiring: ["fixture"], historyDomain: UUID()))
+        XCTAssertNil(try db.beginRecoveryScan(requiring: ["fixture"]))
+        XCTAssertFalse(try db.advanceExistingRecoveryPoint(.init(eventID: 22, configuration: "fixture")))
+        XCTAssertFalse(try db.advanceExistingRecoveryPoint(.init(eventID: 22, configuration: "fixture", historyDomain: UUID())))
+        XCTAssertEqual(try db.recoveryPoint(), old)
+        XCTAssertNotNil(try db.beginRecoveryScan(requiring: ["fixture"], historyDomain: domain))
+        XCTAssertNil(try db.recoveryPoint())
+    }
+
     func testInstallingMissingCheckpointTriggersInvalidatesOnceWithoutClearingRows() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

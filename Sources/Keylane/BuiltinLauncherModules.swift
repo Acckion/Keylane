@@ -294,11 +294,11 @@ enum BuiltinLauncherModules {
             guidance: "请通过启用开关选择可访问的文件夹。文件搜索只会扫描你授权的范围。"
         ), observeImmediately: false)
         var permissionChanges: AnyCancellable?
-        func start() {
+        func start(reconcile: Bool) {
             controller.startRuntime()
             permission.startObserving()
             controller.applyPermissionEnabled(permission.available)
-            // startRuntime restores the committed event position or schedules recovery.
+            if reconcile && !controller.indexing { controller.startIndex() }
             let scopeChanges = controller.$options.map { [$0.enabled ? "enabled" : "disabled"] + $0.roots }
             permissionChanges = Publishers.Merge(permission.updates, ViewObservation.changes(scopeChanges))
                 .receive(on: DispatchQueue.main).sink {
@@ -386,7 +386,7 @@ enum BuiltinLauncherModules {
                           })
         ], settings: [settingsPage(model, "files", "文件搜索", "doc.text.magnifyingglass", "搜索电脑上的文件与文件夹。", 20, titlebar: permission.titlebar("启用文件搜索"),
                                    loading: controller.$indexing.eraseToAnyPublisher(), content: LauncherSettingsContent.files)],
-           services: [.init(start: { start() }, stop: { [weak model] in
+           services: [.init(start: { start(reconcile: false) }, stop: { [weak model] in
                permissionChanges?.cancel()
                permissionChanges = nil
                permission.stopObserving()
@@ -395,7 +395,7 @@ enum BuiltinLauncherModules {
                model?.fileAI.stopPresentation()
                FileActionsWindow.shared.dismiss(owner: .fileSearch)
            }, resume: { [weak model] in
-               start()
+               start(reconcile: true)
                if let model, model.searchesFilesHere, (NSApp.delegate as? Delegate)?.window?.isVisible == true {
                    model.searchFiles()
                }

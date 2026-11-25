@@ -229,17 +229,20 @@ public final class FileSearchIndex {
         public let eventID: UInt64
         public let configuration: String
         public let retryPaths: Set<String>
-        public init(eventID: UInt64, configuration: String, retryPaths: Set<String> = []) {
+        public let historyDomain: UUID?
+        public init(eventID: UInt64, configuration: String, retryPaths: Set<String> = [], historyDomain: UUID? = nil) {
             self.eventID = eventID
             self.configuration = configuration
             self.retryPaths = retryPaths
+            self.historyDomain = historyDomain
         }
-        private enum CodingKeys: String, CodingKey { case eventID, configuration, retryPaths }
+        private enum CodingKeys: String, CodingKey { case eventID, configuration, retryPaths, historyDomain }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             eventID = try c.decode(UInt64.self, forKey: .eventID)
             configuration = try c.decode(String.self, forKey: .configuration)
             retryPaths = try c.decodeIfPresent(Set<String>.self, forKey: .retryPaths) ?? []
+            historyDomain = try c.decodeIfPresent(UUID.self, forKey: .historyDomain)
         }
     }
 
@@ -270,11 +273,12 @@ public final class FileSearchIndex {
 
     /// The cursor is absent throughout a scan. A partial scan must still have
     /// the matching complete baseline when it acquires the write lock.
-    public func beginRecoveryScan(requiring configurations: Set<String>? = nil) throws -> RecoveryScan? {
+    public func beginRecoveryScan(requiring configurations: Set<String>? = nil, historyDomain: UUID? = nil) throws -> RecoveryScan? {
         var scan: RecoveryScan?
         try transaction {
             if let configurations {
-                guard let existing = try recoveryPoint(), configurations.contains(existing.configuration) else { return }
+                guard let existing = try recoveryPoint(), existing.historyDomain == historyDomain,
+                      configurations.contains(existing.configuration) else { return }
             }
             try invalidateRecoveryPoint()
             scan = .init(id: UUID(), owner: ObjectIdentifier(self), dataVersion: try dataVersion())
@@ -310,6 +314,7 @@ public final class FileSearchIndex {
         var matched = false
         try transaction {
             guard isCurrent(), let existing = try recoveryPoint(), existing.retryPaths == point.retryPaths,
+                  existing.historyDomain == point.historyDomain,
                   existing.configuration == point.configuration || existing.configuration == compatibleConfiguration,
                   isCurrent() else { return }
             if point.eventID >= existing.eventID, point != existing {
