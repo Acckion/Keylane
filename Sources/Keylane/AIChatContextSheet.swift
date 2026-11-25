@@ -7,6 +7,7 @@ import KeylaneCore
 /// Explicit context selection. No history or permission requests run at registration time.
 struct AIChatContextSheet: View {
     let source: AIContextRegistration
+    let prepareReader: (AIResourceReader) -> AIResourceReader
     let add: (AIConversationAttachment, AIResourceReader) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
@@ -69,7 +70,7 @@ struct AIChatContextSheet: View {
         selectionTask = Task { @MainActor in
             do {
                 guard source.available() else { throw AIActionError.unavailable }
-                let reader = AIResourceReader(source: row.source, symbol: source.symbol, available: source.available)
+                let reader = prepareReader(AIResourceReader(source: row.source, symbol: source.symbol, available: source.available))
                 let attachment = try await reader.read()
                 guard source.available(), !Task.isCancelled, loadState.complete(token) else { return }
                 add(attachment, reader)

@@ -25,6 +25,24 @@ final class IncomingFilesTests: XCTestCase {
         XCTAssertTrue(tracker.update([], now: now.addingTimeInterval(6)).isEmpty)
         XCTAssertFalse(tracker.needsRescan)
     }
+    func testMixedSettleTimesUseTheEarliestSafeRescanAndWaitForChangedWrites() {
+        let now = Date(timeIntervalSince1970: 100)
+        let image = IncomingFile(url: URL(fileURLWithPath: "/tmp/capture.png"), modified: now, size: 2)
+        let movie = IncomingFile(url: URL(fileURLWithPath: "/tmp/recording.mov"), modified: now, size: 16)
+        let settle: (IncomingFile) -> TimeInterval = { $0.url.pathExtension == "png" ? 0.35 : 2 }
+        var tracker = IncomingFileTracker()
+        XCTAssertTrue(tracker.update([], now: now, settleFor: settle).isEmpty)
+        XCTAssertTrue(tracker.update([image, movie], now: now, settleFor: settle).isEmpty)
+        XCTAssertEqual(tracker.nextRescanDelay(now: now, settleFor: settle), 0.35)
+        let rewriteTime = now.addingTimeInterval(0.20)
+        let rewritten = IncomingFile(url: image.url, modified: rewriteTime, size: 4)
+        XCTAssertTrue(tracker.update([rewritten, movie], now: rewriteTime, settleFor: settle).isEmpty)
+        XCTAssertTrue(tracker.update([rewritten, movie], now: now.addingTimeInterval(0.36), settleFor: settle).isEmpty)
+        XCTAssertEqual(tracker.update([rewritten, movie], now: now.addingTimeInterval(0.56), settleFor: settle), [rewritten])
+        XCTAssertEqual(tracker.update([rewritten, movie], now: now.addingTimeInterval(2.01), settleFor: settle), [movie])
+        XCTAssertNil(tracker.nextRescanDelay(now: now.addingTimeInterval(3), settleFor: settle))
+    }
+
     func testCatalogExcludesTemporaryAndSymbolicLinks() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

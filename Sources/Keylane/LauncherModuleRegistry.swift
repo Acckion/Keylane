@@ -223,6 +223,7 @@ struct LauncherSettingsPage: Identifiable {
     var toolbarMenu: SettingsToolbarMenu?
     var centeredHeader = false
     var guideURL: URL? = nil
+    var sidebarGroup: LauncherModuleOrigin? = nil
     var loading: AnyPublisher<Bool, Never>?
     let content: () -> AnyView
 }
@@ -256,7 +257,7 @@ struct SettingsWindowCatalog {
     init(pages: [LauncherSettingsPage], origins: [String: LauncherModuleOrigin] = [:]) {
         self.pages = pages
         sidebarGroups = LauncherModuleOrigin.allCases.compactMap { origin in
-            let matches = pages.filter { $0.parentID == nil && (origins[$0.id] ?? .builtInExtension) == origin }
+            let matches = pages.filter { $0.parentID == nil && ($0.sidebarGroup ?? origins[$0.id] ?? .builtInExtension) == origin }
             return matches.isEmpty ? nil : SettingsSidebarGroup(id: origin, pages: matches)
         }
         items = pages.flatMap(\.items)

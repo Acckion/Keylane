@@ -484,8 +484,10 @@ struct ScreenshotLibraryCheck {
         try await wait("screenshot baseline") { !library.scanning && library.results.count == 1 }
         try require(received.isEmpty, "Existing captures must not auto-open shelves")
         library.stop() // Closing the page retains the SAME library watcher for opted-in delivery.
+        let captureStarted = ProcessInfo.processInfo.systemUptime
         try writeImage(root.appendingPathComponent("Screenshot new.png"))
         try await wait("background capture delivered") { received.count == 1 }
+        print(String(format: "MEASURE screenshot write to shelf handoff: %.3f s", ProcessInfo.processInfo.systemUptime - captureStarted))
         try require(received[0].lastPathComponent == "Screenshot new.png", "Only the new capture should be delivered")
         try writeImage(root.appendingPathComponent("ordinary.png"))
         library.refresh()

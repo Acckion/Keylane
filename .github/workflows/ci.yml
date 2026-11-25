@@ -42,6 +42,39 @@ jobs:
           python3 -m compileall -q scripts
           for script in scripts/*.sh; do bash -n "$script"; done
           python3 -m unittest discover -s Tests/ReleaseTests -p 'test_*.py'
+      - name: Verify Swift Build output and Focus metadata
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed_build_inputs="$(git diff --name-only "$BASE_SHA" HEAD -- Package.swift Package.resolved scripts/build-release-executable.sh scripts/app_intents.py .github/workflows/ci.yml)"
+          if [[ -n "$changed_build_inputs" ]]; then
+            xcodebuild -version
+            executable="$(bash scripts/build-release-executable.sh)"
+            printf 'Verified Keylane executable: %s\n' "$executable"
+            python3 - "$executable" <<'PY'
+          import pathlib
+          import sys
+          import tempfile
+
+          sys.path.insert(0, 'scripts')
+          from app_intents import extract_metadata, object_directories
+
+          binary = pathlib.Path(sys.argv[1]).resolve(strict=True)
+          output = binary.parents[2]
+          try:
+              with tempfile.TemporaryDirectory(prefix='keylane-check-intents-') as resources:
+                  extract_metadata(binary, resources, pathlib.Path.cwd())
+          except (ValueError, OSError):
+              for directory in object_directories(binary):
+                  print(f'Expected constant values directory: {directory.relative_to(output)}', flush=True)
+              matches = sorted(p.relative_to(output) for p in output.rglob('*.swiftconstvalues') if p.is_file())
+              print(f'Found {len(matches)} Swift constant-value files under {output.name}:', flush=True)
+              for path in matches[:40]:
+                  print(path, flush=True)
+              raise
+          PY
+          fi
       - name: Determine whether to validate the installer
         if: github.event_name == 'push'
         id: installer

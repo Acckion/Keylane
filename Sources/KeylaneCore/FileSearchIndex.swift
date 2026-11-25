@@ -21,6 +21,35 @@ public enum FileIndexError: LocalizedError {
 /// on its own serial queue. No clipboard or note schema is accessed.
 public final class FileSearchIndex {
     private final class QueryCancellation { let check: () -> Bool; init(_ check: @escaping () -> Bool) { self.check = check } }
+    private final class QueryPathFilter {
+        let options: FileSearchOptions
+        let excluded: [String]
+        let ignoresFile: (String, String) -> Bool
+        let ignoresDirectory: (String, String) -> Bool
+        let pathAllowed: ((String, Bool) -> Bool)?
+        let isCancelled: () -> Bool
+        init(options: FileSearchOptions, excluded: [String], pathAllowed: ((String, Bool) -> Bool)?, isCancelled: @escaping () -> Bool) {
+            self.options = options; self.excluded = excluded; self.pathAllowed = pathAllowed
+            ignoresFile = FileSearchRules.pathFilter(options.ignorePatterns)
+            ignoresDirectory = FileSearchRules.pathFilter(options.ignorePatterns, directory: true)
+            self.isCancelled = isCancelled
+        }
+        func allows(_ path: String, directory: Bool, owner: String) -> Bool {
+            guard !isCancelled(), options.includeHidden || !path.split(separator: "/").contains(where: { $0.hasPrefix(".") }),
+                  !excluded.contains(where: { FileSearchLocation.contains(path, in: $0) }) else { return false }
+            let url = URL(fileURLWithPath: path)
+            guard !(directory ? ignoresDirectory : ignoresFile)(path, url.lastPathComponent) else { return false }
+            // The host supplies its full scoped policy, including ignore files and
+            // restored directories. SQL ownership remains independent of path aliases.
+            if let pathAllowed { return pathAllowed(path, directory) }
+            var parent = url.deletingLastPathComponent()
+            while parent.path != owner && parent.path != "/" {
+                guard !isCancelled(), !ignoresDirectory(parent.path, parent.lastPathComponent) else { return false }
+                parent.deleteLastPathComponent()
+            }
+            return true
+        }
+    }
     private var db: OpaquePointer?
     public let url: URL
     public init(url: URL) throws {
@@ -42,6 +71,7 @@ public final class FileSearchIndex {
                 CREATE TRIGGER IF NOT EXISTS file_au AFTER UPDATE OF name,body ON files BEGIN INSERT INTO file_fts(file_fts,rowid,name,body) VALUES('delete',old.rowid,old.name,old.body); INSERT INTO file_fts(rowid,name,body) VALUES(new.rowid,new.name,new.body); END;
                 PRAGMA user_version=1;
                 """)
+            try prepareStatistics()
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch { sqlite3_close(db); db = nil; throw error }
     }
@@ -70,8 +100,10 @@ public final class FileSearchIndex {
     public func removeUnseen(root: String, subtree: String, epoch: String) throws {
         let lower = subtree + "/"
         let upper = subtree + "0" // The next byte after the slash, under SQLite's binary collation.
-        try write("DELETE FROM files WHERE root=? AND epoch<>? AND path IN (SELECT path FROM files WHERE path=? UNION ALL SELECT path FROM files WHERE path>=? AND path<?)",
-                  [root, epoch, subtree, lower, upper])
+        // Bind row IDs first so SQLite cannot scan every record in the root
+        // (including large body overflow pages) for each changed subtree.
+        try write("DELETE FROM files WHERE rowid IN (SELECT rowid FROM files WHERE path=? UNION ALL SELECT rowid FROM files WHERE path>=? AND path<?) AND root=? AND epoch<>?",
+                  [subtree, lower, upper, root, epoch])
     }
     public func removeScope(_ root: String) throws { try write("DELETE FROM files WHERE root=?",[root]) }
     public func removeUnavailableVolumes() throws {
@@ -84,17 +116,52 @@ public final class FileSearchIndex {
         try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>''")
     }
     public func clear() throws { try exec("DELETE FROM files; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
+    private func prepareStatistics() throws {
+        // Initialize older indexes once. The immediate transaction serializes
+        // concurrent reader/writer opens and keeps the snapshot and triggers atomic.
+        try transaction {
+            try exec("CREATE TABLE IF NOT EXISTS file_counts(id INTEGER PRIMARY KEY CHECK(id=1),entries INTEGER NOT NULL,files INTEGER NOT NULL,directories INTEGER NOT NULL,symlinks INTEGER NOT NULL)")
+            let existing = try statement("SELECT 1 FROM file_counts WHERE id=1")
+            let status = sqlite3_step(existing)
+            sqlite3_finalize(existing)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
+            if status == SQLITE_DONE {
+                try exec("INSERT INTO file_counts SELECT 1,count(*),coalesce(sum(directory=0 AND symlink=0),0),coalesce(sum(directory),0),coalesce(sum(symlink),0) FROM files")
+            }
+            // Every mutation participates in the caller's transaction, including
+            // changes made by older app builds or another index connection.
+            try exec("""
+                CREATE TRIGGER IF NOT EXISTS file_counts_insert AFTER INSERT ON files BEGIN
+                    UPDATE file_counts SET entries=entries+1,
+                        files=files+(new.directory=0 AND new.symlink=0),
+                        directories=directories+new.directory,symlinks=symlinks+new.symlink WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS file_counts_delete AFTER DELETE ON files BEGIN
+                    UPDATE file_counts SET entries=entries-1,
+                        files=files-(old.directory=0 AND old.symlink=0),
+                        directories=directories-old.directory,symlinks=symlinks-old.symlink WHERE id=1;
+                END;
+                CREATE TRIGGER IF NOT EXISTS file_counts_update AFTER UPDATE OF directory,symlink ON files
+                    WHEN old.directory<>new.directory OR old.symlink<>new.symlink BEGIN
+                    UPDATE file_counts SET files=files+(new.directory=0 AND new.symlink=0)-(old.directory=0 AND old.symlink=0),
+                        directories=directories+new.directory-old.directory,
+                        symlinks=symlinks+new.symlink-old.symlink WHERE id=1;
+                END;
+                """)
+        }
+    }
+
     public func stats() throws -> FileIndexStats {
-        let s = try statement("SELECT count(*),coalesce(sum(directory=0 AND symlink=0),0),coalesce(sum(directory),0),coalesce(sum(symlink),0) FROM files"); defer { sqlite3_finalize(s) }
+        let s = try statement("SELECT entries,files,directories,symlinks FROM file_counts WHERE id=1"); defer { sqlite3_finalize(s) }
         guard sqlite3_step(s) == SQLITE_ROW else { throw FileIndexError.database }
         var result = FileIndexStats(); result.entries = Int(sqlite3_column_int(s,0)); result.files = Int(sqlite3_column_int(s,1)); result.directories = Int(sqlite3_column_int(s,2)); result.symlinks = Int(sqlite3_column_int(s,3))
         result.bytes = [url.path,url.path+"-wal",url.path+"-shm"].reduce(0) { $0 + ((try? FileManager.default.attributesOfItem(atPath: $1)[.size] as? Int) ?? 0) }
         return result
     }
-    public func search(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [SpotlightFile] {
-        try searchRanked(query, options: options, excluded: excluded, limit: limit, within: within, isCancelled: isCancelled).map(\.file)
+    public func search(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, pathAllowed: ((String, Bool) -> Bool)? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [SpotlightFile] {
+        try searchRanked(query, options: options, excluded: excluded, limit: limit, within: within, pathAllowed: pathAllowed, isCancelled: isCancelled).map(\.file)
     }
-    public func searchRanked(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [RankedFile] {
+    public func searchRanked(_ query: String, options: FileSearchOptions, excluded: [String] = [], limit: Int = 200, within: String? = nil, pathAllowed: ((String, Bool) -> Bool)? = nil, isCancelled: @escaping () -> Bool = { false }) throws -> [RankedFile] {
         guard !isCancelled() else { return [] }
         let cancellation = QueryCancellation(isCancelled)
         sqlite3_progress_handler(db, 1000, { raw in
@@ -133,6 +200,25 @@ public final class FileSearchIndex {
             }
             conditions.append("(" + ranges.joined(separator: " OR ") + ")")
         }
+        // Filter saved ancestors in SQLite before either candidate or result cap.
+        // The context checks paths without opening files, retaining offline rows.
+        let pathFilter = QueryPathFilter(options: options, excluded: excluded, pathAllowed: pathAllowed, isCancelled: isCancelled)
+        guard sqlite3_create_function_v2(db, "keylane_search_path_allowed", 3, SQLITE_UTF8,
+            Unmanaged.passUnretained(pathFilter).toOpaque(), { context, count, arguments in
+                guard let context, count == 3, let arguments,
+                      let raw = sqlite3_user_data(context), let path = sqlite3_value_text(arguments[0]),
+                      let owner = sqlite3_value_text(arguments[2]) else {
+                    sqlite3_result_int(context, 0); return
+                }
+                let filter = Unmanaged<QueryPathFilter>.fromOpaque(raw).takeUnretainedValue()
+                let allowed = filter.allows(String(cString: path), directory: sqlite3_value_int(arguments[1]) != 0, owner: String(cString: owner))
+                sqlite3_result_int(context, allowed ? 1 : 0)
+            }, nil, nil, nil) == SQLITE_OK else { throw FileIndexError.database }
+        defer {
+            sqlite3_create_function_v2(db, "keylane_search_path_allowed", 3, SQLITE_UTF8, nil, nil, nil, nil, nil)
+            withExtendedLifetime(pathFilter) {}
+        }
+        conditions.append("keylane_search_path_allowed(path,directory,root)=1")
         if !options.externalVolumes { conditions.append("external=0") }
         // Root ownership is stored separately from the path: no user text becomes SQL.
         conditions.append("root IN (" + options.roots.map { _ in "?" }.joined(separator: ",") + ")"); values += options.roots
@@ -146,7 +232,7 @@ public final class FileSearchIndex {
         // queries should intersect their row IDs with the root index.
         let shortNameScan = !options.contentSearch && words.allSatisfy { $0.count < 3 }
         let searchIndex = shortNameScan ? "files_name_search" : "files_root"
-        let sql = "SELECT path,modified FROM files INDEXED BY " + searchIndex + " WHERE " + conditions.joined(separator: " AND ")
+        let sql = "SELECT path,modified,directory FROM files INDEXED BY " + searchIndex + " WHERE " + conditions.joined(separator: " AND ")
             + " ORDER BY " + relevance + ",modified DESC,path LIMIT 2000"
         let s = try statement(sql, values)
         defer { sqlite3_finalize(s) }
@@ -162,6 +248,7 @@ public final class FileSearchIndex {
             let name = url.lastPathComponent
             let score = rank(name)
             let file = SpotlightFile(url: url, name: name, modified: Date(timeIntervalSince1970: sqlite3_column_double(s, 1)),
+                                     isDirectory: sqlite3_column_int(s, 2) != 0,
                                      matchesContent: options.contentSearch && score == 0)
             results.append(RankedFile(file: file, score: score))
         }

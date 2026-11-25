@@ -110,6 +110,18 @@ final class FileSearchController: ObservableObject {
         }
         restored = Set(preferences.stringArray(forKey: "fileSearchRestoredPaths") ?? [])
         automaticExclusions = preferences.data(forKey: "fileSearchAutomaticExclusions").flatMap { try? JSONDecoder().decode([AutomaticFileExclusion].self, from: $0) } ?? []
+        // Move Python bytecode caches to an editable rule once. A later explicit
+        // removal must survive restart, and unrelated custom rules are retained.
+        if !preferences.bool(forKey: "fileSearchPythonCacheIgnoreMigrated") {
+            if !options.ignorePatterns.contains("__pycache__") { options.ignorePatterns.append("__pycache__") }
+            preferences.set(try? JSONEncoder().encode(options), forKey: "fileSearchOptions")
+            preferences.set(true, forKey: "fileSearchPythonCacheIgnoreMigrated")
+        }
+        let previousExclusions = automaticExclusions
+        automaticExclusions.removeAll { URL(fileURLWithPath: $0.path).lastPathComponent == "__pycache__" }
+        if automaticExclusions != previousExclusions {
+            preferences.set(try? JSONEncoder().encode(automaticExclusions), forKey: "fileSearchAutomaticExclusions")
+        }
         if let data = preferences.data(forKey: "fileSearchLastStats"), let value = try? JSONDecoder().decode(FileIndexStats.self, from:data) { stats = value }
         spotlight.updated = { [weak self] results, _ in
             guard let self, self.isRunning else { return }
@@ -497,13 +509,16 @@ final class FileSearchController: ObservableObject {
         snapshot.contentSearch = false
         let config = snapshot
         let exclusions = automaticExclusions.map(\.path)
+        let restoredPaths = restored
         let cancellation = FileScanCancellation()
         return try await withTaskCancellationHandler {
             let result: [SpotlightFile] = try await withCheckedThrowingContinuation { continuation in
                 reader.async(execute: DispatchWorkItem { [weak self] in
                     do {
                         guard let self, let db = self.readDB, !runtime.cancelled, !cancellation.cancelled else { throw CancellationError() }
+                        var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restoredPaths)
                         let files = try db.search(query, options: config, excluded: exclusions + config.excludedPaths, limit: limit, within: within,
+                            pathAllowed: { locations.includesSavedResult(at: $0, directory: $1) },
                             isCancelled: { cancellation.cancelled || runtime.cancelled })
                         continuation.resume(returning: files)
                     } catch { continuation.resume(throwing: error) }
@@ -665,12 +680,16 @@ final class FileSearchController: ObservableObject {
         config.contentSearch = config.contentSearch && includesQueryContents
         let queryOptions = config
         let excluded = options.excludedPaths + automaticExclusions.map(\.path)
+        let restoredPaths = restored
         let work = DispatchWorkItem { [weak self] in
             guard let self, !cancellation.cancelled else { return }
             self.reader.async { [weak self] in
                 guard let self, !cancellation.cancelled else { return }
                 do {
-                    let result = try self.readDB?.searchRanked(text, options: queryOptions, excluded: excluded, isCancelled: { cancellation.cancelled }) ?? []
+                    var locations = FileSearchLocation(options: queryOptions, automaticExclusions: excluded, restored: restoredPaths)
+                    let result = try self.readDB?.searchRanked(text, options: queryOptions, excluded: excluded,
+                        pathAllowed: { locations.includesSavedResult(at: $0, directory: $1) },
+                        isCancelled: { cancellation.cancelled }) ?? []
                     DispatchQueue.main.async {
                         guard self.queryVersion == ticket, !cancellation.cancelled else { return }
                         self.localResults = result
@@ -716,8 +735,8 @@ final class FileSearchController: ObservableObject {
         let restored = restored
         let task = DispatchWorkItem { [weak self] in
             var allowed: [RankedFile] = []
+            var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
             if !system.isEmpty {
-                var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
                 allowed = system.filter { hit in
                     config.roots.contains { FileSearchLocation.contains(hit.file.id, in: $0) }
                         && (try? locations.item(at: hit.file.url)) != nil
@@ -725,7 +744,11 @@ final class FileSearchController: ObservableObject {
             }
             var seen = Set<String>()
             let ordered = (local + allowed).filter { hit in
-                !removed.contains { FileSearchLocation.contains(hit.file.id, in: $0) } && seen.insert(hit.file.id).inserted
+                // Saved rows can predate changed ignore rules while indexing is paused.
+                // Check ancestors without requiring the file to be online, preserving
+                // retained records for disconnected volumes.
+                locations.includesSavedResult(at: hit.file.id, directory: hit.file.isDirectory)
+                    && !removed.contains { FileSearchLocation.contains(hit.file.id, in: $0) } && seen.insert(hit.file.id).inserted
             }
                 .sorted { $0.precedes($1) }
             let best = ordered.prefix(200).map { $0.file.readingResourceMetadata() }

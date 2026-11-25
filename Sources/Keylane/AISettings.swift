@@ -15,6 +15,23 @@ enum AIModule {
     static let interactions = SettingsItem(id: "ai-interactions", page: "ai", title: "Quick AI 与聊天",
                                            keywords: "Tab 回车 发送 备选命令 窗口置顶")
 
+    /// The production command-to-draft route is testable without creating the user's Model/stores.
+    @discardableResult
+    static func attachResourceContext(to composer: AIConversationComposer, source: AIActionSource,
+                                      commandID: CommandID, registry: LauncherModuleRegistry,
+                                      disabledCommands: AnyPublisher<Set<String>, Never>, enabled: AnyPublisher<Bool, Never>,
+                                      available: @escaping () -> Bool) -> Bool {
+        guard available(), registry.moduleOwningCommand(commandID) == source.moduleID else { return false }
+        let guarded = registry.guardedAIContextSource(source)
+        let availability = Publishers.Merge3(
+            disabledCommands.map { !$0.contains(commandID.rawValue) },
+            registry.availabilityChanges.map { [weak registry] in registry?.isCommandModuleEnabled(commandID) == true },
+            enabled
+        ).eraseToAnyPublisher()
+        composer.loadResourceReaders([.init(source: guarded, available: available)], availability: availability)
+        return true
+    }
+
     static func make(model: Model) -> LauncherModule {
         let configuration = model.aiSettings
         let interaction = model.aiInteraction
@@ -50,16 +67,13 @@ enum AIModule {
             guard let model, let quickAI, let registry = model.launcherModules,
                   model.canAttachModuleAIContext(),
                   registry.moduleOwningCommand(commandID) == source.moduleID, !model.disabledCommands.contains(commandID.rawValue) else { return false }
-            let guarded = registry.guardedAIContextSource(source)
-            let availability = Publishers.Merge3(
-                model.$disabledCommands.map { !$0.contains(commandID.rawValue) },
-                registry.availabilityChanges.map { registry.isCommandModuleEnabled(commandID) },
-                configuration.$state.map(\.enabled)
-            ).eraseToAnyPublisher()
-            quickAI.composer.loadResourceReaders([.init(source: guarded, available: { [weak model, weak registry] in
-                guard let model, let registry else { return false }
-                return configuration.state.enabled && registry.isCommandModuleEnabled(commandID) && !model.disabledCommands.contains(commandID.rawValue)
-            })], availability: availability)
+            guard attachResourceContext(to: quickAI.composer, source: source, commandID: commandID, registry: registry,
+                disabledCommands: model.$disabledCommands.eraseToAnyPublisher(),
+                enabled: configuration.$state.map(\.enabled).eraseToAnyPublisher(),
+                available: { [weak model, weak registry] in
+                    guard let model, let registry else { return false }
+                    return configuration.state.enabled && registry.isCommandModuleEnabled(commandID) && !model.disabledCommands.contains(commandID.rawValue)
+                }) else { return false }
             if quickAI.isInChat { openChat("") }
             else { model.openPageWithExistingDraft(QuickAILauncher.pageID) }
             return true
@@ -130,10 +144,11 @@ enum AIModule {
                               pages: [AIActionLauncher.page(model: model), QuickAILauncher.page(model: model, controller: quickAI, openChat: { openChat(nil) }),
                                       AITextCommandLauncher.page(model: model, session: textSession, library: library)], settings: [
             .init(id: "ai", title: "AI", symbol: "sparkles", subtitle: "管理 AI 模型、连接与访问凭据。",
-                  order: 8, items: [interactions, fileAccess],
+                  order: 0, items: [interactions, fileAccess],
                   titlebar: .init(title: "启用 AI",
                                   enabled: Binding(get: { configuration.state.enabled }, set: configuration.setEnabled),
                                   updates: configuration.$state.map(\.enabled).removeDuplicates().eraseToAnyPublisher()),
+                  sidebarGroup: .builtInExtension,
                   content: { [weak model] in
                       guard let model else { return AnyView(EmptyView()) }
                       return AnyView(AISettingsHome(model: model))

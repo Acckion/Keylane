@@ -153,7 +153,7 @@ final class ScreenshotLibrary: ObservableObject {
     @Published private(set) var unavailableScopePaths: [String] = []
     @Published private(set) var skippedOCR = 0
 
-    private let watcher = FolderChangeWatcher()
+    private let watcher = FolderChangeWatcher(latency: 0.2)
     private var pageActive = false
     private var needsRefresh = false
     private var scopeAccess: [URL] = []
@@ -395,19 +395,25 @@ final class ScreenshotLibrary: ObservableObject {
         else if !pageActive { stop() }
     }
 
+    private static func settleTime(for file: IncomingFile) -> TimeInterval {
+        UTType(filenameExtension: file.url.pathExtension)?.conforms(to: .image) == true ? 0.35 : 2
+    }
+
     private func receiveNewCaptures(_ candidates: [IncomingFile], complete: Bool) {
         guard autoShelf, enabled, complete else { return }
-        let ready = incomingTracker.update(candidates)
+        let ready = incomingTracker.update(candidates, settleFor: Self.settleTime)
         if !ready.isEmpty {
             let access = scopes.compactMap(\.accessibleURL).filter { $0.startAccessingSecurityScopedResource() }
             defer { access.forEach { $0.stopAccessingSecurityScopedResource() } }
             if addToShelf?(ready.map(\.url)) != true { shelfError = "自动加入失败，请先启用暂存架。截图仍在原位置。" }
         }
         incomingTimer?.cancel(); incomingTimer = nil
-        if incomingTracker.needsRescan {
+        if let delay = incomingTracker.nextRescanDelay(settleFor: Self.settleTime) {
             incomingTimer = Task { @MainActor [weak self] in
-                do { try await Task.sleep(for: .milliseconds(2100)) } catch { return }
-                self?.refresh()
+                do { try await Task.sleep(for: .seconds(min(2.1, delay + 0.05))) } catch { return }
+                guard let self, self.enabled, self.autoShelf else { return }
+                self.incomingTimer = nil
+                self.scanAfterFolderChange()
             }
         }
     }
@@ -428,8 +434,7 @@ final class ScreenshotLibrary: ObservableObject {
             watcher.changed = { [weak self] rebuild in
                 guard let self, self.enabled, self.pageActive || self.autoShelf else { return }
                 if rebuild { self.refresh() }
-                else if self.scanTask != nil { self.needsRefresh = true }
-                else { self.scan(self.scopes.compactMap(\.accessibleURL), showingProgress: false) }
+                else { self.scanAfterFolderChange() }
             }
             watcher.stop()
             releaseScopeAccess()
@@ -448,6 +453,11 @@ final class ScreenshotLibrary: ObservableObject {
             applySearch(query, preservingResults: true)
         }
         scan(folders, showingProgress: true)
+    }
+
+    private func scanAfterFolderChange() {
+        if scanTask != nil { needsRefresh = true }
+        else { scan(scopes.compactMap(\.accessibleURL), showingProgress: false) }
     }
 
     private func scan(_ folders: [URL], showingProgress: Bool) {
