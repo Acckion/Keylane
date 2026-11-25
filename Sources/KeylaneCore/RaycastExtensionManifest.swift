@@ -171,12 +171,24 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
             throw InvalidSource.missingDirectory
         }
         let manifestURL = try containedFile("package.json", under: root)
-        let manifest = try JSONDecoder().decode(Manifest.self, from: manifestData(manifestURL))
+        return try parse(manifestData(manifestURL)) { path in
+            isRegularFile(try containedFile(path, under: root))
+        }
+    }
+
+    /// Inert verified source inventory from the Store. No host files are created.
+    static func readStoreManifest(_ data: Data, files: Set<String>) throws -> Self {
+        guard data.count <= 1_048_576 else { throw InvalidSource.manifestTooLarge }
+        return try parse(data) { files.contains($0) }
+    }
+
+    private static func parse(_ data: Data, exists: (String) throws -> Bool) throws -> Self {
+        let manifest = try JSONDecoder().decode(Manifest.self, from: data)
         try validateIdentifier(manifest.author)
         try validateIdentifier(manifest.name)
         try validateTitle(manifest.title, for: manifest.name)
         guard (1...256).contains(manifest.commands.count) else { throw InvalidSource.commandCount }
-        let icon = try asset(manifest.icon, under: root)
+        let icon = try asset(manifest.icon, exists: exists)
         var names = Set<String>()
         let commands = try manifest.commands.map { command in
             try validateIdentifier(command.name)
@@ -189,14 +201,13 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
             }
             let entries = try ["ts", "tsx", "js", "jsx"].compactMap { suffix -> String? in
                 let path = "src/\(command.name).\(suffix)"
-                let url = try containedFile(path, under: root)
-                return isRegularFile(url) ? path : nil
+                return try exists(path) ? path : nil
             }
             guard let entry = entries.first else { throw InvalidSource.missingEntry(command.name) }
             guard entries.count == 1 else { throw InvalidSource.ambiguousEntry(command.name) }
             let id = "extension:raycast:\(manifest.author)/\(manifest.name)/\(command.name)"
             return Command(id: id, name: command.name, title: command.title, description: command.description,
-                           mode: mode, entry: entry, icon: try asset(command.icon, under: root) ?? icon,
+                           mode: mode, entry: entry, icon: try asset(command.icon, exists: exists) ?? icon,
                            keywords: command.keywords ?? [], arguments: command.arguments ?? [],
                            preferences: command.preferences ?? [], disabledByDefault: command.disabledByDefault ?? false,
                            backgroundIntervalSeconds: mode == .view ? nil : intervalSeconds(command.interval))
@@ -228,14 +239,14 @@ public struct RaycastExtensionManifest: Encodable, Sendable {
         }
     }
 
-    private static func asset(_ icon: String?, under root: URL) throws -> String? {
+    private static func asset(_ icon: String?, exists: (String) throws -> Bool) throws -> String? {
         guard let icon else { return nil }
         let components = icon.split(separator: "/", omittingEmptySubsequences: false)
         guard !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
             throw InvalidSource.unsafePath(icon)
         }
         let path = "assets/\(icon)"
-        guard isRegularFile(try containedFile(path, under: root)) else {
+        guard try exists(path) else {
             throw InvalidSource.missingAsset(path)
         }
         return path

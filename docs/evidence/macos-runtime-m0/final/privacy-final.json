@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "candidate": "bounded-own-container-observation",
+  "cases": {
+    "controlWritesMarker": true,
+    "scannerFindsControl": true,
+    "controlRemoved": true,
+    "noObservedPlaintextAfterExecution": true,
+    "scriptErrorContainsNoBody": true,
+    "noObservedPlaintextAfterError": true,
+    "freshContext": true,
+    "nativeCrashPropagated": true,
+    "fixturesExited": true
+  },
+  "coverage": {
+    "scan": "own-Data-Library-and-tmp-no-symlinks-max16MiB",
+    "fullContainerSanitization": "not-claimed",
+    "realUserData": "not-used"
+  },
+  "controlObservation": {
+    "auditComplete": true,
+    "markerFound": true,
+    "files": 2
+  },
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}

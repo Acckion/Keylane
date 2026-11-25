@@ -1,0 +1,226 @@
+{
+  "schema": 1,
+  "candidate": "fixed-slots-posix-spawn",
+  "fixtureOnly": true,
+  "installed": false,
+  "runtime": "node-v24.12.0-darwin-arm64",
+  "archiveSHA256": "319f221adc5e44ff0ed57e8a441b2284f02b8dc6fc87b8eb92a6a93643fd8080",
+  "coverage": {
+    "keychain": "not-tested",
+    "nativeAddon": "not-tested",
+    "hostService": "not-tested",
+    "forgedPeer": "not-tested",
+    "fullSlotSanitization": "not-tested",
+    "hostDeath": "not-tested"
+  },
+  "control": {
+    "version": "v24.12.0",
+    "cases": {
+      "hostRead": {
+        "allowed": true
+      },
+      "hostWrite": {
+        "allowed": true
+      },
+      "symlinkRead": {
+        "allowed": true
+      },
+      "spawnSystem": {
+        "allowed": true
+      },
+      "spawnNode": {
+        "allowed": true
+      },
+      "childHostRead": {
+        "allowed": true,
+        "code": "allowed"
+      },
+      "containerWrite": {
+        "allowed": true
+      },
+      "crossInvocationRead": {
+        "allowed": false,
+        "code": "Error"
+      },
+      "network": {
+        "allowed": true
+      },
+      "jit": {
+        "allowed": true
+      },
+      "inheritedDescriptor": {
+        "allowed": true
+      }
+    },
+    "rssBytes": 48119808
+  },
+  "slotA": {
+    "version": "v24.12.0",
+    "cases": {
+      "hostRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "hostWrite": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "symlinkRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "spawnSystem": {
+        "allowed": true
+      },
+      "spawnNode": {
+        "allowed": true
+      },
+      "childHostRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "containerWrite": {
+        "allowed": true
+      },
+      "crossInvocationRead": {
+        "allowed": false,
+        "code": "Error"
+      },
+      "network": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "jit": {
+        "allowed": true
+      },
+      "inheritedDescriptor": {
+        "allowed": false,
+        "code": "EBADF"
+      }
+    },
+    "rssBytes": 48185344
+  },
+  "slotB": {
+    "version": "v24.12.0",
+    "cases": {
+      "hostRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "hostWrite": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "symlinkRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "spawnSystem": {
+        "allowed": true
+      },
+      "spawnNode": {
+        "allowed": true
+      },
+      "childHostRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "containerWrite": {
+        "allowed": true
+      },
+      "crossInvocationRead": {
+        "allowed": false,
+        "code": "Error"
+      },
+      "network": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "jit": {
+        "allowed": true
+      },
+      "foreignSlotRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "inheritedDescriptor": {
+        "allowed": false,
+        "code": "EBADF"
+      }
+    },
+    "rssBytes": 48234496
+  },
+  "sameSlot": {
+    "version": "v24.12.0",
+    "cases": {
+      "hostRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "hostWrite": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "symlinkRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "spawnSystem": {
+        "allowed": true
+      },
+      "spawnNode": {
+        "allowed": true
+      },
+      "childHostRead": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "containerWrite": {
+        "allowed": true
+      },
+      "crossInvocationRead": {
+        "allowed": false,
+        "code": "Error"
+      },
+      "network": {
+        "allowed": false,
+        "code": "EPERM"
+      },
+      "jit": {
+        "allowed": true
+      },
+      "foreignSlotRead": {
+        "allowed": true
+      },
+      "inheritedDescriptor": {
+        "allowed": false,
+        "code": "EBADF"
+      }
+    },
+    "rssBytes": 49987584
+  },
+  "ambientGroupRejected": true,
+  "lifecycle": {
+    "hang": {
+      "nodeSharesHelperGroup": true,
+      "descendantSharesHelperGroup": true,
+      "groupStopsTree": true,
+      "fixtureCleanupConfirmed": true
+    },
+    "detached": {
+      "nodeSharesHelperGroup": true,
+      "descendantSharesHelperGroup": false,
+      "groupStopsTree": false,
+      "fixtureCleanupConfirmed": true
+    }
+  },
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "blocked",
+  "blockers": [
+    "spawnSystem",
+    "spawnNode",
+    "slotReuseResidue",
+    "detachedEscapesGroup"
+  ],
+  "temporaryArtifactsRemoved": true
+}
