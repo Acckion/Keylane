@@ -3,6 +3,18 @@ import XCTest
 import KeylaneCore
 
 final class FileIndexExclusionPolicyTests: XCTestCase {
+    func testRecommendedScopesAreNarrowAndDoNotIgnoreAuthorizedCloudProviders() {
+        let home = "/fixture/home"
+        let options = FileSearchOptions.recommendedScopes(home: home)
+        XCTAssertFalse(options.enabled)
+        XCTAssertFalse(options.roots.contains(home))
+        XCTAssertFalse(options.roots.contains(home + "/Library"))
+        XCTAssertTrue(options.roots.contains(home + "/Library/Mobile Documents/com~apple~CloudDocs"))
+        XCTAssertTrue(options.roots.contains(home + "/Library/CloudStorage"))
+        let path = home + "/Library/CloudStorage/ExampleProvider/report.txt"
+        XCTAssertFalse(FileSearchRules.pathFilter(options.ignorePatterns)(path, "report.txt"))
+    }
+
     func testRoutineLibraryEventsDoNotDelayExplicitScopesOrOrdinaryFiles() {
         let library = "/fixture/Library"
         let file = library + "/Biome/streams/telemetry.db-shm"

@@ -145,9 +145,7 @@ final class FileSearchController: ObservableObject {
     private var needsFullScan = false
     static var defaults: FileSearchOptions {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        var options = FileSearchOptions(roots: [home, "/Applications", home + "/Library/Mobile Documents/com~apple~CloudDocs"])
-        options.enabled = false
-        return options
+        return .recommendedScopes(home: home)
     }
     init(directory: URL? = nil, preferences: UserDefaults = .standard, defaultOptions: FileSearchOptions? = nil, watchChanges: Bool = true,
          availableCapacity: ((URL) -> Int64)? = nil, startImmediately: Bool = true,
@@ -495,7 +493,6 @@ final class FileSearchController: ObservableObject {
     func applyPermissionEnabled(_ enabled: Bool) {
         var updated = options
         updated.enabled = enabled && hasAuthorizedScope
-        if updated.enabled { updated.roots = authorizedRoots }
         if updated != options { options = updated }
     }
 

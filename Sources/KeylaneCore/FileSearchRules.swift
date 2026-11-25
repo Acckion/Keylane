@@ -14,6 +14,21 @@ public struct FileSearchOptions: Codable, Equatable {
     public var enforceDiskSpace = false
     public var enabled = true
     public init(roots: [String]) { self.roots = roots; ignorePatterns = Self.defaultIgnores }
+    /// Suggested roots only; the controller watches/indexes each one after it
+    /// has been picked or granted. Separate cloud roots avoid watching Library.
+    public static func recommendedScopes(home: String) -> Self {
+        var options = Self(roots: [
+            home + "/Desktop", home + "/Documents", home + "/Downloads", "/Applications",
+            home + "/Library/Mobile Documents/com~apple~CloudDocs",
+            home + "/Library/CloudStorage",
+        ])
+        options.enabled = false
+        // These defaults suggest CloudStorage explicitly. A blanket ignore
+        // would otherwise silently discard its children even after authorization.
+        options.ignorePatterns.removeAll { $0 == "**/Library/CloudStorage/**" }
+        return options
+    }
+
     private enum CodingKeys: String, CodingKey { case roots, ignorePatterns, excludedPaths, searchFromLauncher, contentSearch, includeHidden, useIgnoreFiles, externalVolumes, keepRemovedVolumes, enforceDiskSpace, enabled }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)

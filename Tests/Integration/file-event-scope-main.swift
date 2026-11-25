@@ -19,6 +19,13 @@ prefs.set(try JSONEncoder().encode(options), forKey: "fileSearchOptions")
 prefs.set(options.roots, forKey: "fileSearchSelectedScopes")
 let legacyStats = Data([42])
 prefs.set(legacyStats, forKey: "fileSearchLastStats")
+// One suggestion is still ungranted when the feature is enabled.
+let ungranted = base.appendingPathComponent("ungranted-cloud")
+try FileManager.default.createDirectory(at: ungranted, withIntermediateDirectories: false)
+try Data("must stay outside index".utf8).write(to: ungranted.appendingPathComponent("not-authorized.txt"))
+var suggested = options
+suggested.roots.append(ungranted.path)
+prefs.set(try JSONEncoder().encode(suggested), forKey: "fileSearchOptions")
 let controller = FileSearchController(directory: base.appendingPathComponent("index"), preferences: prefs, startImmediately: false)
 var scans: [(Bool, Int)] = []
 controller.testScanCompleted = { scans.append(($0, $1)) }
@@ -27,9 +34,12 @@ func wait(_ label: String, _ condition: () -> Bool) {
     while !condition(), Date() < end { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
     precondition(condition(), label + ": " + controller.indexStatus)
 }
+controller.applyPermissionEnabled(true)
+precondition(controller.options.roots.contains(ungranted.path), "Enabling one grant discarded a suggested root")
 controller.startRuntime()
 wait("baseline") { !scans.isEmpty && controller.testEventsIdle }
 let before = controller.stats.entries
+precondition(before == 104, "An ungranted suggested root must not be scanned")
 let dirFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsDir | kFSEventStreamEventFlagItemModified)
 let fileFlag = FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile | kFSEventStreamEventFlagItemModified)
 scans.removeAll()
