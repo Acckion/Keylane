@@ -9,4 +9,3 @@ struct AIVisualSource: Codable, Equatable, Sendable {
     let usedAccessibility: Bool
     var requiresScreenCapture = true
 }
-
