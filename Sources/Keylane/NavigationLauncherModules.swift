@@ -168,7 +168,7 @@ enum NavigationLauncherModules {
         return LauncherModule(id: .init(rawValue: "keylane.screenshots"), commands: commands + ScreenshotAIActions.commands(model: model),
                               aiActions: ScreenshotAIActions.definitions,
                               pages: [screenshotsPage(id, model: model)], settings: [settings], services: [.init(start: {
-            library.addToShelf = { [weak model] in model?.dropShelf.addFiles($0) ?? false }
+            library.addToShelf = { [weak model] in model?.dropShelf.addAutomaticFiles($0, source: .screenshot) ?? false }
             permission.startObserving()
             library.enabled = permission.available
             permissionChanges = Publishers.Merge3(permission.updates, ViewObservation.changes(library.$scopes),

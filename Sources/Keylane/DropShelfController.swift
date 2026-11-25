@@ -7,6 +7,15 @@ import QuickLookThumbnailing
 import ImageIO
 
 final class DropShelfController: ObservableObject {
+    enum AutomaticSource: Hashable { case screenshot, download }
+    static let groupingSecondsRange = 1...3600
+    @Published var screenshotGroupingSeconds: Int {
+        didSet { preferences.set(screenshotGroupingSeconds, forKey: "dropShelf.screenshotGroupingSeconds") }
+    }
+    @Published var downloadGroupingSeconds: Int {
+        didSet { preferences.set(downloadGroupingSeconds, forKey: "dropShelf.downloadGroupingSeconds") }
+    }
+
     @Published var copyByDefault: Bool { didSet { preferences.set(copyByDefault, forKey: "dropShelf.copy"); updateDragOperations() } }
     @Published var keepOpen: Bool { didSet { preferences.set(keepOpen, forKey: "dropShelf.keepOpen") } }
     @Published var shakeEnabled: Bool { didSet { preferences.set(shakeEnabled, forKey: "dropShelf.shake") } }
@@ -86,7 +95,7 @@ final class DropShelfController: ObservableObject {
             return
         }
         guard active, store?.shelf(id) != nil else { return }
-        guard let origin = availableManagedShelfOrigin() else {
+        guard let origin = availableDefaultShelfOrigin() else {
             error = "屏幕上没有足够空间放置暂存架。"
             return
         }
@@ -99,7 +108,7 @@ final class DropShelfController: ObservableObject {
         displayedShelfIDs = visible
         refreshManagement()
     }
-    private func availableManagedShelfOrigin() -> NSPoint? {
+    private func availableDefaultShelfOrigin() -> NSPoint? {
         let mouse = NSEvent.mouseLocation
         let screens = NSScreen.screens
         let current = screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
@@ -140,6 +149,7 @@ final class DropShelfController: ObservableObject {
     private let directory: URL
     private(set) var store: DropShelfStore?
     private var windows: [UUID: DropShelfWindow] = [:]
+    private var incomingGroups: [AutomaticSource: (shelfID: UUID, lastImport: TimeInterval)] = [:]
     private weak var registry: MenuBarRegistry?
     private var timer: Timer?
     private var automaticShelves = Set<UUID>()
@@ -224,6 +234,8 @@ final class DropShelfController: ObservableObject {
 
     init(directory: URL? = nil, preferences: UserDefaults = .standard) {
         self.preferences = preferences
+        screenshotGroupingSeconds = Self.savedGroupingSeconds(in: preferences, key: "dropShelf.screenshotGroupingSeconds")
+        downloadGroupingSeconds = Self.savedGroupingSeconds(in: preferences, key: "dropShelf.downloadGroupingSeconds")
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Keylane/DropShelves", isDirectory: true)
         copyByDefault = preferences.bool(forKey: "dropShelf.copy")
         keepOpen = preferences.bool(forKey: "dropShelf.keepOpen")
@@ -237,6 +249,11 @@ final class DropShelfController: ObservableObject {
         addBehavior = ShelfAddBehavior(rawValue: preferences.string(forKey: "dropShelf.addBehavior") ?? "") ?? .newWindow
         ignoredApps = (preferences.dictionary(forKey: "dropShelf.ignoredApps") as? [String: String]) ?? [:]
     }
+    private static func savedGroupingSeconds(in preferences: UserDefaults, key: String) -> Int {
+        guard let seconds = preferences.object(forKey: key) as? Int, groupingSecondsRange.contains(seconds) else { return 60 }
+        return seconds
+    }
+
     func start(registry: MenuBarRegistry) {
         guard !active else { return }
         do {
@@ -260,6 +277,7 @@ final class DropShelfController: ObservableObject {
         launcherHidden()
         for window in Array(windows.values) { window.close() }
         windows.removeAll()
+        incomingGroups.removeAll()
         syncDisplayedShelves()
         registry?.unregister(owner: "keylane.drop-shelf"); registry = nil
         // Keep the store until promise callbacks finish; old windows revoke their import batches.
@@ -294,10 +312,52 @@ final class DropShelfController: ObservableObject {
     }
     func closed(_ window: DropShelfWindow) {
         automaticShelves.remove(window.shelfID)
+        incomingGroups = incomingGroups.filter { $0.value.shelfID != window.shelfID }
         guard windows.removeValue(forKey: window.shelfID) != nil else { return }
         syncDisplayedShelves()
         do { try store?.trimHistory(keeping: Set(windows.keys)) } catch { report(error) }
     }
+    @discardableResult
+    func addAutomaticFiles(_ urls: [URL], source: AutomaticSource,
+                           now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        guard active, let store, !urls.isEmpty else { return false }
+        let timeout = TimeInterval(source == .screenshot ? screenshotGroupingSeconds : downloadGroupingSeconds)
+        let current = incomingGroups[source].flatMap { group -> UUID? in
+            guard now >= group.lastImport, now - group.lastImport <= timeout,
+                  store.shelf(group.shelfID) != nil, windows[group.shelfID]?.ignoresMouseEvents != true else { return nil }
+            return group.shelfID
+        }
+        let id: UUID
+        do { id = try current ?? store.create() }
+        catch { report(error); return false }
+
+        var delivered = false
+        var added = false
+        for url in urls {
+            do {
+                if try store.addFile(url, to: id) { added = true }
+                delivered = true
+            } catch { report(error) }
+        }
+        guard delivered else {
+            if current == nil {
+                do { try store.deleteShelf(id) } catch { report(error) }
+            }
+            return false
+        }
+        guard added else { return true }
+        incomingGroups[source] = (id, now)
+        if let window = windows[id] {
+            window.refresh()
+        } else if let origin = availableDefaultShelfOrigin() {
+            reveal(id, activate: false, origin: origin)
+        } else {
+            // With no free window position, retain the import in recent history.
+            do { try store.trimHistory(keeping: Set(windows.keys)) } catch { report(error) }
+        }
+        return true
+    }
+
     /// Shared integration entry: use a private pasteboard and existing receiving/bookmark logic.
     /// Never replaces the user's clipboard or enables a disabled module.
     @discardableResult func addFiles(_ urls: [URL]) -> Bool {

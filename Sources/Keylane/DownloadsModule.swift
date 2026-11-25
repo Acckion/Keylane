@@ -42,12 +42,14 @@ enum DownloadsModule {
                 AnyView(DownloadsPreferences(controller: controller, model: model, commands: commands, anchor: anchor))
             })], services: [.init(start: { [weak model] in
                 controller.addToShelf = { [weak model] in model?.dropShelf.addFiles($0) ?? false }
+                controller.addAutomaticallyToShelf = { [weak model] in model?.dropShelf.addAutomaticFiles($0, source: .download) ?? false }
                 permission.startObserving(); controller.setEnabled(permission.available)
                 changes = Publishers.Merge(permission.updates, ViewObservation.changes(controller.$folder)).receive(on: DispatchQueue.main).sink {
                     permission.recheck(); controller.setEnabled(permission.available)
                 }
             }, stop: {
                 changes?.cancel(); changes = nil; permission.stopObserving(); controller.setEnabled(false); controller.addToShelf = nil
+                controller.addAutomaticallyToShelf = nil
             })])
     }
     private static func actions(_ controller: DownloadsController, model: Model) -> [LauncherAction] {

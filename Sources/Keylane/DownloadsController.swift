@@ -21,6 +21,7 @@ final class DownloadsController: ObservableObject {
     private var revision = 0
     private var access: URL?
     var addToShelf: (([URL]) -> Bool)?
+    var addAutomaticallyToShelf: (([URL]) -> Bool)?
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         folder = defaults.data(forKey: "downloads.folder").flatMap { try? JSONDecoder().decode(ScreenshotScope.self, from: $0) }
@@ -98,7 +99,7 @@ final class DownloadsController: ObservableObject {
                 if self.autoShelf, !ready.isEmpty {
                     // Directories are browsable but their recursive contents may still be downloading.
                     let urls = ready.filter { !$0.directory }.map(\.url)
-                    if !urls.isEmpty, self.addToShelf?(urls) != true { self.scanError = "自动加入失败，请先启用暂存架。文件仍保留在下载目录。" }
+                    if !urls.isEmpty, self.addAutomaticallyToShelf?(urls) != true { self.scanError = "自动加入失败，请先启用暂存架。文件仍保留在下载目录。" }
                 }
                 if self.tracker.needsRescan {
                     self.retry = Task { @MainActor [weak self] in

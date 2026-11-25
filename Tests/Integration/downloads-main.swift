@@ -46,6 +46,8 @@ final class Delegate: NSObject, NSApplicationDelegate { func hideLauncher() {} }
         controller.query = "missing"
         try require(controller.selected == nil, "Filtering must clear stale action targets")
         controller.query = ""
+        controller.addAutomaticallyToShelf = { received += $0; return true }
+        controller.addToShelf = { _ in preconditionFailure("Automatic delivery must not use the manual callback") }
         controller.autoShelf = true
         try await Task.sleep(for: .milliseconds(500))
         try require(received.count == 1, "Enabling auto delivery must seed existing files")
