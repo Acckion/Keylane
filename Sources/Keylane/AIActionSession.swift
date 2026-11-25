@@ -79,7 +79,7 @@ final class AIActionSession: ObservableObject {
             do {
                 try definition.validate()
                 guard allowed() else { throw AIActionError.unavailable }
-                let value = try await source.load()
+                let value = try source.recordSnapshot(try await source.load())
                 try Task.checkCancellation()
                 try value.validate(maximumBytes: definition.maximumInputBytes)
                 guard let self, self.generation == token else { return }
