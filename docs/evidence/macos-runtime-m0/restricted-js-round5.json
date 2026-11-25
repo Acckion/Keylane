@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "candidate": "restricted-JavaScriptCore",
+  "cases": {
+    "nativeFilePositiveControl": true,
+    "ordinaryJavaScript": true,
+    "nativeFileDenied": true,
+    "noProcess": true,
+    "noRequire": true,
+    "noFetch": true,
+    "noObjC": true,
+    "noImportScripts": true,
+    "noWorker": true,
+    "noReadFile": true,
+    "noShellLoad": true,
+    "noDlopen": true,
+    "constructorHasNoProcess": true,
+    "freshInvocationState": true,
+    "wrongSignedParentRejected": true,
+    "directLaunchRejected": true,
+    "parentDeathStopsInfiniteJS": true,
+    "disabledWatcherControlSurvives": true
+  },
+  "coverage": {
+    "RaycastNodeCompatibility": "not-implemented",
+    "broker": "not-implemented",
+    "keychain": "not-tested",
+    "nativeAddon": "not-tested",
+    "fullHostileEngineEscape": "not-proven",
+    "fullContainerSanitization": "not-tested"
+  },
+  "fileControl": {
+    "tested": true,
+    "allowed": false,
+    "errno": 1
+  },
+  "artifactAdjacentFileControl": {
+    "tested": true,
+    "allowed": false,
+    "errno": 1
+  },
+  "parentDeath": {
+    "exited": true,
+    "elapsedMs": 13.8,
+    "enteredJavaScript": true
+  },
+  "watcherDisabledControl": {
+    "exited": false,
+    "elapsedMs": 1013.4,
+    "enteredJavaScript": true
+  },
+  "fixtureProcessCleanupConfirmed": true,
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}

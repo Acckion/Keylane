@@ -1,0 +1,161 @@
+{
+  "schema": 1,
+  "runtime": "node-v24.12.0-darwin-arm64",
+  "archiveSHA256": "319f221adc5e44ff0ed57e8a441b2284f02b8dc6fc87b8eb92a6a93643fd8080",
+  "fixtureOnly": true,
+  "installed": false,
+  "gate": "blocked",
+  "cases": {
+    "control": {
+      "version": "v24.12.0",
+      "pid": 42914,
+      "cases": {
+        "hostRead": {
+          "allowed": true
+        },
+        "hostWrite": {
+          "allowed": true
+        },
+        "symlinkRead": {
+          "allowed": true
+        },
+        "spawnSystem": {
+          "allowed": true
+        },
+        "spawnNode": {
+          "allowed": true
+        },
+        "childHostRead": {
+          "allowed": true,
+          "code": "allowed"
+        },
+        "containerWrite": {
+          "allowed": true
+        },
+        "crossInvocationRead": {
+          "allowed": false,
+          "code": "Error"
+        },
+        "network": {
+          "allowed": true
+        },
+        "jit": {
+          "allowed": true
+        }
+      },
+      "rssBytes": 47857664,
+      "elapsedMs": 960.8
+    },
+    "sandboxFirst": {
+      "version": "v24.12.0",
+      "pid": 42945,
+      "cases": {
+        "hostRead": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "hostWrite": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "symlinkRead": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "spawnSystem": {
+          "allowed": true
+        },
+        "spawnNode": {
+          "allowed": true
+        },
+        "childHostRead": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "containerWrite": {
+          "allowed": true
+        },
+        "crossInvocationRead": {
+          "allowed": false,
+          "code": "Error"
+        },
+        "network": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "jit": {
+          "allowed": true
+        }
+      },
+      "rssBytes": 48709632,
+      "elapsedMs": 1421.8
+    },
+    "sandboxSecond": {
+      "version": "v24.12.0",
+      "pid": 42950,
+      "cases": {
+        "hostRead": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "hostWrite": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "symlinkRead": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "spawnSystem": {
+          "allowed": true
+        },
+        "spawnNode": {
+          "allowed": true
+        },
+        "childHostRead": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "containerWrite": {
+          "allowed": true
+        },
+        "crossInvocationRead": {
+          "allowed": true
+        },
+        "network": {
+          "allowed": false,
+          "code": "EPERM"
+        },
+        "jit": {
+          "allowed": true
+        }
+      },
+      "rssBytes": 51560448,
+      "elapsedMs": 148.6
+    }
+  },
+  "coverage": {
+    "keychain": "not-tested",
+    "nativeAddon": "not-tested",
+    "hostService": "not-tested",
+    "descriptorLeak": "not-tested",
+    "forgedPeer": "not-tested",
+    "sharedContainer": "tested",
+    "childSandboxInheritance": "tested",
+    "ownedTreeCancellation": "tested",
+    "abnormalExit": "tested"
+  },
+  "lifecycle": {
+    "helperGroupStopsTree": false,
+    "elapsedMs": 1027.5,
+    "fixtureCleanupConfirmed": true,
+    "abnormalExitPropagated": true
+  },
+  "blockers": [
+    "spawnSystem",
+    "spawnNode",
+    "sharedContainer",
+    "helperGroupDoesNotStopTree"
+  ],
+  "signaturesVerifiedBeforeAndAfter": true
+}

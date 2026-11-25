@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "candidate": "native-persistent-trust-primitives",
+  "cases": {
+    "createdOwnedItem": true,
+    "authorizedRead": true,
+    "nativeForeignKeychainNotReadable": true,
+    "sandboxKeychainNotReadable": true,
+    "sandboxPeerNotReadable": true,
+    "oneCASWinner": true,
+    "persistentAfterRestart": true,
+    "oldValueCannotReplay": true,
+    "wrongClientRejected": true,
+    "authorizedAfterRogue": true,
+    "wrongServerRejected": true,
+    "peerVerificationNegativeControl": true,
+    "copiedClientRejected": true,
+    "copiedServerRejected": true,
+    "replacedLockRejected": true,
+    "ownedItemRemoved": true,
+    "missingItemNoReset": true,
+    "missingItemCannotReenroll": true,
+    "missingItemPreventsStartup": true,
+    "fixturesExited": true
+  },
+  "coverage": {
+    "backend": "legacy-Keychain-ACL-research-only",
+    "productEnrollment": "not-connected",
+    "state": "synthetic-opaque-bytes",
+    "codeIdentity": "OS-XPC-requirements",
+    "storage": "explicit-item-only-no-enumeration"
+  },
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}
