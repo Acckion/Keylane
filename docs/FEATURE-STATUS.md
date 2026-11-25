@@ -47,7 +47,7 @@
 | APP-01 | 应用发现、拼音搜索、收藏及刷新 | 部分实现 | 外置/网络卷、扫描深度和失效路径继续验收 | [应用生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/applications) |
 | APP-02 | 应用正常退出、卸载与残留预览 | 部分实现 | 应用差异、拒绝权限及残留范围逐项验收 | [卸载](UNINSTALL-PREVIEW.md) |
 | APP-03 | 按应用闲置自动退出 | 部分实现 | 各应用保存对话框、退出拒绝和重启恢复实测 | [生命周期](APPLICATION-LIFECYCLE.md)、[Raycast](https://manual.raycast.com/auto-quit) |
-| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数已合入；重启恢复待合并，安装版长期能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
+| FILE-01 | 文件检索、筛选、预览与文件信息 | 部分实现 | 搜索范围、内容索引、排序和大型目录继续对照；索引清理与事务计数已合入；重启恢复已合入，正文队列拆分待合并，安装版长期能耗待复验 | [细项](TODO.md)、[Raycast](https://manual.raycast.com/file-search) |
 | FILE-02 | 文件打开方式、分享、复制、定位等动作 | 部分实现 | 真实分享服务、取消、权限与焦点验收 | [细项](TODO.md) |
 | CLIP-01 | 剪贴板历史、持久化、搜索及 OCR | 部分实现 | 真实跨应用粘贴、采集边界和隐私设置回归 | [实现](../Sources/Keylane/ClipboardActions.swift)、[细项](TODO.md)、[Raycast](https://manual.raycast.com/clipboard-history) |
 | SHOT-01 | 截图/录屏管理、OCR、搜索与文件动作 | 部分实现 | 跨应用分享、粘贴、云盘和权限验收 | [截图](SCREENSHOTS.md)、[Raycast](https://manual.raycast.com/screenshots) |
@@ -292,3 +292,7 @@
 维护记录：2026-11-25，EXT-01-a / PR #241 在 `5aee858d` 上补齐旧更新候选的比较并交换替换：同时冻结已确认安装与被观察候选，构建成功后原子核对／发布；保留精确修订恢复、失败／取消原状态及并发变更拒绝。仅 build-only；离线实际 coordinator／registry 回归与 CI 见原 PR，不涉及签名私钥、第三方运行、真实资料、安装或发布。
 
 维护记录：2026-11-25，EXT-01-a / PR #241 续修匹配 pending 更新的只读恢复：绑定精确候选和已预留目标代次，active-only 候选替换检查保持；补齐原启用／停用状态、第三修订／旧代次拒绝、取消与独立 head 提交前后发布中断的实际 coordinator／registry 合成重启回归。状态矩阵和精确检查见 [M1 记录](MACOS-BUILD-M1.md)，不涉及真实资料、签名私钥、第三方执行、前台、安装或发布。
+
+维护记录：2026-11-23，FILE-01 / 第二批：`fix/file-content-pipeline` 在最新 dev `41dcc4cd` 上承接 PR #243，分离元数据事务与持久化正文待办，单工作线程、小批次回写、过期结果和生命周期保护。458 项 Swift、30 项脚本及阻塞正文/原有文本与 PDF 集成通过；已用本机 Apple Development 签名安装，实机自有文件的名称/正文更新通过；五轮同组文件元数据提交约减少 98%，完整提取 CPU 中位数约增加 4.4%，不宣称长期能耗达标。PR #243 已合入；PR #245 待合并；详见 [正文队列](FILE-CONTENT-PIPELINE.md)。
+
+维护记录：2026-11-25，FILE-01 / PR #245：重叠范围迁移正文待办时换发任务代次；正式提取前核对当前授权范围、文件身份和版本，旧任务缺少证明需扫描重新登记。待合并；隔离自动化见 [正文队列](FILE-CONTENT-PIPELINE.md)，本轮未复验安装版。

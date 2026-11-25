@@ -15,11 +15,12 @@ final class FileSearchController: ObservableObject {
     private var aiIndexRevision = UUID()
     var aiAccessRevision: UUID { aiIndexRevision }
     @Published var options: FileSearchOptions { willSet { if newValue != options { aiIndexRevision = UUID() } } didSet { if options != oldValue { configure(old: oldValue) } } }
-    @Published private(set) var automaticExclusions: [AutomaticFileExclusion] = [] { willSet { if newValue != automaticExclusions { aiIndexRevision = UUID() } } }
+    @Published private(set) var automaticExclusions: [AutomaticFileExclusion] = [] { willSet { if newValue != automaticExclusions { aiIndexRevision = UUID() } } didSet { if Set(oldValue.map(\.path)) != Set(automaticExclusions.map(\.path)) { cancelContent() } } }
     @Published private(set) var stats = FileIndexStats()
     @Published private(set) var indexStatus = "尚未建立本地补充索引"
     @Published private(set) var inaccessible: [String] = []
     @Published private(set) var indexing = false
+    @Published private(set) var contentIndexing = false
     @Published private(set) var indexPaused: Bool
     @Published private(set) var directorySort: FileDirectorySort
     @Published private(set) var browsingDirectory: URL?
@@ -29,6 +30,14 @@ final class FileSearchController: ObservableObject {
     private let availableCapacity: (URL) -> Int64
     private let watchEnabled: Bool
     private let writer = DispatchQueue(label: "org.keylane.files.index", qos: .utility)
+    private let contentQueue = DispatchQueue(label: "org.keylane.files.content", qos: .utility)
+    private var contentLifetime = FileScanCancellation()
+    private var contentBusy = false
+    private var contentFailure: String?
+    private var contentRetryAfter = Date.distantPast
+    private var pendingContentDrain: DispatchWorkItem?
+    private var pendingContentRefresh: DispatchWorkItem?
+    private let contentExtractor: ((FileSearchIndex.ContentJob, @escaping () -> Bool) throws -> String)?
     private let reader = DispatchQueue(label: "org.keylane.files.search", qos: .userInitiated)
     private let databaseURL: URL
     private var runtime: FileScanCancellation?
@@ -84,7 +93,7 @@ final class FileSearchController: ObservableObject {
     private var wrapUpperBound: FSEventStreamEventId?
     private static let maxQueuedEvents = 8192
     private var pendingRefresh: DispatchWorkItem?
-    private var restored: Set<String> = [] { didSet { if oldValue != restored { aiIndexRevision = UUID() } } }
+    private var restored: Set<String> = [] { didSet { if oldValue != restored { aiIndexRevision = UUID(); cancelContent() } } }
     private var dirtyPaths = Set<String>()
     private var needsFullScan = false
     static var defaults: FileSearchOptions {
@@ -95,8 +104,10 @@ final class FileSearchController: ObservableObject {
     }
     init(directory: URL? = nil, preferences: UserDefaults = .standard, defaultOptions: FileSearchOptions? = nil, watchChanges: Bool = true,
          availableCapacity: ((URL) -> Int64)? = nil, startImmediately: Bool = true,
-         recentSpotlightSearch: (([String], @escaping ([RecentlyUsedFile]) -> Void) -> Void)? = nil) {
+         recentSpotlightSearch: (([String], @escaping ([RecentlyUsedFile]) -> Void) -> Void)? = nil,
+         contentExtractor: ((FileSearchIndex.ContentJob, @escaping () -> Bool) throws -> String)? = nil) {
         self.preferences = preferences; self.watchEnabled = watchChanges
+        self.contentExtractor = contentExtractor
         self.recentSpotlightSearch = recentSpotlightSearch
         indexPaused = preferences.bool(forKey: "fileIndexPaused")
         directorySort = preferences.string(forKey: "fileDirectorySort").flatMap(FileDirectorySort.init(rawValue:)) ?? .name
@@ -167,6 +178,7 @@ final class FileSearchController: ObservableObject {
                     guard !token.cancelled else { return }
                     self.restoringIndex = false
                     self.restoreIndex(recovery, historyDomain: historyDomain)
+                    self.drainContent()
                     if !self.queryIsBlank { self.reloadSearch() }
                 }
             } catch {
@@ -271,6 +283,7 @@ final class FileSearchController: ObservableObject {
                         self.dirtyPaths.formUnion(recovery.retryPaths)
                         self.scheduleRefresh()
                         self.indexStatus = "正在恢复文件变化…"
+                        self.drainContent()
                     } else { self.startIndex() }
                 } else {
                     self.startIndex()
@@ -281,6 +294,7 @@ final class FileSearchController: ObservableObject {
 
     func stopRuntime() {
         guard let runtime else { return }
+        cancelContent()
         runtime.cancel()
         self.runtime = nil
         recentlyRemoved.removeAll()
@@ -310,7 +324,7 @@ final class FileSearchController: ObservableObject {
         reader.async { [weak self] in self?.readDB = nil }
     }
 
-    deinit { stopWatch(); cancelMerge(); cancellation.cancel(); activeURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+    deinit { contentLifetime.cancel(); pendingContentDrain?.cancel(); pendingContentRefresh?.cancel(); stopWatch(); cancelMerge(); cancellation.cancel(); activeURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
     private func configure(old: FileSearchOptions) {
         preferences.set(try? JSONEncoder().encode(options), forKey: "fileSearchOptions")
         var previous = old; previous.searchFromLauncher = options.searchFromLauncher
@@ -318,6 +332,7 @@ final class FileSearchController: ObservableObject {
         let changedExclusions = Set(previous.excludedPaths).symmetricDifference(options.excludedPaths)
         previous.excludedPaths = options.excludedPaths
         if previous == options {
+            cancelContent()
             reloadSearch()
             if !indexPaused {
                 dirtyPaths.formUnion(changedExclusions)
@@ -325,7 +340,7 @@ final class FileSearchController: ObservableObject {
             }
             return
         }
-        cancelMerge(); cancellation.cancel(); spotlight.cancel(); spotlightResults = []; localResults = []; stopWatch()
+        cancelContent(); cancelMerge(); cancellation.cancel(); spotlight.cancel(); spotlightResults = []; localResults = []; stopWatch()
         let contentEnabled = options.contentSearch
         let removed = old.roots.filter { !options.roots.contains($0) }
         writer.async { [weak self] in
@@ -341,12 +356,17 @@ final class FileSearchController: ObservableObject {
         else { restoringIndex = false; indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
     private func resolveGrants() {
+        cancelContent()
         aiIndexRevision = UUID()
+        activeContentGrants.removeAll()
         activeURLs.forEach { $0.stopAccessingSecurityScopedResource() }; activeURLs = []
         guard isRunning else { return }
-        for (_,data) in grants {
+        for (path,data) in grants {
             var stale = false
-            if let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope,.withoutUI], bookmarkDataIsStale: &stale), url.startAccessingSecurityScopedResource() { activeURLs.append(url) }
+            if let url = try? URL(resolvingBookmarkData: data, options: [.withSecurityScope,.withoutUI], bookmarkDataIsStale: &stale), url.startAccessingSecurityScopedResource() {
+                activeURLs.append(url)
+                if !stale, url.standardizedFileURL.path == path { activeContentGrants.insert(path) }
+            }
         }
     }
     var hasAuthorizedScope: Bool {
@@ -361,6 +381,11 @@ final class FileSearchController: ObservableObject {
         // Authorization survives a disconnected volume. The scanner applies
         // keepRemovedVolumes when a configured root is temporarily missing.
         options.roots.filter { selectedScopePaths.contains($0) || grants[$0] != nil }
+    }
+
+    private var activeContentGrants: Set<String> = []
+    private var contentAuthorizedRoots: Set<String> {
+        Set(authorizedRoots.filter { grants[$0] == nil ? selectedScopePaths.contains($0) : activeContentGrants.contains($0) })
     }
 
     private var authorizedOptions: FileSearchOptions {
@@ -403,6 +428,7 @@ final class FileSearchController: ObservableObject {
         indexPaused = paused
         preferences.set(paused, forKey: "fileIndexPaused")
         if paused {
+            cancelContent()
             cancellation.cancel()
             cancellation = FileScanCancellation()
             restoringIndex = false
@@ -894,7 +920,7 @@ final class FileSearchController: ObservableObject {
                 }
                 let status: String
                 if !rows.isEmpty {
-                    let notice = self.indexPaused ? "本地索引已暂停" : self.indexFailure
+                    let notice = self.indexPaused ? "本地索引已暂停" : (self.indexFailure ?? (self.includesQueryContents ? self.contentFailure : nil))
                     status = "\(rows.count)项\(truncated ? " · 请增加关键词" : "")"
                         + (notice.map { " · " + $0 } ?? "")
                 } else if self.indexPaused {
@@ -903,6 +929,10 @@ final class FileSearchController: ObservableObject {
                     status = failure
                 } else if self.indexing {
                     status = "正在建立索引，完成后自动更新结果。"
+                } else if let failure = self.contentFailure, self.includesQueryContents {
+                    status = failure
+                } else if self.contentIndexing && self.includesQueryContents {
+                    status = "正在后台补充正文索引，完成后自动更新结果。"
                 } else {
                     status = "请检查搜索范围、忽略规则或文件夹授权。"
                 }
@@ -928,6 +958,144 @@ final class FileSearchController: ObservableObject {
             DispatchQueue.main.async { if !runtime.cancelled { self.indexStatus = error.localizedDescription } }
         }
     }
+    private func cancelContent() {
+        contentRetryAfter = .distantPast
+        contentFailure = nil
+        contentIndexing = false
+        contentLifetime.cancel()
+        contentLifetime = FileScanCancellation()
+        pendingContentDrain?.cancel(); pendingContentDrain = nil
+        pendingContentRefresh?.cancel(); pendingContentRefresh = nil
+        // A native PDF call may still be returning. Keep its slot occupied so
+        // toggling the module cannot accumulate concurrent extraction workers.
+    }
+
+    private func reportContentFailure(_ error: Error) {
+        contentIndexing = false
+        let message = "正文索引暂不可用：" + error.localizedDescription
+        contentFailure = message
+        contentRetryAfter = Date().addingTimeInterval(60)
+        if !indexing { indexStatus = message }
+        if localQueryResolved, includesQueryContents { publish() }
+    }
+
+    private func scheduleContentRefresh() {
+        guard hasQuery, !queryIsBlank, includesQueryContents, pendingContentRefresh == nil else { return }
+        let token = contentLifetime
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !token.cancelled else { return }
+            self.pendingContentRefresh = nil
+            if self.hasQuery, !self.queryIsBlank, self.includesQueryContents { self.refreshQuery() }
+        }
+        pendingContentRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private func drainContent(after delay: Double = 0) {
+        guard isRunning, options.enabled, options.contentSearch, !indexPaused,
+              !indexing, !restoringIndex, !contentBusy, pendingContentDrain == nil else { return }
+        let token = contentLifetime
+        let wait = max(delay, contentRetryAfter.timeIntervalSinceNow)
+        if wait > 0 {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, !token.cancelled else { return }
+                self.pendingContentDrain = nil
+                self.drainContent()
+            }
+            pendingContentDrain = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + wait, execute: work)
+            return
+        }
+        contentBusy = true
+        let config = eventConfiguration
+        let contentRoots = contentAuthorizedRoots
+        writer.async { [weak self] in
+            guard let self else { return }
+            do {
+                guard !token.cancelled, let db = self.writeDB else {
+                    DispatchQueue.main.async { self.contentBusy = false; self.drainContent() }; return
+                }
+                let jobs = try db.nextContentJobs(certifiedOnly: true)
+                guard !jobs.isEmpty else {
+                    let next = try db.nextContentRetry(certifiedOnly: true)
+                    db.releaseCachedPages()
+                    DispatchQueue.main.async {
+                        self.contentBusy = false
+                        if !token.cancelled {
+                            self.contentIndexing = false
+                            self.contentFailure = nil
+                            if self.indexStatus == "正在补充文件正文…" { self.indexStatus = next == nil ? "索引已更新" : "部分文件正文暂不可读，将稍后重试。" }
+                            if self.localQueryResolved { self.publish() }
+                            if let next { self.drainContent(after: max(0.1, next.timeIntervalSinceNow)) }
+                        } else { self.drainContent() }
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    if !token.cancelled, !self.contentIndexing {
+                        self.contentFailure = nil
+                        self.contentIndexing = true
+                        if !self.indexing, self.indexFailure == nil { self.indexStatus = "正在补充文件正文…" }
+                        if self.localQueryResolved { self.publish() }
+                    }
+                }
+                self.contentQueue.async {
+                    let session = FileContentReader.Session()
+                    var updates: [FileSearchIndex.ContentUpdate] = []
+                    for job in jobs {
+                        if token.cancelled { break }
+                        do {
+                            let body = try autoreleasepool { () throws -> String in
+                                guard !token.cancelled else { throw CancellationError() }
+                                guard contentRoots.contains(job.root),
+                                      FileSearchLocation.contains(job.path, in: job.root),
+                                      job.path != job.root else { throw FileContentReader.Failure.unproved }
+                                let custom = self.contentExtractor.map { extractor in { try extractor(job, { token.cancelled }) } }
+                                return try session.read(job, cancelled: { token.cancelled }, allows: {
+                                    var locations = FileSearchLocation(options: config.options, automaticExclusions: config.exclusions.map(\.path), restored: config.restored)
+                                    return locations.includesDeferredContent(at: job.path, ownedBy: job.root)
+                                }, externalVolumes: config.options.externalVolumes, extraction: custom)
+                            }
+                            updates.append(.init(job: job, body: body))
+                        } catch FileContentReader.Failure.changed, FileContentReader.Failure.unproved {
+                            updates.append(.init(job: job, body: nil, parkUntilScan: true))
+                        } catch {
+                            if token.cancelled { break }
+                            updates.append(.init(job: job, body: nil))
+                        }
+                    }
+                    let completed = updates
+                    self.writer.async {
+                        var applied = false
+                        var retryDelay = 0.025
+                        if !token.cancelled, let db = self.writeDB {
+                            do {
+                                applied = try db.applyContent(completed, isCancelled: { token.cancelled })
+                                db.releaseCachedPages()
+                            } catch {
+                                retryDelay = 60
+                                DispatchQueue.main.async { if !token.cancelled { self.reportContentFailure(error) } }
+                            }
+                        }
+                        let changed = applied
+                        let delay = retryDelay
+                        DispatchQueue.main.async {
+                            self.contentBusy = false
+                            if !token.cancelled, changed { self.scheduleContentRefresh() }
+                            self.drainContent(after: delay)
+                        }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.contentBusy = false
+                    if !token.cancelled { self.reportContentFailure(error); self.drainContent(after: 60) }
+                    else { self.drainContent() }
+                }
+            }
+        }
+    }
+
     func startIndex(force: Bool = false) {
         dirtyPaths.removeAll()
         needsFullScan = false
@@ -960,6 +1128,7 @@ final class FileSearchController: ObservableObject {
         #endif
         let requiredConfigurations: Set<String>? = paths == nil || !canCheckpoint ? nil : Set(
             [checkpointConfiguration, checkpointLegacyConfiguration].compactMap { $0 })
+        let contentRoots = contentAuthorizedRoots
         let previousRepairs = pendingRepairPaths
         checkpointReady = false
         restoringIndex = false
@@ -1021,6 +1190,8 @@ final class FileSearchController: ObservableObject {
                 }
                 for (root, subtree) in targets {
                     if token.cancelled { return }
+                    let certification = FileContentReader.Session()
+                    let canCertify = config.contentSearch && contentRoots.contains(root) && certification.pinScope(root, cancelled: { token.cancelled })
                     let rootURL = URL(fileURLWithPath: root)
                     guard FileManager.default.fileExists(atPath: root) else {
                         if !config.keepRemovedVolumes { try db.removeScope(root) }
@@ -1135,10 +1306,10 @@ final class FileSearchController: ObservableObject {
                                                 auto.append(.init(path: path, reason: "构建输出或依赖缓存", events: 0)); continue
                                             }
                                             let record = FileIndexRecord(path:path,name:url.lastPathComponent,volume:value.volume?.path ?? "/",modified:value.contentModificationDate?.timeIntervalSince1970 ?? 0,directory:isDir,symlink:symlink,external:value.volumeIsLocal == false || value.volumeIsRemovable == true || value.volumeIsInternal == false)
-                                            if try force || !db.touchUnchanged(record, root: root, epoch: epoch, contentSearch: config.contentSearch) {
-                                                let body = config.contentSearch && !isDir && !symlink ? FileSearchIndex.content(at: url) : ""
-                                                try db.put(record, body: body, root: root, epoch: epoch)
-                                            }
+                                            try db.stageMetadata(record, root: root, epoch: epoch,
+                                                                 contentSearch: config.contentSearch, force: force,
+                                                                 certification: canCertify ? certification : nil,
+                                                                 allowCertification: canCertify, isCancelled: { token.cancelled })
                                             processed += 1
                                             if isDir && !symlink && url.pathExtension != "app" { queue.append((path, rules)) }
                                         }
@@ -1196,6 +1367,12 @@ final class FileSearchController: ObservableObject {
                     }
                     self.scheduleRefresh()
                     self.saveIdleRecoveryPoint()
+                    // Newly staged work must wake a queue waiting on an older
+                    // file's retry deadline. Hard database failures retain their
+                    // independent backoff through contentRetryAfter.
+                    self.pendingContentDrain?.cancel()
+                    self.pendingContentDrain = nil
+                    self.drainContent()
                 }
             } catch { DispatchQueue.main.async {
                 guard self.cancellation === token else { return }

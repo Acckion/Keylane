@@ -91,6 +91,8 @@ jobs:
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-restart-main.swift bash scripts/verify-files.sh
       - name: File restart history and cursor state integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-restart-startup-main.swift bash scripts/verify-files.sh
+      - name: Deferred file content integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-content-main.swift bash scripts/verify-files.sh
 
   sign-preview-auto:
     name: Sign integrated preview ${{ github.sha }}
