@@ -16,8 +16,10 @@ final class Model: ObservableObject {
     }()
 
     let updates = KeylaneReleaseCheck()
+    let extensionStore = ExtensionStoreController()
     private let dataStoreURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Keylane/data.sqlite")
+    @Published var launcherScrollTopRequest = 0
     @Published var error = ""
     @Published var settingsPage = "applications"
     @Published private(set) var applicationSettingsPath: String?
@@ -1124,6 +1126,12 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pageScrollSample: TimeInterval?
     private var pageScrollVelocity: CGFloat = 0
 
+    @MainActor func clearExtensionSearch(forceScrollToTop: Bool) {
+        NotificationCenter.default.post(name: .launcherClearSavedSearch, object: nil)
+        model.query = ""
+        if forceScrollToTop { model.launcherScrollTopRequest &+= 1 }
+    }
+
     private func resetPageScroll() {
         pageScroll.reset()
         pageScrollSample = nil
@@ -1242,6 +1250,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         modifiers.activate = { [weak self] in self?.show() }
         model.configureModifiers()
         model.launcherModules?.startServices()
+        connectInstalledMacOSExtensions()
         model.updates.start()
         if onboarding.isComplete { show() }
         else { showOnboarding() }
@@ -1384,7 +1393,24 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    func hideLauncher(reason: String = "command") {
+    @MainActor func extensionDisplayPreferences() -> MacOSNoViewCapabilities.DisplayPreferences {
+        let appearance = window?.effectiveAppearance ?? NSApp.effectiveAppearance
+        let isDark = model.colorScheme.map { $0 == .dark }
+            ?? (appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
+        return .init(appearance: isDark ? .dark : .light, textSize: model.interfaceSize == "large" ? .large : .medium)
+    }
+
+    @MainActor func extensionNavigationScope() -> @MainActor @Sendable () -> Bool {
+        let hiddenAt = launcherHiddenAt
+        let page = model.pageID
+        let query = model.query
+        return { [weak self] in
+            guard let self else { return false }
+            return self.launcherHiddenAt == hiddenAt && self.model.pageID == page && self.model.query == query
+        }
+    }
+
+    func hideLauncher(reason: String = "command", suspendReturn: Bool = false) {
         if window.isVisible || reason == "outsideClick" {
             cancelLauncherPaste()
             if reason != "pasteDispatch" { model.clipboard.cancelPendingSequentialPaste() }
@@ -1395,7 +1421,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         resizeTimer = nil
         resizeTarget = nil
         if model.placement == "remember" { window.saveFrame(usingName: "KeylaneLauncher") }
-        launcherHiddenAt = ProcessInfo.processInfo.systemUptime
+        launcherHiddenAt = suspendReturn ? nil : ProcessInfo.processInfo.systemUptime
         window.orderOut(nil)
         if model.windowMode == "compact", model.pageID == .root, model.query.isEmpty {
             model.compactExpanded = false

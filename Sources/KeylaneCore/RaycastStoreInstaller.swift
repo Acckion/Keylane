@@ -5,7 +5,7 @@ import Foundation
 /// treats a prepared artifact as an installed extension.
 public actor RaycastStoreInstaller {
     public enum Failure: String, Error, LocalizedError, Sendable {
-        case unavailable, busy, preparationFailed, unsupportedBuild, invalidArtifact, cancelled, existingDifferentRevision, reconciliationFailed
+        case unavailable, busy, preparationFailed, buildFailed, unsupportedBuild, noRunnableCommands, invalidArtifact, cancelled, existingDifferentRevision, reconciliationFailed
         case installationOutcomeUnknown, invalidReceipt, notInstalled, operationOutcomeUnknown, preferencesRequired, launchBlocked
         public var errorDescription: String? {
             switch self {
@@ -15,7 +15,9 @@ public actor RaycastStoreInstaller {
             case .reconciliationFailed: return "无法读取现有安装记录；为避免重复安装，已停止操作。"
             case .unavailable: return "隔离安装服务尚未接入；尚未安装扩展。"
             case .busy: return "此扩展已有操作正在进行，请等待完成。"
+            case .noRunnableCommands: return "此扩展没有当前预览版可运行的命令，尚未安装。"
             case .unsupportedBuild: return "当前隔离运行环境不支持此扩展的平台、依赖或接口版本；仍可在商店中浏览。"
+            case .buildFailed: return "隔离编译未生成有效制品，未进入安装步骤。请检查扩展的依赖与 API 导入。"
             case .preparationFailed: return "源码获取、依赖准备或隔离构建失败；未进入安装步骤。"
             case .invalidArtifact: return "构建制品与所选来源或完整性摘要不匹配；已阻止安装。"
             case .cancelled: return "准备已取消；未进入安装步骤。"
@@ -124,6 +126,8 @@ public actor RaycastStoreInstaller {
             let failure: Failure
             switch error {
             case is CancellationError: failure = .cancelled
+            case Failure.buildFailed: failure = .buildFailed
+            case Failure.noRunnableCommands: failure = .noRunnableCommands
             case RaycastStoreSourcePackage.Failure.unsupportedPlatform,
                  RaycastStoreBuildDependencies.Failure.unsupportedRuntimeAPI,
                  RaycastStoreBuildDependencies.Failure.unsupportedPackage: failure = .unsupportedBuild

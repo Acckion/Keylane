@@ -1,0 +1,38 @@
+包,接口,macOS 证据,适用行为,限制或待验收
+@raycast/api,Action,已签名验证,有界标题、回调、危险样式和修订绑定,图标与其他标准动作由第 07 批负责
+@raycast/api,Action.Push,已签名验证,Push＋Back、保留父页状态、onPop,当前宿主只呈现 Detail
+@raycast/api,Action.Style,已签名验证,沿用固定 regular／destructive 值及原生危险样式,签名样板核对别名或样式与公共实现一致
+@raycast/api,Action.Style.Destructive,已签名验证,沿用固定 regular／destructive 值及原生危险样式,签名样板核对别名或样式与公共实现一致
+@raycast/api,Action.Style.Regular,已签名验证,沿用固定 regular／destructive 值及原生危险样式,签名样板核对别名或样式与公共实现一致
+@raycast/api,ActionPanel,已签名验证,菜单数据、首要／次要操作、静态及动态分组,安装版键鼠视觉待验收
+@raycast/api,ActionPanel.Item,已签名验证,与 Action 共用同一实现和事件路径,签名样板核对别名或样式与公共实现一致
+@raycast/api,ActionPanel.Item.Push,已签名验证,与 Action.Push 共用同一实现和事件路径,签名样板核对别名或样式与公共实现一致
+@raycast/api,ActionPanel.Item.Style,已签名验证,沿用固定 regular／destructive 值及原生危险样式,签名样板核对别名或样式与公共实现一致
+@raycast/api,ActionPanel.Item.Style.Destructive,已签名验证,沿用固定 regular／destructive 值及原生危险样式,签名样板核对别名或样式与公共实现一致
+@raycast/api,ActionPanel.Item.Style.Regular,已签名验证,沿用固定 regular／destructive 值及原生危险样式,签名样板核对别名或样式与公共实现一致
+@raycast/api,ActionPanel.Section,已签名验证,组号通过宿主帧传递,不呈现组标题
+@raycast/api,ActionPanel.Submenu,已签名验证,静态子菜单、有界搜索回调和动态结果,自定义搜索占位等外观属性待验收
+@raycast/api,ActionPanelItem,已签名验证,与 Action 共用同一实现和事件路径,签名样板核对别名或样式与公共实现一致
+@raycast/api,ActionPanelSection,已签名验证,与 ActionPanel.Section 共用同一实现和事件路径,签名样板核对别名或样式与公共实现一致
+@raycast/api,ActionPanelSubmenu,已签名验证,与 ActionPanel.Submenu 共用同一实现和事件路径,签名样板核对别名或样式与公共实现一致
+@raycast/api,PushAction,已签名验证,与 Action.Push 共用同一实现和事件路径,签名样板核对别名或样式与公共实现一致
+@raycast/api,Toast,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,Toast#hide,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,Toast#message,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,Toast#primaryAction,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,Toast#secondaryAction,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,Toast#show,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,Toast#style,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,Toast#title,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,Toast.constructor,已签名验证,会话内显示、更新、撤回及双按钮,每会话一个当前 Toast，非页面命令没有按钮回调通道
+@raycast/api,clearSearchBar,已签名验证,显式导航授权，清除保存的根查询,原生安装版键鼠交互待验收
+@raycast/api,closeMainWindow,已签名验证,显式导航授权及默认／立即／暂缓返回策略,关闭页面终止会话，暂缓返回不保留旧进程
+@raycast/api,confirmAlert,部分兼容,确认／取消的回调和 Promise，保留按钮标题和危险样式,不支持记住选择和自定义图标
+@raycast/api,popToRoot,已签名验证,显式导航授权，可选清除根查询,原生安装版键鼠交互待验收
+@raycast/api,render,部分兼容,旧版入口可在模块求值时挂载 Detail,不支持任意组件类型或 JSX 运行环境以外的入口
+@raycast/api,showHUD,已签名验证,单独提示授权与可选关闭窗口授权,复用 Keylane 提示样式，不保证 Raycast 外观
+@raycast/api,showToast,已签名验证,返回可更新 Toast；支持对象及旧位置参数,每会话一个当前 Toast，页面关闭回收按钮
+@raycast/api,useActionPanel,已签名验证,update(actionPanel) 更新当前页动作,仅挂载在受监督页面
+@raycast/api,useId,已签名验证,真实 React useId，对既有组件的重新渲染保持稳定,仅挂载在受监督页面
+@raycast/api,useNavigation,已签名验证,Push／Pop、父状态、受监督返回,当前宿主只呈现 Detail
+@raycast/utils,showFailureToast,已签名验证,失败样式及选填按钮进入相同 Toast 会话,签名样板核对失败样式、消息与恢复按钮；只覆盖所列子集

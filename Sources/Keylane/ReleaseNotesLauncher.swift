@@ -145,6 +145,7 @@ final class ReleaseNotesLauncher: ObservableObject {
 struct ReleaseNotesBody: View {
     let notes: String?
     var textScale: Double? = nil
+    var allowsLinks = true
 
     var body: some View {
         let body = notes?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -169,7 +170,7 @@ struct ReleaseNotesBody: View {
         }
         .textSelection(.enabled)
         .environment(\.openURL, OpenURLAction { url in
-            ["https", "http"].contains(url.scheme?.lowercased()) ? .systemAction : .discarded
+            allowsLinks && ["https", "http"].contains(url.scheme?.lowercased()) ? .systemAction : .discarded
         })
     }
 

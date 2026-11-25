@@ -4,8 +4,8 @@ import Foundation
 /// It never forwards guest actions, navigation, or callback data.
 package struct RaycastStoreToastState {
     package enum Failure: Error { case denied }
-    package enum Style: String, Decodable { case success = "SUCCESS", failure = "FAILURE", animated = "ANIMATED" }
-    package struct Presentation: Equatable {
+    package enum Style: String, Decodable, Sendable { case success = "SUCCESS", failure = "FAILURE", animated = "ANIMATED" }
+    package struct Presentation: Equatable, Sendable {
         package let title: String
         package let message: String?
         package let style: Style
@@ -41,6 +41,20 @@ package struct RaycastStoreToastState {
             guard owner == ticket, event.id == lastIDs[ticket] else { throw Failure.denied }
         }
         return .init(title: event.title, message: event.message, style: event.style)
+    }
+
+    mutating func withdraw(_ input: String, from ticket: UUID) throws {
+        struct Withdrawal: Decodable {
+            let id: Int
+        }
+        guard input.utf8.count <= 128,
+              let fields = try JSONSerialization.jsonObject(with: Data(input.utf8)) as? [String: Any],
+              Set(fields.keys) == ["operation", "id"], fields["operation"] as? String == "hide",
+              owner == ticket
+        else { throw Failure.denied }
+        let event = try JSONDecoder().decode(Withdrawal.self, from: Data(input.utf8))
+        guard event.id == lastIDs[ticket] else { throw Failure.denied }
+        owner = nil
     }
 
     package mutating func finish(_ ticket: UUID) -> Bool {

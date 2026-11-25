@@ -39,6 +39,16 @@ public actor RaycastStoreInstallCoordinator: RaycastStoreBackend, RaycastStorePr
         public let commandID: String
         public let artifact: RaycastStoreDiskRegistry.LaunchArtifact
         let registry: RaycastStoreDiskRegistry
+        let arguments: [String: String]
+
+        init(installation: RaycastStoreInstallation, commandID: String, artifact: RaycastStoreDiskRegistry.LaunchArtifact,
+             registry: RaycastStoreDiskRegistry, arguments: [String: String] = [:]) {
+            self.installation = installation
+            self.commandID = commandID
+            self.artifact = artifact
+            self.registry = registry
+            self.arguments = arguments
+        }
     }
 
     private let registry: RaycastStoreDiskRegistry
@@ -52,10 +62,10 @@ public actor RaycastStoreInstallCoordinator: RaycastStoreBackend, RaycastStorePr
     }
 
     package init(root: URL, service: any RaycastStoreInstallationService, anchor: any RaycastStoreRegistryAnchor,
-                 requiresExistingRoot: Bool) throws {
+                 requiresExistingRoot: Bool, preferenceVault: MacOSReviewedPreferenceVault? = nil) throws {
         self.service = service
         registry = try RaycastStoreDiskRegistry(root: root, trust: service, anchor: anchor,
-                                              requiresExistingRoot: requiresExistingRoot)
+                                              requiresExistingRoot: requiresExistingRoot, preferenceVault: preferenceVault)
         validateSource = { _ in }
         acquireProject = { source, versions in
             let catalog = RaycastPublicCatalog()
@@ -168,6 +178,15 @@ public actor RaycastStoreInstallCoordinator: RaycastStoreBackend, RaycastStorePr
         let context = try await runContext(installationID: installationID, commandID: commandID)
         try Task.checkCancellation()
         try await service.runCurrent(context)
+    }
+
+    /// Invoke the generation represented by the Launcher declaration. An update
+    /// must never turn a shortcut for an old declaration into a different run.
+    package func launch(_ installation: RaycastStoreInstallation, commandID: String, arguments: [String: String] = [:]) async throws {
+        let artifact = try await registry.validate(installationID: installation.id, generation: installation.generation,
+                                                   commandID: commandID, capabilities: [])
+        try Task.checkCancellation()
+        try await service.runCurrent(.init(installation: installation, commandID: commandID, artifact: artifact, registry: registry, arguments: arguments))
     }
 
     private func installation(id: UUID) async throws -> RaycastStoreInstallation {

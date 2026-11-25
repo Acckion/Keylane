@@ -4,6 +4,7 @@ import Foundation
 /// Inert, versioned build data. Source acquisition/SRI belongs to the Store
 /// source verifier; a build digest is never an installation or execution grant.
 public enum MacOSExtensionBuild {
+    package static let reactViewRuntimeModule = "node_modules/@keylane/reviewed-view/index.cjs"
     public enum Failure: Error, Equatable {
         case recipe, path, collision, limit, project, lifecycle, nativeContent
         case busy, stale, response, integrity, toolchainChanged

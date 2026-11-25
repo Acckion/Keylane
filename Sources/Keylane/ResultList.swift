@@ -1,17 +1,29 @@
 import SwiftUI
 import KeylaneCore
 
+extension EnvironmentValues {
+    @Entry var launcherScrollTopRequest = 0
+}
+
 /// Shared scrolling surface. Secondary screens supply only rows and their empty state.
 struct ResultListScrollView<Content: View>: View {
+    @Environment(\.launcherScrollTopRequest) private var scrollTopRequest
+    @Namespace private var top
     @ViewBuilder let content: () -> Content
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) { content() }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 0).id(top).accessibilityHidden(true)
+                    content()
+                }
                 .padding(.horizontal, VisualStyle.launcherEdgeInset)
                 .padding(.bottom, VisualStyle.launcherEdgeInset)
+            }
+            .launcherScrollInsets()
+            .launcherScrollEdgeFade()
+            .onChange(of: scrollTopRequest) { _, _ in proxy.scrollTo(top, anchor: .top) }
         }
-        .launcherScrollInsets()
-        .launcherScrollEdgeFade()
     }
 }
 

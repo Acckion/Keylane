@@ -4,9 +4,10 @@ import SwiftUI
 struct AIConversationMarkdownBody: View {
     let text: String
     var scale: Double = 1
+    var allowsLinks = true
 
     var body: some View {
-        ReleaseNotesBody(notes: text, textScale: scale)
+        ReleaseNotesBody(notes: text, textScale: scale, allowsLinks: allowsLinks)
             .font(.system(size: 14 * scale))
     }
 }

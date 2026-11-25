@@ -26,7 +26,8 @@ public struct RaycastStoreBuildProject: Sendable {
         target: RaycastStoreBuildDependencies.Target = .linuxArm64
     ) throws {
         let selection = try RaycastStoreBuildDependencies(source: source, supportedRuntimeAPIVersions: supportedRuntimeAPIVersions, target: target)
-        guard Set(tarballs.keys) == Set(selection.packages.map(\.path)) else { throw Failure.archiveSetMismatch }
+        let staging = try MacOSReviewedRaycastViewAdapter.stagingDependencies(for: source.source, target: target, selection: selection)
+        guard Set(tarballs.keys) == Set(staging.archives.map(\.path)) else { throw Failure.archiveSetMismatch }
         guard tarballs.values.reduce(into: 0, { total, body in
             total = min(Self.maxRawBytes + 1, total + min(Self.maxRawBytes + 1, body.count))
         }) <= Self.maxRawBytes else { throw Failure.limit }
@@ -56,11 +57,35 @@ public struct RaycastStoreBuildProject: Sendable {
             guard path.split(separator: "/").allSatisfy({ $0.lowercased() != "node_modules" }) else { throw Failure.conflictingPath }
             try append(path, body: body)
         }
-        for node in selection.packages {
+        for node in staging.archives {
             guard let bytes = tarballs[node.path] else { throw Failure.archiveSetMismatch }
             let archive = try RaycastStoreDependencyArchive(tarball: bytes, node: node, target: target)
+            if target == .macOSArm64,
+               ["node_modules/@keylane/reviewed-assets", "node_modules/@keylane/reviewed-view"]
+                .contains(archive.installationPath.lowercased()) {
+                throw Failure.conflictingPath
+            }
             for (path, body) in archive.files {
                 try append(archive.installationPath + "/" + path, body: body)
+            }
+        }
+        if target == .macOSArm64, let version = selection.runtimeAPIVersion {
+            let reviewed = try MacOSReviewedRaycastCommand.buildEntries(for: source.source, apiVersion: version)
+            if let capabilities = reviewed.first?.capabilities,
+               !capabilities.isDisjoint(with: [MacOSReviewedRaycastAssets.capability, MacOSReviewedRaycastAssets.supportCapability, MacOSReviewedRaycastCache.capability]) {
+                for file in MacOSReviewedRaycastAssets.files { try append(file.path, body: file.body) }
+            }
+            let adapterFiles: [File]
+            if !staging.usesRenderer {
+                adapterFiles = MacOSReviewedRaycastAPI.files
+            } else {
+                guard let license = entries.first(where: { $0.path == "node_modules/react/LICENSE" })?.body else {
+                    throw RaycastStoreDependencyArchive.Failure.integrity
+                }
+                adapterFiles = try MacOSReviewedRaycastViewAdapter.files(retainingLicense: license)
+            }
+            for file in adapterFiles {
+                try append(file.path, body: file.body)
             }
         }
         self.source = source.source

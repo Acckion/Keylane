@@ -1,0 +1,17 @@
+{
+  "fixtureOnly": true,
+  "scope": "M2 native no-view process",
+  "cases": {
+    "normal": true,
+    "exception": true,
+    "digest": true,
+    "helper-digest": true,
+    "replay": true,
+    "timeout": true,
+    "wrongParent": true,
+    "cancel": true,
+    "parent-loss": true,
+    "registry-disable": true
+  },
+  "gate": "incomplete"
+}

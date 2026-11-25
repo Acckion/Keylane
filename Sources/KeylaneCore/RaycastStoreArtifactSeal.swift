@@ -79,7 +79,7 @@ public struct RaycastStoreArtifactSeal: Sendable {
             throw Failure.malformed
         }
         let manifestFiles = project.files.map(\.path).filter { $0.hasPrefix("src/") || $0.hasPrefix("assets/") }
-        let manifest = try RaycastExtensionManifest.readStoreManifest(manifestData, files: Set(manifestFiles))
+        let manifest = try manifest(manifestData, files: Set(manifestFiles), source: source, apiVersion: project.runtimeAPIVersion)
         guard manifest.name == source.slug, RaycastPublicCatalog.declaresMacOS(manifest.platforms) else { throw Failure.identity }
         guard (1...256).contains(built.count), built.count == manifest.commands.count,
               built.reduce(0, { $0 + min(Self.limit, $1.artifact.count) }) <= 12 * 1024 * 1024 else { throw Failure.limit }
@@ -157,7 +157,12 @@ public struct RaycastStoreArtifactSeal: Sendable {
         guard payload.manifestFiles.count <= 2_048, Set(payload.manifestFiles).count == payload.manifestFiles.count,
               payload.capabilities.count <= 128, Set(payload.capabilities).count == payload.capabilities.count,
               payload.capabilities.allSatisfy(Self.safeToken), (1...256).contains(payload.commands.count) else { throw Failure.limit }
-        let manifest = try RaycastExtensionManifest.readStoreManifest(payload.manifest, files: Set(payload.manifestFiles))
+        if recipe.buildRecipe != nil, let version = payload.apiVersion {
+            let reviewed = try MacOSReviewedRaycastCommand.buildEntries(for: source, apiVersion: version)
+            guard let capabilities = reviewed.first?.capabilities,
+                  Set(payload.capabilities).isSubset(of: capabilities) else { throw Failure.recipe }
+        }
+        let manifest = try manifest(payload.manifest, files: Set(payload.manifestFiles), source: source, apiVersion: payload.apiVersion, sealedEntries: Set(payload.commands.map(\.receipt.provenance.entry)))
         guard manifest.name == source.slug, RaycastPublicCatalog.declaresMacOS(manifest.platforms) else { throw Failure.identity }
         let expected = Set(manifest.commands.map(\.entry))
         var entries = Set<String>()
@@ -180,6 +185,15 @@ public struct RaycastStoreArtifactSeal: Sendable {
         } else if payload.build != nil { throw Failure.recipe }
         return manifest
     }
+    private func manifest(_ data: Data, files: Set<String>, source: RaycastStoreSource,
+                          apiVersion: String?, sealedEntries: Set<String>? = nil) throws -> RaycastExtensionManifest {
+        if recipe.buildRecipe != nil {
+            return try MacOSReviewedRaycastCommand.manifest(data: data, files: files, source: source, apiVersion: apiVersion,
+                                                         sealedEntries: sealedEntries)
+        }
+        return try .readStoreManifest(data, files: files)
+    }
+
     private func manifestFilesContainResources(_ payload: Payload) -> Bool {
         let resources = Set(payload.build?.resources.map(\.path) ?? [])
         return payload.manifestFiles.filter { $0.hasPrefix("assets/") }.allSatisfy(resources.contains)

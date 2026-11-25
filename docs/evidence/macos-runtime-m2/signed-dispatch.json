@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "phase": "M2-signed-service-dispatch",
+  "cases": {
+    "approvalReplayRejected": true,
+    "enrolled": true,
+    "competingServiceDenied": true,
+    "signedProfileDispatch": true,
+    "fixturesExited": true,
+    "cleaned": true
+  },
+  "productionRuntimeReady": false,
+  "publicExtensionsVerified": false,
+  "protectedStorage": "data-protection-keychain-v2",
+  "provisionedFixtureOnly": true,
+  "signaturesVerifiedBeforeAndAfter": true,
+  "temporaryArtifactsRemoved": true,
+  "gate": "incomplete"
+}

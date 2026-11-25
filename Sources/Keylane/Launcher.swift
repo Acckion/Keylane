@@ -335,6 +335,7 @@ struct Launcher: View {
         .clipShape(RoundedRectangle(cornerRadius: VisualStyle.launcherCornerRadius, style: .continuous))
         .keylaneTheme(backgroundOpacity: model.launcherBackdropOpacity)
         .preferredColorScheme(model.colorScheme)
+        .environment(\.launcherScrollTopRequest, model.launcherScrollTopRequest)
     }
 
     private var observedSurface: some View {
@@ -410,6 +411,10 @@ struct Launcher: View {
         .onReceive(NotificationCenter.default.publisher(for: .launcherShown)) { _ in
             if launcherVisible && presentation.page == model.pageID { closeMenus() }
             updatePresentation(visible: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherClearSavedSearch)) { _ in
+            mainSearchQuery = ""
+            mainSearchSelection = .init()
         }
         .onReceive(NotificationCenter.default.publisher(for: .launcherResetSearch)) { _ in
             pageHistory = .init()
@@ -1193,6 +1198,7 @@ struct Launcher: View {
         } else {
             items = root
         }
+        if !applicationMenu, currentSubmenu(root: root)?.search != nil { return items }
         return items.filter {
             actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery)
                 || $0.value?.localizedCaseInsensitiveContains(actionQuery) == true
@@ -1239,6 +1245,9 @@ struct Launcher: View {
             query: Binding(get: { actionQuery }, set: { query in
                 guard actionQuery != query else { return }
                 actionQuery = query; actionSelectionID = nil
+                if !applicationMenu {
+                    currentSubmenu(root: rootMenuItems(applicationMenu: false))?.search?(query)
+                }
             }), focusToken: focusToken, wantsFocus: actions || appMenu, navigation: model.navigation,
             activate: { activateMenuItem($0, applicationMenu: applicationMenu, focus: focus) },
             highlight: { if focus == focusToken { actionSelectionID = $0 } },
@@ -1289,7 +1298,7 @@ struct Launcher: View {
 
     private var primaryActionEnabled: Bool {
         guard presentation.page == model.pageID else { return false }
-        if argumentTarget != nil { return true }
+        if let target = argumentTarget { return target.singleValueLabel == nil || target.allowsEmptyValue || !argumentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if rootScriptArguments != nil { return true }
         if let snapshot = pageActionSnapshot { return snapshot.primary.enabled }
         if model.pageID == .root || showsFileResults {
@@ -1300,7 +1309,7 @@ struct Launcher: View {
     }
 
     private var primaryTitle: String {
-        if argumentTarget != nil { return "启动新实例" }
+        if let target = argumentTarget { return target.singleValueLabel == nil ? "启动新实例" : "运行" }
         if rootScriptArguments != nil { return "运行脚本" }
         if let snapshot = pageActionSnapshot { return snapshot.footerTitle ?? snapshot.primary.title }
         if let title = page?.primaryTitle?() { return title }
@@ -1330,15 +1339,15 @@ struct Launcher: View {
         }) {
             Text(target.title).foregroundStyle(.secondary)
         } fields: {
-            LauncherCreationField("启动参数", detail: "参数是否生效取决于目标应用；不会通过 Shell 执行。") {
+            LauncherCreationField(target.singleValueLabel ?? "启动参数", detail: target.singleValueLabel == nil ? "参数是否生效取决于目标应用；不会通过 Shell 执行。" : nil) {
                 VStack(alignment: .leading, spacing: 8) {
                     LauncherCreationControl(focused: argumentsFocused) {
-                        TextField("例如：--profile \"Work Profile\"", text: $argumentText)
+                        TextField(target.singleValueLabel ?? target.argumentHint ?? "例如：--profile \"Work Profile\"", text: $argumentText)
                             .textFieldStyle(.plain)
                             .focused($argumentsFocused)
                             .onSubmit { run() }
                     }
-                    if let arguments = try? ArgumentParser.parse(argumentText), !arguments.isEmpty {
+                    if target.singleValueLabel == nil, let arguments = try? ArgumentParser.parse(argumentText), !arguments.isEmpty {
                         Text(arguments.enumerated().map { "[\($0.offset)] \($0.element)" }.joined(separator: "\n"))
                             .font(.system(.body, design: .monospaced))
                             .textSelection(.enabled)
@@ -1387,6 +1396,11 @@ struct Launcher: View {
             return
         }
         if let target = argumentTarget {
+            if target.singleValueLabel != nil {
+                let value = argumentText.trimmingCharacters(in: .whitespacesAndNewlines)
+                target.submit(value.isEmpty ? [] : [value])
+                return
+            }
             do { target.submit(try ArgumentParser.parse(argumentText)) }
             catch { model.error = "参数引号或转义未完成。" }
             return
@@ -1400,6 +1414,17 @@ struct Launcher: View {
     private func performRootEntry(_ row: Entry) {
         if row.id == CalculatorLauncherModule.resultID.rawValue, row.detail == CalculatorLauncherModule.colorDetail {
             toggleMenu(application: false)
+        } else if let reviewed = MacOSReviewedRaycastCommand.entry(forCommandID: row.commandID.rawValue), let argument = reviewed.argument {
+            argumentText = ""
+            argumentTarget = .init(title: row.name, singleValueLabel: reviewed.argumentNames.count > 1 ? nil
+                                   : (argument == "uuid" ? "输入要格式化的 UUID" : (argument == "typeID" ? "输入 TypeID" : (argument == "text" ? "输入要转换的文本" : "生成数量（可选）"))),
+                                   allowsEmptyValue: reviewed.argumentIsOptional,
+                                   argumentHint: reviewed.argumentNames.count > 1 ? "前缀 UUID（用空格分隔）" : nil) { arguments in
+                if model.runCommand(row.commandID, origin: .search, usageKey: row.id, arguments: arguments) {
+                    dismissArgumentEditor()
+                    focusToken += 1
+                }
+            }
         } else {
             model.perform(row)
         }

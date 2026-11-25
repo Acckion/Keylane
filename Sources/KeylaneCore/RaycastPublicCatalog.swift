@@ -107,6 +107,9 @@ public struct RaycastPublicCatalog {
     /// Resolve the extension subtree from the selected immutable official commit.
     /// This reads source bytes only; it never invokes npm or an extension entry point.
     public func loadSnapshot(_ source: RaycastStoreSource) async throws -> RaycastStoreSnapshot {
+        if MacOSReviewedRaycastCommand.supports(source) {
+            return try MacOSReviewedRaycastCommand.snapshot(for: source)
+        }
         let root = try await tree(source.revision)
         guard let folder = root.tree.first(where: { $0.path == "extensions" && $0.type == "tree" }),
               Self.isRevision(folder.sha) else { throw Failure.malformedIndex }
@@ -125,7 +128,14 @@ public struct RaycastPublicCatalog {
         let url = path.split(separator: "/").reduce(snapshot.source.sourceURL) {
             $0.appendingPathComponent(String($1))
         }
-        let bytes = try await download(url, maxBytes: file.byteCount)
+        let bytes: Data
+        do {
+            bytes = try await download(url, maxBytes: file.byteCount)
+        } catch Failure.rateLimited {
+            guard path == "package.json", let cached = MacOSReviewedRaycastCommand.cachedManifest(for: snapshot.source)
+            else { throw Failure.rateLimited }
+            bytes = cached
+        }
         guard file.verifies(bytes) else { throw Failure.unexpectedResponse }
         return bytes
     }
@@ -138,7 +148,8 @@ public struct RaycastPublicCatalog {
     ) async throws -> RaycastStoreBuildProject {
         let selection = try RaycastStoreBuildDependencies(source: source, supportedRuntimeAPIVersions: supportedRuntimeAPIVersions, target: target)
         var archives: [String: Data] = [:], remaining = 32 * 1024 * 1024
-        for node in selection.packages {
+        let staging = try MacOSReviewedRaycastViewAdapter.stagingDependencies(for: source.source, target: target, selection: selection)
+        for node in staging.archives {
             try Task.checkCancellation()
             guard remaining > 0, let url = node.registryTarball else { throw Failure.oversized }
             let bytes = try await download(url, maxBytes: min(remaining, 16 * 1024 * 1024))

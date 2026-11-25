@@ -72,7 +72,10 @@ import KeylaneCore
             } catch { denied = true }
             emit(["foreignLegacyReadableByHost":legacyReadable,"foreignProfileRejected":denied]); return
         }
-        if mode == "setup" {
+        if mode == "setup" || mode == "runtime-setup" {
+            if mode == "runtime-setup" {
+                try MacOSBuildProfile.verifyRuntimeConfiguration(application: .main, hostIdentifier: hostID)
+            }
             let approval = try MacOSBuildProfile.Approval(userConfirmed:true)
             // Intent precedes ANY native Keychain write. Keep this signed app if
             // deletion fails; never erase the recovery identity after a failure.
@@ -85,10 +88,22 @@ import KeylaneCore
         }
         let ids = try JSONDecoder().decode([UUID].self,from:Data(contentsOf:intent))
         if mode == "cleanup" {
-            for id in ids { for suffix in ["head","profile"] { for q in [query(id,suffix:suffix),legacyQuery(id,suffix:suffix)] {
-                let result = SecItemDelete(q as CFDictionary)
-                guard result == errSecSuccess || result == errSecItemNotFound else { emit(["cleanupFailed":true]); exit(74) }
-            } } }
+            let manifest = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/ExtensionBuild.json")
+            let configuration = try JSONDecoder().decode(MacOSBuildProfile.Configuration.self, from: Data(contentsOf: manifest))
+            for id in ids {
+                for suffix in ["head", "profile"] {
+                    var queries = [query(id, suffix: suffix), legacyQuery(id, suffix: suffix)]
+                    if configuration.storage == "legacy-login-keychain-preview-v1" {
+                        var preview = legacyQuery(id, suffix: suffix)
+                        preview[kSecAttrService as String] = "org.keylane.extension-build.legacy-preview.v1." + signingTeam() + "." + hostID
+                        queries = [preview]
+                    }
+                    for query in queries {
+                        let result = SecItemDelete(query as CFDictionary)
+                        guard result == errSecSuccess || result == errSecItemNotFound else { emit(["cleanupFailed": true]); exit(74) }
+                    }
+                }
+            }
             try FileManager.default.removeItem(at:intent); emit(["cleaned":true]); return
         }
         guard !ids.isEmpty else { exit(71) }; let id = ids[0]
@@ -115,7 +130,83 @@ import KeylaneCore
             do { _ = try MacOSBuildProfile.open(id:id,application:.main,hostIdentifier:hostID) } catch { denied = true }
             emit(["tamperedToolchainRejected":denied]); return
         }
+        if mode == "official-lorem-markdown" || mode == "official-lorem-markdown-restart" {
+            try await exerciseOfficialLoremMarkdown(profileID: id, restarting: mode.hasSuffix("-restart"))
+            return
+        }
+        if mode == "official-silent-mention" || mode == "official-silent-mention-restart" {
+            try await exerciseOfficialSilentMention(profileID: id, restarting: mode.hasSuffix("-restart"))
+            return
+        }
+        if mode == "official-uuid-run" || mode == "official-uuid-restart" {
+            try await exerciseOfficialUUID(profileID: id, restarting: mode == "official-uuid-restart")
+            return
+        }
         let profile = try MacOSBuildProfile.open(id:id,application:.main,hostIdentifier:hostID)
+        if mode == "batch-02-protected-vault" {
+            guard let vault = profile.preferenceVault else { exit(70) }
+            let installation = UUID()
+            let field = RaycastStorePreferenceKey(scope: .extensionWide, name: "test")
+            let encrypted = try vault.seal([field: "synthetic"], installationID: installation)
+            let second = try MacOSBuildProfile.open(id: id, application: .main, hostIdentifier: hostID)
+            let reopened = try second.preferenceVault?.open(encrypted, installationID: installation)
+            var wrongInstallationRejected = false
+            do { _ = try vault.open(encrypted, installationID: UUID()) }
+            catch { wrongInstallationRejected = true }
+            emit(["protectedCredentialKeyReopened": reopened == [field: "synthetic"], "credentialCiphertextBoundToInstallation": wrongInstallationRejected])
+            return
+        }
+        if mode == "batch-02-file-build" {
+            let service = try MacOSSignedBuildService(profile: profile)
+            let builder = try MacOSExtensionBuild.Coordinator(expected: profile.configuration.recipe, service: service)
+            let source = """
+            import { readFileSync } from "fs";
+            import { readFile, writeFile } from "node:fs/promises";
+            export default async () => {
+                await writeFile("/support/data.txt", readFileSync("/assets/data.txt"));
+                return await readFile("/support/data.txt", "utf8");
+            }
+            """
+            let entry = "src/main.js"
+            let files = (MacOSReviewedRaycastAssets.files + MacOSReviewedRaycastAPI.files).map { MacOSExtensionBuild.File(path: $0.path, body: $0.body) }
+                + [.init(path: "package.json", body: Data("{}".utf8)), .init(path: entry, body: Data(source.utf8)),
+                   .init(path: "assets/data.txt", body: Data("fixture".utf8))]
+            let plan = try MacOSExtensionBuild.Plan(files: files, entries: [entry])
+            let artifact = try await builder.build(plan) { true }
+            emit(["signedVirtualFileImportsBuilt": artifact.commands.map(\.path) == [entry]
+                  && artifact.resources.map(\.path) == ["assets/data.txt"]])
+            return
+        }
+        if mode == "batch-03-view-build" {
+            let service = try MacOSSignedBuildService(profile: profile)
+            let builder = try MacOSExtensionBuild.Coordinator(expected: profile.configuration.recipe, service: service)
+            let entry = "src/main.tsx"
+            let source = try Data(contentsOf: task.appendingPathComponent("batch-03-view.tsx"))
+            var files: [MacOSExtensionBuild.File] = [
+                .init(path: "package.json", body: Data(#"{"name":"first-party-react"}"#.utf8)),
+                .init(path: entry, body: source),
+            ]
+            var license: Data?
+            for node in MacOSReviewedRaycastViewAdapter.dependencies {
+                let data = try Data(contentsOf: task.appendingPathComponent(node.name + ".tgz"))
+                let archive = try RaycastStoreDependencyArchive(tarball: data, node: node, target: .macOSArm64)
+                if node.name == "react" { license = archive.files["LICENSE"] }
+                files += archive.files.map { .init(path: archive.installationPath + "/" + $0.key, body: $0.value) }
+            }
+            guard let license else { throw CocoaError(.fileReadCorruptFile) }
+            files += try MacOSReviewedRaycastViewAdapter.files(retainingLicense: license).map {
+                .init(path: $0.path, body: $0.body)
+            }
+            let plan = try MacOSReviewedRaycastViewAdapter.plan(files: files, entries: [entry])
+            let artifact = try await builder.build(plan) { true }
+            guard artifact.commands.map(\.path) == [entry],
+                  let javascript = String(data: artifact.commands[0].body, encoding: .utf8) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            emit(["signedReactViewBuilt": javascript.contains("__keylaneCommandExports") && javascript.contains("onEvent"),
+                  "builtReactPreservesMITNotice": javascript.contains("Permission is hereby granted, free of charge")])
+            return
+        }
         if mode == "hold-build-lock" {
             let fd = try profile.acquireBuildLock(); defer { flock(fd, LOCK_UN); close(fd) }
             try FileHandle.standardOutput.write(contentsOf:Data("{\"lockHeld\":true}\n".utf8))
@@ -134,6 +225,50 @@ import KeylaneCore
         let service = try MacOSStoreBuildInstallationService(profile:profile)
         let backend = try RaycastStoreInstallCoordinator(root:profile.root,service:service,anchor:profile.anchor,requiresExistingRoot:true,
             acquireProject: { source,_ in try project(source) })
+        if mode == "runtime-service" {
+            let installer = RaycastStoreInstaller(backend: backend)
+            var unsupportedCommandDenied = false
+            do { _ = try await installer.prepareAndInstall(source("a")) }
+            catch RaycastStoreInstaller.Failure.noRunnableCommands {
+                unsupportedCommandDenied = try await backend.installations().isEmpty
+            }
+            let installed = try await installer.prepareAndInstall(source("f"))
+            let commandID = installed.manifest.commands[0].id
+            let readiness = try await backend.launchReadiness(installationID: installed.id, commandID: commandID)
+            try await backend.launch(installed, commandID: commandID)
+            _ = try await backend.setEnabled(installationID: installed.id, enabled: false)
+            _ = try await backend.setEnabled(installationID: installed.id, enabled: true)
+            var staleLauncherCommandDenied = false
+            do { try await backend.launch(installed, commandID: commandID) }
+            catch RaycastStoreDiskRegistry.Failure.stale { staleLauncherCommandDenied = true }
+            var competingHostDenied = false
+            do { _ = try MacOSStoreBuildInstallationService(profile: profile) }
+            catch RaycastStoreDiskRegistry.Failure.busy { competingHostDenied = true }
+            emit(["signedProfileDispatch": readiness == .ready, "competingServiceDenied": competingHostDenied,
+                  "staleLauncherCommandDenied": staleLauncherCommandDenied,
+                  "unsupportedCommandDeniedBeforeInstall": unsupportedCommandDenied])
+            return
+        }
+        if mode == "runtime-restart" {
+            let installer = RaycastStoreInstaller(backend: backend)
+            let list = try await installer.refreshInstalled()
+            guard list.count == 1, let installed = list.first,
+                  installed.source == (try source("f")), let command = installed.manifest.commands.first else { exit(70) }
+            try await installer.launch(slug: installed.source.slug, commandID: command.id)
+            try await installer.setEnabled(slug: installed.source.slug, enabled: false)
+            let disabled = try await installer.launchReadiness(slug: installed.source.slug, commandID: command.id)
+            try await installer.setEnabled(slug: installed.source.slug, enabled: true)
+            try await installer.launch(slug: installed.source.slug, commandID: command.id)
+            try await installer.uninstall(slug: installed.source.slug)
+            let empty = try await backend.installations().isEmpty
+            emit(["restartDispatch": true, "disabledCommandDenied": disabled != .ready, "uninstallRecorded": empty])
+            return
+        }
+        if mode == "runtime-after-uninstall" {
+            let empty = try await RaycastStoreInstaller(backend: backend).refreshInstalled().isEmpty
+            emit(["uninstallPersistsAfterRestart": empty])
+            return
+        }
         if mode == "build" {
             let first = try source("a"), second = try source("b")
             let installer = RaycastStoreInstaller(backend:backend)
@@ -235,20 +370,163 @@ import KeylaneCore
         }
         exit(71)
     }
-    static func query(_ id: UUID, suffix: String) -> [String:Any] {
+    static func signingTeam() -> String {
         var code: SecCode?, staticCode: SecStaticCode?, information: CFDictionary?
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
               SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode,
               SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue:kSecCSSigningInformation), &information) == errSecSuccess,
               let info = information as? [String:Any], let team = info[kSecCodeInfoTeamIdentifier as String] as? String else { exit(71) }
+        return team
+    }
+    static func query(_ id: UUID, suffix: String) -> [String:Any] {
         return [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"org.keylane.extension-build.protected.v2",
                 kSecAttrAccount as String:id.uuidString+":"+suffix,kSecUseAuthenticationUI as String:kSecUseAuthenticationUIFail,
-                kSecAttrSynchronizable as String:false,kSecUseDataProtectionKeychain as String:true,kSecAttrAccessGroup as String:team+"."+hostID]
+                kSecAttrSynchronizable as String:false,kSecUseDataProtectionKeychain as String:true,kSecAttrAccessGroup as String:signingTeam()+"."+hostID]
     }
     static func legacyQuery(_ id: UUID, suffix: String) -> [String:Any] {
         [kSecClass as String:kSecClassGenericPassword,kSecAttrService as String:"org.keylane.extension-build.protected.v1",
          kSecAttrAccount as String:id.uuidString+":"+suffix,kSecUseAuthenticationUI as String:kSecUseAuthenticationUIFail]
     }
+    @MainActor
+    static func exerciseOfficialUUID(profileID: UUID, restarting: Bool) async throws {
+        let slug = "uuid-generator"
+        let revision = "886cbd73fe377ad1d8f0c17083e6cd4c96748a33"
+        let source = try RaycastStoreSource(slug: slug, catalog: .init(revision: revision, slugs: [slug]))
+        var clipboardEffects: [String] = []
+        var toastEffects: [String] = []
+        let backend = try await MacOSStoreBuildInstallationService.open(
+            id: profileID, application: .main, hostIdentifier: hostID,
+            deliver: { presentation in
+                switch presentation {
+                case .diagnostics, .openPreferences, .clearSearch, .popToRoot, .closeWindow: break
+                case .copy(let text): clipboardEffects.append(text)
+                case .toast(let toast): toastEffects.append(toast.title)
+                }
+            }, requiresRuntime: true
+        )
+        let installed: RaycastStoreInstallation
+        if restarting {
+            guard let receipt = try await backend.installation(for: slug) else { exit(70) }
+            installed = receipt
+        } else {
+            let artifact = try await backend.prepare(source)
+            installed = try await backend.install(artifact)
+        }
+        guard installed.source == source, installed.enabled,
+              let command = installed.manifest.commands.first(where: { $0.name == "formatUuid" }),
+              Set(installed.manifest.commands.map(\.name)) == ["formatUuid", "packTypeID", "parseTypeID"] else { exit(70) }
+        var missingArgumentRejected = false
+        do {
+            try await backend.launch(installed, commandID: command.id, arguments: [:])
+        } catch MacOSExtensionRunAdmission.Failure.unsupportedCommand {
+            missingArgumentRejected = clipboardEffects.isEmpty && toastEffects.isEmpty
+        }
+        let arguments = ["uuid": "550e8400e29b41d4a716446655440000"]
+        try await backend.launch(installed, commandID: command.id, arguments: arguments)
+        let formatted = "550e8400-e29b-41d4-a716-446655440000"
+        let copyVerified = clipboardEffects == [formatted]
+        let feedbackVerified = toastEffects.count == 1 && toastEffects[0].contains(formatted)
+        guard let pack = installed.manifest.commands.first(where: { $0.name == "packTypeID" }),
+              let parse = installed.manifest.commands.first(where: { $0.name == "parseTypeID" }) else { exit(70) }
+        let uuid = "0195b514-74a3-7250-b9bb-70e07500ed8b"
+        let typeID = "doctor_01jpth8x53e98bkevgw1tg1vcb"
+        try await backend.launch(installed, commandID: pack.id, arguments: ["suffix": "doctor", "uuid": uuid])
+        try await backend.launch(installed, commandID: parse.id, arguments: ["typeID": typeID])
+        let conversionsVerified = Array(clipboardEffects.dropFirst()) == [typeID, uuid]
+        if restarting {
+            try await backend.uninstall(installationID: installed.id)
+            let receipts = try await backend.installations()
+            emit(["officialUUIDRestartAndUninstall": copyVerified && feedbackVerified && conversionsVerified && receipts.isEmpty])
+        } else {
+            emit(["officialUUIDInstalledAndRan": copyVerified && feedbackVerified && conversionsVerified,
+                  "officialUUIDMissingArgumentRejected": missingArgumentRejected])
+        }
+    }
+
+    @MainActor
+    static func exerciseOfficialSilentMention(profileID: UUID, restarting: Bool) async throws {
+        guard let entry = MacOSReviewedRaycastCommand.entry(forSlug: "silent-mention") else { exit(70) }
+        let source = try RaycastStoreSource(slug: entry.slug, catalog: .init(revision: entry.revision, slugs: [entry.slug]))
+        var copies: [String] = []
+        var titles: [String] = []
+        let backend = try await MacOSStoreBuildInstallationService.open(
+            id: profileID, application: .main, hostIdentifier: hostID,
+            deliver: { effect in
+                switch effect {
+                case .diagnostics, .openPreferences, .clearSearch, .popToRoot, .closeWindow: break
+                case .copy(let text): copies.append(text)
+                case .toast(let toast): titles.append(toast.title)
+                }
+            }, requiresRuntime: true)
+        let receipt = try await officialInstallation(source, backend: backend, restarting: restarting)
+        let activated = Set(receipt.manifest.commands.map(\.name)) == ["copy-zero-width-space", "index"]
+        guard let textCommand = receipt.manifest.commands.first(where: { $0.name == "index" }) else { exit(70) }
+        try await backend.launch(receipt, commandID: entry.commandID)
+        try await backend.launch(receipt, commandID: textCommand.id, arguments: ["text": "@keylane #mac"])
+        let verified = activated && copies == ["\u{2060}", "@\u{2060}keylane #\u{2060}mac"] &&
+            titles == ["Copied to clipboard!", "Copied to clipboard!"]
+        try await emitOfficialLifecycle(verified, name: "officialSilentMention", receipt: receipt, backend: backend, restarting: restarting)
+    }
+
+    @MainActor
+    static func exerciseOfficialLoremMarkdown(profileID: UUID, restarting: Bool) async throws {
+        guard let entry = MacOSReviewedRaycastCommand.entry(forSlug: "lorem-ipsum") else { exit(70) }
+        let source = try RaycastStoreSource(slug: entry.slug, catalog: .init(revision: entry.revision, slugs: [entry.slug]))
+        var effects: [String] = []
+        let deliver: MacOSNoViewCapabilities.Presenter = { effect in
+                switch effect {
+                case .diagnostics, .openPreferences, .clearSearch, .popToRoot: break
+                case .closeWindow(let clear, _): effects.append("close:" + String(clear))
+                case .copy(let text): effects.append(text)
+                case .toast(let toast): effects.append(toast.title)
+                }
+        }
+        let backend = try await MacOSStoreBuildInstallationService.open(
+            id: profileID, application: .main, hostIdentifier: hostID, deliver: deliver, requiresRuntime: true)
+        let receipt = try await officialInstallation(source, backend: backend, restarting: restarting)
+        let names = Set(["markdown", "html", "paragraphs", "sentences", "words"])
+        var observed = Set<String>()
+        for command in receipt.manifest.commands {
+            effects.removeAll()
+            let countField = MacOSReviewedRaycastCommand.entry(forCommandID: command.id)?.argument
+            let arguments = countField.map { [$0: "3"] } ?? [:]
+            try await backend.launch(receipt, commandID: command.id, arguments: arguments)
+            guard effects.count == 3, effects.first == "close:true", !effects[1].isEmpty,
+                  effects.last == "Copied to clipboard! 📋" else { continue }
+            if command.name == "markdown", !effects[1].contains("# ") { continue }
+            if command.name == "html", !effects[1].contains("<") { continue }
+            if command.name == "words", effects[1].split(separator: " ").count != 3 { continue }
+            if countField != nil {
+                effects.removeAll()
+                try await backend.launch(receipt, commandID: command.id)
+                guard effects.count == 3, !effects[1].isEmpty, effects.last == "Copied to clipboard! 📋" else { continue }
+            }
+            observed.insert(command.name)
+        }
+        let verified = observed == names && Set(receipt.manifest.commands.map(\.name)) == names
+        try await emitOfficialLifecycle(verified, name: "officialLoremMarkdown", receipt: receipt, backend: backend, restarting: restarting)
+    }
+
+    static func officialInstallation(_ source: RaycastStoreSource, backend: RaycastStoreInstallCoordinator,
+                                     restarting: Bool) async throws -> RaycastStoreInstallation {
+        if restarting {
+            guard let receipt = try await backend.installation(for: source.slug), receipt.source == source, receipt.enabled else { exit(70) }
+            return receipt
+        }
+        return try await backend.install(backend.prepare(source))
+    }
+
+    static func emitOfficialLifecycle(_ verified: Bool, name: String, receipt: RaycastStoreInstallation,
+                                      backend: RaycastStoreInstallCoordinator, restarting: Bool) async throws {
+        if restarting {
+            try await backend.uninstall(installationID: receipt.id)
+            let removed = try await backend.installation(for: receipt.source.slug) == nil
+            emit([name + "RestartAndUninstall": verified && removed])
+        } else {
+            emit([name + "InstalledAndRan": verified])
+        }
+    }
+
     static func source(_ digit: String) throws -> RaycastStoreSource {
         try .init(slug:"m1-product-fixture",catalog:.init(revision:String(repeating:digit,count:40),slugs:["m1-product-fixture"]))
     }
@@ -258,6 +536,11 @@ import KeylaneCore
             "src/main.ts":Data("import {answer} from './value';globalThis.answer=answer;".utf8),
             "src/value.ts":Data("export const answer:number=42;".utf8),
             "assets/icon.txt":Data(source.revision.utf8), "LICENSE":Data("Self-authored test fixture".utf8)]
+        if source.revision.first == "f", let manifest = files["package.json"],
+           var metadata = try JSONSerialization.jsonObject(with: manifest) as? [String: Any] {
+            metadata.removeValue(forKey: "preferences")
+            files["package.json"] = try JSONSerialization.data(withJSONObject: metadata)
+        }
         if source.revision.first == "d" {
             files["src/main.ts"] = Data((0..<150000).map { "export const value\($0)=\($0);" }.joined(separator:"\n").utf8)
         }

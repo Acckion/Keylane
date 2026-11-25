@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "phase": "M2-signed-service-dispatch",
+  "cases": {
+    "approvalReplayRejected": true,
+    "enrolled": true,
+    "credentialCiphertextBoundToInstallation": true,
+    "protectedCredentialKeyReopened": true,
+    "signedVirtualFileImportsBuilt": true,
+    "competingServiceDenied": true,
+    "signedProfileDispatch": true,
+    "staleLauncherCommandDenied": true,
+    "unsupportedCommandDeniedBeforeInstall": true,
+    "disabledCommandDenied": true,
+    "restartDispatch": true,
+    "uninstallRecorded": true,
+    "uninstallPersistsAfterRestart": true,
+    "fixturesExited": true,
+    "cleaned": true
+  },
+  "productionRuntimeReady": false,
+  "publicExtensionsVerified": false,
+  "protectedStorage": "data-protection-keychain-v2",
+  "provisionedFixtureOnly": true,
+  "signaturesVerifiedBeforeAndAfter": true,
+  "temporaryArtifactsRemoved": true,
+  "gate": "incomplete"
+}

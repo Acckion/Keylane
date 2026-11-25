@@ -53,7 +53,7 @@ enum AppUtilitiesModule {
             command("send-keylane-feedback", "发送 Keylane 反馈", "exclamationmark.bubble", ["Send Feedback", "报告问题"],
                     action: KeylaneToolActions.sendFeedback),
             command("share-keylane", "分享 Keylane", "square.and.arrow.up", ["Share Keylane"], action: KeylaneToolActions.share),
-            placeholder("keylane-extension-store", "扩展商店", "bag", "Store"),
+            model.extensionStore.command,
             .init(declaration: .init(id: .init(rawValue: "screenshot"), title: "Screenshot / 截图", detail: "截取屏幕区域",
                                      symbol: "camera.viewfinder", keywords: ["屏幕截取", "截屏"], destination: .action,
                                      settingsPage: "keylane.app-utilities"),
@@ -82,7 +82,7 @@ enum AppUtilitiesModule {
             return AnyView(KeylaneToolPreferences(model: model, camera: camera, commands: commands))
         })
         return LauncherModule(id: .init(rawValue: settingsID), title: "Keylane 工具", symbol: "wrench.and.screwdriver",
-                              commands: commands, pages: releaseNotes.pages + [cameraPage(model: model, permission: cameraPermission)],
+                              commands: commands, pages: releaseNotes.pages + [cameraPage(model: model, permission: cameraPermission), model.extensionStore.page(model: model)],
                               settings: [settings], services: [.init(start: { [weak model] in
             capture.startObserving()
             windowCapture.startObserving()

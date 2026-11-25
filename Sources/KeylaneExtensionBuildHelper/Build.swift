@@ -122,9 +122,18 @@ private final class Supervisor: @unchecked Sendable {
             // Output names are outside src/assets/node_modules and reserved in
             // the input validation below, so source cannot prepopulate them.
             guard !request.plan.files.contains(where: { $0.path == out || $0.path == meta }) else { throw Build.Failure.collision }
-            let arguments = [compiler.path, "./" + entry, "--bundle", "--platform=neutral", "--format=iife",
-                             "--charset=utf8", "--main-fields=module,main", "--tsconfig-raw={}", "--log-level=error",
+            var arguments = [compiler.path, "./" + entry, "--bundle", "--platform=neutral", "--format=iife",
+                             "--global-name=__keylaneCommandExports", "--charset=utf8", "--main-fields=module,main", "--tsconfig-raw={}", "--log-level=error",
                              "--legal-comments=inline", "--outfile=" + out, "--metafile=" + meta]
+            if request.plan.files.contains(where: { $0.path == Build.reactViewRuntimeModule }) {
+                arguments += ["--jsx=automatic", #"--define:process.env.NODE_ENV="production""#]
+            }
+            if request.plan.files.contains(where: { $0.path == "node_modules/@keylane/reviewed-assets/index.js" }) {
+                for name in ["fs", "node:fs"] {
+                    arguments.append("--alias:" + name + "=./node_modules/@keylane/reviewed-assets/index.js")
+                    arguments.append("--alias:" + name + "/promises=./node_modules/@keylane/reviewed-assets/promises.js")
+                }
+            }
             let pid = try supervisor.spawn {
                 var actions: posix_spawn_file_actions_t?, attributes: posix_spawnattr_t?
                 guard posix_spawn_file_actions_init(&actions) == 0 else { throw Build.Failure.project }

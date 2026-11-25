@@ -25,10 +25,14 @@ struct LauncherAction: Identifiable {
     struct Submenu {
         let title: String
         let items: [LauncherAction]
+        var search: ((String) -> Void)? = nil
     }
 
     struct ArgumentForm {
         let title: String
+        var singleValueLabel: String? = nil
+        var allowsEmptyValue = false
+        var argumentHint: String? = nil
         let submit: ([String]) -> Void
     }
 
