@@ -51,6 +51,7 @@ final class LauncherCommandSearch {
     private var preparedNames: [String: SearchRanker.Name] = [:]
 
     struct Diagnostics {
+        var prepared = 0
         var scored = 0
         var reused = 0
         var cacheHit = false
@@ -106,7 +107,9 @@ final class LauncherCommandSearch {
         var currentNames: [String: SearchRanker.Name] = [:]
         func prepare(_ name: String) -> SearchRanker.Name {
             if let prepared = currentNames[name] { return prepared }
-            let prepared = preparedNames[name] ?? SearchRanker.prepareName(name)
+            let prepared: SearchRanker.Name
+            if let cached = preparedNames[name] { prepared = cached }
+            else { diagnostics.prepared += 1; prepared = SearchRanker.prepareName(name) }
             currentNames[name] = prepared
             return prepared
         }
@@ -115,6 +118,13 @@ final class LauncherCommandSearch {
             let score: SearchResultRank?
             if let previous = ranked[entry.id], previous.matches(entry) {
                 diagnostics.reused += 1
+                // Reused ranks still own prepared names needed by the next
+                // query. A one-module refresh must not evict the other modules.
+                if !input.query.isEmpty {
+                    for name in [entry.name] + entry.aliases + [input.aliases[entry.id] ?? ""] {
+                        if let prepared = preparedNames[name] { currentNames[name] = prepared }
+                    }
+                }
                 score = previous.rank
             } else {
                 diagnostics.scored += 1

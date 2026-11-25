@@ -93,6 +93,15 @@ jobs:
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-restart-startup-main.swift bash scripts/verify-files.sh
       - name: Deferred file content integration
         run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-content-main.swift bash scripts/verify-files.sh
+      - name: File search scheduling integration
+        run: KEYLANE_FILE_TEST_SOURCE=Tests/Integration/file-search-scheduling-main.swift bash scripts/verify-files.sh
+      - name: Live FSEvents and file search stage diagnostic
+        timeout-minutes: 8
+        env:
+          KEYLANE_FILE_TEST_SOURCE: Tests/Integration/file-search-live-diagnostic.swift
+        run: |
+          ulimit -c 0
+          bash scripts/verify-files.sh
 
   sign-preview-auto:
     name: Sign integrated preview ${{ github.sha }}

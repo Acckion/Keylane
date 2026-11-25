@@ -76,7 +76,8 @@ final class FileSearchController: ObservableObject {
     private var spotlightResults: [RankedFile] = []
     private var localResults: [RankedFile] = []
     private let mergeQueue = DispatchQueue(label: "org.keylane.files.merge", qos: .userInitiated)
-    private var pendingMerge: DispatchWorkItem?
+    private lazy var queryWork = LatestWorkQueue(queue: reader)
+    private lazy var mergeWork = LatestWorkQueue(queue: mergeQueue)
     private var mergeVersion = 0
     private var watch: FSEventStreamRef?
     private let eventQueue = DispatchQueue(label: "org.keylane.files.events", qos: .utility)
@@ -340,7 +341,7 @@ final class FileSearchController: ObservableObject {
             }
             return
         }
-        cancelContent(); cancelMerge(); cancellation.cancel(); spotlight.cancel(); spotlightResults = []; localResults = []; stopWatch()
+        cancelContent(); stopSearchJobs(); cancellation.cancel(); stopWatch()
         let contentEnabled = options.contentSearch
         let removed = old.roots.filter { !options.roots.contains($0) }
         writer.async { [weak self] in
@@ -353,7 +354,7 @@ final class FileSearchController: ObservableObject {
             startIndex()
             reloadSearch()
         }
-        else { restoringIndex = false; indexing = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
+        else { restoringIndex = false; indexing = false; isSearching = false; indexStatus = "文件搜索已关闭"; updated?([], indexStatus) }
     }
     private func resolveGrants() {
         cancelContent()
@@ -471,6 +472,8 @@ final class FileSearchController: ObservableObject {
     func refreshAfterFileAction(_ url: URL, removed: Bool) {
         guard isRunning, options.enabled else { return }
         if removed {
+            // A pre-mutation merge must not restore a row hidden immediately below.
+            cancelMerge()
             recentlyRemoved.insert(url.path)
             let visible = lastPublished.filter { !FileSearchLocation.contains($0.id, in: url.path) }
             emit(visible, visible.isEmpty ? "没有匹配项。" : lastPublishedStatus)
@@ -567,7 +570,7 @@ final class FileSearchController: ObservableObject {
         let wasSearching = hasQuery
         hasQuery = false
         browsingDirectory = nil
-        queryVersion += 1; pendingQuery?.cancel(); pendingQuery = nil; queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
+        queryVersion += 1; queryWork.cancel(); pendingQuery?.cancel(); pendingQuery = nil; queryCancellation.cancel(); spotlight.cancel(); currentQuery = ""; localResults = []; spotlightResults = []; localQueryResolved = false; isSearching = false
         lastPublished = []
         lastPublishedQuery = ""
         lastPublishedStatus = ""
@@ -601,21 +604,21 @@ final class FileSearchController: ObservableObject {
             return
         }
         if !didStart && !restoringIndex { startIndex() }
-        if changed {
-            stopSearchJobs()
-            isSearching = true
-            if scopeChanged { emit([], "正在搜索…") }
-            let roots = authorizedRoots
-            if !options.useIgnoreFiles, !roots.isEmpty {
-                spotlight.search(text, root: roots.count == 1 ? URL(fileURLWithPath: roots[0]) : nil)
-            }
+        guard changed else { return }
+        stopSearchJobs()
+        isSearching = true
+        if scopeChanged { emit([], "正在搜索…") }
+        let roots = authorizedRoots
+        if !options.useIgnoreFiles, !roots.isEmpty {
+            spotlight.search(text, root: roots.count == 1 ? URL(fileURLWithPath: roots[0]) : nil)
         }
-        refreshQuery(delay: changed ? 0.06 : 0)
+        refreshQuery(delay: 0.06)
     }
 
     private func stopSearchJobs() {
         cancelMerge()
         queryVersion += 1
+        queryWork.cancel()
         pendingQuery?.cancel()
         queryCancellation.cancel()
         spotlight.cancel()
@@ -800,19 +803,19 @@ final class FileSearchController: ObservableObject {
         let sort = directorySort
         if !browse { browsingDirectory = nil }
         isSearching = true
-        reader.async { [weak self] in
-            guard !cancellation.cancelled else { return }
+        queryWork.submit { [weak self] latest in
+            guard !cancellation.cancelled, !latest.isCancelled else { return }
             var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
             let result = Result { () -> ([SpotlightFile], String, URL?) in
                 let file = try locations.item(at: url)
                 if browse && file.isDirectory {
-                    let children = try locations.children(of: file.url, sortedBy: sort, isCancelled: { cancellation.cancelled })
+                    let children = try locations.children(of: file.url, sortedBy: sort, isCancelled: { cancellation.cancelled || latest.isCancelled })
                     return (children, children.isEmpty ? "该文件夹没有可显示的项目。" : "\(file.name) · \(children.count) 项", file.url)
                 }
                 return ([file], file.url.path, nil)
             }
             DispatchQueue.main.async {
-                guard let self, self.queryVersion == ticket, !cancellation.cancelled else { return }
+                guard let self, self.queryVersion == ticket, !cancellation.cancelled, !latest.isCancelled else { return }
                 switch result {
                 case .success(let (items, status, directory)):
                     self.browsingDirectory = directory
@@ -827,9 +830,10 @@ final class FileSearchController: ObservableObject {
     }
     private func refreshQuery(delay: Double = 0) {
         guard isRunning, options.enabled, !queryIsBlank else { return }
-        pendingQuery?.cancel(); queryCancellation.cancel(); queryCancellation = FileScanCancellation()
+        pendingQuery?.cancel()
+        if queryCancellation.cancelled { queryCancellation = FileScanCancellation() }
         let cancellation = queryCancellation
-        queryVersion += 1; let ticket = queryVersion
+        let ticket = queryVersion
         let text = currentQuery
         var config = authorizedOptions
         // Show permission/ignore-filtered names immediately; do not reveal a
@@ -840,22 +844,26 @@ final class FileSearchController: ObservableObject {
         let restoredPaths = restored
         let work = DispatchWorkItem { [weak self] in
             guard let self, !cancellation.cancelled else { return }
-            self.reader.async { [weak self] in
-                guard let self, !cancellation.cancelled else { return }
+            self.queryWork.submit(cancelActive: false) { [weak self] latest in
+                guard let self, !cancellation.cancelled, !latest.isCancelled else { return }
+                #if KEYLANE_FILE_EVENT_TESTING
+                self.testBeforeLocalQuery?(text)
+                #endif
+                guard !cancellation.cancelled, !latest.isCancelled else { return }
                 do {
                     var locations = FileSearchLocation(options: queryOptions, automaticExclusions: excluded, restored: restoredPaths)
                     let result = try self.readDB?.searchRanked(text, options: queryOptions, excluded: excluded,
                         pathAllowed: { locations.includesSavedResult(at: $0, directory: $1) },
-                        isCancelled: { cancellation.cancelled }) ?? []
+                        isCancelled: { cancellation.cancelled || latest.isCancelled }) ?? []
                     DispatchQueue.main.async {
-                        guard self.queryVersion == ticket, !cancellation.cancelled else { return }
+                        guard self.queryVersion == ticket, !cancellation.cancelled, !latest.isCancelled else { return }
                         self.localResults = result
                         self.localQueryResolved = true
                         self.publish()
                     }
                 } catch {
                     DispatchQueue.main.async {
-                        guard self.queryVersion == ticket, !cancellation.cancelled else { return }
+                        guard self.queryVersion == ticket, !cancellation.cancelled, !latest.isCancelled else { return }
                         self.localQueryResolved = true
                         if !self.spotlightResults.isEmpty { self.publish() }
                         else {
@@ -874,14 +882,12 @@ final class FileSearchController: ObservableObject {
         lastPublished = rows; lastPublishedStatus = status; lastPublishedQuery = currentQuery; updated?(rows, status)
     }
     private func cancelMerge() {
-        pendingMerge?.cancel()
-        pendingMerge = nil
+        mergeWork.cancel()
         mergeVersion += 1
     }
 
     private func publish() {
         guard isRunning, options.enabled, !queryIsBlank else { return }
-        cancelMerge()
         let ticket = mergeVersion
         let query = currentQuery
         let config = authorizedOptions
@@ -890,28 +896,25 @@ final class FileSearchController: ObservableObject {
         let removed = recentlyRemoved
         let system = config.useIgnoreFiles ? [] : spotlightResults
         let restored = restored
-        let task = DispatchWorkItem { [weak self] in
-            var allowed: [RankedFile] = []
+        mergeWork.submit(cancelActive: false) { [weak self] latest in
             var locations = FileSearchLocation(options: config, automaticExclusions: exclusions, restored: restored)
-            if !system.isEmpty {
-                allowed = system.filter { hit in
+            func saved(_ hit: RankedFile) -> Bool {
+                !removed.contains { FileSearchLocation.contains(hit.file.id, in: $0) }
+                    && locations.includesSavedResult(at: hit.file.id, directory: hit.file.isDirectory)
+            }
+            guard let ordered = FileSearchMerge.top(local: local, system: system, acceptsLocal: saved,
+                acceptsSystem: { hit in
                     config.roots.contains { FileSearchLocation.contains(hit.file.id, in: $0) }
-                        && (try? locations.item(at: hit.file.url)) != nil
-                }
+                        && saved(hit) && (try? locations.item(at: hit.file.url)) != nil
+                }, isCancelled: { latest.isCancelled }) else { return }
+            var best: [SpotlightFile] = []
+            for hit in ordered {
+                guard !latest.isCancelled else { return }
+                best.append(hit.file.readingResourceMetadata())
             }
-            var seen = Set<String>()
-            let ordered = (local + allowed).filter { hit in
-                // Saved rows can predate changed ignore rules while indexing is paused.
-                // Check ancestors without requiring the file to be online, preserving
-                // retained records for disconnected volumes.
-                locations.includesSavedResult(at: hit.file.id, directory: hit.file.isDirectory)
-                    && !removed.contains { FileSearchLocation.contains(hit.file.id, in: $0) } && seen.insert(hit.file.id).inserted
-            }
-                .sorted { $0.precedes($1) }
-            let best = ordered.prefix(200).map { $0.file.readingResourceMetadata() }
             let truncated = ordered.count >= 200
             DispatchQueue.main.async {
-                guard let self, self.mergeVersion == ticket, self.currentQuery == query else { return }
+                guard let self, !latest.isCancelled, self.mergeVersion == ticket, self.currentQuery == query else { return }
                 var rows = best
                 if self.lastPublishedQuery == query {
                     let byID = Dictionary(uniqueKeysWithValues: best.map { ($0.id, $0) })
@@ -940,8 +943,6 @@ final class FileSearchController: ObservableObject {
                 if self.isSearching && self.localQueryResolved { self.isSearching = false }
             }
         }
-        pendingMerge = task
-        mergeQueue.async(execute: task)
     }
     private func refreshStats(runtime: FileScanCancellation) {
         do {
@@ -1555,6 +1556,12 @@ final class FileSearchController: ObservableObject {
                     return flag & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) == 0
                         && id < FSEventStreamEventId(kFSEventStreamEventIdSinceNow) ? max(maximum, id) : maximum
                 }
+                #if KEYLANE_FILE_EVENT_TESTING
+                if let trace = callback.owner?.testTraceRawIndexPath {
+                    let current = callback.owner?.watchLifetime === callback.lifetime
+                    for (path, flag) in zip(paths as! [String], flags) { trace(path, flag, current) }
+                }
+                #endif
                 callback.owner?.acceptIndexEvents(paths: paths, flags: flags, eventID: last, from: callback.lifetime)
             }, &context, roots as CFArray, eventID, 2,
                FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
@@ -1609,6 +1616,15 @@ final class FileSearchController: ObservableObject {
         }
     }
 
+    var testBeforeLocalQuery: ((String) -> Void)?
+    var testQueryDiagnostics: LatestWorkQueue.Diagnostics { queryWork.diagnostics }
+    func testRefreshQuery() { refreshQuery() }
+    var testHasNativeFileWatcher: Bool { watch != nil && watchLifetime != nil }
+    var testEventPipelineIdle: Bool {
+        !indexing && !processingEvents && pendingEvents.isEmpty && pendingRefresh == nil && dirtyPaths.isEmpty && !needsFullScan
+    }
+    var testTraceRawIndexPath: ((String, FSEventStreamEventFlags, Bool) -> Void)?
+    var testTraceEligibleIndexPath: ((String) -> Void)?
     func testIndexEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
         testEventEmitter()?(paths, flags, currentIndexEventID())
     }
@@ -1642,6 +1658,9 @@ final class FileSearchController: ObservableObject {
                     }
                     if !self.needsFullScan {
                         self.dirtyPaths.formUnion(result.paths)
+                        #if KEYLANE_FILE_EVENT_TESTING
+                        if let trace = self.testTraceEligibleIndexPath { result.paths.forEach(trace) }
+                        #endif
                         self.needsFullScan = self.dirtyPaths.count > Self.maxQueuedEvents
                     }
                     if self.needsFullScan { self.checkpointReady = false; self.dirtyPaths.removeAll() }
