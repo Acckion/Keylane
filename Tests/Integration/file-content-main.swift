@@ -100,3 +100,27 @@ let recovered = FileSearchController(directory: store, preferences: prefs, watch
 try wait("Commit retry succeeds after restart") { try bodyMatches("freshbody") }
 recovered.stopRuntime()
 print("PASS injected SQLite body failure backs off, preserves metadata, and recovers after restart")
+
+// A persisted job from a prior valid scan must not use ambient access when
+// its saved bookmark cannot be proved in the current runtime.
+let deniedStore = base.appendingPathComponent("denied-index")
+let deniedDB = try FileSearchIndex(url: deniedStore.appendingPathComponent("index.sqlite"))
+let deniedModified = try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!.timeIntervalSince1970
+try deniedDB.stageMetadata(.init(path: file.path, name: file.lastPathComponent, volume: "/", modified: deniedModified,
+                                 directory: false, symlink: false), root: scope.path, epoch: "c:prior-grant", contentSearch: true)
+let priorGrantJob = try deniedDB.nextContentJobs(certifiedOnly: true).first!
+prefs.set([scope.path: Data([0])], forKey: "fileSearchGrants")
+var deniedReads = 0
+let denied = FileSearchController(directory: deniedStore, preferences: prefs, watchChanges: false, contentExtractor: { _, _ in
+    lock.lock(); deniedReads += 1; lock.unlock()
+    return "shouldnotread"
+})
+try wait("Unproved persisted grant parks before invoking extraction") {
+    try deniedDB.nextContentRetry(certifiedOnly: true) == nil
+}
+lock.lock(); let deniedReadCount = deniedReads; lock.unlock()
+precondition(deniedReadCount == 0)
+let deniedPublication = try deniedDB.completeContent(priorGrantJob, body: "old")
+precondition(!deniedPublication)
+denied.stopRuntime()
+print("PASS unresolved bookmark cannot use ambient permission and parks its certified job")

@@ -1415,6 +1415,7 @@ struct LauncherBackButton: View {
                 .frame(width: 24, height: 26)
         }
         .buttonStyle(.glass)
+        .tint(nil) // Navigation stays neutral even inside a tinted theme.
         .buttonBorderShape(.circle)
         .controlSize(.large)
         .help("返回")

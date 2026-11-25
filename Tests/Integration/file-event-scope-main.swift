@@ -27,6 +27,9 @@ var suggested = options
 suggested.roots.append(ungranted.path)
 prefs.set(try JSONEncoder().encode(suggested), forKey: "fileSearchOptions")
 let controller = FileSearchController(directory: base.appendingPathComponent("index"), preferences: prefs, startImmediately: false)
+// This fixture injects flags explicitly; actual delivery is covered
+// separately by file-search-live-diagnostic and file-index-live-main.
+controller.testQuietIndexEventID = 42
 var scans: [(Bool, Int)] = []
 controller.testScanCompleted = { scans.append(($0, $1)) }
 func wait(_ label: String, _ condition: () -> Bool) {
@@ -37,6 +40,7 @@ func wait(_ label: String, _ condition: () -> Bool) {
 controller.applyPermissionEnabled(true)
 precondition(controller.options.roots.contains(ungranted.path), "Enabling one grant discarded a suggested root")
 controller.startRuntime()
+controller.search("item-")
 wait("baseline") { !scans.isEmpty && controller.testEventsIdle }
 let before = controller.stats.entries
 precondition(before == 104, "An ungranted suggested root must not be scanned")

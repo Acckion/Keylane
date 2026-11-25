@@ -51,7 +51,7 @@ class PreviewTargetTests(unittest.TestCase):
         checks, signing = ci.split('  sign-preview-auto:', 1)
         self.assertIn('  pull_request:', checks)
         pr_trigger = checks.split('  pull_request:', 1)[1].split('  push:', 1)[0]
-        self.assertNotIn('branches:', pr_trigger, 'Stacked PRs require the same secret-free Checks gate')
+        self.assertEqual(pr_trigger.strip(), 'branches: [dev, main]', 'Retargeted PRs use the dev/main Checks gate')
         self.assertIn('name: Checks', checks)
         for forbidden in ['secrets.', 'environment:', 'scripts/package.sh', 'upload-artifact@']:
             self.assertNotIn(forbidden, checks)

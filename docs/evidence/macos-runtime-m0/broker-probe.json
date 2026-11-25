@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "candidate": "restricted-js-broker",
+  "fixtureOnly": true,
+  "installed": false,
+  "cases": {
+    "boundA": true,
+    "namespaceWritesIsolated": true,
+    "ownerSpoofRejected": true,
+    "requestReplayRejected": true,
+    "nativeMalformedRejected": true,
+    "boundsRejected": true,
+    "boundB": true,
+    "offOnRejectsPending": true,
+    "replaceRejectsPending": true,
+    "uninstallRejectsPending": true,
+    "readRevocationWithholdsReply": true,
+    "closedBindingWithholdsReply": true,
+    "wrongSealRejectedBeforeSpawn": true,
+    "wrongParentRejected": true,
+    "frameBudgetTerminates": true,
+    "nativeDeadlineStopsLoop": true,
+    "fixtureProcessesExited": true
+  },
+  "authorityRoot": "synthetic signed-parent records, not product Store/Registry",
+  "coverage": {
+    "realInstallationAdmission": "not-connected",
+    "diskStorageMigration": "not-implemented",
+    "RaycastNodeCompatibility": "not-implemented",
+    "keychain": "not-tested",
+    "rawTransportCorruption": "not-tested",
+    "memoryExhaustion": "not-tested"
+  },
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}

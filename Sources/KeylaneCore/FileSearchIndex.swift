@@ -65,6 +65,7 @@ public final class FileSearchIndex {
     public private(set) var writeDiagnostics = WriteDiagnostics()
     private var db: OpaquePointer?
     private var contentStatements: [String: OpaquePointer] = [:]
+    private var activeRecoveryScan: UUID?
     public let url: URL
     public init(url: URL) throws {
         self.url = url
@@ -85,7 +86,6 @@ public final class FileSearchIndex {
 
                 CREATE TABLE IF NOT EXISTS file_content_queue(path TEXT PRIMARY KEY,token TEXT NOT NULL,root TEXT NOT NULL,modified REAL NOT NULL,ready REAL NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS file_content_ready ON file_content_queue(ready);
-                CREATE TRIGGER IF NOT EXISTS file_content_owner AFTER UPDATE OF root ON files WHEN old.root<>new.root BEGIN UPDATE file_content_queue SET root=new.root WHERE path=new.path; END;
                 CREATE TRIGGER IF NOT EXISTS file_content_delete AFTER DELETE ON files BEGIN DELETE FROM file_content_queue WHERE path=old.path; END;
                 CREATE TABLE IF NOT EXISTS file_recovery(id INTEGER PRIMARY KEY CHECK(id=1),state TEXT NOT NULL);
 
@@ -124,6 +124,7 @@ public final class FileSearchIndex {
                     try exec("PRAGMA user_version=3")
                 }
             }
+            try prepareContentProof()
             try prepareStatistics()
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch { sqlite3_close(db); db = nil; throw error }
@@ -200,55 +201,144 @@ public final class FileSearchIndex {
             try markSeen(path: record.path, epoch: epoch)
             writeDiagnostics.metadataSkips &+= 1
         }
-        if contentSearch {
-            try writeContent("UPDATE file_content_queue SET ready=0,attempts=0,failure='',revision=revision+1 WHERE path=?", [record.path])
-        }
         return true
+    }
+    private func prepareContentProof() throws {
+        // Migrate the old owner trigger and certificate column in a single
+        // write transaction, including concurrent legacy database opens.
+        try transaction {
+            let s = try statement("SELECT 1 FROM pragma_table_info('file_content_queue') WHERE name='proof'")
+            let status = sqlite3_step(s)
+            sqlite3_finalize(s)
+            guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
+            if status == SQLITE_DONE {
+                try exec("ALTER TABLE file_content_queue ADD COLUMN proof TEXT")
+            }
+            let owner = try statement("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='file_content_owner_generation'")
+            let ownerStatus = sqlite3_step(owner)
+            sqlite3_finalize(owner)
+            guard ownerStatus == SQLITE_ROW || ownerStatus == SQLITE_DONE else { throw FileIndexError.database }
+            if ownerStatus == SQLITE_DONE {
+                try exec("""
+                    CREATE TRIGGER file_content_owner_generation AFTER UPDATE OF root ON files WHEN old.root<>new.root BEGIN
+                        UPDATE file_content_queue SET root=new.root,token=lower(hex(randomblob(16))),ready=0,proof=NULL WHERE path=new.path;
+                    END;
+                    """)
+            }
+            // Idempotently use a separate trigger for schema 3. Owner UUIDs
+            // still change on v1/v2 migrations and old readers cannot make
+            // a previous owner's revision or proof valid again.
+            try exec("""
+                CREATE TRIGGER IF NOT EXISTS file_content_owner_retry_reset AFTER UPDATE OF root ON files WHEN old.root<>new.root BEGIN
+                    UPDATE file_content_queue SET attempts=0,failure='',revision=revision+1 WHERE path=new.path;
+                END;
+                CREATE INDEX IF NOT EXISTS file_content_certified_ready ON file_content_queue(ready) WHERE proof IS NOT NULL;
+                """)
+            // Also remove a legacy trigger recreated by an older build.
+            let legacy = try statement("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='file_content_owner'")
+            let legacyStatus = sqlite3_step(legacy)
+            sqlite3_finalize(legacy)
+            guard legacyStatus == SQLITE_ROW || legacyStatus == SQLITE_DONE else { throw FileIndexError.database }
+            if legacyStatus == SQLITE_ROW { try exec("DROP TRIGGER file_content_owner") }
+        }
     }
 
     public struct ContentJob: Sendable {
         public let path: String, token: String, root: String
         public let modified: Double
         public let revision: Int64
-        public init(path: String, token: String, root: String, modified: Double, revision: Int64 = 0) {
-            self.path = path; self.token = token; self.root = root; self.modified = modified; self.revision = revision
+        let proof: FileContentReader.Proof?
+    }
+
+    /// Indexed metadata read before a worker attempts descriptor certification.
+    /// Common unchanged completed rows need no filesystem work.
+    public func needsContentProof(_ record: FileIndexRecord, root: String, contentSearch: Bool, force: Bool = false) throws -> Bool {
+        guard contentSearch, !record.directory, !record.symlink, FileContentReader.supports(record.path) else { return false }
+        if force { return true }
+        let s = try statement("""
+            SELECT EXISTS(SELECT 1 FROM file_content_queue WHERE path=?) OR NOT EXISTS(
+                SELECT 1 FROM files WHERE path=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%')
+            """, [record.path, record.path, String(record.modified)])
+        defer { sqlite3_finalize(s) }
+        guard sqlite3_step(s) == SQLITE_ROW else { throw FileIndexError.database }
+        return sqlite3_column_int(s, 0) != 0
+    }
+
+    /// Compatibility path for Core callers and fixtures. Product scan workers
+    /// obtain their certificate off the writer queue and submit it as data.
+    public func stageMetadata(_ record: FileIndexRecord, root: String, epoch: String,
+                              contentSearch: Bool, force: Bool = false, wakeFromEvent: Bool = false,
+                              certification: FileContentReader.Session? = nil, allowCertification: Bool = true,
+                              isCancelled: () -> Bool = { false }) throws {
+        let needsProof = try allowCertification && needsContentProof(record, root: root, contentSearch: contentSearch, force: force)
+        let proof = needsProof ? (certification ?? FileContentReader.Session()).certify(path: record.path, owner: root, modified: record.modified, cancelled: isCancelled) : nil
+        try stagePreparedMetadata(record, root: root, epoch: epoch, contentSearch: contentSearch, force: force,
+                                  wakeFromEvent: wakeFromEvent, proof: proof, isCancelled: isCancelled)
+    }
+
+    public func stagePreparedMetadata(_ record: FileIndexRecord, root: String, epoch: String,
+                                      contentSearch: Bool, force: Bool = false, wakeFromEvent: Bool = false,
+                                      proof: FileContentReader.Proof?, isCancelled: () -> Bool = { false }) throws {
+        if isCancelled() { throw CancellationError() }
+        let needsBody = contentSearch && !record.directory && !record.symlink && FileContentReader.supports(record.path)
+        try savepoint {
+            let touched = !force ? try touchUnchanged(record, root: root, epoch: epoch, contentSearch: contentSearch) : false
+            if !touched {
+                try putRecord(record, root: root, epoch: epoch, preservingBody: needsBody)
+                writeDiagnostics.metadataWrites &+= 1
+            }
+            if needsBody {
+                if touched {
+                    let q = try statement("SELECT proof,ready FROM file_content_queue WHERE path=?", [record.path])
+                    let status = sqlite3_step(q)
+                    let old = status == SQLITE_ROW ? Self.decodeProof(text(q, 0)) : nil
+                    let waiting = status == SQLITE_ROW && sqlite3_column_double(q, 1) < 0
+                    sqlite3_finalize(q)
+                    guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
+                    guard status == SQLITE_ROW else { return }
+                    if old == proof {
+                        if wakeFromEvent, waiting {
+                            try writeContent("UPDATE file_content_queue SET ready=0,attempts=0,failure='',revision=revision+1 WHERE path=? AND root=?",
+                                             [record.path,root])
+                        }
+                        return
+                    }
+                }
+                let encoded = try proof.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) } ?? ""
+                try writeContent("""
+                    INSERT INTO file_content_queue(path,token,root,modified,ready,proof,attempts,failure,revision)
+                    VALUES(?,?,?,?,0,NULLIF(?,''),0,'',0)
+                    ON CONFLICT(path) DO UPDATE SET token=excluded.token,root=excluded.root,modified=excluded.modified,
+                        ready=0,proof=excluded.proof,attempts=0,failure='',revision=0
+                    """, [record.path, UUID().uuidString, root, String(record.modified), encoded])
+            } else if !touched { try writeContent("DELETE FROM file_content_queue WHERE path=?", [record.path]) }
         }
     }
 
-    /// Metadata and its durable extraction request are committed together by the
-    /// caller's directory transaction. No file body is read here.
-    public func stageMetadata(_ record: FileIndexRecord, root: String, epoch: String,
-                              contentSearch: Bool, force: Bool = false) throws {
-        if !force, try touchUnchanged(record, root: root, epoch: epoch, contentSearch: contentSearch) { return }
-        try savepoint {
-        let needsBody = contentSearch && !record.directory && !record.symlink && FileContentReader.supports(record.path)
-        try putRecord(record, root: root, epoch: epoch, preservingBody: needsBody)
-        writeDiagnostics.metadataWrites &+= 1
-        if needsBody {
-            try writeContent("INSERT INTO file_content_queue(path,token,root,modified,ready) VALUES(?,?,?,?,0) ON CONFLICT(path) DO UPDATE SET token=excluded.token,root=excluded.root,modified=excluded.modified,ready=0,attempts=0,failure='',revision=0",
-                      [record.path, UUID().uuidString, root, String(record.modified)])
-        } else { try writeContent("DELETE FROM file_content_queue WHERE path=?", [record.path]) }
-        }
+    private static func decodeProof(_ text: String) -> FileContentReader.Proof? {
+        guard !text.isEmpty else { return nil }
+        return try? JSONDecoder().decode(FileContentReader.Proof.self, from: Data(text.utf8))
     }
 
     public func nextContentJob(now: Date = Date()) throws -> ContentJob? {
         try nextContentJobs(limit: 1, now: now).first
     }
 
-    public func nextContentJobs(limit: Int = 8, now: Date = Date()) throws -> [ContentJob] {
-        let s = try statement("SELECT path,token,root,modified,revision FROM file_content_queue WHERE ready>=0 AND ready<=? ORDER BY ready,rowid LIMIT ?", [String(now.timeIntervalSince1970), String(max(1, min(8, limit)))])
+    public func nextContentJobs(limit: Int = 8, now: Date = Date(), certifiedOnly: Bool = false) throws -> [ContentJob] {
+        let certified = certifiedOnly ? " AND proof IS NOT NULL" : ""
+        let s = try statement("SELECT path,token,root,modified,revision,proof FROM file_content_queue WHERE ready>=0 AND ready<=?" + certified + " ORDER BY ready,rowid LIMIT ?", [String(now.timeIntervalSince1970), String(max(1, min(8, limit)))])
         defer { sqlite3_finalize(s) }
         var jobs: [ContentJob] = []
         while true {
             let status = sqlite3_step(s)
             if status == SQLITE_DONE { return jobs }
             guard status == SQLITE_ROW else { throw FileIndexError.database }
-            jobs.append(ContentJob(path: text(s, 0), token: text(s, 1), root: text(s, 2), modified: sqlite3_column_double(s, 3), revision: sqlite3_column_int64(s, 4)))
+            jobs.append(ContentJob(path: text(s, 0), token: text(s, 1), root: text(s, 2), modified: sqlite3_column_double(s, 3), revision: sqlite3_column_int64(s, 4), proof: Self.decodeProof(text(s, 5))))
         }
     }
 
-    public func nextContentRetry() throws -> Date? {
-        let s = try statement("SELECT ready FROM file_content_queue WHERE ready>=0 ORDER BY ready LIMIT 1")
+    public func nextContentRetry(certifiedOnly: Bool = false) throws -> Date? {
+        let s = try statement("SELECT ready FROM file_content_queue WHERE ready>=0" + (certifiedOnly ? " AND proof IS NOT NULL" : "") + " ORDER BY ready LIMIT 1")
         defer { sqlite3_finalize(s) }
         let status = sqlite3_step(s)
         if status == SQLITE_DONE { return nil }
@@ -256,7 +346,7 @@ public final class FileSearchIndex {
         return Date(timeIntervalSince1970: sqlite3_column_double(s, 0))
     }
 
-    public enum ContentFailure: String, Sendable { case transient, permission, missing, changed, unsafePath, cancelled }
+    public enum ContentFailure: String, Sendable { case transient, permission, missing, changed, unsafePath, exhausted, cancelled }
     public func hasEventDeferredContent() throws -> Bool {
         let q = try statement("SELECT 1 FROM file_content_queue WHERE ready<0 LIMIT 1")
         defer { sqlite3_finalize(q) }
@@ -268,8 +358,8 @@ public final class FileSearchIndex {
         public let job: ContentJob
         public let body: String?
         public let failure: ContentFailure
-        public init(job: ContentJob, body: String?, failure: ContentFailure = .transient) {
-            self.job = job; self.body = body; self.failure = failure
+        public init(job: ContentJob, body: String?, failure: ContentFailure = .transient, parkUntilScan: Bool = false) {
+            self.job = job; self.body = body; self.failure = parkUntilScan ? .unsafePath : failure
         }
     }
 
@@ -287,13 +377,25 @@ public final class FileSearchIndex {
                 let job = update.job
                 if let body = update.body {
                     let foldedBody = FileSearchRules.fold(body)
-                    try writeContent("UPDATE files SET body=? WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%' AND body IS NOT ? AND EXISTS(SELECT 1 FROM file_content_queue WHERE path=? AND token=?)",
-                              [foldedBody, job.path, job.root, String(job.modified), foldedBody, job.path, job.token])
-                    if sqlite3_changes(db) > 0 { writeDiagnostics.contentWrites &+= 1; applied = true }
+                    let pathKey = [job.path, job.root, String(job.modified)]
+                    try writeContent("""
+                        UPDATE files SET body=? WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0
+                          AND epoch LIKE 'c:%' AND body IS NOT ? AND EXISTS(
+                            SELECT 1 FROM file_content_queue WHERE path=? AND token=? AND root=? AND modified=? AND revision=? AND ready>=0)
+                        """, [foldedBody] + pathKey + [foldedBody] + Self.contentKey(job))
+                    let wroteBody = sqlite3_changes(db) > 0
+                    if wroteBody { writeDiagnostics.contentWrites &+= 1 }
                     else { writeDiagnostics.contentSkips &+= 1 }
-                    try writeContent("DELETE FROM file_content_queue WHERE path=? AND token=? AND root=? AND EXISTS(SELECT 1 FROM files WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%')", [job.path,job.token,job.root,job.path,job.root,String(job.modified)])
-                    // Completion can reveal a reused body even when no FTS write was needed.
-                    applied = (sqlite3_changes(db) > 0 && !foldedBody.isEmpty) || applied
+                    try writeContent("""
+                        DELETE FROM file_content_queue WHERE path=? AND token=? AND root=? AND modified=? AND revision=? AND ready>=0 AND EXISTS(
+                            SELECT 1 FROM files WHERE path=? AND root=? AND modified=? AND directory=0 AND symlink=0 AND epoch LIKE 'c:%')
+                        """, Self.contentKey(job) + pathKey)
+                    if sqlite3_changes(db) > 0 {
+                        // Equal verified results become visible without FTS churn.
+                        applied = applied || wroteBody || !foldedBody.isEmpty
+                    } else {
+                        try failContent(job, reason: .changed)
+                    }
                 } else if update.failure != .cancelled { try failContent(job, reason: update.failure) }
             }
             if isCancelled() { throw CancellationError() }
@@ -301,23 +403,32 @@ public final class FileSearchIndex {
         return applied
     }
 
-    /// Event-only failures use ready=-1, never an overflowing distant-future timer.
-    /// Bounded persisted attempts survive restart; file metadata changes reset them.
+    /// Persist one timed retry. Permission waits for a qualifying event;
+    /// exhausted/changed/unproved jobs also lose their certificate.
     public func failContent(_ job: ContentJob, reason: ContentFailure, now: Date = Date(), jitter: Double = Double.random(in: 0.9...1.1)) throws {
         guard reason != .cancelled else { return }
-        let q = try statement("SELECT attempts FROM file_content_queue WHERE path=? AND token=? AND root=? AND revision=?", [job.path,job.token,job.root,String(job.revision)])
-        let status = sqlite3_step(q)
-        guard status == SQLITE_ROW else { sqlite3_finalize(q); if status != SQLITE_DONE { throw FileIndexError.database }; return }
-        let attempts = min(16, max(0, Int(sqlite3_column_int(q,0))) + 1)
-        sqlite3_finalize(q)
-        let delay = min(1800, 15 * pow(2, Double(attempts - 1))) * min(1.1,max(0.9,jitter))
-        let ready = reason == .transient ? now.addingTimeInterval(min(1800,delay)).timeIntervalSince1970 : -1
-        try writeContent("UPDATE file_content_queue SET ready=?,attempts=?,failure=? WHERE path=? AND token=? AND root=? AND revision=?", [String(ready),String(attempts),reason.rawValue,job.path,job.token,job.root,String(job.revision)])
+        let attempts = "CASE WHEN attempts<2 THEN attempts+1 ELSE attempts END"
+        let delay = String(now.addingTimeInterval(60 * min(1.1,max(0.9,jitter))).timeIntervalSince1970)
+        let transient = reason == .transient ? "1" : "0"
+        let dropProof = reason == .transient || reason == .permission ? "0" : "1"
+        try writeContent("""
+            UPDATE file_content_queue SET ready=CASE WHEN ? AND attempts=0 THEN ? ELSE -1 END,
+                failure=CASE WHEN ? AND attempts>0 THEN 'exhausted' ELSE ? END,
+                token=CASE WHEN ? OR (? AND attempts>0) THEN lower(hex(randomblob(16))) ELSE token END,
+                proof=CASE WHEN ? OR (? AND attempts>0) THEN NULL ELSE proof END,
+                attempts=\(attempts), revision=revision+1
+            WHERE path=? AND token=? AND root=? AND modified=? AND revision=? AND ready>=0
+            """, [transient, delay, transient, reason.rawValue, dropProof, transient, dropProof, transient] + Self.contentKey(job))
         if sqlite3_changes(db) > 0 { writeDiagnostics.contentDeferrals &+= 1 }
     }
+
+    private static func contentKey(_ job: ContentJob) -> [String] {
+        [job.path,job.token,job.root,String(job.modified),String(job.revision)]
+    }
     public func deferContent(_ job: ContentJob, until date: Date) throws {
-        writeDiagnostics.contentDeferrals &+= 1
-        try writeContent("UPDATE file_content_queue SET ready=? WHERE path=? AND token=? AND root=?", [String(date.timeIntervalSince1970), job.path, job.token, job.root])
+        try writeContent("UPDATE file_content_queue SET ready=? WHERE path=? AND token=? AND root=? AND modified=? AND revision=? AND ready>=0",
+                         [String(date.timeIntervalSince1970)] + Self.contentKey(job))
+        if sqlite3_changes(db) > 0 { writeDiagnostics.contentDeferrals &+= 1 }
     }
 
     public func transaction(_ body: () throws -> Void) throws {
@@ -403,7 +514,13 @@ public final class FileSearchIndex {
             try exec("UPDATE files SET body='',epoch='n:' || substr(epoch,3) WHERE body<>'' OR path IN (SELECT path FROM file_content_queue); DELETE FROM file_content_queue")
         }
     }
-    public func clear() throws { try exec("DELETE FROM files; DELETE FROM file_seen; DELETE FROM file_content_queue; DELETE FROM file_recovery; PRAGMA wal_checkpoint(TRUNCATE); VACUUM;") }
+    public func clear() throws {
+        try transaction {
+            try invalidateRecoveryPoint()
+            try exec("DELETE FROM files; DELETE FROM file_seen; DELETE FROM file_content_queue")
+        }
+        try exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")
+    }
     private func prepareStatistics() throws {
         // Initialize older indexes once. The immediate transaction serializes
         // concurrent reader/writer opens and keeps the snapshot and triggers atomic.
@@ -415,6 +532,40 @@ public final class FileSearchIndex {
             guard status == SQLITE_ROW || status == SQLITE_DONE else { throw FileIndexError.database }
             if status == SQLITE_DONE {
                 try exec("INSERT INTO file_counts SELECT 1,count(*),coalesce(sum(directory=0 AND symlink=0),0),coalesce(sum(directory),0),coalesce(sum(symlink),0) FROM files")
+            }
+            let triggers = try statement("""
+                SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN
+                ('file_recovery_files_insert','file_recovery_files_structural_update','file_recovery_files_delete')
+                """)
+            let triggerStatus = sqlite3_step(triggers)
+            let protected = triggerStatus == SQLITE_ROW && sqlite3_column_int(triggers, 0) == 3
+            sqlite3_finalize(triggers)
+            guard triggerStatus == SQLITE_ROW else { throw FileIndexError.database }
+            if !protected {
+                // An older writer could have changed rows before the triggers existed.
+                // Preserve its rows but require a new recovery baseline once.
+                try invalidateRecoveryPoint()
+                try exec("""
+                    CREATE TRIGGER IF NOT EXISTS file_recovery_files_insert AFTER INSERT ON files
+                        WHEN EXISTS(SELECT 1 FROM file_recovery WHERE id=1) BEGIN DELETE FROM file_recovery WHERE id=1; END;
+                    DROP TRIGGER IF EXISTS file_recovery_files_update;
+                    CREATE TRIGGER IF NOT EXISTS file_recovery_files_structural_update AFTER UPDATE ON files
+                        WHEN (old.rowid IS NOT new.rowid OR old.path IS NOT new.path OR old.name IS NOT new.name OR
+                              old.root IS NOT new.root OR old.volume IS NOT new.volume OR old.modified IS NOT new.modified OR
+                              old.directory IS NOT new.directory OR old.symlink IS NOT new.symlink OR
+                              old.external IS NOT new.external OR old.epoch IS NOT new.epoch)
+                              AND EXISTS(SELECT 1 FROM file_recovery WHERE id=1)
+                        BEGIN DELETE FROM file_recovery WHERE id=1; END;
+                    CREATE TRIGGER IF NOT EXISTS file_recovery_files_delete AFTER DELETE ON files
+                        WHEN EXISTS(SELECT 1 FROM file_recovery WHERE id=1) BEGIN DELETE FROM file_recovery WHERE id=1; END;
+                    """)
+            }
+            if protected {
+                let legacy = try statement("SELECT 1 FROM sqlite_schema WHERE type='trigger' AND name='file_recovery_files_update'")
+                let legacyStatus = sqlite3_step(legacy)
+                sqlite3_finalize(legacy)
+                guard legacyStatus == SQLITE_ROW || legacyStatus == SQLITE_DONE else { throw FileIndexError.database }
+                if legacyStatus == SQLITE_ROW { try exec("DROP TRIGGER file_recovery_files_update") }
             }
             // Every mutation participates in the caller's transaction, including
             // changes made by older app builds or another index connection.
@@ -443,17 +594,20 @@ public final class FileSearchIndex {
         public let eventID: UInt64
         public let configuration: String
         public let retryPaths: Set<String>
-        public init(eventID: UInt64, configuration: String, retryPaths: Set<String> = []) {
+        public let historyDomain: UUID?
+        public init(eventID: UInt64, configuration: String, retryPaths: Set<String> = [], historyDomain: UUID? = nil) {
             self.eventID = eventID
             self.configuration = configuration
             self.retryPaths = retryPaths
+            self.historyDomain = historyDomain
         }
-        private enum CodingKeys: String, CodingKey { case eventID, configuration, retryPaths }
+        private enum CodingKeys: String, CodingKey { case eventID, configuration, retryPaths, historyDomain }
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             eventID = try c.decode(UInt64.self, forKey: .eventID)
             configuration = try c.decode(String.self, forKey: .configuration)
             retryPaths = try c.decodeIfPresent(Set<String>.self, forKey: .retryPaths) ?? []
+            historyDomain = try c.decodeIfPresent(UUID.self, forKey: .historyDomain)
         }
     }
 
@@ -472,7 +626,76 @@ public final class FileSearchIndex {
     }
 
     public func invalidateRecoveryPoint() throws {
-        try exec("DELETE FROM file_recovery")
+        activeRecoveryScan = nil
+        try exec("DELETE FROM file_recovery WHERE id=1")
+    }
+
+    public struct RecoveryScan {
+        fileprivate let id: UUID
+        fileprivate let owner: ObjectIdentifier
+        fileprivate let dataVersion: Int64
+    }
+
+    /// The cursor is absent throughout a scan. A partial scan must still have
+    /// the matching complete baseline when it acquires the write lock.
+    public func beginRecoveryScan(requiring configurations: Set<String>? = nil, historyDomain: UUID? = nil) throws -> RecoveryScan? {
+        var scan: RecoveryScan?
+        try transaction {
+            if let configurations {
+                guard let existing = try recoveryPoint(), existing.historyDomain == historyDomain,
+                      configurations.contains(existing.configuration) else { return }
+            }
+            try invalidateRecoveryPoint()
+            scan = .init(id: UUID(), owner: ObjectIdentifier(self), dataVersion: try dataVersion())
+        }
+        activeRecoveryScan = scan?.id
+        return scan
+    }
+
+    /// SQLite data_version only compares observations on the same connection,
+    /// and only changes for commits by other connections.
+    public func completeRecoveryScan(_ scan: RecoveryScan, point: RecoveryPoint,
+                                     whileCurrent isCurrent: () -> Bool = { true }) throws -> Bool {
+        guard scan.owner == ObjectIdentifier(self), scan.id == activeRecoveryScan else { return false }
+        activeRecoveryScan = nil
+        var committed = false
+        try transaction {
+            guard isCurrent() else { return }
+            guard try dataVersion() == scan.dataVersion else {
+                try invalidateRecoveryPoint()
+                return
+            }
+            guard isCurrent() else { return }
+            try saveRecoveryPoint(point)
+            committed = true
+        }
+        return committed
+    }
+
+    /// Idle cursor progress may update a matching point, never create one or
+    /// overwrite another scan's outstanding repair work.
+    public func advanceExistingRecoveryPoint(_ point: RecoveryPoint, compatibleConfiguration: String? = nil,
+                                             whileCurrent isCurrent: () -> Bool = { true }) throws -> Bool {
+        var matched = false
+        try transaction {
+            guard isCurrent(), let existing = try recoveryPoint(), existing.retryPaths == point.retryPaths,
+                  existing.historyDomain == point.historyDomain,
+                  existing.configuration == point.configuration || existing.configuration == compatibleConfiguration,
+                  isCurrent() else { return }
+            if point.eventID >= existing.eventID, point != existing {
+                let state = String(decoding: try JSONEncoder().encode(point), as: UTF8.self)
+                try write("UPDATE file_recovery SET state=? WHERE id=1", [state])
+            }
+            matched = true
+        }
+        return matched
+    }
+
+    private func dataVersion() throws -> Int64 {
+        let s = try statement("PRAGMA data_version")
+        defer { sqlite3_finalize(s) }
+        guard sqlite3_step(s) == SQLITE_ROW else { throw FileIndexError.database }
+        return sqlite3_column_int64(s, 0)
     }
 
     public func stats() throws -> FileIndexStats {

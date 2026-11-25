@@ -16,13 +16,12 @@ prefs.set(options.roots, forKey: "fileSearchSelectedScopes")
 let store = base.appendingPathComponent("index")
 let controller = FileSearchController(directory: store, preferences: prefs, startImmediately: false)
 let gate = DispatchSemaphore(value: 0), lock = NSLock()
-var blocked = false
-controller.testBeforeCommitMetadata = { path in
-    if path == scope.path {
-        lock.lock(); let first = !blocked; blocked = true; lock.unlock()
-        if first { gate.wait() }
-    }
+let quiet = ProcessInfo.processInfo.environment["KEYLANE_VERIFY_LIVE_QUIET_ONLY"] == "1"
+if quiet { controller.testQuietIndexEventID = 42 }
+func injectFixtureEvents(_ items: [(URL, Int)]) {
+    if quiet { controller.testIndexEvents(paths: items.map { $0.0.path }, flags: items.map { FSEventStreamEventFlags($0.1) }) }
 }
+var blocked = false
 var rows: [SpotlightFile] = []
 controller.updated = { rows = $0; _ = $1 }
 func wait(_ label: String, _ condition: () -> Bool) {
@@ -32,24 +31,39 @@ func wait(_ label: String, _ condition: () -> Bool) {
 }
 func isBlocked() -> Bool { lock.lock(); defer { lock.unlock() }; return blocked }
 controller.startRuntime()
+controller.search("stale-snapshot")
+wait("Warm baseline publishes before the held refresh") {
+    !controller.indexing && !controller.isSearching && rows.map(\.id) == [original.path] && controller.testFullIndexScans == 1
+}
+precondition(quiet || controller.testHasNativeFileWatcher, "Native FSEvents unavailable in this runner; live stages were not exercised")
+controller.testBeforeCommitMetadata = { path in
+    if path == scope.path {
+        lock.lock(); let first = !blocked; blocked = true; lock.unlock()
+        if first { _ = gate.wait(timeout: .now() + 120) }
+    }
+}
+controller.startIndex()
 wait("Baseline waiting outside writer transaction") { isBlocked() }
 let db = try FileSearchIndex(url: store.appendingPathComponent("index.sqlite"))
-try db.transaction { try db.put(.init(path: scope.appendingPathComponent("writer-sentinel").path, name: "writer-sentinel", volume: "/", modified: 1, directory: false, symlink: false), root: scope.path, epoch: "n:old") }
+try db.transaction { _ = try db.stats() }
 print("PASS metadata enumeration holds no database transaction while blocked")
 let fresh = scope.appendingPathComponent("live-created.txt")
 try Data("freshbodyunique fixture".utf8).write(to: fresh)
 try Data("updatedbodyunique fixture".utf8).write(to: original)
+injectFixtureEvents([(fresh,kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsFile),
+                     (original,kFSEventStreamEventFlagItemModified | kFSEventStreamEventFlagItemIsFile)])
 controller.search("live-created")
 wait("Created filename visible during baseline") { controller.indexing && !controller.isSearching && rows.map(\.id) == [fresh.path] }
 controller.search("freshbodyunique")
 wait("Created body available during baseline") { controller.indexing && !controller.isSearching && rows.map(\.id) == [fresh.path] }
 controller.search("updatedbodyunique")
 wait("Modified file body available during baseline") { controller.indexing && !controller.isSearching && rows.map(\.id) == [original.path] }
-print("PASS real FSEvents publish new/modified filenames and body while baseline metadata is blocked")
+print("PASS \(quiet ? "injected production event pipeline" : "real FSEvents") publishes new/modified filenames and body while baseline metadata is blocked")
 let nested = scope.appendingPathComponent("live-folder/nested")
 try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
 let nestedFile = nested.appendingPathComponent("nested-file.txt")
 try Data("nestedbodyunique fixture".utf8).write(to: nestedFile)
+injectFixtureEvents([(nested.deletingLastPathComponent(),kFSEventStreamEventFlagItemCreated | kFSEventStreamEventFlagItemIsDir)])
 controller.search("nestedbodyunique")
 wait("New nested folder is searchable during baseline") { controller.indexing && !controller.isSearching && rows.map(\.id) == [nestedFile.path] }
 print("PASS newly created nested folders are patched during a blocked baseline")
@@ -57,6 +71,9 @@ let renamed = scope.appendingPathComponent("live-renamed.txt")
 try FileManager.default.moveItem(at: fresh, to: renamed)
 try FileManager.default.removeItem(at: original)
 controller.refreshAfterFileAction(original, removed: true)
+injectFixtureEvents([(fresh,kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemIsFile),
+                     (renamed,kFSEventStreamEventFlagItemRenamed | kFSEventStreamEventFlagItemIsFile),
+                     (original,kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemIsFile)])
 controller.search("live-renamed")
 wait("Renamed filename visible during baseline") { controller.indexing && !controller.isSearching && rows.map(\.id) == [renamed.path] }
 wait("Removed names disappear before baseline resumes") {
@@ -89,16 +106,18 @@ func waitVolume(_ label: String, _ condition: () -> Bool) {
     while !condition(), Date() < end { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
     precondition(condition(), label)
 }
+if quiet { volumes.testQuietIndexEventID = 42 }
 volumes.startRuntime()
-waitVolume("Volume fixture initialized") { volumes.stats.entries == 1 && volumes.testEventsIdle }
+volumes.search("sentinel")
+waitVolume("Volume fixture initialized") { volumes.stats.entries == 1 && volumes.testEventPipelineIdle }
 let baselineVisits = visitCount()
 volumes.testIndexEvents(paths: [base.appendingPathComponent("outside-volume").path], flags: [FSEventStreamEventFlags(kFSEventStreamEventFlagMount)])
-waitVolume("Outside mount classified") { volumes.testEventsIdle }
+waitVolume("Outside mount classified") { volumes.testEventPipelineIdle }
 precondition(visitCount() == baselineVisits, "Unrelated mount rebuilt the index")
 volumes.testIndexEvents(paths: [volumeScope.path], flags: [FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged)])
-waitVolume("Inside root change rebuilds") { visitCount() > baselineVisits && volumes.testEventsIdle }
+waitVolume("Inside root change rebuilds") { visitCount() > baselineVisits && volumes.testEventPipelineIdle }
 let afterScoped = visitCount()
 volumes.testIndexEvents(paths: [base.appendingPathComponent("outside-volume").path], flags: [FSEventStreamEventFlags(kFSEventStreamEventFlagUserDropped)])
-waitVolume("Global event loss rebuilds") { visitCount() > afterScoped && volumes.testEventsIdle }
+waitVolume("Global event loss rebuilds") { visitCount() > afterScoped && volumes.testEventPipelineIdle }
 volumes.stopRuntime()
 print("PASS unrelated volume changes avoid baseline rebuild; affected root changes and global event loss still recover")

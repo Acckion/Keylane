@@ -48,9 +48,11 @@ public struct AIActionContext: Sendable, Equatable {
     public let title: String
     public let text: String
     public let fingerprint: String
-    public init(sourceID: String, title: String, text: String, fingerprint: String? = nil) {
+    public let resourceSnapshot: AIResourceSnapshot?
+    public init(sourceID: String, title: String, text: String, fingerprint: String? = nil, resourceSnapshot: AIResourceSnapshot? = nil) {
         self.sourceID = sourceID; self.title = title; self.text = text
         self.fingerprint = fingerprint ?? Self.digest(text)
+        self.resourceSnapshot = resourceSnapshot
     }
     public static func digest(_ text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()

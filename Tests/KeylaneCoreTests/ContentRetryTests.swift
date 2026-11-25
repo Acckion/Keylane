@@ -6,7 +6,7 @@ final class ContentRetryTests: XCTestCase {
     private func record(_ modified: Double = 1) -> FileIndexRecord {
         .init(path: "/fixture/doc.txt", name: "doc.txt", volume: "/", modified: modified, directory: false, symlink: false)
     }
-    func testTransientBackoffPersistsCapsAndPermissionWaitsForMetadata() throws {
+    func testOneTimedRetryThenWaitsForFreshMetadataAndPermissionUsesEvents() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: folder) }
         let url = folder.appendingPathComponent("index.sqlite")
@@ -15,27 +15,29 @@ final class ContentRetryTests: XCTestCase {
         let job = try XCTUnwrap(db.nextContentJob())
         let now = Date()
         try db.failContent(job, reason: .transient, now: now, jitter: 1)
-        XCTAssertEqual(try XCTUnwrap(db.nextContentRetry()).timeIntervalSince(now), 15, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(db.nextContentRetry()).timeIntervalSince(now), 60, accuracy: 0.001)
         XCTAssertNil(try db.nextContentJob(now: now))
         db = try FileSearchIndex(url: url)
-        try db.failContent(job, reason: .transient, now: now, jitter: 1)
-        XCTAssertEqual(try XCTUnwrap(db.nextContentRetry()).timeIntervalSince(now), 30, accuracy: 0.001)
-        for _ in 0..<30 { try db.failContent(job, reason: .transient, now: now, jitter: 1.1) }
-        XCTAssertEqual(try XCTUnwrap(db.nextContentRetry()).timeIntervalSince(now), 1800, accuracy: 0.001)
+        let retry = try XCTUnwrap(db.nextContentJob(now: now.addingTimeInterval(60)))
+        XCTAssertGreaterThan(retry.revision, job.revision)
         try db.failContent(job, reason: .permission)
+        XCTAssertNotNil(try db.nextContentRetry(), "Stale job cannot alter timed retry")
+        try db.failContent(retry, reason: .transient, now: now, jitter: 1)
         XCTAssertTrue(try db.hasEventDeferredContent())
-        XCTAssertNil(try db.nextContentRetry(), "Blocked files must not keep a periodic retry timer alive")
-        XCTAssertNil(try db.nextContentJob(now: now.addingTimeInterval(1_000_000)))
-        try db.stageMetadata(record(), root: "/fixture", epoch: "c:permission-event", contentSearch: true)
-        let woke = try XCTUnwrap(db.nextContentJob())
-        XCTAssertEqual(woke.token, job.token)
-        XCTAssertGreaterThan(woke.revision, job.revision)
-        try db.failContent(job, reason: .permission)
-        XCTAssertNotNil(try db.nextContentJob(), "Late failure must not overwrite a newer permission wakeup")
-        try db.failContent(woke, reason: .transient, now: now, jitter: 1)
-        XCTAssertEqual(try XCTUnwrap(db.nextContentRetry()).timeIntervalSince(now), 15, accuracy: 0.001)
+        XCTAssertNil(try db.nextContentRetry())
+        XCTAssertFalse(try db.completeContent(retry, body: "late"))
         try db.stageMetadata(record(2), root: "/fixture", epoch: "c:changed", contentSearch: true)
-        XCTAssertNotEqual(try db.nextContentJob()?.token, job.token)
+        let fresh = try XCTUnwrap(db.nextContentJob())
+        XCTAssertNotEqual(fresh.token, retry.token)
+        try db.failContent(fresh, reason: .permission)
+        try db.stageMetadata(record(2), root: "/fixture", epoch: "c:unrelated", contentSearch: true)
+        XCTAssertNil(try db.nextContentRetry(), "Unchanged full scan should not wake a permission wait")
+        try db.stageMetadata(record(2), root: "/fixture", epoch: "c:permission-event", contentSearch: true, wakeFromEvent: true)
+        let woke = try XCTUnwrap(db.nextContentJob())
+        XCTAssertEqual(woke.token, fresh.token)
+        XCTAssertGreaterThan(woke.revision, fresh.revision)
+        try db.failContent(fresh, reason: .permission)
+        XCTAssertNotNil(try db.nextContentJob(), "Late failure must not overwrite newer permission wakeup")
     }
     func testRetainedBodyHiddenUntilRevalidatedAndEqualBodySkipsFTSWrite() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -82,8 +84,11 @@ final class ContentRetryTests: XCTestCase {
             try? FileManager.default.removeItem(at: folder)
         }
         let modified = try XCTUnwrap(file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate).timeIntervalSince1970
-        let job = FileSearchIndex.ContentJob(path: file.path, token: "fixture", root: folder.path, modified: modified)
         try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: file.path)
+        let db = try FileSearchIndex(url: folder.appendingPathComponent("index.sqlite"))
+        try db.stageMetadata(.init(path: file.path, name: file.lastPathComponent, volume: "/", modified: modified,
+                                   directory: false, symlink: false), root: folder.path, epoch: "c:test", contentSearch: true)
+        let job = try XCTUnwrap(db.nextContentJobs(certifiedOnly: true).first)
         XCTAssertThrowsError(try FileContentReader.read(job)) { XCTAssertEqual(FileContentReader.classify($0), .permission) }
     }
     func testVersionTwoQueueMigrationAndFailureClassification() throws {

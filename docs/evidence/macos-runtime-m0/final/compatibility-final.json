@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "candidate": "compiled-first-party-contrast",
+  "cases": {
+    "compiledNoView": true,
+    "compiledReactData": true,
+    "compiledStorage": true,
+    "nodeFSPositive": true,
+    "nodeFSUnavailable": true,
+    "nodeBufferPositive": true,
+    "nodeBufferUnavailable": true,
+    "nodeTimerPositive": true,
+    "nodeTimerUnavailable": true,
+    "fixturesExited": true
+  },
+  "packages": [
+    {
+      "name": "@esbuild/darwin-arm64",
+      "version": "0.25.5",
+      "archiveSHA256": "61a312bcb8249d058639c405cf6378dd3107de5535a9974973c48a6dd0d2d062",
+      "license": "MIT"
+    },
+    {
+      "name": "react",
+      "version": "19.0.0",
+      "archiveSHA256": "2178ec02d41c09f60b5a7dc21844787afd0a41f268faa6ea9ac7a06ccf64eca6",
+      "license": "MIT"
+    }
+  ],
+  "coverage": {
+    "RaycastAPI": "not-implemented",
+    "mountedReconciler": "not-tested",
+    "publicExtensions": "not-run",
+    "productEngineDecision": "required",
+    "NodeCompatibility": "not-equivalent"
+  },
+  "samples": {
+    "no-view": {
+      "compiledBytes": 112,
+      "sourceSHA256": "2af0c1f725c341cf1aa548c4ca45788a3d587d720cb0d937c6f54241240f310e",
+      "bundleSHA256": "c6a83f29f36cea2472bdb2b8b9b6abd06b8e1b2b73a5af5a5f9675cc5050f49a",
+      "NodeControlMatched": true,
+      "restrictedExit": 0
+    },
+    "view": {
+      "compiledBytes": 8601,
+      "sourceSHA256": "1c26b23b2cd61a7405597b29a93efcee63e7bcd041f805d184d0bae480629cd2",
+      "bundleSHA256": "e33cd36b4daa509096cdc8e9cc13e26ad36077cd2381b7a08f691b8e78ae1a0f",
+      "NodeControlMatched": true,
+      "restrictedExit": 0
+    },
+    "storage": {
+      "compiledBytes": 291,
+      "sourceSHA256": "0a16ce66ecf68d47cc96e453796ce7655e2e61125bdc5a5ee51cc6ff7ec866fd",
+      "bundleSHA256": "cf6b6e1ac3f2bccecb30b1a6b121c74cf874c2f73aad8cc143557c0b528a9fed",
+      "NodeControlMatched": true,
+      "restrictedExit": 0
+    },
+    "node-fs": {
+      "compiledBytes": 407,
+      "sourceSHA256": "940f7c4b95b1fcb86382997ce2e3ff161e0139489060e2611934e94f4936a20a",
+      "bundleSHA256": "6c469e3c99232c1e1dd43131c9861813ea47349c44d36e6b70e2dbea20e00fc7",
+      "NodeControlMatched": true,
+      "restrictedExit": 72
+    },
+    "buffer": {
+      "compiledBytes": 113,
+      "sourceSHA256": "5b3b9a47493036a1e3dc7cbcccd8bd9f4809e0cdccd7e00b7eff1a443e72b438",
+      "bundleSHA256": "d3fc55a14077ba86182b24f0c7d8920f2692c3448b74543e75d34d73b67024c8",
+      "NodeControlMatched": true,
+      "restrictedExit": 72
+    },
+    "timer": {
+      "compiledBytes": 119,
+      "sourceSHA256": "8f0f45bc14a73310038fda66caa3920f4f6513597d94a5b188b324a60f069a17",
+      "bundleSHA256": "e01a86ab0b9345892f89eff81a463601bbf53b613cf6e88f35bcc5e02f31b1fa",
+      "NodeControlMatched": true,
+      "restrictedExit": 72
+    }
+  },
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}

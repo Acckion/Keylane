@@ -119,7 +119,7 @@ private struct DeferredAINavigationView: View {
                         .init(sourceID: "fixture", title: "Fixture", text: "Synthetic selected data")
                     }, isCurrent: { _ in true }))]
                 }
-                try await display(AnyView(AIChatContextSheet(source: context, add: { _ in })), name: "module-context-picker")
+                try await display(AnyView(AIChatContextSheet(source: context, prepareReader: { $0 }, add: { _, _ in })), name: "module-context-picker")
                 try await display(AnyView(AIResultContent(answer: "## 合成结果\n\n- **统一 Markdown**\n- 保留原始数据", status: "合成验证完成", running: false, progress: .init()).padding(26)), name: "shared-text-result")
                 let emoji = EmojiSearchController(defaults: prefs)
                 try await emoji.loadForAI(); emoji.start()
