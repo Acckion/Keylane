@@ -1556,6 +1556,12 @@ final class FileSearchController: ObservableObject {
                     return flag & FSEventStreamEventFlags(kFSEventStreamEventFlagHistoryDone) == 0
                         && id < FSEventStreamEventId(kFSEventStreamEventIdSinceNow) ? max(maximum, id) : maximum
                 }
+                #if KEYLANE_FILE_EVENT_TESTING
+                if let trace = callback.owner?.testTraceRawIndexPath {
+                    let current = callback.owner?.watchLifetime === callback.lifetime
+                    for (path, flag) in zip(paths as! [String], flags) { trace(path, flag, current) }
+                }
+                #endif
                 callback.owner?.acceptIndexEvents(paths: paths, flags: flags, eventID: last, from: callback.lifetime)
             }, &context, roots as CFArray, eventID, 2,
                FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot))
@@ -1576,11 +1582,6 @@ final class FileSearchController: ObservableObject {
     private func acceptIndexEvents(paths: CFArray, flags: UnsafeBufferPointer<FSEventStreamEventFlags>,
                                    eventID: FSEventStreamEventId, from lifetime: FileScanCancellation) {
         guard watchLifetime === lifetime, !lifetime.cancelled, !flags.isEmpty else { return }
-        #if KEYLANE_FILE_EVENT_TESTING
-        if let trace = testTraceRawIndexPath {
-            for path in (paths as NSArray).compactMap({ $0 as? String }) { trace(path) }
-        }
-        #endif
         let wrapped = flags.contains { $0 & FSEventStreamEventFlags(kFSEventStreamEventFlagEventIdsWrapped) != 0 }
         if flags.contains(where: { $0 & Self.discontinuityFlags != 0 }) || flags.count > Self.maxQueuedEvents - pendingEventCount {
             restartAfterDiscontinuity(lifetime, wrapped: wrapped)
@@ -1619,7 +1620,10 @@ final class FileSearchController: ObservableObject {
     var testQueryDiagnostics: LatestWorkQueue.Diagnostics { queryWork.diagnostics }
     func testRefreshQuery() { refreshQuery() }
     var testHasNativeFileWatcher: Bool { watch != nil && watchLifetime != nil }
-    var testTraceRawIndexPath: ((String) -> Void)?
+    var testEventPipelineIdle: Bool {
+        !indexing && !processingEvents && pendingEvents.isEmpty && pendingRefresh == nil && dirtyPaths.isEmpty && !needsFullScan
+    }
+    var testTraceRawIndexPath: ((String, FSEventStreamEventFlags, Bool) -> Void)?
     var testTraceEligibleIndexPath: ((String) -> Void)?
     func testIndexEvents(paths: [String], flags: [FSEventStreamEventFlags]) {
         testEventEmitter()?(paths, flags, currentIndexEventID())

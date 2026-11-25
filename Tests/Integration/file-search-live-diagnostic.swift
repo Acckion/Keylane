@@ -1,4 +1,6 @@
-import AppKit
+import CoreServices
+import Darwin
+import Foundation
 import KeylaneCore
 import SQLite3
 
@@ -9,8 +11,25 @@ struct FixtureFailure: Error, CustomStringConvertible {
 }
 
 let manager = FileManager.default
-let testRoot = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYLANE_FILE_TEST_ROOT"]!, isDirectory: true)
-    .resolvingSymlinksInPath()
+// Foundation may rewrite the physical /private/tmp spelling back to /tmp.
+// The controller indexes the configured root literally. Use the same physical
+// spelling for its root, the fixture marker paths, and the readonly SQL checks.
+func physicalPath(_ path: String) -> String? {
+    guard let resolved = realpath(path, nil) else { return nil }
+    defer { free(resolved) }
+    return String(cString: resolved)
+}
+let configuredFixture = ProcessInfo.processInfo.environment["KEYLANE_FILE_TEST_ROOT"]!
+guard let canonicalFixture = physicalPath(configuredFixture),
+      canonicalFixture.hasPrefix("/private/tmp/") else {
+    throw FixtureFailure(description: "Expected a physical /private/tmp fixture root")
+}
+let tmpAlias = "/tmp/" + canonicalFixture.dropFirst("/private/tmp/".count)
+guard physicalPath(tmpAlias) == canonicalFixture else {
+    throw FixtureFailure(description: "Fixture /tmp alias did not match its physical /private/tmp path")
+}
+print("PASS POSIX fixture root normalizes /tmp and /private/tmp to the same directory")
+let testRoot = URL(fileURLWithPath: canonicalFixture, isDirectory: true)
 let scope = testRoot.appendingPathComponent("scope", isDirectory: true)
 let store = testRoot.appendingPathComponent("index", isDirectory: true)
 try manager.createDirectory(at: scope, withIntermediateDirectories: true)
@@ -59,13 +78,32 @@ func note(_ stage: String, marker: Marker) -> Double {
     print("\(marker.label) \(stage) t=\(String(format: "%.3f", t)) delta=\(lag)")
     return t
 }
-controller.testTraceRawIndexPath = { path in
-    if let m = markers.first(where: { $0.url.path == path }), raw[m.label] == nil {
-        raw[m.label] = note("FSEvents callback", marker: m)
+// Only accept exact marker identity (or its POSIX equivalent). Merely seeing
+// a root/parent callback does not satisfy a marker stage.
+func fixturePath(_ path: String) -> String? {
+    guard path == canonicalFixture || path.hasPrefix(canonicalFixture + "/") ||
+          path == tmpAlias || path.hasPrefix(tmpAlias + "/") else { return nil }
+    return physicalPath(path)
+}
+var warmupPaths = Set<String>()
+var productWarmup = Set<String>()
+var observerSeen: [String: Double] = [:]
+var productCallbacks = 0, productAncestors = 0, productAliases = 0, retiredCallbacks = 0
+var observerCallbacks = 0, observerAncestors = 0
+controller.testTraceRawIndexPath = { path, flag, current in
+    guard let normalized = fixturePath(path) else { return }
+    productCallbacks += 1
+    if normalized != path { productAliases += 1 }
+    if normalized == scope.path { productAncestors += 1 }
+    guard current else { retiredCallbacks += 1; return }
+    if warmupPaths.contains(normalized) { productWarmup.insert(normalized) }
+    if let m = markers.first(where: { $0.url.path == normalized }), raw[m.label] == nil {
+        raw[m.label] = note("FSEvents callback flags=\(flag)", marker: m)
     }
 }
 controller.testTraceEligibleIndexPath = { path in
-    if let m = markers.first(where: { $0.url.path == path }), eligible[m.label] == nil {
+    guard let normalized = fixturePath(path) else { return }
+    if let m = markers.first(where: { $0.url.path == normalized }), eligible[m.label] == nil {
         eligible[m.label] = note("classified/dirty", marker: m)
     }
 }
@@ -87,6 +125,71 @@ try wait("initial local-only baseline") {
 guard controller.testHasNativeFileWatcher else {
     throw FixtureFailure(description: "FSEvents native watcher did not start in this runner; stage assertions were not exercised")
 }
+
+// An independent native watcher on the same test root distinguishes absent
+// OS delivery from the product's event or scheduling path. It never injects
+// anything into the controller and does not restart the product watcher.
+final class DiagnosticObserver {
+    let handle: (String) -> Void
+    init(_ handle: @escaping (String) -> Void) { self.handle = handle }
+}
+let diagnostics = DiagnosticObserver { path in
+    guard let normalized = fixturePath(path) else { return }
+    observerCallbacks += 1
+    if normalized == scope.path { observerAncestors += 1 }
+    if let m = markers.first(where: { $0.url.path == normalized }), observerSeen[m.label] == nil {
+        observerSeen[m.label] = note("independent FSEvents callback", marker: m)
+    }
+}
+var observerContext = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(diagnostics).toOpaque(),
+                                           retain: nil, release: nil, copyDescription: nil)
+let observer = FSEventStreamCreate(nil, { _, context, _, paths, _, _ in
+    guard let context else { return }
+    let diagnostics = Unmanaged<DiagnosticObserver>.fromOpaque(context).takeUnretainedValue()
+    for path in Unmanaged<CFArray>.fromOpaque(paths).takeUnretainedValue() as! [String] {
+        diagnostics.handle(path)
+    }
+}, &observerContext, [scope.path] as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2,
+   FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents |
+                            kFSEventStreamCreateFlagNoDefer))
+var observerActive = false
+if let observer {
+    FSEventStreamSetDispatchQueue(observer, .main)
+    observerActive = FSEventStreamStart(observer)
+}
+defer {
+    if let observer {
+        if observerActive { FSEventStreamStop(observer) }
+        FSEventStreamInvalidate(observer)
+        FSEventStreamRelease(observer)
+    }
+    withExtendedLifetime(diagnostics) {}
+}
+
+func counts() -> String {
+    "productRaw=\(productCallbacks) productAncestor=\(productAncestors) productAliases=\(productAliases) retired=\(retiredCallbacks) independentStarted=\(observerActive) independentRaw=\(observerCallbacks) independentAncestor=\(observerAncestors)"
+}
+// Initial registration alone was not a delivery check. Warm up with bounded
+// seed writes until the PRODUCT stream sees one; the independent observer is
+// purely diagnostic and can never fail or satisfy a product assertion.
+var nextWarmup = now(), warmupCount = 0
+do {
+    try wait("one synthetic warmup file reaches the product watcher") {
+        if !productWarmup.isEmpty { return true }
+        if now() >= nextWarmup, warmupCount < 6 {
+            warmupCount += 1
+            nextWarmup = now() + 1
+            let url = scope.appendingPathComponent("watcher-warmup-\(warmupCount).txt")
+            warmupPaths.insert(url.path)
+            try Data("synthetic watcher readiness".utf8).write(to: url)
+        }
+        return false
+    }
+    try wait("drain product event pipeline before tracked marker") { controller.testEventPipelineIdle }
+} catch {
+    throw FixtureFailure(description: "\(error); " + counts())
+}
+print("PASS product watcher delivered a real warmup marker; " + counts())
 
 var db: OpaquePointer?
 let dbURL = store.appendingPathComponent("index.sqlite")
@@ -126,8 +229,13 @@ func write(_ m: Marker) throws {
     try Data("synthetic marker payload".utf8).write(to: m.url)
 }
 func event(_ m: Marker) throws {
-    try wait("\(m.label): product FSEvents callback") { _ = try hasMetadata(m); return raw[m.label] != nil }
-    try wait("\(m.label): product event classification") { _ = try hasMetadata(m); return eligible[m.label] != nil }
+    do {
+        try wait("\(m.label): product FSEvents callback") { _ = try hasMetadata(m); return raw[m.label] != nil }
+        try wait("\(m.label): product event classification") { _ = try hasMetadata(m); return eligible[m.label] != nil }
+    } catch {
+        throw FixtureFailure(description: "\(error); " + counts() +
+            " independent=\(observerSeen[m.label] != nil) product=\(raw[m.label] != nil) eligible=\(eligible[m.label] != nil)")
+    }
 }
 func observe(_ m: Marker) throws {
     try wait("\(m.label): event-driven metadata commit") { try hasMetadata(m) }
