@@ -2,6 +2,28 @@ import CryptoKit
 import XCTest
 @testable import KeylaneCore
 
+/// In-memory protected-head substitute; no keychain or signing keys.
+private final class CoordinatorFixtureAnchor: RaycastStoreRegistryAnchor, @unchecked Sendable {
+    private let lock = NSLock()
+    private var digest: String?
+    private var nextFailure: Bool?
+    func failNextAdvance(afterCommit: Bool) { lock.withLock { nextFailure = afterCommit } }
+    func verify(expectedDigest: String?) throws {
+        try lock.withLock { guard digest == expectedDigest else { throw RaycastStoreDiskRegistry.Failure.anchor } }
+    }
+    func advance(previousDigest: String?, to nextDigest: String) throws {
+        try lock.withLock {
+            guard digest == previousDigest else { throw RaycastStoreDiskRegistry.Failure.anchor }
+            if let afterCommit = nextFailure {
+                nextFailure = nil
+                if afterCommit { digest = nextDigest }
+                throw RaycastStoreDiskRegistry.Failure.anchor
+            }
+            digest = nextDigest
+        }
+    }
+}
+
 private actor CoordinatorFixtureService: RaycastStoreInstallationService {
     private nonisolated let manifest: RaycastExtensionManifest
     private var minimumGeneration: [UUID: UInt64] = [:]
@@ -12,6 +34,8 @@ private actor CoordinatorFixtureService: RaycastStoreInstallationService {
     private var suspendAdmission = false
     private var suspendBuild = false
     private var rejectNextBuild = false
+    private var rejectNextRevoke = false
+    private var publicationFailure: (CoordinatorFixtureAnchor, Bool)?
     private var buildGate: CheckedContinuation<Void, Never>?
     private var buildObserver: CheckedContinuation<Void, Never>?
     private(set) var builds = 0
@@ -51,6 +75,8 @@ private actor CoordinatorFixtureService: RaycastStoreInstallationService {
 
     func delayBuild() { suspendBuild = true }
     func rejectBuild() { rejectNextBuild = true }
+    func interruptRevocation() { rejectNextRevoke = true }
+    func interruptPublication(using anchor: CoordinatorFixtureAnchor, afterCommit: Bool) { publicationFailure = (anchor, afterCommit) }
     func allowBuild() { buildGate?.resume(); buildGate = nil }
     func awaitBuild() async {
         if buildGate != nil { return }
@@ -89,6 +115,11 @@ private actor CoordinatorFixtureService: RaycastStoreInstallationService {
 
     func revoke(installationID: UUID, before generation: UInt64) async throws {
         minimumGeneration[installationID] = max(generation, minimumGeneration[installationID, default: 1])
+        if rejectNextRevoke { rejectNextRevoke = false; throw CocoaError(.fileWriteUnknown) }
+        if let (anchor, afterCommit) = publicationFailure {
+            publicationFailure = nil
+            anchor.failNextAdvance(afterCommit: afterCommit)
+        }
     }
 }
 
@@ -124,6 +155,117 @@ final class RaycastStoreInstallCoordinatorTests: XCTestCase {
         XCTAssertEqual(lhs.id, rhs.id, file: file, line: line)
         XCTAssertEqual(lhs.source, rhs.source, file: file, line: line)
         XCTAssertEqual(lhs.contentDigest, rhs.contentDigest, file: file, line: line)
+    }
+
+    func testCoordinatorResumesExactPendingUpdateWithoutRebuildingOrReplacingIt() async throws {
+        for initiallyEnabled in [true, false] {
+            let (root, a, projectA, service) = try fixture()
+            let (rootB, b, projectB, _) = try fixture(revision: String(repeating: "b", count: 40))
+            let (rootC, c, _, _) = try fixture(revision: String(repeating: "c", count: 40))
+            defer { for url in [root, rootB, rootC] { try? FileManager.default.removeItem(at: url) } }
+            let storage = root.appendingPathComponent("registry")
+            let anchor = CoordinatorFixtureAnchor()
+            let first = try RaycastStoreInstallCoordinator(root: storage, service: service, anchor: anchor) { source, _ in source == a ? projectA : projectB }
+            var installed = try await first.install(first.prepare(a))
+            if !initiallyEnabled { installed = try await first.setEnabled(installationID: installed.id, enabled: false) }
+            let candidate = try await first.prepareUpdate(b, replacing: installed)
+            await service.interruptRevocation()
+            do { _ = try await first.install(candidate); XCTFail("Activation must stop after durable pending state") }
+            catch { XCTAssertEqual((error as? CocoaError)?.code, .fileWriteUnknown) }
+            let restarted = try RaycastStoreInstallCoordinator(root: storage, service: service, anchor: anchor) { _, _ in
+                XCTFail("Recovery or rejection must not reacquire source")
+                throw RaycastStoreInstaller.Failure.preparationFailed
+            }
+            let pendingValue = try await restarted.installation(for: a.slug)
+            let pending = try XCTUnwrap(pendingValue)
+            XCTAssertTrue(pending.pendingOperation); XCTAssertFalse(pending.enabled)
+            XCTAssertEqual(pending.source, a); XCTAssertEqual(pending.generation, installed.generation + 1)
+            let before = await service.builds
+            do { _ = try await restarted.prepareUpdate(b, replacing: installed); XCTFail("Old active generation is not current") }
+            catch { XCTAssertEqual(error as? RaycastStoreDiskRegistry.Failure, .stale) }
+            do { _ = try await restarted.prepareUpdate(c, replacing: pending); XCTFail("Third revision cannot replace a pending update") }
+            catch { XCTAssertEqual(error as? RaycastStoreDiskRegistry.Failure, .stale) }
+            let registry = try RaycastStoreDiskRegistry(root: storage, trust: service, anchor: anchor)
+            do {
+                _ = try await registry.replaceUpdateCandidate(candidate, replacing: pending, bytes: Data(),
+                    expectedDigest: String(repeating: "0", count: 64), source: c, grantedCapabilities: [])
+                XCTFail("Pending receipt must never authorize candidate replacement")
+            } catch { XCTAssertEqual(error as? RaycastStoreDiskRegistry.Failure, .stale) }
+            let recovered = try await restarted.prepareUpdate(b, replacing: pending)
+            assertSameArtifact(recovered, candidate)
+            // Cancellation before activation must not consume the recoverable candidate.
+            let cancelled = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                let staged = try await restarted.prepareUpdate(b, replacing: pending)
+                return try await restarted.install(staged)
+            }
+            do { _ = try await cancelled.value; XCTFail("Cancelled activation must not publish") } catch is CancellationError { }
+            let stillPending = try await restarted.installation(for: a.slug)
+            XCTAssertEqual(stillPending?.generation, pending.generation); XCTAssertTrue(stillPending?.pendingOperation == true)
+            let installer = RaycastStoreInstaller(backend: restarted)
+            try await installer.reconcile(slug: a.slug)
+            let resumed = try await installer.prepareAndUpdate(b, replacing: pending)
+            XCTAssertEqual(resumed.id, installed.id); XCTAssertEqual(resumed.source, b)
+            XCTAssertEqual(resumed.generation, pending.generation); XCTAssertFalse(resumed.pendingOperation)
+            XCTAssertEqual(resumed.enabled, initiallyEnabled)
+            let after = await service.builds
+            XCTAssertEqual(after, before, "Exact pending recovery must not build any revision")
+        }
+    }
+
+    func testPendingLifecycleWithoutCandidateDoesNotAuthorizeAnUpdate() async throws {
+        let (root, a, projectA, service) = try fixture()
+        let (rootB, b, _, _) = try fixture(revision: String(repeating: "b", count: 40))
+        defer { for url in [root, rootB] { try? FileManager.default.removeItem(at: url) } }
+        let storage = root.appendingPathComponent("registry")
+        let first = try RaycastStoreInstallCoordinator(root: storage, service: service) { _, _ in projectA }
+        let installed = try await first.install(first.prepare(a))
+        await service.interruptRevocation()
+        do { _ = try await first.setEnabled(installationID: installed.id, enabled: false); XCTFail() } catch { }
+        let restarted = try RaycastStoreInstallCoordinator(root: storage, service: service) { _, _ in
+            XCTFail("Pending without candidate must not build")
+            throw RaycastStoreInstaller.Failure.preparationFailed
+        }
+        let pendingValue = try await restarted.installation(for: a.slug)
+        let pending = try XCTUnwrap(pendingValue)
+        do { _ = try await restarted.prepareUpdate(b, replacing: pending); XCTFail("Unrelated pending operation must not recover an update") }
+        catch { XCTAssertEqual(error as? RaycastStoreDiskRegistry.Failure, .stale) }
+        let current = try await restarted.installation(for: a.slug)
+        XCTAssertEqual(current?.source, a); XCTAssertEqual(current?.generation, pending.generation)
+        XCTAssertTrue(current?.pendingOperation == true); XCTAssertFalse(current?.enabled == true)
+    }
+
+    func testRestartReconcilesInterruptedUpdatePublicationBeforeRetry() async throws {
+        for committed in [false, true] {
+            let (root, a, projectA, service) = try fixture()
+            let (rootB, b, projectB, _) = try fixture(revision: String(repeating: "b", count: 40))
+            defer { for url in [root, rootB] { try? FileManager.default.removeItem(at: url) } }
+            let storage = root.appendingPathComponent("registry")
+            let anchor = CoordinatorFixtureAnchor()
+            let first = try RaycastStoreInstallCoordinator(root: storage, service: service, anchor: anchor) { source, _ in source == a ? projectA : projectB }
+            let installed = try await first.install(first.prepare(a))
+            let candidate = try await first.prepareUpdate(b, replacing: installed)
+            await service.interruptPublication(using: anchor, afterCommit: committed)
+            do { _ = try await first.install(candidate); XCTFail("Injected protected-head write interruption must propagate") } catch { }
+            let restarted = try RaycastStoreInstallCoordinator(root: storage, service: service, anchor: anchor) { _, _ in
+                XCTFail("Publication recovery must not build")
+                throw RaycastStoreInstaller.Failure.preparationFailed
+            }
+            let recovery = try await restarted.recoverPendingPublication()
+            XCTAssertEqual(recovery, committed ? .completed : .discardedUncommitted)
+            let currentValue = try await restarted.installation(for: a.slug)
+            let current = try XCTUnwrap(currentValue)
+            XCTAssertEqual(current.id, installed.id); XCTAssertEqual(current.generation, installed.generation + 1)
+            XCTAssertEqual(current.source, committed ? b : a); XCTAssertEqual(current.pendingOperation, !committed)
+            let before = await service.builds
+            let installer = RaycastStoreInstaller(backend: restarted)
+            try await installer.reconcile(slug: a.slug)
+            let resumed = try await installer.prepareAndUpdate(b, replacing: current)
+            XCTAssertEqual(resumed.id, installed.id); XCTAssertEqual(resumed.source, b)
+            XCTAssertEqual(resumed.generation, installed.generation + 1); XCTAssertFalse(resumed.pendingOperation)
+            let after = await service.builds
+            XCTAssertEqual(after, before)
+        }
     }
 
     func testObsoleteUpdateCandidateIsAtomicallyReplacedAndExactRevisionRecovered() async throws {

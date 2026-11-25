@@ -103,6 +103,7 @@ public actor RaycastStoreInstallCoordinator: RaycastStoreBackend, RaycastStorePr
         let previousCandidate: RaycastStorePreparedArtifact?
         if let expected {
             previousStage = nil
+            if let recovered = try await registry.recoverUpdateCandidate(for: source, replacing: expected) { return recovered }
             previousCandidate = try await registry.updateCandidate(replacing: expected)
             if let previousCandidate, previousCandidate.source == source { return previousCandidate }
         } else {

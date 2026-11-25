@@ -335,6 +335,21 @@ public actor RaycastStoreDiskRegistry {
         return .init(id: record.id, source: source, contentDigest: expectedDigest)
     }
 
+    /// Read-only recovery accepts only this exact candidate. A pending record
+    /// names the already reserved target generation, not a new replacement base.
+    func recoverUpdateCandidate(for source: RaycastStoreSource, replacing expected: RaycastStoreInstallation) throws -> RaycastStorePreparedArtifact? {
+        let fd = try lock(); defer { unlock(fd) }
+        let state = try read()
+        let installed = try confirmedInstallation(expected, in: state)
+        guard let candidate = state.candidates?.first(where: { $0.id == installed.id }),
+              try candidate.source == source else { return nil }
+        guard candidate.phase == .prepared, let base = candidate.baseGeneration, base < UInt64.max,
+              (installed.phase == .active && installed.generation == base && candidate.baseEnabled == installed.enabled) ||
+              (installed.phase == .pending && installed.generation == base + 1 && !installed.enabled) else { throw Failure.stale }
+        _ = try verified(candidate)
+        return .init(id: candidate.id, source: source, contentDigest: candidate.digest)
+    }
+
     /// Observe a candidate together with the user-confirmed installed generation.
     /// This proof (including absence) must survive the build unchanged.
     func updateCandidate(replacing expected: RaycastStoreInstallation) throws -> RaycastStorePreparedArtifact? {
@@ -377,11 +392,18 @@ public actor RaycastStoreDiskRegistry {
         return .init(id: record.id, source: source, contentDigest: expectedDigest)
     }
 
-    private func confirmedUpdateBase(_ expected: RaycastStoreInstallation, in state: State) throws -> Record {
-        guard !expected.pendingOperation, let record = state.records.first(where: { $0.id == expected.id }),
-              record.phase == .active, record.generation == expected.generation, record.generation < UInt64.max,
-              record.enabled == expected.enabled, try record.source == expected.source else { throw Failure.stale }
+    private func confirmedInstallation(_ expected: RaycastStoreInstallation, in state: State) throws -> Record {
+        guard let record = state.records.first(where: { $0.id == expected.id }), record.phase != .prepared,
+              record.generation == expected.generation, record.enabled == expected.enabled,
+              (record.phase == .pending) == expected.pendingOperation,
+              try record.source == expected.source else { throw Failure.stale }
         _ = try verified(record)
+        return record
+    }
+
+    private func confirmedUpdateBase(_ expected: RaycastStoreInstallation, in state: State) throws -> Record {
+        let record = try confirmedInstallation(expected, in: state)
+        guard record.phase == .active, record.generation < UInt64.max else { throw Failure.stale }
         return record
     }
 
