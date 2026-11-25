@@ -148,7 +148,8 @@ public struct RaycastPublicCatalog {
     ) async throws -> RaycastStoreBuildProject {
         let selection = try RaycastStoreBuildDependencies(source: source, supportedRuntimeAPIVersions: supportedRuntimeAPIVersions, target: target)
         var archives: [String: Data] = [:], remaining = 32 * 1024 * 1024
-        for node in selection.packages {
+        let staging = try MacOSReviewedRaycastViewAdapter.stagingDependencies(for: source.source, target: target, selection: selection)
+        for node in staging.archives {
             try Task.checkCancellation()
             guard remaining > 0, let url = node.registryTarball else { throw Failure.oversized }
             let bytes = try await download(url, maxBytes: min(remaining, 16 * 1024 * 1024))

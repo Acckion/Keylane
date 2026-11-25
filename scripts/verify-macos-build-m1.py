@@ -74,7 +74,7 @@ def main():
         report['compilerArchiveSHA256'] = compiler(args.compiler_archive, tool)
         rights = task/'inherit.plist'
         rights.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox':True,'com.apple.security.inherit':True}))
-        m0.run(['swiftc','-parse-as-library','-DM1_FIXTURE','-target','arm64-apple-macos26.0','-O',
+        m0.run(['swiftc','-package-name','Keylane','-parse-as-library','-DM1_FIXTURE','-target','arm64-apple-macos26.0','-O',
                 str(ROOT/'Sources/KeylaneCore/MacOSExtensionBuild.swift'),
                 str(ROOT/'Sources/KeylaneExtensionBuildHelper/Build.swift'),'-o',str(helper)], capture_output=True)
         for binary, entitlement in [(tool, rights), (app, broker.FIXTURE/'helper.entitlements')]:

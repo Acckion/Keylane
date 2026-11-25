@@ -65,13 +65,63 @@ def bundle_reviewed_fixture(host, task, compiler_archive, command):
                    cwd=task, capture_output=True, check=True, timeout=10)
 
 
+def bundle_react_fixture(task, archive_directory):
+    # Fixture dependencies only. Production dependency admission is unchanged.
+    hashes = {
+        'react': '2178ec02d41c09f60b5a7dc21844787afd0a41f268faa6ea9ac7a06ccf64eca6',
+        'react-reconciler': '9f41ac53213ff6cfab8be60cea2513572893a15b0e976c63f42571a97b494323',
+        'scheduler': '8aac2da6decb09c1dacf8c106f62d2fb4454fbb1fdf2f6fe6d4ef1a57b7c6914',
+    }
+    for name, digest in hashes.items():
+        path = archive_directory/(name + '.tgz')
+        with path.open('rb') as source:
+            raw = source.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != digest:
+            raise ValueError('Unexpected pinned React fixture archive: ' + name)
+        with tarfile.open(fileobj=io.BytesIO(raw)) as archive:
+            for member in archive.getmembers():
+                parts = Path(member.name).parts
+                if not member.isfile() or not parts or parts[0] != 'package' or '..' in parts:
+                    raise ValueError('Unexpected React fixture archive entry')
+                output = task/'node_modules'/name/Path(*parts[1:])
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_bytes(archive.extractfile(member).read())
+    source = ROOT/'Tests/ExtensionPrototype/MacOSRuntimeM2/Batch03React.cjs'
+    shutil.copyfile(source, task/source.name)
+    subprocess.run([str(task/'fixture-esbuild'), source.name, '--bundle', '--platform=neutral',
+                    '--format=iife', '--global-name=__keylaneCommandExports',
+                    '--define:process.env.NODE_ENV="production"', '--legal-comments=inline',
+                    '--outfile=Batch03React.js'], cwd=task, check=True, capture_output=True, timeout=15)
+
+
+def bundle_native_view_fixtures(host, task):
+    # The previous fixture has no Raycast adapter yet. Use a separate project
+    # for the exact production adapter so the two @raycast/api modules cannot mix.
+    view = task/'view-adapter'
+    view.mkdir()
+    (view/'node_modules').mkdir()
+    for name in ['react', 'react-reconciler', 'scheduler']:
+        shutil.copytree(task/'node_modules'/name, view/'node_modules'/name)
+    subprocess.run([str(host), 'reviewed-view-adapter', str(view)], check=True, timeout=10)
+    for name in ['Batch03NativeView', 'Batch03LegacyRender', 'Batch03ViewEffects']:
+        shutil.copyfile(ROOT/'Tests/ExtensionPrototype/MacOSRuntimeM2'/f'{name}.tsx', view/f'{name}.tsx')
+        subprocess.run([str(task/'fixture-esbuild'), f'{name}Entry.mjs', '--bundle', '--platform=neutral',
+                        '--format=iife', '--global-name=__keylaneCommandExports', '--jsx=automatic', '--main-fields=module,main',
+                        '--define:process.env.NODE_ENV="production"', '--legal-comments=inline',
+                        f'--outfile={task}/{name}.js'], cwd=view, check=True, timeout=15)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--products', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--batch-01', nargs=2, type=Path, metavar=('COMPILER_ARCHIVE', 'API_ARCHIVE'))
     parser.add_argument('--batch-02', type=Path, metavar='COMPILER_ARCHIVE')
+    parser.add_argument('--batch-03', type=Path, metavar='COMPILER_ARCHIVE')
+    parser.add_argument('--batch-03-react-archives', type=Path)
     args = parser.parse_args()
+    if args.batch_03_react_archives and not args.batch_03:
+        parser.error('--batch-03-react-archives requires --batch-03')
     identity = broker.m0.resolve_identity()
     cases = {}
     with broker.slots.owned_directory() as task:
@@ -131,6 +181,27 @@ def main():
             bundle_reviewed_fixture(host, task, args.batch_02, 'Batch02Assets')
             for mode in ['batch-02-write', 'batch-02-failed', 'batch-02-reopen', 'batch-02-denied', 'batch-02-ordinary-only',
                          'batch-02-files-write', 'batch-02-files-reopen', 'batch-02-files-denied']:
+                result = subprocess.run([str(host), mode, str(task)], timeout=10, capture_output=True, text=True)
+                if result.returncode:
+                    print(f'{mode}: {result.stderr}')
+                cases[mode] = result.returncode == 0 and not broker.helper_pids(helper)
+        if args.batch_03:
+            bundle_reviewed_fixture(host, task, args.batch_03, 'Batch03HUD')
+            for mode in ['view-session-updates', 'view-session-stale-action', 'view-session-revoked',
+                         'view-session-feedback-confirm-toast', 'view-session-feedback-dismiss',
+                         'view-session-feedback-blocked', 'view-session-feedback-blocked-toast',
+                         'batch-03-hud-allowed', 'batch-03-hud-denied']:
+                result = subprocess.run([str(host), mode, str(task)], timeout=10, capture_output=True, text=True)
+                if result.returncode:
+                    print(f'{mode}: {result.stderr}')
+                cases[mode] = result.returncode == 0 and not broker.helper_pids(helper)
+        if args.batch_03_react_archives:
+            bundle_react_fixture(task, args.batch_03_react_archives)
+            bundle_native_view_fixtures(host, task)
+            for mode in ['view-session-react', 'view-session-react-group-denied',
+                         'view-production-confirm', 'view-production-decline', 'view-production-legacy',
+                         'view-production-revoked', 'view-production-no-grant', 'view-production-no-presentation',
+                         'view-production-effects', 'view-production-effects-denied']:
                 result = subprocess.run([str(host), mode, str(task)], timeout=10, capture_output=True, text=True)
                 if result.returncode:
                     print(f'{mode}: {result.stderr}')
@@ -207,7 +278,7 @@ def main():
             cases['ownerReleasedAfterHelperExit'] = True
         broker.m0.verify_signature(runtime, identity, rights)
         broker.m0.verify_signature(app, identity, {})
-    report = {'fixtureOnly': True, 'scope': 'M2 native no-view process', 'cases': cases,
+    report = {'fixtureOnly': True, 'scope': 'M2 native no-view and supervised view processes', 'cases': cases,
               'gate': 'incomplete' if all(cases.values()) else 'blocked'}
     if rows_verified and cases['batch-01-values'] and cases['batch-01-no-grants']:
         report['batch01JavaScriptEntries'] = rows_verified

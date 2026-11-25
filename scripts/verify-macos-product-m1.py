@@ -74,11 +74,14 @@ def main():
     p.add_argument('--official-uuid', action='store_true',
                    help='Fetch and execute the pinned official UUID Generator command in a temporary profile')
     p.add_argument('--legacy-preview', action='store_true', help='Exercise the runtime using isolated login Keychain slots')
+    p.add_argument('--batch-03-view-build', type=Path, metavar='REACT_ARCHIVE_DIRECTORY')
     p.add_argument('--batch-02-file-build', action='store_true')
     p.add_argument('--batch-02-protected-vault', action='store_true')
     p.add_argument('--report',type=Path,required=True);args=p.parse_args()
     if args.batch_02_protected_vault and (not args.runtime_helper or args.legacy_preview):
         p.error('--batch-02-protected-vault requires protected runtime mode')
+    if args.batch_03_view_build and not args.runtime_helper:
+        p.error('--batch-03-view-build requires --runtime-helper')
     if args.batch_02_file_build and not args.runtime_helper:
         p.error('--batch-02-file-build requires --runtime-helper')
     if args.legacy_preview and (not args.runtime_helper or args.provisioning_profile):
@@ -93,6 +96,13 @@ def main():
                 protectedStorage=LEGACY_PREVIEW_STORAGE if args.legacy_preview else 'data-protection-keychain-v2',
                 provisionedFixtureOnly=not args.legacy_preview)
     with task_directory() as task:
+        if args.batch_03_view_build:
+            for name in ['react', 'react-reconciler', 'scheduler']:
+                archive = args.batch_03_view_build/(name + '.tgz')
+                if archive.stat().st_size > 2 * 1024 * 1024:
+                    raise ValueError('React archive too large')
+                shutil.copyfile(archive, task/archive.name)
+            shutil.copyfile(ROOT/'Tests/ExtensionPrototype/MacOSRuntimeM2/Batch03NativeView.tsx', task/'batch-03-view.tsx')
         app=task/'Host.app';host=app/'Contents/MacOS/host';host.parent.mkdir(parents=True)
         identifier='org.keylane.tests.runtime-m1.product-host'
         (app/'Contents/Info.plist').write_bytes(plistlib.dumps(dict(CFBundleIdentifier=identifier,CFBundleExecutable='host',CFBundlePackageType='APPL')))
@@ -134,6 +144,8 @@ def main():
                     call('batch-02-protected-vault')
                 if args.batch_02_file_build:
                     call('batch-02-file-build')
+                if args.batch_03_view_build:
+                    call('batch-03-view-build')
                 call('runtime-service')
                 call('runtime-restart')
                 call('runtime-after-uninstall')
@@ -163,6 +175,8 @@ def main():
                 required |= {'protectedCredentialKeyReopened', 'credentialCiphertextBoundToInstallation'}
             if args.batch_02_file_build:
                 required.add('signedVirtualFileImportsBuilt')
+            if args.batch_03_view_build:
+                required |= {'signedReactViewBuilt', 'builtReactPreservesMITNotice'}
             if args.official_uuid:
                 official_cases = {'officialUUIDInstalledAndRan', 'officialUUIDMissingArgumentRejected',
                                   'officialUUIDRestartAndUninstall'}

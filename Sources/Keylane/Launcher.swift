@@ -412,6 +412,10 @@ struct Launcher: View {
             if launcherVisible && presentation.page == model.pageID { closeMenus() }
             updatePresentation(visible: true)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .launcherClearSavedSearch)) { _ in
+            mainSearchQuery = ""
+            mainSearchSelection = .init()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .launcherResetSearch)) { _ in
             pageHistory = .init()
             mainSearchQuery = ""
@@ -1194,6 +1198,7 @@ struct Launcher: View {
         } else {
             items = root
         }
+        if !applicationMenu, currentSubmenu(root: root)?.search != nil { return items }
         return items.filter {
             actionQuery.isEmpty || $0.title.localizedCaseInsensitiveContains(actionQuery)
                 || $0.value?.localizedCaseInsensitiveContains(actionQuery) == true
@@ -1240,6 +1245,9 @@ struct Launcher: View {
             query: Binding(get: { actionQuery }, set: { query in
                 guard actionQuery != query else { return }
                 actionQuery = query; actionSelectionID = nil
+                if !applicationMenu {
+                    currentSubmenu(root: rootMenuItems(applicationMenu: false))?.search?(query)
+                }
             }), focusToken: focusToken, wantsFocus: actions || appMenu, navigation: model.navigation,
             activate: { activateMenuItem($0, applicationMenu: applicationMenu, focus: focus) },
             highlight: { if focus == focusToken { actionSelectionID = $0 } },

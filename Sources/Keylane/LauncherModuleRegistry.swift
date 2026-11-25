@@ -25,6 +25,7 @@ struct LauncherAction: Identifiable {
     struct Submenu {
         let title: String
         let items: [LauncherAction]
+        var search: ((String) -> Void)? = nil
     }
 
     struct ArgumentForm {

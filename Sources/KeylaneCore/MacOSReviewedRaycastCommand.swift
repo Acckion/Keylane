@@ -1,9 +1,9 @@
 import Foundation
 
-/// The macOS preview qualifies one reviewed command at a pinned official revision.
+/// The macOS preview qualifies reviewed commands at pinned official revisions.
 package enum MacOSReviewedRaycastCommand {
     package struct Entry: Sendable {
-        package var mode: RaycastExtensionManifest.Mode { .noView }
+        package var mode: RaycastExtensionManifest.Mode = .noView
         package static let runtimeImport = "@raycast/api"
         package let slug: String
         package let revision: String

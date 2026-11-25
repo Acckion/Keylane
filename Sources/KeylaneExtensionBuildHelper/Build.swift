@@ -125,6 +125,9 @@ private final class Supervisor: @unchecked Sendable {
             var arguments = [compiler.path, "./" + entry, "--bundle", "--platform=neutral", "--format=iife",
                              "--global-name=__keylaneCommandExports", "--charset=utf8", "--main-fields=module,main", "--tsconfig-raw={}", "--log-level=error",
                              "--legal-comments=inline", "--outfile=" + out, "--metafile=" + meta]
+            if request.plan.files.contains(where: { $0.path == Build.reactViewRuntimeModule }) {
+                arguments += ["--jsx=automatic", #"--define:process.env.NODE_ENV="production""#]
+            }
             if request.plan.files.contains(where: { $0.path == "node_modules/@keylane/reviewed-assets/index.js" }) {
                 for name in ["fs", "node:fs"] {
                     arguments.append("--alias:" + name + "=./node_modules/@keylane/reviewed-assets/index.js")

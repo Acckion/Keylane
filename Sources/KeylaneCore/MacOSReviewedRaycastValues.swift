@@ -1,6 +1,8 @@
 /// Pure Raycast exports ported from the legacy Linux guest adapters.
 enum MacOSReviewedRaycastValues {
-    static let source = #"""
+    static let source = randomSource + "\n" + pureSource
+
+    private static let randomSource = #"""
     export function randomId(size = 21) {
       if (!Number.isSafeInteger(size) || size < 0 || size > 65536) {
         throw new RangeError("Expected an integer ID length between 0 and 65536");
@@ -10,6 +12,9 @@ enum MacOSReviewedRaycastValues {
       return id;
     }
 
+    """#
+
+    static let pureSource = #"""
     export const AlertActionStyle = Object.freeze({ Default: "default", Cancel: "cancel", Destructive: "destructive" });
     export const Alert = Object.freeze({ ActionStyle: AlertActionStyle });
 

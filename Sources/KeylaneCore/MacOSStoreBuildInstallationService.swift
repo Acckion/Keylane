@@ -1,6 +1,6 @@
 import Foundation
 
-/// Composes the fixed builder, protected registry and optional signed no-view runtime.
+/// Composes the fixed builder, protected registry and optional signed command runtime.
 package final class MacOSStoreBuildInstallationService: RaycastStoreInstallationService, @unchecked Sendable {
     package var buildTarget: RaycastStoreBuildDependencies.Target { .macOSArm64 }
     private let profile: MacOSBuildProfile
@@ -38,7 +38,13 @@ package final class MacOSStoreBuildInstallationService: RaycastStoreInstallation
            !manifest.commands.contains(where: { MacOSExtensionRunAdmission.supports(command: $0, manifest: manifest, capabilities: capabilities) }) {
             throw RaycastStoreInstaller.Failure.noRunnableCommands
         }
-        let plan = try MacOSExtensionBuild.Plan(files: project.files.map { .init(path: $0.path, body: $0.body) }, entries: manifest.commands.map(\.entry))
+        let planFiles = project.files.map { MacOSExtensionBuild.File(path: $0.path, body: $0.body) }
+        let entries = manifest.commands.map(\.entry)
+        let plan = if MacOSReviewedViewSession.canRun(capabilities) {
+            try MacOSReviewedRaycastViewAdapter.plan(files: planFiles, entries: entries)
+        } else {
+            try MacOSExtensionBuild.Plan(files: planFiles, entries: entries)
+        }
         let artifact: MacOSExtensionBuild.Artifact
         do {
             artifact = try await coordinator.build(plan) { [profile] in try profile.verify(); return true }

@@ -5,6 +5,13 @@ import os
 /// including on cancellation. It consumes the ticket before starting the process.
 package protocol MacOSExtensionNoViewDriver: Sendable {
     func run(bytes: Data, ticket: StoreGuestRunTicket) async throws
+    func runView(bytes: Data, ticket: StoreGuestRunTicket, presentation: MacOSReviewedViewSession.Presentation) async throws
+}
+
+extension MacOSExtensionNoViewDriver {
+    func runView(bytes: Data, ticket: StoreGuestRunTicket, presentation: MacOSReviewedViewSession.Presentation) async throws {
+        throw MacOSExtensionRunAdmission.Failure.unsupportedCommand
+    }
 }
 
 /// M2 admission for a single host. The composition root must give registry
@@ -51,6 +58,11 @@ package final class MacOSExtensionRunAdmission: Sendable {
         let run = try await context.registry.withCurrentRun(context, includeSecrets: true) { installation, trusted, snapshot in
             try Task.checkCancellation()
             guard Self.supports(commandID: context.commandID, trusted: trusted) else { throw Failure.unsupportedCommand }
+            guard let command = trusted.manifest.commands.first(where: { $0.id == context.commandID }) else {
+                throw Failure.unsupportedCommand
+            }
+            let presentation = MacOSReviewedViewSession.presentation
+            guard command.mode != .view || presentation != nil else { throw Failure.unsupportedCommand }
             var launchContext = try Self.launchContext(commandID: context.commandID, trusted: trusted, snapshot: snapshot, arguments: context.arguments)
             let artifact = try seal.open(context.artifact, installation: installation, commandID: context.commandID)
             if trusted.requiredCapabilities.contains(MacOSReviewedRaycastAssets.capability) {
@@ -60,7 +72,11 @@ package final class MacOSExtensionRunAdmission: Sendable {
                                   generation: installation.generation, commandID: context.commandID,
                                   receipt: artifact.receipt, capabilities: trusted.requiredCapabilities,
                                   launchContext: launchContext) { ticket in
-                try await driver.run(bytes: artifact.bytes, ticket: ticket)
+                if command.mode == .view, let presentation {
+                    try await driver.runView(bytes: artifact.bytes, ticket: ticket, presentation: presentation)
+                } else {
+                    try await driver.run(bytes: artifact.bytes, ticket: ticket)
+                }
             }
         }
         try await run.wait()
@@ -73,6 +89,11 @@ package final class MacOSExtensionRunAdmission: Sendable {
 
     static func supports(command: RaycastExtensionManifest.Command, manifest: RaycastExtensionManifest,
                          capabilities: Set<String>) -> Bool {
+        if command.mode == .view {
+            return MacOSReviewedViewSession.canRun(capabilities)
+                && !command.disabledByDefault && command.backgroundIntervalSeconds == nil && command.arguments.isEmpty
+                && (try? RaycastStorePreferenceSchema(manifest: manifest, commandID: command.id).entries.isEmpty) == true
+        }
         guard command.mode == .noView, command.arguments.isEmpty || MacOSReviewedRaycastCommand.entry(forCommandID: command.id)?.argument != nil,
               command.backgroundIntervalSeconds == nil,
               !command.disabledByDefault, capabilities.isSubset(of: MacOSNoViewCapabilities.supported),

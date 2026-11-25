@@ -19,6 +19,23 @@ import os
                 exit(0)
             } catch { exit(1) }
         }
+        if mode == "reviewed-view-adapter" {
+            do {
+                for file in MacOSReviewedRaycastViewAdapter.files {
+                    let path = scratch.appendingPathComponent(file.path)
+                    try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try file.body.write(to: path, options: .withoutOverwriting)
+                }
+                for name in ["Batch03NativeView", "Batch03LegacyRender", "Batch03ViewEffects"] {
+                    try MacOSReviewedRaycastViewAdapter.wrapper(command: name + ".tsx")
+                        .write(to: scratch.appendingPathComponent(name + "Entry.mjs"), options: .withoutOverwriting)
+                }
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
         let ownership: MacOSStoreOwnership?
         if mode == "owner-loss" {
             let path = scratch.appendingPathComponent("owner.lock")
@@ -35,6 +52,58 @@ import os
                                                  signingRequirement: FixtureSigning.requirement, ownership: ownership,
                                                  deliver: { observed.record($0) },
                                                  storage: mode.hasPrefix("batch-02-") ? .init(root: scratch) : nil)
+        if mode.hasPrefix("batch-03-hud-") {
+            do {
+                let allowed = mode == "batch-03-hud-allowed"
+                try await exerciseHUD(driver, scratch: scratch, navigation: allowed)
+                exit(observed.history == (allowed ? ["close:true:suspended", "Scoped HUD"] : []) ? 0 : 1)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
+        if mode.hasPrefix("view-production-") {
+            do {
+                try await runThroughRegistry(driver: driver, scratch: scratch, withCapabilities: false, viewMode: mode)
+                let expected = mode == "view-production-effects"
+                    ? ["clear:false", "close:false:suspended", "View HUD", "root:true", "close:false"] : []
+                if observed.history != expected {
+                    FileHandle.standardError.write(Data(String(describing: observed.history).utf8))
+                    exit(1)
+                }
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
+        if mode == "view-session-react" || mode == "view-session-react-group-denied" {
+            do {
+                try exerciseReactView(scratch: scratch, helper: driver.verifiedHelper(), chooseGroup: mode.hasSuffix("group-denied"))
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
+        if mode.hasPrefix("view-session-feedback-") {
+            do {
+                try exerciseViewFeedback(mode, helper: driver.verifiedHelper())
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
+        if mode.hasPrefix("view-session-") {
+            do {
+                try exerciseViewSession(mode, helper: driver.verifiedHelper())
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data(String(describing: error).utf8))
+                exit(1)
+            }
+        }
         if mode == "batch-01-values" || mode == "batch-01-no-grants" {
             do {
                 try await exerciseBatch01(driver, scratch: scratch, allow: mode == "batch-01-values")
@@ -160,6 +229,143 @@ import os
             liveLease: { true })
         try await MacOSNoViewCapabilities.$displayPreferences.withValue(.init(appearance: .light, textSize: .large)) {
             try await driver.run(bytes: bytes, ticket: ticket)
+        }
+    }
+
+    static func exerciseHUD(_ driver: MacOSRestrictedNoViewDriver, scratch: URL, navigation: Bool) async throws {
+        let bytes = try Data(contentsOf: scratch.appendingPathComponent("Batch03HUD.js"))
+        let id = UUID(), lease = OSAllocatedUnfairLock(initialState: true)
+        let receipt = StoreRuntimeBridge.Receipt(
+            provenance: .init(installation: .init(id: id.uuidString, generation: 0),
+                              entry: "src/main.js", projectDigest: "", runtimeDigest: ""),
+            artifactDigest: MacOSExtensionBuild.hash(bytes))
+        let grants: Set<String> = navigation ? [MacOSNoViewCapabilities.toast, MacOSNoViewCapabilities.closeWindow] : [MacOSNoViewCapabilities.toast]
+        let ticket = StoreGuestRunTicket(id: UUID(), profileID: id, installation: .init(id: id.uuidString, generation: 1),
+            receipt: receipt, commandID: "extension:raycast:fixture/batch-03/main", capabilities: grants,
+            launchContext: .init(arguments: ["navigation": navigation ? "on" : "off"]),
+            macOSLease: lease, liveLease: { lease.withLock { $0 } })
+        try await driver.run(bytes: bytes, ticket: ticket)
+    }
+
+    static func exerciseReactView(scratch: URL, helper: URL, chooseGroup: Bool) throws {
+        let script = try String(contentsOf: scratch.appendingPathComponent("Batch03React.js"), encoding: .utf8)
+        let mailbox = MacOSReviewedViewSession.Mailbox()
+        var snapshots: [String] = []
+        do {
+            try MacOSReviewedViewSession.run(helper: helper, source: script, process: .init(), timeout: .seconds(4),
+                mailbox: mailbox, isCurrent: { true }) { detail, revision in
+                    snapshots.append(detail.markdown)
+                    let actionID = chooseGroup ? "counter" : "increment"
+                    mailbox.submit(revision < 2 ? .action(.action(actionID)) : .finish, revision: revision)
+                }
+        } catch MacOSReviewedViewSession.Failure.invalidEvent where chooseGroup && snapshots == ["count:0"] {
+            return
+        }
+        guard !chooseGroup, snapshots == ["count:0", "count:1", "count:2"] else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+    }
+
+    static func exerciseViewFeedback(_ mode: String, helper: URL) throws {
+        let source = """
+        const copy = { id: "copy", title: "Copy", style: "regular" };
+        const retry = { id: "retry", title: "Retry", style: "regular" };
+        var __keylaneCommandExports = {
+            default: () => ({
+                markdown: "prompt", actions: [copy],
+                confirmation: { title: "Continue?", acceptTitle: "Continue" }
+            }),
+            onEvent: async event => {
+                await Promise.resolve();
+                if (event.kind === "confirm") {
+                    return { markdown: "accepted", actions: [copy], toast: { title: "Completed", primary: retry } };
+                }
+                if (event.kind === "dismiss") return { markdown: "dismissed", actions: [] };
+                if (event.kind === "toastAction" && event.actionID === "retry") {
+                    return { markdown: "retried", actions: [] };
+                }
+                throw new Error("Unexpected event");
+            }
+        };
+        """
+        let mailbox = MacOSReviewedViewSession.Mailbox()
+        var observed = [String]()
+        do {
+            try MacOSReviewedViewSession.run(helper: helper, source: source, process: .init(), timeout: .seconds(4),
+                mailbox: mailbox, isCurrent: { true }) { detail, revision in
+                    observed.append(detail.markdown)
+                    let selection: MacOSReviewedViewSession.Mailbox.Selection
+                    switch (mode, revision) {
+                    case ("view-session-feedback-dismiss", 0): selection = .action(.dismiss)
+                    case ("view-session-feedback-blocked", 0): selection = .action(.action("copy"))
+                    case (_, 0): selection = .action(.confirm)
+                    case ("view-session-feedback-blocked-toast", 1): selection = .action(.toastAction("copy"))
+                    case ("view-session-feedback-confirm-toast", 1): selection = .action(.toastAction("retry"))
+                    default: selection = .finish
+                    }
+                    mailbox.submit(selection, revision: revision)
+                }
+        } catch MacOSReviewedViewSession.Failure.invalidEvent
+            where mode == "view-session-feedback-blocked" || mode == "view-session-feedback-blocked-toast" {
+            let expected = mode == "view-session-feedback-blocked" ? ["prompt"] : ["prompt", "accepted"]
+            guard observed == expected else { throw CocoaError(.fileReadCorruptFile) }
+            return
+        }
+        let expected = mode == "view-session-feedback-dismiss" ? ["prompt", "dismissed"] : ["prompt", "accepted", "retried"]
+        guard observed == expected else { throw CocoaError(.fileReadCorruptFile) }
+    }
+
+    static func exerciseViewSession(_ mode: String, helper: URL) throws {
+        let source = """
+        let count = 0;
+        const root = () => ({ markdown: `count:${count}`, actions: [
+            { id: "advance", title: "Advance", style: "regular" }
+        ] });
+        var __keylaneCommandExports = {
+            default: root,
+            onEvent: async event => {
+                await Promise.resolve();
+                if (event.kind === "action" && event.actionID === "advance") {
+                    count++;
+                    return { markdown: `detail:${count}`, actions: [] };
+                }
+                if (event.kind === "back") return root();
+                throw new Error("Unexpected event");
+            }
+        };
+        """
+        let process = MacOSOwnedHelperProcess()
+        let mailbox = MacOSReviewedViewSession.Mailbox()
+        var observed = [String]()
+        var current = true
+        do {
+            try MacOSReviewedViewSession.run(helper: helper, source: source, process: process, timeout: .seconds(4),
+                                               mailbox: mailbox, isCurrent: { current }) { detail, revision in
+                observed.append(detail.markdown)
+                let selection: MacOSReviewedViewSession.Mailbox.Selection
+                switch (mode, observed.count) {
+                case ("view-session-updates", 1): selection = .action(.action("advance"))
+                case ("view-session-updates", 2): selection = .action(.back)
+                case ("view-session-stale-action", 1), ("view-session-stale-action", 2): selection = .action(.action("advance"))
+                case ("view-session-revoked", 1):
+                    current = false
+                    selection = .action(.action("advance"))
+                default: selection = .finish
+                }
+                DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(75)) {
+                    _ = mailbox.submit(.finish, revision: revision - 1)
+                    mailbox.submit(selection, revision: revision)
+                }
+            }
+        } catch MacOSReviewedViewSession.Failure.invalidEvent where mode == "view-session-stale-action" {
+            guard observed == ["count:0", "detail:1"] else { throw CocoaError(.fileReadCorruptFile) }
+            return
+        } catch MacOSReviewedViewSession.Failure.retired where mode == "view-session-revoked" {
+            guard observed == ["count:0"] else { throw CocoaError(.fileReadCorruptFile) }
+            return
+        }
+        guard mode == "view-session-updates", observed == ["count:0", "detail:1", "count:1"] else {
+            throw CocoaError(.fileReadCorruptFile)
         }
     }
 
@@ -323,7 +529,7 @@ import os
         }
     }
 
-    private static func runThroughRegistry(driver: MacOSRestrictedNoViewDriver, scratch: URL, withCapabilities: Bool) async throws {
+    private static func runThroughRegistry(driver: MacOSRestrictedNoViewDriver, scratch: URL, withCapabilities: Bool, viewMode: String? = nil) async throws {
         let key = P256.Signing.PrivateKey(), id = UUID(), revision = String(repeating: "a", count: 40)
         let source = try RaycastStoreSource(slug: "m2-fixture", catalog: .init(revision: revision, slugs: ["m2-fixture"]))
         let entry = "src/main.js"
@@ -332,10 +538,25 @@ import os
         if (!keylane.toast(JSON.stringify({operation:"show",id:1,title:"sealed toast",style:"SUCCESS"}))) throw Error();
         if (!keylane.copy(keylane.preferences.label)) throw Error();
         """ : "while(true) {}"
-        let bytes = Data(script.utf8)
-        let grants = withCapabilities ? feedbackFixtureCapabilities : []
+        let bytes: Data
+        if let viewMode {
+            let file = if viewMode.hasSuffix("legacy") { "Batch03LegacyRender.js" }
+                else if viewMode.contains("effects") { "Batch03ViewEffects.js" }
+                else { "Batch03NativeView.js" }
+            bytes = try Data(contentsOf: scratch.appendingPathComponent(file))
+        } else {
+            bytes = Data(script.utf8)
+        }
+        let grants = if viewMode == "view-production-no-grant" { Set<String>() }
+            else if viewMode == "view-production-effects" {
+                MacOSNoViewCapabilities.navigation.union([MacOSReviewedViewSession.capability, MacOSNoViewCapabilities.toast])
+            } else if viewMode != nil { Set([MacOSReviewedViewSession.capability]) }
+            else { withCapabilities ? feedbackFixtureCapabilities : [] }
         let original = Data(#"{"name":"m2-fixture","title":"First party","author":"fixture","platforms":["macOS"],"commands":[{"name":"main","title":"Main","mode":"no-view"}]}"#.utf8)
         var metadata = try JSONSerialization.jsonObject(with: original) as! [String: Any]
+        if viewMode != nil {
+            metadata["commands"] = [["name": "main", "title": "Main", "mode": "view"]]
+        }
         if withCapabilities { metadata["preferences"] = [["name":"label","title":"Label","type":"textfield","required":true]] }
         let files = [entry: bytes, "package.json": try JSONSerialization.data(withJSONObject: metadata)]
         let tree = files.map { path, data -> [String: Any] in
@@ -374,6 +595,73 @@ import os
                                                     commandID: command, capabilities: [])
         let context = RaycastStoreInstallCoordinator.RunContext(installation: installed, commandID: command,
                                                                  artifact: artifact, registry: registry)
+        if let viewMode {
+            var snapshots: [MacOSReviewedViewSession.Detail] = []
+            let mailbox = MacOSReviewedViewSession.Mailbox()
+            if viewMode == "view-production-no-presentation" {
+                do {
+                    try await admission.start(context, profileID: id, seal: seal, driver: driver)
+                    throw CocoaError(.fileReadCorruptFile)
+                } catch MacOSExtensionRunAdmission.Failure.unsupportedCommand {
+                    return
+                }
+            }
+            let presentation = MacOSReviewedViewSession.Presentation(mailbox: mailbox) { snapshot, revision in
+                snapshots.append(snapshot)
+                let items = snapshot.actions
+                let selection: MacOSReviewedViewSession.Mailbox.Selection
+                if viewMode.hasSuffix("legacy") || viewMode.hasSuffix("no-grant") || viewMode.contains("effects") {
+                    selection = .finish
+                } else if viewMode.hasSuffix("revoked") {
+                    Task { _ = try await registry.setEnabled(installationID: id, expectedGeneration: installed.generation, enabled: false) }
+                    return
+                } else {
+                    switch revision {
+                    case 0:
+                        if items.count == 3, let submenu = items.last {
+                            selection = .action(.search(submenu.id, query: "sample"))
+                        } else { selection = .finish }
+                    case 1: selection = items.last?.children?.first.map { .action(.action($0.id)) } ?? .finish
+                    case 2: selection = items.dropFirst().first.map { .action(.action($0.id)) } ?? .finish
+                    case 3: selection = .action(.back)
+                    case 4: selection = items.first.map { .action(.action($0.id)) } ?? .finish
+                    case 5: selection = .action(viewMode.hasSuffix("decline") ? .dismiss : .confirm)
+                    case 6: selection = snapshot.toast?.secondary.map { .action(.toastAction($0.id)) } ?? .finish
+                    case 7: selection = snapshot.toast?.primary.map { .action(.toastAction($0.id)) } ?? .finish
+                    default: selection = .finish
+                    }
+                }
+                mailbox.submit(selection, revision: revision)
+            }
+            do {
+                try await MacOSReviewedViewSession.$presentation.withValue(presentation) {
+                    try await admission.start(context, profileID: id, seal: seal, driver: driver)
+                }
+            } catch MacOSExtensionRunAdmission.Failure.unsupportedCommand
+                where viewMode.hasSuffix("no-grant") && snapshots.isEmpty { return }
+            catch is CancellationError where viewMode.hasSuffix("revoked") && snapshots.count == 1 { return }
+            if viewMode.hasSuffix("legacy"), snapshots.map(\.markdown) == ["legacy render"] { return }
+            if viewMode.contains("effects"), snapshots.map(\.markdown) == ["view effects"] {
+                guard snapshots[0].effects?.count ?? 0 == (viewMode == "view-production-effects" ? 5 : 0) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return
+            }
+            let choice = viewMode.hasSuffix("decline") ? "declined" : "accepted"
+            guard snapshots.map(\.markdown) == ["ready", "ready", "selected:sample", "child", "returned", "returned", choice, "retried", "undone"],
+                  snapshots[0].actions.first?.shortcut?.key == "g", snapshots[0].actions.last?.searchable == true,
+                  snapshots[1].actions.last?.children?.first?.title == "sample", snapshots[3].depth == 1,
+                  snapshots[4].depth == 0, snapshots[5].toast?.style == .animated,
+                  snapshots[5].confirmation?.cancelTitle == "Decline", snapshots[5].confirmation?.destructive == true,
+                  snapshots[6].confirmation == nil, snapshots[6].toast?.title == "Choice saved",
+                  snapshots[6].toast?.style == .success, snapshots[7].toast?.style == .failure,
+                  snapshots[7].toast?.message == "Retry failed", snapshots[8].toast == nil
+            else {
+                FileHandle.standardError.write(Data(String(describing: snapshots).utf8))
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            return
+        }
         if withCapabilities {
             do {
                 try await admission.start(context, profileID: id, seal: seal, driver: driver)

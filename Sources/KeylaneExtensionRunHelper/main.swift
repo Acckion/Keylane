@@ -17,6 +17,10 @@ private func evaluate() throws -> Bool {
         _exit(70)
     }, nil) == 0, let watcher else { return false }
     pthread_detach(watcher)
+    if CommandLine.arguments == [CommandLine.arguments[0], "--reviewed-view-session"] {
+        return try ViewSession.run()
+    }
+    guard CommandLine.arguments.count == 1 else { return false }
     alarm(6)
 
     var input = Data()

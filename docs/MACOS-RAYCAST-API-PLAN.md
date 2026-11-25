@@ -82,6 +82,18 @@ python3 scripts/verify-macos-run-m2.py --products "$PRODUCTS" \
 
 第 02 批签名样本用 `verify-macos-run-m2.py --batch-02 "$ESBUILD_ARCHIVE"` 复跑；可与第 01 批参数同时使用。
 
+## 第 03 批阶段验收记录
+
+2026-11-25 · 受监督的双向页面会话与 HUD 选项切片已验证，整批尚未达到验收条件。
+
+- 首方签名宿主复用现有辅助程序的签名、父进程约束、所有权描述符、退出和超时监督。一次会话只求值一次脚本，后续通过有界帧向同一 JavaScriptCore 上下文发送事件。帧绑定会话和修订号，宿主每次核对 Markdown、动作描述和动作 ID，拒绝失效修订、失效动作和已撤销调用。等待用户事件时，进程监督继续处理超时、取消和子进程退出。
+- 首方样本在原进程中显示初始 Detail 数据、异步执行动作、提交新 Detail 数据并返回，验证计数状态仍在。延迟送来的上个页面动作被拦截。样本核对的是进程往返和供原生宿主使用的 Detail 数据，尚未在启动器渲染页面。
+- `showHUD` 复用关闭窗口选项校验，对显式的立即或暂缓返回选项使用已有关闭窗口授权。签名样本证实有权时按顺序提交效果，无关闭窗口权限时拒绝整次调用。默认提示路径仍保留。
+- 尚待接入：React 渲染和更新、签名商店 view 命令的准入、本机页面宿主和 Escape、动作菜单与快捷键、`render`、`useId`、`useNavigation`、`useActionPanel`、交互确认和 Toast 按钮。阶段性 Toast 与 Promise 等待用户交互也需随完整会话验收。本批不改商店可运行命令或兼容统计。
+- 32 项签名运行器、19 项签名商店、109 项相关 Swift 和 81 项发布脚本检查通过；其中 5 项为本批的会话与 HUD 场景。三款既有扩展、10 条命令的构建、安装、新进程运行和卸载回归通过。未替换本机安装版。 [签名运行器](evidence/macos-runtime-m2/batch-03-signed-runtime.json) · [签名商店](evidence/macos-runtime-m2/batch-03-signed-store.json)
+
+第 03 批样本使用 `verify-macos-run-m2.py --batch-03 "$ESBUILD_ARCHIVE"` 复跑。
+
 ### 第 02 批补验：资源与支持目录
 
 2026-11-25 · 接通 `environment.assetsPath` 和 `environment.supportPath` 的受控文件子集。两个目录分别要求显式的 `files.assets.read` 与 `files.support.write` 权限，现有商店命令未增加权限。
@@ -102,3 +114,22 @@ python3 scripts/verify-macos-run-m2.py --products "$PRODUCTS" \
 - 诊断已接到扩展详情的「本机运行诊断」，每个安装保留最近 16 条，当前运行和代次有效时才发布。仅展示异常类别、辅助进程常驻内存和峰值。JavaScriptCore 公共接口不提供等价 JS 堆统计，Raycast Developer Hub 上传未接入，诊断仍按部分兼容追踪。 [Apple JavaScriptCore](https://developer.apple.com/documentation/javascriptcore) · [Raycast 诊断接口](https://developers.raycast.com/api-reference/utilities)
 - 115 项 Swift 定向测试、81 项发布脚本测试和 36 项签名运行器检查通过。签名样本验证了缓存目录隔离和只读索引、密码及选择值的授权与拒绝、常驻内存及异常数据交付。未替换本机安装版。 [签名运行器](evidence/macos-runtime-m2/batch-02-preferences-cache-diagnostics-runtime.json)
 - 15 项受保护配置签名检查通过，包括用已签名测试宿主重开凭据密钥、拒绝跨安装解密以及受控文件模块的签名构建。20 项预览商店检查通过，覆盖既有三款扩展 10 条命令。当前商店样本权限保持原样，新增权限的验证来自首方夹具。 [受保护配置](evidence/macos-runtime-m2/batch-02-preferences-cache-diagnostics-vault.json) · [预览商店](evidence/macos-runtime-m2/batch-02-preferences-cache-diagnostics-store.json)
+
+### 第 03 批补验：React 挂载与交互反馈
+
+2026-11-25 · 首方签名夹具验证真实 React 19.0.0、react-reconciler 0.31.0、scheduler 0.25.0。组件在同一 JavaScriptCore 进程内挂载，执行两次子菜单动作后产生三次不同的页面快照，React 的状态和 useId 保持稳定。测试依赖按摘要锁定，只进入测试制品。
+
+页面协议支持最多四层的静态子菜单、确认与取消结果、Toast 主副动作。宿主按当前帧校验动作 ID 和类型。存在模态确认时只能确认或取消，菜单分组不能当作叶动作，普通菜单 ID 不能当作 Toast 按钮，失效帧和撤权沿用已有拒绝路径。
+
+115 项相关 Swift 测试及 32 项 Apple Development 签名运行器检查通过，其中新增 6 项 React 与反馈场景。当前验证覆盖渲染夹具和宿主协议。正式运行器中的 Raycast React 适配器、商店视图命令准入，以及 Launcher 的原生呈现、快捷键、动态菜单、确认框、Toast 按钮和交互 Promise 尚未接入，整批仍未完成。 [签名报告](evidence/macos-runtime-m2/batch-03-react-feedback.json) · [React 渲染器接口](https://github.com/react/react/tree/main/packages/react-reconciler)
+
+### 第 03 批续验：生产 React 路径与启动器
+
+2026-11-25 · 代码已接到签名构建、运行准入和 Launcher，待合并。运行器已经过首方签名样板验证，安装版交互与公开 view 扩展尚未验收。
+
+- 签名构建仅为明确审核的 view 命令引入按完整性锁定的 React 19、react-reconciler 和 scheduler。实际构建使用统一的入口包装与 API 适配器，原始入口路径、收据、授权与撤权机制继续复用。签名样板也验证了构建产物保留 MIT 通知。
+- Launcher 使用公共页面、Markdown、动作菜单、返回与快捷键路径。支持同一会话内的 Detail 更新、`render`、`useId`、`useNavigation`、`useActionPanel.update`、Action.Push、动作分组和动态子菜单。无效修订、未授权的宿主动作、没有 UI 宿主的视图调用均拒绝。离开或隐藏页面取消会话，旧会话不能发布；签名样板核对撤权停止进程。本批未增加任何默认商店授予。
+- 支持确认和取消 Promise、危险按钮样式、Toast 样式、阶段更新和两个原生按钮。HUD、关闭窗口、清搜索和回根页继续各自核对原有授权。Modal 等待不会占用事件队列。首方签名样板验证了确认、取消、父页面状态、菜单查询、撤权和授权不足。
+- 本阶段只支持受监督的 Detail。确认框记住选择、自定义图标、会话外 Toast 按钮和部分外观语义未做到 Raycast 等价。列表、网格、表单及其他页面组件由后续批次负责。签名样板不等于已有公开商店 view 命令通过实机测试。未覆盖 Mac 安装版。
+- 112 项 Swift 定向测试、81 项发布脚本检查、40 项签名运行器检查及 21 项签名构建和商店检查通过。三款原有公开扩展十条无界面命令保持可构建、安装、运行和卸载。
+- [37 项独立证据](evidence/macos-runtime-m2/batch-03-interface-evidence.csv) · [签名运行器复验](evidence/macos-runtime-m2/batch-03-launcher-signed-runtime.json) · [签名构建与真实扩展回归](evidence/macos-runtime-m2/batch-03-launcher-signed-builder.json) · [Raycast 动作菜单](https://developers.raycast.com/api-reference/user-interface/action-panel) · [Raycast 导航](https://developers.raycast.com/api-reference/user-interface/navigation) · [Raycast 确认](https://developers.raycast.com/api-reference/feedback/alert) · [Raycast Toast](https://developers.raycast.com/api-reference/feedback/toast)

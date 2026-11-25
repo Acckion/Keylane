@@ -99,5 +99,6 @@ struct SearchField: View {
 extension Notification.Name {
     static let launcherShown = Notification.Name("Keylane.launcherShown")
     static let launcherHidden = Notification.Name("Keylane.launcherHidden")
+    static let launcherClearSavedSearch = Notification.Name("Keylane.launcherClearSavedSearch")
     static let launcherResetSearch = Notification.Name("Keylane.launcherResetSearch")
 }

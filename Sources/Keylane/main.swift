@@ -1127,6 +1127,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var pageScrollVelocity: CGFloat = 0
 
     @MainActor func clearExtensionSearch(forceScrollToTop: Bool) {
+        NotificationCenter.default.post(name: .launcherClearSavedSearch, object: nil)
         model.query = ""
         if forceScrollToTop { model.launcherScrollTopRequest &+= 1 }
     }

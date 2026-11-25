@@ -4,12 +4,15 @@ import Foundation
 /// Bounded pipe transport and stop supervision for signed native helpers.
 final class MacOSOwnedHelperProcess: @unchecked Sendable {
     enum Failure: Error { case transport, failed }
+    enum FrameStep { case send(Data), wait, finish }
 
     private let lock = NSLock()
     private var cancelled = false
     func cancel() { lock.withLock { cancelled = true } }
     private var isCancelled: Bool { lock.withLock { cancelled } }
-    func run(helper: URL, input: Data, timeout: Duration, outputLimit: Int, ownership: Int32? = nil) throws -> Data {
+    func run(helper: URL, input: Data, timeout: Duration, outputLimit: Int, ownership: Int32? = nil,
+             arguments: [String] = [], nextFrame: ((Data) throws -> FrameStep)? = nil,
+             pollFrame: (() throws -> FrameStep)? = nil) throws -> Data {
         guard !input.isEmpty else { throw Failure.transport }
         if isCancelled { throw CancellationError() }
         func pipePair() throws -> [Int32] {
@@ -42,7 +45,7 @@ final class MacOSOwnedHelperProcess: @unchecked Sendable {
         for (source, target) in mappings {
             guard posix_spawn_file_actions_adddup2(&actions, source, target) == 0 else { throw Failure.transport }
         }
-        let argv = [strdup(helper.path), nil], environment = [strdup("PATH=/usr/bin:/bin"),nil]
+        let argv = ([helper.path] + arguments).map { strdup($0) } + [nil], environment = [strdup("PATH=/usr/bin:/bin"),nil]
         defer { for item in argv + environment { free(item) } }
         var pid: pid_t = 0
         let error = argv.withUnsafeBufferPointer { a in environment.withUnsafeBufferPointer { e in
@@ -52,8 +55,28 @@ final class MacOSOwnedHelperProcess: @unchecked Sendable {
         release(incoming[0]); release(outgoing[1]); release(diagnostics[1]); release(lifetime[0])
         for fd in [incoming[1],outgoing[0],diagnostics[0]] { _ = fcntl(fd,F_SETFL,O_NONBLOCK) }
         var position = 0, output = Data(), diagnosticBytes = 0
+        var pending: Data? = input
+        var awaitingReply = false
+        var waitingForInput = false
+        var frameFailure: (any Error)?
         var inputOpen = true, outputOpen = true, errorOpen = true
         var exited = false, bad = false, stoppedAt: ContinuousClock.Instant?
+        func advance(_ step: FrameStep) throws {
+            switch step {
+            case .send(let data):
+                guard !data.isEmpty, data.count <= 4096, data.last == 10 else { throw Failure.transport }
+                pending = data
+                position = 0
+                waitingForInput = false
+            case .wait:
+                guard pollFrame != nil else { throw Failure.transport }
+                waitingForInput = true
+            case .finish:
+                waitingForInput = false
+                release(incoming[1])
+                inputOpen = false
+            }
+        }
         let deadline = ContinuousClock.now + timeout
         // This loop owns the PID until waitpid. Cancellation only sets a flag,
         // so no other thread can reap a child then signal a recycled PID.
@@ -61,6 +84,10 @@ final class MacOSOwnedHelperProcess: @unchecked Sendable {
             if isCancelled || bad || ContinuousClock.now >= deadline {
                 if stoppedAt == nil { release(lifetime[1]); stoppedAt = .now }
                 if !exited, stoppedAt!.duration(to: .now) > .seconds(1) { kill(-pid,SIGKILL) }
+            }
+            if waitingForInput, let pollFrame, stoppedAt == nil {
+                do { try advance(pollFrame()) }
+                catch { frameFailure = error; bad = true }
             }
             var status = siginfo_t()
             let observed = waitid(P_PID,id_t(pid),&status,WEXITED | WNOHANG | WNOWAIT)
@@ -76,17 +103,24 @@ final class MacOSOwnedHelperProcess: @unchecked Sendable {
                 if waitError == ECHILD { throw Failure.transport }
                 bad = true
             }
-            var polls = [pollfd(fd: inputOpen ? incoming[1] : -1,events: Int16(POLLOUT),revents:0),
+            var polls = [pollfd(fd: inputOpen && pending != nil ? incoming[1] : -1,events: Int16(POLLOUT),revents:0),
                          pollfd(fd: outputOpen ? outgoing[0] : -1,events:Int16(POLLIN),revents:0),
                          pollfd(fd: errorOpen ? diagnostics[0] : -1,events:Int16(POLLIN),revents:0)]
             _ = Darwin.poll(&polls,nfds_t(polls.count),50)
-            if inputOpen && polls[0].revents != 0 {
-                let count = input.withUnsafeBytes { bytes in
-                    Darwin.write(incoming[1],bytes.baseAddress!.advanced(by:position),min(65536,bytes.count-position))
+            if inputOpen, let bytes = pending, polls[0].revents != 0 {
+                let count = bytes.withUnsafeBytes { buffer in
+                    Darwin.write(incoming[1], buffer.baseAddress!.advanced(by: position), min(65536, bytes.count - position))
                 }
                 if count > 0 { position += count }
-                else if count < 0 && errno != EAGAIN && errno != EINTR { bad = true; position = input.count }
-                if position == input.count { release(incoming[1]); inputOpen = false }
+                else if count < 0 && errno != EAGAIN && errno != EINTR { bad = true; position = bytes.count }
+                if position == bytes.count {
+                    pending = nil
+                    if nextFrame == nil || bad {
+                        release(incoming[1]); inputOpen = false
+                    } else {
+                        awaitingReply = true
+                    }
+                }
             }
             for index in 1...2 where polls[index].revents != 0 {
                 let fd = polls[index].fd
@@ -94,7 +128,22 @@ final class MacOSOwnedHelperProcess: @unchecked Sendable {
                 let count = Darwin.read(fd,&buffer,buffer.count)
                 if count > 0 {
                     if index == 1 {
-                        if count <= outputLimit - output.count { output.append(contentsOf:buffer.prefix(count)) } else { bad = true }
+                        guard count <= outputLimit - output.count else { bad = true; continue }
+                        output.append(contentsOf: buffer.prefix(count))
+                        if let nextFrame, let newline = output.firstIndex(of: 10), !bad, !isCancelled, stoppedAt == nil {
+                            guard awaitingReply, newline == output.index(before: output.endIndex) else {
+                                bad = true; continue
+                            }
+                            awaitingReply = false
+                            do {
+                                let reply = Data(output[..<newline])
+                                output.removeAll(keepingCapacity: true)
+                                try advance(nextFrame(reply))
+                            } catch {
+                                frameFailure = error
+                                bad = true
+                            }
+                        }
                     } else { diagnosticBytes += count; if diagnosticBytes > 4096 { bad = true } }
                 } else if count == 0 || (errno != EAGAIN && errno != EINTR) {
                     release(fd); if index == 1 { outputOpen = false } else { errorOpen = false }
@@ -104,7 +153,9 @@ final class MacOSOwnedHelperProcess: @unchecked Sendable {
         var status: Int32 = 0
         while waitpid(pid,&status,0) < 0 { if errno != EINTR { throw Failure.transport } }
         if isCancelled { throw CancellationError() }
-        guard !bad, stoppedAt == nil, status == 0 else { throw Failure.failed }
+        if let frameFailure { throw frameFailure }
+        guard !bad, stoppedAt == nil, status == 0,
+              nextFrame == nil || (!awaitingReply && !inputOpen && output.isEmpty) else { throw Failure.failed }
         return output
     }
 }

@@ -177,6 +177,36 @@ import KeylaneCore
                   && artifact.resources.map(\.path) == ["assets/data.txt"]])
             return
         }
+        if mode == "batch-03-view-build" {
+            let service = try MacOSSignedBuildService(profile: profile)
+            let builder = try MacOSExtensionBuild.Coordinator(expected: profile.configuration.recipe, service: service)
+            let entry = "src/main.tsx"
+            let source = try Data(contentsOf: task.appendingPathComponent("batch-03-view.tsx"))
+            var files: [MacOSExtensionBuild.File] = [
+                .init(path: "package.json", body: Data(#"{"name":"first-party-react"}"#.utf8)),
+                .init(path: entry, body: source),
+            ]
+            var license: Data?
+            for node in MacOSReviewedRaycastViewAdapter.dependencies {
+                let data = try Data(contentsOf: task.appendingPathComponent(node.name + ".tgz"))
+                let archive = try RaycastStoreDependencyArchive(tarball: data, node: node, target: .macOSArm64)
+                if node.name == "react" { license = archive.files["LICENSE"] }
+                files += archive.files.map { .init(path: archive.installationPath + "/" + $0.key, body: $0.value) }
+            }
+            guard let license else { throw CocoaError(.fileReadCorruptFile) }
+            files += try MacOSReviewedRaycastViewAdapter.files(retainingLicense: license).map {
+                .init(path: $0.path, body: $0.body)
+            }
+            let plan = try MacOSReviewedRaycastViewAdapter.plan(files: files, entries: [entry])
+            let artifact = try await builder.build(plan) { true }
+            guard artifact.commands.map(\.path) == [entry],
+                  let javascript = String(data: artifact.commands[0].body, encoding: .utf8) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            emit(["signedReactViewBuilt": javascript.contains("__keylaneCommandExports") && javascript.contains("onEvent"),
+                  "builtReactPreservesMITNotice": javascript.contains("Permission is hereby granted, free of charge")])
+            return
+        }
         if mode == "hold-build-lock" {
             let fd = try profile.acquireBuildLock(); defer { flock(fd, LOCK_UN); close(fd) }
             try FileHandle.standardOutput.write(contentsOf:Data("{\"lockHeld\":true}\n".utf8))

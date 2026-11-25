@@ -93,8 +93,8 @@ package enum MacOSNoViewCapabilities {
         }
     }
 
-    struct Effect: Decodable {
-        enum Kind: String, Decodable { case toast, copy, close, clearSearch, popToRoot, openPreferences }
+    struct Effect: Decodable, Equatable, Sendable {
+        enum Kind: String, Decodable, Sendable { case toast, copy, close, clearSearch, popToRoot, openPreferences }
         let kind: Kind
         let value: String
     }

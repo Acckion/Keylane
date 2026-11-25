@@ -42,6 +42,45 @@ package struct MacOSRestrictedNoViewDriver: MacOSExtensionNoViewDriver {
         deliver != nil || capabilities.isDisjoint(with: MacOSNoViewCapabilities.navigation.union([MacOSNoViewCapabilities.toast, MacOSNoViewCapabilities.clipboard, MacOSNoViewCapabilities.openPreferences]))
     }
 
+    package func runView(bytes: Data, ticket: StoreGuestRunTicket,
+                         presentation: MacOSReviewedViewSession.Presentation) async throws {
+        guard MacOSReviewedViewSession.canRun(ticket.capabilities), canDeliver(capabilities: ticket.capabilities),
+              !bytes.isEmpty, bytes.count <= 4 * 1024 * 1024,
+              MacOSExtensionBuild.hash(bytes) == ticket.receipt.artifactDigest,
+              let source = String(data: bytes, encoding: .utf8) else { throw Failure.invalidArtifact }
+        let process = MacOSOwnedHelperProcess()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                DispatchQueue.global(qos: .utility).async {
+                    continuation.resume(with: Result {
+                        let helper = try verifiedHelper()
+                        guard ticket.consumeForStart() else { throw Failure.rejected }
+                        try MacOSReviewedViewSession.run(helper: helper, source: source, process: process,
+                            timeout: .seconds(180), ownership: ownership?.descriptor, capabilities: ticket.capabilities,
+                            mailbox: presentation.mailbox,
+                            isCurrent: { ticket.isCurrent() }, publish: { snapshot, revision in
+                                let effects = snapshot.effects ?? []
+                                let (outputs, granted) = try MacOSNoViewCapabilities.validate(.init(effects: effects), ticket: ticket)
+                                let required = granted.union([MacOSReviewedViewSession.capability])
+                                Task { @MainActor in
+                                    try? ticket.commitMacOSEffects(required) {
+                                        guard presentation.publishIfVisible(snapshot, revision) else { return }
+                                        MacOSNoViewCapabilities.$navigationCommitted.withValue(true) {
+                                            for effect in outputs { deliver?(effect) }
+                                        }
+                                    }
+                                }
+                            })
+                    })
+                }
+            }
+        } onCancel: {
+            process.cancel()
+        }
+        try Task.checkCancellation()
+    }
+
     package func run(bytes: Data, ticket: StoreGuestRunTicket) async throws {
         guard !bytes.isEmpty, bytes.count <= 4 * 1024 * 1024,
               MacOSExtensionBuild.hash(bytes) == ticket.receipt.artifactDigest else { throw Failure.invalidArtifact }

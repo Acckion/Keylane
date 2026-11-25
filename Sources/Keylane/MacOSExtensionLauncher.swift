@@ -152,9 +152,20 @@ extension Delegate {
 
     func module() async -> LauncherModule? {
         var commands: [LauncherModule.Command] = []
-        for command in installation.manifest.commands where command.mode == .noView && !command.disabledByDefault {
+        var pages: [LauncherPage] = []
+        for command in installation.manifest.commands where !command.disabledByDefault {
             guard let readiness = try? await backend.launchReadiness(installationID: installation.id, commandID: command.id),
                   readiness == .ready || readiness == .preferencesRequired else { continue }
+            if command.mode == .view {
+                guard let delegate else { continue }
+                let view = MacOSLauncherExtensionPage(installation: installation, command: command, backend: backend, delegate: delegate)
+                pages.append(view.page)
+                commands.append(.init(declaration: .init(id: .init(rawValue: command.id), title: command.title,
+                    detail: command.description ?? installation.manifest.title, symbol: "puzzlepiece.extension",
+                    keywords: command.keywords), execute: { origin in view.open(origin: origin) }))
+                continue
+            }
+            guard command.mode == .noView else { continue }
             let reviewed = MacOSReviewedRaycastCommand.entry(forCommandID: command.id)
             let inputs = reviewed?.argumentNames ?? []
             commands.append(.init(declaration: .init(id: .init(rawValue: command.id), title: command.title,
@@ -168,7 +179,7 @@ extension Delegate {
         }
         guard !commands.isEmpty else { return nil }
         return LauncherModule(id: .init(rawValue: "store:" + installation.id.uuidString),
-            origin: .installedExtension, title: installation.manifest.title, commands: commands,
+            origin: .installedExtension, title: installation.manifest.title, commands: commands, pages: pages,
             services: [.init(start: {}, stop: { self.running?.cancel() })],
             registration: .init(isPresent: { true }, updates: Empty<Void, Never>().eraseToAnyPublisher(),
                                 generation: { self.installation.generation }))

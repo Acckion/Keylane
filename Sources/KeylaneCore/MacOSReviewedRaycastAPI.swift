@@ -393,13 +393,13 @@ package enum MacOSReviewedRaycastAPI {
     }
 
     export async function showHUD(title, options) {
-      const clearRootSearch = navigationFlag(options, "clearRootSearch", false);
+      const { clearRootSearch, popToRootType } = closeOptions(options);
       const presentation = toastOptions({ title });
-      if (clearRootSearch) {
+      if (clearRootSearch || popToRootType !== PopToRootType.Default) {
         if (!environment.canAccess(showHUD) || !environment.canAccess(closeMainWindow)) {
           throw new Error("HUD cannot clear the root search");
         }
-        await closeMainWindow({ clearRootSearch });
+        await closeMainWindow({ clearRootSearch, popToRootType });
       }
       await showToast(presentation);
     }

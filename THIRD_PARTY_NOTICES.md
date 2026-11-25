@@ -22,6 +22,12 @@ trademarks, private source code, or proprietary distribution artifacts.
   generated test bundles and test helpers are not included in Keylane.app.
   The product esbuild distribution is listed separately below.
 
+- Reviewed macOS view builds use integrity-pinned React 19.0.0, react-reconciler
+  0.31.0, and scheduler 0.25.0 from the official npm registry. These are MIT
+  packages from Meta Platforms, Inc. and affiliates.
+  The signed view bundle includes their [MIT notice](https://github.com/facebook/react/blob/v19.0.0/LICENSE).
+  They remain outside the Keylane.app bundle.
+
 These original notices must be retained when redistributing the corresponding
 materials. Test fixtures are not included by the app packaging script.
 

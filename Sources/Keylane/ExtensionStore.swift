@@ -142,6 +142,13 @@ final class ExtensionStoreController: ObservableObject {
                 return .init(id: "store-run-" + command.name, title: "运行：" + command.title, icon: "play",
                       enabled: available && receipt.enabled && (inputs.isEmpty || hasValues || (uuid.isEmpty && reviewed?.argumentIsOptional == true))
                         && presentation.launchReady.contains(receipt.id.uuidString + "/" + command.id)) {
+                    if command.mode == .view {
+                        let model = (NSApp.delegate as? Delegate)?.model
+                        if model?.runCommand(.init(rawValue: command.id), origin: .menu) != true {
+                            self.presentation.installationMessages[slug] = "扩展页面未能打开，请检查安装状态。"
+                        }
+                        return
+                    }
                     Task { @MainActor in
                         do {
                             if !inputs.isEmpty, let backend = self.backend {
