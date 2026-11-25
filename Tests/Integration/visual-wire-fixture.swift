@@ -359,6 +359,32 @@ private final class VisualConversationProtocol: URLProtocol {
     configuration.setEnabled(false); configuration.setEnabled(true)
     try await Task.sleep(for: .milliseconds(60))
     precondition(!composer.loadingFiles && imagePreparation == 0 && composer.attachments == retained)
+    // The exact @Published configuration publisher must outlive the original Composer.
+    // A CurrentValueSubject surrogate would miss willSet's replay ordering.
+    var retiredSession: AIConversationSession? = AIConversationSession(configuration: configuration, runtime: runtime,
+        observesDefaultConnection: false, readKey: { _ in preconditionFailure("Draft lifetime test cannot read credentials") })
+    retiredSession!.composer.text = "Retired draft"
+    retiredSession!.composer.attachments = [picture]
+    retiredSession!.composer.attachFiles([file])
+    try await waitFor { retiredSession?.composer.loadingFiles == false }
+    let retiredDraft = retiredSession!.composer.snapshot
+    let retiredResource = retiredSession!.composer.attachments[1]
+    precondition(retiredSession!.composer.canReread(retiredResource))
+    weak var releasedComposer = retiredSession!.composer
+    retiredSession = nil
+    precondition(releasedComposer == nil, "Original Composer must actually deallocate before the @Published off/on")
+    configuration.setEnabled(false); configuration.setEnabled(true)
+    let destination = AIConversationSession(configuration: configuration, runtime: runtime, observesDefaultConnection: false,
+        readKey: { _ in preconditionFailure("Draft lifetime test cannot read credentials") })
+    destination.composer.restore(retiredDraft)
+    precondition(destination.composer.attachments == retiredDraft.attachments && destination.composer.text == "Retired draft")
+    precondition(!destination.composer.canReread(retiredResource), "@Published off/on revived a copied reader after its original Composer deallocated")
+    destination.composer.rereadAttachment(retiredResource.id)
+    precondition(!destination.composer.loadingFiles && destination.composer.attachments == retiredDraft.attachments)
+    destination.composer.attachFiles([file]); try await waitFor { !destination.composer.loadingFiles }
+    precondition(destination.composer.attachments.count == 3 && destination.composer.attachments[1] == retiredResource)
+    precondition(destination.composer.canReread(destination.composer.attachments[2]), "Fresh selection after @Published off/on must remain available")
+    print("PASS actual @Published retired-owner lifetime: original Composer deallocated, off/on permanently revokes copied reader while preserving snapshots/images/draft; fresh destination selection works")
     print("PASS composed file/context/image routes: independent session off/on permanently revokes old readers and picker generation, preserves snapshots/selection/images, rejects late context and queued image; fresh selections work")
 
     // Retry restores live draft readers only when accepted; a failed visual preflight must do nothing.
