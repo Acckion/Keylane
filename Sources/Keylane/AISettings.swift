@@ -4,6 +4,7 @@ import KeylaneCore
 import SwiftUI
 
 enum AIModule {
+    static let toolInstructions = AIInstructionDefinition("File path tools require an explicitly authorized root. Read only after native approval; continue private pages with the current request's keylane_read_result cursor. Continuation reads the original version/snapshot, not the latest file. Search-reference tools and path tools use separate authorization and arguments. Do not infer success from a denied or unconfirmed operation.")
     static let models = SettingsItem(id: "ai-models", page: "ai-models", title: "模型与提供方",
                                      keywords: "AI 模型 提供方 接口 API 密钥 Keychain 流式 Ollama")
 
@@ -13,6 +14,23 @@ enum AIModule {
 
     static let interactions = SettingsItem(id: "ai-interactions", page: "ai", title: "Quick AI 与聊天",
                                            keywords: "Tab 回车 发送 备选命令 窗口置顶")
+
+    /// The production command-to-draft route is testable without creating the user's Model/stores.
+    @discardableResult
+    static func attachResourceContext(to composer: AIConversationComposer, source: AIActionSource,
+                                      commandID: CommandID, registry: LauncherModuleRegistry,
+                                      disabledCommands: AnyPublisher<Set<String>, Never>, enabled: AnyPublisher<Bool, Never>,
+                                      available: @escaping () -> Bool) -> Bool {
+        guard available(), registry.moduleOwningCommand(commandID) == source.moduleID else { return false }
+        let guarded = registry.guardedAIContextSource(source)
+        let availability = Publishers.Merge3(
+            disabledCommands.map { !$0.contains(commandID.rawValue) },
+            registry.availabilityChanges.map { [weak registry] in registry?.isCommandModuleEnabled(commandID) == true },
+            enabled
+        ).eraseToAnyPublisher()
+        composer.loadResourceReaders([.init(source: guarded, available: available)], availability: availability)
+        return true
+    }
 
     static func make(model: Model) -> LauncherModule {
         let configuration = model.aiSettings
@@ -29,7 +47,7 @@ enum AIModule {
                 currentProject: { [weak quickAI] in quickAI?.currentProject }, index: model.fileSearch.aiToolIndexSource())
             return tools.map { registration in
                 var copy = registration
-                if copy.owner == nil { copy.owner = .init(rawValue: "keylane.ai"); copy.ownerTitle = "AI" }
+                if copy.owner == nil { copy.owner = .init(rawValue: "keylane.ai"); copy.ownerTitle = "AI"; copy.moduleInstructions = toolInstructions }
                 return copy
             }
         }
@@ -49,16 +67,13 @@ enum AIModule {
             guard let model, let quickAI, let registry = model.launcherModules,
                   model.canAttachModuleAIContext(),
                   registry.moduleOwningCommand(commandID) == source.moduleID, !model.disabledCommands.contains(commandID.rawValue) else { return false }
-            let guarded = registry.guardedAIContextSource(source)
-            let availability = Publishers.Merge3(
-                model.$disabledCommands.map { !$0.contains(commandID.rawValue) },
-                registry.availabilityChanges.map { registry.isCommandModuleEnabled(commandID) },
-                configuration.$state.map(\.enabled)
-            ).eraseToAnyPublisher()
-            quickAI.composer.loadAttachments(availability: availability) {
-                let context = try await guarded.load()
-                return [.init(title: context.title, text: context.text, symbol: "doc.text")]
-            }
+            guard attachResourceContext(to: quickAI.composer, source: source, commandID: commandID, registry: registry,
+                disabledCommands: model.$disabledCommands.eraseToAnyPublisher(),
+                enabled: configuration.$state.map(\.enabled).eraseToAnyPublisher(),
+                available: { [weak model, weak registry] in
+                    guard let model, let registry else { return false }
+                    return configuration.state.enabled && registry.isCommandModuleEnabled(commandID) && !model.disabledCommands.contains(commandID.rawValue)
+                }) else { return false }
             if quickAI.isInChat { openChat("") }
             else { model.openPageWithExistingDraft(QuickAILauncher.pageID) }
             return true
@@ -161,7 +176,7 @@ enum AIModule {
             ViewObservation.changes(interaction.$rootTab)
         ], dynamicCommandSettings: .init(model: model, items: { library.commands }, title: \.title,
                                         commandID: \.commandID, updates: { [ViewObservation.changes(library.$commands)] },
-                                        entry: { $0.settingsEntry(model: $1) }))
+                                        entry: { $0.settingsEntry(model: $1) })).withAIInstructions(toolInstructions.text)
     }
 }
 

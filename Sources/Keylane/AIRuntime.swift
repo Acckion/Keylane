@@ -171,6 +171,15 @@ struct AIMessage: Encodable, Sendable {
     enum Role: String, Encodable, Sendable { case system, user, assistant }
     let role: Role
     let content: String
+    var images: [AIImageInput] = []
+    var visualSources: [AIVisualSource] = []
+    private enum CodingKeys: String, CodingKey { case role, content }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(role, forKey: .role)
+        if images.isEmpty { try container.encode(content, forKey: .content) }
+        else { try container.encode(blocks(anthropic: false), forKey: .content) }
+    }
 }
 
 private final class AIRedirectPolicy: NSObject, URLSessionTaskDelegate {
@@ -370,6 +379,7 @@ actor AIRuntime {
                   subscriptionReasoningEffort: String? = nil, tools: AIToolRun? = nil,
                   progress: @escaping @Sendable (AIResponseEvent) async -> Void = { _ in },
                   emit: @Sendable (String) async throws -> Void) async throws -> Int? {
+        try AIVisualInputPolicy.validate(messages, connection: connection)
         guard connection.taskKind == .text else { throw AIResponseError.invalidResponse }
         if tools != nil, connection.supportsTools == false { throw AIResponseError.toolsUnavailable }
         if connection.protocolKind.isSubscription {
@@ -402,9 +412,10 @@ actor AIRuntime {
             payload.merge(extra) { _, added in added }
             body = try JSONSerialization.data(withJSONObject: payload)
         }
-        guard body.count <= 1_048_576 else { throw AIResponseError.requestTooLarge }
+        guard body.count <= AIVisualInputPolicy.maximumWireBytes(for: messages) else { throw AIResponseError.requestTooLarge }
         request.httpBody = body
         try Task.checkCancellation()
+        try AIVisualInputPolicy.validateSources(messages.flatMap(\.visualSources))
         let (bytes, response) = try await session.bytes(for: request)
         defer { bytes.task.cancel() }
         guard let response = response as? HTTPURLResponse else { throw AIResponseError.invalidResponse }
