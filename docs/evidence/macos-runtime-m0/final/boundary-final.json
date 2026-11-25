@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "candidate": "native-boundary-and-compiler",
+  "cases": {
+    "hostReadControl": true,
+    "symlinkControl": true,
+    "networkControl": true,
+    "untrustedLibraryControl": true,
+    "nativeHostReadDenied": true,
+    "nativeSymlinkDenied": true,
+    "nativeNetworkDenied": true,
+    "signedLibraryAllowed": true,
+    "untrustedLibraryReadableButRejected": true,
+    "sandboxCompilerPositive": true,
+    "buildSourceNotExecuted": true,
+    "fixturesExited": true
+  },
+  "coverage": {
+    "libraryValidation": "linker-ad-hoc-first-party-library-negative-control",
+    "build": "fixed-CLI-stdin-stdout-no-config-or-hooks",
+    "engineMemoryCorruption": "not-proven",
+    "thirdPartyCode": "not-run"
+  },
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}

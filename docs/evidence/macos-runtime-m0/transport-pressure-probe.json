@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "candidate": "restricted-js-transport-pressure",
+  "cases": {
+    "fragmentedPositiveControl": true,
+    "zeroRequestRejected": true,
+    "hugeRequestRejected": true,
+    "shortHeader1Rejected": true,
+    "shortHeader2Rejected": true,
+    "shortHeader3Rejected": true,
+    "shortBodyRejected": true,
+    "zeroReplyRejected": true,
+    "hugeReplyRejected": true,
+    "shortReplyHeaderRejected": true,
+    "shortReplyBodyRejected": true,
+    "invalidUTF8ReplyRejected": true,
+    "blockedRPCParentDeath": true,
+    "blockedRPCDeadline": true,
+    "resultLimitAccepted": true,
+    "oversizedResultRejected": true,
+    "memoryWatchdogStopsAllocation": true,
+    "observeOnlyMemoryControlSurvives": true,
+    "fixturesExited": true
+  },
+  "coverage": {
+    "installationAdmission": "synthetic-only",
+    "memoryHardLimit": "not-proven",
+    "containerSanitization": "not-tested",
+    "keychain": "not-tested",
+    "RaycastNodeCompatibility": "not-implemented"
+  },
+  "memoryPolicy": {
+    "sampleMs": 20,
+    "thresholdMiB": 64,
+    "syntheticAllocationCeilingMiB": 128
+  },
+  "memoryObserved": {
+    "enforcedPeakMiB": 64.9,
+    "observeOnlyPeakMiB": 136.9
+  },
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}
