@@ -16,12 +16,14 @@ final class AIConversationComposer: ObservableObject {
     private var activeResourceLifetimeIDs: Set<UUID> = []
 
     private var globalResourceObservation: AnyCancellable?
+    private var globalResourceAvailability: AnyPublisher<Bool, Never>?
     private var globalResourceLifetime: AIResourceReadLifetime?
 
     /// Session-owned authority survives presentation changes and completed reads.
     func observeResourceAvailability(_ availability: AnyPublisher<Bool, Never>) {
         globalResourceObservation?.cancel()
         globalResourceLifetime?.revoke()
+        globalResourceAvailability = availability
         globalResourceObservation = availability.sink { [weak self] enabled in
             guard let self else { return }
             if enabled {
@@ -37,7 +39,7 @@ final class AIConversationComposer: ObservableObject {
     }
 
     private func makeResourceLifetime() -> AIResourceReadLifetime {
-        AIResourceReadLifetime { [weak self] id in
+        AIResourceReadLifetime(availability: globalResourceAvailability) { [weak self] id in
             let revoke = { [weak self] in self?.revokeResourceReaders(id) }
             if Thread.isMainThread { revoke() } else { DispatchQueue.main.async { revoke() } }
         }

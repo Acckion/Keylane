@@ -217,6 +217,22 @@ try await verifyRetainedCommandReaderLifetime()
     let newContext = try await fresh.read()
     precondition(composer.appendResourceAttachment(newContext, reader: fresh, for: composer.draftID))
     precondition(composer.canReread(newContext) && composer.attachments.dropLast() == accepted[...])
+    // A saved in-memory draft must keep the revocation subscription even if its
+    // original composer is released before the global switch changes.
+    var retired: AIConversationComposer? = AIConversationComposer()
+    retired!.observeResourceAvailability(enabled.eraseToAnyPublisher())
+    let retiringReader = retired!.prepareResourceReader(.init(source: source))
+    let retiringAttachment = try await retiringReader.read()
+    precondition(retired!.appendResourceAttachment(retiringAttachment, reader: retiringReader, for: retired!.draftID))
+    let retiredDraft = retired!.snapshot
+    weak var released = retired
+    retired = nil
+    precondition(released == nil)
+    enabled.send(false); enabled.send(true)
+    let destination = AIConversationComposer()
+    destination.observeResourceAvailability(enabled.eraseToAnyPublisher())
+    destination.restore(retiredDraft)
+    precondition(destination.attachments == [retiringAttachment] && !destination.canReread(retiringAttachment))
     print("PASS global AI lifetime: actual attachFiles, context selection binding, copied drafts, same-turn off/on, pending refresh and selection, fresh explicit selection; accepted snapshots preserved")
 }
 try await verifyGlobalAIReaderLifetime()
