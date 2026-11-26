@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "gate": "M1-passed",
+  "failures": [],
+  "checks": 48,
+  "M1Complete": true,
+  "M2Started": false,
+  "productionRuntimeReady": false,
+  "publicExtensionsVerified": false,
+  "candidate": "restricted-JavaScriptCore",
+  "mode": "build-only",
+  "scope": "first-party-signed-build-receipt-and-install-transactions",
+  "remaining": [
+    "M2 command runtime",
+    "M3 UI and persistent content",
+    "M4 performance",
+    "M5 VM removal and product switch"
+  ],
+  "evidenceSHA256": {
+    "build-final.json": "b1f957f648f77799cd762b5f27eb1265c63efbe9efc4b5facafc977f217ef57b",
+    "product-final.json": "20335bd86b30386845c007db6caf9ba83890418f7ddd4827566dba2bb694ce7f"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@esbuild/darwin-arm64",
+  "version": "0.25.5",
+  "license": "MIT",
+  "url": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.25.5.tgz",
+  "integrity": "sha512-GtaBgammVvdF7aPIgH2jxMDdivezgFu6iKpmT+48+F8Hhg5J/sfnDieg0aeG/jfSvkYQU2/pceFPDKlqZzwnfQ=="
+}

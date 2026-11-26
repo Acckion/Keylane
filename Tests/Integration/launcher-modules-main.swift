@@ -962,6 +962,10 @@ let refreshedRows = performanceSearch.results(for: performanceInput, registry: p
 let refreshedDiagnostics = performanceSearch.diagnostics
 precondition(refreshedDiagnostics.scored == 1 && refreshedDiagnostics.reused == 2000)
 precondition(refreshedRows.contains { $0.name == fileTitle })
+let nextTextInput = LauncherCommandSearch.Input(query: "Demo app", page: .root, aliases: [:], favorites: [], usage: [:])
+_ = performanceSearch.results(for: nextTextInput, registry: performanceRegistry)
+precondition(performanceSearch.diagnostics.prepared == 0, "One-module refresh evicted unchanged commands' prepared names")
+_ = performanceSearch.results(for: performanceInput, registry: performanceRegistry)
 let oracle = LauncherCommandSearch().results(for: performanceInput, registry: performanceRegistry)
 precondition(refreshedRows.map(\.id) == oracle.map(\.id))
 // Availability is checked on every enumerated candidate, including cached scores.
