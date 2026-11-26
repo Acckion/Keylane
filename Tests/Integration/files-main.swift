@@ -3,13 +3,6 @@ import AppKit
 import KeylaneCore
 import UniformTypeIdentifiers
 
-// The file-controller fixture does not exercise AI tool registration. Match only its
-// declaration dependency; production search, scope validation and drag preparation run unchanged.
-struct AIFileToolIndexSource: Sendable {
-    let isCurrent: @MainActor @Sendable () -> Bool
-    let search: @MainActor @Sendable (String, String) async throws -> [String]
-}
-
 let app = NSApplication.shared
 let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["KEYLANE_FILE_TEST_ROOT"]!)
 let scope = root.appendingPathComponent("scope")
@@ -145,7 +138,7 @@ controller.startIndex(); wait("Stable index refresh") { !controller.indexing }
 RunLoop.current.run(until:Date().addingTimeInterval(0.2))
 precondition(emptyFrames == 0 && repeatedRefreshes == 0,"Unchanged query must not clear or republish the list")
 controller.search("不存在A"); controller.search("不存在B"); controller.search("作业")
-RunLoop.current.run(until:Date().addingTimeInterval(0.3))
+wait("Final query settles after superseded inputs") { !controller.isSearching && controller.lastPublishedQuery == "作业" }
 precondition(emptyFrames == 0 && results.first?.name == "作业-2.pdf")
 recordsRefresh = false
 controller.options.searchFromLauncher = true
@@ -153,9 +146,15 @@ precondition(!controller.indexing,"Launcher setting must not trigger a full inde
 precondition(try! JSONDecoder().decode(FileSearchOptions.self,from:prefs.data(forKey:"fileSearchOptions")!).searchFromLauncher)
 controller.search("预算 报告")
 wait("Multiple Chinese words") { results.count == 1 && results.first?.name == "报告 预算2026.txt" }
-controller.search("skip.log"); RunLoop.current.run(until:Date().addingTimeInterval(0.2)); precondition(results.isEmpty)
+controller.search("skip.log")
+// The controller deliberately keeps the last published rows during a new
+// search. Wait for this query, not a wall-clock sample of the previous one.
+wait("Ignored log query settles") { !controller.isSearching && controller.lastPublishedQuery == "skip.log" }
+precondition(results.isEmpty, "An ignored log must not appear in its settled query")
 controller.search("keep.log"); wait("Ignore negation") { results.first?.name == "keep.log" }
-controller.search("LOCAL CONTENT"); RunLoop.current.run(until:Date().addingTimeInterval(0.2)); precondition(results.isEmpty)
+controller.search("LOCAL CONTENT")
+wait("Body query settles before opting into content search") { !controller.isSearching && controller.lastPublishedQuery == "LOCAL CONTENT" }
+precondition(results.isEmpty, "A body-only query must not match before content search is enabled")
 controller.options.contentSearch = true
 wait("Opt-in content index") { !controller.indexing && results.first?.name == "报告 预算2026.txt" }
 controller.search("PDF DOCUMENT NEEDLE"); wait("PDF text extraction") { results.first?.name == "作业-2.pdf" }

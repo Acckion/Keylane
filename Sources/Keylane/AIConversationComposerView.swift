@@ -32,6 +32,7 @@ struct AIConversationComposerView: View {
     @State private var menuScrollTarget: String?
     @State private var suppressedCompletion: AIChatCompletionToken?
     @State private var contextRequest: AIConversationDraftContextRequest<AIContextRegistration>?
+    @State private var visualRequest: AIConversationDraftContextRequest<AIVisualPickerMode>?
     @State private var toolsPresented = false
     @State private var capability: AIChatCapabilityInfo?
 
@@ -43,9 +44,9 @@ struct AIConversationComposerView: View {
             .alert("无法读取附件", isPresented: Binding(get: { !composer.fileError.isEmpty }, set: { if !$0 { composer.fileError = "" } })) {
                 Button("好") { composer.fileError = "" }
             } message: { Text(composer.fileError) }
-            .onChange(of: composer.draftID) { _, _ in contextRequest = nil; dismissComposerMenu() }
+            .onChange(of: composer.draftID) { _, _ in contextRequest = nil; visualRequest = nil; dismissComposerMenu() }
             .onReceive(configuration.$state.map(\.enabled).removeDuplicates()) { enabled in
-                if !enabled { contextRequest = nil; dismissComposerMenu() }
+                if !enabled { composer.cancelAttachmentLoad(); contextRequest = nil; visualRequest = nil; dismissComposerMenu() }
             }
             .onReceive(composer.contextRequested) { request in
                 switch request {
@@ -64,6 +65,14 @@ struct AIConversationComposerView: View {
                         composer.focusRequested.send()
                     } else if composer.draftID == request.draftID {
                         attachmentError = "问题与上下文合计不能超过 32,000 字节，且最多 5 项。"
+                    }
+                }
+            }
+            .sheet(item: $visualRequest) { request in
+                AIVisualContextSheet(mode: request.source) { attachment in
+                    guard configuration.state.enabled, visualRequest?.id == request.id else { return }
+                    if !composer.appendAttachment(attachment, from: request), composer.draftID == request.draftID {
+                        attachmentError = "上下文超过文字、图像或附件数量限制，请移除部分附件后重试。"
                     }
                 }
             }
@@ -86,8 +95,7 @@ struct AIConversationComposerView: View {
                     HStack(spacing: 6) {
                         ForEach(composer.attachments) { attachment in
                             HStack(spacing: 5) {
-                                Image(systemName: attachment.symbol)
-                                Text(attachment.title).lineLimit(1)
+                                AIConversationAttachmentLabel(attachment: attachment)
                                 if composer.canReread(attachment) {
                                     Button("重新读取", systemImage: "arrow.clockwise") { composer.rereadAttachment(attachment.id) }
                                         .labelStyle(.iconOnly).buttonStyle(.bordered).controlSize(.mini)
@@ -103,6 +111,7 @@ struct AIConversationComposerView: View {
                     }
                 }
             }
+            if let issue = controller.visualInputIssue { Text(issue).font(.caption).foregroundStyle(.secondary) }
             if let message = configurationMessage {
                 HStack {
                     Text(message).font(.caption).foregroundStyle(.secondary)
@@ -223,6 +232,9 @@ struct AIConversationComposerView: View {
             items = [
                 Item(id: "file", section: "上下文", title: "附加文件…", symbol: "doc.badge.plus", action: addTextFile),
                 Item(id: "clipboard", section: "上下文", title: "当前剪贴板文字", symbol: "doc.on.clipboard", action: insertClipboard),
+                Item(id: "visual-image", section: "上下文", title: "附加图像（视觉模型）…", symbol: "photo", action: addVisualImage),
+                Item(id: "visual-window", section: "上下文", title: "窗口或区域（视觉模型）…", symbol: "rectangle.dashed", action: { openVisualPicker(textOnly: false) }),
+                Item(id: "accessible-window", section: "上下文", title: "窗口文字（辅助功能）…", symbol: "accessibility", action: { openVisualPicker(textOnly: true) }),
                 Item(id: "screenshot", section: "上下文", title: "从图片文件提取文字…", symbol: "viewfinder", action: addImageText),
                 Item(id: "selection", section: "上下文", title: "选中文字", symbol: "text.cursor", action: insertSelectedText)
             ]
@@ -313,6 +325,16 @@ struct AIConversationComposerView: View {
         composer.focusRequested.send()
     }
 
+    private func openVisualPicker(textOnly: Bool) {
+        guard !composer.loadingFiles else { return }
+        let app = (NSApp.delegate as? Delegate)?.previousApplication
+        visualRequest = composer.contextRequest(AIVisualPickerMode(textOnly: textOnly, applicationPID: app?.processIdentifier, applicationName: app?.localizedName ?? "上一个应用"))
+    }
+    private func addVisualImage() {
+        AIConversationHostActions.chooseImage(composer: composer, directory: controller.currentProject?.directoryURL, mode: .vision) {
+            try await AIVisualImageLoader.read($0)
+        }
+    }
     private func addImageText() {
         AIConversationHostActions.chooseImage(composer: composer, directory: controller.currentProject?.directoryURL) {
             try await AIChatImageContext.read($0)

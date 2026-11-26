@@ -741,8 +741,13 @@ wait("Chat metadata is persisted independently of generated titles") {
     conversation.chats.first?.pinned == true && conversation.chats.first?.archived == true &&
         conversation.chats.first?.title == "重命名后的对话"
 }
+let instructionsBeforeSave = conversation.chats.first { $0.id == savedID }!.updated
 conversation.chatInstructions = "简洁回答，保留技术术语。"
-RunLoop.current.run(until: Date().addingTimeInterval(0.45))
+// Wait for the actual repository commit callback, not an assumed timer schedule.
+// Under load, the MainActor debounce task can start after the old 450 ms fence.
+wait("Additional instructions write committed") {
+    (conversation.chats.first { $0.id == savedID }?.updated ?? .distantPast) > instructionsBeforeSave
+}
 var instructedRecord: AIChatRecord?
 history.perform({ try $0.load(savedID) }) { instructedRecord = try! $0.get() }
 wait("Additional instructions survive history writes") {

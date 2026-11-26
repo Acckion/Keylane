@@ -21,6 +21,7 @@ struct AIToolRegistration: Sendable {
     let definition: AIToolDefinition
     var owner: ModuleID?
     var ownerTitle: String?
+    var moduleInstructions: AIInstructionDefinition?
     var requiresConfirmation = false
     var prepare: (@MainActor @Sendable ([String: AIToolValue], AIToolRecipient?) async throws -> AIToolPreparedOperation)? = nil
     var available: @MainActor @Sendable () -> Bool = { true }

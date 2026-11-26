@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "candidate": "pinned-store-receipt-bridge",
+  "cases": {
+    "sealedFirstPartyExecutes": true,
+    "sourceInjectionRejected": true,
+    "signatureRejected": true,
+    "innerDigestRejected": true,
+    "wrongKeyRejected": true,
+    "wrongRuntimeRejected": true,
+    "wrongInstallationRejected": true,
+    "wrongCommandRejected": true,
+    "wrongRevisionRejected": true,
+    "grantMismatchRejected": true,
+    "registryRollbackRejected": true,
+    "missingAnchorRejected": true,
+    "ticketReplayRejected": true,
+    "disableBeforeEffectStopsChild": true,
+    "disableAfterReadWithholdsBody": true,
+    "offOnCannotReviveOldLease": true,
+    "uninstallStopsOldChild": true,
+    "replacementStopsOldChild": true,
+    "failedCASDoesNotReviveLease": true,
+    "fixturesExited": true
+  },
+  "coverage": {
+    "productionEnrollment": "not-connected",
+    "protectedStorage": "in-memory-CAS-fixture",
+    "sourceBuild": "fixed-first-party-bytes-not-a-build-service",
+    "persistentRestart": "not-proven",
+    "copiedProductParentAdmission": "not-proven",
+    "RaycastNodeCompatibility": "not-implemented"
+  },
+  "sourceContract": {
+    "commit": "c7b419771a5196a65bd8894daa6c63fd3ce74f43",
+    "keyFileSHA256": {
+      "RaycastStoreArtifactSeal.swift": "db1677f46f1d5eb6c6e45577864dd0d6bcf8eaefa751f46f281f417efd8b2381",
+      "RaycastStoreProtectedReceiptState.swift": "6426425953a2d6c6274d0926a39a2e7e45c78ddae26816074c1a97f7e3938e3c",
+      "RaycastStoreDiskRegistry.swift": "c8ea4c9fea9c2bb920654d78702e0ffc52ad022897fe28c2b8dde81e74300a1f",
+      "StoreGuestRunTicket.swift": "03f4d75060337620302457f718ad503465b4c0431e51a1b1faf3c27d7cc127a1"
+    }
+  },
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true
+}

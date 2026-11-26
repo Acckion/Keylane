@@ -54,7 +54,8 @@ public struct FileSearchLocation {
 
     public static func typedURL(_ text: String) -> URL? {
         guard !text.contains("\0"), text.hasPrefix("/") || text == "~" || text.hasPrefix("~/") else { return nil }
-        return URL(fileURLWithPath: (text as NSString).expandingTildeInPath)
+        // Parsing user input must not probe an unavailable filesystem on the UI thread.
+        return URL(fileURLWithPath: (text as NSString).expandingTildeInPath, isDirectory: text.hasSuffix("/") || text == "~")
     }
 
     public static func canonicalPath(_ path: String) -> String? {
@@ -114,6 +115,13 @@ public struct FileSearchLocation {
         guard let scope = roots.first(where: { Self.contains(path, in: $0.configured) || Self.contains(path, in: $0.resolved) }) else { return false }
         let root = Self.contains(path, in: scope.configured) ? scope.configured : scope.resolved
         return (try? check(URL(fileURLWithPath: path), directory: directory, root: root)) != nil
+    }
+
+    /// Deferred content is tied to its exact owner, not any overlapping
+    /// or alias-equivalent search scope that might still expose the name.
+    public mutating func includesDeferredContent(at path: String, ownedBy owner: String) -> Bool {
+        guard options.roots.contains(owner), path != owner, Self.contains(path, in: owner) else { return false }
+        return (try? check(URL(fileURLWithPath: path), directory: false, root: owner)) != nil
     }
 
     private mutating func rules(in directory: URL, root: String) -> [FileSearchRules.IgnoreRule] {

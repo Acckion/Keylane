@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "date": "2026-11-22",
+  "engine": "restricted-JavaScriptCore",
+  "strictIsolation": true,
+  "vmAllowed": false,
+  "compatibility": "explicit-subset",
+  "userDecision": "允许受限 JavaScriptCore，明确兼容子集并逐步适配"
+}

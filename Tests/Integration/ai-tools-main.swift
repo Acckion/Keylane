@@ -471,3 +471,121 @@ Task { @MainActor in
     toolSessionFinished = true
 }
 wait("Shared tool session and approval handoff") { toolSessionFinished }
+
+final class InstructionFixtureProtocol: URLProtocol {
+    static var bodies: [[String: Any]] = []
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        do {
+            var data = request.httpBody ?? Data()
+            if data.isEmpty, let stream = request.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var bytes = [UInt8](repeating: 0, count: 4096)
+                while true { let count = stream.read(&bytes, maxLength: bytes.count); if count <= 0 { break }; data.append(contentsOf: bytes.prefix(count)) }
+            }
+            Self.bodies.append(try JSONSerialization.jsonObject(with: data) as! [String: Any])
+            let object: [String: Any] = request.url!.path.hasSuffix("/messages")
+                ? ["type": "message", "content": [["type": "text", "text": "done"]], "stop_reason": "end_turn"]
+                : ["choices": [["message": ["role": "assistant", "content": "done"], "finish_reason": "stop"]]]
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: try JSONSerialization.data(withJSONObject: object))
+            client?.urlProtocolDidFinishLoading(self)
+        } catch { client?.urlProtocol(self, didFailWithError: error) }
+    }
+}
+var moduleInstructionsFinished = false
+Task { @MainActor in
+    do {
+        for wire in [AIWireProtocol.openAI, .anthropic] {
+            let suite = "keylane.instructions." + UUID().uuidString
+            let prefs = UserDefaults(suiteName: suite)!
+            defer { prefs.removePersistentDomain(forName: suite) }
+            var connection = AIConnection(endpoint: "https://synthetic.invalid/v1", model: "synthetic", mode: .complete, wireProtocol: wire)
+            connection.supportsImages = true
+            prefs.set(try JSONEncoder().encode(AIConfiguration.State(enabled: true, connections: [connection], selectedID: connection.id)), forKey: "aiConnections.v1")
+            let configuration = AIConfiguration(preferences: prefs)
+            let interaction = AIInteractionPreferences(preferences: prefs); interaction.toolsEnabled = true
+            let transport = URLSessionConfiguration.ephemeral; transport.protocolClasses = [InstructionFixtureProtocol.self]
+            let session = AIConversationSession(configuration: configuration, runtime: AIRuntime(configuration: transport), readKey: { _ in nil })
+            let firstOwner = ModuleID(rawValue: "fixture.first"), otherOwner = ModuleID(rawValue: "fixture.other")
+            var leases = 0
+            var first = AIToolRegistration(definition: try .init(name: "fixture_first", title: "First", description: "Fixture")) { _ in try .init(text: "data") }
+            first.owner = firstOwner; first.moduleInstructions = .init("FIRST_ONLY_GUIDANCE")
+            first.snapshotAvailability = { leases += 1; return { true } }
+            var other = AIToolRegistration(definition: try .init(name: "fixture_other", title: "Other", description: "Fixture")) { _ in try .init(text: "data") }
+            other.owner = otherOwner; other.moduleInstructions = .init("OTHER_ONLY_GUIDANCE")
+            var catalog = [first, other]
+            session.configureTools(preferences: interaction, source: { catalog })
+            session.chatInstructions = "KEEP_USER_INSTRUCTIONS"
+            session.setToolCapability(otherOwner, enabled: false)
+            InstructionFixtureProtocol.bodies = []
+            precondition(leases == 0 && session.submit("Synthetic instruction test"))
+            catalog[0].moduleInstructions = .init("LATER_CATALOG_GUIDANCE")
+            let deadline = Date().addingTimeInterval(3)
+            while session.running, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(!session.running && session.lastAnswer == "done" && leases == 1)
+            let request = InstructionFixtureProtocol.bodies[0]
+            let system = wire == .anthropic ? request["system"] as! String : (request["messages"] as! [[String: Any]])[0]["content"] as! String
+            precondition(system.contains("FIRST_ONLY_GUIDANCE") && system.hasSuffix("KEEP_USER_INSTRUCTIONS"))
+            precondition(!system.contains("OTHER_ONLY_GUIDANCE") && !system.contains("LATER_CATALOG_GUIDANCE"))
+            let tools = request["tools"] as! [[String: Any]]
+            precondition(tools.count == 1 && session.chatInstructions == "KEEP_USER_INSTRUCTIONS")
+            // Merge regression: the same production submit must preserve both
+            // #229 image blocks and #234 frozen selected-module instructions.
+            session.reset(); session.chatInstructions = "KEEP_USER_INSTRUCTIONS"
+            catalog[0].moduleInstructions = first.moduleInstructions
+            let raster = CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0,
+                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+            let bytes = NSMutableData()
+            let encoder = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil)!
+            CGImageDestinationAddImage(encoder, raster.makeImage()!, nil)
+            precondition(CGImageDestinationFinalize(encoder))
+            let image = try AIImageInput(data: bytes as Data, mediaType: "image/jpeg", width: 2, height: 2)
+            session.composer.attachments = [.init(title: "Synthetic image", text: "Fixture", image: image)]
+            InstructionFixtureProtocol.bodies = []
+            precondition(session.submit("Combined image and guidance"))
+            catalog[0].moduleInstructions = .init("LATER_CATALOG_GUIDANCE")
+            while session.running { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(session.lastAnswer == "done" && leases == 2)
+            let combined = InstructionFixtureProtocol.bodies[0]
+            let combinedMessages = combined["messages"] as! [[String: Any]]
+            let combinedSystem = wire == .anthropic ? combined["system"] as! String : combinedMessages[0]["content"] as! String
+            precondition(combinedSystem.contains("FIRST_ONLY_GUIDANCE") && combinedSystem.hasSuffix("KEEP_USER_INSTRUCTIONS"))
+            precondition(!combinedSystem.contains("OTHER_ONLY_GUIDANCE") && !combinedSystem.contains("LATER_CATALOG_GUIDANCE"))
+            let blocks = combinedMessages.first { $0["role"] as? String == "user" }!["content"] as! [[String: Any]]
+            if wire == .anthropic {
+                let encoded = blocks.first { $0["type"] as? String == "image" }!["source"] as! [String: String]
+                precondition(encoded["data"] == image.data.base64EncodedString())
+            } else {
+                let encoded = blocks.first { $0["type"] as? String == "image_url" }!["image_url"] as! [String: String]
+                precondition(encoded["url"] == "data:image/jpeg;base64," + image.data.base64EncodedString())
+            }
+            precondition((combined["tools"] as! [[String: Any]]).count == 1)
+            session.reset(); session.chatInstructions = "KEEP_USER_INSTRUCTIONS"
+            session.setToolCapability(firstOwner, enabled: false)
+            InstructionFixtureProtocol.bodies = []
+            precondition(session.submit("Explicit empty selection"))
+            while session.running { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(session.lastAnswer == "done")
+            let emptyBody = InstructionFixtureProtocol.bodies[0]
+            let emptySystem = wire == .anthropic ? emptyBody["system"] as! String : (emptyBody["messages"] as! [[String: Any]])[0]["content"] as! String
+            precondition(emptySystem == "KEEP_USER_INSTRUCTIONS" && emptyBody["tools"] == nil && leases == 2)
+            session.reset(); session.resetToolCapabilities()
+            catalog[0].moduleInstructions = .init(String(repeating: "x", count: 4097))
+            session.composer.text = "Preserve rejected draft"
+            let turns = session.turns
+            precondition(!session.submit(session.composer.text))
+            precondition(session.composer.text == "Preserve rejected draft" && session.turns == turns && leases == 2)
+            interaction.toolsEnabled = false
+            precondition(session.submit("Globally disabled tools"))
+            while session.running { try await Task.sleep(for: .milliseconds(10)) }
+            precondition(session.lastAnswer == "done" && leases == 2, "Global-off fixture wire=\(wire) status=\(session.status) answer=\(String(describing: session.lastAnswer)) leases=\(leases) requests=\(InstructionFixtureProtocol.bodies.count)")
+        }
+        print("PASS module guidance: combined image/frozen guidance payloads, selected-only OpenAI/Anthropic requests, atomic tool/instruction metadata snapshot, dispatch-only leases, base preservation, empty/global-off omit guidance, invalid guidance preserves draft")
+    } catch { fatalError("Module instruction fixture failed: \(error)") }
+    moduleInstructionsFinished = true
+}
+wait("Module instruction requests") { moduleInstructionsFinished }

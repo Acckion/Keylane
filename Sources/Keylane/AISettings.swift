@@ -4,6 +4,7 @@ import KeylaneCore
 import SwiftUI
 
 enum AIModule {
+    static let toolInstructions = AIInstructionDefinition("File path tools require an explicitly authorized root. Read only after native approval; continue private pages with the current request's keylane_read_result cursor. Continuation reads the original version/snapshot, not the latest file. Search-reference tools and path tools use separate authorization and arguments. Do not infer success from a denied or unconfirmed operation.")
     static let models = SettingsItem(id: "ai-models", page: "ai-models", title: "模型与提供方",
                                      keywords: "AI 模型 提供方 接口 API 密钥 Keychain 流式 Ollama")
 
@@ -46,7 +47,7 @@ enum AIModule {
                 currentProject: { [weak quickAI] in quickAI?.currentProject }, index: model.fileSearch.aiToolIndexSource())
             return tools.map { registration in
                 var copy = registration
-                if copy.owner == nil { copy.owner = .init(rawValue: "keylane.ai"); copy.ownerTitle = "AI" }
+                if copy.owner == nil { copy.owner = .init(rawValue: "keylane.ai"); copy.ownerTitle = "AI"; copy.moduleInstructions = toolInstructions }
                 return copy
             }
         }
@@ -175,7 +176,7 @@ enum AIModule {
             ViewObservation.changes(interaction.$rootTab)
         ], dynamicCommandSettings: .init(model: model, items: { library.commands }, title: \.title,
                                         commandID: \.commandID, updates: { [ViewObservation.changes(library.$commands)] },
-                                        entry: { $0.settingsEntry(model: $1) }))
+                                        entry: { $0.settingsEntry(model: $1) })).withAIInstructions(toolInstructions.text)
     }
 }
 

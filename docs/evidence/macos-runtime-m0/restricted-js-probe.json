@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "fixtureOnly": true,
+  "installed": false,
+  "candidate": "restricted-JavaScriptCore",
+  "cases": {
+    "nativeFilePositiveControl": true,
+    "ordinaryJavaScript": true,
+    "nativeFileDenied": true,
+    "noProcess": true,
+    "noRequire": true,
+    "noFetch": true,
+    "noObjC": true,
+    "noImportScripts": true,
+    "noWorker": true,
+    "noReadFile": true,
+    "noShellLoad": true,
+    "noDlopen": true,
+    "constructorHasNoProcess": true,
+    "freshInvocationState": true,
+    "wrongSignedParentRejected": true,
+    "directLaunchRejected": true,
+    "parentDeathStopsInfiniteJS": true,
+    "disabledWatcherControlSurvives": true
+  },
+  "coverage": {
+    "RaycastNodeCompatibility": "not-implemented",
+    "broker": "not-implemented",
+    "keychain": "not-tested",
+    "nativeAddon": "not-tested",
+    "fullHostileEngineEscape": "not-proven",
+    "fullContainerSanitization": "not-tested"
+  },
+  "fileControl": {
+    "tested": true,
+    "allowed": false,
+    "errno": 1
+  },
+  "artifactAdjacentFileControl": {
+    "tested": true,
+    "allowed": false,
+    "errno": 1
+  },
+  "parentDeath": {
+    "exited": true,
+    "elapsedMs": 12.7,
+    "enteredJavaScript": true
+  },
+  "watcherDisabledControl": {
+    "exited": false,
+    "elapsedMs": 1031.1,
+    "enteredJavaScript": true
+  },
+  "fixtureProcessCleanupConfirmed": true,
+  "signaturesVerifiedBeforeAndAfter": true,
+  "gate": "incomplete",
+  "failures": [],
+  "temporaryArtifactsRemoved": true,
+  "date": "2026-11-21",
+  "base": "036cfd72427a14204a7ccd1c5a9e4f67579aded8",
+  "decision": "Strict isolation retained; alternative research only, no trusted-extension or VM fallback.",
+  "interpretation": "All 18 first-party subset cases passed; overall M0 incomplete and no Raycast/Node compatibility claim.",
+  "hostOS": "27.3",
+  "architecture": "arm64"
+}
