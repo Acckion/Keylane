@@ -263,9 +263,9 @@ final class AIConversationSession: ObservableObject {
                     guard let self else { return false }
                     return self.activeID == turn.id && self.toolEnabled() && self.configuration.state.enabled &&
                         self.currentConnection == connection && registrations.allSatisfy({ $0.available() })
-                }, approve: { [weak self] title, arguments in
+                }, approveRequest: { [weak self] context in
                     guard let self else { return false }
-                    return await self.toolApproval.request(title: title, arguments: arguments)
+                    return await self.toolApproval.request(context)
                 })
             }, progress: { [weak self] event in
                 guard let self, self.activeID == turn.id, let index = self.turns.indices.last else { return }

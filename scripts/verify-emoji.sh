@@ -9,6 +9,6 @@ swiftc -package-name Keylane -swift-version 5 -target "$target" -emit-library -e
     -emit-module-path "$task_directory/KeylaneCore.swiftmodule" Sources/KeylaneCore/*.swift -lsqlite3 -o "$task_directory/libKeylaneCore.dylib"
 swiftc -package-name Keylane -swift-version 5 -D DEBUG -target "$target" -I "$task_directory" -L "$task_directory" \
     -lKeylaneCore -Xlinker -rpath -Xlinker "$task_directory" \
-    Sources/Keylane/{EmojiSearch,ResultGrid,ResultList,ResultTypeFilter,VisualStyle,ThemeStore,ThemeStyle,ContentActionButtonStyle,NativeHoverButton,SearchField,WorkspaceItemIcon}.swift \
+    Sources/Keylane/{EmojiSearch,ResultGrid,ResultList,ResultFileDrag,ResultTypeFilter,VisualStyle,ThemeStore,ThemeStyle,ContentActionButtonStyle,NativeHoverButton,SearchField,WorkspaceItemIcon}.swift \
     Tests/Integration/emoji-main.swift -o "$task_directory/verify"
 "$task_directory/verify" -AppleLanguages "(zh-Hans)"

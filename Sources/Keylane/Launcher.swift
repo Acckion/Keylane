@@ -857,7 +857,7 @@ struct Launcher: View {
                     }
                     if index == 5 && model.query.isEmpty { sectionHeader("其他") }
                 }
-                ResultListButton(id: row.commandID, action: {
+                ResultListButton(id: row.commandID, fileDrag: fileDragSource(row), action: {
                     activateResult(row.commandID, selectOnly: showsFileResults)
                 }) {
                     if row.id == "calculator" {
@@ -880,6 +880,14 @@ struct Launcher: View {
                         }
                     }
             }
+        }
+    }
+    private func fileDragSource(_ row: Entry) -> ResultFileDrag? {
+        guard row.detail == "File" else { return nil }
+        return ResultFileDrag(id: AnyHashable(row.commandID), select: { activateResult(row.commandID, selectOnly: true) }) { completion in
+            guard selectionIsCurrent, rows.contains(where: { $0.commandID == row.commandID }) else { completion(nil); return }
+            do { completion(try model.fileSearch.prepareFileDrag(URL(fileURLWithPath: row.id))) }
+            catch { model.fileActionFeedback(error.localizedDescription, style: .failure); completion(nil) }
         }
     }
     private func sectionHeader(_ title: String) -> some View { Text(title).font(VisualStyle.sectionText).foregroundStyle(.secondary).padding(.leading, 14).padding(.top, 5).padding(.bottom, 5).frame(height: 26) }

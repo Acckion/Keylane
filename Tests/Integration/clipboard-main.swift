@@ -446,6 +446,17 @@ defer { searchBoard.releaseGlobally(); searchPrefs.removePersistentDomain(forNam
 precondition(!imageSearch.automaticOCR)
 imageSearch.search("剪贴板文字测试")
 wait("Vision OCR") { Set(imageSearch.items.map(\.id)) == Set([rawID, imageFileID]) && !imageSearch.indexingImageText }
+var fileDragFinished = false
+var fileDragPayload: ResultFileDragPayload?
+imageSearch.prepareFileDrag(id: imageFileID) { fileDragPayload = $0; fileDragFinished = true }
+wait("clipboard file drag preparation") { fileDragFinished }
+precondition(fileDragPayload?.urls == [searchImageFile])
+fileDragPayload = nil
+fileDragFinished = false
+imageSearch.prepareFileDrag(id: rawID) { fileDragPayload = $0; fileDragFinished = true }
+wait("clipboard image asset drag preparation") { fileDragFinished }
+precondition(fileDragPayload?.urls.count == 1 && fileDragPayload!.urls.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+fileDragPayload = nil
 imageSearch.kind = "files"
 wait("OCR file filter") { imageSearch.items.map(\.id) == [imageFileID] }
 imageSearch.endPresentation()

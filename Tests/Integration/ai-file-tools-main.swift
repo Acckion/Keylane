@@ -29,6 +29,17 @@ import KeylaneCore
         try Data("synthetic needle".utf8).write(to: note)
         try Data("protected fixture".utf8).write(to: root.appendingPathComponent(".env"))
         precondition(registrations().contains { $0.definition.name == "keylane_edit_file" })
+        let declared = registrations()
+        precondition(declared.allSatisfy(\.requiresConfirmation), "Impact metadata must preserve native file approvals")
+        for name in ["keylane_edit_file", "keylane_replace_file", "keylane_move_file", "keylane_trash_file", "keylane_restore_file"] {
+            precondition(declared.first { $0.definition.name == name }?.impact == .unspecified,
+                         "Later mutation tools must not inherit a read-only classification")
+        }
+        precondition(declared.first { $0.definition.name == "keylane_read_file" }?.impact == .privateRead)
+        precondition(declared.first { $0.definition.name == "keylane_write_file" }?.impact == .createFile)
+        precondition(declared.first { $0.definition.name == "keylane_create_directory" }?.impact == .createDirectory)
+        print("PASS impact metadata: original read/create classifications retained; later mutations remain unspecified with native confirmation")
+
         var approvals: [String] = [], events: [AIResponseEvent] = []
         var allow = false
         var onApproval: (() -> Void)?
