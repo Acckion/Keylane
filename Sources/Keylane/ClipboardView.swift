@@ -145,7 +145,9 @@ private struct ClipboardHistoryList: View {
             ForEach(periods, id: \.self) { period in
                 ResultListSection(title: period.rawValue, isFirst: period == periods.first) {
                     ForEach(groups[period, default: []]) { item in
-                        ResultListButton(id: item.id, action: { controller.select(item.id) }) {
+                        ResultListButton(id: item.id, fileDrag: item.kind == .files || item.kind == .image
+                            ? ResultFileDrag(id: AnyHashable(item.id), select: { controller.select(item.id) }, prepare: { controller.prepareFileDrag(id: item.id, completion: $0) }) : nil,
+                            action: { controller.select(item.id) }) {
                             ResultListRow(selected: item.id == controller.selectedID) {
                                 ClipboardListIcon(item: item, controller: controller, showsLinkVisuals: controller.showsLinkVisuals)
                             } content: {

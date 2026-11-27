@@ -94,6 +94,7 @@ extension View {
 struct ResultListButton<ID: Hashable, Label: View>: View {
     let id: ID
     var disabled = false
+    var fileDrag: ResultFileDrag? = nil
     let action: () -> Void
     @ViewBuilder let label: () -> Label
 
@@ -101,6 +102,11 @@ struct ResultListButton<ID: Hashable, Label: View>: View {
         Button(action: action, label: label)
             .buttonStyle(.plain)
             .disabled(disabled)
+            .overlay {
+                if let fileDrag, !disabled {
+                    ResultFileDragSurface(source: fileDrag, click: action).accessibilityHidden(true)
+                }
+            }
             .id(id)
     }
 }
