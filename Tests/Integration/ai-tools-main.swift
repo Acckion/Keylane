@@ -589,3 +589,54 @@ Task { @MainActor in
     moduleInstructionsFinished = true
 }
 wait("Module instruction requests") { moduleInstructionsFinished }
+
+var impactContextFinished = false
+Task { @MainActor in
+    do {
+        let definition = try AIToolDefinition(name: "fixture_impact", title: "Impact", description: "Synthetic only")
+        var performed = 0
+        let tool = AIToolRegistration(definition: definition, requiresConfirmation: true, impact: .privateRead,
+            prepare: { _, _ in
+                .init(displayArguments: "synthetic target", approvalArguments: "synthetic approval", impact: .computation) {
+                    performed += 1; return try .init(text: "data")
+                }
+            }) { _ in preconditionFailure("Prepared handler cannot be bypassed") }
+        var contexts: [AIToolApprovalContext] = []
+        let denied = try AIToolRun(registrations: [tool], isCurrent: { true }, approveRequest: { context in contexts.append(context); return false })
+        let call = try AIToolCall(id: "impact-one", name: definition.name, arguments: [:])
+        let result = try await denied.execute(call, scope: "synthetic", progress: { _ in })
+        precondition(result.isError && performed == 0 && contexts.count == 1)
+        precondition(contexts[0].impact.effects == [.privateRead, .modelDisclosure, .computation])
+        precondition(contexts[0].arguments == "synthetic approval")
+        // Impact descriptions do not decide the pending calendar/application policy.
+        var automaticCalls = 0, automaticApprovals = 0
+        let automatic = AIToolRegistration(definition: definition, impact: .privateRead) { _ in
+            automaticCalls += 1; return try .init(text: "synthetic only")
+        }
+        let unchanged = try AIToolRun(registrations: [automatic], isCurrent: { true }, approveRequest: { _ in
+            automaticApprovals += 1; return false
+        })
+        let automaticResult = try await unchanged.execute(call, scope: "synthetic", progress: { _ in })
+        precondition(!automaticResult.isError && automaticCalls == 1 && automaticApprovals == 0)
+        var sourceAvailable = true
+        var revocable = tool
+        revocable.available = { sourceAvailable }
+        let revoked = try AIToolRun(registrations: [revocable], isCurrent: { true }, approveRequest: { context in
+            precondition(context.impact.effects == [.privateRead, .modelDisclosure, .computation])
+            sourceAvailable = false; return true
+        })
+        let revokedResult = try await revoked.execute(call, scope: "synthetic", progress: { _ in })
+        precondition(revokedResult.isError && performed == 0, "Approval cannot survive source revocation")
+        let broker = AIToolApprovalBroker()
+        let pending = Task { @MainActor in await broker.request(contexts[0]) }
+        let deadline = Date().addingTimeInterval(2)
+        while broker.pending == nil, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        precondition(broker.pending?.impact == contexts[0].impact)
+        broker.cancel()
+        let approved = await pending.value
+        precondition(!approved)
+        print("PASS structured approval context: effects merge without downgrade, denial prevents execution, typed impact reaches shared broker, descriptions preserve current approval conditions, source revocation/cancellation rejects pending request")
+    } catch { fatalError("Impact fixture failed: \(error)") }
+    impactContextFinished = true
+}
+wait("Structured approval context") { impactContextFinished }

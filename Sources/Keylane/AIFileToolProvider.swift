@@ -90,11 +90,21 @@ enum AIFileToolProvider {
                 .init("query", description: "要搜索的文件名或关键词。", kind: .string(maximumLength: 256)), count]))
         }
         return declarations.map { name, title, description, parameters in
+            // Keep this batch's original classifications. Later mutation tools
+            // retain their full native approval text rather than claiming read-only effects.
+            let impact: AIActionImpact
+            switch name {
+            case "keylane_write_file": impact = .createFile
+            case "keylane_create_directory": impact = .createDirectory
+            case "keylane_file_roots", "keylane_read_file", "keylane_file_info", "keylane_glob", "keylane_grep",
+                 "keylane_read_result", "keylane_search_indexed_files": impact = .privateRead
+            default: impact = .unspecified
+            }
             let toolAvailable: @MainActor @Sendable () -> Bool = {
                 available() && (name != "keylane_search_indexed_files" || index?.isCurrent() == true)
             }
             return .init(definition: try! AIToolDefinition(name: name, title: title, description: description, parameters: parameters),
-                  requiresConfirmation: true,
+                  requiresConfirmation: true, impact: impact,
                   prepare: { arguments, recipient in
                       guard let recipient, !recipient.destination.isEmpty, toolAvailable() else { throw AIToolContractError.unavailable }
                       try lease.check()
@@ -129,7 +139,7 @@ enum AIFileToolProvider {
                       let creationNotice = ["keylane_write_file", "keylane_create_directory"].contains(name)
                           ? "\n创建绑定已确认的目录对象。其他进程仍可能移动它；创建后核对失败不能证明未写入。结果无法确认时请人工核对，勿直接重试；不自动回滚。"
                           : ""
-                      return AIToolPreparedOperation(displayArguments: display, approvalArguments: review + creationNotice + (plan.localMutationSummary.map { "\n" + $0 } ?? ""), isCurrent: operationAvailable) {
+                      return AIToolPreparedOperation(displayArguments: display, approvalArguments: review + creationNotice + (plan.localMutationSummary.map { "\n" + $0 } ?? ""), isCurrent: operationAvailable, impact: impact) {
                           guard operationAvailable() else { throw CancellationError() }
                           let cancellation = AIFileAccessLease()
                           let documentWork = ImageTextRecognitionWork()
@@ -161,7 +171,7 @@ enum AIFileToolProvider {
         return .init(definition: try! AIToolDefinition(name: "keylane_search_tools", title: "搜索工具", description: "Search Tools：搜索本次可用工具的名称、说明及参数，不执行工具或申请权限。", parameters: [
             .init("query", description: "工具用途或关键词，例如 read、文件、日历。", kind: .string(maximumLength: 256)),
             .init("limit", description: "最多返回条数，默认10。", kind: .integer(minimum: 1, maximum: 10), required: false)
-        ])) { arguments in
+        ]), impact: .publicRead) { arguments in
             guard case .string(let query) = arguments["query"] else { throw AIToolContractError.invalidArguments }
             let limit: Int = { if case .number(let n) = arguments["limit"] { return Int(n) }; return 10 }()
             return try AIToolWire.result(["tools": .array(definitions.filter {
