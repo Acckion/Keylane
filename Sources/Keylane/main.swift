@@ -1143,7 +1143,7 @@ final class Delegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: VisualStyle.launcherWidth, height: 470), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.title = "Keylane · Developer Preview"; window.titlebarAppearsTransparent = true; window.titleVisibility = .hidden
         window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = true
-        window.level = .floating; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.level = FloatingWindowVisibility.panelLevel; window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.isMovableByWindowBackground = true
         let hosting = NSHostingView(rootView: Launcher(model: model))
         // The panel owns the viewport, including fractional interface scales.

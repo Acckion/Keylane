@@ -2,6 +2,9 @@ import AppKit
 
 /// Opacity-only transitions keep the window's drag destination and hit regions stable.
 final class FloatingWindowVisibility {
+    // Transient launcher surfaces must sit above floating and modal application panels.
+    // Window ordering remains independent of key-window/application activation.
+    static let panelLevel: NSWindow.Level = .popUpMenu
     static let defaultShowDuration: TimeInterval = 0.18
     private weak var window: NSWindow?
     private var timer: Timer?
