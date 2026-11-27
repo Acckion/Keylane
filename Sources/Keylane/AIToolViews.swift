@@ -52,6 +52,9 @@ struct AIToolApprovalView: View {
         if let request = broker.pending {
             VStack(alignment: .leading, spacing: 10) {
                 Label("允许本次“\(request.title)”操作？", systemImage: "hand.raised").font(.headline)
+                if !request.impact.effects.isEmpty {
+                    Text(request.impact.summary).font(.caption).foregroundStyle(.secondary)
+                }
                 Text(request.arguments).font(.caption.monospaced()).textSelection(.enabled)
                 Text("仅本次有效，60 秒未确认将自动拒绝。").font(.caption).foregroundStyle(.secondary)
                 HStack {
