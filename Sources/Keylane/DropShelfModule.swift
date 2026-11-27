@@ -7,9 +7,9 @@ import KeylaneCore
 enum DropShelfModule {
     static let folderObservationID = "keylane.drop-shelf.folders"
     static let screenshotFolder = SettingsItem(id: "dropShelf.folders.screenshots", page: folderObservationID,
-                                                title: "截图文件夹", keywords: "截屏 录屏 文件夹观察 截图目录 暂存架")
+                                                title: "截图文件夹", keywords: "截屏 录屏 文件夹观察 截图目录 暂存架 分组 超时")
     static let downloadFolder = SettingsItem(id: "dropShelf.folders.downloads", page: folderObservationID,
-                                              title: "下载文件夹", keywords: "下载目录 文件夹观察 暂存架")
+                                              title: "下载文件夹", keywords: "下载目录 文件夹观察 暂存架 分组 超时")
 
     static func make(model: Model) -> LauncherModule {
         let controller = model.dropShelf
@@ -88,7 +88,7 @@ enum DropShelfModule {
         }), .init(id: folderObservationID, title: "文件夹观察", symbol: "folder.badge.plus",
                   subtitle: "", order: 85, items: [screenshotFolder, downloadFolder], parentID: settingsID, content: { [weak model] in
             guard let model else { return AnyView(EmptyView()) }
-            return AnyView(DropShelfFolderPreferences(screenshots: model.screenshots, downloads: model.downloads))
+            return AnyView(DropShelfFolderPreferences(screenshots: model.screenshots, downloads: model.downloads, shelves: controller))
         })], services: [.init(start: { [weak model] in if let model {
             controller.openManager = { [weak model] in model?.runCommand(historyID, origin: .menu) }
             controller.start(registry: model.menuBar)
@@ -108,7 +108,7 @@ private struct DropShelfPreferences: View {
         SettingsPageSections {
             SettingsCard {
                 Button { model.openSettings(page: DropShelfModule.folderObservationID) } label: {
-                    SettingsRow("文件夹观察", detail: "设置截图和下载的文件夹位置。") {
+                    SettingsRow("文件夹观察", detail: "设置截图和下载的文件夹位置及分组超时。") {
                         Image(systemName: "chevron.right").foregroundStyle(.secondary)
                     }
                     .contentShape(Rectangle())
@@ -227,11 +227,13 @@ private struct DropShelfPreferences: View {
 private struct DropShelfFolderPreferences: View {
     let screenshots: ScreenshotLibrary
     @ObservedObject var downloads: DownloadsController
+    @ObservedObject var shelves: DropShelfController
     @StateObject private var screenshotFolders: ViewObservation
 
-    init(screenshots: ScreenshotLibrary, downloads: DownloadsController) {
+    init(screenshots: ScreenshotLibrary, downloads: DownloadsController, shelves: DropShelfController) {
         self.screenshots = screenshots
         self.downloads = downloads
+        self.shelves = shelves
         _screenshotFolders = StateObject(wrappedValue: ViewObservation([
             ViewObservation.changes(screenshots.$scopes),
             ViewObservation.changes(screenshots.$unavailableScopePaths)
@@ -244,8 +246,13 @@ private struct DropShelfFolderPreferences: View {
                                      unavailablePaths: screenshots.unavailableScopePaths, suggestedFolder: screenshots.suggestedFolder,
                                      anchor: DropShelfModule.screenshotFolder, title: "截图文件夹",
                                      detail: "与截图管理共用目录。加入暂存架时只识别截图和录屏。")
+            SettingsCard {
+                groupingTimeout("截图分组超时", seconds: $shelves.screenshotGroupingSeconds)
+            }
             SettingsCard(anchor: DropShelfModule.downloadFolder) {
                 DownloadsFolderSettingRow(controller: downloads, folderPath: downloads.folder?.path)
+                Divider()
+                groupingTimeout("下载分组超时", seconds: $shelves.downloadGroupingSeconds)
                 if !downloads.error.isEmpty { SettingsDescription(downloads.error) }
             }
         }
@@ -254,4 +261,20 @@ private struct DropShelfFolderPreferences: View {
             screenshots.checkFolders()
         }
     }
+
+    private func groupingTimeout(_ title: String, seconds: Binding<Int>) -> some View {
+        let range = DropShelfController.groupingSecondsRange
+        let value = Binding(get: { seconds.wrappedValue },
+                            set: { seconds.wrappedValue = min(range.upperBound, max(range.lowerBound, $0)) })
+        return SettingsRow(title, detail: "距上次自动加入超过此时长后会新建暂存架。") {
+            HStack(spacing: 6) {
+                TextField(title, value: value, format: .number)
+                    .labelsHidden()
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 64)
+                Text("秒").foregroundStyle(.secondary)
+            }
+        }
+    }
+
 }

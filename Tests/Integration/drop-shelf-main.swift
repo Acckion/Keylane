@@ -424,6 +424,50 @@ expect(shelves.managedShelves.last?.id == newDuringSession, "new shelves append 
 try shelves.store!.deleteShelf(newDuringSession)
 shelves.launcherHidden()
 for id in placementIDs { shelves.removeManagedShelf(id) }
+do {
+    let originalScreenshots = shelves.screenshotGroupingSeconds
+    let originalDownloads = shelves.downloadGroupingSeconds
+    shelves.screenshotGroupingSeconds = 60
+    shelves.downloadGroupingSeconds = 20
+    defer {
+        shelves.screenshotGroupingSeconds = originalScreenshots
+        shelves.downloadGroupingSeconds = originalDownloads
+    }
+    let files = try (0..<7).map { index -> URL in
+        let url = fixtures.appendingPathComponent("automatic-shelf-\(index).txt")
+        try Data("Synthetic automatic import".utf8).write(to: url)
+        return url
+    }
+    func importFile(_ index: Int, from source: DropShelfController.AutomaticSource, at time: TimeInterval) -> UUID {
+        expect(shelves.addAutomaticFiles([files[index]], source: source, now: time), "automatic import succeeds")
+        return shelves.store!.shelves.first!.id
+    }
+    let occupied = NSApp.windows.compactMap { $0 as? DropShelfWindow }
+        .filter { $0.isVisible && $0.controller === shelves }.map(\.frame)
+    let shot = importFile(0, from: .screenshot, at: 100)
+    let download = importFile(1, from: .download, at: 150)
+    expect(shot != download, "screenshots and downloads use independent shelves")
+    expect(importFile(2, from: .screenshot, at: 160) == shot, "equal to the timeout still joins the existing shelf")
+    let laterDownload = importFile(3, from: .download, at: 171)
+    expect(laterDownload != download && laterDownload != shot, "download uses its own shorter timeout")
+    expect(importFile(4, from: .screenshot, at: 215) == shot, "timeout rolls forward from the last successful import")
+    expect(shelves.store!.shelf(shot)?.items.count == 3, "all three screenshots share one shelf")
+    let laterShot = importFile(5, from: .screenshot, at: 276)
+    expect(laterShot != shot, "screenshot after a gap longer than the timeout starts a new shelf")
+    let ids = [shot, download, laterDownload, laterShot]
+    let panels = NSApp.windows.compactMap { $0 as? DropShelfWindow }
+        .filter { $0.isVisible && ids.contains($0.shelfID) }
+    expect(panels.count == ids.count, "automatic imports make their new shelves visible where space permits")
+    for (index, panel) in panels.enumerated() {
+        let others = occupied + panels.dropFirst(index + 1).map(\.frame)
+        expect(others.allSatisfy { $0.intersection(panel.frame).isEmpty },
+               "automatic windows avoid existing shelves and each other")
+    }
+    panels.first { $0.shelfID == laterShot }?.close()
+    let afterClose = importFile(6, from: .screenshot, at: 280)
+    expect(afterClose != laterShot, "closing a shelf ends its automatic grouping session")
+    for id in ids + [afterClose] { shelves.removeManagedShelf(id) }
+}
 let navigationFixtureIDs = try (0..<5).map { _ in try shelves.store!.create() }
 for id in navigationFixtureIDs { try shelves.store!.rename(id, title: "grid-navigation-token") }
 shelves.searchShelves("grid-navigation-token")
