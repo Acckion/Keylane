@@ -305,15 +305,15 @@ final class DropShelfController: ObservableObject {
         let board = NSPasteboard.withUniqueName()
         defer { board.releaseGlobally() }
         guard board.writeObjects(urls.map { $0 as NSURL }) else { return false }
-        return addContents(board, dragging: false)
+        return addContents(board, dragging: false, activate: false)
     }
     func clipboardShelf() { _ = addContents(.general, dragging: false) }
-    @discardableResult func addContents(_ board: NSPasteboard, dragging: Bool) -> Bool {
+    @discardableResult func addContents(_ board: NSPasteboard, dragging: Bool, activate: Bool = true) -> Bool {
         let existing = addBehavior == .existingWindow ? NSApp.orderedWindows.compactMap { $0 as? DropShelfWindow }
             .first { $0.controller === self && $0.isVisible && !$0.isMiniaturized && !$0.showsDragEntry } : nil
-        guard let window = existing ?? (dragging ? createForDrag(nearPointer: false) : create()) else { return false }
+        guard let window = existing ?? (dragging ? createForDrag(nearPointer: false) : create(activate: activate)) else { return false }
         let accepted = window.receive(board, isDrag: dragging)
-        if accepted, existing != nil { _ = reveal(window.shelfID, activate: !dragging) }
+        if accepted, existing != nil { _ = reveal(window.shelfID, activate: activate && !dragging) }
         if !accepted, dragging, existing == nil { window.close() }
         return accepted
     }
@@ -536,7 +536,7 @@ final class DropShelfWindow: NSPanel, NSWindowDelegate, NSTableViewDataSource, N
         // Register the window as the fallback for the entire card, not only its preview.
         registerForDraggedTypes(DropShelfController.types)
         title = "Keylane · 暂存架"; isReleasedWhenClosed = false; delegate = self
-        level = .floating; collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        level = FloatingWindowVisibility.panelLevel; collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         hidesOnDeactivate = false; isMovableByWindowBackground = true
         isOpaque = false; backgroundColor = .clear; hasShadow = true
         titlebarAppearsTransparent = true; titleVisibility = .hidden
